@@ -16,6 +16,7 @@ from verda.constants import Actions
 
 from skyward.accelerator import Accelerator
 from skyward.callback import emit
+from skyward.spec import Spot, _SpotNever, normalize_spot
 from skyward.events import (
     BootstrapCompleted,
     BootstrapStarting,
@@ -27,6 +28,7 @@ from skyward.events import (
     InstanceStopping,
     ProviderName,
     ProvisioningCompleted,
+    RegionAutoSelected,
 )
 from skyward.types import ComputeSpec, ExitedInstance, Instance
 
@@ -85,10 +87,10 @@ def provision(
             image = get_gpu_image(
                 cast(Accelerator, compute.accelerator), instance_spec.accelerator_count
             )
-            username = "ubuntu"
+            username = "root"
         else:
             image = get_standard_image()
-            username = "ubuntu"  # Verda uses ubuntu for all images
+            username = "root"  # Verda uses root for all images
 
         object.__setattr__(provider, "_username", username)
 
@@ -101,6 +103,31 @@ def provision(
         script_name = f"skyward-bootstrap-{cluster_id}"
         startup_script = client.startup_scripts.create(name=script_name, script=user_data)
         startup_script_id = startup_script.id
+
+        # Determine if we should use spot instances
+        spot_strategy = normalize_spot(compute.spot) if hasattr(compute, "spot") else Spot.Never
+        use_spot = not isinstance(spot_strategy, _SpotNever)
+
+        # Find available region (auto-discovery)
+        from skyward.providers.verda.availability import find_available_region
+
+        actual_region = find_available_region(
+            client,
+            instance_spec.slug,
+            is_spot=use_spot,
+            preferred_region=provider.region,
+        )
+
+        # Emit event if region was changed
+        if actual_region != provider.region:
+            emit(
+                RegionAutoSelected(
+                    requested_region=provider.region,
+                    selected_region=actual_region,
+                    instance_type=instance_spec.slug,
+                    provider=ProviderName.Verda,
+                )
+            )
 
         emit(InstanceLaunching(count=compute.nodes, instance_type=instance_spec.slug, provider=ProviderName.Verda))
 
@@ -116,8 +143,8 @@ def provision(
                 hostname=instance_name,
                 description=f"Skyward managed instance - cluster {cluster_id}",
                 startup_script_id=startup_script_id,
-                location_code=provider.region,
-                is_spot=compute.spot if hasattr(compute, "spot") and compute.spot else False,
+                location=actual_region,
+                is_spot=use_spot,
             )
 
             verda_instances.append(
@@ -142,7 +169,7 @@ def provision(
             instance = Instance(
                 id=str(vinst.id),
                 provider=provider,
-                spot=bool(compute.spot) if hasattr(compute, "spot") else False,
+                spot=use_spot,
                 private_ip=vinst.private_ip or vinst.ip,
                 public_ip=vinst.ip,
                 node=i,
@@ -162,7 +189,7 @@ def provision(
                 InstanceProvisioned(
                     instance_id=str(vinst.id),
                     node=i,
-                    spot=bool(compute.spot) if hasattr(compute, "spot") else False,
+                    spot=use_spot,
                     ip=vinst.ip,
                     instance_type=instance_spec.slug,
                     provider=ProviderName.Verda,
@@ -174,7 +201,7 @@ def provision(
                 spot=len([i for i in instances if i.spot]),
                 on_demand=len([i for i in instances if not i.spot]),
                 provider=ProviderName.Verda,
-                region=provider.region,
+                region=actual_region,
                 instances=list(map(lambda inst: inst.id, instances)),
             )
         )

@@ -84,6 +84,20 @@ class ProvisioningCompleted:
     instances: list[str]
 
 
+@dataclass(frozen=True, slots=True)
+class RegionAutoSelected:
+    """Region was auto-selected due to availability.
+
+    Emitted when the requested instance type is not available in the
+    configured region, and a different region was automatically selected.
+    """
+
+    requested_region: str
+    selected_region: str
+    instance_type: str
+    provider: ProviderName
+
+
 # =============================================================================
 # Setup Phase Events
 # =============================================================================
@@ -232,6 +246,7 @@ type SkywardEvent = (
     | InstanceLaunching
     | InstanceProvisioned
     | ProvisioningCompleted
+    | RegionAutoSelected
     | BootstrapStarting
     | BootstrapProgress
     | BootstrapCompleted
@@ -252,6 +267,7 @@ __all__ = [
     "InstanceLaunching",
     "InstanceProvisioned",
     "ProvisioningCompleted",
+    "RegionAutoSelected",
     "ProviderName",
     # Setup
     "BootstrapStarting",

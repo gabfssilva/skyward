@@ -33,39 +33,72 @@ ACCELERATOR_INSTANCES: list[InstanceSpec] = [
     InstanceSpec("2V100.10V", 10, 44, "V100", 2, 16),
     InstanceSpec("4V100.20V", 20, 88, "V100", 4, 16),
     InstanceSpec("8V100.48V", 48, 176, "V100", 8, 16),
-    # NVIDIA A100 40GB
-    InstanceSpec("1A100.40G.6V", 6, 60, "A100-40GB", 1, 40),
-    InstanceSpec("2A100.40G.12V", 12, 120, "A100-40GB", 2, 40),
-    InstanceSpec("4A100.40G.24V", 24, 240, "A100-40GB", 4, 40),
-    InstanceSpec("8A100.40G.48V", 48, 480, "A100-40GB", 8, 40),
+    # NVIDIA A100 40GB (SXM variant)
+    InstanceSpec("1A100.40S.22V", 22, 60, "A100-40GB", 1, 40),
+    InstanceSpec("8A100.40S.176V", 176, 480, "A100-40GB", 8, 40),
     # NVIDIA A100 80GB
-    InstanceSpec("1A100.80G.10V", 10, 120, "A100-80GB", 1, 80),
-    InstanceSpec("2A100.80G.20V", 20, 240, "A100-80GB", 2, 80),
-    InstanceSpec("4A100.80G.40V", 40, 480, "A100-80GB", 4, 80),
-    InstanceSpec("8A100.80G.80V", 80, 960, "A100-80GB", 8, 80),
-    # NVIDIA H100 SXM 80GB (with InfiniBand)
-    InstanceSpec("1H100.SXM.80G.IB.45V", 45, 240, "H100-80GB", 1, 80),
-    InstanceSpec("2H100.SXM.80G.IB.90V", 90, 480, "H100-80GB", 2, 80),
-    InstanceSpec("4H100.SXM.80G.IB.180V", 180, 960, "H100-80GB", 4, 80),
-    InstanceSpec("8H100.SXM.80G.IB.350V", 350, 1920, "H100-80GB", 8, 80),
-    # NVIDIA H200 (141GB HBM3e)
-    InstanceSpec("1H200.141G.45V", 45, 240, "H200", 1, 141),
-    InstanceSpec("8H200.141G.350V", 350, 1920, "H200", 8, 141),
+    InstanceSpec("1A100.22V", 22, 120, "A100-80GB", 1, 80),
+    InstanceSpec("2A100.44V", 44, 240, "A100-80GB", 2, 80),
+    InstanceSpec("4A100.88V", 88, 480, "A100-80GB", 4, 80),
+    InstanceSpec("8A100.176V", 176, 960, "A100-80GB", 8, 80),
+    # NVIDIA H100 SXM 80GB
+    InstanceSpec("1H100.80S.30V", 30, 240, "H100-80GB", 1, 80),
+    InstanceSpec("1H100.80S.32V", 32, 240, "H100-80GB", 1, 80),
+    InstanceSpec("2H100.80S.80V", 80, 480, "H100-80GB", 2, 80),
+    InstanceSpec("4H100.80S.176V", 176, 960, "H100-80GB", 4, 80),
+    InstanceSpec("8H100.80S.176V", 176, 1920, "H100-80GB", 8, 80),
+    # NVIDIA H200 (141GB HBM3e, SXM variant)
+    InstanceSpec("1H200.141S.44V", 44, 240, "H200", 1, 141),
+    InstanceSpec("2H200.141S.88V", 88, 480, "H200", 2, 141),
+    InstanceSpec("4H200.141S.176V", 176, 960, "H200", 4, 141),
+    InstanceSpec("8H200.141S.176V", 176, 1920, "H200", 8, 141),
     # NVIDIA L40S (48GB)
-    InstanceSpec("1L40S.48G.12V", 12, 120, "L40S", 1, 48),
-    InstanceSpec("2L40S.48G.24V", 24, 240, "L40S", 2, 48),
-    InstanceSpec("4L40S.48G.48V", 48, 480, "L40S", 4, 48),
-    InstanceSpec("8L40S.48G.96V", 96, 960, "L40S", 8, 48),
-    # NVIDIA GB200 (latest Blackwell)
-    InstanceSpec("1GB200.192G.72V", 72, 480, "GB200", 1, 192),
+    InstanceSpec("1L40S.20V", 20, 120, "L40S", 1, 48),
+    InstanceSpec("2L40S.40V", 40, 240, "L40S", 2, 48),
+    InstanceSpec("4L40S.80V", 80, 480, "L40S", 4, 48),
+    InstanceSpec("8L40S.160V", 160, 960, "L40S", 8, 48),
+    # NVIDIA RTX 6000 Ada (48GB)
+    InstanceSpec("1RTX6000ADA.10V", 10, 60, "RTX6000-ADA", 1, 48),
+    InstanceSpec("2RTX6000ADA.20V", 20, 120, "RTX6000-ADA", 2, 48),
+    InstanceSpec("4RTX6000ADA.40V", 40, 240, "RTX6000-ADA", 4, 48),
+    InstanceSpec("8RTX6000ADA.80V", 80, 480, "RTX6000-ADA", 8, 48),
+    # NVIDIA RTX PRO 6000 (48GB)
+    InstanceSpec("1RTXPRO6000.30V", 30, 120, "RTXPRO6000", 1, 48),
+    InstanceSpec("2RTXPRO6000.60V", 60, 240, "RTXPRO6000", 2, 48),
+    InstanceSpec("4RTXPRO6000.120V", 120, 480, "RTXPRO6000", 4, 48),
+    InstanceSpec("8RTXPRO6000.240V", 240, 960, "RTXPRO6000", 8, 48),
+    # NVIDIA A6000 (48GB)
+    InstanceSpec("1A6000.10V", 10, 60, "A6000", 1, 48),
+    InstanceSpec("2A6000.20V", 20, 120, "A6000", 2, 48),
+    InstanceSpec("4A6000.40V", 40, 240, "A6000", 4, 48),
+    InstanceSpec("8A6000.80V", 80, 480, "A6000", 8, 48),
+    # NVIDIA B200 (Blackwell)
+    InstanceSpec("1B200.30V", 30, 240, "B200", 1, 192),
+    InstanceSpec("2B200.60V", 60, 480, "B200", 2, 192),
+    InstanceSpec("4B200.120V", 120, 960, "B200", 4, 192),
+    InstanceSpec("8B200.240V", 240, 1920, "B200", 8, 192),
+    # NVIDIA B300 (Blackwell)
+    InstanceSpec("1B300.30V", 30, 240, "B300", 1, 288),
+    InstanceSpec("2B300.60V", 60, 480, "B300", 2, 288),
+    InstanceSpec("4B300.120V", 120, 960, "B300", 4, 288),
+    InstanceSpec("8B300.240V", 240, 1920, "B300", 8, 288),
+    # NVIDIA GB300 (Grace Blackwell)
+    InstanceSpec("1GB300.36V", 36, 240, "GB300", 1, 288),
+    InstanceSpec("2GB300.72V", 72, 480, "GB300", 2, 288),
+    InstanceSpec("4GB300.144V", 144, 960, "GB300", 4, 288),
 ]
 
 # Standard CPU instances (no GPU)
 STANDARD_INSTANCES: list[InstanceSpec] = [
-    InstanceSpec("cpu-4v-16gb", 4, 16),
-    InstanceSpec("cpu-8v-32gb", 8, 32),
-    InstanceSpec("cpu-16v-64gb", 16, 64),
-    InstanceSpec("cpu-32v-128gb", 32, 128),
+    InstanceSpec("CPU.4V.16G", 4, 16),
+    InstanceSpec("CPU.8V.32G", 8, 32),
+    InstanceSpec("CPU.16V.64G", 16, 64),
+    InstanceSpec("CPU.32V.128G", 32, 128),
+    InstanceSpec("CPU.64V.256G", 64, 256),
+    InstanceSpec("CPU.96V.384G", 96, 384),
+    InstanceSpec("CPU.120V.480G", 120, 480),
+    InstanceSpec("CPU.180V.720G", 180, 720),
+    InstanceSpec("CPU.360V.1440G", 360, 1440),
 ]
 
 

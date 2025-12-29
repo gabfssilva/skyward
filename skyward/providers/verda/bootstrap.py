@@ -20,6 +20,7 @@ from skyward.providers.common.bootstrap import (
 from skyward.providers.common.bootstrap import (
     wait_for_bootstrap as _wait_for_bootstrap,
 )
+from skyward.providers.verda.ssh import find_local_ssh_key
 from skyward.types import ComputeSpec, Instance
 
 
@@ -30,11 +31,26 @@ VERDA_EXTRA_CHECKPOINTS = (
 )
 
 
+def _get_ssh_private_key_path() -> str | None:
+    """Get path to SSH private key (without .pub extension)."""
+    key_info = find_local_ssh_key()
+    if key_info is None:
+        return None
+    pub_path, _ = key_info
+    # Remove .pub to get private key path
+    private_path = pub_path.with_suffix("")
+    if private_path.exists():
+        return str(private_path)
+    return None
+
+
 def _create_ssh_runner(ip: str, username: str) -> Callable[[str], str]:
     """Create a command runner using SSH.
 
     Returns a function that runs commands via SSH and returns stdout.
+    Raises RuntimeError on SSH failures to trigger retry logic.
     """
+    key_path = _get_ssh_private_key_path()
 
     def run_command(cmd: str) -> str:
         ssh_cmd = [
@@ -42,13 +58,16 @@ def _create_ssh_runner(ip: str, username: str) -> Callable[[str], str]:
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", "ConnectTimeout=10",
-            f"{username}@{ip}",
-            cmd,
         ]
+        if key_path:
+            ssh_cmd.extend(["-i", key_path])
+        ssh_cmd.extend([f"{username}@{ip}", cmd])
+
         result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode == 0:
-            return result.stdout
-        return ""
+        if result.returncode != 0:
+            # Raise to trigger retry in wait_for_bootstrap
+            raise RuntimeError(f"SSH command failed (exit {result.returncode}): {result.stderr}")
+        return result.stdout
 
     return run_command
 
@@ -63,7 +82,7 @@ def wait_for_bootstrap(
         instances: Instances to wait for.
         timeout: Maximum time to wait per instance in seconds.
     """
-    username = instances[0].get_meta("username", "ubuntu")
+    username = instances[0].get_meta("username", "root")
 
     for inst in instances:
         ip = inst.get_meta("instance_ip") or inst.public_ip
@@ -85,7 +104,7 @@ def install_skyward_wheel(instances: tuple[Instance, ...]) -> None:
 
     def install_on_instance(inst: Instance) -> None:
         ip = inst.get_meta("instance_ip") or inst.public_ip
-        username = inst.get_meta("username", "ubuntu")
+        username = inst.get_meta("username", "root")
 
         # Find uv path dynamically
         find_uv_cmd = "which uv || find /root /home -name uv -type f 2>/dev/null | head -1"
@@ -154,14 +173,16 @@ def _ssh_run(
     timeout: int = 60,
 ) -> subprocess.CompletedProcess[str]:
     """Run SSH command on instance."""
+    key_path = _get_ssh_private_key_path()
     ssh_cmd = [
         "ssh",
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", "ConnectTimeout=10",
-        f"{username}@{ip}",
-        command,
     ]
+    if key_path:
+        ssh_cmd.extend(["-i", key_path])
+    ssh_cmd.extend([f"{username}@{ip}", command])
     return subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=timeout)
 
 
@@ -187,13 +208,15 @@ def _build_wheel() -> Path:
 
 def _scp_upload(ip: str, username: str, local_path: Path, remote_path: str) -> None:
     """Upload file to remote via SCP."""
+    key_path = _get_ssh_private_key_path()
     scp_cmd = [
         "scp",
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
-        str(local_path),
-        f"{username}@{ip}:{remote_path}",
     ]
+    if key_path:
+        scp_cmd.extend(["-i", key_path])
+    scp_cmd.extend([str(local_path), f"{username}@{ip}:{remote_path}"])
     result = subprocess.run(scp_cmd, capture_output=True, text=True, timeout=60)
     if result.returncode != 0:
         raise RuntimeError(f"SCP failed: {result.stderr}")

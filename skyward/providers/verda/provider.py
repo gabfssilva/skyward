@@ -54,7 +54,7 @@ class Verda(Provider):
     _resolved_ssh_key_id: str | None = field(
         default=None, repr=False, compare=False, hash=False
     )
-    _username: str = field(default="ubuntu", repr=False, compare=False, hash=False)
+    _username: str = field(default="root", repr=False, compare=False, hash=False)
     _instances: list = field(default_factory=list, repr=False, compare=False, hash=False)
     _cluster_id: str | None = field(default=None, repr=False, compare=False, hash=False)
 
@@ -113,9 +113,15 @@ class Verda(Provider):
     def create_tunnel(self, instance: Instance) -> tuple[int, subprocess.Popen[bytes]]:
         """Create SSH tunnel to instance."""
         from skyward.providers.common import RPYC_PORT, create_tunnel, find_available_port
+        from skyward.providers.verda.ssh import find_local_ssh_key
 
         ip = instance.get_meta("instance_ip") or instance.public_ip
         local_port = find_available_port()
+
+        # Get SSH private key path
+        key_info = find_local_ssh_key()
+        key_path = str(key_info[0].with_suffix("")) if key_info else None
+
         cmd = [
             "ssh",
             "-o", "StrictHostKeyChecking=no",
@@ -124,9 +130,10 @@ class Verda(Provider):
             "-o", "ServerAliveInterval=30",
             "-o", "ServerAliveCountMax=3",
             "-N",
-            "-L", f"{local_port}:127.0.0.1:{RPYC_PORT}",
-            f"{self._username}@{ip}",
         ]
+        if key_path:
+            cmd.extend(["-i", key_path])
+        cmd.extend(["-L", f"{local_port}:127.0.0.1:{RPYC_PORT}", f"{self._username}@{ip}"])
         return create_tunnel(cmd, local_port)
 
     @override
@@ -175,9 +182,15 @@ class Verda(Provider):
         """
         import subprocess
 
+        from skyward.providers.verda.ssh import find_local_ssh_key
+
         ip = instance.get_meta("instance_ip") or instance.public_ip or instance.private_ip
         if not ip:
             raise RuntimeError(f"No IP address for instance {instance.id}")
+
+        # Get SSH private key path
+        key_info = find_local_ssh_key()
+        key_path = str(key_info[0].with_suffix("")) if key_info else None
 
         username = instance.get_meta("username", self._username)
         ssh_cmd = [
@@ -185,9 +198,10 @@ class Verda(Provider):
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", f"ConnectTimeout={min(timeout, 10)}",
-            f"{username}@{ip}",
-            command,
         ]
+        if key_path:
+            ssh_cmd.extend(["-i", key_path])
+        ssh_cmd.extend([f"{username}@{ip}", command])
         result = subprocess.run(
             ssh_cmd, capture_output=True, text=True, timeout=timeout
         )

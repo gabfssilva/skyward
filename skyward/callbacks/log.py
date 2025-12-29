@@ -24,6 +24,7 @@ from skyward.events import (
     PoolStarted,
     PoolStopping,
     ProvisioningCompleted,
+    RegionAutoSelected,
     SkywardEvent,
 )
 
@@ -110,9 +111,9 @@ def log(event: SkywardEvent) -> None:
         case InstanceLaunching(count=count, instance_type=itype, provider=provider):
             _log_local("INFO", f"🚀 Launching {count}x {itype} on {provider.name}")
 
-        # case InstanceProvisioned(instance_id=iid, spot=spot, instance_type=itype, provider=provider):
-        #     tag = "[spot]" if spot else "[on-demand]"
-        #     _log_local("INFO", f"📦 {iid[:12]} {tag} {itype} provisioned on {provider.name}")
+        case InstanceProvisioned(instance_id=iid, spot=spot, instance_type=itype, provider=provider):
+            tag = "[spot]" if spot else "[on-demand]"
+            _log_local("INFO", f"📦 {iid[:12]} {tag} {itype} provisioned on {provider.name}")
 
         case ProvisioningCompleted(spot=spot, on_demand=on_demand, provider=prov, region=region, instances=instances):
             total = spot + on_demand
@@ -125,12 +126,15 @@ def log(event: SkywardEvent) -> None:
             else:
                 _log_local("INFO", f"🖥️ {total} instances provisioned on {prov.value} ({region}) with ids {', '.join(inst)}")
 
+        case RegionAutoSelected(requested_region=req, selected_region=sel, instance_type=itype, provider=prov):
+            _log_local("WARNING", f"⚠️  {itype} not available in {req}, using {sel} instead")
+
         # Setup phase
         case BootstrapStarting(instance_id=iid):
             _log_local("INFO", f"⚙️ Bootstrap starting for {iid[:12]}...")
 
-        # case BootstrapProgress(instance_id=iid, step=step):
-        #     _log_local("INFO", f"⚙️  {iid[:12]} {step}")
+        case BootstrapProgress(instance_id=iid, step=step):
+            _log_local("INFO", f"⚙️  {iid[:12]} {step}")
 
         case BootstrapCompleted(instance_id=iid):
             _log_local("INFO", f"✅ {iid[:12]} is ready.")
