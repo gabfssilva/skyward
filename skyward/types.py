@@ -7,8 +7,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
-if TYPE_CHECKING:
-    from skyward.events import EventCallback
 
 # Re-export from accelerator module for convenience
 from skyward.accelerator import GPU, NVIDIA, Accelerator, Trainium, current_accelerator
@@ -224,8 +222,7 @@ class Provider(Protocol):
 
     Execution is handled directly by ComputePool via RPyC connections.
 
-    Each phase accepts an optional on_event callback for progress tracking.
-    Events are typed using the SkywardEvent ADT (see skyward.events).
+    Events are emitted via the callback system (see skyward.callback).
     """
 
     @property
@@ -236,13 +233,11 @@ class Provider(Protocol):
     def provision(
         self,
         compute: ComputeSpec,
-        on_event: EventCallback = None,
     ) -> tuple[Instance, ...]:
         """Provision compute instances.
 
         Args:
             compute: Compute specification including nodes, accelerator, etc.
-            on_event: Optional callback for progress events.
 
         Returns:
             Tuple of provisioned Instance objects.
@@ -253,14 +248,12 @@ class Provider(Protocol):
         self,
         instances: tuple[Instance, ...],
         compute: ComputeSpec,
-        on_event: EventCallback = None,
     ) -> None:
         """Setup instances with dependencies and skyward.
 
         Args:
             instances: Instances from provision phase.
             compute: Compute specification.
-            on_event: Optional callback for bootstrap progress events.
         """
         ...
 
@@ -268,14 +261,12 @@ class Provider(Protocol):
         self,
         instances: tuple[Instance, ...],
         compute: ComputeSpec,
-        on_event: EventCallback = None,
     ) -> tuple[ExitedInstance, ...]:
         """Shutdown instances.
 
         Args:
             instances: Instances to shut down.
             compute: Compute specification.
-            on_event: Optional callback for shutdown events.
 
         Returns:
             Tuple of ExitedInstance objects.

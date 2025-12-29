@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
 from typing import Any, TypeVar
-
-logger = logging.getLogger("skyward.cache")
 
 CACHE_DIR = Path.home() / ".skyward" / "cache"
 CACHE_VERSION = 1
@@ -42,10 +39,8 @@ class DiskCache:
                 if raw.get("version") == CACHE_VERSION:
                     self._data = raw.get("entries", {})
                 else:
-                    logger.info(f"Cache version mismatch, resetting {self.namespace}")
                     self._data = {}
-            except Exception as e:
-                logger.warning(f"Failed to load cache {self.namespace}: {e}")
+            except Exception:
                 self._data = {}
         else:
             self._data = {}
@@ -75,12 +70,10 @@ class DiskCache:
         if ttl is not None:
             created = datetime.fromisoformat(entry["created"])
             if datetime.utcnow() - created > ttl:
-                logger.info(f"Cache entry expired: {key}")
                 del self.data[key]
                 self._save()
                 return False, None
 
-        logger.info(f"Cache hit: {self.namespace}/{key}")
         return True, entry["value"]
 
     def set(self, key: str, value: Any) -> None:
@@ -90,7 +83,6 @@ class DiskCache:
             "created": datetime.utcnow().isoformat(),
         }
         self._save()
-        logger.info(f"Cache set: {self.namespace}/{key}")
 
     def clear(self) -> None:
         """Clear all entries in this namespace."""

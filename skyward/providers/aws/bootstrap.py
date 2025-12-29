@@ -7,13 +7,11 @@ Uses the common bootstrap module with AWS-specific extensions:
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from botocore.exceptions import ClientError
 
-from skyward.events import EventCallback
 from skyward.exceptions import InstanceTerminatedError
 from skyward.providers.common.bootstrap import (
     Checkpoint,
@@ -24,8 +22,6 @@ from skyward.providers.common.bootstrap import (
 
 if TYPE_CHECKING:
     from skyward.providers.aws.ssm import SSMSession
-
-logger = logging.getLogger("skyward.aws.bootstrap")
 
 
 # AWS-specific checkpoints (in addition to common ones)
@@ -74,7 +70,6 @@ def _create_ssm_runner(
 def wait_for_bootstrap(
     ssm_session: SSMSession,
     instance_id: str,
-    on_event: EventCallback = None,
     verified_instances: set[str] | None = None,
     timeout: int = 300,
 ) -> None:
@@ -85,7 +80,6 @@ def wait_for_bootstrap(
     Args:
         ssm_session: SSM session for running commands.
         instance_id: EC2 instance ID.
-        on_event: Optional callback for progress events.
         verified_instances: Set to track verified instances.
         timeout: Maximum time to wait in seconds.
 
@@ -102,7 +96,6 @@ def wait_for_bootstrap(
         _wait_for_bootstrap(
             run_command=runner,
             instance_id=instance_id,
-            on_event=on_event,
             timeout=timeout,
             extra_checkpoints=AWS_EXTRA_CHECKPOINTS,
         )

@@ -8,7 +8,6 @@ This module provides:
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -20,15 +19,14 @@ from tenacity import (
     wait_exponential,
 )
 
+from skyward.callback import emit
 from skyward.constants import (
     DEFAULT_PYTHON,
     RPYC_PORT,
     SKYWARD_DIR,
     UV_INSTALL_URL,
 )
-from skyward.events import BootstrapProgress, EventCallback
-
-logger = logging.getLogger("skyward.bootstrap")
+from skyward.events import BootstrapProgress
 
 
 # =============================================================================
@@ -79,7 +77,6 @@ CommandRunner = Callable[[str], str]  # command -> stdout
 def wait_for_bootstrap(
     run_command: CommandRunner,
     instance_id: str,
-    on_event: EventCallback = None,
     timeout: int = 300,
     extra_checkpoints: tuple[Checkpoint, ...] = (),
 ) -> None:
@@ -92,7 +89,6 @@ def wait_for_bootstrap(
         run_command: Function that runs a shell command and returns stdout.
                     Should raise on failure (non-zero exit, timeout, etc.).
         instance_id: Instance ID for logging and events.
-        on_event: Optional callback for progress events.
         timeout: Maximum time to wait in seconds.
         extra_checkpoints: Additional provider-specific checkpoints to track.
 
@@ -111,7 +107,6 @@ def wait_for_bootstrap(
         "if [ -f .error ]; then echo '---ERROR---'; cat .error; fi; exit 0"
     )
 
-    logger.info(f"Waiting for bootstrap on {instance_id}...")
     completed_steps: set[str] = set()
 
     @retry(
@@ -126,10 +121,8 @@ def wait_for_bootstrap(
         try:
             stdout = run_command(check_cmd)
         except TimeoutError:
-            logger.info(f"Command timed out on {instance_id}, retrying...")
             raise
         except Exception as e:
-            logger.info(f"Command failed on {instance_id}: {e}")
             raise BootstrapNotReadyError() from e
 
         stdout = stdout.strip()
@@ -144,13 +137,12 @@ def wait_for_bootstrap(
         # Emit events for completed checkpoints
         for checkpoint in all_checkpoints:
             if checkpoint.file in found_files and checkpoint.name not in completed_steps:
-                if on_event:
-                    on_event(
-                        BootstrapProgress(
-                            instance_id=instance_id,
-                            step=checkpoint.name,
-                        )
+                emit(
+                    BootstrapProgress(
+                        instance_id=instance_id,
+                        step=checkpoint.name,
                     )
+                )
                 completed_steps.add(checkpoint.name)
 
         # Check if bootstrap complete

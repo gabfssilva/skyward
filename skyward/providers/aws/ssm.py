@@ -9,7 +9,6 @@ No SSH keys, no paramiko, no EIC endpoints needed.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING
@@ -24,8 +23,6 @@ from tenacity import (
 
 if TYPE_CHECKING:
     from mypy_boto3_ssm import SSMClient
-
-logger = logging.getLogger("skyward.ssm")
 
 
 class _SSMPendingError(Exception):
@@ -99,19 +96,13 @@ class SSMSession:
             TimeoutError: If command doesn't complete within timeout.
             RuntimeError: If command invocation fails.
         """
-        logger.info(f"Running on {instance_id}: {command[:100]}...")
-
         # Send command
-        try:
-            response = self._ssm.send_command(
-                InstanceIds=[instance_id],
-                DocumentName="AWS-RunShellScript",
-                Parameters={"commands": [command]},
-                TimeoutSeconds=min(timeout, 3600),  # SSM max is 3600
-            )
-        except Exception as e:
-            logger.error(f"Failed to send command to {instance_id}: {e}")
-            raise
+        response = self._ssm.send_command(
+            InstanceIds=[instance_id],
+            DocumentName="AWS-RunShellScript",
+            Parameters={"commands": [command]},
+            TimeoutSeconds=min(timeout, 3600),  # SSM max is 3600
+        )
 
         command_id = response["Command"]["CommandId"]
 
@@ -140,7 +131,6 @@ class SSMSession:
                 )
             elif status in ("Failed", "TimedOut", "Cancelled"):
                 stderr = result.get("StandardErrorContent", "") or f"Command {status}"
-                logger.warning(f"Command {status} on {instance_id}: {stderr}")
                 return CommandResult(
                     exit_code=1,
                     stdout=result.get("StandardOutputContent", ""),
@@ -169,7 +159,6 @@ class SSMSession:
         Raises:
             TimeoutError: If SSM agent doesn't become available within timeout.
         """
-        logger.info(f"Waiting for SSM agent on {instance_id}...")
 
         @retry(
             stop=stop_after_delay(timeout),
@@ -182,14 +171,12 @@ class SSMSession:
                 result = self.run_command(instance_id, "echo ok", timeout=30)
                 if result.success:
                     return
-                logger.warning(f"SSM check failed on {instance_id}: exit_code={result.exit_code}, stderr={result.stderr}")
-            except Exception as e:
-                logger.warning(f"SSM check error on {instance_id}: {e}")
+            except Exception:
+                pass
             raise _SSMNotReadyError()
 
         try:
             _check()
-            logger.info(f"SSM agent ready on {instance_id}")
         except RetryError as e:
             raise TimeoutError(
                 f"SSM agent not available on {instance_id} after {timeout}s"

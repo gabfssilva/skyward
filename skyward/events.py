@@ -20,12 +20,22 @@ Use pattern matching to handle events in consumers:
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
+from typing import Literal
+
+from skyward.callback import emit
 
 # =============================================================================
 # Provision Phase Events
 # =============================================================================
+
+class ProviderName(Enum):
+    AWS = 'AWS'
+    DigitalOcean = 'Digital Ocean'
+    Verda = 'Verda'
+    Azure = 'Azure'
+    GCP = 'GCP'
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +58,7 @@ class InstanceLaunching:
 
     count: int
     instance_type: str
+    provider: ProviderName
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,8 +68,20 @@ class InstanceProvisioned:
     instance_id: str
     node: int
     spot: bool
+    provider: ProviderName
     ip: str | None = None
     instance_type: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProvisioningCompleted:
+    """All instances have been provisioned."""
+
+    spot: int
+    on_demand: int
+    provider: ProviderName
+    region: str
+    instances: list[str]
 
 
 # =============================================================================
@@ -203,11 +226,12 @@ class Error:
 # Union Type (ADT)
 # =============================================================================
 
-SkywardEvent = (
+type SkywardEvent = (
     InfraCreating
     | InfraCreated
     | InstanceLaunching
     | InstanceProvisioned
+    | ProvisioningCompleted
     | BootstrapStarting
     | BootstrapProgress
     | BootstrapCompleted
@@ -221,16 +245,14 @@ SkywardEvent = (
     | Error
 )
 
-# Type alias for event callback
-EventCallback = Callable[[SkywardEvent], None] | None
-
-
 __all__ = [
     # Provision
     "InfraCreating",
     "InfraCreated",
     "InstanceLaunching",
     "InstanceProvisioned",
+    "ProvisioningCompleted",
+    "ProviderName",
     # Setup
     "BootstrapStarting",
     "BootstrapProgress",
@@ -250,6 +272,6 @@ __all__ = [
     "Error",
     # Union type
     "SkywardEvent",
-    # Callback type
-    "EventCallback",
+    # Emit function (re-exported from callback)
+    "emit",
 ]

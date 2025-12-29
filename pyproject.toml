@@ -30,9 +30,11 @@ dependencies = [
     "rpyc>=6.0.0",
     "tqdm>=4.67.1",
     "pydo>=0.22.0",
+    "verda>=1.0.0",
     "tenacity>=8.0.0",
     "psutil>=5.9.0",
     "thespian>=4.0.1",
+    "loguru>=0.7.3",
 ]
 
 [project.optional-dependencies]

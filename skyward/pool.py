@@ -32,13 +32,15 @@ Example:
 from __future__ import annotations
 
 import contextlib
-import logging
+import contextvars
 import subprocess
 import threading
+import time
 from collections.abc import Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Callable
 
 import rpyc
 from tenacity import (
@@ -50,9 +52,10 @@ from tenacity import (
 )
 
 from skyward.accelerator import Accelerator
-from skyward.bus import EventBus, respond_with as _respond_with
+from skyward.callback import Callback, compose, emit, use_callback
+from skyward.callbacks import cost_tracker, log, spinner
 from skyward.conc import map_async
-from skyward.events import Error, PoolStarted, PoolStopping, SkywardEvent
+from skyward.events import Error, LogLine, PoolStarted, PoolStopping, SkywardEvent
 from skyward.exceptions import ConnectionLostError, ExecutionError, NotProvisionedError
 from skyward.pending import PendingBatch, PendingCompute
 from skyward.spec import SpotLike
@@ -61,8 +64,6 @@ from skyward.volume import Volume, parse_volume_uri
 
 if TYPE_CHECKING:
     pass
-
-logger = logging.getLogger("skyward.pool")
 
 
 class _RPyCNotReadyError(Exception):
@@ -132,16 +133,20 @@ class ComputePool:
     volume: dict[str, str] | Sequence[Volume] | None = None
     spot: SpotLike = "if-available"
     timeout: int = 3600
+    env: dict[str, str] | None = None
 
     # Display settings
-    log_level: Literal["INFO", "WARN", "ERROR", "DEBUG", "TRACE"] = "INFO"
-    display: Literal["spinner", "log"] = "log"
+    display: Literal["spinner", "log", "quiet"] = "log"
+    on_event: Callback | None = None
 
     # Internal state
     _active: bool = field(default=False, init=False, repr=False)
     _instances: tuple[Instance, ...] | None = field(default=None, init=False, repr=False)
-    _bus: EventBus = field(default_factory=EventBus, init=False, repr=False)
+    _callback_ctx: AbstractContextManager[None] | None = field(
+        default=None, init=False, repr=False
+    )
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _conn_locks: dict[str, threading.Lock] = field(default_factory=dict, init=False, repr=False)
     _tunnels: dict[str, subprocess.Popen[bytes]] = field(default_factory=dict, init=False, repr=False)
     _rpyc_conns: dict[str, rpyc.Connection] = field(default_factory=dict, init=False, repr=False)
     _cluster_setup: set[str] = field(default_factory=set, init=False, repr=False)
@@ -151,16 +156,14 @@ class ComputePool:
         """Enter pool context and provision resources."""
         import uuid
 
-        import skyward
-
-        skyward.set_log_level(self.log_level)
-
         self._active = True
         self._job_id = str(uuid.uuid4())[:8]
 
-        self._register_consumer()
-        self._emit(PoolStarted())
+        # Setup callback context
+        self._callback_ctx = use_callback(self._build_callback())
+        self._callback_ctx.__enter__()
 
+        emit(PoolStarted())
         self._provision()
         return self
 
@@ -171,13 +174,14 @@ class ComputePool:
         exc_tb: TracebackType | None,
     ) -> None:
         """Exit pool context and release resources."""
-        self._shutdown()
-        self._active = False
-
-        with contextlib.suppress(ExecutionError):
-            self._emit(PoolStopping())
-
-        self._bus.clear()
+        try:
+            emit(PoolStopping())
+            self._shutdown()
+        finally:
+            self._active = False
+            if self._callback_ctx is not None:
+                self._callback_ctx.__exit__(exc_type, exc_val, exc_tb)
+                self._callback_ctx = None
 
     def run[R](self, pending: PendingCompute[R]) -> R:
         """Execute a single computation on the pool.
@@ -196,7 +200,7 @@ class ComputePool:
 
         # Use first available instance (simple scheduling)
         instance = self._instances[0]
-        return self._execute_on_instance(instance, pending)
+        return self._execute_on_instance(instance, pending, self._stdout_cb(emit))
 
     def run_batch(self, batch: PendingBatch) -> tuple[Any, ...]:
         """Execute a batch of computations in parallel.
@@ -216,9 +220,11 @@ class ComputePool:
         # Distribute computations across instances (round-robin)
         n_instances = len(self._instances)
 
+        stdout_cb = self._stdout_cb(emit)
+
         def execute_indexed(idx: int, pending: PendingCompute[Any]) -> Any:
             instance = self._instances[idx % n_instances]  # type: ignore
-            return self._execute_on_instance(instance, pending)
+            return self._execute_on_instance(instance, pending, stdout_cb)
 
         # Execute in parallel
         results = list(
@@ -251,19 +257,25 @@ class ComputePool:
         if not self._active or self._instances is None:
             raise NotProvisionedError()
 
+        stdout_cb = self._stdout_cb(emit)
+
         results = list(
             map_async(
-                lambda inst: self._execute_on_instance(inst, pending),
+                lambda inst: self._execute_on_instance(inst, pending, stdout_cb),
                 self._instances,
             )
         )
         return tuple(results)
 
     def _execute_on_instance[R](
-        self, instance: Instance, pending: PendingCompute[R]
+        self,
+        instance: Instance,
+        pending: PendingCompute[R],
+        stdout_cb: Callable[[int, Instance], Callable[[str], None]],
     ) -> R:
         """Execute a computation on a specific instance."""
         conn = self._get_rpyc_connection(instance)
+        node = self._instances.index(instance) if self._instances else 0
 
         # Serialize and send to remote
         from skyward.serialization import deserialize, serialize
@@ -273,7 +285,7 @@ class ComputePool:
         kwargs_bytes = serialize(pending.kwargs_dict)
 
         try:
-            result_bytes = conn.root.execute(fn_bytes, args_bytes, kwargs_bytes)
+            result_bytes = conn.root.execute(fn_bytes, args_bytes, kwargs_bytes, stdout_cb(node, instance))
             response = deserialize(result_bytes)
             if response.get("error"):
                 raise ExecutionError(response["error"])
@@ -281,7 +293,7 @@ class ComputePool:
         except ExecutionError:
             raise
         except Exception as e:
-            logger.error(f"Execution failed on {instance.id}: {e}")
+            emit(Error(message=f"Execution failed on {instance.id}: {e}"))
             raise
 
     def _provision(self) -> None:
@@ -300,22 +312,29 @@ class ComputePool:
             pip=tuple(self.pip),
             pip_extra_index_url=self.pip_extra_index_url,
             apt=tuple(self.apt),
-            env=frozenset(),
+            env=frozenset(self.env.items()) if self.env else frozenset(),
             timeout=self.timeout,
             spot=self.spot,
             volumes=_parse_volumes(self.volume),
         )
 
-        on_event = self._emit
-
-        # Provision
-        instances = self.provider.provision(compute, on_event=on_event)
-
-        # Setup
-        self.provider.setup(instances, compute, on_event=on_event)
-
+        # Provision and setup (providers use emit() directly)
+        instances = self.provider.provision(compute)
+        self.provider.setup(instances, compute)
         self._instances = instances
-        logger.info(f"Pool provisioned {len(instances)} instances")
+
+    def _stdout_cb(
+        self,
+        do_emit: Callable[[Any], None],
+    ):
+        return lambda node, instance: lambda line: do_emit(
+            LogLine(
+                node=node,
+                instance_id=instance.id,
+                line=line,
+                timestamp=time.time(),
+            ),
+        )
 
     def _shutdown(self) -> None:
         """Shutdown and release pool resources."""
@@ -342,13 +361,21 @@ class ComputePool:
         )
 
         try:
-            self.provider.shutdown(self._instances, compute, on_event=self._emit)
-        except Exception as e:
-            logger.warning(f"Error during shutdown: {e}")
+            self.provider.shutdown(self._instances, compute)
+        except Exception:
+            pass  # Shutdown errors are not critical
 
         # Close connections
         self._close_connections()
         self._instances = None
+
+    def _get_instance_lock(self, key: str) -> threading.Lock:
+        """Get or create lock for specific instance."""
+        if key not in self._conn_locks:
+            with self._lock:
+                if key not in self._conn_locks:
+                    self._conn_locks[key] = threading.Lock()
+        return self._conn_locks[key]
 
     def _get_rpyc_connection(self, instance: Instance) -> rpyc.Connection:
         """Get or create RPyC connection for instance."""
@@ -356,7 +383,7 @@ class ComputePool:
         if key in self._rpyc_conns:
             return self._rpyc_conns[key]
 
-        with self._lock:
+        with self._get_instance_lock(key):
             if key in self._rpyc_conns:
                 return self._rpyc_conns[key]
 
@@ -405,10 +432,9 @@ class ComputePool:
             accelerator_type=accelerator_type,
         )
 
-        env_bytes = serialize({})
+        env_bytes = serialize(self.env or {})
         conn.root.setup_cluster(pool_info.model_dump_json(), env_bytes)
         self._cluster_setup.add(instance.id)
-        logger.info(f"Setup cluster on node {node} ({instance.id})")
 
     def _connect_with_retry(
         self, instance: Instance
@@ -433,8 +459,8 @@ class ComputePool:
                     )
                     if conn.root.ping() == "pong":
                         return conn
-                except Exception as e:
-                    logger.info(f"RPyC connection attempt to {instance.id} failed: {e}")
+                except Exception:
+                    pass
                 raise _RPyCNotReadyError()
 
             conn = _connect_rpyc()
@@ -463,41 +489,34 @@ class ComputePool:
 
         self._rpyc_conns.clear()
         self._tunnels.clear()
+        self._conn_locks.clear()
 
-    def _emit(self, event: SkywardEvent) -> None:
-        """Emit event to handlers."""
-        self._bus.emit(event)
+    def _build_callback(self) -> Callback:
+        """Build the composite callback for this pool."""
+        callbacks: list[Callback] = []
 
-        if isinstance(event, Error):
-            raise ExecutionError(event.message)
-
-    def _register_consumer(self) -> None:
-        """Register display and cost consumers."""
-        from skyward.cost import CostConsumer
-        from skyward.display.consumers.log import LogConsumer
-        from skyward.display.consumers.spinner import SpinnerConsumer
-
-        # Cost tracking
-        CostConsumer(
-            pool=self,
-            region=getattr(self.provider, "region", "us-east-1"),
-            provider=self.provider.name,  # type: ignore[arg-type]
+        # Cost tracking (always active)
+        callbacks.append(
+            cost_tracker(
+                region=getattr(self.provider, "region", "us-east-1"),
+                provider=getattr(self.provider, "name", "aws"),
+            )
         )
 
-        # Display
-        if self.display == "log":
-            LogConsumer(self)
-        else:
-            SpinnerConsumer(self)
+        # Display callback
+        match self.display:
+            case "log":
+                callbacks.append(log)
+            case "spinner":
+                callbacks.append(spinner())
+            case "quiet":
+                pass
 
-    def on(self, *event_types: type[SkywardEvent]) -> Any:
-        """Register event handler (delegates to EventBus)."""
-        return self._bus.on(*event_types)
+        # User callback
+        if self.on_event is not None:
+            callbacks.append(self.on_event)
 
-    @property
-    def respond_with(self) -> Any:
-        """Decorator to mark handler for reply dispatch."""
-        return _respond_with
+        return compose(*callbacks)
 
     @property
     def is_active(self) -> bool:

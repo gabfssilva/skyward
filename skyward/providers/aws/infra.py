@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import contextlib
 import json
-import logging
 from dataclasses import dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, cast
 
 from skyward.cache import cached
-
-logger = logging.getLogger("skyward.infra")
 
 if TYPE_CHECKING:
     from mypy_boto3_ec2 import EC2Client
@@ -500,17 +497,9 @@ class AWSInfraManager:
             ("ami", self._cleanup_ami),
         ]
 
-        errors: list[tuple[str, Exception]] = []
-        for name, cleanup_fn in cleanups:
-            try:
+        for _, cleanup_fn in cleanups:
+            with contextlib.suppress(Exception):
                 cleanup_fn()
-            except Exception as e:
-                errors.append((name, e))
-                logger.warning(f"Cleanup de {name} falhou: {e}")
-
-        if errors:
-            failed = [name for name, _ in errors]
-            logger.error(f"Cleanup incompleto. Recursos com falha: {failed}")
 
     def _cleanup_eice(self) -> None:
         """Delete EC2 Instance Connect Endpoints."""
@@ -525,15 +514,10 @@ class AWSInfraManager:
                 state = endpoint["State"]
 
                 if state in ("create-complete", "create-failed"):
-                    logger.info(f"Deleting EIC endpoint {endpoint_id}...")
                     with contextlib.suppress(Exception):
                         self._ec2.delete_instance_connect_endpoint(
                             InstanceConnectEndpointId=endpoint_id
                         )
-                        deleted += 1
-
-            if deleted > 0:
-                logger.info(f"Deleted {deleted} EIC endpoints")
 
     def _cleanup_ami(self) -> None:
         """Delete skyward-managed AMIs (legacy cleanup).
@@ -550,7 +534,6 @@ class AWSInfraManager:
 
             for image in response.get("Images", []):
                 ami_id = image["ImageId"]
-                logger.info(f"Deregistering legacy AMI {ami_id}...")
 
                 # Get snapshot IDs before deregistering
                 snapshot_ids = [
@@ -583,7 +566,6 @@ class AWSInfraManager:
                     instance_ids.append(instance["InstanceId"])
 
             if instance_ids:
-                logger.info(f"Terminating {len(instance_ids)} skyward-managed instances...")
                 self._ec2.terminate_instances(InstanceIds=instance_ids)
                 # Wait for termination
                 waiter = self._ec2.get_waiter("instance_terminated")

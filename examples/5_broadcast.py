@@ -7,6 +7,7 @@ This is useful for:
 - Collecting information from all nodes
 - Distributed map operations
 """
+from time import sleep
 
 from skyward import AWS, NVIDIA, ComputePool, compute, instance_info
 
@@ -64,6 +65,8 @@ def process_partition(data: list[int]) -> dict:
     # shard() automatically gives this node its portion
     local_data = shard(data)
 
+    print(f"Processing {len(local_data)} items...")
+
     return {
         "node": pool.node,
         "partition_size": len(local_data),
@@ -79,7 +82,7 @@ if __name__ == "__main__":
     with ComputePool(
         provider=AWS(),
         nodes=4,
-        accelerator=NVIDIA.A100,
+        accelerator='T4',
         spot="always",
     ) as pool:
         # =================================================================

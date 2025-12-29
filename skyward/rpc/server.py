@@ -6,7 +6,6 @@ It is accessed via SSM port forwarding (AWS) or SSH tunnel (other providers).
 
 from __future__ import annotations
 
-import logging
 import subprocess
 import sys
 import traceback
@@ -17,12 +16,6 @@ import rpyc
 from rpyc.utils.server import ThreadedServer
 
 from skyward.serialization import deserialize, serialize
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger("skyward.rpc.server")
 
 # Default port for RPyC server
 RPYC_PORT = 18861
@@ -53,11 +46,11 @@ class SkywardService(rpyc.Service):
 
     def on_connect(self, conn: rpyc.Connection) -> None:
         """Called when a client connects."""
-        logger.info("Client connected")
+        pass
 
     def on_disconnect(self, conn: rpyc.Connection) -> None:
         """Called when a client disconnects."""
-        logger.info("Client disconnected")
+        pass
 
     def exposed_execute(
         self,
@@ -78,17 +71,11 @@ class SkywardService(rpyc.Service):
             Cloudpickle-serialized dict with 'result' or 'error' key.
         """
         try:
-            logger.info("Deserializing function...")
             fn = deserialize(fn_bytes)
             args = deserialize(args_bytes)
             kwargs = deserialize(kwargs_bytes)
 
-            fn_name = getattr(fn, "__name__", str(fn))
-            logger.info(f"Executing function: {fn_name}...")
-
             if stdout_callback:
-                # Stream stdout AND stderr to callback in real-time
-                # Keras may use both for progress bars and logs
                 old_stdout = sys.stdout
                 old_stderr = sys.stderr
                 sys.stdout = StreamingStdout(stdout_callback, old_stdout)
@@ -103,17 +90,12 @@ class SkywardService(rpyc.Service):
             else:
                 result = fn(*args, **kwargs)
 
-            logger.info("Function completed successfully")
-
-            # Unmount S3 volumes to force pending uploads to complete
-            # os.sync() doesn't work for FUSE filesystems - umount is required
             self._sync_s3_volumes()
             result_bytes: bytes = serialize({"result": result, "error": None})
             return result_bytes
 
         except Exception:
             error_msg = traceback.format_exc()
-            logger.error(f"Function execution failed:\n{error_msg}")
             error_bytes: bytes = serialize({"result": None, "error": error_msg})
             return error_bytes
 
@@ -124,21 +106,14 @@ class SkywardService(rpyc.Service):
         before data is uploaded. The only guaranteed way to sync is umount.
         """
         try:
-            result = subprocess.run(
+            subprocess.run(
                 ["umount", "-a", "-t", "fuse.mount-s3"],
                 check=False,  # Don't fail if no mounts exist
                 capture_output=True,
                 text=True,
             )
-            if result.returncode == 0:
-                logger.info("S3 volumes unmounted successfully")
-            elif "not found" in result.stderr.lower() or result.returncode == 32:
-                # No S3 mounts to unmount - this is fine
-                logger.info("No S3 volumes mounted")
-            else:
-                logger.warning(f"S3 volume unmount returned: {result.stderr}")
-        except Exception as e:
-            logger.warning(f"Failed to unmount S3 volumes: {e}")
+        except Exception:
+            pass  # Best effort - don't fail execution for unmount issues
 
     def exposed_ping(self) -> str:
         """Health check endpoint.
@@ -168,12 +143,10 @@ class SkywardService(rpyc.Service):
         import os
 
         os.environ["COMPUTE_POOL"] = pool_info_json
-        logger.info("Set COMPUTE_POOL for distributed execution")
 
         env_vars: dict[str, str] = deserialize(env_vars_bytes)
         for key, value in env_vars.items():
             os.environ[key] = value
-            logger.info(f"Set env: {key}={value}")
 
         return "ok"
 
@@ -193,7 +166,6 @@ def main() -> None:
             "sync_request_timeout": 3600,  # 1 hour timeout for long computations
         },
     )
-    logger.info(f"RPyC server starting on 127.0.0.1:{port}")
     server.start()
 
 

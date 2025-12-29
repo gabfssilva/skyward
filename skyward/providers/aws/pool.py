@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import logging
 import uuid
 from dataclasses import dataclass
 from functools import cached_property
@@ -68,8 +67,6 @@ if TYPE_CHECKING:
     from skyward.providers.aws.infra import AWSResources
     from skyward.providers.aws.ssm import SSMSession
     from skyward.volume import Volume
-
-logger = logging.getLogger("skyward.pool")
 
 
 def _generate_volume_script(
@@ -225,7 +222,6 @@ class InstancePool:
             reraise=True,
         )
         def _launch_spot() -> list[Instance]:
-            logger.info(f"Launching {n} spot instances...")
             launched = self._launch_instances(
                 n, instance_type, ami_id, requirements_hash, apt_packages,
                 python_version=python_version, spot=True,
@@ -248,7 +244,6 @@ class InstancePool:
                 raise SpotCapacityError(spot.retries, instance_type)
 
             # Spot.IfAvailable: fallback to on-demand
-            logger.info("Spot unavailable after retries, falling back to On-Demand")
             return self._acquire_on_demand(
                 n, instance_type, ami_id, requirements_hash, apt_packages,
                 python_version, skyward_wheel_key, username, volumes,
@@ -271,7 +266,6 @@ class InstancePool:
     ) -> list[Instance]:
         """Acquire on-demand instances, reusing stopped ones when possible."""
         stopped = self._find_stopped_instances(instance_type, requirements_hash)
-        logger.info(f"Found {len(stopped)} stopped instances matching criteria")
 
         # Start as many stopped as we can (up to n)
         to_start = stopped[:n]
@@ -282,12 +276,10 @@ class InstancePool:
 
         # Start existing instances
         if to_start:
-            logger.info(f"Starting {len(to_start)} stopped instances")
             started_ids = self._start_instances(to_start)
 
         # Launch new instances for remaining
         if to_launch > 0:
-            logger.info(f"Launching {to_launch} new on-demand instances")
             launched = self._launch_instances(
                 to_launch, instance_type, ami_id, requirements_hash, apt_packages,
                 python_version=python_version, spot=False,
@@ -321,10 +313,8 @@ class InstancePool:
         instance_ids = [i.id for i in instances]
 
         if isinstance(spot, _SpotNever):
-            logger.info(f"Stopping {len(instances)} on-demand instances")
             self._ec2.stop_instances(InstanceIds=instance_ids)
         else:
-            logger.info(f"Terminating {len(instances)} spot instances")
             self._ec2.terminate_instances(InstanceIds=instance_ids)
 
     def terminate_all(self) -> int:
@@ -354,7 +344,6 @@ class InstancePool:
         ]
 
         if instance_ids:
-            logger.info(f"Terminating {len(instance_ids)} instances")
             self._ec2.terminate_instances(InstanceIds=instance_ids)
 
         return len(instance_ids)
@@ -487,7 +476,6 @@ class InstancePool:
         if not instance_ids:
             return
 
-        logger.info(f"Waiting for {len(instance_ids)} instances to be running...")
         waiter = self._ec2.get_waiter("instance_running")
         waiter.wait(
             InstanceIds=instance_ids,
@@ -504,15 +492,8 @@ class InstancePool:
         if not instance_ids:
             return
 
-        logger.info(f"Waiting for SSM on {len(instance_ids)} instances...")
-
         def wait_ssm(iid: str) -> None:
-            try:
-                self.ssm.wait_for_ssm_agent(iid, timeout=600)
-                logger.info(f"SSM ready on {iid}")
-            except Exception as e:
-                logger.error(f"SSM failed on {iid}: {e}")
-                raise
+            self.ssm.wait_for_ssm_agent(iid, timeout=600)
 
         for_each_async(wait_ssm, instance_ids)
 
@@ -766,16 +747,14 @@ touch /opt/skyward/.ready
             LaunchTemplateData=template_data,  # type: ignore[arg-type]
         )
         template_id = response["LaunchTemplate"]["LaunchTemplateId"]
-        logger.info(f"Created launch template: {template_id}")
         return template_id
 
     def _delete_launch_template(self, template_id: str) -> None:
         """Delete ephemeral launch template."""
         try:
             self._ec2.delete_launch_template(LaunchTemplateId=template_id)
-            logger.info(f"Deleted launch template: {template_id}")
-        except Exception as e:
-            logger.warning(f"Failed to delete launch template {template_id}: {e}")
+        except Exception:
+            pass  # Best effort cleanup
 
     def _launch_fleet(
         self,
@@ -842,25 +821,13 @@ touch /opt/skyward/.ready
             reraise=True,
         )
         def _do_fleet() -> list[Instance]:
-            logger.info(
-                f"Launching fleet: {n} instances, "
-                f"spot_target={spot_capacity}, ondemand_target={ondemand_capacity}, "
-                f"types={instance_types}"
-            )
-
             response = self._ec2.create_fleet(**fleet_config)
 
             instance_ids: list[str] = []
             for group in response.get("Instances", []):
                 instance_ids.extend(group.get("InstanceIds", []))
 
-            errors = response.get("Errors", [])
-            if errors:
-                for err in errors:
-                    logger.warning(f"Fleet error: {err.get('ErrorCode')}: {err.get('ErrorMessage')}")
-
             got = len(instance_ids)
-            logger.info(f"Fleet launched {got}/{n} instances")
 
             if got < n:
                 if instance_ids:
@@ -873,7 +840,6 @@ touch /opt/skyward/.ready
                 min_spot = ceil(n * spot.percentage)
 
                 if got_spot < min_spot:
-                    logger.warning(f"Spot minimum not met: {got_spot}/{min_spot} required")
                     self._ec2.terminate_instances(InstanceIds=instance_ids)
                     raise FleetCapacityError(n, got)
 
@@ -881,7 +847,6 @@ touch /opt/skyward/.ready
                 instances = self._get_instances(instance_ids)
                 got_spot = sum(1 for i in instances if i.spot)
                 if got_spot < n:
-                    logger.warning(f"Not all instances are spot: {got_spot}/{n}")
                     self._ec2.terminate_instances(InstanceIds=instance_ids)
                     raise FleetCapacityError(n, got_spot)
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import uuid
 from typing import TYPE_CHECKING, Any, cast
 
@@ -15,16 +14,18 @@ from tenacity import (
 )
 
 from skyward.accelerator import Accelerator
+from skyward.callback import emit
 from skyward.events import (
     BootstrapCompleted,
     BootstrapStarting,
     Error,
-    EventCallback,
     InfraCreated,
     InfraCreating,
     InstanceLaunching,
     InstanceProvisioned,
     InstanceStopping,
+    ProviderName,
+    ProvisioningCompleted,
 )
 from skyward.types import ComputeSpec, ExitedInstance, Instance
 
@@ -32,13 +33,10 @@ if TYPE_CHECKING:
     from skyward.providers.digitalocean import DigitalOcean
     from skyward.providers.digitalocean.types import Droplet
 
-logger = logging.getLogger("skyward.digitalocean.lifecycle")
-
 
 def provision(
     provider: DigitalOcean,
     compute: ComputeSpec,
-    on_event: EventCallback = None,
 ) -> tuple[Instance, ...]:
     """Provision DigitalOcean Droplets.
 
@@ -47,7 +45,6 @@ def provision(
     Args:
         provider: DigitalOcean provider instance.
         compute: Compute specification.
-        on_event: Optional callback for progress events.
 
     Returns:
         Tuple of provisioned Instance objects.
@@ -63,13 +60,11 @@ def provision(
 
         cluster_id = str(uuid.uuid4())[:8]
 
-        if on_event:
-            on_event(InfraCreating())
+        emit(InfraCreating())
 
         _ = provider.ssh_fingerprint  # Trigger SSH key registration
 
-        if on_event:
-            on_event(InfraCreated(region=provider.region))
+        emit(InfraCreated(region=provider.region))
 
         client = get_client(provider.api_token)
 
@@ -98,8 +93,7 @@ def provision(
 
         user_data = create_user_data_script(compute, provider.instance_timeout)
 
-        if on_event:
-            on_event(InstanceLaunching(count=compute.nodes, instance_type=droplet_spec.slug))
+        emit(InstanceLaunching(count=compute.nodes, instance_type=droplet_spec.slug, provider=ProviderName.DigitalOcean))
 
         # Create droplets
         droplets: list[Droplet] = []
@@ -125,7 +119,6 @@ def provision(
                     ip="",
                 )
             )
-            logger.info(f"Created droplet {droplet_name} (id={droplet_data['id']})")
 
         # Wait for droplets to be active
         _wait_for_active(client, droplets, timeout=300)
@@ -155,20 +148,31 @@ def provision(
             )
             instances.append(instance)
 
-            if on_event:
-                on_event(InstanceProvisioned(
+            emit(
+                InstanceProvisioned(
                     instance_id=str(droplet.id),
                     node=i,
                     spot=False,
                     ip=droplet.ip,
                     instance_type=droplet_spec.slug,
-                ))
+                    provider=ProviderName.DigitalOcean,
+                )
+            )
+
+        emit(
+            ProvisioningCompleted(
+                spot=0,
+                on_demand=len(instances),
+                provider=ProviderName.DigitalOcean,
+                region=provider.region,
+                instances=list(map(lambda inst: inst.id, instances)),
+            )
+        )
 
         return tuple(instances)
 
     except Exception as e:
-        if on_event:
-            on_event(Error(message=f"Provision failed: {e}"))
+        emit(Error(message=f"Provision failed: {e}"))
         raise
 
 
@@ -176,7 +180,6 @@ def setup(
     provider: DigitalOcean,
     instances: tuple[Instance, ...],
     compute: ComputeSpec,
-    on_event: EventCallback = None,
 ) -> None:
     """Setup instances (wait for bootstrap to complete).
 
@@ -184,7 +187,6 @@ def setup(
         provider: DigitalOcean provider instance.
         instances: Instances from provision phase.
         compute: Compute specification.
-        on_event: Optional callback for bootstrap progress events.
     """
     try:
         from skyward.providers.digitalocean.bootstrap import (
@@ -193,22 +195,19 @@ def setup(
         )
 
         for inst in instances:
-            if on_event:
-                on_event(BootstrapStarting(instance_id=inst.id))
+            emit(BootstrapStarting(instance_id=inst.id))
 
         # Wait for bootstrap on all droplets
-        wait_for_bootstrap(instances, on_event, timeout=300)
+        wait_for_bootstrap(instances, timeout=300)
 
         # Install skyward wheel on all droplets
         install_skyward_wheel(instances)
 
         for inst in instances:
-            if on_event:
-                on_event(BootstrapCompleted(instance_id=inst.id))
+            emit(BootstrapCompleted(instance_id=inst.id))
 
     except Exception as e:
-        if on_event:
-            on_event(Error(message=f"Setup failed: {e}"))
+        emit(Error(message=f"Setup failed: {e}"))
         raise
 
 
@@ -216,7 +215,6 @@ def shutdown(
     provider: DigitalOcean,
     instances: tuple[Instance, ...],
     compute: ComputeSpec,
-    on_event: EventCallback = None,
 ) -> tuple[ExitedInstance, ...]:
     """Shutdown Droplets (destroy them).
 
@@ -224,7 +222,6 @@ def shutdown(
         provider: DigitalOcean provider instance.
         instances: Instances to shut down.
         compute: Compute specification.
-        on_event: Optional callback for shutdown events.
 
     Returns:
         Tuple of ExitedInstance objects.
@@ -237,14 +234,12 @@ def shutdown(
     for inst in instances:
         droplet_id = inst.get_meta("droplet_id")
         if droplet_id:
-            if on_event:
-                on_event(InstanceStopping(instance_id=inst.id))
+            emit(InstanceStopping(instance_id=inst.id))
 
             try:
                 client.droplets.destroy(droplet_id=droplet_id)
-                logger.info(f"Destroyed droplet {droplet_id}")
-            except Exception as e:
-                logger.warning(f"Error destroying droplet {droplet_id}: {e}")
+            except Exception:
+                pass  # Ignore destroy errors
 
         exited.append(
             ExitedInstance(
@@ -294,8 +289,6 @@ def _wait_for_active(
 
             if not droplet.ip:
                 raise _DropletPendingError()
-
-            logger.info(f"Droplet {droplet.id} active at {droplet.ip}")
 
         try:
             _check()

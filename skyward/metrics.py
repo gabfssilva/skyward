@@ -3,34 +3,30 @@
 from __future__ import annotations
 
 import contextlib
-import logging
 import threading
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
-from skyward.events import EventCallback, Metrics
+from skyward.callback import emit
+from skyward.events import Metrics
 
 if TYPE_CHECKING:
     from skyward.types import Instance
-
-logger = logging.getLogger("skyward.metrics")
 
 
 class MetricsPoller:
     """Polls metrics from instances via instance.metrics().
 
     Uses a background thread to periodically collect metrics and emit
-    events via the on_event callback.
+    events via the callback system.
     """
 
     def __init__(
         self,
         instance: Instance,
-        on_event: EventCallback,
         interval: float = 2.0,
     ) -> None:
         self.instance = instance
-        self.on_event = on_event
         self.interval = interval
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -53,16 +49,13 @@ class MetricsPoller:
             try:
                 data = self.instance.metrics()
                 self._emit_metrics(data)
-            except Exception as e:
-                logger.info(f"Metrics collection failed: {e}")
+            except Exception:
+                pass  # Metrics collection failures are not critical
             self._stop_event.wait(self.interval)
 
     def _emit_metrics(self, data: dict[str, Any]) -> None:
         """Convert raw data to Metrics event and emit."""
-        if not self.on_event:
-            return
-
-        self.on_event(
+        emit(
             Metrics(
                 instance_id=self.instance.id,
                 node=self.instance.node,
@@ -81,25 +74,22 @@ class MetricsPoller:
 @contextlib.contextmanager
 def metrics_polling(
     instances: tuple[Instance, ...],
-    on_event: EventCallback,
 ) -> Iterator[None]:
     """Context manager that polls metrics during execution.
 
     Args:
         instances: Instances to poll metrics from.
-        on_event: Callback for emitting Metrics events.
 
     Example:
-        with metrics_polling(instances, on_event):
+        with metrics_polling(instances):
             result = run_function_on_instances(...)
     """
     pollers: list[MetricsPoller] = []
 
-    if on_event:
-        for instance in instances:
-            poller = MetricsPoller(instance, on_event)
-            poller.start()
-            pollers.append(poller)
+    for instance in instances:
+        poller = MetricsPoller(instance)
+        poller.start()
+        pollers.append(poller)
 
     try:
         yield

@@ -6,10 +6,7 @@ Uses AWS SSM Parameter Store to get the latest AMI IDs.
 
 from __future__ import annotations
 
-import logging
 from functools import lru_cache
-
-logger = logging.getLogger("skyward.ami")
 
 # SSM parameter paths for public AMIs
 # CPU: Amazon Linux 2023 (lightweight, fast boot)
@@ -50,13 +47,10 @@ def resolve_ami(region: str, gpu: bool = False) -> str:
         param_name = AL2023_CPU_SSM
         ami_type = "Amazon Linux 2023"
 
-    logger.info(f"Resolving {ami_type} AMI for region {region}...")
-
     try:
         ssm = boto3.client("ssm", region_name=region)
         response = ssm.get_parameter(Name=param_name)
         ami_id: str = response["Parameter"]["Value"]
-        logger.info(f"Resolved AMI: {ami_id}")
         return ami_id
     except ClientError as e:
         error_code = e.response.get("Error", {}).get("Code", "Unknown")
@@ -96,7 +90,6 @@ def get_ami_username(region: str, ami_id: str) -> str:
         response = ec2.describe_images(ImageIds=[ami_id])
 
         if not response.get("Images"):
-            logger.warning(f"AMI {ami_id} not found, defaulting to 'ec2-user'")
             return "ec2-user"
 
         image = response["Images"][0]
@@ -105,18 +98,14 @@ def get_ami_username(region: str, ami_id: str) -> str:
 
         # Check for Ubuntu
         if "ubuntu" in name or "ubuntu" in description:
-            logger.info(f"AMI {ami_id} detected as Ubuntu, using 'ubuntu'")
             return "ubuntu"
 
         # Check for Debian
         if "debian" in name or "debian" in description:
-            logger.info(f"AMI {ami_id} detected as Debian, using 'admin'")
             return "admin"
 
         # Default to ec2-user (Amazon Linux, RHEL, CentOS, etc.)
-        logger.info(f"AMI {ami_id} defaulting to 'ec2-user'")
         return "ec2-user"
 
-    except ClientError as e:
-        logger.warning(f"Failed to query AMI {ami_id}: {e}, defaulting to 'ec2-user'")
+    except ClientError:
         return "ec2-user"

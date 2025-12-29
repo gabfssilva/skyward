@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-import logging
 import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, override
 
-from skyward.events import EventCallback
 from skyward.types import ComputeSpec, ExitedInstance, Instance, Provider
 
 if TYPE_CHECKING:
     import subprocess
-
-logger = logging.getLogger("skyward.digitalocean")
 
 
 @dataclass(frozen=True)
@@ -104,7 +100,6 @@ class DigitalOcean(Provider):
 
         from skyward.providers.digitalocean.ssh import get_or_create_ssh_key
 
-        logger.info("Auto-detecting SSH key from ~/.ssh/...")
         key_info = get_or_create_ssh_key(self.api_token)
 
         # Cache the result (bypass frozen dataclass)
@@ -136,33 +131,30 @@ class DigitalOcean(Provider):
     def provision(
         self,
         compute: ComputeSpec,
-        on_event: EventCallback = None,
     ) -> tuple[Instance, ...]:
         """Provision DigitalOcean Droplets."""
         from skyward.providers.digitalocean.lifecycle import provision
-        return provision(self, compute, on_event)
+        return provision(self, compute)
 
     @override
     def setup(
         self,
         instances: tuple[Instance, ...],
         compute: ComputeSpec,
-        on_event: EventCallback = None,
     ) -> None:
         """Setup instances (wait for bootstrap to complete)."""
         from skyward.providers.digitalocean.lifecycle import setup
-        setup(self, instances, compute, on_event)
+        setup(self, instances, compute)
 
     @override
     def shutdown(
         self,
         instances: tuple[Instance, ...],
         compute: ComputeSpec,
-        on_event: EventCallback = None,
     ) -> tuple[ExitedInstance, ...]:
         """Shutdown Droplets (destroy them)."""
         from skyward.providers.digitalocean.lifecycle import shutdown
-        return shutdown(self, instances, compute, on_event)
+        return shutdown(self, instances, compute)
 
     @override
     def run_command(self, instance: Instance, command: str, timeout: int = 30) -> str:

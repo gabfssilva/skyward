@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import logging
+import contextvars
 import time
 import uuid
 from collections.abc import Callable
@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING, Any, cast
 import cloudpickle  # type: ignore[import-untyped]
 import rpyc  # type: ignore[import-untyped]
 
-from skyward.events import EventCallback, LogLine
+from skyward.callback import emit
+from skyward.events import LogLine
 from skyward.exceptions import ConnectionLostError
 from skyward.providers.common.accelerator_detection import resolve_accelerator
 from skyward.providers.common.types import (
@@ -23,8 +24,6 @@ from skyward.serialization import deserialize, serialize
 
 if TYPE_CHECKING:
     from skyward.types import Instance
-
-logger = logging.getLogger("skyward.execution")
 
 
 def safe_rpc_call[T](instance_id: str, fn: Callable[[], T]) -> T:
@@ -41,7 +40,6 @@ def run[R](
     compute: Any,  # _PoolCompute in v2
     args: tuple[object, ...],
     kwargs: dict[str, object],
-    on_event: EventCallback = None,
     *,
     resolve_peers: PeerResolver,
     resolve_head_addr: HeadAddrResolver,
@@ -49,7 +47,8 @@ def run[R](
     """Execute function on instances via RPyC.
 
     This is the shared execution engine. Provider-specific behavior is
-    injected via the resolver functions.
+    injected via the resolver functions. Events are emitted via the
+    callback system (see skyward.callback).
 
     Args:
         conns: Dict mapping instance_id to rpyc.Connection.
@@ -57,7 +56,6 @@ def run[R](
         compute: Compute specification.
         args: Function arguments.
         kwargs: Function keyword arguments.
-        on_event: Optional callback for emitting events.
         resolve_peers: Function to build peer info from instances.
         resolve_head_addr: Function to get head node address.
 
@@ -107,19 +105,22 @@ def run[R](
     # Execute on all nodes in parallel
     from skyward.conc import map_async_indexed
 
+    # Capture context BEFORE spawning threads (main thread has _callback set)
+    ctx = contextvars.copy_context()
+
     def execute_node(node: int, instance: Instance) -> R:
         conn = conns[instance.id]
 
         def stdout_cb(line: str) -> None:
-            if on_event:
-                on_event(
-                    LogLine(
-                        node=node,
-                        instance_id=instance.id,
-                        line=line,
-                        timestamp=time.time(),
-                    )
-                )
+            ctx.run(
+                emit,
+                LogLine(
+                    node=node,
+                    instance_id=instance.id,
+                    line=line,
+                    timestamp=time.time(),
+                ),
+            )
 
         try:
             result_bytes = safe_rpc_call(
@@ -131,7 +132,6 @@ def run[R](
             if data.get("error"):
                 raise RuntimeError(f"Node {node} failed: {data['error']}")
 
-            logger.info(f"Node {node}: Completed")
             return cast(R, data["result"])
         except Exception as e:
             raise RuntimeError(f"Node {node} ({instance.id}) failed: {e}") from e

@@ -2,6 +2,8 @@ from skyward import *
 
 @compute
 def remote_sum(x: int, y: int) -> int:
+    print("hello from AWS!")
+    print("let's wait for something, just for science")
     return x + y
 
 if __name__ == '__main__':

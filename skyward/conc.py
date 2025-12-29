@@ -1,5 +1,6 @@
 """Concurrent utilities - functional primitives for parallel execution."""
 
+import contextvars
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from typing import overload
@@ -11,6 +12,8 @@ def map_async[I, O](
     concurrency: int | None = None,
 ) -> Iterator[O]:
     """Apply function to items concurrently, preserving order.
+
+    Automatically propagates contextvars to worker threads.
 
     Args:
         fn: Function to apply to each item.
@@ -28,9 +31,13 @@ def map_async[I, O](
     if not items_list:
         return
 
+    # Create a fresh context copy for EACH task (ctx.run cannot be concurrent on same object)
     workers = concurrency if concurrency is not None else len(items_list)
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = [executor.submit(fn, item) for item in items_list]
+        futures = [
+            executor.submit(contextvars.copy_context().run, fn, item)
+            for item in items_list
+        ]
         for future in futures:
             yield future.result()
 
@@ -85,6 +92,8 @@ def map_async_indexed[I, O](
 ) -> Iterator[O] | Iterator[tuple[int, O]]:
     """Apply function with index to items concurrently, preserving order.
 
+    Automatically propagates contextvars to worker threads.
+
     Args:
         fn: Function (index, item) -> result.
         items: Items to process.
@@ -102,9 +111,13 @@ def map_async_indexed[I, O](
     if not items_list:
         return
 
+    # Create a fresh context copy for EACH task (ctx.run cannot be concurrent on same object)
     workers = concurrency if concurrency is not None else len(items_list)
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = [executor.submit(fn, i, item) for i, item in enumerate(items_list)]
+        futures = [
+            executor.submit(contextvars.copy_context().run, fn, i, item)
+            for i, item in enumerate(items_list)
+        ]
         for i, future in enumerate(futures):
             result = future.result()
             if with_index:

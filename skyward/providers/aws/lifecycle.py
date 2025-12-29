@@ -2,33 +2,31 @@
 
 from __future__ import annotations
 
-import logging
 import uuid
 from typing import TYPE_CHECKING, cast
 
+from skyward.callback import emit
 from skyward.events import (
     BootstrapCompleted,
     BootstrapStarting,
     Error,
-    EventCallback,
     InfraCreated,
     InfraCreating,
     InstanceLaunching,
     InstanceProvisioned,
     InstanceStopping,
+    ProviderName,
+    ProvisioningCompleted,
 )
 from skyward.types import ComputeSpec, ExitedInstance, Instance
 
 if TYPE_CHECKING:
     from skyward.providers.aws import AWS
 
-logger = logging.getLogger("skyward.aws.lifecycle")
-
 
 def provision(
     provider: AWS,
     compute: ComputeSpec,
-    on_event: EventCallback = None,
 ) -> tuple[Instance, ...]:
     """Provision EC2 instances.
 
@@ -38,7 +36,6 @@ def provision(
     Args:
         provider: AWS provider instance.
         compute: Compute specification.
-        on_event: Optional callback for progress events.
 
     Returns:
         Tuple of provisioned Instance objects.
@@ -55,14 +52,11 @@ def provision(
     try:
         cluster_id = str(uuid.uuid4())[:8]
 
-        # Emit infrastructure creation event
-        if on_event:
-            on_event(InfraCreating())
+        emit(InfraCreating())
 
         provider._get_resources()
 
-        if on_event:
-            on_event(InfraCreated(region=provider.region))
+        emit(InfraCreated(region=provider.region))
 
         # Resolve AMI and username
         ami_id = provider._resolve_ami(compute)
@@ -116,12 +110,13 @@ def provision(
         pool = provider._get_pool()
 
         if use_fleet:
-            # EC2 Fleet for multi-type fallback
-            if on_event:
-                on_event(InstanceLaunching(
+            emit(
+                InstanceLaunching(
                     count=compute.nodes,
                     instance_type=", ".join(instance_types),
-                ))
+                    provider=ProviderName.AWS,
+                )
+            )
 
             pool_instances = pool.acquire_fleet(
                 n=compute.nodes,
@@ -139,9 +134,7 @@ def provision(
                 allocation_strategy=provider.allocation_strategy,
             )
         else:
-            # Standard run_instances for single type
-            if on_event:
-                on_event(InstanceLaunching(count=compute.nodes, instance_type=instance_type))
+            emit(InstanceLaunching(count=compute.nodes, instance_type=instance_type, provider=ProviderName.AWS))
 
             pool_instances = pool.acquire(
                 n=compute.nodes,
@@ -158,15 +151,15 @@ def provision(
                 instance_timeout=provider.instance_timeout,
             )
 
-        logger.info(f"Acquired {len(pool_instances)} instances")
-
         # Convert pool instances to Instance objects
         instances: list[Instance] = []
         for i, pool_inst in enumerate(pool_instances):
             # Use real instance_type from AWS (may differ in Fleet with multiple types)
             real_instance_type = pool_inst.instance_type or instance_type
             real_spec = get_instance_spec(real_instance_type)
-            real_accelerator_count = real_spec.accelerator_count if real_spec else accelerator_count
+            real_accelerator_count = (
+                real_spec.accelerator_count if real_spec else accelerator_count
+            )
 
             instance = Instance(
                 id=pool_inst.id,
@@ -186,19 +179,31 @@ def provision(
             )
             instances.append(instance)
 
-            if on_event:
-                on_event(InstanceProvisioned(
+            emit(
+                InstanceProvisioned(
                     instance_id=instance.id,
                     node=i,
                     spot=instance.spot,
                     instance_type=real_instance_type,
-                ))
+                    provider=ProviderName.AWS
+                )
+            )
+
+        spot_count = sum(1 for inst in instances if inst.spot)
+        emit(
+            ProvisioningCompleted(
+                spot=spot_count,
+                on_demand=len(instances) - spot_count,
+                provider=ProviderName.AWS,
+                region=provider.region,
+                instances=list(map(lambda it: it.id, instances)),
+            )
+        )
 
         return tuple(instances)
 
     except Exception as e:
-        if on_event:
-            on_event(Error(message=f"Provision failed: {e}"))
+        emit(Error(message=f"Provision failed: {e}"))
         raise
 
 
@@ -206,7 +211,6 @@ def setup(
     provider: AWS,
     instances: tuple[Instance, ...],
     compute: ComputeSpec,
-    on_event: EventCallback = None,
 ) -> None:
     """Setup instances (bootstrap, install dependencies).
 
@@ -217,7 +221,6 @@ def setup(
         provider: AWS provider instance.
         instances: Instances from provision phase.
         compute: Compute specification.
-        on_event: Optional callback for bootstrap progress events.
     """
     from skyward.conc import for_each_async
     from skyward.providers.aws.bootstrap import wait_for_bootstrap
@@ -228,31 +231,28 @@ def setup(
         def bootstrap_instance(inst: Instance) -> None:
             """Wait for bootstrap on a single instance."""
             try:
-                if on_event:
-                    on_event(BootstrapStarting(instance_id=inst.id))
+                emit(BootstrapStarting(instance_id=inst.id))
 
                 wait_for_bootstrap(
                     ssm_session=ssm_session,
                     instance_id=inst.id,
-                    on_event=on_event,
                     verified_instances=provider._verified_instances,
                 )
 
-                if on_event:
-                    on_event(BootstrapCompleted(instance_id=inst.id))
+                emit(BootstrapCompleted(instance_id=inst.id))
             except Exception as e:
-                if on_event:
-                    on_event(Error(
+                emit(
+                    Error(
                         message=f"Bootstrap failed on {inst.id}: {e}",
                         instance_id=inst.id,
-                    ))
+                    )
+                )
                 raise
 
         for_each_async(bootstrap_instance, instances)
 
     except Exception as e:
-        if on_event:
-            on_event(Error(message=f"Setup failed: {e}"))
+        emit(Error(message=f"Setup failed: {e}"))
         raise
 
 
@@ -260,7 +260,6 @@ def shutdown(
     provider: AWS,
     instances: tuple[Instance, ...],
     compute: ComputeSpec,
-    on_event: EventCallback = None,
 ) -> tuple[ExitedInstance, ...]:
     """Shutdown instances (stop on-demand, terminate spot).
 
@@ -268,7 +267,6 @@ def shutdown(
         provider: AWS provider instance.
         instances: Instances to shut down.
         compute: Compute specification.
-        on_event: Optional callback for shutdown events.
 
     Returns:
         Tuple of ExitedInstance objects.
@@ -291,8 +289,7 @@ def shutdown(
 
     exited: list[ExitedInstance] = []
     for inst in instances:
-        if on_event:
-            on_event(InstanceStopping(instance_id=inst.id))
+        emit(InstanceStopping(instance_id=inst.id))
 
         exited.append(
             ExitedInstance(

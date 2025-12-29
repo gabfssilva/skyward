@@ -5,7 +5,6 @@ Fetches pricing from Vantage (AWS, Azure, GCP) and caches daily.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
@@ -18,8 +17,6 @@ from skyward.cache import cached
 
 if TYPE_CHECKING:
     from skyward.types import Instance
-
-logger = logging.getLogger("skyward.pricing")
 
 Provider = Literal["aws", "azure", "gcp", "digitalocean"]
 
@@ -145,7 +142,6 @@ def _parse_savings_pct(value: str | int | None) -> int | None:
 @cached(namespace="pricing.aws", ttl=_CACHE_TTL)
 def _fetch_aws_data() -> list[dict[str, Any]]:
     """Fetch AWS pricing data from Vantage."""
-    logger.info("Fetching AWS pricing data from Vantage...")
     data: list[dict[str, Any]] = httpx.get(VANTAGE_ENDPOINTS["aws"], timeout=30).json()
     return data
 
@@ -153,7 +149,6 @@ def _fetch_aws_data() -> list[dict[str, Any]]:
 @cached(namespace="pricing.azure", ttl=_CACHE_TTL)
 def _fetch_azure_data() -> list[dict[str, Any]]:
     """Fetch Azure pricing data from Vantage."""
-    logger.info("Fetching Azure pricing data from Vantage...")
     data: list[dict[str, Any]] = httpx.get(VANTAGE_ENDPOINTS["azure"], timeout=30).json()
     return data
 
@@ -161,7 +156,6 @@ def _fetch_azure_data() -> list[dict[str, Any]]:
 @cached(namespace="pricing.gcp", ttl=_CACHE_TTL)
 def _fetch_gcp_data() -> list[dict[str, Any]]:
     """Fetch GCP pricing data from Vantage."""
-    logger.info("Fetching GCP pricing data from Vantage...")
     data: list[dict[str, Any]] = httpx.get(VANTAGE_ENDPOINTS["gcp"], timeout=30).json()
     return data
 
@@ -221,8 +215,7 @@ def get_instance_pricing(
 
     try:
         index = _get_pricing_index(provider)
-    except Exception as e:
-        logger.warning(f"Failed to fetch pricing data for {provider}: {e}")
+    except Exception:
         return None
 
     inst = index.get(_get_instance_type_key(instance_type))

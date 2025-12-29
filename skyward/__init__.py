@@ -15,13 +15,14 @@ Example:
         r1, r2 = gather(train(d1), train(d2)) >> pool
 """
 
-import logging
-
 # Accelerator utilities
 from skyward.accelerator import is_nvidia, is_trainium
 
-# Event Bus
-from skyward.bus import EventBus
+# Distributed training decorators
+from skyward import distributed
+
+# Callback system
+from skyward.callback import Callback, compose, emit, use_callback
 
 # Cluster utilities
 from skyward.cluster import InstanceInfo, instance_info
@@ -34,17 +35,20 @@ from skyward.events import (
     BootstrapCompleted,
     BootstrapProgress,
     BootstrapStarting,
+    CostFinal,
+    CostUpdate,
     Error,
-    EventCallback,
     InfraCreated,
     InfraCreating,
     InstanceLaunching,
     InstanceProvisioned,
     InstanceStopping,
+    LogLine,
     Metrics,
     PoolStarted,
     PoolStopping,
     SkywardEvent,
+
 )
 
 # Lazy computation API
@@ -63,6 +67,7 @@ from skyward.pool import ComputePool
 # Providers
 from skyward.providers.aws import AWS
 from skyward.providers.digitalocean import DigitalOcean
+from skyward.providers.verda import Verda
 
 # Types
 from skyward.types import (
@@ -82,21 +87,6 @@ from skyward.volume import S3Volume, Volume
 
 __version__ = "0.2.0"
 
-
-def set_log_level(level: str = "INFO") -> None:
-    """Set the logging level for Skyward."""
-    numeric_level = getattr(logging, level.upper(), logging.INFO)
-    logger = logging.getLogger("skyward")
-    logger.setLevel(numeric_level)
-
-    if not logger.handlers:
-        handler = logging.StreamHandler()
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-        )
-        logger.addHandler(handler)
-
-
 __all__ = [
     # === Lazy API ===
     # Lazy computation
@@ -108,8 +98,13 @@ __all__ = [
     "ComputeFunction",
     # Pool
     "ComputePool",
-    # Event Bus
-    "EventBus",
+    # Distributed training
+    "distributed",
+    # Callback system
+    "emit",
+    "use_callback",
+    "compose",
+    "Callback",
     # === Types ===
     "Instance",
     "ExitedInstance",
@@ -117,7 +112,6 @@ __all__ = [
     "ComputeSpec",
     # Events (ADT)
     "SkywardEvent",
-    "EventCallback",
     "InfraCreating",
     "InfraCreated",
     "InstanceLaunching",
@@ -126,7 +120,10 @@ __all__ = [
     "BootstrapProgress",
     "BootstrapCompleted",
     "Metrics",
+    "LogLine",
     "InstanceStopping",
+    "CostUpdate",
+    "CostFinal",
     "PoolStarted",
     "PoolStopping",
     "Error",
@@ -141,6 +138,7 @@ __all__ = [
     # Providers
     "AWS",
     "DigitalOcean",
+    "Verda",
     # Volumes
     "Volume",
     "S3Volume",
@@ -151,7 +149,6 @@ __all__ = [
     "shard",
     "shard_iterator",
     "DistributedSampler",
-    # Configuration
-    "set_log_level",
+    # Version
     "__version__",
 ]

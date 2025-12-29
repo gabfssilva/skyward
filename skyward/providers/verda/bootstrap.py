@@ -1,8 +1,9 @@
-"""Bootstrap operations for DigitalOcean Droplets.
+"""Bootstrap operations for Verda instances.
 
-Uses the common bootstrap module with DO-specific extensions:
+Uses the common bootstrap module with Verda-specific extensions:
 - SSH for remote command execution
 - Wheel upload via SCP
+- Startup scripts via Verda API
 """
 
 from __future__ import annotations
@@ -22,8 +23,8 @@ from skyward.providers.common.bootstrap import (
 from skyward.types import ComputeSpec, Instance
 
 
-# DO-specific checkpoints
-DO_EXTRA_CHECKPOINTS = (
+# Verda-specific checkpoints (same as DO since we use similar bootstrap)
+VERDA_EXTRA_CHECKPOINTS = (
     Checkpoint(".step_venv", "venv"),
     Checkpoint(".step_base", "base deps"),
 )
@@ -56,23 +57,23 @@ def wait_for_bootstrap(
     instances: tuple[Instance, ...],
     timeout: int = 300,
 ) -> None:
-    """Wait for bootstrap to complete on all droplets.
+    """Wait for bootstrap to complete on all instances.
 
     Args:
         instances: Instances to wait for.
         timeout: Maximum time to wait per instance in seconds.
     """
-    username = instances[0].get_meta("username", "root")
+    username = instances[0].get_meta("username", "ubuntu")
 
     for inst in instances:
-        ip = inst.get_meta("droplet_ip")
+        ip = inst.get_meta("instance_ip") or inst.public_ip
         runner = _create_ssh_runner(ip, username)
 
         _wait_for_bootstrap(
             run_command=runner,
             instance_id=inst.id,
             timeout=timeout,
-            extra_checkpoints=DO_EXTRA_CHECKPOINTS,
+            extra_checkpoints=VERDA_EXTRA_CHECKPOINTS,
         )
 
 
@@ -83,11 +84,11 @@ def install_skyward_wheel(instances: tuple[Instance, ...]) -> None:
     wheel_path = _build_wheel()
 
     def install_on_instance(inst: Instance) -> None:
-        ip = inst.get_meta("droplet_ip")
-        username = inst.get_meta("username", "root")
+        ip = inst.get_meta("instance_ip") or inst.public_ip
+        username = inst.get_meta("username", "ubuntu")
 
         # Find uv path dynamically
-        find_uv_cmd = "which uv || find /root -name uv -type f 2>/dev/null | head -1"
+        find_uv_cmd = "which uv || find /root /home -name uv -type f 2>/dev/null | head -1"
         find_uv_result = _ssh_run(ip, username, find_uv_cmd, timeout=30)
         uv_path = find_uv_result.stdout.strip()
         if not uv_path:
@@ -110,7 +111,7 @@ def install_skyward_wheel(instances: tuple[Instance, ...]) -> None:
             raise RuntimeError(f"skyward not importable on {ip}: {verify_result.stderr}")
 
         # Start RPyC server
-        start_result = _ssh_run(ip, username, "systemctl start skyward-rpyc", timeout=30)
+        start_result = _ssh_run(ip, username, "sudo systemctl start skyward-rpyc", timeout=30)
         if start_result.returncode != 0:
             raise RuntimeError(f"Failed to start RPyC on {ip}: {start_result.stderr}")
 
@@ -123,7 +124,7 @@ def create_user_data_script(
 ) -> str:
     """Create cloud-init user_data script.
 
-    Uses the common base script generator with DO-specific configuration.
+    Uses the common base script generator with Verda-specific configuration.
     """
     from skyward.image import Image
 
@@ -134,15 +135,14 @@ def create_user_data_script(
         env=dict(compute.env),
     )
 
-    # DO doesn't pre-upload wheel - it's installed later via SCP
-    # So we skip the wheel step in user_data and do it in setup phase
+    # Verda doesn't pre-upload wheel - it's installed later via SCP
     return generate_base_script(
         python=compute.python or "3.12",
         pip=tuple(image.pip) if image.pip else (),
         apt=tuple(image.apt) if image.apt else (),
         env=dict(image.env) if image.env else None,
         instance_timeout=instance_timeout,
-        preamble="",  # No DO-specific preamble needed
+        preamble="",
         postamble="# Skyward wheel installed via SCP in setup phase",
     )
 
@@ -153,7 +153,7 @@ def _ssh_run(
     command: str,
     timeout: int = 60,
 ) -> subprocess.CompletedProcess[str]:
-    """Run SSH command on droplet."""
+    """Run SSH command on instance."""
     ssh_cmd = [
         "ssh",
         "-o", "StrictHostKeyChecking=no",

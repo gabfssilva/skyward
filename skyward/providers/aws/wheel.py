@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from skyward.providers.aws.s3 import S3ObjectStore
-
-logger = logging.getLogger("skyward.aws.wheel")
 
 
 def _find_project_root() -> Path:
@@ -45,7 +42,6 @@ def ensure_skyward_wheel(store: S3ObjectStore) -> str:
     wheel_key = f"wheel/{content_hash}/{wheel_name}"
 
     if not store.exists(wheel_key):
-        logger.info(f"Building skyward wheel (hash={content_hash})...")
         build_dir = Path("/tmp/skyward-wheel")
         build_dir.mkdir(exist_ok=True)
 
@@ -59,7 +55,6 @@ def ensure_skyward_wheel(store: S3ObjectStore) -> str:
             raise RuntimeError(f"Failed to build skyward wheel: {result.stderr}")
 
         wheel_path = next(build_dir.glob("*.whl"))
-        logger.info("Uploading skyward wheel to S3...")
         store.put(wheel_key, wheel_path.read_bytes())
 
     return wheel_key

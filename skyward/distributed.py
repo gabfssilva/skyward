@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import functools
 import json
-import logging
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -16,9 +15,19 @@ if TYPE_CHECKING:
 Framework = Literal["jax", "torch", "keras", "tensorflow", "transformers"]
 Backend = Literal["jax", "torch", "tensorflow"] | None
 
-__all__ = ["detect_framework", "wrap_with_distributed_init", "Framework", "Backend"]
-
-logger = logging.getLogger("skyward.distributed")
+__all__ = [
+    # Types
+    "Framework",
+    "Backend",
+    # Decorators
+    "keras",
+    "torch",
+    "jax",
+    "tensorflow",
+    "transformers",
+    # Utilities
+    "detect_framework",
+]
 
 
 def _pytorch_env_vars(pool: InstanceInfo) -> dict[str, str]:
@@ -89,60 +98,60 @@ def _init_pytorch(pool: InstanceInfo) -> None:
         backend = "nccl" if torch.cuda.is_available() else "gloo"
         dist.init_process_group(backend=backend, init_method="env://")
 
-    logger.info(
-        f"PyTorch distributed initialized: rank {pool.node}/{pool.total_nodes}, "
-        f"master={pool.head_addr}:{pool.head_port}"
-    )
-
 
 def _init_jax(pool: InstanceInfo) -> None:
     """Initialize JAX distributed runtime."""
+    print(f"[_init_jax] Importing jax...")
     import jax
 
-    coordinator_address = f"{pool.head_addr}:{pool.head_port}"
+    if jax.distributed.is_initialized():
+        print(f"[_init_jax] Already initialized, skipping.")
+        return
 
+    coordinator_address = f"{pool.head_addr}:{pool.head_port}"
+    print(f"[_init_jax] coordinator_address={coordinator_address}, num_processes={pool.total_nodes}, process_id={pool.node}")
+
+    print(f"[_init_jax] Calling jax.distributed.initialize()...")
     jax.distributed.initialize(
         coordinator_address=coordinator_address,
         num_processes=pool.total_nodes,
         process_id=pool.node,
     )
-
-    logger.info(
-        f"JAX distributed initialized: process {pool.node}/{pool.total_nodes}, "
-        f"coordinator={coordinator_address}"
-    )
+    print(f"[_init_jax] jax.distributed.initialize() completed.")
 
 
 def _init_tensorflow(pool: InstanceInfo) -> None:
-    """Log TensorFlow distributed configuration."""
-    worker_addrs = [
-        f"{peer.get('private_ip', '')}:{pool.head_port}"
-        for peer in sorted(pool.peers, key=lambda p: p.get("node", 0))
-    ]
-
-    logger.info(
-        f"TensorFlow distributed: worker {pool.node}/{pool.total_nodes}, "
-        f"cluster={worker_addrs}"
-    )
+    """Initialize TensorFlow distributed configuration (env vars set separately)."""
+    pass  # TF_CONFIG is set via env vars
 
 
 def _init_keras(pool: InstanceInfo) -> None:
     """Initialize Keras 3 DataParallel distribution."""
+    print(f"[_init_keras] total_nodes={pool.total_nodes}")
     if pool.total_nodes <= 1:
+        print(f"[_init_keras] Single node, skipping distribution setup.")
         return
 
+    print(f"[_init_keras] Importing keras...")
     import keras
 
+    # Set consistent seed across all nodes
+    print(f"[_init_keras] Setting random seed for consistency...")
+    keras.utils.set_random_seed(42)
+
+    print(f"[_init_keras] Calling keras.distribution.list_devices()...")
     devices = keras.distribution.list_devices()
+    print(f"[_init_keras] devices={devices}")
 
     if not devices:
-        logger.warning("No devices found for Keras DataParallel")
+        print(f"[_init_keras] No devices found, skipping distribution setup.")
         return
 
+    print(f"[_init_keras] Creating DataParallel distribution...")
     data_parallel = keras.distribution.DataParallel(devices=devices, auto_shard_dataset=False)
+    print(f"[_init_keras] Setting distribution...")
     keras.distribution.set_distribution(data_parallel)
-
-    logger.info(f"Keras DataParallel set with {len(devices)} devices")
+    print(f"[_init_keras] Distribution set.")
 
 
 _FRAMEWORK_INITIALIZERS: dict[str, Callable[[InstanceInfo], None]] = {
@@ -262,49 +271,252 @@ def detect_framework(
     return framework, backend
 
 
-def wrap_with_distributed_init[**P, R](
-    fn: Callable[P, R],
-    framework: Framework | None,
-    backend: Backend,
-) -> Callable[P, R]:
-    """Wrap function to initialize distributed training environment before execution.
+# =============================================================================
+# Decorators for explicit distributed configuration
+# =============================================================================
 
-    This wrapper is applied before serializing the function for remote execution.
-    It reads COMPUTE_POOL environment variable and configures framework-specific
-    distributed training variables (MASTER_ADDR, JAX_COORDINATOR_ADDRESS, TF_CONFIG, etc.).
+# Import here to avoid circular imports
+from skyward.pending import ComputeFunction
+
+
+def keras[**P, R](
+    backend: Backend = None,
+) -> Callable[[Callable[P, R] | ComputeFunction[P, R]], Callable[P, R] | ComputeFunction[P, R]]:
+    """Configure Keras 3 distributed training.
 
     Args:
-        fn: Original function to wrap.
-        framework: Detected ML framework (jax, torch, keras, tensorflow, transformers).
-        backend: Backend for Keras (jax, torch, tensorflow).
-
-    Returns:
-        Wrapped function that initializes distributed environment before execution.
+        backend: Backend to use (jax, torch, tensorflow). Auto-detected if None.
 
     Example:
-        >>> wrapped = wrap_with_distributed_init(train_fn, "torch", None)
-        >>> # When executed remotely, MASTER_ADDR, WORLD_SIZE, RANK are set automatically
+        @distributed.keras(backend="jax")
+        @compute
+        def train():
+            import keras
+            model = keras.Sequential([...])
+            model.fit(...)
     """
-    if framework is None:
-        return fn
 
-    @functools.wraps(fn)
-    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-        from skyward.cluster import instance_info
+    def wrapper(fn: Callable[P, R]) -> Callable[P, R]:
+        @functools.wraps(fn)
+        def inner(*args: P.args, **kwargs: P.kwargs) -> R:
+            from skyward.cluster import instance_info
 
-        pool = instance_info()
-        if pool is not None:
-            _configure_framework_env(pool, framework, backend)
-        return fn(*args, **kwargs)
+            print(f"[distributed.keras] Starting initialization, backend={backend}")
 
-    return wrapper
+            pool = instance_info()
+            print(f"[distributed.keras] pool={pool}")
+
+            if pool is not None:
+                # Set env vars for backend
+                effective = backend if backend else "jax"
+                print(f"[distributed.keras] effective backend={effective}")
+
+                builder = _ENV_VAR_BUILDERS.get(effective)
+                if builder:
+                    env_vars = builder(pool)
+                    print(f"[distributed.keras] Setting env vars: {env_vars}")
+                    for key, value in env_vars.items():
+                        os.environ[key] = value
+
+                # Init backend
+                print(f"[distributed.keras] Initializing backend {effective}...")
+                initializer = _FRAMEWORK_INITIALIZERS.get(effective)
+                if initializer:
+                    print(f"[distributed.keras] Calling {initializer.__name__}...")
+                    initializer(pool)
+                    print(f"[distributed.keras] Backend initialized.")
+
+                # Init Keras distribution
+                print(f"[distributed.keras] Initializing Keras distribution...")
+                _init_keras(pool)
+                print(f"[distributed.keras] Keras distribution initialized.")
+
+            print(f"[distributed.keras] Calling user function {fn.__name__}...")
+            result = fn(*args, **kwargs)
+            print(f"[distributed.keras] User function returned.")
+            return result
+
+        return inner
+
+    def decorator(fn: Callable[P, R] | ComputeFunction[P, R]) -> Callable[P, R] | ComputeFunction[P, R]:
+        if isinstance(fn, ComputeFunction):
+            return ComputeFunction(fn=wrapper(fn.fn), name=fn.name)
+        return wrapper(fn)
+
+    return decorator
 
 
-def _configure_framework_env(
-    pool: InstanceInfo,
-    framework: Framework,
-    backend: Backend,
-) -> None:
-    """Configure framework-specific environment variables for distributed training."""
-    config = build_distributed_config(pool, framework, backend)
-    apply_distributed_config(config, pool)
+def torch[**P, R](
+    backend: Literal["nccl", "gloo"] | None = None,
+) -> Callable[[Callable[P, R] | ComputeFunction[P, R]], Callable[P, R] | ComputeFunction[P, R]]:
+    """Configure PyTorch distributed training.
+
+    Args:
+        backend: Process group backend. Auto-detected if None (nccl for GPU, gloo for CPU).
+
+    Example:
+        @distributed.torch(backend="nccl")
+        @compute
+        def train():
+            import torch.distributed as dist
+            assert dist.is_initialized()
+            ...
+    """
+
+    def wrapper(fn: Callable[P, R]) -> Callable[P, R]:
+        @functools.wraps(fn)
+        def inner(*args: P.args, **kwargs: P.kwargs) -> R:
+            from skyward.cluster import instance_info
+
+            pool = instance_info()
+            if pool is not None:
+                # Set env vars
+                for key, value in _pytorch_env_vars(pool).items():
+                    os.environ[key] = value
+
+                # Init process group
+                import torch
+                import torch.distributed as dist
+
+                if not dist.is_initialized():
+                    be = backend if backend else ("nccl" if torch.cuda.is_available() else "gloo")
+                    dist.init_process_group(backend=be, init_method="env://")
+
+            return fn(*args, **kwargs)
+
+        return inner
+
+    def decorator(fn: Callable[P, R] | ComputeFunction[P, R]) -> Callable[P, R] | ComputeFunction[P, R]:
+        if isinstance(fn, ComputeFunction):
+            return ComputeFunction(fn=wrapper(fn.fn), name=fn.name)
+        return wrapper(fn)
+
+    return decorator
+
+
+def jax[**P, R]() -> Callable[[Callable[P, R] | ComputeFunction[P, R]], Callable[P, R] | ComputeFunction[P, R]]:
+    """Configure JAX distributed training.
+
+    Example:
+        @distributed.jax()
+        @compute
+        def train():
+            import jax
+            # jax.distributed already initialized
+            ...
+    """
+
+    def wrapper(fn: Callable[P, R]) -> Callable[P, R]:
+        @functools.wraps(fn)
+        def inner(*args: P.args, **kwargs: P.kwargs) -> R:
+            from skyward.cluster import instance_info
+
+            pool = instance_info()
+            if pool is not None:
+                # Set env vars
+                for key, value in _jax_env_vars(pool).items():
+                    os.environ[key] = value
+
+                # Init JAX distributed
+                import jax
+
+                jax.distributed.initialize(
+                    coordinator_address=f"{pool.head_addr}:{pool.head_port}",
+                    num_processes=pool.total_nodes,
+                    process_id=pool.node,
+                )
+
+            return fn(*args, **kwargs)
+
+        return inner
+
+    def decorator(fn: Callable[P, R] | ComputeFunction[P, R]) -> Callable[P, R] | ComputeFunction[P, R]:
+        if isinstance(fn, ComputeFunction):
+            return ComputeFunction(fn=wrapper(fn.fn), name=fn.name)
+        return wrapper(fn)
+
+    return decorator
+
+
+def tensorflow[**P, R]() -> Callable[[Callable[P, R] | ComputeFunction[P, R]], Callable[P, R] | ComputeFunction[P, R]]:
+    """Configure TensorFlow distributed training.
+
+    Example:
+        @distributed.tensorflow()
+        @compute
+        def train():
+            import tensorflow as tf
+            # TF_CONFIG already set
+            ...
+    """
+
+    def wrapper(fn: Callable[P, R]) -> Callable[P, R]:
+        @functools.wraps(fn)
+        def inner(*args: P.args, **kwargs: P.kwargs) -> R:
+            from skyward.cluster import instance_info
+
+            pool = instance_info()
+            if pool is not None:
+                # Set TF_CONFIG env var
+                for key, value in _tensorflow_env_vars(pool).items():
+                    os.environ[key] = value
+
+            return fn(*args, **kwargs)
+
+        return inner
+
+    def decorator(fn: Callable[P, R] | ComputeFunction[P, R]) -> Callable[P, R] | ComputeFunction[P, R]:
+        if isinstance(fn, ComputeFunction):
+            return ComputeFunction(fn=wrapper(fn.fn), name=fn.name)
+        return wrapper(fn)
+
+    return decorator
+
+
+def transformers[**P, R](
+    backend: Literal["nccl", "gloo"] | None = None,
+) -> Callable[[Callable[P, R] | ComputeFunction[P, R]], Callable[P, R] | ComputeFunction[P, R]]:
+    """Configure Hugging Face Transformers distributed training.
+
+    Uses PyTorch distributed backend internally.
+
+    Args:
+        backend: Process group backend. Auto-detected if None.
+
+    Example:
+        @distributed.transformers(backend="nccl")
+        @compute
+        def train():
+            from transformers import Trainer
+            ...
+    """
+
+    def wrapper(fn: Callable[P, R]) -> Callable[P, R]:
+        @functools.wraps(fn)
+        def inner(*args: P.args, **kwargs: P.kwargs) -> R:
+            from skyward.cluster import instance_info
+
+            pool = instance_info()
+            if pool is not None:
+                # Set env vars (uses PyTorch backend)
+                for key, value in _pytorch_env_vars(pool).items():
+                    os.environ[key] = value
+
+                # Init process group
+                import torch
+                import torch.distributed as dist
+
+                if not dist.is_initialized():
+                    be = backend if backend else ("nccl" if torch.cuda.is_available() else "gloo")
+                    dist.init_process_group(backend=be, init_method="env://")
+
+            return fn(*args, **kwargs)
+
+        return inner
+
+    def decorator(fn: Callable[P, R] | ComputeFunction[P, R]) -> Callable[P, R] | ComputeFunction[P, R]:
+        if isinstance(fn, ComputeFunction):
+            return ComputeFunction(fn=wrapper(fn.fn), name=fn.name)
+        return wrapper(fn)
+
+    return decorator

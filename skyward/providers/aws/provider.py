@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import logging
 import threading
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, override
 
-from skyward.events import EventCallback
 from skyward.spec import AllocationStrategy
 from skyward.types import ComputeSpec, ExitedInstance, Instance, Provider
 
@@ -19,8 +17,6 @@ if TYPE_CHECKING:
     from skyward.providers.aws.pool import InstancePool
     from skyward.providers.aws.s3 import S3ObjectStore
     from skyward.providers.aws.ssm import SSMSession
-
-logger = logging.getLogger("skyward.aws")
 
 # Cache for AWS resources per region
 _resources_cache: dict[str, AWSResources] = {}
@@ -138,7 +134,6 @@ class AWS(Provider):
     def _resolve_ami(self, compute: ComputeSpec) -> str:
         """Resolve AMI ID based on configuration."""
         if self.ami:
-            logger.info(f"Using user-provided AMI: {self.ami}")
             return self.ami
 
         from skyward.providers.aws.ami import resolve_ami
@@ -153,9 +148,7 @@ class AWS(Provider):
 
         from skyward.providers.aws.ami import get_ami_username
 
-        username = get_ami_username(self.region, ami_id)
-        logger.info(f"Auto-detected system username: {username}")
-        return username
+        return get_ami_username(self.region, ami_id)
 
     @override
     def create_tunnel(self, instance: Instance) -> tuple[int, subprocess.Popen[bytes]]:
@@ -199,33 +192,30 @@ class AWS(Provider):
     def provision(
         self,
         compute: ComputeSpec,
-        on_event: EventCallback = None,
     ) -> tuple[Instance, ...]:
         """Provision EC2 instances."""
         from skyward.providers.aws.lifecycle import provision
-        return provision(self, compute, on_event)
+        return provision(self, compute)
 
     @override
     def setup(
         self,
         instances: tuple[Instance, ...],
         compute: ComputeSpec,
-        on_event: EventCallback = None,
     ) -> None:
         """Setup instances (bootstrap, install dependencies)."""
         from skyward.providers.aws.lifecycle import setup
-        setup(self, instances, compute, on_event)
+        setup(self, instances, compute)
 
     @override
     def shutdown(
         self,
         instances: tuple[Instance, ...],
         compute: ComputeSpec,
-        on_event: EventCallback = None,
     ) -> tuple[ExitedInstance, ...]:
         """Shutdown instances (stop on-demand, terminate spot)."""
         from skyward.providers.aws.lifecycle import shutdown
-        return shutdown(self, instances, compute, on_event)
+        return shutdown(self, instances, compute)
 
     @override
     def run_command(self, instance: Instance, command: str, timeout: int = 30) -> str:
