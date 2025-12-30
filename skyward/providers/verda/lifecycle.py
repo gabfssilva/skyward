@@ -61,6 +61,7 @@ def provision(
         )
         from skyward.providers.verda.ssh import get_or_create_ssh_key
         from skyward.providers.verda.types import VerdaInstance
+        from skyward.accelerator import AcceleratorSpec
 
         cluster_id = str(uuid.uuid4())[:8]
 
@@ -74,12 +75,18 @@ def provision(
 
         emit(InfraCreated(region=provider.region))
 
+        # Get accelerator spec (AcceleratorSpec or Accelerator string)
+        acc_spec = AcceleratorSpec.from_value(compute.accelerator)
+        accelerator_type = acc_spec.accelerator if acc_spec else None
+        requested_gpu_count = acc_spec.count if acc_spec else 1
+
         # Select instance type
         memory_mb = 1024  # Default 1GB
         instance_spec = select_instance_type(
             cpu=1,
             memory_mb=memory_mb,
-            accelerator=cast(Accelerator, compute.accelerator),
+            accelerator=cast(Accelerator, accelerator_type),
+            accelerator_count=requested_gpu_count,
         )
 
         # Select image

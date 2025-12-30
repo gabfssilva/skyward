@@ -152,9 +152,18 @@ class SkywardService(rpyc.Service):
 
 
 def main() -> None:
-    """Start the RPyC server."""
-    port = RPYC_PORT
-    if len(sys.argv) > 1:
+    """Start the RPyC server.
+
+    Port can be configured via:
+    1. SKYWARD_WORKER_PORT environment variable (for worker isolation)
+    2. Command line argument (legacy)
+    3. Default RPYC_PORT (18861)
+    """
+    import os
+
+    # Priority: env var > command line > default
+    port = int(os.environ.get("SKYWARD_WORKER_PORT", "0")) or RPYC_PORT
+    if port == RPYC_PORT and len(sys.argv) > 1:
         port = int(sys.argv[1])
 
     server = ThreadedServer(

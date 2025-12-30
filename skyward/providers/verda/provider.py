@@ -110,9 +110,19 @@ class Verda(Provider):
         return key_info.id
 
     @override
-    def create_tunnel(self, instance: Instance) -> tuple[int, subprocess.Popen[bytes]]:
-        """Create SSH tunnel to instance."""
-        from skyward.providers.common import RPYC_PORT, create_tunnel, find_available_port
+    def create_tunnel(
+        self,
+        instance: Instance,
+        remote_port: int = 18861,
+    ) -> tuple[int, subprocess.Popen[bytes]]:
+        """Create SSH tunnel to instance.
+
+        Args:
+            instance: Instance to connect to.
+            remote_port: Remote port to tunnel to (default: 18861).
+                        For worker isolation, use 18861 + worker_id.
+        """
+        from skyward.providers.common import create_tunnel, find_available_port
         from skyward.providers.verda.ssh import find_local_ssh_key
 
         ip = instance.get_meta("instance_ip") or instance.public_ip
@@ -133,7 +143,7 @@ class Verda(Provider):
         ]
         if key_path:
             cmd.extend(["-i", key_path])
-        cmd.extend(["-L", f"{local_port}:127.0.0.1:{RPYC_PORT}", f"{self._username}@{ip}"])
+        cmd.extend(["-L", f"{local_port}:127.0.0.1:{remote_port}", f"{self._username}@{ip}"])
         return create_tunnel(cmd, local_port)
 
     @override

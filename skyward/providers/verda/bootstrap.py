@@ -76,24 +76,27 @@ def wait_for_bootstrap(
     instances: tuple[Instance, ...],
     timeout: int = 300,
 ) -> None:
-    """Wait for bootstrap to complete on all instances.
+    """Wait for bootstrap to complete on all instances (concurrent).
 
     Args:
         instances: Instances to wait for.
         timeout: Maximum time to wait per instance in seconds.
     """
+    from skyward.conc import for_each_async
+
     username = instances[0].get_meta("username", "root")
 
-    for inst in instances:
+    def wait_for_instance(inst: Instance) -> None:
         ip = inst.get_meta("instance_ip") or inst.public_ip
         runner = _create_ssh_runner(ip, username)
-
         _wait_for_bootstrap(
             run_command=runner,
             instance_id=inst.id,
             timeout=timeout,
             extra_checkpoints=VERDA_EXTRA_CHECKPOINTS,
         )
+
+    for_each_async(wait_for_instance, instances)
 
 
 def install_skyward_wheel(instances: tuple[Instance, ...]) -> None:
@@ -129,10 +132,15 @@ def install_skyward_wheel(instances: tuple[Instance, ...]) -> None:
         if verify_result.returncode != 0:
             raise RuntimeError(f"skyward not importable on {ip}: {verify_result.stderr}")
 
-        # Start RPyC server
-        start_result = _ssh_run(ip, username, "sudo systemctl start skyward-rpyc", timeout=30)
-        if start_result.returncode != 0:
-            raise RuntimeError(f"Failed to start RPyC on {ip}: {start_result.stderr}")
+        # Restart RPyC server (single or multi-worker)
+        restart_cmd = (
+            "if systemctl is-active skyward-rpyc >/dev/null 2>&1; then "
+            "systemctl restart skyward-rpyc; "
+            "else "
+            "systemctl list-units 'skyward-worker@*' --no-legend | awk '{print $1}' | xargs -r systemctl restart; "
+            "fi"
+        )
+        _ssh_run(ip, username, f"sudo bash -c \"{restart_cmd}\"", timeout=60)
 
     for_each_async(install_on_instance, instances)
 
@@ -155,6 +163,8 @@ def create_user_data_script(
     )
 
     # Verda doesn't pre-upload wheel - it's installed later via SCP
+    worker_bs = getattr(compute, "worker_bootstrap_script", "")
+
     return generate_base_script(
         python=compute.python or "3.12",
         pip=tuple(image.pip) if image.pip else (),
@@ -163,6 +173,7 @@ def create_user_data_script(
         instance_timeout=instance_timeout,
         preamble="",
         postamble="# Skyward wheel installed via SCP in setup phase",
+        worker_bootstrap=worker_bs,
     )
 
 

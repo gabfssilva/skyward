@@ -18,6 +18,8 @@ def build_pool_info(
     peers: list[dict[str, Any]],
     accelerator_type: str | None = None,
     placement_group: str | None = None,
+    worker: int = 0,
+    workers_per_node: int = 1,
 ) -> InstanceInfo:
     """Build ComputePoolInfo for COMPUTE_POOL environment variable.
 
@@ -35,6 +37,8 @@ def build_pool_info(
         peers: List of peer info dicts with keys: node, addr, instance_id.
         accelerator_type: Type of accelerator (e.g., "A100-80", "H100", "Trainium1").
         placement_group: Optional placement group name.
+        worker: Worker index within this node (0-indexed, for MIG partitions).
+        workers_per_node: Number of workers per node (e.g., 2 for MIG 3g.40gb).
 
     Returns:
         ComputePoolInfo instance ready to be serialized with .model_dump_json().
@@ -65,7 +69,9 @@ def build_pool_info(
 
     return InstanceInfo(
         node=node,
+        worker=worker,
         total_nodes=total_nodes,
+        workers_per_node=workers_per_node,
         accelerators=accelerator_count,
         total_accelerators=total_accelerators,
         head_addr=head_addr,

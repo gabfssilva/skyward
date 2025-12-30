@@ -41,6 +41,8 @@ STANDARD_INSTANCES: list[InstanceSpec] = [
 # Accelerator instances (GPUs and Trainium)
 # All accelerator instances support cluster placement groups
 ACCELERATOR_INSTANCES: list[InstanceSpec] = [
+    InstanceSpec("g3.8xlarge", 32, 32, "M60", 2, True, 16),
+
     # NVIDIA T4 instances (g4dn family) - 16GB per GPU
     InstanceSpec("g4dn.xlarge", 4, 16, "T4", 1, True, 16),
     InstanceSpec("g4dn.2xlarge", 8, 32, "T4", 1, True, 16),
@@ -93,6 +95,7 @@ def select_instance_type(
     cpu: int,
     memory_mb: int,
     accelerator: Accelerator = None,
+    accelerator_count: int = 1,
 ) -> str:
     """Select the smallest instance type that meets requirements.
 
@@ -100,6 +103,7 @@ def select_instance_type(
         cpu: Required number of vCPUs.
         memory_mb: Required memory in MB.
         accelerator: Required accelerator type (e.g., "T4", "A100-80", "Trainium1").
+        accelerator_count: Required number of accelerators (GPUs/NeuronCores).
 
     Returns:
         EC2 instance type name.
@@ -113,9 +117,24 @@ def select_instance_type(
         candidates = [
             inst
             for inst in ACCELERATOR_INSTANCES
-            if inst.accelerator == accelerator and inst.vcpu >= cpu and inst.memory_gb >= memory_gb
+            if inst.accelerator == accelerator
+            and inst.accelerator_count >= accelerator_count
+            and inst.vcpu >= cpu
+            and inst.memory_gb >= memory_gb
         ]
         if not candidates:
+            # Find available counts for this accelerator type
+            available_counts = sorted({
+                inst.accelerator_count
+                for inst in ACCELERATOR_INSTANCES
+                if inst.accelerator == accelerator
+            })
+            if available_counts:
+                raise ValueError(
+                    f"No instance type found for {accelerator_count}x {accelerator} "
+                    f"with {cpu} vCPU, {memory_gb}GB RAM. "
+                    f"Available GPU counts for {accelerator}: {available_counts}"
+                )
             available = sorted({inst.accelerator for inst in ACCELERATOR_INSTANCES if inst.accelerator})
             raise ValueError(
                 f"No instance type found for {accelerator} with {cpu} vCPU, {memory_gb}GB RAM. "

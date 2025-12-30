@@ -77,7 +77,9 @@ class InstanceInfo(BaseModel):
     """
 
     node: int = Field(description="Index of this node (0 to total_nodes - 1)")
+    worker: int = Field(default=0, description="Worker index within this node (0 to workers_per_node - 1)")
     total_nodes: int = Field(description="Total number of nodes in the pool")
+    workers_per_node: int = Field(default=1, description="Number of workers per node (e.g., 2 for MIG 3g.40gb)")
     accelerators: int = Field(description="Number of accelerators on this node")
     total_accelerators: int = Field(description="Total accelerators in the pool")
     head_addr: str = Field(description="IP address of the head node")
@@ -87,6 +89,21 @@ class InstanceInfo(BaseModel):
     peers: list[PeerInfo] = Field(description="Information about all peers")
     accelerator: AcceleratorInfo | None = Field(default=None, description="Accelerator configuration")
     network: NetworkInfo = Field(description="Network configuration")
+
+    @property
+    def global_worker_index(self) -> int:
+        """Global index of this worker (0 to total_workers - 1)."""
+        return self.node * self.workers_per_node + self.worker
+
+    @property
+    def total_workers(self) -> int:
+        """Total number of workers across all nodes."""
+        return self.total_nodes * self.workers_per_node
+
+    @property
+    def is_head(self) -> bool:
+        """True if this is the head worker (global_worker_index == 0)."""
+        return self.global_worker_index == 0
 
     @property
     def is_trainium(self) -> bool:
@@ -110,11 +127,6 @@ class InstanceInfo(BaseModel):
             return None
 
         return cls.model_validate_json(cluster_info_json)
-
-    @property
-    def is_head(self) -> bool:
-        """Check if this is the head node."""
-        return self.node == 0
 
 
 def instance_info() -> InstanceInfo | None:

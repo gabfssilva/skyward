@@ -109,10 +109,15 @@ def install_skyward_wheel(instances: tuple[Instance, ...]) -> None:
         if verify_result.returncode != 0:
             raise RuntimeError(f"skyward not importable on {ip}: {verify_result.stderr}")
 
-        # Start RPyC server
-        start_result = _ssh_run(ip, username, "systemctl start skyward-rpyc", timeout=30)
-        if start_result.returncode != 0:
-            raise RuntimeError(f"Failed to start RPyC on {ip}: {start_result.stderr}")
+        # Restart RPyC server (single or multi-worker)
+        restart_cmd = (
+            "if systemctl is-active skyward-rpyc >/dev/null 2>&1; then "
+            "systemctl restart skyward-rpyc; "
+            "else "
+            "systemctl list-units 'skyward-worker@*' --no-legend | awk '{print $1}' | xargs -r systemctl restart; "
+            "fi"
+        )
+        _ssh_run(ip, username, f"sudo bash -c \"{restart_cmd}\"", timeout=60)
 
     for_each_async(install_on_instance, instances)
 
@@ -144,6 +149,7 @@ def create_user_data_script(
         instance_timeout=instance_timeout,
         preamble="",  # No DO-specific preamble needed
         postamble="# Skyward wheel installed via SCP in setup phase",
+        worker_bootstrap=getattr(compute, "worker_bootstrap_script", ""),
     )
 
 

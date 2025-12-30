@@ -32,13 +32,17 @@ __all__ = [
 
 def _pytorch_env_vars(pool: InstanceInfo) -> dict[str, str]:
     """Build PyTorch distributed environment variables."""
+    # Global rank: each worker is a separate process
+    world_size = pool.total_nodes * pool.workers_per_node
+    global_rank = pool.node * pool.workers_per_node + pool.worker
+
     env = {
         "MASTER_ADDR": pool.head_addr,
         "MASTER_PORT": str(pool.head_port),
-        "WORLD_SIZE": str(pool.total_nodes),
-        "RANK": str(pool.node),
-        "LOCAL_RANK": "0",
-        "LOCAL_WORLD_SIZE": str(pool.accelerators) if pool.accelerators > 0 else "1",
+        "WORLD_SIZE": str(world_size),
+        "RANK": str(global_rank),
+        "LOCAL_RANK": str(pool.worker),
+        "LOCAL_WORLD_SIZE": str(pool.workers_per_node),
         "NODE_RANK": str(pool.node),
     }
 
@@ -54,10 +58,14 @@ def _jax_env_vars(pool: InstanceInfo) -> dict[str, str]:
     """Build JAX distributed environment variables."""
     coordinator_address = f"{pool.head_addr}:{pool.head_port}"
 
+    # Global process ID: each worker is a separate JAX process
+    total_processes = pool.total_nodes * pool.workers_per_node
+    process_id = pool.node * pool.workers_per_node + pool.worker
+
     env = {
         "JAX_COORDINATOR_ADDRESS": coordinator_address,
-        "JAX_NUM_PROCESSES": str(pool.total_nodes),
-        "JAX_PROCESS_ID": str(pool.node),
+        "JAX_NUM_PROCESSES": str(total_processes),
+        "JAX_PROCESS_ID": str(process_id),
     }
 
     if pool.accelerators > 0:
@@ -68,14 +76,20 @@ def _jax_env_vars(pool: InstanceInfo) -> dict[str, str]:
 
 def _tensorflow_env_vars(pool: InstanceInfo) -> dict[str, str]:
     """Build TensorFlow distributed environment variables (TF_CONFIG)."""
-    worker_addrs = [
-        f"{peer.get('private_ip', '')}:{pool.head_port}"
-        for peer in sorted(pool.peers, key=lambda p: p.get("node", 0))
-    ]
+    # Build addresses for all workers (each worker gets a unique port)
+    worker_addrs: list[str] = []
+    for peer in sorted(pool.peers, key=lambda p: p.get("node", 0)):
+        ip = peer.get("private_ip", peer.get("addr", ""))
+        for worker_idx in range(pool.workers_per_node):
+            port = pool.head_port + worker_idx
+            worker_addrs.append(f"{ip}:{port}")
+
+    # Global task index: each worker is a separate TF worker
+    task_index = pool.node * pool.workers_per_node + pool.worker
 
     tf_config = {
         "cluster": {"worker": worker_addrs},
-        "task": {"type": "worker", "index": pool.node},
+        "task": {"type": "worker", "index": task_index},
     }
 
     return {"TF_CONFIG": json.dumps(tf_config)}
@@ -109,13 +123,16 @@ def _init_jax(pool: InstanceInfo) -> None:
         return
 
     coordinator_address = f"{pool.head_addr}:{pool.head_port}"
-    print(f"[_init_jax] coordinator_address={coordinator_address}, num_processes={pool.total_nodes}, process_id={pool.node}")
+    # Global process ID: each worker is a separate JAX process
+    total_processes = pool.total_nodes * pool.workers_per_node
+    process_id = pool.node * pool.workers_per_node + pool.worker
+    print(f"[_init_jax] coordinator_address={coordinator_address}, num_processes={total_processes}, process_id={process_id}")
 
     print(f"[_init_jax] Calling jax.distributed.initialize()...")
     jax.distributed.initialize(
         coordinator_address=coordinator_address,
-        num_processes=pool.total_nodes,
-        process_id=pool.node,
+        num_processes=total_processes,
+        process_id=process_id,
     )
     print(f"[_init_jax] jax.distributed.initialize() completed.")
 
@@ -420,10 +437,14 @@ def jax[**P, R]() -> Callable[[Callable[P, R] | ComputeFunction[P, R]], Callable
                 # Init JAX distributed
                 import jax
 
+                # Global process ID: each worker is a separate JAX process
+                total_processes = pool.total_nodes * pool.workers_per_node
+                process_id = pool.node * pool.workers_per_node + pool.worker
+
                 jax.distributed.initialize(
                     coordinator_address=f"{pool.head_addr}:{pool.head_port}",
-                    num_processes=pool.total_nodes,
-                    process_id=pool.node,
+                    num_processes=total_processes,
+                    process_id=process_id,
                 )
 
             return fn(*args, **kwargs)

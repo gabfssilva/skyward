@@ -7,6 +7,7 @@ Demonstrates how to:
 """
 
 from skyward import AWS, NVIDIA, ComputePool, compute, instance_info, InstanceInfo, Verda
+from skyward.accelerator import H100
 
 
 @compute
@@ -146,16 +147,19 @@ def train_simple_model(epochs: int) -> dict:
 
 if __name__ == "__main__":
     # =================================================================
-    # Pool with NVIDIA L40S GPU
+    # Pool with NVIDIA H100 GPU (MIG partitioned: 2 workers per GPU)
     # =================================================================
     with ComputePool(
         provider=Verda(),
-        accelerator='L40S',
+        accelerator=H100(
+            memory='80',
+            mig=['4g.40gb', '3g.40gb']
+        ),
         pip=["torch", "numpy"],
         spot="always",
     ) as pool:
         # Get GPU information
-        info = instance_information() >> pool
+        info = instance_information() @ pool
         print(f"GPU Info: {info}")
 
         # Heavy benchmark - ~5s on CPU vs ~0.1s on GPU

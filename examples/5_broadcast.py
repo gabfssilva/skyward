@@ -9,7 +9,7 @@ This is useful for:
 """
 from time import sleep
 
-from skyward import AWS, NVIDIA, ComputePool, compute, instance_info
+from skyward import AWS, NVIDIA, ComputePool, compute, instance_info, Verda
 
 
 @compute
@@ -80,9 +80,9 @@ if __name__ == "__main__":
     # Pool with 4 nodes, each with an A100 GPU
     # =================================================================
     with ComputePool(
-        provider=AWS(),
+        provider=Verda(),
         nodes=4,
-        accelerator='T4',
+        accelerator='A100-80GB',
         spot="always",
     ) as pool:
         # =================================================================

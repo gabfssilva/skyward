@@ -48,6 +48,7 @@ def provision(
         select_instance_type,
     )
     from skyward.providers.aws.wheel import ensure_skyward_wheel
+    from skyward.accelerator import AcceleratorSpec
 
     try:
         cluster_id = str(uuid.uuid4())[:8]
@@ -71,12 +72,18 @@ def provision(
             instance_types = get_instance_types_for_accelerators(accelerator_list)
             instance_type = instance_types[0]  # Primary type for display
         else:
+            # Get accelerator spec (AcceleratorSpec or Accelerator string)
+            acc_spec = AcceleratorSpec.from_value(compute.accelerator)
+            accelerator_type = acc_spec.accelerator if acc_spec else None
+            requested_gpu_count = acc_spec.count if acc_spec else 1
+
             # Standard: select single instance type
             memory_mb = 512  # Default memory for instance type selection
             instance_type = select_instance_type(
                 cpu=1,  # Default
                 memory_mb=memory_mb,
-                accelerator=cast(Accelerator, compute.accelerator),
+                accelerator=cast(Accelerator, accelerator_type),
+                accelerator_count=requested_gpu_count,
             )
             instance_types = [instance_type]
 

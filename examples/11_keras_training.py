@@ -8,8 +8,10 @@ Demonstrates training a ViT with Keras 3 on Skyward:
 Architecture:
     MNIST 28x28 → Patches 4x4 (49 patches) → Embedding + Pos → Transformer × N → [CLS] → 10 classes
 """
+from typing import Literal, LiteralString
 
-from skyward import AWS, ComputePool, compute, distributed, instance_info, shard
+from skyward import AWS, ComputePool, compute, distributed, instance_info, shard, Verda, H100, L40S, T4, L4, A100
+from skyward.accelerator import M60
 
 
 # =============================================================================
@@ -263,15 +265,14 @@ def train_vit(
 # Main
 # =============================================================================
 
-
 if __name__ == "__main__":
     with ComputePool(
-        provider=AWS(),
+        provider=Verda(),
         nodes=2,
-        accelerator="T4",
+        accelerator=A100(memory='80', count=2),
         pip=["keras>=3.2", "jax[cuda12]"],
         env={"KERAS_BACKEND": "jax"},
-        spot="always",
+        spot="never",
     ) as pool:
         print("=" * 60)
         print("Vision Transformer (ViT) - MNIST Classification")

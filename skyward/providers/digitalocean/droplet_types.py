@@ -76,6 +76,7 @@ def select_droplet_type(
     cpu: int,
     memory_mb: int,
     accelerator: Accelerator = None,
+    accelerator_count: int = 1,
 ) -> DropletSpec:
     """Select the smallest droplet type that meets requirements.
 
@@ -83,6 +84,7 @@ def select_droplet_type(
         cpu: Required number of vCPUs.
         memory_mb: Required memory in MB.
         accelerator: Required accelerator type (e.g., "H100", "L40S").
+        accelerator_count: Required number of accelerators (GPUs).
 
     Returns:
         DropletSpec with the selected droplet type.
@@ -101,10 +103,23 @@ def select_droplet_type(
             for spec in ACCELERATOR_DROPLETS
             if spec.accelerator
             and _normalize_accelerator(spec.accelerator) == accel_normalized
+            and spec.accelerator_count >= accelerator_count
             and spec.vcpu >= cpu
             and spec.memory_gb >= memory_gb
         ]
         if not candidates:
+            # Find available counts for this accelerator type
+            available_counts = sorted({
+                spec.accelerator_count
+                for spec in ACCELERATOR_DROPLETS
+                if spec.accelerator and _normalize_accelerator(spec.accelerator) == accel_normalized
+            })
+            if available_counts:
+                raise ValueError(
+                    f"No droplet type found for {accelerator_count}x {accelerator} "
+                    f"with {cpu} vCPU, {memory_gb}GB RAM. "
+                    f"Available GPU counts for {accelerator}: {available_counts}"
+                )
             available = sorted(
                 {spec.accelerator for spec in ACCELERATOR_DROPLETS if spec.accelerator}
             )

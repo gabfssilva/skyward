@@ -151,12 +151,22 @@ class AWS(Provider):
         return get_ami_username(self.region, ami_id)
 
     @override
-    def create_tunnel(self, instance: Instance) -> tuple[int, subprocess.Popen[bytes]]:
-        """Create SSM tunnel to instance."""
+    def create_tunnel(
+        self,
+        instance: Instance,
+        remote_port: int = 18861,
+    ) -> tuple[int, subprocess.Popen[bytes]]:
+        """Create SSM tunnel to instance.
+
+        Args:
+            instance: Instance to connect to.
+            remote_port: Remote port to tunnel to (default: 18861).
+                        For worker isolation, use 18861 + worker_id.
+        """
         import json
         import subprocess
 
-        from skyward.providers.common import RPYC_PORT, create_tunnel, find_available_port
+        from skyward.providers.common import create_tunnel, find_available_port
 
         # Check SSM plugin is installed
         try:
@@ -181,7 +191,7 @@ class AWS(Provider):
             "--target", instance.id,
             "--document-name", "AWS-StartPortForwardingSession",
             "--parameters", json.dumps({
-                "portNumber": [str(RPYC_PORT)],
+                "portNumber": [str(remote_port)],
                 "localPortNumber": [str(local_port)],
             }),
             "--region", self.region,

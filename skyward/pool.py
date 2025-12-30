@@ -31,10 +31,6 @@ Example:
 
 from __future__ import annotations
 
-import contextlib
-import contextvars
-import subprocess
-import threading
 import time
 from collections.abc import Sequence
 from contextlib import AbstractContextManager
@@ -42,32 +38,28 @@ from dataclasses import dataclass, field
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Literal, Callable
 
-import rpyc
-from tenacity import (
-    RetryError,
-    retry,
-    retry_if_exception_type,
-    stop_after_delay,
-    wait_fixed,
-)
-
 from skyward.accelerator import Accelerator
 from skyward.callback import Callback, compose, emit, use_callback
 from skyward.callbacks import cost_tracker, log, spinner
 from skyward.conc import map_async
-from skyward.events import Error, LogLine, PoolStarted, PoolStopping, SkywardEvent
-from skyward.exceptions import ConnectionLostError, ExecutionError, NotProvisionedError
+from skyward.events import Error, LogLine, PoolStarted, PoolStopping
+from skyward.exceptions import ExecutionError, NotProvisionedError
 from skyward.pending import PendingBatch, PendingCompute
 from skyward.spec import SpotLike
 from skyward.types import Instance, Provider
 from skyward.volume import Volume, parse_volume_uri
+from skyward.worker import (
+    AcceleratorSpec,
+    ResourceLimits,
+    Worker,
+    WorkerPool,
+    create_partition,
+    generate_worker_bootstrap,
+    generate_worker_configs,
+)
 
 if TYPE_CHECKING:
-    pass
-
-
-class _RPyCNotReadyError(Exception):
-    """RPyC not connected - retry."""
+    import rpyc
 
 
 def _parse_volumes(
@@ -99,23 +91,38 @@ class ComputePool:
     Args:
         provider: Cloud provider (AWS, DigitalOcean). Required.
         nodes: Number of nodes to provision. Default 1.
-        accelerator: Accelerator type ("A100", "H100", etc.) or None for CPU-only.
+        accelerator: Accelerator type or spec. Formats:
+            - "H100" → 1 accelerator, 1 worker
+            - H100() → 1 accelerator, 1 worker (factory function)
+            - H100(count=8) → 8 accelerators, 8 workers
+            - H100(mig="3g.40gb") → 1 GPU, 2 workers (MIG)
+            - H100(count=8, mig="3g.40gb") → 8 GPUs, 16 workers (MIG)
         python: Python version to use.
         pip: pip packages to install.
         pip_extra_index_url: Extra pip index URL.
         apt: apt packages to install.
         volume: Volumes to mount.
         spot: Spot strategy.
+        cpu: CPU cores per worker (for cgroups limits).
+        memory: Memory per worker (e.g., "32GB", for cgroups limits).
 
     Example:
         pool = Pool(
             provider=AWS(),
-            accelerator="A100",
+            accelerator=A100(),
             pip=["torch", "transformers"],
         )
 
         with pool:
             result = train(data) | pool
+
+    Worker Isolation Example:
+        pool = Pool(
+            provider=AWS(),
+            accelerator=H100(count=8, mig="3g.40gb"),  # 8 GPUs, 16 workers (MIG)
+            cpu=4,                                      # 4 CPU cores per worker
+            memory="32GB",                              # 32GB RAM per worker
+        )
     """
 
     # Required
@@ -123,7 +130,7 @@ class ComputePool:
 
     # Resource specification
     nodes: int = 1
-    accelerator: Accelerator | list[Accelerator] = None
+    accelerator: Accelerator | list[Accelerator] | AcceleratorSpec | list[AcceleratorSpec] | None = None
     cpu: int | None = None
     memory: str | None = None
     python: str = "3.13"
@@ -145,12 +152,76 @@ class ComputePool:
     _callback_ctx: AbstractContextManager[None] | None = field(
         default=None, init=False, repr=False
     )
-    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
-    _conn_locks: dict[str, threading.Lock] = field(default_factory=dict, init=False, repr=False)
-    _tunnels: dict[str, subprocess.Popen[bytes]] = field(default_factory=dict, init=False, repr=False)
-    _rpyc_conns: dict[str, rpyc.Connection] = field(default_factory=dict, init=False, repr=False)
     _cluster_setup: set[str] = field(default_factory=set, init=False, repr=False)
     _job_id: str = field(default="", init=False, repr=False)
+
+    # Worker isolation state
+    _accelerator_spec: AcceleratorSpec | None = field(default=None, init=False, repr=False)
+    _worker_pool: WorkerPool | None = field(default=None, init=False, repr=False)
+    _worker_bootstrap: str = field(default="", init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        """Parse accelerator spec and validate configuration."""
+        if self.accelerator is None:
+            return
+
+        # Convert to AcceleratorSpec if it's an AcceleratorSpec or Accelerator string
+        if isinstance(self.accelerator, AcceleratorSpec):
+            self.accelerator.validate()
+            object.__setattr__(self, "_accelerator_spec", self.accelerator)
+        elif isinstance(self.accelerator, str) and not isinstance(self.accelerator, list):
+            # Plain accelerator string like "H100" - create spec with defaults
+            spec = AcceleratorSpec.from_value(self.accelerator)
+            if spec is not None:
+                object.__setattr__(self, "_accelerator_spec", spec)
+
+    def _parse_accelerator_for_provider(self) -> Accelerator | list[Accelerator]:
+        """Get the accelerator type for the provider (without worker info)."""
+        if self._accelerator_spec is not None:
+            # Return just the accelerator type for provider
+            return self._accelerator_spec.accelerator  # type: ignore
+        return self.accelerator
+
+    @property
+    def workers_per_instance(self) -> int:
+        """Number of workers per instance."""
+        if self._accelerator_spec is not None:
+            return self._accelerator_spec.workers
+        return 1
+
+    def _generate_worker_bootstrap(self, device_count: int) -> str:
+        """Generate worker isolation bootstrap script."""
+        if self._accelerator_spec is None or self._accelerator_spec.workers <= 1:
+            return ""
+
+        # Create resource limits from cpu/memory
+        limits = None
+        if self.cpu is not None or self.memory is not None:
+            limits = ResourceLimits.from_params(memory=self.memory, cpu=self.cpu)
+
+        # Get partition strategy for this accelerator
+        strategy = create_partition(
+            accelerator=self._accelerator_spec.accelerator,
+            device_count=device_count,
+            mig=self._accelerator_spec.mig,
+        )
+
+        # Generate worker configs using partition strategy's env function
+        def device_env_fn(worker_id: int) -> dict[str, str]:
+            return strategy.get_worker_env(worker_id, device_count)
+
+        configs = generate_worker_configs(
+            worker_count=self._accelerator_spec.workers,
+            device_env_fn=device_env_fn,
+            limits=limits,
+        )
+
+        # Generate bootstrap script
+        return generate_worker_bootstrap(
+            configs=configs,
+            limits=limits,
+            partition_setup=strategy.setup_script,
+        )
 
     def __enter__(self) -> ComputePool:
         """Enter pool context and provision resources."""
@@ -186,6 +257,8 @@ class ComputePool:
     def run[R](self, pending: PendingCompute[R]) -> R:
         """Execute a single computation on the pool.
 
+        Acquires the first available worker, executes, and releases.
+
         Args:
             pending: PendingCompute to execute.
 
@@ -195,15 +268,19 @@ class ComputePool:
         Raises:
             NotProvisionedError: If pool is not active.
         """
-        if not self._active or self._instances is None:
+        if not self._active or self._worker_pool is None:
             raise NotProvisionedError()
 
-        # Use first available instance (simple scheduling)
-        instance = self._instances[0]
-        return self._execute_on_instance(instance, pending, self._stdout_cb(emit))
+        workers = self._worker_pool.acquire(1)
+        try:
+            return self._execute_on_worker(workers[0], pending)
+        finally:
+            self._worker_pool.release(*workers)
 
     def run_batch(self, batch: PendingBatch) -> tuple[Any, ...]:
         """Execute a batch of computations in parallel.
+
+        Distributes computations across available workers (round-robin).
 
         Args:
             batch: PendingBatch containing computations to execute.
@@ -214,68 +291,99 @@ class ComputePool:
         Raises:
             NotProvisionedError: If pool is not active.
         """
-        if not self._active or self._instances is None:
+        if not self._active or self._worker_pool is None:
             raise NotProvisionedError()
 
-        # Distribute computations across instances (round-robin)
-        n_instances = len(self._instances)
+        computations = list(batch.computations)
+        n_computations = len(computations)
 
-        stdout_cb = self._stdout_cb(emit)
+        # Acquire as many workers as we need (up to available)
+        n_workers = min(n_computations, self._worker_pool.total_workers)
+        workers = self._worker_pool.acquire(n_workers)
 
-        def execute_indexed(idx: int, pending: PendingCompute[Any]) -> Any:
-            instance = self._instances[idx % n_instances]  # type: ignore
-            return self._execute_on_instance(instance, pending, stdout_cb)
+        try:
+            # Assign computations to workers (round-robin)
+            def execute_on_worker(item: tuple[int, PendingCompute[Any]]) -> Any:
+                idx, pending = item
+                worker = workers[idx % n_workers]
+                return self._execute_on_worker(worker, pending)
 
-        # Execute in parallel
-        results = list(
-            map_async(
-                lambda item: execute_indexed(item[0], item[1]),
-                list(enumerate(batch.computations)),
+            results = list(
+                map_async(
+                    execute_on_worker,
+                    list(enumerate(computations)),
+                )
             )
-        )
-        return tuple(results)
+            return tuple(results)
+        finally:
+            self._worker_pool.release(*workers)
 
     def broadcast[R](self, pending: PendingCompute[R]) -> tuple[R, ...]:
-        """Broadcast: execute computation on ALL nodes in parallel.
+        """Broadcast: execute computation on ALL workers in parallel.
 
-        Unlike run() which executes on one node, broadcast() executes the
-        same computation on every node in the pool simultaneously.
+        Unlike run() which executes on one worker, broadcast() executes the
+        same computation on every worker in the pool simultaneously.
+
+        With MIG or multi-worker configurations, this broadcasts to all
+        workers (not just instances). For example, with 1 instance and
+        MIG="3g.40gb" (2 partitions), this broadcasts to 2 workers.
 
         Args:
             pending: PendingCompute to broadcast.
 
         Returns:
-            Tuple of results, one per node.
+            Tuple of results, one per worker.
 
         Raises:
             NotProvisionedError: If pool is not active.
 
         Example:
-            # Initialize model on all 4 nodes
-            results = load_model(path) @ pool  # tuple of 4 results
+            # Initialize model on all workers
+            results = load_model(path) @ pool  # tuple of N results
         """
-        if not self._active or self._instances is None:
+        if not self._active or self._worker_pool is None:
             raise NotProvisionedError()
 
-        stdout_cb = self._stdout_cb(emit)
+        # Acquire all workers
+        total_workers = self._worker_pool.total_workers
+        workers = self._worker_pool.acquire(total_workers)
 
-        results = list(
-            map_async(
-                lambda inst: self._execute_on_instance(inst, pending, stdout_cb),
-                self._instances,
+        try:
+            results = list(
+                map_async(
+                    lambda w: self._execute_on_worker(w, pending),
+                    workers,
+                )
             )
-        )
-        return tuple(results)
+            return tuple(results)
+        finally:
+            self._worker_pool.release(*workers)
 
-    def _execute_on_instance[R](
+    def _execute_on_worker[R](
         self,
-        instance: Instance,
+        worker: Worker,
         pending: PendingCompute[R],
-        stdout_cb: Callable[[int, Instance], Callable[[str], None]],
     ) -> R:
-        """Execute a computation on a specific instance."""
-        conn = self._get_rpyc_connection(instance)
-        node = self._instances.index(instance) if self._instances else 0
+        """Execute a computation on a specific worker (via WorkerPool)."""
+        assert self._worker_pool is not None
+        assert self._instances is not None
+
+        # Get connection from WorkerPool
+        conn = self._worker_pool.get_connection(worker)
+
+        # Get instance for this worker (for cluster setup and logging)
+        instance = self._worker_pool._get_instance_for_worker(worker)
+        if instance is None:
+            raise RuntimeError(f"Instance not found for worker {worker.key}")
+
+        # Setup cluster environment on first connection to this worker
+        worker_key = f"{instance.id}:{worker.worker_id}"
+        if worker_key not in self._cluster_setup:
+            node = next(
+                (i for i, inst in enumerate(self._instances) if inst.id == instance.id),
+                0,
+            )
+            self._setup_cluster_on_worker(node, worker.worker_id, instance, conn)
 
         # Serialize and send to remote
         from skyward.serialization import deserialize, serialize
@@ -284,8 +392,19 @@ class ComputePool:
         args_bytes = serialize(pending.args)
         kwargs_bytes = serialize(pending.kwargs_dict)
 
+        # Create stdout callback for this worker
+        def stdout_callback(line: str) -> None:
+            emit(
+                LogLine(
+                    node=worker.worker_id,
+                    instance_id=instance.id,
+                    line=line,
+                    timestamp=time.time(),
+                )
+            )
+
         try:
-            result_bytes = conn.root.execute(fn_bytes, args_bytes, kwargs_bytes, stdout_cb(node, instance))
+            result_bytes = conn.root.execute(fn_bytes, args_bytes, kwargs_bytes, stdout_callback)
             response = deserialize(result_bytes)
             if response.get("error"):
                 raise ExecutionError(response["error"])
@@ -293,19 +412,32 @@ class ComputePool:
         except ExecutionError:
             raise
         except Exception as e:
-            emit(Error(message=f"Execution failed on {instance.id}: {e}"))
+            emit(Error(message=f"Execution failed on worker {worker.key}: {e}"))
             raise
 
     def _provision(self) -> None:
         """Provision resources for the pool."""
         from skyward.pool_compute import _PoolCompute
 
+        # Get accelerator type for provider (without worker count info)
+        accelerator_for_provider = self._parse_accelerator_for_provider()
+
+        # Determine device count (will be updated after provisioning)
+        # For now, use spec if available
+        device_count = 1
+        if self._accelerator_spec is not None:
+            device_count = self._accelerator_spec.count
+
+        # Generate worker bootstrap script if needed
+        worker_bootstrap = self._generate_worker_bootstrap(device_count)
+        self._worker_bootstrap = worker_bootstrap
+
         # Create a Compute-like object that the provider expects
         compute = _PoolCompute(
             pool=self,
             fn=lambda: None,  # Placeholder
             nodes=self.nodes,
-            accelerator=self.accelerator,
+            accelerator=self.accelerator,  # Keep full spec (e.g., 'L40S:2') for provider to parse
             cpu=self.cpu,
             memory=self.memory,
             python=self.python,
@@ -316,6 +448,8 @@ class ComputePool:
             timeout=self.timeout,
             spot=self.spot,
             volumes=_parse_volumes(self.volume),
+            _workers_per_instance=self.workers_per_instance,
+            _worker_bootstrap_script=worker_bootstrap,
         )
 
         # Provision and setup (providers use emit() directly)
@@ -323,18 +457,13 @@ class ComputePool:
         self.provider.setup(instances, compute)
         self._instances = instances
 
-    def _stdout_cb(
-        self,
-        do_emit: Callable[[Any], None],
-    ):
-        return lambda node, instance: lambda line: do_emit(
-            LogLine(
-                node=node,
-                instance_id=instance.id,
-                line=line,
-                timestamp=time.time(),
-            ),
-        )
+        # Always initialize WorkerPool (even with 1 worker per instance)
+        self._worker_pool = WorkerPool(provider=self.provider)
+        for instance in instances:
+            self._worker_pool.register_instance(
+                instance=instance,
+                worker_count=self.workers_per_instance,
+            )
 
     def _shutdown(self) -> None:
         """Shutdown and release pool resources."""
@@ -343,11 +472,22 @@ class ComputePool:
 
         from skyward.pool_compute import _PoolCompute
 
+        # Close WorkerPool first if active
+        if self._worker_pool is not None:
+            try:
+                self._worker_pool.close_all()
+            except Exception:
+                pass
+            self._worker_pool = None
+
+        # Get accelerator type for provider
+        accelerator_for_provider = self._parse_accelerator_for_provider()
+
         compute = _PoolCompute(
             pool=self,
             fn=lambda: None,
             nodes=self.nodes,
-            accelerator=self.accelerator,
+            accelerator=accelerator_for_provider,
             cpu=self.cpu,
             memory=self.memory,
             python=self.python,
@@ -358,6 +498,8 @@ class ComputePool:
             timeout=self.timeout,
             spot=self.spot,
             volumes=_parse_volumes(self.volume),
+            _workers_per_instance=self.workers_per_instance,
+            _worker_bootstrap_script=self._worker_bootstrap,
         )
 
         try:
@@ -365,43 +507,18 @@ class ComputePool:
         except Exception:
             pass  # Shutdown errors are not critical
 
-        # Close connections
-        self._close_connections()
         self._instances = None
 
-    def _get_instance_lock(self, key: str) -> threading.Lock:
-        """Get or create lock for specific instance."""
-        if key not in self._conn_locks:
-            with self._lock:
-                if key not in self._conn_locks:
-                    self._conn_locks[key] = threading.Lock()
-        return self._conn_locks[key]
-
-    def _get_rpyc_connection(self, instance: Instance) -> rpyc.Connection:
-        """Get or create RPyC connection for instance."""
-        key = instance.id
-        if key in self._rpyc_conns:
-            return self._rpyc_conns[key]
-
-        with self._get_instance_lock(key):
-            if key in self._rpyc_conns:
-                return self._rpyc_conns[key]
-
-            local_port, proc, conn = self._connect_with_retry(instance)
-            self._tunnels[key] = proc
-            self._rpyc_conns[key] = conn
-
-            # Setup cluster environment on first connection
-            node = self._instances.index(instance)  # type: ignore[union-attr]
-            self._setup_cluster_on_instance(node, instance, conn)
-
-            return conn
-
-    def _setup_cluster_on_instance(
-        self, node: int, instance: Instance, conn: rpyc.Connection
+    def _setup_cluster_on_worker(
+        self,
+        node: int,
+        worker_id: int,
+        instance: Instance,
+        conn: rpyc.Connection,
     ) -> None:
-        """Setup cluster environment on instance (called once per node)."""
-        if instance.id in self._cluster_setup:
+        """Setup cluster environment on worker (called once per worker)."""
+        worker_key = f"{instance.id}:{worker_id}"
+        if worker_key in self._cluster_setup:
             return
 
         from skyward.providers.pool_info import build_pool_info
@@ -430,66 +547,13 @@ class ComputePool:
             job_id=self._job_id,
             peers=peers,
             accelerator_type=accelerator_type,
+            worker=worker_id,
+            workers_per_node=self.workers_per_instance,
         )
 
         env_bytes = serialize(self.env or {})
         conn.root.setup_cluster(pool_info.model_dump_json(), env_bytes)
-        self._cluster_setup.add(instance.id)
-
-    def _connect_with_retry(
-        self, instance: Instance
-    ) -> tuple[int, subprocess.Popen[bytes], rpyc.Connection]:
-        """Create tunnel and verify RPyC connection with retry."""
-        # Create tunnel
-        local_port, proc = self.provider.create_tunnel(instance)
-
-        try:
-            @retry(
-                stop=stop_after_delay(60),
-                wait=wait_fixed(0.5),
-                retry=retry_if_exception_type(_RPyCNotReadyError),
-                reraise=True,
-            )
-            def _connect_rpyc() -> rpyc.Connection:
-                try:
-                    conn = rpyc.connect(
-                        "127.0.0.1",
-                        local_port,
-                        config={"allow_pickle": True, "sync_request_timeout": 3600},
-                    )
-                    if conn.root.ping() == "pong":
-                        return conn
-                except Exception:
-                    pass
-                raise _RPyCNotReadyError()
-
-            conn = _connect_rpyc()
-            return local_port, proc, conn
-
-        except RetryError as e:
-            proc.terminate()
-            raise ConnectionLostError(
-                instance.id,
-                f"Failed to establish RPyC connection after 60s: {e.last_attempt.exception()}",
-            ) from e
-        except Exception:
-            proc.terminate()
-            raise
-
-    def _close_connections(self) -> None:
-        """Close all RPyC connections and tunnels."""
-        for conn in self._rpyc_conns.values():
-            with contextlib.suppress(Exception):
-                conn.close()
-
-        for proc in self._tunnels.values():
-            with contextlib.suppress(Exception):
-                proc.terminate()
-                proc.wait(timeout=5)
-
-        self._rpyc_conns.clear()
-        self._tunnels.clear()
-        self._conn_locks.clear()
+        self._cluster_setup.add(worker_key)
 
     def _build_callback(self) -> Callback:
         """Build the composite callback for this pool."""

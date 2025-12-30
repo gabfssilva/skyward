@@ -52,6 +52,13 @@ CHECKPOINTS: tuple[Checkpoint, ...] = (
     Checkpoint(".step_server", "server"),
 )
 
+# Additional checkpoints for worker isolation
+WORKER_CHECKPOINTS: tuple[Checkpoint, ...] = (
+    Checkpoint(".step_partition", "partition"),
+    Checkpoint(".step_cgroups", "cgroups"),
+    Checkpoint(".step_workers", "workers"),
+)
+
 
 # =============================================================================
 # Wait for Bootstrap
@@ -174,6 +181,7 @@ def generate_base_script(
     preamble: str = "",
     postamble: str = "",
     pip_extra_index_url: str | None = None,
+    worker_bootstrap: str = "",
 ) -> str:
     """Generate base bootstrap script for user_data.
 
@@ -182,7 +190,7 @@ def generate_base_script(
     2. Installs UV
     3. Installs apt packages
     4. Creates venv and installs pip packages
-    5. Sets up systemd service for RPyC server
+    5. Sets up systemd service for RPyC server (or multiple workers)
 
     Providers can inject custom sections via preamble/postamble.
 
@@ -195,6 +203,8 @@ def generate_base_script(
         preamble: Shell script to run BEFORE standard bootstrap.
         postamble: Shell script to run AFTER standard bootstrap (before .ready).
         pip_extra_index_url: Extra pip index URL.
+        worker_bootstrap: Optional script for multi-worker setup. When provided,
+            replaces the single RPyC server with multiple worker services.
 
     Returns:
         Complete bash script as string.
@@ -259,7 +269,23 @@ uv pip install cloudpickle rpyc
 
 # Skyward wheel installation (provider-specific in postamble)
 touch {SKYWARD_DIR}/.step_wheel
+"""
 
+    # Either setup multiple workers or single RPyC server
+    if worker_bootstrap:
+        # Multi-worker setup: cgroups + systemd workers
+        script += f"""
+{postamble}
+
+# Worker isolation bootstrap
+{worker_bootstrap}
+
+touch {SKYWARD_DIR}/.step_server
+touch {SKYWARD_DIR}/.ready
+"""
+    else:
+        # Single RPyC server (default)
+        script += f"""
 # Setup systemd service for RPyC server
 cat > /etc/systemd/system/skyward-rpyc.service << 'SERVICEEOF'
 [Unit]

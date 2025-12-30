@@ -41,6 +41,10 @@ class _PoolCompute:
     spot: SpotLike
     volumes: tuple[Volume, ...]
 
+    # Worker isolation fields
+    _workers_per_instance: int = 1
+    _worker_bootstrap_script: str = ""
+
     # Properties expected by providers
 
     @property
@@ -72,6 +76,16 @@ class _PoolCompute:
     def placement_group(self) -> str | None:
         """Placement group name."""
         return None
+
+    @property
+    def workers_per_instance(self) -> int:
+        """Number of workers per instance (for worker isolation)."""
+        return self._workers_per_instance
+
+    @property
+    def worker_bootstrap_script(self) -> str:
+        """Bootstrap script for worker isolation (cgroups, systemd, etc.)."""
+        return self._worker_bootstrap_script
 
     # Compatibility properties (not used but may be checked)
 

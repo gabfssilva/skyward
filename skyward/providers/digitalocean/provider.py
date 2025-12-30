@@ -108,9 +108,19 @@ class DigitalOcean(Provider):
         return key_info.fingerprint
 
     @override
-    def create_tunnel(self, instance: Instance) -> tuple[int, subprocess.Popen[bytes]]:
-        """Create SSH tunnel to Droplet."""
-        from skyward.providers.common import RPYC_PORT, create_tunnel, find_available_port
+    def create_tunnel(
+        self,
+        instance: Instance,
+        remote_port: int = 18861,
+    ) -> tuple[int, subprocess.Popen[bytes]]:
+        """Create SSH tunnel to Droplet.
+
+        Args:
+            instance: Instance to connect to.
+            remote_port: Remote port to tunnel to (default: 18861).
+                        For worker isolation, use 18861 + worker_id.
+        """
+        from skyward.providers.common import create_tunnel, find_available_port
 
         ip = instance.get_meta("droplet_ip")
         local_port = find_available_port()
@@ -122,7 +132,7 @@ class DigitalOcean(Provider):
             "-o", "ServerAliveInterval=30",
             "-o", "ServerAliveCountMax=3",
             "-N",
-            "-L", f"{local_port}:127.0.0.1:{RPYC_PORT}",
+            "-L", f"{local_port}:127.0.0.1:{remote_port}",
             f"{self._username}@{ip}",
         ]
         return create_tunnel(cmd, local_port)

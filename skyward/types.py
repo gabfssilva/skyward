@@ -168,7 +168,7 @@ class ComputeSpec(Protocol):
     """
 
     nodes: int
-    accelerator: Any  # Accelerator | list[Accelerator]
+    accelerator: Any  # Accelerator | list[Accelerator] | str (e.g., "H100:8:16")
     cpu: int | None
     memory: str | None
     python: str
@@ -208,6 +208,16 @@ class ComputeSpec(Protocol):
     @property
     def placement_group(self) -> str | None:
         """Placement group name for co-located instances."""
+        ...
+
+    @property
+    def workers_per_instance(self) -> int:
+        """Number of workers per instance (for worker isolation)."""
+        ...
+
+    @property
+    def worker_bootstrap_script(self) -> str:
+        """Bootstrap script for worker isolation (cgroups, systemd, etc.)."""
         ...
 
 
@@ -273,11 +283,17 @@ class Provider(Protocol):
         """
         ...
 
-    def create_tunnel(self, instance: Instance) -> tuple[int, subprocess.Popen[bytes]]:
+    def create_tunnel(
+        self,
+        instance: Instance,
+        remote_port: int = 18861,
+    ) -> tuple[int, subprocess.Popen[bytes]]:
         """Create tunnel to instance for RPyC connection.
 
         Args:
             instance: Instance to connect to.
+            remote_port: Remote port to tunnel to (default: 18861).
+                        For worker isolation, use 18861 + worker_id.
 
         Returns:
             Tuple of (local_port, tunnel_process).
