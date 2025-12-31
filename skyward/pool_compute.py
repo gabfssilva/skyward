@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from skyward.accelerator import Accelerator
-from skyward.skyimage import Image
+from skyward.image import Image
 from skyward.spec import SpotLike
 
 if TYPE_CHECKING:

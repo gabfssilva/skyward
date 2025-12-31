@@ -3,25 +3,14 @@
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast, override
 
 from pydo import Client
-from tenacity import (
-    RetryError,
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    stop_after_delay,
-    wait_exponential,
-    wait_fixed,
-)
 
 from skyward.accelerator import Accelerator
-from skyward.cache import cached
 from skyward.callback import emit
 from skyward.events import (
     BootstrapCompleted,
@@ -35,18 +24,26 @@ from skyward.events import (
     ProviderName,
     ProvisioningCompleted,
 )
-from skyward.providers.common import (
-    SSH_KEY_PATHS,
+from skyward.providers.base import (
     SSHKeyInfo,
-    compute_fingerprint,
-    create_tunnel,
-    find_available_port,
-    find_local_ssh_key,
+    SSHKeyManager,
+    SSHTransport,
+    get_private_key_path,
+)
+from skyward.providers.common import (
     install_skyward_wheel,
-    ssh_run,
     wait_for_ssh_bootstrap,
 )
-from skyward.types import ComputeSpec, ExitedInstance, Instance, InstanceSpec, Provider, select_instance
+from skyward.types import (
+    ComputeSpec,
+    ExitedInstance,
+    Instance,
+    InstanceSpec,
+    Provider,
+    select_instance,
+)
+
+from .discovery import fetch_available_instances, get_gpu_image
 
 if TYPE_CHECKING:
     pass
@@ -68,106 +65,30 @@ class _Droplet:
 
 
 # =============================================================================
-# SSH Key Management
+# SSH Key Management (using SSHKeyManager)
 # =============================================================================
 
+# DigitalOcean-specific SSHKeyManager configuration
+_do_ssh_key_manager: SSHKeyManager[Client] = SSHKeyManager(
+    list_keys=lambda c: c.ssh_keys.list().get("ssh_keys", []),
+    create_key=lambda c, name, pub: c.ssh_keys.create(body={"name": name, "public_key": pub}).get(
+        "ssh_key", {}
+    ),
+    get_fingerprint=lambda k: k.get("fingerprint", ""),
+    get_id=lambda k: None,  # DigitalOcean uses fingerprint, not ID
+)
 
-def _get_or_create_ssh_key(token: str) -> SSHKeyInfo:
-    """Get or create SSH key on DigitalOcean."""
-    key_info = find_local_ssh_key()
-    if key_info is None:
-        raise RuntimeError(
-            "No SSH key found. Please create one with:\n"
-            "  ssh-keygen -t ed25519 -C 'your@email.com'\n"
-            f"Searched locations: {', '.join(SSH_KEY_PATHS)}"
-        )
 
-    key_path, public_key = key_info
-    fingerprint = compute_fingerprint(public_key)
-    key_name = f"skyward-{os.environ.get('USER', 'user')}-{key_path.stem}"
-
-    client = Client(token=token)
-
-    resp = client.ssh_keys.list()
-    existing_keys = resp.get("ssh_keys", [])
-
-    for key in existing_keys:
-        if key.get("fingerprint") == fingerprint:
-            return SSHKeyInfo(
-                id=None,
-                fingerprint=fingerprint,
-                public_key=public_key,
-                name=key.get("name", key_name),
-            )
-
+def _get_or_create_ssh_key(client: Client) -> SSHKeyInfo:
+    """Get or create SSH key on DigitalOcean using SSHKeyManager."""
     try:
-        resp = client.ssh_keys.create(body={"name": key_name, "public_key": public_key})
-        created_key = resp.get("ssh_key", {})
-        return SSHKeyInfo(
-            id=None,
-            fingerprint=created_key.get("fingerprint", fingerprint),
-            public_key=public_key,
-            name=created_key.get("name", key_name),
-        )
+        return _do_ssh_key_manager.get_or_create(client)
     except Exception as e:
+        # Handle "already been taken" race condition
         if "already been taken" in str(e).lower():
-            return SSHKeyInfo(
-                id=None,
-                fingerprint=fingerprint,
-                public_key=public_key,
-                name=key_name,
-            )
+            # Key was created between list and create, re-fetch
+            return _do_ssh_key_manager.get_or_create(client)
         raise
-
-
-# =============================================================================
-# Instance Type Discovery
-# =============================================================================
-
-
-def _normalize_gpu_model(model: str | None) -> str | None:
-    """Normalize DigitalOcean GPU model name."""
-    if not model:
-        return None
-
-    model = model.lower()
-    for prefix in ("nvidia_", "amd_"):
-        if model.startswith(prefix):
-            model = model[len(prefix):]
-            break
-
-    return model.upper()
-
-
-def _parse_droplet_size(size: dict[str, Any]) -> InstanceSpec:
-    """Parse DigitalOcean size to InstanceSpec."""
-    gpu_info = size.get("gpu_info") or {}
-
-    accelerator = None
-    accelerator_count = 0
-    accelerator_memory_gb = 0.0
-
-    if gpu_info:
-        accelerator = _normalize_gpu_model(gpu_info.get("model"))
-        accelerator_count = gpu_info.get("count", 0)
-        vram = gpu_info.get("vram") or {}
-        accelerator_memory_gb = vram.get("amount", 0)
-
-    return InstanceSpec(
-        name=size["slug"],
-        vcpu=size.get("vcpus", 0),
-        memory_gb=size.get("memory", 0) / 1024,
-        accelerator=accelerator,
-        accelerator_count=accelerator_count,
-        accelerator_memory_gb=accelerator_memory_gb,
-        price_on_demand=size.get("price_hourly"),
-        price_spot=None,  # DigitalOcean does not have spot pricing
-        billing_increment_minutes=None,  # DigitalOcean: per-second billing (60s min) since Jan 2026
-        metadata={
-            "regions": size.get("regions", []),
-            "price_monthly": size.get("price_monthly"),
-        },
-    )
 
 
 # =============================================================================
@@ -175,12 +96,18 @@ def _parse_droplet_size(size: dict[str, Any]) -> InstanceSpec:
 # =============================================================================
 
 
-class _DropletPendingError(Exception):
-    """Droplet not yet active - retry."""
-
-
 def _wait_for_active(client: Client, droplets: list[_Droplet], timeout: float) -> None:
     """Wait for all droplets to become active and get IPs."""
+    from tenacity import (
+        RetryError,
+        retry,
+        retry_if_exception_type,
+        stop_after_delay,
+        wait_fixed,
+    )
+
+    class _DropletPendingError(Exception):
+        """Droplet not yet active - retry."""
 
     def poll_droplet(droplet: _Droplet) -> None:
         @retry(
@@ -208,25 +135,10 @@ def _wait_for_active(client: Client, droplets: list[_Droplet], timeout: float) -
         try:
             check()
         except RetryError as e:
-            raise TimeoutError(
-                f"Droplet {droplet.id} did not become active within {timeout}s"
-            ) from e
+            raise TimeoutError(f"Droplet {droplet.id} did not become active within {timeout}s") from e
 
     for droplet in droplets:
         poll_droplet(droplet)
-
-
-def _get_gpu_image(accelerator: Accelerator, accelerator_count: int = 1) -> str:
-    """Get the appropriate GPU image for the accelerator type."""
-    acc_str = accelerator.accelerator if hasattr(accelerator, "accelerator") else str(accelerator)
-
-    if acc_str and "MI3" in acc_str.upper():
-        return "gpu-amd-base"
-
-    if accelerator_count == 8:
-        return "gpu-h100x8-base"
-
-    return "gpu-h100x1-base"
 
 
 # =============================================================================
@@ -272,7 +184,7 @@ class DigitalOcean(Provider):
 
     _resolved_fingerprint: str | None = field(default=None, repr=False, compare=False, hash=False)
     _username: str = field(default="root", repr=False, compare=False, hash=False)
-    _droplets: list = field(default_factory=list, repr=False, compare=False, hash=False)
+    _droplets: list[_Droplet] = field(default_factory=list, repr=False, compare=False, hash=False)
 
     @property
     @override
@@ -306,9 +218,17 @@ class DigitalOcean(Provider):
         if self._resolved_fingerprint is not None:
             return self._resolved_fingerprint
 
-        key_info = _get_or_create_ssh_key(self._token)
+        client = self._get_client()
+        key_info = _get_or_create_ssh_key(client)
         object.__setattr__(self, "_resolved_fingerprint", key_info.fingerprint)
         return key_info.fingerprint
+
+    def _get_transport(self, instance: Instance) -> SSHTransport:
+        """Get SSHTransport for an instance."""
+        ip = instance.get_meta("droplet_ip") or instance.public_ip or instance.private_ip
+        username = instance.get_meta("username", self._username)
+        key_path = get_private_key_path()
+        return SSHTransport(host=ip, username=username, key_path=key_path)
 
     @override
     def provision(self, compute: ComputeSpec) -> tuple[Instance, ...]:
@@ -335,7 +255,7 @@ class DigitalOcean(Provider):
             )
 
             if compute.accelerator:
-                os_image = _get_gpu_image(cast(Accelerator, compute.accelerator), spec.accelerator_count)
+                os_image = get_gpu_image(cast(Accelerator, compute.accelerator), spec.accelerator_count)
                 username = "ubuntu"
             else:
                 os_image = "ubuntu-24-04-x64"
@@ -346,7 +266,11 @@ class DigitalOcean(Provider):
             # Generate bootstrap script using Image.bootstrap()
             user_data = compute.image.bootstrap(ttl=self.instance_timeout)
 
-            emit(InstanceLaunching(count=compute.nodes, instance_type=spec.name, provider=ProviderName.DigitalOcean))
+            emit(
+                InstanceLaunching(
+                    count=compute.nodes, instance_type=spec.name, provider=ProviderName.DigitalOcean
+                )
+            )
 
             droplets: list[_Droplet] = []
             for i in range(compute.nodes):
@@ -385,13 +309,15 @@ class DigitalOcean(Provider):
                     private_ip=droplet.private_ip or droplet.ip,
                     public_ip=droplet.ip,
                     node=i,
-                    metadata=frozenset([
-                        ("cluster_id", cluster_id),
-                        ("droplet_id", droplet.id),
-                        ("droplet_ip", droplet.ip),
-                        ("username", username),
-                        ("accelerator_count", str(spec.accelerator_count)),
-                    ]),
+                    metadata=frozenset(
+                        [
+                            ("cluster_id", cluster_id),
+                            ("droplet_id", droplet.id),
+                            ("droplet_ip", droplet.ip),
+                            ("username", username),
+                            ("accelerator_count", str(spec.accelerator_count)),
+                        ]
+                    ),
                 )
                 instances.append(instance)
 
@@ -446,7 +372,9 @@ class DigitalOcean(Provider):
             raise
 
     @override
-    def shutdown(self, instances: tuple[Instance, ...], compute: ComputeSpec) -> tuple[ExitedInstance, ...]:
+    def shutdown(
+        self, instances: tuple[Instance, ...], compute: ComputeSpec
+    ) -> tuple[ExitedInstance, ...]:
         """Shutdown Droplets (destroy them)."""
         client = self._get_client()
 
@@ -472,35 +400,18 @@ class DigitalOcean(Provider):
         return tuple(exited)
 
     @override
-    def create_tunnel(self, instance: Instance, remote_port: int = 18861) -> tuple[int, subprocess.Popen[bytes]]:
-        """Create SSH tunnel to Droplet."""
-        ip = instance.get_meta("droplet_ip")
-        local_port = find_available_port()
-        cmd = [
-            "ssh",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "ConnectTimeout=10",
-            "-o", "ServerAliveInterval=30",
-            "-o", "ServerAliveCountMax=3",
-            "-N",
-            "-L", f"{local_port}:127.0.0.1:{remote_port}",
-            f"{self._username}@{ip}",
-        ]
-        return create_tunnel(cmd, local_port)
+    def create_tunnel(
+        self, instance: Instance, remote_port: int = 18861
+    ) -> tuple[int, subprocess.Popen[bytes]]:
+        """Create SSH tunnel to Droplet using SSHTransport."""
+        transport = self._get_transport(instance)
+        return transport.create_tunnel(remote_port)
 
     @override
     def run_command(self, instance: Instance, command: str, timeout: int = 30) -> str:
-        """Run shell command on Droplet via SSH."""
-        ip = instance.get_meta("droplet_ip") or instance.public_ip or instance.private_ip
-        if not ip:
-            raise RuntimeError(f"No IP address for instance {instance.id}")
-
-        username = instance.get_meta("username", self._username)
-        result = ssh_run(ip, username, command, timeout)
-        if result.returncode != 0:
-            raise RuntimeError(f"Command failed on {instance.id}: {result.stderr}")
-        return result.stdout
+        """Run shell command on Droplet via SSH using SSHTransport."""
+        transport = self._get_transport(instance)
+        return transport.run_command(command, timeout)
 
     @override
     def discover_peers(self, cluster_id: str) -> tuple[Instance, ...]:
@@ -531,12 +442,14 @@ class DigitalOcean(Provider):
                     private_ip=private_ip or public_ip,
                     public_ip=public_ip,
                     node=0,
-                    metadata=frozenset([
-                        ("cluster_id", cluster_id),
-                        ("droplet_id", droplet["id"]),
-                        ("droplet_ip", public_ip or private_ip),
-                        ("region", self.region),
-                    ]),
+                    metadata=frozenset(
+                        [
+                            ("cluster_id", cluster_id),
+                            ("droplet_id", droplet["id"]),
+                            ("droplet_ip", public_ip or private_ip),
+                            ("region", self.region),
+                        ]
+                    ),
                 )
             )
 
@@ -556,35 +469,7 @@ class DigitalOcean(Provider):
         )
 
     @override
-    @cached(namespace="digitalocean")
     def available_instances(self) -> tuple[InstanceSpec, ...]:
         """List all available droplet sizes."""
         client = self._get_client()
-        sizes: list[dict[str, Any]] = []
-
-        page = 1
-        while True:
-            resp = client.sizes.list(page=page, per_page=100)
-            sizes.extend(resp.get("sizes", []))
-
-            links = resp.get("links", {})
-            pages = links.get("pages", {})
-            if not pages.get("next"):
-                break
-            page += 1
-
-        specs = [
-            _parse_droplet_size(s)
-            for s in sizes
-            if s.get("available", True)
-        ]
-
-        return tuple(sorted(
-            specs,
-            key=lambda s: (
-                s.accelerator or "",
-                s.accelerator_count,
-                s.vcpu,
-                s.memory_gb,
-            ),
-        ))
+        return fetch_available_instances(client)

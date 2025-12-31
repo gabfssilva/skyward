@@ -46,7 +46,7 @@ from skyward.events import Error, LogLine, PoolStarted, PoolStopping
 from skyward.exceptions import ExecutionError, NotProvisionedError
 from skyward.metrics import MetricsPoller
 from skyward.pending import PendingBatch, PendingCompute
-from skyward.skyimage import DEFAULT_IMAGE, Image
+from skyward.image import DEFAULT_IMAGE, Image
 from skyward.spec import SpotLike
 from skyward.types import Instance, Provider
 from skyward.volume import Volume, parse_volume_uri

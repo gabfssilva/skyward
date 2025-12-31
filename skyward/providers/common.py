@@ -1,9 +1,11 @@
-"""Common utilities shared between providers (SSH, tunnels, bootstrap)."""
+"""Common utilities shared between providers (SSH, tunnels, bootstrap).
+
+NOTE: SSH key utilities have been moved to skyward.providers.base.ssh_keys.
+      They are re-exported here for backwards compatibility.
+"""
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import socket
 import subprocess
 from collections.abc import Callable
@@ -22,13 +24,17 @@ from tenacity import (
 )
 
 from skyward.callback import emit
-from skyward.constants import (
-    DEFAULT_PYTHON,
-    RPYC_PORT,
-    SKYWARD_DIR,
-    UV_INSTALL_URL,
-)
+from skyward.constants import RPYC_PORT, SKYWARD_DIR
 from skyward.events import BootstrapProgress
+
+# Re-export SSH utilities from base for backwards compatibility
+from skyward.providers.base.ssh_keys import (
+    SSH_KEY_PATHS,
+    SSHKeyInfo,
+    compute_fingerprint,
+    find_local_ssh_key,
+    get_private_key_path,
+)
 
 if TYPE_CHECKING:
     from skyward.types import Instance
@@ -215,183 +221,13 @@ def wait_for_bootstrap(
         raise RuntimeError(f"Bootstrap timed out on {instance_id}") from e
 
 
-def generate_base_script(
-    python: str = DEFAULT_PYTHON,
-    pip: tuple[str, ...] = (),
-    apt: tuple[str, ...] = (),
-    env: dict[str, str] | None = None,
-    instance_timeout: int | None = None,
-    preamble: str = "",
-    postamble: str = "",
-    pip_extra_index_url: str | None = None,
-    worker_bootstrap: str = "",
-) -> str:
-    """Generate base bootstrap script for user_data."""
-    pip_packages = " ".join(pip) if pip else ""
-    apt_packages = " ".join(apt) if apt else ""
-    env_exports = "\n".join(f'export {k}="{v}"' for k, v in (env or {}).items())
-    extra_index = f"--extra-index-url {pip_extra_index_url}" if pip_extra_index_url else ""
-
-    script = f"""#!/bin/bash
-set -e
-
-mkdir -p {SKYWARD_DIR}
-
-exec > {SKYWARD_DIR}/bootstrap.log 2>&1
-
-trap 'echo "Command failed: $BASH_COMMAND" > {SKYWARD_DIR}/.error; echo "Exit code: $?" >> {SKYWARD_DIR}/.error; echo "--- Output ---" >> {SKYWARD_DIR}/.error; tail -50 {SKYWARD_DIR}/bootstrap.log >> {SKYWARD_DIR}/.error' ERR
-
-export DEBIAN_FRONTEND=noninteractive
-export PATH="/root/.local/bin:$PATH"
-{env_exports}
-
-SKYWARD_INSTANCE_TIMEOUT="{instance_timeout or ''}"
-if [ -n "$SKYWARD_INSTANCE_TIMEOUT" ] && [ "$SKYWARD_INSTANCE_TIMEOUT" -gt 0 ]; then
-    (sleep $SKYWARD_INSTANCE_TIMEOUT && shutdown -h now) &
-fi
-
-{preamble}
-
-if ! command -v uv &> /dev/null; then
-    curl -LsSf {UV_INSTALL_URL} | sh
-fi
-touch {SKYWARD_DIR}/.step_uv
-
-apt-get update -qq
-apt-get install -y -qq python3 python3-venv curl ca-certificates
-"""
-
-    if apt_packages:
-        script += f"apt-get install -y -qq {apt_packages}\n"
-
-    script += f"""touch {SKYWARD_DIR}/.step_apt
-
-cd {SKYWARD_DIR}
-uv venv --python {python} venv
-source venv/bin/activate
-
-uv pip install cloudpickle rpyc
-"""
-
-    if pip_packages:
-        script += f"uv pip install {pip_packages} {extra_index}\n"
-
-    script += f"""touch {SKYWARD_DIR}/.step_pip
-
-touch {SKYWARD_DIR}/.step_wheel
-"""
-
-    if worker_bootstrap:
-        script += f"""
-{postamble}
-
-{worker_bootstrap}
-
-touch {SKYWARD_DIR}/.step_server
-touch {SKYWARD_DIR}/.ready
-"""
-    else:
-        script += f"""
-cat > /etc/systemd/system/skyward-rpyc.service << 'SERVICEEOF'
-[Unit]
-Description=Skyward RPyC Server
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory={SKYWARD_DIR}
-Environment="PATH={SKYWARD_DIR}/venv/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart={SKYWARD_DIR}/venv/bin/python -m skyward.rpc
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-SERVICEEOF
-
-systemctl daemon-reload
-systemctl enable skyward-rpyc
-
-{postamble}
-
-systemctl start skyward-rpyc
-
-for i in $(seq 1 60); do
-    if ss -tlnp 2>/dev/null | grep -q ':{RPYC_PORT} ' || netstat -tlnp 2>/dev/null | grep -q ':{RPYC_PORT} '; then
-        break
-    fi
-    sleep 0.5
-done
-touch {SKYWARD_DIR}/.step_server
-
-touch {SKYWARD_DIR}/.ready
-"""
-    return script
-
-
 # =============================================================================
 # SSH Utilities
 # =============================================================================
 
-
-SSH_KEY_PATHS = (
-    "~/.ssh/id_ed25519.pub",
-    "~/.ssh/id_rsa.pub",
-    "~/.ssh/id_ecdsa.pub",
-)
-
-
-@dataclass(frozen=True)
-class SSHKeyInfo:
-    """Information about an SSH key."""
-
-    id: str | None
-    fingerprint: str
-    public_key: str
-    name: str
-
-
-def find_local_ssh_key() -> tuple[Path, str] | None:
-    """Find the first available SSH public key."""
-    for key_path in SSH_KEY_PATHS:
-        path = Path(key_path).expanduser()
-        if path.exists():
-            try:
-                content = path.read_text().strip()
-                if content:
-                    return path, content
-            except Exception:
-                continue
-    return None
-
-
-def get_private_key_path() -> str | None:
-    """Get path to SSH private key (without .pub extension)."""
-    key_info = find_local_ssh_key()
-    if key_info is None:
-        return None
-    pub_path, _ = key_info
-    private_path = pub_path.with_suffix("")
-    if private_path.exists():
-        return str(private_path)
-    return None
-
-
-def compute_fingerprint(public_key: str) -> str:
-    """Compute MD5 fingerprint of an SSH public key."""
-    parts = public_key.split()
-    if len(parts) < 2:
-        raise ValueError(f"Invalid SSH public key format: {public_key[:50]}...")
-
-    key_data = parts[1]
-    try:
-        decoded = base64.b64decode(key_data)
-    except Exception as e:
-        raise ValueError(f"Could not decode SSH key: {e}") from e
-
-    md5_hash = hashlib.md5(decoded).hexdigest()
-    return ":".join(md5_hash[i : i + 2] for i in range(0, len(md5_hash), 2))
+# NOTE: SSHKeyInfo, SSH_KEY_PATHS, find_local_ssh_key, get_private_key_path,
+#       and compute_fingerprint have been moved to skyward.providers.base.ssh_keys
+#       and are re-exported above for backwards compatibility.
 
 
 def ssh_run(
@@ -485,6 +321,7 @@ def install_skyward_wheel(
     key_path: str | None = None,
 ) -> None:
     """Build and install skyward wheel on all instances (concurrent)."""
+    from skyward.bootstrap.worker import rpyc_service_unit
     from skyward.conc import for_each_async
 
     wheel_path = build_wheel()
@@ -502,7 +339,7 @@ def install_skyward_wheel(
         remote_wheel = f"{SKYWARD_DIR}/{wheel_path.name}"
         scp_upload(ip, username, wheel_path, remote_wheel, key_path=key_path)
 
-        install_cmd = f"cd {SKYWARD_DIR} && {uv_path} add {remote_wheel}"
+        install_cmd = f"cd {SKYWARD_DIR} && {uv_path} pip install {remote_wheel}"
         result = ssh_run(ip, username, install_cmd, timeout=120, key_path=key_path)
         if result.returncode != 0:
             raise RuntimeError(f"Failed to install wheel on {ip}: {result.stderr}")
@@ -512,14 +349,49 @@ def install_skyward_wheel(
         if verify_result.returncode != 0:
             raise RuntimeError(f"skyward not importable on {ip}: {verify_result.stderr}")
 
-        restart_cmd = (
-            "if systemctl is-active skyward-rpyc >/dev/null 2>&1; then "
-            "systemctl restart skyward-rpyc; "
-            "else "
-            "systemctl list-units 'skyward-worker@*' --no-legend | awk '{print $1}' | xargs -r systemctl restart; "
-            "fi"
+        # Create and start systemd service (only after wheel is installed)
+        # Image.bootstrap() doesn't create the service - it only sets up the venv and deps
+        # The service must be created after the wheel is installed via SCP
+        # Use the bootstrap ops system to generate a proper script
+        from skyward.bootstrap import bootstrap as bootstrap_ops, systemd, wait_for_port as wait_for_port_op
+
+        unit_content = rpyc_service_unit()
+
+        # Generate setup script using ops - handles heredoc quoting correctly
+        # Use empty header since we're piping to sudo bash
+        setup_script = bootstrap_ops(
+            systemd("skyward-rpyc", unit_content),
+            wait_for_port_op(RPYC_PORT, timeout=30),
+            header="#!/bin/bash\nset -e\n\n",
         )
-        ssh_run(ip, username, f"sudo bash -c \"{restart_cmd}\"", timeout=60, key_path=key_path)
+
+        # Pass script via stdin to avoid shell quoting issues
+        ssh_cmd = [
+            "ssh",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR",
+            "-o", "ConnectTimeout=10",
+        ]
+        if key_path:
+            ssh_cmd.extend(["-i", key_path])
+        ssh_cmd.extend([f"{username}@{ip}", "sudo bash"])
+
+        setup_result = subprocess.run(
+            ssh_cmd,
+            input=setup_script.encode(),
+            capture_output=True,
+            timeout=120,
+        )
+        if setup_result.returncode != 0:
+            # Get service status and logs for debugging
+            status_result = ssh_run(ip, username, "systemctl status skyward-rpyc 2>&1 || true", timeout=30, key_path=key_path)
+            journal_result = ssh_run(ip, username, "journalctl -u skyward-rpyc -n 50 --no-pager 2>&1 || true", timeout=30, key_path=key_path)
+            raise RuntimeError(
+                f"Failed to setup systemd service on {ip}\n"
+                f"--- systemctl status ---\n{status_result.stdout}\n"
+                f"--- journal ---\n{journal_result.stdout}"
+            )
 
     for_each_async(install_on_instance, instances)
 

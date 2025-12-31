@@ -3,24 +3,15 @@
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, override
+from typing import TYPE_CHECKING, Any, override
 
-from tenacity import (
-    RetryError,
-    retry,
-    retry_if_exception_type,
-    stop_after_delay,
-    wait_exponential,
-)
 from verda import VerdaClient
 from verda.constants import Actions
 
 from skyward.accelerator import Accelerator
-from skyward.cache import cached
 from skyward.callback import emit
 from skyward.events import (
     BootstrapCompleted,
@@ -35,32 +26,34 @@ from skyward.events import (
     ProvisioningCompleted,
     RegionAutoSelected,
 )
-from skyward.providers.common import (
-    SSH_KEY_PATHS,
+from skyward.providers.base import (
     SSHKeyInfo,
-    compute_fingerprint,
-    create_tunnel,
-    find_available_port,
-    find_local_ssh_key,
+    SSHKeyManager,
+    SSHTransport,
     get_private_key_path,
+)
+from skyward.providers.common import (
     install_skyward_wheel,
-    ssh_run,
     wait_for_ssh_bootstrap,
 )
 from skyward.spec import Spot, _SpotNever, normalize_spot
-from skyward.types import ComputeSpec, ExitedInstance, Instance, InstanceSpec, Provider, select_instance
+from skyward.types import (
+    ComputeSpec,
+    ExitedInstance,
+    Instance,
+    InstanceSpec,
+    Provider,
+    select_instance,
+)
 
+from .discovery import (
+    NoAvailableRegionError,
+    fetch_available_instances,
+    find_available_region,
+)
 
-# =============================================================================
-# Constants
-# =============================================================================
-
-GPU_MODEL_NORMALIZATIONS = {
-    "Tesla V100": "V100",
-    "RTX A6000": "A6000",
-    "RTX 6000 Ada": "RTX6000Ada",
-    "RTX PRO 6000": "RTXPRO6000",
-}
+if TYPE_CHECKING:
+    pass
 
 
 # =============================================================================
@@ -80,203 +73,48 @@ class _VerdaInstance:
 
 
 # =============================================================================
-# Exceptions
+# SSH Key Management (using SSHKeyManager)
 # =============================================================================
 
 
-class NoAvailableRegionError(Exception):
-    """No region has the requested instance type available."""
+def _verda_get_fingerprint(key: Any) -> str:
+    """Extract fingerprint from Verda SSH key object."""
+    if hasattr(key, "fingerprint"):
+        return key.fingerprint
+    # Fallback: compute from key content
+    if hasattr(key, "key"):
+        from skyward.providers.base import compute_fingerprint
 
-    def __init__(self, instance_type: str, is_spot: bool, regions_checked: list[str]):
-        spot_str = "spot " if is_spot else ""
-        regions_str = ", ".join(regions_checked) if regions_checked else "none"
-        super().__init__(
-            f"No region has {spot_str}instance type '{instance_type}' available. "
-            f"Regions checked: {regions_str}. "
-            "Try a different instance type or check Verda's capacity status."
-        )
-        self.instance_type = instance_type
-        self.is_spot = is_spot
-        self.regions_checked = regions_checked
+        try:
+            return compute_fingerprint(key.key.strip())
+        except Exception:
+            pass
+    return ""
 
 
-# =============================================================================
-# SSH Key Management (Verda-specific)
-# =============================================================================
+def _verda_get_id(key: Any) -> str | None:
+    """Extract ID from Verda SSH key object."""
+    return getattr(key, "id", None)
+
+
+# Verda-specific SSHKeyManager configuration
+_verda_ssh_key_manager: SSHKeyManager[VerdaClient] = SSHKeyManager(
+    list_keys=lambda c: c.ssh_keys.get(),
+    create_key=lambda c, name, pub: c.ssh_keys.create(name=name, key=pub),
+    get_fingerprint=_verda_get_fingerprint,
+    get_id=_verda_get_id,
+)
 
 
 def _get_or_create_ssh_key(client: VerdaClient) -> SSHKeyInfo:
-    """Get or create SSH key on Verda."""
-    key_info = find_local_ssh_key()
-    if key_info is None:
-        raise RuntimeError(
-            "No SSH key found. Please create one with:\n"
-            "  ssh-keygen -t ed25519 -C 'your@email.com'\n"
-            f"Searched locations: {', '.join(SSH_KEY_PATHS)}"
-        )
-
-    key_path, public_key = key_info
-    fingerprint = compute_fingerprint(public_key)
-    key_name = f"skyward-{os.environ.get('USER', 'user')}-{key_path.stem}"
-
-    existing_keys = client.ssh_keys.get()
-
-    for key in existing_keys:
-        if hasattr(key, "fingerprint") and key.fingerprint == fingerprint:
-            return SSHKeyInfo(
-                id=key.id,
-                fingerprint=fingerprint,
-                public_key=public_key,
-                name=getattr(key, "name", key_name),
-            )
-        if hasattr(key, "key") and key.key.strip() == public_key.strip():
-            return SSHKeyInfo(
-                id=key.id,
-                fingerprint=fingerprint,
-                public_key=public_key,
-                name=getattr(key, "name", key_name),
-            )
-
+    """Get or create SSH key on Verda using SSHKeyManager."""
     try:
-        created_key = client.ssh_keys.create(name=key_name, key=public_key)
-        return SSHKeyInfo(
-            id=created_key.id,
-            fingerprint=fingerprint,
-            public_key=public_key,
-            name=key_name,
-        )
+        return _verda_ssh_key_manager.get_or_create(client)
     except Exception as e:
+        # Handle "already exists" race condition
         if "already" in str(e).lower():
-            existing_keys = client.ssh_keys.get()
-            for key in existing_keys:
-                if hasattr(key, "key") and key.key.strip() == public_key.strip():
-                    return SSHKeyInfo(
-                        id=key.id,
-                        fingerprint=fingerprint,
-                        public_key=public_key,
-                        name=getattr(key, "name", key_name),
-                    )
+            return _verda_ssh_key_manager.get_or_create(client)
         raise
-
-
-# =============================================================================
-# Availability (Verda-specific)
-# =============================================================================
-
-
-def _get_availability(client: VerdaClient, is_spot: bool = False) -> dict[str, frozenset[str]]:
-    """Get instance availability across all regions."""
-    response = client._http_client.get(
-        "/instance-availability",
-        params={"is_spot": str(is_spot).lower()},
-    )
-    data = response.json()
-    return {
-        region["location_code"]: frozenset(region.get("availabilities", []))
-        for region in data
-    }
-
-
-def _find_available_region(
-    client: VerdaClient,
-    instance_type: str,
-    is_spot: bool = False,
-    preferred_region: str | None = None,
-) -> str:
-    """Find a region where the instance type is available."""
-    availability = _get_availability(client, is_spot)
-    regions_checked = list(availability.keys())
-
-    if preferred_region:
-        available_types = availability.get(preferred_region, frozenset())
-        if instance_type in available_types:
-            return preferred_region
-
-    for region, types in availability.items():
-        if instance_type in types:
-            return region
-
-    raise NoAvailableRegionError(instance_type, is_spot, regions_checked)
-
-
-# =============================================================================
-# Instance Type Parsing (Verda-specific)
-# =============================================================================
-
-
-def _parse_gpu_model(description: str) -> str | None:
-    """Parse GPU model from Verda description string."""
-    if not description:
-        return None
-
-    match = re.match(r"^\d+x\s+(.+?)\s+\d+GB$", description)
-    if not match:
-        return None
-
-    model_raw = match.group(1)
-    model_clean = re.sub(r"\s+SXM\d+", "", model_raw)
-
-    if model_clean in GPU_MODEL_NORMALIZATIONS:
-        return GPU_MODEL_NORMALIZATIONS[model_clean]
-
-    return model_clean.replace(" ", "")
-
-
-def _parse_instance_type(spec: dict[str, Any]) -> InstanceSpec:
-    """Parse Verda raw API instance type to InstanceSpec."""
-    cpu_info = spec.get("cpu") or {}
-    vcpu = cpu_info.get("number_of_cores", 0) if isinstance(cpu_info, dict) else 0
-
-    memory_info = spec.get("memory") or {}
-    memory_gb = memory_info.get("size_in_gigabytes", 0) if isinstance(memory_info, dict) else 0
-
-    gpu_info = spec.get("gpu") or {}
-    accelerator = None
-    accelerator_count = 0
-    accelerator_memory_gb = 0.0
-
-    if gpu_info and isinstance(gpu_info, dict):
-        description = gpu_info.get("description", "")
-        accelerator = _parse_gpu_model(description)
-        accelerator_count = gpu_info.get("number_of_gpus", 0)
-
-        gpu_memory = spec.get("gpu_memory") or {}
-        if isinstance(gpu_memory, dict):
-            accelerator_memory_gb = gpu_memory.get("size_in_gigabytes", 0)
-
-    # Extract pricing (API returns strings, convert to float)
-    def _safe_float(v: Any) -> float | None:
-        if v is None:
-            return None
-        try:
-            return float(v)
-        except (ValueError, TypeError):
-            return None
-
-    price_on_demand = _safe_float(spec.get("price_per_hour"))
-    price_spot = _safe_float(spec.get("spot_price"))
-
-    storage_info = spec.get("storage") or {}
-    metadata = {
-        "instance_id": spec.get("id"),
-        "description": spec.get("description"),
-        "storage": storage_info.get("description") if isinstance(storage_info, dict) else None,
-        "supported_os": sorted(spec.get("supported_os") or [], reverse=True),
-    }
-    metadata = {k: v for k, v in metadata.items() if v is not None}
-
-    return InstanceSpec(
-        name=spec["instance_type"],
-        vcpu=vcpu,
-        memory_gb=memory_gb,
-        accelerator=accelerator,
-        accelerator_count=accelerator_count,
-        accelerator_memory_gb=accelerator_memory_gb,
-        price_on_demand=price_on_demand,
-        price_spot=price_spot,
-        billing_increment_minutes=10,  # Verda charges per 10-minute block
-        metadata=metadata,
-    )
 
 
 # =============================================================================
@@ -284,12 +122,18 @@ def _parse_instance_type(spec: dict[str, Any]) -> InstanceSpec:
 # =============================================================================
 
 
-class _InstancePendingError(Exception):
-    """Instance not yet running - retry."""
-
-
 def _wait_for_running(client: VerdaClient, instances: list[_VerdaInstance], timeout: float) -> None:
     """Wait for all instances to become running and get IPs."""
+    from tenacity import (
+        RetryError,
+        retry,
+        retry_if_exception_type,
+        stop_after_delay,
+        wait_exponential,
+    )
+
+    class _InstancePendingError(Exception):
+        """Instance not yet running - retry."""
 
     def poll_instance(vinst: _VerdaInstance) -> None:
         @retry(
@@ -322,9 +166,7 @@ def _wait_for_running(client: VerdaClient, instances: list[_VerdaInstance], time
         try:
             check()
         except RetryError as e:
-            raise TimeoutError(
-                f"Instance {vinst.id} did not become running within {timeout}s"
-            ) from e
+            raise TimeoutError(f"Instance {vinst.id} did not become running within {timeout}s") from e
 
     for vinst in instances:
         poll_instance(vinst)
@@ -344,6 +186,11 @@ class Verda(Provider):
 
     SSH keys are automatically detected from ~/.ssh/id_ed25519.pub or
     ~/.ssh/id_rsa.pub and registered on Verda if needed.
+
+    Features:
+        - Auto-region discovery: If the requested region doesn't have capacity,
+          automatically finds another region with availability.
+        - Spot instances: Supports spot pricing for cost savings.
 
     Example:
         from skyward import ComputePool, Verda, compute
@@ -374,7 +221,7 @@ class Verda(Provider):
 
     _resolved_ssh_key_id: str | None = field(default=None, repr=False, compare=False, hash=False)
     _username: str = field(default="root", repr=False, compare=False, hash=False)
-    _instances: list = field(default_factory=list, repr=False, compare=False, hash=False)
+    _instances: list[_VerdaInstance] = field(default_factory=list, repr=False, compare=False, hash=False)
     _cluster_id: str | None = field(default=None, repr=False, compare=False, hash=False)
 
     @property
@@ -407,6 +254,13 @@ class Verda(Provider):
     def _get_client(self) -> VerdaClient:
         """Create authenticated Verda client."""
         return VerdaClient(self._client_id, self._client_secret)
+
+    def _get_transport(self, instance: Instance) -> SSHTransport:
+        """Get SSHTransport for an instance."""
+        ip = instance.get_meta("instance_ip") or instance.public_ip or instance.private_ip
+        username = instance.get_meta("username", self._username)
+        key_path = get_private_key_path()
+        return SSHTransport(host=ip, username=username, key_path=key_path)
 
     @override
     def provision(self, compute: ComputeSpec) -> tuple[Instance, ...]:
@@ -451,7 +305,8 @@ class Verda(Provider):
             spot_strategy = normalize_spot(compute.spot) if hasattr(compute, "spot") else Spot.Never
             use_spot = not isinstance(spot_strategy, _SpotNever)
 
-            actual_region = _find_available_region(
+            # Auto-region discovery
+            actual_region = find_available_region(
                 client,
                 spec.name,
                 is_spot=use_spot,
@@ -468,7 +323,9 @@ class Verda(Provider):
                     )
                 )
 
-            emit(InstanceLaunching(count=compute.nodes, instance_type=spec.name, provider=ProviderName.Verda))
+            emit(
+                InstanceLaunching(count=compute.nodes, instance_type=spec.name, provider=ProviderName.Verda)
+            )
 
             verda_instances: list[_VerdaInstance] = []
             for i in range(compute.nodes):
@@ -508,13 +365,15 @@ class Verda(Provider):
                     private_ip=vinst.private_ip or vinst.ip,
                     public_ip=vinst.ip,
                     node=i,
-                    metadata=frozenset([
-                        ("cluster_id", cluster_id),
-                        ("instance_id", vinst.id),
-                        ("instance_ip", vinst.ip),
-                        ("username", username),
-                        ("accelerator_count", str(spec.accelerator_count)),
-                    ]),
+                    metadata=frozenset(
+                        [
+                            ("cluster_id", cluster_id),
+                            ("instance_id", vinst.id),
+                            ("instance_ip", vinst.ip),
+                            ("username", username),
+                            ("accelerator_count", str(spec.accelerator_count)),
+                        ]
+                    ),
                 )
                 instances.append(instance)
 
@@ -571,7 +430,9 @@ class Verda(Provider):
             raise
 
     @override
-    def shutdown(self, instances: tuple[Instance, ...], compute: ComputeSpec) -> tuple[ExitedInstance, ...]:
+    def shutdown(
+        self, instances: tuple[Instance, ...], compute: ComputeSpec
+    ) -> tuple[ExitedInstance, ...]:
         """Shutdown instances (delete them)."""
         client = self._get_client()
 
@@ -597,40 +458,18 @@ class Verda(Provider):
         return tuple(exited)
 
     @override
-    def create_tunnel(self, instance: Instance, remote_port: int = 18861) -> tuple[int, subprocess.Popen[bytes]]:
-        """Create SSH tunnel to instance."""
-        ip = instance.get_meta("instance_ip") or instance.public_ip
-        local_port = find_available_port()
-
-        key_path = get_private_key_path()
-
-        cmd = [
-            "ssh",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "ConnectTimeout=10",
-            "-o", "ServerAliveInterval=30",
-            "-o", "ServerAliveCountMax=3",
-            "-N",
-        ]
-        if key_path:
-            cmd.extend(["-i", key_path])
-        cmd.extend(["-L", f"{local_port}:127.0.0.1:{remote_port}", f"{self._username}@{ip}"])
-        return create_tunnel(cmd, local_port)
+    def create_tunnel(
+        self, instance: Instance, remote_port: int = 18861
+    ) -> tuple[int, subprocess.Popen[bytes]]:
+        """Create SSH tunnel to instance using SSHTransport."""
+        transport = self._get_transport(instance)
+        return transport.create_tunnel(remote_port)
 
     @override
     def run_command(self, instance: Instance, command: str, timeout: int = 30) -> str:
-        """Run shell command on instance via SSH."""
-        ip = instance.get_meta("instance_ip") or instance.public_ip or instance.private_ip
-        if not ip:
-            raise RuntimeError(f"No IP address for instance {instance.id}")
-
-        username = instance.get_meta("username", self._username)
-        key_path = get_private_key_path()
-        result = ssh_run(ip, username, command, timeout, key_path=key_path)
-        if result.returncode != 0:
-            raise RuntimeError(f"Command failed on {instance.id}: {result.stderr}")
-        return result.stdout
+        """Run shell command on instance via SSH using SSHTransport."""
+        transport = self._get_transport(instance)
+        return transport.run_command(command, timeout)
 
     @override
     def discover_peers(self, cluster_id: str) -> tuple[Instance, ...]:
@@ -658,12 +497,14 @@ class Verda(Provider):
                     private_ip=ip,
                     public_ip=ip,
                     node=0,
-                    metadata=frozenset([
-                        ("cluster_id", cluster_id),
-                        ("instance_id", vinst.id),
-                        ("instance_ip", ip),
-                        ("username", self._username),
-                    ]),
+                    metadata=frozenset(
+                        [
+                            ("cluster_id", cluster_id),
+                            ("instance_id", vinst.id),
+                            ("instance_ip", ip),
+                            ("username", self._username),
+                        ]
+                    ),
                 )
             )
 
@@ -683,20 +524,7 @@ class Verda(Provider):
         )
 
     @override
-    @cached(namespace="verda")
     def available_instances(self) -> tuple[InstanceSpec, ...]:
         """List all available instance types."""
         client = self._get_client()
-        # Use raw API to get supported_os field
-        response = client._http_client.get("/instance-types")
-        instance_types: list[dict[str, Any]] = response.json()
-
-        return tuple(sorted(
-            [_parse_instance_type(t) for t in instance_types],
-            key=lambda s: (
-                s.accelerator or "",
-                s.accelerator_count,
-                s.vcpu,
-                s.memory_gb,
-            ),
-        ))
+        return fetch_available_instances(client)

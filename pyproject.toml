@@ -102,3 +102,9 @@ markers = [
     "integration: marks tests as integration tests (require Docker)",
     "ec2: marks tests as EC2 integration tests (require AWS credentials)",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.10",
+    "vulture>=2.14",
+]

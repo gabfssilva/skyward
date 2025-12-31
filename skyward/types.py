@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 if TYPE_CHECKING:
-    from skyward.skyimage import Image
+    from skyward.image import Image
 
 # Re-export from accelerator module for convenience
 from skyward.accelerator import GPU, NVIDIA, Accelerator, Trainium, current_accelerator

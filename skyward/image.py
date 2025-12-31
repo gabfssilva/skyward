@@ -94,8 +94,8 @@ class Image:
             Complete shell script for cloud-init/user_data.
         """
         return bootstrap(
+            instance_timeout(ttl) if ttl else None, # the safety timeout is ALWAYS first
             preamble,
-            instance_timeout(ttl) if ttl else None,
             env_export(**self.env) if self.env else None,
             install_uv(),
             apt("python3", "curl", *self.apt),

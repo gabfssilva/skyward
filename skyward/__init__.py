@@ -72,7 +72,7 @@ from skyward.pending import (
 from skyward.pool import ComputePool
 
 # Image
-from skyward.skyimage import Image
+from skyward.image import Image
 
 # Providers
 from skyward.providers import AWS, DigitalOcean, Verda

@@ -1,0 +1,888 @@
+"""AWS EC2 provider for Skyward GPU instances using SSM connectivity."""
+
+from __future__ import annotations
+
+import json
+import threading
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from functools import lru_cache
+from typing import TYPE_CHECKING, Any, override
+
+from botocore.exceptions import ClientError
+
+from skyward.callback import emit
+from skyward.constants import RPYC_PORT, SKYWARD_DIR, SkywardTag
+from skyward.events import (
+    BootstrapCompleted,
+    BootstrapStarting,
+    Error,
+    InfraCreated,
+    InfraCreating,
+    InstanceLaunching,
+    InstanceProvisioned,
+    InstanceStopping,
+    ProviderName,
+    ProvisioningCompleted,
+    RegionAutoSelected,
+)
+from skyward.exceptions import InstanceTerminatedError
+from skyward.providers.base.ssh_keys import find_local_ssh_key, get_private_key_path
+from skyward.providers.common import (
+    Checkpoint,
+    build_wheel,
+    create_tunnel,
+    find_available_port,
+    scp_upload,
+    ssh_run,
+    wait_for_bootstrap as _wait_for_bootstrap_common,
+)
+from skyward.spec import AllocationStrategy, normalize_spot
+from skyward.types import ComputeSpec, ExitedInstance, Instance, InstanceSpec, Provider, select_instance
+
+from .discovery import (
+    DLAMI_GPU_SSM,
+    UBUNTU_BASE_SSM,
+    Architecture,
+    NoAvailableRegionError,
+    build_instance_specs,
+    discover_all_instances,
+    find_available_region,
+)
+from .fleet import get_instance_details, launch_instances, wait_running
+from .infra import AWSInfraManager, AWSResources, S3ObjectStore
+from .ssm import SSMSession, SSMTransport
+
+if TYPE_CHECKING:
+    from subprocess import Popen
+
+    from mypy_boto3_ec2 import EC2Client
+
+    from skyward.volume import Volume
+
+
+# =============================================================================
+# Constants
+# =============================================================================
+
+# AWS-specific bootstrap checkpoints (in addition to common ones)
+AWS_EXTRA_CHECKPOINTS: tuple[Checkpoint, ...] = (
+    Checkpoint(".step_download", "downloading deps"),
+    Checkpoint(".step_volumes", "volumes"),
+)
+
+
+# =============================================================================
+# Volume Script Generation
+# =============================================================================
+
+
+def _generate_volume_script(
+    volumes: tuple[Volume, ...],
+    username: str = "ec2-user",
+) -> str:
+    """Generate shell script to install and mount volumes."""
+    if not volumes:
+        return ""
+
+    if username == "root":
+        home_dir = "/root"
+    else:
+        home_dir = f"/home/{username}"
+
+    lines = ["# Install and mount volumes"]
+
+    install_cmds: set[str] = set()
+    for vol in volumes:
+        install_cmds.update(vol.install_commands())
+
+    for cmd in install_cmds:
+        lines.append(cmd)
+
+    lines.append(f"MOUNT_UID=$(id -u {username})")
+    lines.append(f"MOUNT_GID=$(id -g {username})")
+
+    for vol in volumes:
+        for cmd in vol.mount_commands():
+            expanded_cmd = cmd.replace("~/", f"{home_dir}/")
+            if expanded_cmd == "~":
+                expanded_cmd = home_dir
+            elif expanded_cmd.startswith("~ "):
+                expanded_cmd = home_dir + expanded_cmd[1:]
+            expanded_cmd = expanded_cmd.replace("UID_PLACEHOLDER", "$MOUNT_UID")
+            expanded_cmd = expanded_cmd.replace("GID_PLACEHOLDER", "$MOUNT_GID")
+            lines.append(expanded_cmd)
+
+    return "\n".join(lines)
+
+
+# =============================================================================
+# AWS Bootstrap (SSM-based)
+# =============================================================================
+
+
+def _is_instance_terminated_error(exc: BaseException) -> bool:
+    """Check if exception indicates the instance is terminated."""
+    if isinstance(exc, ClientError):
+        code = exc.response.get("Error", {}).get("Code", "")
+        return code in ("InvalidInstanceId", "InvalidInstanceId.NotFound")
+    msg = str(exc).lower()
+    return "invalidinstanceid" in msg or "not in a valid state" in msg
+
+
+def _create_ssm_runner(
+    ssm_session: SSMSession,
+    instance_id: str,
+) -> Callable[[str], str]:
+    """Create a command runner using SSM."""
+
+    def run_command(cmd: str) -> str:
+        try:
+            result = ssm_session.run_command(instance_id, cmd, timeout=30)
+            if result.success:
+                return result.stdout
+            return ""
+        except Exception as e:
+            if _is_instance_terminated_error(e):
+                raise InstanceTerminatedError(instance_id, "instance not in valid state") from e
+            raise
+
+    return run_command
+
+
+def wait_for_bootstrap(
+    ssm_session: SSMSession,
+    instance_id: str,
+    verified_instances: set[str] | None = None,
+    timeout: int = 600,
+) -> None:
+    """Wait for instance bootstrap with progress tracking."""
+    if verified_instances is None:
+        verified_instances = set()
+
+    runner = _create_ssm_runner(ssm_session, instance_id)
+
+    try:
+        _wait_for_bootstrap_common(
+            run_command=runner,
+            instance_id=instance_id,
+            timeout=timeout,
+            extra_checkpoints=AWS_EXTRA_CHECKPOINTS,
+        )
+        verified_instances.add(instance_id)
+    except RuntimeError:
+        error_file = ""
+        bootstrap_log = ""
+        cloud_init_logs = ""
+
+        try:
+            result = ssm_session.run_command(
+                instance_id,
+                "cat /opt/skyward/.error 2>/dev/null || echo ''",
+                timeout=30,
+            )
+            error_file = result.stdout.strip() if result.success else ""
+
+            result = ssm_session.run_command(
+                instance_id,
+                "tail -100 /opt/skyward/bootstrap.log 2>/dev/null || echo ''",
+                timeout=30,
+            )
+            bootstrap_log = result.stdout.strip() if result.success else ""
+
+            result = ssm_session.run_command(
+                instance_id,
+                "cat /var/log/cloud-init-output.log 2>/dev/null || echo ''",
+                timeout=30,
+            )
+            cloud_init_logs = result.stdout.strip() if result.success else ""
+        except Exception:
+            pass
+
+        msg_parts = [f"Bootstrap failed on {instance_id}."]
+
+        if error_file:
+            msg_parts.append(f"\n--- Error file ---\n{error_file}")
+
+        if bootstrap_log:
+            msg_parts.append(f"\n--- Bootstrap log (last 100 lines) ---\n{bootstrap_log}")
+
+        if cloud_init_logs and not error_file and not bootstrap_log:
+            msg_parts.append(f"\n--- Cloud-init logs ---\n{cloud_init_logs}")
+
+        raise RuntimeError("\n".join(msg_parts)) from None
+
+
+# =============================================================================
+# AWS Provider
+# =============================================================================
+
+# Cache for AWS resources per region
+_resources_cache: dict[str, AWSResources] = {}
+_resources_lock = threading.Lock()
+
+
+@dataclass(frozen=True, slots=True)
+class AWS(Provider):
+    """Provider for AWS EC2 with SSM connectivity.
+
+    Executes functions on EC2 instances using UV for fast dependency installation.
+    Supports NVIDIA GPUs, Trainium, distributed clusters, and spot instances.
+
+    Uses SSM (Systems Manager) for all connectivity - no SSH required.
+    Infrastructure (S3 bucket, IAM roles, security groups) is auto-created.
+
+    Example:
+        from skyward import ComputePool, AWS, compute
+
+        @compute
+        def train(data):
+            return model.fit(data)
+
+        pool = ComputePool(
+            provider=AWS(region="us-east-1"),
+            accelerator="A100",
+            pip=["torch"],
+        )
+
+        with pool:
+            result = train(data) >> pool
+
+    Environment Variables:
+        AWS_REGION: Default region (can be overridden by region parameter)
+        AWS_ACCESS_KEY_ID: AWS credentials
+        AWS_SECRET_ACCESS_KEY: AWS credentials
+    """
+
+    region: str = "us-east-1"
+    ami: str | None = None
+    subnet_id: str | None = None
+    security_group_id: str | None = None
+    instance_profile_arn: str | None = None
+    username: str | None = None
+    instance_timeout: int = 300
+    allocation_strategy: AllocationStrategy = "price-capacity-optimized"
+
+    # Mutable state (not part of equality/hash)
+    _resolved_region: str | None = field(default=None, compare=False, repr=False, hash=False)
+    _resources: AWSResources | None = field(default=None, compare=False, repr=False, hash=False)
+    _store: S3ObjectStore | None = field(default=None, compare=False, repr=False, hash=False)
+    _ssm_session: SSMSession | None = field(default=None, compare=False, repr=False, hash=False)
+    _verified_instances: set[str] = field(default_factory=set, compare=False, repr=False, hash=False)
+
+    @property
+    @override
+    def name(self) -> str:
+        return "aws"
+
+    @property
+    def _active_region(self) -> str:
+        """Return resolved region (from auto-discovery) or configured region."""
+        return self._resolved_region or self.region
+
+    # =========================================================================
+    # Resource Management
+    # =========================================================================
+
+    def _get_resources(self) -> AWSResources:
+        """Get or create AWS resources."""
+        if self._resources is not None:
+            return self._resources
+
+        region = self._active_region
+        cache_key = region
+
+        with _resources_lock:
+            if cache_key in _resources_cache:
+                resources = _resources_cache[cache_key]
+                object.__setattr__(self, "_resources", resources)
+                return resources
+
+            infra = AWSInfraManager(region=region)
+            resources = infra.ensure_infrastructure()
+            _resources_cache[cache_key] = resources
+            object.__setattr__(self, "_resources", resources)
+            return resources
+
+    def _get_ssm_session(self) -> SSMSession:
+        """Get or create SSM session."""
+        if self._ssm_session is not None:
+            return self._ssm_session
+
+        resources = self._get_resources()
+        session = SSMSession(region=resources.region)
+        object.__setattr__(self, "_ssm_session", session)
+        return session
+
+    def _get_transport(self, instance: Instance) -> SSMTransport:
+        """Get SSMTransport for an instance."""
+        return SSMTransport(instance_id=instance.id, region=self._active_region)
+
+    @property
+    def _ec2(self) -> EC2Client:
+        """EC2 client for active region."""
+        import boto3
+
+        return boto3.client("ec2", region_name=self._active_region)
+
+    # =========================================================================
+    # AMI Resolution
+    # =========================================================================
+
+    def _resolve_ami_id(
+        self,
+        compute: ComputeSpec,
+        architecture: Architecture = "x86_64",
+        acc: "Accelerator | None" = None,
+    ) -> str:
+        """Resolve AMI ID based on configuration and architecture."""
+        from skyward.accelerator import Accelerator
+
+        if self.ami:
+            return self.ami
+
+        # Fractional GPU needs Ubuntu base + GRID driver (not DLAMI)
+        if acc and acc.fractional:
+            return self._get_ubuntu_base_ami(architecture=architecture)
+
+        return self._get_public_ami(gpu=compute.accelerator is not None, architecture=architecture)
+
+    @lru_cache(maxsize=8)
+    def _get_ubuntu_base_ami(self, architecture: Architecture = "x86_64") -> str:
+        """Get Ubuntu base AMI for fractional GPU (requires GRID driver)."""
+        import boto3
+
+        param_name = UBUNTU_BASE_SSM[architecture]
+        region = self._active_region
+        try:
+            ssm = boto3.client("ssm", region_name=region)
+            response = ssm.get_parameter(Name=param_name)
+            return response["Parameter"]["Value"]
+        except ClientError as e:
+            raise RuntimeError(
+                f"Could not find Ubuntu 22.04 AMI in region {region}. "
+                f"SSM parameter {param_name} not found."
+            ) from e
+
+    @lru_cache(maxsize=32)
+    def _get_public_ami(self, gpu: bool = False, architecture: Architecture = "x86_64") -> str:
+        """Get the best public AMI for the given configuration."""
+        import boto3
+
+        if gpu:
+            param_name = DLAMI_GPU_SSM[architecture]
+            ami_type = f"Deep Learning AMI (Ubuntu 22.04, {architecture})"
+        else:
+            param_name = UBUNTU_BASE_SSM[architecture]
+            ami_type = f"Ubuntu 22.04 ({architecture})"
+
+        region = self._active_region
+        try:
+            ssm = boto3.client("ssm", region_name=region)
+            response = ssm.get_parameter(Name=param_name)
+            return response["Parameter"]["Value"]
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "Unknown")
+            if error_code == "ParameterNotFound":
+                raise RuntimeError(
+                    f"Could not find {ami_type} AMI in region {region}. "
+                    f"SSM parameter {param_name} not found. "
+                    "Please specify an AMI explicitly using AWS(ami='ami-xxx')"
+                ) from e
+            raise RuntimeError(f"Failed to resolve AMI in region {region}: {e}") from e
+
+    def _resolve_username(self, ami_id: str) -> str:
+        """Resolve system username for the given AMI."""
+        if self.username:
+            return self.username
+
+        return self._get_ami_username(ami_id)
+
+    @lru_cache(maxsize=32)
+    def _get_ami_block_device_info(self, ami_id: str) -> tuple[str, int]:
+        """Get root device name and minimum volume size from AMI.
+
+        Returns:
+            Tuple of (device_name, min_volume_size_gb).
+        """
+        try:
+            response = self._ec2.describe_images(ImageIds=[ami_id])
+            if response.get("Images"):
+                image = response["Images"][0]
+                root_device = image.get("RootDeviceName", "/dev/sda1")
+                for bdm in image.get("BlockDeviceMappings", []):
+                    if bdm.get("DeviceName") == root_device:
+                        min_size = bdm.get("Ebs", {}).get("VolumeSize", 30)
+                        return root_device, min_size
+                return root_device, 30
+        except ClientError:
+            pass
+        return "/dev/sda1", 30
+
+    @lru_cache(maxsize=32)
+    def _get_ami_username(self, ami_id: str) -> str:
+        """Detect the default system username for an AMI."""
+        try:
+            response = self._ec2.describe_images(ImageIds=[ami_id])
+
+            if not response.get("Images"):
+                return "ec2-user"
+
+            image = response["Images"][0]
+            name = (image.get("Name") or "").lower()
+            description = (image.get("Description") or "").lower()
+
+            if "ubuntu" in name or "ubuntu" in description:
+                return "ubuntu"
+
+            if "debian" in name or "debian" in description:
+                return "admin"
+
+            return "ec2-user"
+
+        except ClientError:
+            return "ec2-user"
+
+    # =========================================================================
+    # Skyward Wheel Installation
+    # =========================================================================
+
+    def _install_skyward_wheel(self, instances: tuple[Instance, ...]) -> None:
+        """Install skyward wheel on all instances via SSM SSH tunnel.
+
+        Creates an SSM tunnel to port 22 and uses SSH/SCP to transfer
+        and install the wheel, same approach as Verda/DigitalOcean.
+        """
+        from skyward.bootstrap.worker import rpyc_service_unit
+        from skyward.conc import for_each_async
+
+        # Build wheel locally
+        wheel_path = build_wheel()
+        key_path = get_private_key_path()
+        ssm = self._get_ssm_session()
+
+        def install_on_instance(inst: Instance) -> None:
+            # Ensure SSM agent is ready for sessions (may have just started with cached AMI)
+            ssm.wait_for_ssm_agent(inst.id, timeout=120)
+
+            # Wait for SSH daemon to be ready (critical for cached AMIs where sshd may not be up yet)
+            ssm.run_command(
+                inst.id,
+                "for i in $(seq 1 30); do nc -z 127.0.0.1 22 && break || sleep 1; done",
+                timeout=60,
+            )
+
+            # Create SSM tunnel to SSH port (22)
+            local_port = find_available_port()
+            tunnel_cmd = [
+                "aws",
+                "ssm",
+                "start-session",
+                "--target",
+                inst.id,
+                "--document-name",
+                "AWS-StartPortForwardingSession",
+                "--parameters",
+                json.dumps(
+                    {
+                        "portNumber": ["22"],
+                        "localPortNumber": [str(local_port)],
+                    }
+                ),
+                "--region",
+                self._active_region,
+            ]
+            # Give more time for tunnel (Session Manager can be slower than RunCommand)
+            local_port, tunnel_proc = create_tunnel(tunnel_cmd, local_port, timeout=60)
+
+            try:
+                username = inst.get_meta("username", "ubuntu")
+
+                # Upload wheel to /tmp first (user has write access), then move to SKYWARD_DIR
+                tmp_wheel = f"/tmp/{wheel_path.name}"
+                remote_wheel = f"{SKYWARD_DIR}/{wheel_path.name}"
+                scp_upload("localhost", username, wheel_path, tmp_wheel, port=local_port, key_path=key_path)
+
+                # Move to SKYWARD_DIR with sudo
+                ssh_run(
+                    "localhost",
+                    username,
+                    f"sudo mv {tmp_wheel} {remote_wheel}",
+                    timeout=30,
+                    port=local_port,
+                    key_path=key_path,
+                )
+
+                # Find uv path
+                find_uv_result = ssh_run(
+                    "localhost",
+                    username,
+                    "which uv || find /root /home -name uv -type f 2>/dev/null | head -1",
+                    timeout=30,
+                    port=local_port,
+                    key_path=key_path,
+                )
+                uv_path = find_uv_result.stdout.strip()
+                if not uv_path:
+                    uv_path = "/root/.local/bin/uv"
+
+                # Install wheel with all dependencies
+                install_result = ssh_run(
+                    "localhost",
+                    username,
+                    f"sudo bash -c 'cd {SKYWARD_DIR} && {uv_path} pip install {remote_wheel}'",
+                    timeout=120,
+                    port=local_port,
+                    key_path=key_path,
+                )
+                if install_result.returncode != 0:
+                    raise RuntimeError(f"Failed to install wheel: {install_result.stderr}")
+
+                # Create and start systemd service (only after wheel is installed)
+                # The service runs python -m skyward.rpc which requires the skyward package
+                unit_content = rpyc_service_unit()
+                unit_path = "/etc/systemd/system/skyward-rpyc.service"
+
+                # Write unit file, reload daemon, enable and start
+                setup_service_cmd = f"""sudo bash -c '
+cat > {unit_path} << EOF
+{unit_content}
+EOF
+systemctl daemon-reload
+systemctl enable skyward-rpyc
+systemctl restart skyward-rpyc
+'"""
+                ssh_run("localhost", username, setup_service_cmd, timeout=60, port=local_port, key_path=key_path)
+
+                # Wait for port to be ready
+                wait_port_cmd = f"""
+for i in $(seq 1 30); do
+    if nc -z 127.0.0.1 {RPYC_PORT} 2>/dev/null; then
+        echo "Port {RPYC_PORT} ready"
+        exit 0
+    fi
+    sleep 1
+done
+echo "Timeout waiting for port {RPYC_PORT}"
+exit 1
+"""
+                port_result = ssh_run(
+                    "localhost",
+                    username,
+                    f"sudo bash -c '{wait_port_cmd}'",
+                    timeout=60,
+                    port=local_port,
+                    key_path=key_path,
+                )
+                if port_result.returncode != 0:
+                    raise RuntimeError(f"RPyC service failed to start: {port_result.stderr}")
+
+            finally:
+                tunnel_proc.terminate()
+
+        for_each_async(install_on_instance, instances)
+
+    # =========================================================================
+    # Provider Protocol Implementation
+    # =========================================================================
+
+    @override
+    def provision(self, compute: ComputeSpec) -> tuple[Instance, ...]:
+        """Provision EC2 instances."""
+        from skyward.accelerator import Accelerator
+        from skyward.bootstrap import grid_driver, group, inject_ssh_key, ssm_restart
+
+        try:
+            cluster_id = str(uuid.uuid4())[:8]
+
+            emit(InfraCreating())
+
+            # Select instance type first (before region discovery)
+            acc = Accelerator.from_value(compute.accelerator)
+            accelerator_type = acc.accelerator if acc else None
+            requested_gpu_count = acc.count if acc else 1
+
+            spec = select_instance(
+                self.available_instances(),
+                cpu=1,
+                memory_mb=512,
+                accelerator=accelerator_type,
+                accelerator_count=requested_gpu_count,
+            )
+            instance_type = spec.name
+            accelerator_count = spec.accelerator_count
+            architecture = spec.metadata.get("architecture", "x86_64")
+
+            # Find available region for this instance type
+            actual_region = find_available_region(
+                instance_type=instance_type,
+                preferred_region=self.region,
+            )
+
+            # Set resolved region if different from configured
+            if actual_region != self.region:
+                object.__setattr__(self, "_resolved_region", actual_region)
+                emit(
+                    RegionAutoSelected(
+                        requested_region=self.region,
+                        selected_region=actual_region,
+                        instance_type=instance_type,
+                        provider=ProviderName.AWS,
+                    )
+                )
+
+            # Now create resources in the actual region
+            resources = self._get_resources()
+            emit(InfraCreated(region=self._active_region))
+
+            # Get image from compute spec
+            image = compute.image
+            content_hash = image.content_hash()
+
+            ami_id = self._resolve_ami_id(compute, architecture=architecture, acc=acc)
+            username = self._resolve_username(ami_id)
+
+            # Get local SSH public key to inject into instance
+            ssh_key_op = None
+            key_info = find_local_ssh_key()
+            if key_info:
+                _, public_key = key_info
+                ssh_key_op = inject_ssh_key(public_key)
+
+            # Generate bootstrap script
+            base_preamble = group(ssm_restart(), grid_driver()) if acc and acc.fractional else ssm_restart()
+            preamble = group(base_preamble, ssh_key_op) if ssh_key_op else base_preamble
+
+            # Build postamble (volume mounting)
+            volume_script = _generate_volume_script(compute.volumes, username)
+            postamble = volume_script if volume_script else None
+
+            user_data = image.bootstrap(
+                ttl=compute.timeout,
+                preamble=preamble,
+                postamble=postamble,
+            )
+
+            # Normalize spot strategy
+            spot_strategy = normalize_spot(compute.spot)
+
+            emit(InstanceLaunching(count=compute.nodes, instance_type=instance_type, provider=ProviderName.AWS))
+
+            # Get AMI block device info
+            root_device, min_volume_size = self._get_ami_block_device_info(ami_id)
+
+            # Launch instances with full spot strategy support
+            instance_ids = launch_instances(
+                ec2=self._ec2,
+                resources=resources,
+                n=compute.nodes,
+                instance_type=instance_type,
+                ami_id=ami_id,
+                user_data=user_data,
+                requirements_hash=content_hash,
+                spot_strategy=spot_strategy,
+                allocation_strategy=self.allocation_strategy,
+                root_device=root_device,
+                min_volume_size=min_volume_size,
+            )
+
+            # Wait for instances to be running
+            wait_running(self._ec2, instance_ids)
+
+            # Wait for SSM agent in parallel
+            self._wait_ssm_parallel(instance_ids)
+
+            # Get instance details
+            instance_details = get_instance_details(self._ec2, instance_ids)
+
+            # Build Instance objects
+            instances: list[Instance] = []
+            for i, details in enumerate(instance_details):
+                instance = Instance(
+                    id=details["id"],
+                    provider=self,
+                    spot=details["spot"],
+                    private_ip=details["private_ip"],
+                    node=i,
+                    metadata=frozenset(
+                        [
+                            ("cluster_id", cluster_id),
+                            ("region", self._active_region),
+                            ("instance_type", instance_type),
+                            ("content_hash", content_hash),
+                            ("accelerator_count", str(accelerator_count)),
+                            ("username", username),
+                        ]
+                    ),
+                )
+                instances.append(instance)
+
+                emit(
+                    InstanceProvisioned(
+                        instance_id=instance.id,
+                        node=i,
+                        spot=instance.spot,
+                        instance_type=instance_type,
+                        provider=ProviderName.AWS,
+                        price_on_demand=spec.price_on_demand,
+                        price_spot=spec.price_spot,
+                        billing_increment_minutes=spec.billing_increment_minutes,
+                    )
+                )
+
+            spot_count = sum(1 for inst in instances if inst.spot)
+            emit(
+                ProvisioningCompleted(
+                    spot=spot_count,
+                    on_demand=len(instances) - spot_count,
+                    provider=ProviderName.AWS,
+                    region=self._active_region,
+                    instances=[inst.id for inst in instances],
+                )
+            )
+
+            return tuple(instances)
+
+        except Exception as e:
+            emit(Error(message=f"Provision failed: {e}"))
+            raise
+
+    def _wait_ssm_parallel(self, instance_ids: list[str]) -> None:
+        """Wait for SSM agent to be ready on all instances."""
+        from skyward.conc import for_each_async
+
+        if not instance_ids:
+            return
+
+        ssm = self._get_ssm_session()
+
+        def wait_ssm(iid: str) -> None:
+            ssm.wait_for_ssm_agent(iid, timeout=600)
+
+        for_each_async(wait_ssm, instance_ids)
+
+    @override
+    def setup(self, instances: tuple[Instance, ...], compute: ComputeSpec) -> None:
+        """Setup instances (bootstrap, install dependencies)."""
+        from skyward.conc import for_each_async
+
+        try:
+            ssm_session = self._get_ssm_session()
+
+            def bootstrap_instance(inst: Instance) -> None:
+                try:
+                    emit(BootstrapStarting(instance_id=inst.id))
+
+                    wait_for_bootstrap(
+                        ssm_session=ssm_session,
+                        instance_id=inst.id,
+                        verified_instances=self._verified_instances,
+                    )
+
+                    emit(BootstrapCompleted(instance_id=inst.id))
+                except Exception as e:
+                    emit(Error(message=f"Bootstrap failed on {inst.id}: {e}", instance_id=inst.id))
+                    raise
+
+            for_each_async(bootstrap_instance, instances)
+
+            # Install skyward wheel on all instances
+            self._install_skyward_wheel(instances)
+
+        except Exception as e:
+            emit(Error(message=f"Setup failed: {e}"))
+            raise
+
+    @override
+    def shutdown(self, instances: tuple[Instance, ...], compute: ComputeSpec) -> tuple[ExitedInstance, ...]:
+        """Terminate instances."""
+        if not instances:
+            return ()
+
+        instance_ids = [inst.id for inst in instances]
+
+        # Terminate all instances
+        self._ec2.terminate_instances(InstanceIds=instance_ids)
+
+        # Build ExitedInstance objects
+        exited: list[ExitedInstance] = []
+        for inst in instances:
+            emit(InstanceStopping(instance_id=inst.id))
+            exited.append(ExitedInstance(instance=inst, exit_code=0, exit_reason="terminated"))
+
+        # Cleanup SSM session
+        if self._ssm_session is not None:
+            self._ssm_session.cleanup()
+
+        self._verified_instances.clear()
+
+        return tuple(exited)
+
+    @override
+    def create_tunnel(self, instance: Instance, remote_port: int = 18861) -> tuple[int, Popen[bytes]]:
+        """Create SSM tunnel to instance."""
+        transport = self._get_transport(instance)
+        return transport.create_tunnel(remote_port)
+
+    @override
+    def run_command(self, instance: Instance, command: str, timeout: int = 30) -> str:
+        """Run shell command on instance via SSM."""
+        ssm = self._get_ssm_session()
+        result = ssm.run_command(instance.id, command, timeout)
+        if not result.success:
+            raise RuntimeError(f"Command failed on {instance.id}: {result.stderr}")
+        return result.stdout
+
+    @override
+    def discover_peers(self, cluster_id: str) -> tuple[Instance, ...]:
+        """Discover peer instances in a cluster via EC2 API."""
+        response = self._ec2.describe_instances(
+            Filters=[
+                {"Name": f"tag:{SkywardTag.MANAGED}", "Values": ["true"]},
+                {"Name": f"tag:{SkywardTag.CLUSTER_ID}", "Values": [cluster_id]},
+                {"Name": "instance-state-name", "Values": ["running"]},
+            ]
+        )
+
+        instances = []
+        for reservation in response.get("Reservations", []):
+            for inst in reservation.get("Instances", []):
+                instances.append(
+                    Instance(
+                        id=inst["InstanceId"],
+                        provider=self,
+                        spot=inst.get("InstanceLifecycle") == "spot",
+                        private_ip=inst.get("PrivateIpAddress", ""),
+                        public_ip=inst.get("PublicIpAddress"),
+                        node=0,
+                        metadata=frozenset(
+                            [
+                                ("cluster_id", cluster_id),
+                                ("instance_type", inst.get("InstanceType", "")),
+                                ("region", self._active_region),
+                            ]
+                        ),
+                    )
+                )
+
+        instances.sort(key=lambda i: i.private_ip)
+
+        return tuple(
+            Instance(
+                id=inst.id,
+                provider=inst.provider,
+                spot=inst.spot,
+                private_ip=inst.private_ip,
+                public_ip=inst.public_ip,
+                node=idx,
+                metadata=inst.metadata,
+            )
+            for idx, inst in enumerate(instances)
+        )
+
+    @override
+    def available_instances(self) -> tuple[InstanceSpec, ...]:
+        """List all available instance types in this region with pricing."""
+        instance_data = discover_all_instances(self._ec2, self._active_region)
+        return build_instance_specs(instance_data, self._active_region)
