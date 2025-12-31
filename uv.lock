@@ -2570,7 +2570,6 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "boto3" },
-    { name = "boto3-stubs", extra = ["ec2", "ecr", "iam", "s3", "ssm", "sts"] },
     { name = "cloudpickle" },
     { name = "httpx" },
     { name = "loguru" },
@@ -2604,6 +2603,7 @@ azure = [
     { name = "azure-mgmt-containerinstance" },
 ]
 dev = [
+    { name = "boto3-stubs", extra = ["ec2", "ecr", "iam", "s3", "ssm", "sts"] },
     { name = "jax" },
     { name = "keras" },
     { name = "mypy" },
@@ -2633,7 +2633,7 @@ requires-dist = [
     { name = "azure-mgmt-containerinstance", marker = "extra == 'azure'", specifier = ">=10.0" },
     { name = "boto3", specifier = ">=1.42.3" },
     { name = "boto3", marker = "extra == 'aws'", specifier = "==1.42.5" },
-    { name = "boto3-stubs", extras = ["ec2", "ecr", "iam", "s3", "ssm", "sts"], specifier = ">=1.42.3" },
+    { name = "boto3-stubs", extras = ["ec2", "ecr", "iam", "s3", "ssm", "sts"], marker = "extra == 'dev'", specifier = ">=1.42.3" },
     { name = "boto3-stubs", extras = ["s3", "ec2", "ecr", "sts", "iam"], marker = "extra == 'aws'", specifier = "==1.42.5" },
     { name = "cloudpickle", specifier = ">=3.1.2" },
     { name = "datasets", marker = "extra == 'huggingface'", specifier = ">=4.4.1" },

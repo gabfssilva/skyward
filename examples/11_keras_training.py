@@ -10,8 +10,7 @@ Architecture:
 """
 from typing import Literal, LiteralString
 
-from skyward import AWS, ComputePool, compute, distributed, instance_info, shard, Verda, H100, L40S, T4, L4, A100
-from skyward.accelerator import M60
+from skyward import AWS, ComputePool, compute, distributed, instance_info, shard, Verda, Accelerator, Image
 
 
 # =============================================================================
@@ -173,7 +172,7 @@ def build_vit(
 
 
 @compute
-@distributed.keras(backend="jax")
+# @distributed.keras(backend="jax")
 def train_vit(
     epochs: int = 10,
     batch_size: int = 128,
@@ -240,7 +239,7 @@ def train_vit(
         epochs=epochs,
         batch_size=batch_size,
         validation_split=0.1,
-        verbose=1 if pool.is_head else 0,
+        verbose=0,
     )
 
     # =========================================================================
@@ -267,12 +266,15 @@ def train_vit(
 
 if __name__ == "__main__":
     with ComputePool(
-        provider=Verda(),
-        nodes=2,
-        accelerator=A100(memory='80', count=2),
-        pip=["keras>=3.2", "jax[cuda12]"],
-        env={"KERAS_BACKEND": "jax"},
-        spot="never",
+        provider=AWS(),
+        # nodes=2,
+        accelerator=Accelerator.NVIDIA.T4(count=0.2),
+        image=Image(
+            pip=["keras>=3.2", "jax[cuda12]"],
+            env={"KERAS_BACKEND": "jax"},
+        ),
+        spot="always",
+        timeout=1200,
     ) as pool:
         print("=" * 60)
         print("Vision Transformer (ViT) - MNIST Classification")

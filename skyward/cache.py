@@ -8,87 +8,126 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, ParamSpec, TypeVar, overload
+
+import cloudpickle
 
 CACHE_DIR = Path.home() / ".skyward" / "cache"
 CACHE_VERSION = 1
 
-F = TypeVar("F", bound=Callable[..., Any])
-
-
-class DiskCache:
-    """Simple disk-based cache with JSON serialization."""
+class DiskCache[P, R, T]:
+    """Simple disk-based cache with cloudpickle serialization."""
 
     def __init__(self, namespace: str = "default") -> None:
         self.namespace = namespace
-        self.cache_file = CACHE_DIR / f"{namespace}.json"
-        self._data: dict[str, Any] | None = None
+        self.cache_dir = CACHE_DIR / namespace
+        self._index: dict[str, datetime] | None = None
 
     @property
-    def data(self) -> dict[str, Any]:
-        """Lazy load cache data."""
-        if self._data is None:
-            self._load()
-        return self._data  # type: ignore
+    def index_file(self) -> Path:
+        return self.cache_dir / "_index.json"
 
-    def _load(self) -> None:
-        """Load cache from disk."""
-        if self.cache_file.exists():
+    @property
+    def index(self) -> dict[str, datetime]:
+        """Lazy load index (tracks creation times)."""
+        if self._index is None:
+            self._load_index()
+        return self._index  # type: ignore
+
+    def _load_index(self) -> None:
+        if self.index_file.exists():
             try:
-                raw = json.loads(self.cache_file.read_text())
+                raw = json.loads(self.index_file.read_text())
                 if raw.get("version") == CACHE_VERSION:
-                    self._data = raw.get("entries", {})
+                    self._index = {
+                        k: datetime.fromisoformat(v)
+                        for k, v in raw.get("entries", {}).items()
+                    }
                 else:
-                    self._data = {}
+                    self._index = {}
             except Exception:
-                self._data = {}
+                self._index = {}
         else:
-            self._data = {}
+            self._index = {}
 
-    def _save(self) -> None:
-        """Save cache to disk."""
-        self.cache_file.parent.mkdir(parents=True, exist_ok=True)
-        self.cache_file.write_text(
-            json.dumps({"version": CACHE_VERSION, "entries": self.data}, indent=2)
+    def _save_index(self) -> None:
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.index_file.write_text(
+            json.dumps(
+                {
+                    "version": CACHE_VERSION,
+                    "entries": {k: v.isoformat() for k, v in self.index.items()},
+                },
+                indent=2,
+            )
         )
 
+    def _key_path(self, key: str) -> Path:
+        return self.cache_dir / f"{key}.pkl"
+
     def _make_key(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
-        """Create cache key from function arguments."""
-        key_data = json.dumps({"args": args, "kwargs": kwargs}, sort_keys=True)
-        return hashlib.sha256(key_data.encode()).hexdigest()[:16]
+        key_data = cloudpickle.dumps((args, kwargs))
+        return hashlib.sha256(key_data).hexdigest()[:16]
 
-    def get(self, key: str, ttl: timedelta | None = None) -> tuple[bool, Any]:
-        """Get value from cache.
+    @overload
+    def get(self, key: str, ttl: timedelta | None = None) -> tuple[bool, Any]: ...
 
-        Returns:
-            Tuple of (hit, value). If hit=False, value is None.
-        """
-        entry = self.data.get(key)
-        if entry is None:
+    @overload
+    def get(
+        self, key: str, ttl: timedelta | None = None, *, dtype: type[T]
+    ) -> tuple[bool, T | None]: ...
+
+    def get(
+        self,
+        key: str,
+        ttl: timedelta | None = None,
+        *,
+        dtype: type[T] | None = None,  # noqa: ARG002 - mantido para compatibilidade
+    ) -> tuple[bool, T | None]:
+        """Get value from cache."""
+        if key not in self.index:
             return False, None
 
         if ttl is not None:
-            created = datetime.fromisoformat(entry["created"])
+            created = self.index[key]
             if datetime.utcnow() - created > ttl:
-                del self.data[key]
-                self._save()
+                self._delete(key)
                 return False, None
 
-        return True, entry["value"]
+        path = self._key_path(key)
+        if not path.exists():
+            del self.index[key]
+            self._save_index()
+            return False, None
+
+        try:
+            value = cloudpickle.loads(path.read_bytes())
+            return True, value
+        except Exception:
+            self._delete(key)
+            return False, None
 
     def set(self, key: str, value: Any) -> None:
         """Store value in cache."""
-        self.data[key] = {
-            "value": value,
-            "created": datetime.utcnow().isoformat(),
-        }
-        self._save()
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._key_path(key).write_bytes(cloudpickle.dumps(value))
+        self.index[key] = datetime.utcnow()
+        self._save_index()
+
+    def _delete(self, key: str) -> None:
+        path = self._key_path(key)
+        if path.exists():
+            path.unlink()
+        if key in self.index:
+            del self.index[key]
+            self._save_index()
 
     def clear(self) -> None:
         """Clear all entries in this namespace."""
-        self._data = {}
-        if self.cache_file.exists():
-            self.cache_file.unlink()
+        self._index = {}
+        if self.cache_dir.exists():
+            import shutil
+            shutil.rmtree(self.cache_dir)
 
 
 _caches: dict[str, DiskCache] = {}
@@ -101,33 +140,19 @@ def get_cache(namespace: str) -> DiskCache:
     return _caches[namespace]
 
 
-def cached(
+def cached[**P, R](
     namespace: str = "default",
     ttl: timedelta | None = None,
     key_func: Callable[..., str] | None = None,
     cache_falsy: bool = False,
-) -> Callable[[F], F]:
-    """Decorator for caching function results to disk.
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """Decorator for caching function results to disk."""
 
-    Args:
-        namespace: Cache namespace (separate file per namespace).
-        ttl: Optional time-to-live for cache entries.
-        key_func: Optional custom function to generate cache key from args.
-        cache_falsy: If False (default), don't cache falsy values (False, 0, "", [], etc.).
-            This prevents caching "not found" results that may become valid later.
-
-    Example:
-        @cached(namespace="aws.ami")
-        def find_ami(image_hash: str) -> str:
-            return expensive_aws_call(image_hash)
-    """
-
-    def decorator(func: F) -> F:
+    def decorator(func: Callable[P, R]) -> Callable[P, R]:
         cache = get_cache(namespace)
 
         @wraps(func)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            # Skip 'self' for methods
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             cache_args = args[1:] if args and hasattr(args[0], "__dict__") else args
 
             if key_func:
@@ -137,16 +162,15 @@ def cached(
 
             hit, value = cache.get(key, ttl)
             if hit:
-                return value
+                return value  # type: ignore
 
             result = func(*args, **kwargs)
 
-            # Cache result if it's not None and (cache_falsy or result is truthy)
             if result is not None and (cache_falsy or result):
                 cache.set(key, result)
 
             return result
 
-        return wrapper  # type: ignore
+        return wrapper
 
     return decorator

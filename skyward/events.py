@@ -71,6 +71,9 @@ class InstanceProvisioned:
     provider: ProviderName
     ip: str | None = None
     instance_type: str | None = None
+    price_on_demand: float | None = None
+    price_spot: float | None = None
+    billing_increment_minutes: int | None = None  # None = per-second billing
 
 
 @dataclass(frozen=True, slots=True)

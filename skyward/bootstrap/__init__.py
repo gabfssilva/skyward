@@ -1,0 +1,137 @@
+"""Declarative bootstrap script DSL.
+
+This module provides a functional DSL for generating shell scripts
+used in cloud-init user_data and startup scripts.
+
+Example:
+    >>> from skyward.bootstrap import bootstrap, apt, pip, checkpoint, when
+    >>>
+    >>> script = bootstrap(
+    ...     apt("python3", "curl"),
+    ...     checkpoint(".step_apt"),
+    ...     when("command -v nvidia-smi",
+    ...         "nvidia-smi --query-gpu=name",
+    ...     ),
+    ...     pip("torch", "transformers"),
+    ...     checkpoint(".ready"),
+    ... )
+"""
+
+from __future__ import annotations
+
+# Core types and composition
+from .compose import (
+    DEFAULT_HEADER,
+    Op,
+    bootstrap,
+    resolve,
+)
+
+# Core operations
+from .ops import (
+    activate,
+    apt,
+    cd,
+    checkpoint,
+    env_export,
+    file,
+    grid_driver,
+    inject_ssh_key,
+    instance_timeout,
+    mkdir,
+    pip,
+    s3_pip_install,
+    s3_wheel,
+    shell,
+    ssm_restart,
+    systemd,
+    systemd_template,
+    uv,
+    uv_add,
+    uv_init,
+    install_uv,
+    wait_for_port,
+)
+
+# Control flow
+from .control import (
+    and_then,
+    capture,
+    for_each,
+    group,
+    or_else,
+    subshell,
+    unless,
+    var,
+    when,
+)
+
+# Worker operations
+from .worker import (
+    cgroups,
+    mig_setup,
+    rpyc_service_unit,
+    start_workers,
+    wait_for_workers,
+    worker_envs,
+    worker_server_ops,
+    worker_service_template,
+    worker_service_unit,
+)
+
+# Unified generator
+from .unified import skyward_bootstrap
+
+__all__ = [
+    # Core types
+    "Op",
+    "bootstrap",
+    "resolve",
+    "DEFAULT_HEADER",
+    # Core operations
+    "activate",
+    "apt",
+    "pip",
+    "uv",
+    "install_uv",
+    "uv_add",
+    "uv_init",
+    "checkpoint",
+    "mkdir",
+    "file",
+    "systemd",
+    "systemd_template",
+    "shell",
+    "cd",
+    "wait_for_port",
+    "env_export",
+    "instance_timeout",
+    "inject_ssh_key",
+    # AWS operations
+    "ssm_restart",
+    "grid_driver",
+    "s3_pip_install",
+    "s3_wheel",
+    # Control flow
+    "capture",
+    "var",
+    "when",
+    "unless",
+    "for_each",
+    "and_then",
+    "or_else",
+    "group",
+    "subshell",
+    # Worker operations
+    "cgroups",
+    "worker_envs",
+    "mig_setup",
+    "worker_service_unit",
+    "worker_service_template",
+    "start_workers",
+    "wait_for_workers",
+    "worker_server_ops",
+    "rpyc_service_unit",
+    # Unified generator
+    "skyward_bootstrap",
+]

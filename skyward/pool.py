@@ -6,7 +6,7 @@ function definition, allowing multiple functions to share the same
 resources.
 
 Example:
-    from skyward import compute, Pool, AWS
+    from skyward import compute, ComputePool, AWS, Image
 
     @compute
     def train(data):
@@ -17,10 +17,10 @@ Example:
         return model.evaluate()
 
     # Create a pool with GPU and PyTorch
-    pool = Pool(
+    pool = ComputePool(
         provider=AWS(region="us-east-1"),
         accelerator="A100",
-        pip=["torch", "transformers"],
+        image=Image(pip=["torch", "transformers"]),
     )
 
     with pool:
@@ -38,23 +38,24 @@ from dataclasses import dataclass, field
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Literal, Callable
 
-from skyward.accelerator import Accelerator
+from skyward.accelerator import Accelerator, MIG_MAX_INSTANCES
 from skyward.callback import Callback, compose, emit, use_callback
 from skyward.callbacks import cost_tracker, log, spinner
 from skyward.conc import map_async
 from skyward.events import Error, LogLine, PoolStarted, PoolStopping
 from skyward.exceptions import ExecutionError, NotProvisionedError
+from skyward.metrics import MetricsPoller
 from skyward.pending import PendingBatch, PendingCompute
+from skyward.skyimage import DEFAULT_IMAGE, Image
 from skyward.spec import SpotLike
 from skyward.types import Instance, Provider
 from skyward.volume import Volume, parse_volume_uri
 from skyward.worker import (
-    AcceleratorSpec,
     ResourceLimits,
     Worker,
+    WorkerConfig,
     WorkerPool,
     create_partition,
-    generate_worker_bootstrap,
     generate_worker_configs,
 )
 
@@ -90,61 +91,50 @@ class ComputePool:
 
     Args:
         provider: Cloud provider (AWS, DigitalOcean). Required.
+        image: Image specification (python, pip, apt, env).
         nodes: Number of nodes to provision. Default 1.
-        accelerator: Accelerator type or spec. Formats:
-            - "H100" → 1 accelerator, 1 worker
-            - H100() → 1 accelerator, 1 worker (factory function)
-            - H100(count=8) → 8 accelerators, 8 workers
-            - H100(mig="3g.40gb") → 1 GPU, 2 workers (MIG)
-            - H100(count=8, mig="3g.40gb") → 8 GPUs, 16 workers (MIG)
-        python: Python version to use.
-        pip: pip packages to install.
-        pip_extra_index_url: Extra pip index URL.
-        apt: apt packages to install.
+        accelerator: Accelerator specification. Formats:
+            - "H100" → 1 accelerator
+            - Accelerator.NVIDIA.H100() → 1 GPU full
+            - Accelerator.NVIDIA.H100(count=8) → 8 GPUs
+            - Accelerator.NVIDIA.H100(mig="3g.40gb") → 1 MIG partition
         volume: Volumes to mount.
         spot: Spot strategy.
         cpu: CPU cores per worker (for cgroups limits).
         memory: Memory per worker (e.g., "32GB", for cgroups limits).
+        env: Environment variables (merged with image.env, pool overrides).
 
     Example:
-        pool = Pool(
+        pool = ComputePool(
             provider=AWS(),
-            accelerator=A100(),
-            pip=["torch", "transformers"],
+            accelerator=Accelerator.NVIDIA.A100(),
+            image=Image(pip=["torch", "transformers"]),
         )
 
         with pool:
             result = train(data) | pool
-
-    Worker Isolation Example:
-        pool = Pool(
-            provider=AWS(),
-            accelerator=H100(count=8, mig="3g.40gb"),  # 8 GPUs, 16 workers (MIG)
-            cpu=4,                                      # 4 CPU cores per worker
-            memory="32GB",                              # 32GB RAM per worker
-        )
     """
 
     # Required
     provider: Provider
 
+    # Environment specification
+    image: Image = field(default_factory=lambda: DEFAULT_IMAGE)
+
     # Resource specification
     nodes: int = 1
-    accelerator: Accelerator | list[Accelerator] | AcceleratorSpec | list[AcceleratorSpec] | None = None
+    accelerator: Accelerator | str | None = None
     cpu: int | None = None
     memory: str | None = None
-    python: str = "3.13"
-    pip: Sequence[str] = ()
-    pip_extra_index_url: str | None = None
-    apt: Sequence[str] = ()
     volume: dict[str, str] | Sequence[Volume] | None = None
-    spot: SpotLike = "if-available"
+    spot: SpotLike = "always"
     timeout: int = 3600
     env: dict[str, str] | None = None
 
     # Display settings
     display: Literal["spinner", "log", "quiet"] = "log"
     on_event: Callback | None = None
+    collect_metrics: bool = True
 
     # Internal state
     _active: bool = field(default=False, init=False, repr=False)
@@ -156,43 +146,53 @@ class ComputePool:
     _job_id: str = field(default="", init=False, repr=False)
 
     # Worker isolation state
-    _accelerator_spec: AcceleratorSpec | None = field(default=None, init=False, repr=False)
+    _accelerator_cfg: Accelerator | None = field(default=None, init=False, repr=False)
     _worker_pool: WorkerPool | None = field(default=None, init=False, repr=False)
-    _worker_bootstrap: str = field(default="", init=False, repr=False)
+    _worker_configs: tuple[WorkerConfig, ...] | None = field(default=None, init=False, repr=False)
+    _worker_limits: ResourceLimits | None = field(default=None, init=False, repr=False)
+    _worker_partition_script: str = field(default="", init=False, repr=False)
+    _metrics_pollers: list[MetricsPoller] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        """Parse accelerator spec and validate configuration."""
+        """Parse accelerator and store configuration."""
         if self.accelerator is None:
             return
 
-        # Convert to AcceleratorSpec if it's an AcceleratorSpec or Accelerator string
-        if isinstance(self.accelerator, AcceleratorSpec):
-            self.accelerator.validate()
-            object.__setattr__(self, "_accelerator_spec", self.accelerator)
-        elif isinstance(self.accelerator, str) and not isinstance(self.accelerator, list):
-            # Plain accelerator string like "H100" - create spec with defaults
-            spec = AcceleratorSpec.from_value(self.accelerator)
-            if spec is not None:
-                object.__setattr__(self, "_accelerator_spec", spec)
+        # Convert to Accelerator if it's a string
+        cfg = Accelerator.from_value(self.accelerator)
+        if cfg is not None:
+            object.__setattr__(self, "_accelerator_cfg", cfg)
 
-    def _parse_accelerator_for_provider(self) -> Accelerator | list[Accelerator]:
-        """Get the accelerator type for the provider (without worker info)."""
-        if self._accelerator_spec is not None:
-            # Return just the accelerator type for provider
-            return self._accelerator_spec.accelerator  # type: ignore
-        return self.accelerator
+    def _parse_accelerator_for_provider(self) -> str | None:
+        """Get the accelerator type for the provider."""
+        if self._accelerator_cfg is not None:
+            return self._accelerator_cfg.accelerator
+        return None
 
     @property
     def workers_per_instance(self) -> int:
         """Number of workers per instance."""
-        if self._accelerator_spec is not None:
-            return self._accelerator_spec.workers
-        return 1
+        if self._accelerator_cfg is None:
+            return 1
+        mig = self._accelerator_cfg.multiple_instance
+        if mig is None:
+            return 1
+        if isinstance(mig, list):
+            return self._accelerator_cfg.count * len(mig)
+        return self._accelerator_cfg.count * MIG_MAX_INSTANCES.get(mig, 1)
 
-    def _generate_worker_bootstrap(self, device_count: int) -> str:
-        """Generate worker isolation bootstrap script."""
-        if self._accelerator_spec is None or self._accelerator_spec.workers <= 1:
-            return ""
+    def _get_worker_isolation_data(
+        self, device_count: int
+    ) -> tuple[tuple[WorkerConfig, ...] | None, ResourceLimits | None, str]:
+        """Get worker isolation configuration.
+
+        Returns:
+            Tuple of (worker_configs, resource_limits, partition_script).
+            Returns (None, None, "") if no worker isolation needed.
+        """
+        workers = self.workers_per_instance
+        if self._accelerator_cfg is None or workers <= 1:
+            return None, None, ""
 
         # Create resource limits from cpu/memory
         limits = None
@@ -201,9 +201,9 @@ class ComputePool:
 
         # Get partition strategy for this accelerator
         strategy = create_partition(
-            accelerator=self._accelerator_spec.accelerator,
+            accelerator=self._accelerator_cfg.accelerator,
             device_count=device_count,
-            mig=self._accelerator_spec.mig,
+            mig=self._accelerator_cfg.multiple_instance,
         )
 
         # Generate worker configs using partition strategy's env function
@@ -211,17 +211,12 @@ class ComputePool:
             return strategy.get_worker_env(worker_id, device_count)
 
         configs = generate_worker_configs(
-            worker_count=self._accelerator_spec.workers,
+            worker_count=workers,
             device_env_fn=device_env_fn,
             limits=limits,
         )
 
-        # Generate bootstrap script
-        return generate_worker_bootstrap(
-            configs=configs,
-            limits=limits,
-            partition_setup=strategy.setup_script,
-        )
+        return configs, limits, strategy.setup_script
 
     def __enter__(self) -> ComputePool:
         """Enter pool context and provision resources."""
@@ -376,13 +371,15 @@ class ComputePool:
         if instance is None:
             raise RuntimeError(f"Instance not found for worker {worker.key}")
 
+        # Calculate node index (instance position in cluster)
+        node = next(
+            (i for i, inst in enumerate(self._instances) if inst.id == instance.id),
+            0,
+        )
+
         # Setup cluster environment on first connection to this worker
         worker_key = f"{instance.id}:{worker.worker_id}"
         if worker_key not in self._cluster_setup:
-            node = next(
-                (i for i, inst in enumerate(self._instances) if inst.id == instance.id),
-                0,
-            )
             self._setup_cluster_on_worker(node, worker.worker_id, instance, conn)
 
         # Serialize and send to remote
@@ -396,7 +393,7 @@ class ComputePool:
         def stdout_callback(line: str) -> None:
             emit(
                 LogLine(
-                    node=worker.worker_id,
+                    node=node,
                     instance_id=instance.id,
                     line=line,
                     timestamp=time.time(),
@@ -423,14 +420,15 @@ class ComputePool:
         accelerator_for_provider = self._parse_accelerator_for_provider()
 
         # Determine device count (will be updated after provisioning)
-        # For now, use spec if available
         device_count = 1
-        if self._accelerator_spec is not None:
-            device_count = self._accelerator_spec.count
+        if self._accelerator_cfg is not None:
+            device_count = self._accelerator_cfg.count
 
-        # Generate worker bootstrap script if needed
-        worker_bootstrap = self._generate_worker_bootstrap(device_count)
-        self._worker_bootstrap = worker_bootstrap
+        # Get worker isolation data if needed
+        configs, limits, partition_script = self._get_worker_isolation_data(device_count)
+        object.__setattr__(self, "_worker_configs", configs)
+        object.__setattr__(self, "_worker_limits", limits)
+        object.__setattr__(self, "_worker_partition_script", partition_script)
 
         # Create a Compute-like object that the provider expects
         compute = _PoolCompute(
@@ -438,18 +436,16 @@ class ComputePool:
             fn=lambda: None,  # Placeholder
             nodes=self.nodes,
             accelerator=self.accelerator,  # Keep full spec (e.g., 'L40S:2') for provider to parse
+            image=self.image,
             cpu=self.cpu,
             memory=self.memory,
-            python=self.python,
-            pip=tuple(self.pip),
-            pip_extra_index_url=self.pip_extra_index_url,
-            apt=tuple(self.apt),
-            env=frozenset(self.env.items()) if self.env else frozenset(),
             timeout=self.timeout,
             spot=self.spot,
-            volumes=_parse_volumes(self.volume),
+            volumes=list(_parse_volumes(self.volume)),
             _workers_per_instance=self.workers_per_instance,
-            _worker_bootstrap_script=worker_bootstrap,
+            _worker_configs=configs,
+            _worker_limits=limits,
+            _worker_partition_script=partition_script,
         )
 
         # Provision and setup (providers use emit() directly)
@@ -465,12 +461,24 @@ class ComputePool:
                 worker_count=self.workers_per_instance,
             )
 
+        # Start metrics polling if enabled
+        if self.collect_metrics:
+            for instance in instances:
+                poller = MetricsPoller(instance)
+                poller.start()
+                self._metrics_pollers.append(poller)
+
     def _shutdown(self) -> None:
         """Shutdown and release pool resources."""
         if self._instances is None:
             return
 
         from skyward.pool_compute import _PoolCompute
+
+        # Stop metrics polling
+        for poller in self._metrics_pollers:
+            poller.stop()
+        self._metrics_pollers.clear()
 
         # Close WorkerPool first if active
         if self._worker_pool is not None:
@@ -488,18 +496,16 @@ class ComputePool:
             fn=lambda: None,
             nodes=self.nodes,
             accelerator=accelerator_for_provider,
+            image=self.image,
             cpu=self.cpu,
             memory=self.memory,
-            python=self.python,
-            pip=tuple(self.pip),
-            pip_extra_index_url=self.pip_extra_index_url,
-            apt=tuple(self.apt),
-            env=frozenset(),
             timeout=self.timeout,
             spot=self.spot,
-            volumes=_parse_volumes(self.volume),
+            volumes=list(_parse_volumes(self.volume)),
             _workers_per_instance=self.workers_per_instance,
-            _worker_bootstrap_script=self._worker_bootstrap,
+            _worker_configs=self._worker_configs,
+            _worker_limits=self._worker_limits,
+            _worker_partition_script=self._worker_partition_script,
         )
 
         try:
@@ -533,7 +539,7 @@ class ComputePool:
         ]
 
         # Resolve accelerator by probing instance
-        from skyward.providers.common.accelerator_detection import resolve_accelerator
+        from skyward.providers.accelerator_detection import resolve_accelerator
 
         accelerator_type, accelerator_count = resolve_accelerator(instance)
 
@@ -551,7 +557,9 @@ class ComputePool:
             workers_per_node=self.workers_per_instance,
         )
 
-        env_bytes = serialize(self.env or {})
+        # Merge env from image and pool (pool overrides image)
+        merged_env = {**self.image.env, **(self.env or {})}
+        env_bytes = serialize(merged_env)
         conn.root.setup_cluster(pool_info.model_dump_json(), env_bytes)
         self._cluster_setup.add(worker_key)
 

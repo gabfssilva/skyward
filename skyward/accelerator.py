@@ -1,53 +1,19 @@
 """Accelerator type definitions and detection utilities.
 
-Provides type-safe Literal types for supported accelerators,
-AcceleratorSpec for worker isolation configurations, and
-factory functions with autocomplete support.
+Provides the Accelerator class with nested factory classes for
+type-safe accelerator specifications, along with Literal types
+for supported accelerators and helper functions.
 """
 
 from __future__ import annotations
 
-from abc import ABC
+import inspect
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, Literal, Union
+from typing import TYPE_CHECKING, Final, Literal, Union, overload
+
 
 if TYPE_CHECKING:
     from skyward.cluster import InstanceInfo
-#
-# class Acc(ABC):
-#     accelerator: str
-#     memory: str
-#     count: int = 1
-#     type: Literal['gpu', 'npu', 'tpu'] = 'gpu'
-#
-# @dataclass(frozen=True)
-# class NVIDIA(Acc):
-#     accelerator: NVIDIA
-#     memory: str
-#     count: int = 1
-#     type: Literal['gpu', 'npu', 'tpu'] = 'gpu'
-#     mig: str | list[str] | None = None
-#
-# @dataclass(frozen=True)
-# class H100(NVIDIA):
-#     accelerator: Literal['H100']
-#     count: int = 1
-#     memory: Literal['40GB', '80GB'] = '40GB'
-#     mig: MultiInstance
-#
-#     type MultiInstance = Literal[
-#         "1g.10gb",  # 7 workers, 10GB each
-#         "1g.20gb",  # 4 workers, 20GB each
-#         "2g.20gb",  # 3 workers, 20GB each
-#         "3g.40gb",  # 2 workers, 40GB each
-#         "4g.40gb",  # 1 worker, 40GB
-#     ]
-
-# =============================================================================
-# Type Aliases for Factory Functions
-# =============================================================================
-
-type AcceleratorCount = Literal[1, 2, 3, 4, 5, 6, 7, 8]
 
 # MIG profile types for autocomplete
 type H100MIG = Literal[
@@ -71,6 +37,8 @@ type A100_40GB_MIG = Literal[
     "3g.20gb",  # 2 workers, 20GB each
     "4g.20gb",  # 1 worker, 20GB
 ]
+
+type A100MIG = A100_40GB_MIG | A100_80GB_MIG
 
 
 # =============================================================================
@@ -139,223 +107,236 @@ def _normalize_accelerator(acc: str) -> str:
     return ACCELERATOR_ALIASES.get(acc, acc)
 
 
-# =============================================================================
-# AcceleratorSpec
-# =============================================================================
-
-
-@dataclass(frozen=True, slots=True)
-class AcceleratorSpec:
-    """Accelerator specification with MIG partitioning support.
-
-    Attributes:
-        accelerator: Accelerator type (e.g., "H100-80GB", "T4").
-        count: Number of GPUs.
-        mig: MIG profile(s) for partitioning. None = no MIG (full GPU).
-             String = homogeneous (e.g., "3g.40gb" → 2 workers per GPU).
-             Tuple = heterogeneous (e.g., ("4g.40gb", "3g.40gb") → 2 workers).
+@dataclass(frozen=True)
+class Accelerator:
+    """Accelerator specification with factory methods via nested classes.
 
     Examples:
-        >>> H100()                           # 1 GPU, 1 worker, 80GB
-        >>> H100(count=4)                    # 4 GPUs, 4 workers
-        >>> H100(mig="3g.40gb")              # 1 GPU, 2 workers de 40GB
-        >>> H100(count=2, mig="3g.40gb")     # 2 GPUs, 4 workers
-        >>> H100(mig=("4g.40gb", "3g.40gb")) # 1 GPU, 2 workers (heterogeneous)
+        >>> Accelerator.NVIDIA.H100()           # 1 GPU full
+        >>> Accelerator.NVIDIA.H100(count=4)    # 4 GPUs
+        >>> Accelerator.NVIDIA.H100(mig="3g.40gb")  # 1 MIG partition
+        >>> Accelerator.AMD.MI("300X")          # 1 MI300X
     """
 
     accelerator: str
-    count: int = 1
-    mig: str | tuple[str, ...] | None = None
-
-    @property
-    def workers(self) -> int:
-        """Total number of workers across all GPUs.
-
-        Without MIG: 1 worker manages all GPUs (multi-GPU data parallel).
-        With MIG: 1 worker per MIG partition (each partition is isolated).
-        """
-        if self.mig is None:
-            return 1  # Single process can manage multiple GPUs
-        if isinstance(self.mig, tuple):
-            return self.count * len(self.mig)
-        return self.count * MIG_MAX_INSTANCES[self.mig]
-
-    @property
-    def workers_per_gpu(self) -> int:
-        """Number of workers per GPU."""
-        if self.mig is None:
-            return 1
-        if isinstance(self.mig, tuple):
-            return len(self.mig)
-        return MIG_MAX_INSTANCES[self.mig]
-
-    @property
-    def requires_mig(self) -> bool:
-        """True if MIG partitioning is needed."""
-        return self.mig is not None
-
-    @property
-    def is_heterogeneous(self) -> bool:
-        """True if using different MIG profiles per GPU."""
-        return isinstance(self.mig, tuple) and len(set(self.mig)) > 1
-
-    @property
-    def mig_profiles(self) -> tuple[str, ...] | None:
-        """MIG profiles as tuple (for script generation)."""
-        if self.mig is None:
-            return None
-        if isinstance(self.mig, str):
-            return (self.mig,) * MIG_MAX_INSTANCES[self.mig]
-        return self.mig
-
-    def validate(self) -> None:
-        if self.count <= 0:
-            raise ValueError(f"count must be positive, got {self.count}")
-
-        if self.mig is not None:
-            normalized = _normalize_accelerator(self.accelerator)
-            if normalized not in MIG_CAPABLE:
-                raise ValueError(
-                    f"{self.accelerator} does not support MIG partitioning"
-                )
-
-            # Get valid profiles for this GPU
-            valid_profiles = MIG_PROFILES_FOR_GPU.get(normalized, set())
-
-            # Validate all profiles
-            profiles = (self.mig,) if isinstance(self.mig, str) else self.mig
-            for profile in profiles:
-                if profile not in valid_profiles:
-                    raise ValueError(
-                        f"Profile '{profile}' not valid for {self.accelerator}. "
-                        f"Valid profiles: {sorted(valid_profiles)}"
-                    )
-
-            # For heterogeneous, validate total slices <= 7
-            if isinstance(self.mig, tuple):
-                total_slices = sum(MIG_PROFILE_SLICES[p] for p in self.mig)
-                if total_slices > 7:
-                    raise ValueError(
-                        f"MIG profiles {self.mig} use {total_slices} slices, "
-                        f"but GPU only has 7 slices"
-                    )
+    memory: str
+    count: float = 1
+    multiple_instance: str | list[str] | None = None
 
     @classmethod
-    def from_value(
-        cls, value: AcceleratorSpec | str | None
-    ) -> AcceleratorSpec | None:
-        """Create AcceleratorSpec from various input types.
+    def from_name(cls, name: str) -> "Accelerator | None":
+        """Create Accelerator from GPU name string (dynamic factory lookup)."""
+        for vendor in (cls.NVIDIA, cls.AMD, cls.Habana, cls.AWS, cls.Google):
+            if hasattr(vendor, name):
+                return getattr(vendor, name)()
+        return None
 
-        Args:
-            value: AcceleratorSpec, Accelerator string, or None.
-
-        Returns:
-            AcceleratorSpec or None if value is None.
-        """
+    @classmethod
+    def from_value(cls, value: "Accelerator | str | None") -> "Accelerator | None":
+        """Create Accelerator from various input types."""
         if value is None:
             return None
-        if isinstance(value, AcceleratorSpec):
+        if isinstance(value, Accelerator):
             return value
-        # Accelerator literal (string like "H100")
-        return cls(accelerator=value, count=1, mig=None)
+        return cls(accelerator=value, memory="", count=1)
 
+    @property
+    def fractional(self) -> bool:
+        """True if using fractional GPU (0 < count < 1)."""
+        return 0 < self.count < 1
 
-# =============================================================================
-# Factory Functions (MIG-capable accelerators)
-# =============================================================================
+    class NVIDIA:
+        @staticmethod
+        def H100(
+            count: float = 1,
+            memory: Literal["40GB", "80GB"] = "80GB",
+            form_factor: Literal["SXM", "PCIe", "NVL"] | None = None,
+            mig: H100MIG | list[H100MIG] | None = None,
+        ) -> "Accelerator":
+            if form_factor:
+                name = f"H100-{form_factor}"
+                mem = "94GB" if form_factor == "NVL" else memory
+            else:
+                name = "H100"
+                mem = memory
+            return Accelerator(name, mem, count, mig)
 
+        @staticmethod
+        def H200(count: float = 1) -> "Accelerator":
+            return Accelerator("H200", "141GB", count)
 
-def H100(
-    memory: Literal["40", "80"] = "80",
-    count: AcceleratorCount = 1,
-    mig: H100MIG | list[H100MIG] | None = None,
-) -> AcceleratorSpec:
-    """Create H100 GPU specification.
+        @staticmethod
+        @overload
+        def A100(
+            count: float = 1,
+            memory: Literal["80GB"] = "80GB",
+            mig: A100_80GB_MIG | list[A100_80GB_MIG] | None = None,
+        ) -> "Accelerator": ...
 
-    Args:
-        memory: VRAM variant ("40" or "80" GB).
-        count: Number of GPUs.
-        mig: MIG profile(s) for partitioning.
-            - None: No MIG, 1 worker per GPU (full 80GB)
-            - "3g.40gb": 2 workers per GPU, 40GB each
-            - "2g.20gb": 3 workers per GPU, 20GB each
-            - "1g.10gb": 7 workers per GPU, 10GB each
-            - ("4g.40gb", "3g.40gb"): heterogeneous, 2 workers using 7/7 slices
+        @staticmethod
+        @overload
+        def A100(
+            count: float = 1,
+            memory: Literal["40GB"] = "40GB",
+            mig: A100_40GB_MIG | list[A100_40GB_MIG] | None = None,
+        ) -> "Accelerator": ...
 
-    Examples:
-        >>> H100()                           # 1 GPU, 1 worker, 80GB
-        >>> H100(count=4)                    # 4 GPUs, 4 workers
-        >>> H100(mig="3g.40gb")              # 1 GPU, 2 workers de 40GB
-        >>> H100(mig=("4g.40gb", "3g.40gb")) # 1 GPU, 2 workers (7/7 slices)
-    """
-    return AcceleratorSpec(f"H100-{memory}GB", count, tuple(mig))
+        @staticmethod
+        def A100(
+            count: float = 1,
+            memory: Literal["40GB", "80GB"] = "80GB",
+            mig: A100MIG | list[A100MIG] | None = None,
+        ) -> "Accelerator":
+            return Accelerator("A100", memory, count, mig)
 
+        @staticmethod
+        def B100(count: float = 1) -> "Accelerator":
+            return Accelerator("B100", "192GB", count)
 
-def A100(
-    memory: Literal["40", "80"] = "80",
-    count: AcceleratorCount = 1,
-    mig: A100_80GB_MIG | A100_40GB_MIG | tuple[str, ...] | None = None,
-) -> AcceleratorSpec:
-    """Create A100 GPU specification.
+        @staticmethod
+        def B200(count: float = 1) -> "Accelerator":
+            return Accelerator("B200", "192GB", count)
 
-    Args:
-        memory: VRAM variant ("40" or "80" GB).
-        count: Number of GPUs.
-        mig: MIG profile(s) for partitioning.
+        @staticmethod
+        def GB200(count: float = 1) -> "Accelerator":
+            return Accelerator("GB200", "384GB", count)
 
-    Examples:
-        >>> A100()                  # 1 GPU, 1 worker
-        >>> A100(mig="3g.40gb")     # 1 GPU, 2 workers de 40GB (80GB variant)
-        >>> A100(memory="40", mig="3g.20gb")  # 1 GPU, 2 workers de 20GB
-    """
-    return AcceleratorSpec(f"A100-{memory}GB", count, mig)
+        @staticmethod
+        def GH200(count: float = 1) -> "Accelerator":
+            return Accelerator("GH200", "96GB", count)
 
+        @staticmethod
+        def L4(count: float = 1) -> "Accelerator":
+            return Accelerator("L4", "24GB", count)
 
-# =============================================================================
-# Factory Functions (Non-MIG accelerators)
-# =============================================================================
+        @staticmethod
+        def L40(count: float = 1) -> "Accelerator":
+            return Accelerator("L40", "48GB", count)
 
+        @staticmethod
+        def L40S(count: float = 1) -> "Accelerator":
+            return Accelerator("L40S", "48GB", count)
 
-def T4(count: AcceleratorCount = 1) -> AcceleratorSpec:
-    """Create T4 GPU specification (no MIG support)."""
-    return AcceleratorSpec("T4", count)
+        @staticmethod
+        def T4(count: float = 1) -> "Accelerator":
+            return Accelerator("T4", "16GB", count)
 
+        @staticmethod
+        def A10(count: float = 1) -> "Accelerator":
+            return Accelerator("A10", "24GB", count)
 
-def L4(count: AcceleratorCount = 1) -> AcceleratorSpec:
-    """Create L4 GPU specification (no MIG support)."""
-    return AcceleratorSpec("L4", count)
+        @staticmethod
+        def A10G(count: float = 1) -> "Accelerator":
+            return Accelerator("A10G", "24GB", count)
 
-def M60(count: AcceleratorCount = 1) -> AcceleratorSpec:
-    return AcceleratorSpec("M60", count)
+        @staticmethod
+        def A2(count: float = 1) -> "Accelerator":
+            return Accelerator("A2", "16GB", count)
 
-def L40(count: AcceleratorCount = 1) -> AcceleratorSpec:
-    """Create L40 GPU specification (no MIG support)."""
-    return AcceleratorSpec("L40", count)
+        @staticmethod
+        def V100(count: float = 1, memory: Literal["16GB", "32GB"] = "32GB") -> "Accelerator":
+            return Accelerator("V100", memory, count)
 
+        @staticmethod
+        def P100(count: float = 1) -> "Accelerator":
+            return Accelerator("P100", "16GB", count)
 
-def L40S(count: AcceleratorCount = 1) -> AcceleratorSpec:
-    """Create L40S GPU specification (no MIG support)."""
-    return AcceleratorSpec("L40S", count)
+        @staticmethod
+        def P4(count: float = 1) -> "Accelerator":
+            return Accelerator("P4", "8GB", count)
 
+        @staticmethod
+        def K80(count: float = 1) -> "Accelerator":
+            return Accelerator("K80", "12GB", count)
 
-def V100(count: AcceleratorCount = 1) -> AcceleratorSpec:
-    """Create V100 GPU specification (no MIG support)."""
-    return AcceleratorSpec("V100", count)
+        @staticmethod
+        def RTX3080(count: float = 1) -> "Accelerator":
+            return Accelerator("RTX3080", "10GB", count)
 
+        @staticmethod
+        def RTX3090(count: float = 1) -> "Accelerator":
+            return Accelerator("RTX3090", "24GB", count)
 
-def P100(count: AcceleratorCount = 1) -> AcceleratorSpec:
-    """Create P100 GPU specification (no MIG support)."""
-    return AcceleratorSpec("P100", count)
+        @staticmethod
+        def RTX4080(count: float = 1) -> "Accelerator":
+            return Accelerator("RTX4080", "16GB", count)
 
+        @staticmethod
+        def RTX4090(count: float = 1) -> "Accelerator":
+            return Accelerator("RTX4090", "24GB", count)
 
-def RTX3090(count: AcceleratorCount = 1) -> AcceleratorSpec:
-    """Create RTX 3090 GPU specification (no MIG support)."""
-    return AcceleratorSpec("RTX3090", count)
+    class AMD:
+        @staticmethod
+        def MI(
+            model: Literal["50", "100", "210", "250", "250X", "300A", "300B", "300X"],
+            count: float = 1,
+        ) -> "Accelerator":
+            memory = {
+                "50": "16GB", "100": "32GB", "210": "64GB",
+                "250": "128GB", "250X": "128GB",
+                "300A": "128GB", "300B": "192GB", "300X": "192GB",
+            }
+            return Accelerator(f"MI{model}", memory[model], count)
 
+        @staticmethod
+        def RadeonPro(
+            model: Literal["V520", "V710"],
+            count: float = 1,
+        ) -> "Accelerator":
+            """Radeon Pro GPUs for graphics/streaming workloads (AWS g4ad, Azure)."""
+            memory = {"V520": "8GB", "V710": "16GB"}
+            return Accelerator(f"RadeonPro-{model}", memory[model], count)
 
-def RTX4090(count: AcceleratorCount = 1) -> AcceleratorSpec:
-    """Create RTX 4090 GPU specification (no MIG support)."""
-    return AcceleratorSpec("RTX4090", count)
+        @staticmethod
+        def Instinct(
+            model: Literal["MI25"],
+            count: float = 1,
+        ) -> "Accelerator":
+            """Radeon Instinct GPUs (Azure NVv4)."""
+            memory = {"MI25": "16GB"}
+            return Accelerator(f"Instinct-{model}", memory[model], count)
+
+    class Habana:
+        @staticmethod
+        def Gaudi(version: Literal[1, 2, 3] = 3, count: float = 1) -> "Accelerator":
+            memory = {1: "32GB", 2: "96GB", 3: "128GB"}
+            name = "Gaudi" if version == 1 else f"Gaudi{version}"
+            return Accelerator(name, memory[version], count)
+
+    class AWS:
+        @staticmethod
+        def Trainium(version: Literal[1, 2, 3] = 2, count: float = 1) -> "Accelerator":
+            memory = {1: "32GB", 2: "64GB", 3: "128GB"}
+            return Accelerator(f"Trainium{version}", memory[version], count)
+
+        @staticmethod
+        def Inferentia(version: Literal[1, 2] = 2, count: float = 1) -> "Accelerator":
+            memory = {1: "8GB", 2: "32GB"}
+            return Accelerator(f"Inferentia{version}", memory[version], count)
+
+    class Google:
+        @staticmethod
+        def TPU(
+            version: Literal["v2", "v3", "v4", "v5e", "v5p", "v6"] = "v5p",
+            count: float = 1,
+        ) -> "Accelerator":
+            memory = {"v2": "8GB", "v3": "16GB", "v4": "32GB", "v5e": "16GB", "v5p": "95GB", "v6": "32GB"}
+            return Accelerator(f"TPU{version}", memory[version], count)
+
+        @staticmethod
+        def TPUSlice(
+            version: Literal["v2-8", "v3-8", "v3-32", "v4-64", "v5e-4", "v5p-8"],
+        ) -> "Accelerator":
+            config = {
+                "v2-8": ("64GB", 8),
+                "v3-8": ("128GB", 8),
+                "v3-32": ("512GB", 32),
+                "v4-64": ("2TB", 64),
+                "v5e-4": ("64GB", 4),
+                "v5p-8": ("760GB", 8),
+            }
+            mem, cnt = config[version]
+            return Accelerator(f"TPU{version}", mem, cnt)
 
 
 # =============================================================================
@@ -445,6 +426,7 @@ TPU = Literal[
 # =============================================================================
 
 AMD = Literal[
+    # Instinct (data center compute)
     "MI50",
     "MI100",
     "MI210",
@@ -453,6 +435,10 @@ AMD = Literal[
     "MI300A",
     "MI300B",
     "MI300X",
+    "Instinct-MI25",
+    # Radeon Pro (graphics/streaming)
+    "RadeonPro-V520",
+    "RadeonPro-V710",
 ]
 
 
@@ -477,7 +463,7 @@ GPU = Union[
     None,
 ]
 
-Accelerator = Union[
+AcceleratorType = Union[
     NVIDIA,
     Trainium,
     Inferentia,
@@ -519,6 +505,7 @@ _TPU_VALUES: Final[frozenset[str]] = frozenset({
 
 _AMD_VALUES: Final[frozenset[str]] = frozenset({
     "MI50", "MI100", "MI210", "MI250", "MI250X", "MI300A", "MI300B", "MI300X",
+    "Instinct-MI25", "RadeonPro-V520", "RadeonPro-V710",
 })
 
 _HABANA_VALUES: Final[frozenset[str]] = frozenset({
@@ -531,42 +518,42 @@ _HABANA_VALUES: Final[frozenset[str]] = frozenset({
 # =============================================================================
 
 
-def is_nvidia(acc: Accelerator) -> bool:
+def is_nvidia(acc: AcceleratorType) -> bool:
     """Check if accelerator is an NVIDIA GPU."""
     return acc in _NVIDIA_VALUES
 
 
-def is_trainium(acc: Accelerator) -> bool:
+def is_trainium(acc: AcceleratorType) -> bool:
     """Check if accelerator is AWS Trainium."""
     return acc in _TRAINIUM_VALUES
 
 
-def is_inferentia(acc: Accelerator) -> bool:
+def is_inferentia(acc: AcceleratorType) -> bool:
     """Check if accelerator is AWS Inferentia."""
     return acc in _INFERENTIA_VALUES
 
 
-def is_tpu(acc: Accelerator) -> bool:
+def is_tpu(acc: AcceleratorType) -> bool:
     """Check if accelerator is a Google TPU."""
     return acc in _TPU_VALUES
 
 
-def is_amd(acc: Accelerator) -> bool:
+def is_amd(acc: AcceleratorType) -> bool:
     """Check if accelerator is an AMD GPU."""
     return acc in _AMD_VALUES
 
 
-def is_habana(acc: Accelerator) -> bool:
+def is_habana(acc: AcceleratorType) -> bool:
     """Check if accelerator is a Habana Gaudi."""
     return acc in _HABANA_VALUES
 
 
-def is_gpu(acc: Accelerator) -> bool:
+def is_gpu(acc: AcceleratorType) -> bool:
     """Check if accelerator is any GPU (NVIDIA or AMD)."""
     return acc in _NVIDIA_VALUES or acc in _AMD_VALUES
 
 
-def current_accelerator() -> Accelerator:
+def current_accelerator() -> AcceleratorType:
     """Get the accelerator type for the current compute pool.
 
     Returns:

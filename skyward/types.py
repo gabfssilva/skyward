@@ -7,6 +7,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
+if TYPE_CHECKING:
+    from skyward.skyimage import Image
 
 # Re-export from accelerator module for convenience
 from skyward.accelerator import GPU, NVIDIA, Accelerator, Trainium, current_accelerator
@@ -19,6 +21,8 @@ __all__ = [
     "Accelerator",
     "current_accelerator",
     # Core types
+    "InstanceSpec",
+    "select_instance",
     "Instance",
     "ExitedInstance",
     # Legacy types (used by runtime modules)
@@ -28,6 +32,115 @@ __all__ = [
     "ComputeSpec",
     "Provider",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class InstanceSpec:
+    """Unified instance specification across all providers.
+
+    Represents an available instance/droplet type with its specs.
+    Provider-specific data (e.g., architecture, regions) goes in metadata.
+    """
+
+    name: str  # type_name (AWS) ou slug (DO, Verda)
+    vcpu: int
+    memory_gb: float
+    accelerator: str | None = None
+    accelerator_count: float = 0
+    accelerator_memory_gb: float = 0
+    price_on_demand: float | None = None  # USD per hour
+    price_spot: float | None = None  # USD per hour (if available)
+    billing_increment_minutes: int | None = None  # None = per-second billing
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def _normalize_accelerator_name(acc: str | Accelerator) -> str:
+    """Normalize accelerator name for comparison."""
+    acc_str = acc.accelerator if isinstance(acc, Accelerator) else str(acc)
+    return acc_str.upper().replace("-", "").replace("_", "")
+
+
+def select_instance(
+    instances: tuple[InstanceSpec, ...],
+    cpu: int = 1,
+    memory_mb: int = 1024,
+    accelerator: str | Accelerator | None = None,
+    accelerator_count: float = 1,
+) -> InstanceSpec:
+    """Select smallest instance that meets requirements.
+
+    Generic selection function that works with any provider's instances.
+
+    Args:
+        instances: Available instances from provider.available_instances().
+        cpu: Required number of vCPUs.
+        memory_mb: Required memory in MB.
+        accelerator: Required accelerator type (e.g., "H100", "A100").
+        accelerator_count: Required number of accelerators.
+
+    Returns:
+        InstanceSpec that meets requirements.
+
+    Raises:
+        ValueError: If no instance type meets the requirements.
+    """
+    memory_gb = memory_mb / 1024
+
+    if accelerator:
+        acc_normalized = _normalize_accelerator_name(accelerator)
+        candidates = [
+            s for s in instances
+            if s.accelerator
+            and _normalize_accelerator_name(s.accelerator) == acc_normalized
+            and s.accelerator_count >= accelerator_count
+            and s.vcpu >= cpu
+            and s.memory_gb >= memory_gb
+        ]
+
+        if not candidates:
+            available_counts = sorted({
+                s.accelerator_count for s in instances
+                if s.accelerator
+                and _normalize_accelerator_name(s.accelerator) == acc_normalized
+            })
+            if available_counts:
+                raise ValueError(
+                    f"No instance type found for {accelerator_count}x {accelerator} "
+                    f"with {cpu} vCPU, {memory_gb}GB RAM. "
+                    f"Available counts for {accelerator}: {available_counts}"
+                )
+            available = sorted({s.accelerator for s in instances if s.accelerator})
+            raise ValueError(
+                f"No instance type found for {accelerator}. "
+                f"Available accelerator types: {available}"
+            )
+
+        return candidates[0]
+
+    # Standard instances (no accelerator)
+    candidates = [
+        s for s in instances
+        if not s.accelerator
+        and s.vcpu >= cpu
+        and s.memory_gb >= memory_gb
+    ]
+
+    if not candidates:
+        # Fallback: include any instance that meets CPU/memory
+        candidates = [
+            s for s in instances
+            if s.vcpu >= cpu and s.memory_gb >= memory_gb
+        ]
+
+    if not candidates:
+        max_vcpu = max((s.vcpu for s in instances), default=0)
+        max_mem = max((s.memory_gb for s in instances), default=0)
+        raise ValueError(
+            f"No instance type found for {cpu} vCPU, {memory_gb}GB RAM. "
+            f"Maximum available: {max_vcpu} vCPU, {max_mem}GB RAM"
+        )
+
+    return candidates[0]
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,16 +282,12 @@ class ComputeSpec(Protocol):
 
     nodes: int
     accelerator: Any  # Accelerator | list[Accelerator] | str (e.g., "H100:8:16")
+    image: Image  # Environment specification (python, pip, apt, env)
     cpu: int | None
     memory: str | None
-    python: str
-    pip: tuple[str, ...]
-    pip_extra_index_url: str | None
-    apt: tuple[str, ...]
-    env: frozenset[tuple[str, str]]
     timeout: int
     spot: Any  # SpotLike
-    volumes: tuple[Any, ...]  # tuple[Volume, ...]
+    volumes: list[Any]  # list[Volume]
 
     @property
     def name(self) -> str:
@@ -188,11 +297,6 @@ class ComputeSpec(Protocol):
     @property
     def is_cluster(self) -> bool:
         """True if multi-node cluster."""
-        ...
-
-    @property
-    def env_dict(self) -> dict[str, str]:
-        """Environment variables as dict."""
         ...
 
     @property
@@ -213,11 +317,6 @@ class ComputeSpec(Protocol):
     @property
     def workers_per_instance(self) -> int:
         """Number of workers per instance (for worker isolation)."""
-        ...
-
-    @property
-    def worker_bootstrap_script(self) -> str:
-        """Bootstrap script for worker isolation (cgroups, systemd, etc.)."""
         ...
 
 
@@ -331,6 +430,17 @@ class Provider(Protocol):
         Returns:
             Tuple of Instance objects for all running peers, sorted by private_ip.
             The node field is assigned based on sort order (lowest IP = node 0).
+        """
+        ...
+
+    def available_instances(self) -> tuple[InstanceSpec, ...]:
+        """List all available instance types for this provider.
+
+        Returns cached results from discovery (24h TTL).
+        Includes both standard (CPU) and accelerator (GPU) instances.
+
+        Returns:
+            Tuple of InstanceSpec with available instance types.
         """
         ...
 

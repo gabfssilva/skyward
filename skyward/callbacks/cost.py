@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
+from math import ceil
 from typing import TYPE_CHECKING, Literal
 
 from skyward.events import (
@@ -31,6 +32,8 @@ class _InstanceCost:
     instance_type: str
     is_spot: bool
     hourly_rate: float
+    on_demand_rate: float  # Stored for savings calculation
+    billing_increment_minutes: int | None = None  # None = per-second billing
     start_time: float | None = None
     end_time: float | None = None
 
@@ -42,8 +45,20 @@ class _InstanceCost:
         return end - self.start_time
 
     @property
+    def billable_hours(self) -> float:
+        """Calculate billable hours, respecting billing increment."""
+        elapsed_minutes = self.elapsed_seconds / 60
+        if self.billing_increment_minutes is not None:
+            # Round up to next billing increment
+            billable_minutes = ceil(elapsed_minutes / self.billing_increment_minutes) * self.billing_increment_minutes
+        else:
+            # Per-second billing
+            billable_minutes = elapsed_minutes
+        return billable_minutes / 60
+
+    @property
     def cost(self) -> float:
-        return (self.elapsed_seconds / 3600) * self.hourly_rate
+        return self.billable_hours * self.hourly_rate
 
 
 @dataclass
@@ -54,22 +69,49 @@ class _CostState:
     provider: Literal["aws", "azure", "gcp"]
     instances: dict[str, _InstanceCost] = field(default_factory=dict)
 
-    def register(self, instance_id: str, is_spot: bool, instance_type: str) -> None:
-        """Register an instance and fetch its pricing."""
-        pricing = get_instance_pricing(instance_type, self.provider, self.region)
+    def register(
+        self,
+        instance_id: str,
+        is_spot: bool,
+        instance_type: str,
+        price_on_demand: float | None = None,
+        price_spot: float | None = None,
+        billing_increment_minutes: int | None = None,
+    ) -> None:
+        """Register an instance and determine its pricing.
 
-        if pricing is None:
-            hourly_rate = 0.0
-        elif is_spot and pricing.spot_avg is not None:
-            hourly_rate = pricing.spot_avg
-        else:
-            hourly_rate = pricing.ondemand or 0.0
+        Prefers pricing from InstanceSpec if available, falls back to Vantage API.
+        """
+        hourly_rate: float = 0.0
+        on_demand_rate: float = 0.0
+
+        # Prefer pricing from InstanceSpec if available
+        if price_on_demand is not None:
+            on_demand_rate = price_on_demand
+        if price_spot is not None and is_spot:
+            hourly_rate = price_spot
+        elif price_on_demand is not None:
+            hourly_rate = price_on_demand
+
+        # Fallback to Vantage API lookup if not provided
+        if hourly_rate == 0.0 or on_demand_rate == 0.0:
+            pricing = get_instance_pricing(instance_type, self.provider, self.region)
+            if pricing is not None:
+                if hourly_rate == 0.0:
+                    if is_spot and pricing.spot_avg is not None:
+                        hourly_rate = pricing.spot_avg
+                    else:
+                        hourly_rate = pricing.ondemand or 0.0
+                if on_demand_rate == 0.0:
+                    on_demand_rate = pricing.ondemand or 0.0
 
         self.instances[instance_id] = _InstanceCost(
             instance_id=instance_id,
             instance_type=instance_type,
             is_spot=is_spot,
             hourly_rate=hourly_rate,
+            on_demand_rate=on_demand_rate,
+            billing_increment_minutes=billing_increment_minutes,
         )
 
     def start_billing(self, instance_id: str) -> None:
@@ -142,12 +184,8 @@ class _CostState:
                 total_hourly += inst.hourly_rate
                 actual_cost += inst.cost
 
-                # Calculate what on-demand would have cost
-                pricing = get_instance_pricing(
-                    inst.instance_type, self.provider, self.region
-                )
-                od_rate = pricing.ondemand if pricing else inst.hourly_rate
-                ondemand_cost += (inst.elapsed_seconds / 3600) * (od_rate or 0)
+                # Calculate what on-demand would have cost (using stored rate and billable hours)
+                ondemand_cost += inst.billable_hours * inst.on_demand_rate
 
                 if inst.is_spot:
                     spot_count += 1
@@ -196,9 +234,14 @@ def cost_tracker(
         with lock:
             match event:
                 case InstanceProvisioned(
-                    instance_id=iid, spot=spot, instance_type=itype
+                    instance_id=iid,
+                    spot=spot,
+                    instance_type=itype,
+                    price_on_demand=od,
+                    price_spot=sp,
+                    billing_increment_minutes=billing,
                 ) if itype:
-                    state.register(iid, spot, itype)
+                    state.register(iid, spot, itype, od, sp, billing)
                     return None
 
                 case BootstrapCompleted(instance_id=iid):

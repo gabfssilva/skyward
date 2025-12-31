@@ -11,18 +11,20 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from skyward.accelerator import Accelerator
+from skyward.skyimage import Image
 from skyward.spec import SpotLike
 
 if TYPE_CHECKING:
     from skyward.pool import ComputePool
     from skyward.volume import Volume
+    from skyward.worker.config import ResourceLimits, WorkerConfig
 
 
 @dataclass(frozen=True, slots=True)
 class _PoolCompute:
     """Adapter that makes a Pool look like a Compute for Provider protocol.
 
-    Providers expect a Compute object with attributes like `nodes`, `pip`,
+    Providers expect a Compute object with attributes like `nodes`, `image`,
     `accelerator`, etc. This adapter wraps Pool to provide those attributes.
     """
 
@@ -30,20 +32,18 @@ class _PoolCompute:
     fn: Callable[..., Any]
     nodes: int
     accelerator: Accelerator | list[Accelerator]
+    image: Image
     cpu: int | None
     memory: str | None
-    python: str
-    pip: tuple[str, ...]
-    pip_extra_index_url: str | None
-    apt: tuple[str, ...]
-    env: frozenset[tuple[str, str]]
     timeout: int
     spot: SpotLike
-    volumes: tuple[Volume, ...]
+    volumes: list[Volume]
 
     # Worker isolation fields
     _workers_per_instance: int = 1
-    _worker_bootstrap_script: str = ""
+    _worker_configs: tuple[WorkerConfig, ...] | None = None
+    _worker_limits: ResourceLimits | None = None
+    _worker_partition_script: str = ""
 
     # Properties expected by providers
 
@@ -56,11 +56,6 @@ class _PoolCompute:
     def is_cluster(self) -> bool:
         """True if multi-node."""
         return self.nodes > 1
-
-    @property
-    def env_dict(self) -> dict[str, str]:
-        """Environment variables as dict."""
-        return dict(self.env)
 
     @property
     def wrapped_fn(self) -> Callable[..., Any]:
@@ -83,9 +78,19 @@ class _PoolCompute:
         return self._workers_per_instance
 
     @property
-    def worker_bootstrap_script(self) -> str:
-        """Bootstrap script for worker isolation (cgroups, systemd, etc.)."""
-        return self._worker_bootstrap_script
+    def worker_configs(self) -> tuple[WorkerConfig, ...] | None:
+        """Worker configurations for isolation."""
+        return self._worker_configs
+
+    @property
+    def worker_limits(self) -> ResourceLimits | None:
+        """Resource limits for workers."""
+        return self._worker_limits
+
+    @property
+    def worker_partition_script(self) -> str:
+        """MIG/partition setup script."""
+        return self._worker_partition_script
 
     # Compatibility properties (not used but may be checked)
 

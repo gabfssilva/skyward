@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import threading
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
@@ -30,12 +31,22 @@ class MetricsPoller:
         self.interval = interval
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._context: contextvars.Context | None = None
 
     def start(self) -> None:
         """Start polling in background thread."""
         self._stop_event.clear()
-        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
+        # Capture current context (includes callback ContextVar)
+        self._context = contextvars.copy_context()
+        self._thread = threading.Thread(target=self._run_with_context, daemon=True)
         self._thread.start()
+
+    def _run_with_context(self) -> None:
+        """Run poll loop within captured context."""
+        if self._context is not None:
+            self._context.run(self._poll_loop)
+        else:
+            self._poll_loop()
 
     def stop(self) -> None:
         """Stop polling."""

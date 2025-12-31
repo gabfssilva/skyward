@@ -83,6 +83,13 @@ def _log_cloud(level: str, instance_id: str, node: int, msg: str) -> None:
     lvl = _format_level(level)
     _emit(f"{ts} | <blue>{source:<20}</blue> | {lvl} | <bold>{msg}</bold>")
 
+def _log_metrics(level: str, instance_id: str, node: int,  msg: str) -> None:
+    """Log with metrics source."""
+    ts = _timestamp()
+    source = f"{instance_id[:12]} {_node_emoji(node)}"
+    lvl = _format_level(level)
+    _emit(f"{ts} | <orange>{source:<20}</orange> | {lvl} | <bold>{msg}</bold>")
+
 
 def log(event: SkywardEvent) -> None:
     """Callback that prints formatted events to stdout with emojis.
@@ -143,8 +150,8 @@ def log(event: SkywardEvent) -> None:
         case LogLine(node=node, instance_id=iid, line=line) if line.strip():
             _log_cloud("INFO", iid, node, f"☁️  {line.rstrip()}")
 
-        case Metrics():
-            pass  # Silent - too verbose
+        case Metrics(node=node, instance_id=iid) as metrics:
+            _log_metrics("INFO", iid, node, f"CPU {metrics.cpu_percent}% ~ Memory {metrics.memory_used_mb}MB / {metrics.memory_total_mb}MB ~ GPU {metrics.gpu_utilization}%, {metrics.gpu_memory_used_mb}MB / {metrics.gpu_memory_total_mb}MB")
 
         # Cost events
         case CostUpdate(
