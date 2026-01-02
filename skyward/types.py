@@ -23,6 +23,7 @@ __all__ = [
     # Core types
     "InstanceSpec",
     "select_instance",
+    "parse_memory_mb",
     "Instance",
     "ExitedInstance",
     # Protocols
@@ -51,6 +52,38 @@ class InstanceSpec:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+def parse_memory_mb(memory: str | int | None) -> int:
+    """Parse memory to MB.
+
+    Args:
+        memory: Memory specification. Can be:
+            - None: Returns 1024 MB (1GB) default
+            - int: Treated as MB directly
+            - str: Parsed with suffix (e.g., '8GB', '4096MB', '8G', '4096M')
+
+    Returns:
+        Memory in MB.
+    """
+    if memory is None:
+        return 1024
+
+    if isinstance(memory, int):
+        return memory
+
+    memory = memory.strip().upper()
+    if memory.endswith("GB"):
+        return int(float(memory[:-2]) * 1024)
+    if memory.endswith("MB"):
+        return int(float(memory[:-2]))
+    if memory.endswith("G"):
+        return int(float(memory[:-1]) * 1024)
+    if memory.endswith("M"):
+        return int(float(memory[:-1]))
+
+    # Assume MB if no suffix
+    return int(float(memory))
+
+
 def _normalize_accelerator_name(acc: str | Accelerator) -> str:
     """Normalize accelerator name for comparison."""
     acc_str = acc.accelerator if isinstance(acc, Accelerator) else str(acc)
@@ -63,8 +96,9 @@ def select_instance(
     memory_mb: int = 1024,
     accelerator: str | Accelerator | None = None,
     accelerator_count: float = 1,
+    prefer_spot: bool = False,
 ) -> InstanceSpec:
-    """Select smallest instance that meets requirements.
+    """Select cheapest instance that meets requirements.
 
     Generic selection function that works with any provider's instances.
 
@@ -74,14 +108,20 @@ def select_instance(
         memory_mb: Required memory in MB.
         accelerator: Required accelerator type (e.g., "H100", "A100").
         accelerator_count: Required number of accelerators.
+        prefer_spot: If True, sort by spot price; otherwise by on-demand price.
 
     Returns:
-        InstanceSpec that meets requirements.
+        InstanceSpec that meets requirements (cheapest option).
 
     Raises:
         ValueError: If no instance type meets the requirements.
     """
     memory_gb = memory_mb / 1024
+
+    def _price_key(s: InstanceSpec) -> float:
+        if prefer_spot:
+            return s.price_spot or s.price_on_demand or float("inf")
+        return s.price_on_demand or float("inf")
 
     if accelerator:
         acc_normalized = _normalize_accelerator_name(accelerator)
@@ -112,6 +152,7 @@ def select_instance(
                 f"Available accelerator types: {available}"
             )
 
+        candidates.sort(key=_price_key)
         return candidates[0]
 
     # Standard instances (no accelerator)
@@ -137,6 +178,7 @@ def select_instance(
             f"Maximum available: {max_vcpu} vCPU, {max_mem}GB RAM"
         )
 
+    candidates.sort(key=_price_key)
     return candidates[0]
 
 

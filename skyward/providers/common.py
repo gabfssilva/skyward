@@ -13,7 +13,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from subprocess import PIPE, Popen
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from tenacity import (
     RetryError,
@@ -27,7 +27,6 @@ from tenacity import (
 from skyward.callback import emit
 from skyward.constants import RPYC_PORT, SKYWARD_DIR
 from skyward.events import BootstrapProgress
-
 
 if TYPE_CHECKING:
     from skyward.providers.base import Transport
@@ -309,27 +308,22 @@ def build_wheel() -> Path:
     return next(build_dir.glob("*.whl"))
 
 
-def _build_wheel_install_script(
-    wheel_name: str,
-    workers_per_instance: int,
-    worker_configs: tuple[Any, ...] | None,
-    worker_limits: Any | None,
-    partition_script: str,
-) -> str:
+def _build_wheel_install_script(wheel_name: str) -> str:
     """Build complete wheel installation + service setup script.
 
     Single script that does everything:
     1. Find uv
     2. Install wheel
     3. Verify installation
-    4. Setup systemd service(s)
+    4. Setup single RPyC systemd service
 
     Returns:
         Shell script string.
     """
-    from skyward.bootstrap import bootstrap as bootstrap_ops, systemd
+    from skyward.bootstrap import bootstrap as bootstrap_ops
+    from skyward.bootstrap import systemd
     from skyward.bootstrap import wait_for_port as wait_for_port_op
-    from skyward.bootstrap.worker import rpyc_service_unit, worker_server_ops
+    from skyward.bootstrap.worker import rpyc_service_unit
 
     # Common preamble: move wheel from /tmp (where user can upload) and install
     preamble = f"""
@@ -350,19 +344,13 @@ $UV_PATH pip install {SKYWARD_DIR}/{wheel_name}
 {SKYWARD_DIR}/.venv/bin/python -c 'import skyward; print(skyward.__file__)'
 """
 
-    # Service setup based on worker configuration
-    if workers_per_instance > 1 and worker_configs is not None:
-        service_script = bootstrap_ops(
-            *worker_server_ops(worker_configs, worker_limits, partition_script),
-            header="",
-        )
-    else:
-        unit_content = rpyc_service_unit()
-        service_script = bootstrap_ops(
-            systemd("skyward-rpyc", unit_content),
-            wait_for_port_op(RPYC_PORT, timeout=30),
-            header="",
-        )
+    # Always use single RPyC service (concurrency handled via slots, not workers)
+    unit_content = rpyc_service_unit()
+    service_script = bootstrap_ops(
+        systemd("skyward-rpyc", unit_content),
+        wait_for_port_op(RPYC_PORT, timeout=30),
+        header="",
+    )
 
     return f"#!/bin/bash\nset -e\n{preamble}\n{service_script}"
 
@@ -381,8 +369,7 @@ def install_skyward_wheel_via_transport(
         instances: Instances to install on.
         get_transport: Factory that creates a context manager yielding a Transport
             for each instance. The context manager handles lifecycle (e.g., tunnel cleanup).
-        compute: Compute spec with worker configuration. If provided and
-            workers_per_instance > 1, creates multiple worker services.
+        compute: Compute spec (unused, kept for backward compatibility).
 
     Example:
         # SSH-based providers (Verda, DigitalOcean)
@@ -407,26 +394,8 @@ def install_skyward_wheel_via_transport(
 
     wheel_path = build_wheel()
 
-    # Determine if we need multi-worker setup
-    workers_per_instance = 1
-    worker_configs = None
-    worker_limits = None
-    partition_script = ""
-
-    if compute is not None:
-        workers_per_instance = getattr(compute, "workers_per_instance", 1)
-        worker_configs = getattr(compute, "worker_configs", None)
-        worker_limits = getattr(compute, "worker_limits", None)
-        partition_script = getattr(compute, "worker_partition_script", "")
-
-    # Build single script that does everything
-    install_script = _build_wheel_install_script(
-        wheel_path.name,
-        workers_per_instance,
-        worker_configs,
-        worker_limits,
-        partition_script,
-    )
+    # Build single script that does everything (always single RPyC service)
+    install_script = _build_wheel_install_script(wheel_path.name)
 
     def install_on_instance(inst: Instance) -> None:
         import tempfile

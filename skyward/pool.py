@@ -36,31 +36,21 @@ from collections.abc import Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
-from skyward.accelerator import Accelerator, MIG_MAX_INSTANCES
+from skyward.accelerator import Accelerator
 from skyward.callback import Callback, compose, emit, use_callback
 from skyward.callbacks import cost_tracker, log, spinner
 from skyward.conc import map_async
 from skyward.events import Error, LogLine, PoolStarted, PoolStopping
 from skyward.exceptions import ExecutionError, NotProvisionedError
+from skyward.image import DEFAULT_IMAGE, Image
 from skyward.metrics import MetricsPoller
 from skyward.pending import PendingBatch, PendingCompute
-from skyward.image import DEFAULT_IMAGE, Image
 from skyward.spec import SpotLike
+from skyward.task import PooledConnection, TaskPool
 from skyward.types import Instance, Provider
 from skyward.volume import Volume, parse_volume_uri
-from skyward.worker import (
-    ResourceLimits,
-    Worker,
-    WorkerConfig,
-    WorkerPool,
-    create_partition,
-    generate_worker_configs,
-)
-
-if TYPE_CHECKING:
-    import rpyc
 
 
 def _parse_volumes(
@@ -131,6 +121,9 @@ class ComputePool:
     timeout: int = 3600
     env: dict[str, str] | None = None
 
+    # Concurrency
+    concurrency: int = 1  # Number of concurrent tasks per instance
+
     # Display settings
     display: Literal["spinner", "log", "quiet"] = "log"
     on_event: Callback | None = None
@@ -142,16 +135,13 @@ class ComputePool:
     _callback_ctx: AbstractContextManager[None] | None = field(
         default=None, init=False, repr=False
     )
-    _cluster_setup: set[str] = field(default_factory=set, init=False, repr=False)
     _job_id: str = field(default="", init=False, repr=False)
 
-    # Worker isolation state
+    # Task pool state
     _accelerator_cfg: Accelerator | None = field(default=None, init=False, repr=False)
-    _worker_pool: WorkerPool | None = field(default=None, init=False, repr=False)
-    _worker_configs: tuple[WorkerConfig, ...] | None = field(default=None, init=False, repr=False)
-    _worker_limits: ResourceLimits | None = field(default=None, init=False, repr=False)
-    _worker_partition_script: str = field(default="", init=False, repr=False)
+    _task_pool: TaskPool | None = field(default=None, init=False, repr=False)
     _metrics_pollers: list[MetricsPoller] = field(default_factory=list, init=False, repr=False)
+    _event_callback: Callback | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Parse accelerator and store configuration."""
@@ -171,52 +161,27 @@ class ComputePool:
 
     @property
     def workers_per_instance(self) -> int:
-        """Number of workers per instance."""
-        if self._accelerator_cfg is None:
-            return 1
-        mig = self._accelerator_cfg.multiple_instance
-        if mig is None:
-            return 1
-        if isinstance(mig, list):
-            return self._accelerator_cfg.count * len(mig)
-        return self._accelerator_cfg.count * MIG_MAX_INSTANCES.get(mig, 1)
+        """Number of workers per instance.
+
+        Always returns 1 - one RPyC server per instance.
+        Concurrency is controlled by the `concurrency` parameter.
+        """
+        return 1
+
+    @property
+    def total_slots(self) -> int:
+        """Total number of execution slots (nodes * concurrency)."""
+        return self.nodes * self.concurrency
 
     def _get_worker_isolation_data(
         self, device_count: int
-    ) -> tuple[tuple[WorkerConfig, ...] | None, ResourceLimits | None, str]:
+    ) -> tuple[None, None, str]:
         """Get worker isolation configuration.
 
-        Returns:
-            Tuple of (worker_configs, resource_limits, partition_script).
-            Returns (None, None, "") if no worker isolation needed.
+        Always returns (None, None, "") - no worker isolation.
+        We use a single RPyC server per instance with concurrent slots.
         """
-        workers = self.workers_per_instance
-        if self._accelerator_cfg is None or workers <= 1:
-            return None, None, ""
-
-        # Create resource limits from cpu/memory
-        limits = None
-        if self.cpu is not None or self.memory is not None:
-            limits = ResourceLimits.from_params(memory=self.memory, cpu=self.cpu)
-
-        # Get partition strategy for this accelerator
-        strategy = create_partition(
-            accelerator=self._accelerator_cfg.accelerator,
-            device_count=device_count,
-            mig=self._accelerator_cfg.multiple_instance,
-        )
-
-        # Generate worker configs using partition strategy's env function
-        def device_env_fn(worker_id: int) -> dict[str, str]:
-            return strategy.get_worker_env(worker_id, device_count)
-
-        configs = generate_worker_configs(
-            worker_count=workers,
-            device_env_fn=device_env_fn,
-            limits=limits,
-        )
-
-        return configs, limits, strategy.setup_script
+        return None, None, ""
 
     def __enter__(self) -> ComputePool:
         """Enter pool context and provision resources."""
@@ -225,8 +190,11 @@ class ComputePool:
         self._active = True
         self._job_id = str(uuid.uuid4())[:8]
 
-        # Setup callback context
-        self._callback_ctx = use_callback(self._build_callback())
+        # Build and store callback for direct access (bypasses ContextVar issues with joblib)
+        self._event_callback = self._build_callback()
+
+        # Setup callback context for emit() usage
+        self._callback_ctx = use_callback(self._event_callback)
         self._callback_ctx.__enter__()
 
         emit(PoolStarted())
@@ -252,7 +220,7 @@ class ComputePool:
     def run[R](self, pending: PendingCompute[R]) -> R:
         """Execute a single computation on the pool.
 
-        Acquires the first available worker, executes, and releases.
+        Acquires the first available connection, executes, and releases.
 
         Args:
             pending: PendingCompute to execute.
@@ -263,19 +231,19 @@ class ComputePool:
         Raises:
             NotProvisionedError: If pool is not active.
         """
-        if not self._active or self._worker_pool is None:
+        if not self._active or self._task_pool is None:
             raise NotProvisionedError()
 
-        workers = self._worker_pool.acquire(1)
+        conn = self._task_pool.acquire()
         try:
-            return self._execute_on_worker(workers[0], pending)
+            return self._execute_on_connection(conn, pending)
         finally:
-            self._worker_pool.release(*workers)
+            self._task_pool.release(conn)
 
     def run_batch(self, batch: PendingBatch) -> tuple[Any, ...]:
         """Execute a batch of computations in parallel.
 
-        Distributes computations across available workers (round-robin).
+        Distributes computations across available connections (round-robin).
 
         Args:
             batch: PendingBatch containing computations to execute.
@@ -286,119 +254,102 @@ class ComputePool:
         Raises:
             NotProvisionedError: If pool is not active.
         """
-        if not self._active or self._worker_pool is None:
+        if not self._active or self._task_pool is None:
             raise NotProvisionedError()
 
         computations = list(batch.computations)
         n_computations = len(computations)
 
-        # Acquire as many workers as we need (up to available)
-        n_workers = min(n_computations, self._worker_pool.total_workers)
-        workers = self._worker_pool.acquire(n_workers)
+        # Acquire as many connections as we need (up to available)
+        n_conns = min(n_computations, self._task_pool.total_slots)
+        conns = [self._task_pool.acquire() for _ in range(n_conns)]
 
         try:
-            # Assign computations to workers (round-robin)
-            def execute_on_worker(item: tuple[int, PendingCompute[Any]]) -> Any:
+            # Assign computations to connections (round-robin)
+            def execute(item: tuple[int, PendingCompute[Any]]) -> Any:
                 idx, pending = item
-                worker = workers[idx % n_workers]
-                return self._execute_on_worker(worker, pending)
+                conn = conns[idx % n_conns]
+                return self._execute_on_connection(conn, pending)
 
             results = list(
                 map_async(
-                    execute_on_worker,
+                    execute,
                     list(enumerate(computations)),
+                    concurrency=n_conns,
                 )
             )
             return tuple(results)
         finally:
-            self._worker_pool.release(*workers)
+            for conn in conns:
+                self._task_pool.release(conn)
 
     def broadcast[R](self, pending: PendingCompute[R]) -> tuple[R, ...]:
-        """Broadcast: execute computation on ALL workers in parallel.
+        """Broadcast: execute computation on ALL connections in parallel.
 
-        Unlike run() which executes on one worker, broadcast() executes the
-        same computation on every worker in the pool simultaneously.
-
-        With MIG or multi-worker configurations, this broadcasts to all
-        workers (not just instances). For example, with 1 instance and
-        MIG="3g.40gb" (2 partitions), this broadcasts to 2 workers.
+        Unlike run() which executes on one connection, broadcast() executes the
+        same computation on every connection in the pool simultaneously.
 
         Args:
             pending: PendingCompute to broadcast.
 
         Returns:
-            Tuple of results, one per worker.
+            Tuple of results, one per connection.
 
         Raises:
             NotProvisionedError: If pool is not active.
 
         Example:
-            # Initialize model on all workers
+            # Initialize model on all connections
             results = load_model(path) @ pool  # tuple of N results
         """
-        if not self._active or self._worker_pool is None:
+        if not self._active or self._task_pool is None:
             raise NotProvisionedError()
 
-        # Acquire all workers
-        total_workers = self._worker_pool.total_workers
-        workers = self._worker_pool.acquire(total_workers)
+        # Acquire all connections
+        total = self._task_pool.total_slots
+        conns = [self._task_pool.acquire() for _ in range(total)]
 
         try:
             results = list(
                 map_async(
-                    lambda w: self._execute_on_worker(w, pending),
-                    workers,
+                    lambda c: self._execute_on_connection(c, pending),
+                    conns,
                 )
             )
             return tuple(results)
         finally:
-            self._worker_pool.release(*workers)
+            for conn in conns:
+                self._task_pool.release(conn)
 
-    def _execute_on_worker[R](
+    def _execute_on_connection[R](
         self,
-        worker: Worker,
+        pc: PooledConnection,
         pending: PendingCompute[R],
     ) -> R:
-        """Execute a computation on a specific worker (via WorkerPool)."""
-        assert self._worker_pool is not None
+        """Execute a computation on a pooled connection."""
+        assert self._task_pool is not None
         assert self._instances is not None
 
-        # Get connection from WorkerPool
-        conn = self._worker_pool.get_connection(worker)
+        conn = pc.conn
 
-        # Get instance for this worker (for cluster setup and logging)
-        instance = self._worker_pool._get_instance_for_worker(worker)
-        if instance is None:
-            raise RuntimeError(f"Instance not found for worker {worker.key}")
-
-        # Calculate node index (instance position in cluster)
-        node = next(
-            (i for i, inst in enumerate(self._instances) if inst.id == instance.id),
-            0,
-        )
-
-        # Setup cluster environment on first connection to this worker
-        worker_key = f"{instance.id}:{worker.worker_id}"
-        if worker_key not in self._cluster_setup:
-            self._setup_cluster_on_worker(node, worker.worker_id, instance, conn)
-
-        # Serialize and send to remote
         from skyward.serialization import deserialize, serialize
 
         fn_bytes = serialize(pending.fn)
         args_bytes = serialize(pending.args)
         kwargs_bytes = serialize(pending.kwargs_dict)
 
-        # Create stdout callback for this worker
+        event_callback = self._event_callback
+
         def stdout_callback(line: str) -> None:
-            emit(
-                LogLine(
-                    node=node,
-                    instance_id=instance.id,
-                    line=line,
-                    timestamp=time.time(),
+            if event_callback is not None:
+                event_callback(
+                    LogLine(
+                        node=pc.node_idx,
+                        instance_id=pc.instance_id,
+                        line=line,
+                        timestamp=time.time(),
+                    )
                 )
-            )
 
         try:
             result_bytes = conn.root.execute(fn_bytes, args_bytes, kwargs_bytes, stdout_callback)
@@ -409,40 +360,25 @@ class ComputePool:
         except ExecutionError:
             raise
         except Exception as e:
-            emit(Error(message=f"Execution failed on worker {worker.key}: {e}"))
+            emit(Error(message=f"Execution failed on {pc.instance_id}: {e}"))
             raise
 
     def _provision(self) -> None:
         """Provision resources for the pool."""
         from skyward.pool_compute import _PoolCompute
 
-        # Determine device count (will be updated after provisioning)
-        device_count = 1
-        if self._accelerator_cfg is not None:
-            device_count = self._accelerator_cfg.count
-
-        # Get worker isolation data if needed
-        configs, limits, partition_script = self._get_worker_isolation_data(device_count)
-        object.__setattr__(self, "_worker_configs", configs)
-        object.__setattr__(self, "_worker_limits", limits)
-        object.__setattr__(self, "_worker_partition_script", partition_script)
-
         # Create a Compute-like object that the provider expects
         compute = _PoolCompute(
             pool=self,
             fn=lambda: None,  # Placeholder
             nodes=self.nodes,
-            accelerator=self.accelerator,  # Keep full spec (e.g., 'L40S:2') for provider to parse
+            accelerator=self.accelerator,
             image=self.image,
             cpu=self.cpu,
             memory=self.memory,
             timeout=self.timeout,
             spot=self.spot,
             volumes=list(_parse_volumes(self.volume)),
-            _workers_per_instance=self.workers_per_instance,
-            _worker_configs=configs,
-            _worker_limits=limits,
-            _worker_partition_script=partition_script,
         )
 
         # Provision and setup (providers use emit() directly)
@@ -450,18 +386,20 @@ class ComputePool:
         self.provider.setup(instances, compute)
         self._instances = instances
 
-        # Always initialize WorkerPool (even with 1 worker per instance)
-        self._worker_pool = WorkerPool(provider=self.provider)
-        for instance in instances:
-            self._worker_pool.register_instance(
-                instance=instance,
-                worker_count=self.workers_per_instance,
-            )
+        # Initialize TaskPool (creates tunnels and connections in parallel)
+        self._task_pool = TaskPool(
+            provider=self.provider,
+            instances=instances,
+            concurrency=self.concurrency,
+        )
+
+        # Setup cluster on all instances in parallel (once per instance)
+        self._setup_all_instances()
 
         # Start metrics polling if enabled
         if self.collect_metrics:
             for instance in instances:
-                poller = MetricsPoller(instance)
+                poller = MetricsPoller(instance, callback=self._event_callback)
                 poller.start()
                 self._metrics_pollers.append(poller)
 
@@ -477,13 +415,13 @@ class ComputePool:
             poller.stop()
         self._metrics_pollers.clear()
 
-        # Close WorkerPool first if active
-        if self._worker_pool is not None:
+        # Close TaskPool first if active
+        if self._task_pool is not None:
             try:
-                self._worker_pool.close_all()
+                self._task_pool.close_all()
             except Exception:
                 pass
-            self._worker_pool = None
+            self._task_pool = None
 
         # Get accelerator type for provider
         accelerator_for_provider = self._parse_accelerator_for_provider()
@@ -499,10 +437,6 @@ class ComputePool:
             timeout=self.timeout,
             spot=self.spot,
             volumes=list(_parse_volumes(self.volume)),
-            _workers_per_instance=self.workers_per_instance,
-            _worker_configs=self._worker_configs,
-            _worker_limits=self._worker_limits,
-            _worker_partition_script=self._worker_partition_script,
         )
 
         try:
@@ -512,18 +446,37 @@ class ComputePool:
 
         self._instances = None
 
-    def _setup_cluster_on_worker(
-        self,
-        node: int,
-        worker_id: int,
-        instance: Instance,
-        conn: rpyc.Connection,
-    ) -> None:
-        """Setup cluster environment on worker (called once per worker)."""
-        worker_key = f"{instance.id}:{worker_id}"
-        if worker_key in self._cluster_setup:
-            return
+    def _setup_all_instances(self) -> None:
+        """Setup cluster environment on all instances in parallel."""
+        import time as _time
 
+        from skyward.events import ClusterSetupCompleted
+
+        assert self._task_pool is not None
+        assert self._instances is not None
+
+        t0 = _time.perf_counter()
+
+        # Acquire one connection per instance (first N connections are interleaved)
+        conns = [self._task_pool.acquire() for _ in range(len(self._instances))]
+
+        try:
+            # Setup in parallel
+            def setup(pc: PooledConnection) -> None:
+                self._setup_cluster(pc)
+
+            map_async(setup, conns)
+        finally:
+            for conn in conns:
+                self._task_pool.release(conn)
+
+        emit(ClusterSetupCompleted(
+            instance_count=len(self._instances),
+            duration_seconds=_time.perf_counter() - t0,
+        ))
+
+    def _setup_cluster(self, pc: PooledConnection) -> None:
+        """Setup cluster environment on instance (called once per instance)."""
         from skyward.providers.pool_info import build_pool_info
         from skyward.serialization import serialize
 
@@ -538,10 +491,10 @@ class ComputePool:
         # Resolve accelerator by probing instance
         from skyward.providers.accelerator_detection import resolve_accelerator
 
-        accelerator_type, accelerator_count = resolve_accelerator(instance)
+        accelerator_type, accelerator_count = resolve_accelerator(pc.instance)
 
         pool_info = build_pool_info(
-            node=node,
+            node=pc.node_idx,
             total_nodes=len(instances),
             accelerator_count=accelerator_count,
             total_accelerators=len(instances) * accelerator_count,
@@ -550,15 +503,14 @@ class ComputePool:
             job_id=self._job_id,
             peers=peers,
             accelerator_type=accelerator_type,
-            worker=worker_id,
-            workers_per_node=self.workers_per_instance,
+            worker=0,  # Always 0 since we have single RPyC server per instance
+            workers_per_node=1,  # Always 1 since we use concurrency, not workers
         )
 
         # Merge env from image and pool (pool overrides image)
         merged_env = {**self.image.env, **(self.env or {})}
         env_bytes = serialize(merged_env)
-        conn.root.setup_cluster(pool_info.model_dump_json(), env_bytes)
-        self._cluster_setup.add(worker_key)
+        pc.conn.root.setup_cluster(pool_info.model_dump_json(), env_bytes)
 
     def _build_callback(self) -> Callback:
         """Build the composite callback for this pool."""

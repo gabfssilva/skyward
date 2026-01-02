@@ -8,35 +8,94 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
 import traceback
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING
 
 import rpyc
 from rpyc.utils.server import ThreadedServer
 
+from skyward.output import redirect_output
 from skyward.serialization import deserialize, serialize
+
+if TYPE_CHECKING:
+    from typing import TextIO
 
 # Default port for RPyC server
 RPYC_PORT = 18861
 
 
-class StreamingStdout:
-    """Redirects stdout to a callback function for real-time streaming."""
+# =============================================================================
+# Thread-Local Stdout Dispatcher
+# =============================================================================
 
-    def __init__(self, callback: Callable[[str], None], original: Any) -> None:
-        self.callback = callback
+
+class ThreadLocalStdout:
+    """Stdout dispatcher that routes writes to thread-local callbacks.
+
+    Installed once at server startup. Each thread registers its own
+    callback for the duration of function execution. This avoids race
+    conditions when multiple threads execute concurrently.
+    """
+
+    def __init__(self, original: TextIO) -> None:
         self.original = original
+        self._local = threading.local()
+
+    def register(self, callback: Callable[[str], None]) -> None:
+        """Register callback for current thread."""
+        self._local.callback = callback
+
+    def unregister(self) -> None:
+        """Unregister callback for current thread."""
+        self._local.callback = None
 
     def write(self, data: str) -> int:
-        """Pass data directly to callback."""
+        """Write to thread's callback if registered, else discard."""
         if data:
-            self.callback(data)
+            callback = getattr(self._local, "callback", None)
+            if callback is not None:
+                try:
+                    callback(data)
+                except Exception:
+                    pass  # Don't fail execution for callback errors
         return len(data)
 
     def flush(self) -> None:
         """No-op - data is sent immediately."""
         pass
+
+    def isatty(self) -> bool:
+        """Not a TTY."""
+        return False
+
+    @property
+    def encoding(self) -> str:
+        """Forward encoding from original stream."""
+        return self.original.encoding
+
+    def fileno(self) -> int:
+        """Forward fileno from original stream."""
+        return self.original.fileno()
+
+
+# Global dispatchers (installed once at server startup)
+_stdout_dispatcher: ThreadLocalStdout | None = None
+_stderr_dispatcher: ThreadLocalStdout | None = None
+
+
+def _install_dispatchers() -> None:
+    """Install thread-local stdout/stderr dispatchers (once)."""
+    global _stdout_dispatcher, _stderr_dispatcher
+
+    if _stdout_dispatcher is None:
+        _stdout_dispatcher = ThreadLocalStdout(sys.stdout)
+        sys.stdout = _stdout_dispatcher  # type: ignore[assignment]
+
+    if _stderr_dispatcher is None:
+        _stderr_dispatcher = ThreadLocalStdout(sys.stderr)
+        sys.stderr = _stderr_dispatcher  # type: ignore[assignment]
 
 
 class SkywardService(rpyc.Service):
@@ -71,33 +130,16 @@ class SkywardService(rpyc.Service):
             Cloudpickle-serialized dict with 'result' or 'error' key.
         """
         try:
-            fn = deserialize(fn_bytes)
-            args = deserialize(args_bytes)
-            kwargs = deserialize(kwargs_bytes)
-
-            if stdout_callback:
-                old_stdout = sys.stdout
-                old_stderr = sys.stderr
-                sys.stdout = StreamingStdout(stdout_callback, old_stdout)
-                sys.stderr = StreamingStdout(stdout_callback, old_stderr)
-                try:
-                    result = fn(*args, **kwargs)
-                finally:
-                    sys.stdout.flush()
-                    sys.stderr.flush()
-                    sys.stdout = old_stdout
-                    sys.stderr = old_stderr
-            else:
+            with redirect_output(stdout_callback):
+                fn = deserialize(fn_bytes)
+                args = deserialize(args_bytes)
+                kwargs = deserialize(kwargs_bytes)
                 result = fn(*args, **kwargs)
-
-            self._sync_s3_volumes()
-            result_bytes: bytes = serialize({"result": result, "error": None})
-            return result_bytes
-
+                self._sync_s3_volumes()
+                return serialize({"result": result, "error": None})
         except Exception:
             error_msg = traceback.format_exc()
-            error_bytes: bytes = serialize({"result": None, "error": error_msg})
-            return error_bytes
+            return serialize({"result": None, "error": error_msg})
 
     def _sync_s3_volumes(self) -> None:
         """Unmount all S3 volumes to force pending uploads to complete.
@@ -160,6 +202,9 @@ def main() -> None:
     3. Default RPYC_PORT (18861)
     """
     import os
+
+    # Install thread-local stdout/stderr dispatchers before starting server
+    _install_dispatchers()
 
     # Priority: env var > command line > default
     port = int(os.environ.get("SKYWARD_WORKER_PORT", "0")) or RPYC_PORT

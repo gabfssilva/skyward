@@ -1,34 +1,23 @@
 """Skyward integrations with third-party libraries.
 
 Available integrations:
-- joblib: Distributed sklearn via joblib backend
+- JoblibPool: Distributed joblib execution
+- ScikitLearnPool: Distributed sklearn training
+- sklearn_backend: Low-level backend for existing ComputePool
 
 Usage:
-    from skyward.integrations import sklearn_backend
+    from skyward import AWS
+    from skyward.integrations import JoblibPool
 
-Note: Integrations are lazy-loaded. You need the corresponding
-library installed (e.g., scikit-learn for sklearn_backend).
+    with JoblibPool(provider=AWS(), nodes=4):
+        results = Parallel(n_jobs=-1)(delayed(fn)(x) for x in data)
 """
 
-from typing import TYPE_CHECKING
+from skyward.integrations.joblib import (
+    JoblibPool,
+    ScikitLearnPool,
+    joblib_backend,
+    sklearn_backend,
+)
 
-if TYPE_CHECKING:
-    from skyward.integrations.joblib import sklearn_backend as sklearn_backend
-
-__all__ = ["sklearn_backend"]
-
-
-def __getattr__(name: str):
-    """Lazy import integrations to avoid requiring optional dependencies."""
-    if name == "sklearn_backend":
-        try:
-            from skyward.integrations.joblib import sklearn_backend
-
-            return sklearn_backend
-        except ImportError as e:
-            raise ImportError(
-                "sklearn_backend requires joblib. "
-                "Install it with: pip install scikit-learn"
-            ) from e
-
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+__all__ = ["JoblibPool", "ScikitLearnPool", "sklearn_backend", "joblib_backend"]

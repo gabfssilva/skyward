@@ -197,6 +197,28 @@ class CostFinal:
 
 
 # =============================================================================
+# Pool Initialization Events
+# =============================================================================
+
+
+@dataclass(frozen=True, slots=True)
+class TaskPoolInitCompleted:
+    """Task pool initialization completed (tunnels + connections ready)."""
+
+    tunnels: int
+    connections: int
+    duration_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class ClusterSetupCompleted:
+    """Cluster environment setup completed on all instances."""
+
+    instance_count: int
+    duration_seconds: float
+
+
+# =============================================================================
 # Lifecycle Events
 # =============================================================================
 
@@ -255,6 +277,8 @@ type SkywardEvent = (
     | InstanceStopping
     | CostUpdate
     | CostFinal
+    | TaskPoolInitCompleted
+    | ClusterSetupCompleted
     | PoolStarted
     | PoolStopping
     | Error
@@ -281,6 +305,9 @@ __all__ = [
     # Cost
     "CostUpdate",
     "CostFinal",
+    # Pool Init
+    "TaskPoolInitCompleted",
+    "ClusterSetupCompleted",
     # Lifecycle
     "PoolStarted",
     "PoolStopping",

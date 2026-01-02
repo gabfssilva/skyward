@@ -1,27 +1,29 @@
 """Distributed Grid Search with scikit-learn.
 
-Demonstrates how to distribute sklearn's GridSearchCV using Skyward's
-joblib backend integration. Zero changes to sklearn code required!
+Demonstrates a single GridSearchCV that searches over both estimators
+AND their hyperparameters using Skyward's distributed joblib backend.
 
-Features:
-- Uses sklearn's native GridSearchCV (no custom wrapper)
-- Distributes cross-validation folds across cloud workers
-- Works with any sklearn estimator that supports n_jobs
-- Automatic environment replication to workers
+Uses sklearn's native Pipeline with list-of-dicts param_grid to treat
+the estimator itself as a searchable hyperparameter.
+
+See: https://scikit-learn.org/stable/modules/compose.html#access-to-nested-parameters
 """
+
+from functools import reduce
+from operator import mul
 
 from sklearn.datasets import load_digits
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.model_selection import GridSearchCV, train_test_split
+from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC
 
-from skyward import AWS, ComputePool, Image
-from skyward.integrations import sklearn_backend
+from skyward import AWS, Image
+from skyward.integrations import ScikitLearnPool
 
 
-def run_distributed_grid_search():
-    """Run a distributed grid search comparing multiple models."""
-    # Load the digits dataset
+def main():
+    """Run a unified grid search over estimators and their hyperparameters."""
     X, y = load_digits(return_X_y=True)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42
@@ -30,106 +32,81 @@ def run_distributed_grid_search():
     print(f"Dataset: {X_train.shape[0]} train, {X_test.shape[0]} test samples")
     print(f"Features: {X_train.shape[1]}, Classes: {len(set(y))}")
 
-    # Define models and their parameter grids
-    models = [
-        (
-            "RandomForest",
-            RandomForestClassifier(random_state=42),
-            {
-                "n_estimators": [50, 100, 200],
-                "max_depth": [None, 10, 20],
-                "min_samples_split": [2, 5],
-            },
-        ),
-        (
-            "GradientBoosting",
-            GradientBoostingClassifier(random_state=42),
-            {
-                "n_estimators": [50, 100],
-                "learning_rate": [0.01, 0.1, 0.2],
-                "max_depth": [3, 5],
-            },
-        ),
-        (
-            "SVM",
-            SVC(),
-            {
-                "C": [0.1, 1, 10],
-                "kernel": ["rbf", "poly"],
-                "gamma": ["scale", "auto"],
-            },
-        ),
+    # Pipeline where the classifier step can be swapped via param_grid
+    pipe = Pipeline([("clf", SVC())])
+
+    # List of dicts: each dict defines a separate grid for one estimator family
+    # The "clf" parameter swaps the estimator; "clf__param" tunes its hyperparams
+    param_grid = [
+        {
+            "clf": [RandomForestClassifier(random_state=42)],
+            "clf__n_estimators": [50, 100, 200],
+            "clf__max_depth": [None, 10, 20],
+            "clf__min_samples_split": [2, 5],
+        },
+        {
+            "clf": [GradientBoostingClassifier(random_state=42)],
+            "clf__n_estimators": [50, 100],
+            "clf__learning_rate": [0.01, 0.1, 0.2],
+            "clf__max_depth": [3, 5],
+        },
+        {
+            "clf": [SVC()],
+            "clf__C": [0.1, 1, 10],
+            "clf__kernel": ["rbf", "poly"],
+            "clf__gamma": ["scale", "auto"],
+        },
     ]
 
-    results = []
+    n_candidates = sum(
+        reduce(mul, (len(v) for v in grid.values()), 1)
+        for grid in param_grid
+    )
+    cv_folds = 5
 
-    with ComputePool(
-        provider=AWS(),
-        nodes=4,
-        cpu=4,
-        image=Image(pip=["scikit-learn"]),
-        spot="always",
-    ) as pool:
-        # Enable Skyward as the joblib backend
-        with sklearn_backend(pool):
-            for name, estimator, param_grid in models:
-                n_candidates = 1
-                for v in param_grid.values():
-                    n_candidates *= len(v)
-
-                print(f"\n{'=' * 60}")
-                print(f"Running GridSearchCV for {name}")
-                print(f"  Candidates: {n_candidates}")
-                print(f"  CV folds: 5")
-                print(f"  Total fits: {n_candidates * 5}")
-                print("=" * 60)
-
-                # Standard sklearn GridSearchCV - automatically distributed!
-                grid_search = GridSearchCV(
-                    estimator=estimator,
-                    param_grid=param_grid,
-                    cv=5,
-                    scoring="accuracy",
-                    n_jobs=-1,  # This triggers distributed execution
-                    verbose=1,
-                )
-
-                grid_search.fit(X_train, y_train)
-
-                # Evaluate on test set
-                test_score = grid_search.score(X_test, y_test)
-
-                results.append({
-                    "name": name,
-                    "best_params": grid_search.best_params_,
-                    "best_cv_score": grid_search.best_score_,
-                    "test_score": test_score,
-                    "n_candidates": n_candidates,
-                })
-
-                print(f"\n{name} Results:")
-                print(f"  Best CV score: {grid_search.best_score_:.2%}")
-                print(f"  Test score: {test_score:.2%}")
-                print(f"  Best params: {grid_search.best_params_}")
-
-    # Summary
-    print("\n" + "=" * 60)
-    print("SUMMARY")
+    print(f"\n{'=' * 60}")
+    print("Running unified GridSearchCV across all estimators")
+    print(f"  Estimator families: {len(param_grid)}")
+    print(f"  Total candidates: {n_candidates}")
+    print(f"  CV folds: {cv_folds}")
+    print(f"  Total fits: {n_candidates * cv_folds}")
     print("=" * 60)
 
-    results.sort(key=lambda r: r["test_score"], reverse=True)
+    with ScikitLearnPool(
+        provider=AWS(),
+        nodes=10,
+        cpu=2,
+        concurrency=4,
+        image=Image(pip=["scikit-learn"]),
+        spot="always",
+    ):
+        grid_search = GridSearchCV(
+            estimator=pipe,
+            param_grid=param_grid,
+            cv=cv_folds,
+            scoring="accuracy",
+            n_jobs=-1,
+            verbose=3,
+        )
+        grid_search.fit(X_train, y_train)
 
-    for r in results:
-        print(f"\n{r['name']}:")
-        print(f"  CV: {r['best_cv_score']:.2%} | Test: {r['test_score']:.2%}")
-        params = ", ".join(f"{k}={v}" for k, v in r["best_params"].items())
-        print(f"  Params: {params}")
+    test_score = grid_search.score(X_test, y_test)
+    best_clf = grid_search.best_params_["clf"]
+    best_params = {
+        k.removeprefix("clf__"): v
+        for k, v in grid_search.best_params_.items()
+        if k != "clf"
+    }
 
-    winner = results[0]
     print(f"\n{'=' * 60}")
-    print(f"WINNER: {winner['name']} with {winner['test_score']:.2%} test accuracy")
+    print("RESULTS")
+    print("=" * 60)
+    print(f"Best estimator: {type(best_clf).__name__}")
+    print(f"Best params: {best_params}")
+    print(f"Best CV score: {grid_search.best_score_:.2%}")
+    print(f"Test score: {test_score:.2%}")
     print("=" * 60)
 
 
 if __name__ == "__main__":
-    run_distributed_grid_search()
+    main()

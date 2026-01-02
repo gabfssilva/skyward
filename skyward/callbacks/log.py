@@ -88,7 +88,7 @@ def _log_metrics(level: str, instance_id: str, node: int,  msg: str) -> None:
     ts = _timestamp()
     source = f"{instance_id[:12]} {_node_emoji(node)}"
     lvl = _format_level(level)
-    _emit(f"{ts} | <orange>{source:<20}</orange> | {lvl} | <bold>{msg}</bold>")
+    _emit(f"{ts} | <yellow>{source:<20}</yellow> | {lvl} | <bold>{msg}</bold>")
 
 
 def log(event: SkywardEvent) -> None:
@@ -150,8 +150,11 @@ def log(event: SkywardEvent) -> None:
         case LogLine(node=node, instance_id=iid, line=line) if line.strip():
             _log_cloud("INFO", iid, node, f"☁️  {line.rstrip()}")
 
-        case Metrics(node=node, instance_id=iid) as metrics:
-            _log_metrics("INFO", iid, node, f"CPU {metrics.cpu_percent}% ~ Memory {metrics.memory_used_mb}MB / {metrics.memory_total_mb}MB ~ GPU {metrics.gpu_utilization}%, {metrics.gpu_memory_used_mb}MB / {metrics.gpu_memory_total_mb}MB")
+        case Metrics(node=node, instance_id=iid) as m:
+            msg = f"CPU {m.cpu_percent:.1f}% | Mem {m.memory_used_mb:.0f}/{m.memory_total_mb:.0f}MB"
+            if m.gpu_utilization is not None:
+                msg += f" | GPU {m.gpu_utilization:.0f}% {m.gpu_memory_used_mb:.0f}/{m.gpu_memory_total_mb:.0f}MB"
+            _log_metrics("INFO", iid, node, msg)
 
         # Cost events
         case CostUpdate(

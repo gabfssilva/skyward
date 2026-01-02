@@ -38,8 +38,16 @@ from skyward.providers.common import (
     install_skyward_wheel_via_transport,
     wait_for_bootstrap as _wait_for_bootstrap_common,
 )
-from skyward.spec import AllocationStrategy, normalize_spot
-from skyward.types import ComputeSpec, ExitedInstance, Instance, InstanceSpec, Provider, select_instance
+from skyward.spec import AllocationStrategy, _SpotNever, normalize_spot
+from skyward.types import (
+    ComputeSpec,
+    ExitedInstance,
+    Instance,
+    InstanceSpec,
+    Provider,
+    parse_memory_mb,
+    select_instance,
+)
 
 from .discovery import (
     DLAMI_GPU_SSM,
@@ -532,13 +540,15 @@ class AWS(Provider):
             acc = Accelerator.from_value(compute.accelerator)
             accelerator_type = acc.accelerator if acc else None
             requested_gpu_count = acc.count if acc else 1
+            prefer_spot = not isinstance(compute.spot, _SpotNever)
 
             spec = select_instance(
                 self.available_instances(),
-                cpu=1,
-                memory_mb=512,
+                cpu=compute.cpu or 1,
+                memory_mb=parse_memory_mb(compute.memory),
                 accelerator=accelerator_type,
                 accelerator_count=requested_gpu_count,
+                prefer_spot=prefer_spot,
             )
             instance_type = spec.name
             accelerator_count = spec.accelerator_count

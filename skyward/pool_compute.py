@@ -17,7 +17,6 @@ from skyward.spec import SpotLike
 if TYPE_CHECKING:
     from skyward.pool import ComputePool
     from skyward.volume import Volume
-    from skyward.worker.config import ResourceLimits, WorkerConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,12 +37,6 @@ class _PoolCompute:
     timeout: int
     spot: SpotLike
     volumes: list[Volume]
-
-    # Worker isolation fields
-    _workers_per_instance: int = 1
-    _worker_configs: tuple[WorkerConfig, ...] | None = None
-    _worker_limits: ResourceLimits | None = None
-    _worker_partition_script: str = ""
 
     # Properties expected by providers
 
@@ -71,26 +64,6 @@ class _PoolCompute:
     def placement_group(self) -> str | None:
         """Placement group name."""
         return None
-
-    @property
-    def workers_per_instance(self) -> int:
-        """Number of workers per instance (for worker isolation)."""
-        return self._workers_per_instance
-
-    @property
-    def worker_configs(self) -> tuple[WorkerConfig, ...] | None:
-        """Worker configurations for isolation."""
-        return self._worker_configs
-
-    @property
-    def worker_limits(self) -> ResourceLimits | None:
-        """Resource limits for workers."""
-        return self._worker_limits
-
-    @property
-    def worker_partition_script(self) -> str:
-        """MIG/partition setup script."""
-        return self._worker_partition_script
 
     # Compatibility properties (not used but may be checked)
 

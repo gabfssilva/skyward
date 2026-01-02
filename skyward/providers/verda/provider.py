@@ -43,6 +43,7 @@ from skyward.types import (
     Instance,
     InstanceSpec,
     Provider,
+    parse_memory_mb,
     select_instance,
 )
 
@@ -278,13 +279,15 @@ class Verda(Provider):
             acc = Accelerator.from_value(compute.accelerator)
             accelerator_type = acc.accelerator if acc else None
             requested_gpu_count = acc.count if acc else 1
+            prefer_spot = not isinstance(compute.spot, _SpotNever)
 
             spec = select_instance(
                 self.available_instances(),
-                cpu=1,
-                memory_mb=1024,
+                cpu=compute.cpu or 1,
+                memory_mb=parse_memory_mb(compute.memory),
                 accelerator=accelerator_type,
                 accelerator_count=requested_gpu_count,
+                prefer_spot=prefer_spot,
             )
 
             supported_os = spec.metadata.get("supported_os", ())

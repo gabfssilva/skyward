@@ -1,11 +1,13 @@
-"""Worker isolation operations for bootstrap scripts.
+"""Bootstrap operations for RPyC server and worker isolation.
 
-Operations for cgroups, MIG setup, systemd worker services.
+Operations for systemd services, cgroups, MIG setup.
+NOTE: Worker-specific operations (cgroups, worker_envs, etc.) are kept
+for future MIG implementation in skyward/nvidia/.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from skyward.constants import RPYC_PORT, SKYWARD_DIR
 
@@ -13,7 +15,9 @@ from .compose import Op
 from .ops import systemd_template
 
 if TYPE_CHECKING:
-    from skyward.worker.config import ResourceLimits, WorkerConfig
+    # These types will be defined in skyward/nvidia/ when MIG is implemented
+    ResourceLimits = Any
+    WorkerConfig = Any
 
 
 # =============================================================================
