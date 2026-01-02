@@ -6,8 +6,6 @@ Customization happens via passing operations, not configuration flags.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from skyward.constants import DEFAULT_PYTHON, RPYC_PORT, SKYWARD_DIR
 
 from .compose import Op, bootstrap
@@ -23,9 +21,6 @@ from .ops import (
     wait_for_port,
 )
 from .worker import rpyc_service_unit
-
-if TYPE_CHECKING:
-    from skyward.worker.config import ResourceLimits, WorkerConfig
 
 
 def skyward_bootstrap(

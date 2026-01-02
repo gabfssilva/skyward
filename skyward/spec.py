@@ -102,30 +102,6 @@ def normalize_spot(spot: SpotLike) -> NormalizedSpot:
     return spot
 
 
-class SpotCapacityError(Exception):
-    """Raised when Spot capacity is unavailable and strategy is Spot.Always."""
-
-    def __init__(self, retries: int, instance_type: str) -> None:
-        super().__init__(
-            f"Spot capacity unavailable for {instance_type} after {retries} retries"
-        )
-        self.retries = retries
-        self.instance_type = instance_type
-
-
-class SpotMinimumNotMetError(Exception):
-    """Raised when minimum Spot percentage cannot be met."""
-
-    def __init__(self, required: int, got: int, total: int) -> None:
-        percentage = (got / total * 100) if total > 0 else 0
-        super().__init__(
-            f"Spot minimum not met: required {required}/{total}, got {got} ({percentage:.0f}%)"
-        )
-        self.required = required
-        self.got = got
-        self.total = total
-
-
 # --- Allocation Strategies (EC2 Fleet) ---
 
 AllocationStrategy = Literal[

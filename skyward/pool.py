@@ -36,7 +36,7 @@ from collections.abc import Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Literal, Callable
+from typing import TYPE_CHECKING, Any, Literal
 
 from skyward.accelerator import Accelerator, MIG_MAX_INSTANCES
 from skyward.callback import Callback, compose, emit, use_callback
@@ -415,9 +415,6 @@ class ComputePool:
     def _provision(self) -> None:
         """Provision resources for the pool."""
         from skyward.pool_compute import _PoolCompute
-
-        # Get accelerator type for provider (without worker count info)
-        accelerator_for_provider = self._parse_accelerator_for_provider()
 
         # Determine device count (will be updated after provisioning)
         device_count = 1

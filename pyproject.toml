@@ -106,5 +106,6 @@ markers = [
 [dependency-groups]
 dev = [
     "ruff>=0.14.10",
+    "scikit-learn>=1.8.0",
     "vulture>=2.14",
 ]

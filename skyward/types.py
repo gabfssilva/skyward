@@ -25,9 +25,6 @@ __all__ = [
     "select_instance",
     "Instance",
     "ExitedInstance",
-    # Legacy types (used by runtime modules)
-    "NodeInfo",
-    "ClusterTopology",
     # Protocols
     "ComputeSpec",
     "Provider",
@@ -443,47 +440,3 @@ class Provider(Protocol):
             Tuple of InstanceSpec with available instance types.
         """
         ...
-
-
-# =============================================================================
-# Legacy Types (for compatibility during migration)
-# =============================================================================
-
-
-@dataclass(frozen=True, slots=True)
-class NodeInfo:
-    """Information about a provisioned node."""
-
-    id: str
-    private_ip: str
-    public_ip: str | None = None
-    node: int = 0
-
-    @property
-    def is_head(self) -> bool:
-        """True if this is the head node."""
-        return self.node == 0
-
-
-@dataclass(frozen=True, slots=True)
-class ClusterTopology:
-    """Complete cluster topology."""
-
-    cluster_id: str
-    nodes: tuple[NodeInfo, ...]
-    head_addr: str
-    head_port: int
-
-    @property
-    def total_nodes(self) -> int:
-        """Total number of nodes in the cluster."""
-        return len(self.nodes)
-
-    @property
-    def head(self) -> NodeInfo:
-        """Returns the head node."""
-        return self.nodes[0]
-
-    def get_node(self, node: int) -> NodeInfo:
-        """Returns the node with the specified index."""
-        return self.nodes[node]

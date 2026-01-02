@@ -6,8 +6,7 @@ Demonstrates how to:
 - Run GPU-accelerated computations
 """
 
-from skyward import AWS, NVIDIA, ComputePool, compute, instance_info, InstanceInfo, Verda
-from skyward.accelerator import H100
+from skyward import AWS, ComputePool, compute, instance_info, InstanceInfo, Image, Verda
 
 
 @compute
@@ -146,16 +145,10 @@ def train_simple_model(epochs: int) -> dict:
 
 
 if __name__ == "__main__":
-    # =================================================================
-    # Pool with NVIDIA H100 GPU (MIG partitioned: 2 workers per GPU)
-    # =================================================================
     with ComputePool(
         provider=Verda(),
-        accelerator=H100(
-            memory='80',
-            mig=['4g.40gb', '3g.40gb']
-        ),
-        pip=["torch", "numpy"],
+        image=Image(pip=["torch", "numpy"]),
+        accelerator='L40S',
         spot="always",
     ) as pool:
         # Get GPU information
@@ -191,12 +184,3 @@ if __name__ == "__main__":
         print(f"  Device: {result['device']}")
         print(f"  Initial loss: {result['initial_loss']:.4f}")
         print(f"  Final loss: {result['final_loss']:.4f}")
-
-    # =================================================================
-    # Other GPU options (commented for reference)
-    # =================================================================
-    # NVIDIA.H100      # Latest and fastest
-    # NVIDIA.A100      # Great for training
-    # NVIDIA.L4        # Cost-effective inference
-    # NVIDIA.T4        # Budget option
-    # NVIDIA.V100      # Older but capable

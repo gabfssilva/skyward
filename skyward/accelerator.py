@@ -7,7 +7,6 @@ for supported accelerators and helper functions.
 
 from __future__ import annotations
 
-import inspect
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal, Union, overload
 
@@ -526,26 +525,6 @@ def is_nvidia(acc: AcceleratorType) -> bool:
 def is_trainium(acc: AcceleratorType) -> bool:
     """Check if accelerator is AWS Trainium."""
     return acc in _TRAINIUM_VALUES
-
-
-def is_inferentia(acc: AcceleratorType) -> bool:
-    """Check if accelerator is AWS Inferentia."""
-    return acc in _INFERENTIA_VALUES
-
-
-def is_tpu(acc: AcceleratorType) -> bool:
-    """Check if accelerator is a Google TPU."""
-    return acc in _TPU_VALUES
-
-
-def is_amd(acc: AcceleratorType) -> bool:
-    """Check if accelerator is an AMD GPU."""
-    return acc in _AMD_VALUES
-
-
-def is_habana(acc: AcceleratorType) -> bool:
-    """Check if accelerator is a Habana Gaudi."""
-    return acc in _HABANA_VALUES
 
 
 def is_gpu(acc: AcceleratorType) -> bool:

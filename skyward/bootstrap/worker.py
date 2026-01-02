@@ -9,9 +9,8 @@ from typing import TYPE_CHECKING
 
 from skyward.constants import RPYC_PORT, SKYWARD_DIR
 
-from .compose import Op, resolve
-from .control import for_each
-from .ops import file, systemd_template
+from .compose import Op
+from .ops import systemd_template
 
 if TYPE_CHECKING:
     from skyward.worker.config import ResourceLimits, WorkerConfig

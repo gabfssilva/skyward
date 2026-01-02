@@ -19,7 +19,6 @@ Examples:
     "H100:8:16"  → 8 GPUs, 16 workers (MIG 0.5 each)
 """
 
-from skyward.worker.bootstrap import generate_worker_bootstrap
 from skyward.worker.config import ResourceLimits, WorkerConfig, generate_worker_configs
 from skyward.worker.partition import PartitionStrategy, create_partition
 from skyward.worker.pool import Worker, WorkerPool
@@ -35,6 +34,4 @@ __all__ = [
     # Pool
     "Worker",
     "WorkerPool",
-    # Bootstrap
-    "generate_worker_bootstrap",
 ]

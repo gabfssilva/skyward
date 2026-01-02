@@ -9,10 +9,11 @@ from __future__ import annotations
 import socket
 import subprocess
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from subprocess import PIPE, Popen
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from tenacity import (
     RetryError,
@@ -27,17 +28,10 @@ from skyward.callback import emit
 from skyward.constants import RPYC_PORT, SKYWARD_DIR
 from skyward.events import BootstrapProgress
 
-# Re-export SSH utilities from base for backwards compatibility
-from skyward.providers.base.ssh_keys import (
-    SSH_KEY_PATHS,
-    SSHKeyInfo,
-    compute_fingerprint,
-    find_local_ssh_key,
-    get_private_key_path,
-)
 
 if TYPE_CHECKING:
-    from skyward.types import Instance
+    from skyward.providers.base import Transport
+    from skyward.types import ComputeSpec, Instance
 
 
 # =============================================================================
@@ -315,83 +309,146 @@ def build_wheel() -> Path:
     return next(build_dir.glob("*.whl"))
 
 
-def install_skyward_wheel(
+def _build_wheel_install_script(
+    wheel_name: str,
+    workers_per_instance: int,
+    worker_configs: tuple[Any, ...] | None,
+    worker_limits: Any | None,
+    partition_script: str,
+) -> str:
+    """Build complete wheel installation + service setup script.
+
+    Single script that does everything:
+    1. Find uv
+    2. Install wheel
+    3. Verify installation
+    4. Setup systemd service(s)
+
+    Returns:
+        Shell script string.
+    """
+    from skyward.bootstrap import bootstrap as bootstrap_ops, systemd
+    from skyward.bootstrap import wait_for_port as wait_for_port_op
+    from skyward.bootstrap.worker import rpyc_service_unit, worker_server_ops
+
+    # Common preamble: move wheel from /tmp (where user can upload) and install
+    preamble = f"""
+# Move wheel from /tmp to SKYWARD_DIR (uploaded to /tmp for permission reasons)
+mv /tmp/{wheel_name} {SKYWARD_DIR}/{wheel_name} 2>/dev/null || true
+
+# Find uv
+UV_PATH=$(which uv 2>/dev/null || find /root /home -name uv -type f 2>/dev/null | head -1)
+if [ -z "$UV_PATH" ]; then
+    UV_PATH="/root/.local/bin/uv"
+fi
+
+# Install wheel
+cd {SKYWARD_DIR}
+$UV_PATH pip install {SKYWARD_DIR}/{wheel_name}
+
+# Verify installation
+{SKYWARD_DIR}/.venv/bin/python -c 'import skyward; print(skyward.__file__)'
+"""
+
+    # Service setup based on worker configuration
+    if workers_per_instance > 1 and worker_configs is not None:
+        service_script = bootstrap_ops(
+            *worker_server_ops(worker_configs, worker_limits, partition_script),
+            header="",
+        )
+    else:
+        unit_content = rpyc_service_unit()
+        service_script = bootstrap_ops(
+            systemd("skyward-rpyc", unit_content),
+            wait_for_port_op(RPYC_PORT, timeout=30),
+            header="",
+        )
+
+    return f"#!/bin/bash\nset -e\n{preamble}\n{service_script}"
+
+
+def install_skyward_wheel_via_transport(
     instances: tuple[Instance, ...],
-    get_ip: Callable[[Instance], str],
-    key_path: str | None = None,
+    get_transport: Callable[[Instance], AbstractContextManager[Transport]],
+    compute: ComputeSpec | None = None,
 ) -> None:
-    """Build and install skyward wheel on all instances (concurrent)."""
-    from skyward.bootstrap.worker import rpyc_service_unit
+    """Build and install skyward wheel on all instances using Transport abstraction.
+
+    This is the preferred way to install the wheel - it works with any transport
+    (SSH, SSM tunneled SSH, etc.) via the Transport protocol.
+
+    Args:
+        instances: Instances to install on.
+        get_transport: Factory that creates a context manager yielding a Transport
+            for each instance. The context manager handles lifecycle (e.g., tunnel cleanup).
+        compute: Compute spec with worker configuration. If provided and
+            workers_per_instance > 1, creates multiple worker services.
+
+    Example:
+        # SSH-based providers (Verda, DigitalOcean)
+        @contextmanager
+        def ssh_transport(inst):
+            yield SSHTransport(host=get_ip(inst), username="root", key_path=key_path)
+
+        install_skyward_wheel_via_transport(instances, ssh_transport, compute)
+
+        # AWS with SSM tunnel
+        @contextmanager
+        def ssm_ssh_transport(inst):
+            local_port, tunnel = ssm.create_tunnel_to_ssh(inst.id)
+            try:
+                yield SSHTransport(host="localhost", port=local_port, ...)
+            finally:
+                tunnel.terminate()
+
+        install_skyward_wheel_via_transport(instances, ssm_ssh_transport, compute)
+    """
     from skyward.conc import for_each_async
 
     wheel_path = build_wheel()
 
+    # Determine if we need multi-worker setup
+    workers_per_instance = 1
+    worker_configs = None
+    worker_limits = None
+    partition_script = ""
+
+    if compute is not None:
+        workers_per_instance = getattr(compute, "workers_per_instance", 1)
+        worker_configs = getattr(compute, "worker_configs", None)
+        worker_limits = getattr(compute, "worker_limits", None)
+        partition_script = getattr(compute, "worker_partition_script", "")
+
+    # Build single script that does everything
+    install_script = _build_wheel_install_script(
+        wheel_path.name,
+        workers_per_instance,
+        worker_configs,
+        worker_limits,
+        partition_script,
+    )
+
     def install_on_instance(inst: Instance) -> None:
-        ip = get_ip(inst)
-        username = inst.get_meta("username", "root")
+        import tempfile
 
-        find_uv_cmd = "which uv || find /root /home -name uv -type f 2>/dev/null | head -1"
-        find_uv_result = ssh_run(ip, username, find_uv_cmd, timeout=30, key_path=key_path)
-        uv_path = find_uv_result.stdout.strip()
-        if not uv_path:
-            raise RuntimeError(f"uv not found on {ip}")
+        with get_transport(inst) as transport:
+            # Upload wheel to /tmp (user has write access, script will move to SKYWARD_DIR)
+            tmp_wheel = f"/tmp/{wheel_path.name}"
+            transport.upload_file(wheel_path, tmp_wheel)
 
-        remote_wheel = f"{SKYWARD_DIR}/{wheel_path.name}"
-        scp_upload(ip, username, wheel_path, remote_wheel, key_path=key_path)
+            # Upload install script to /tmp (safer than passing via bash -c with escaping issues)
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as f:
+                f.write(install_script)
+                local_script = Path(f.name)
 
-        install_cmd = f"cd {SKYWARD_DIR} && {uv_path} pip install {remote_wheel}"
-        result = ssh_run(ip, username, install_cmd, timeout=120, key_path=key_path)
-        if result.returncode != 0:
-            raise RuntimeError(f"Failed to install wheel on {ip}: {result.stderr}")
+            try:
+                remote_script = "/tmp/.install-wheel.sh"
+                transport.upload_file(local_script, remote_script)
 
-        verify_cmd = f"{SKYWARD_DIR}/.venv/bin/python -c 'import skyward; print(skyward.__file__)'"
-        verify_result = ssh_run(ip, username, verify_cmd, timeout=30, key_path=key_path)
-        if verify_result.returncode != 0:
-            raise RuntimeError(f"skyward not importable on {ip}: {verify_result.stderr}")
-
-        # Create and start systemd service (only after wheel is installed)
-        # Image.bootstrap() doesn't create the service - it only sets up the venv and deps
-        # The service must be created after the wheel is installed via SCP
-        # Use the bootstrap ops system to generate a proper script
-        from skyward.bootstrap import bootstrap as bootstrap_ops, systemd, wait_for_port as wait_for_port_op
-
-        unit_content = rpyc_service_unit()
-
-        # Generate setup script using ops - handles heredoc quoting correctly
-        # Use empty header since we're piping to sudo bash
-        setup_script = bootstrap_ops(
-            systemd("skyward-rpyc", unit_content),
-            wait_for_port_op(RPYC_PORT, timeout=30),
-            header="#!/bin/bash\nset -e\n\n",
-        )
-
-        # Pass script via stdin to avoid shell quoting issues
-        ssh_cmd = [
-            "ssh",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "LogLevel=ERROR",
-            "-o", "ConnectTimeout=10",
-        ]
-        if key_path:
-            ssh_cmd.extend(["-i", key_path])
-        ssh_cmd.extend([f"{username}@{ip}", "sudo bash"])
-
-        setup_result = subprocess.run(
-            ssh_cmd,
-            input=setup_script.encode(),
-            capture_output=True,
-            timeout=120,
-        )
-        if setup_result.returncode != 0:
-            # Get service status and logs for debugging
-            status_result = ssh_run(ip, username, "systemctl status skyward-rpyc 2>&1 || true", timeout=30, key_path=key_path)
-            journal_result = ssh_run(ip, username, "journalctl -u skyward-rpyc -n 50 --no-pager 2>&1 || true", timeout=30, key_path=key_path)
-            raise RuntimeError(
-                f"Failed to setup systemd service on {ip}\n"
-                f"--- systemctl status ---\n{status_result.stdout}\n"
-                f"--- journal ---\n{journal_result.stdout}"
-            )
+                # Single remote call: execute script (runs as sudo to have write access)
+                transport.run_command(f"sudo bash {remote_script}", timeout=180)
+            finally:
+                local_script.unlink(missing_ok=True)
 
     for_each_async(install_on_instance, instances)
 

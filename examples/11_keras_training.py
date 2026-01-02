@@ -172,7 +172,7 @@ def build_vit(
 
 
 @compute
-# @distributed.keras(backend="jax")
+@distributed.keras(backend="jax")
 def train_vit(
     epochs: int = 10,
     batch_size: int = 128,
@@ -266,15 +266,15 @@ def train_vit(
 
 if __name__ == "__main__":
     with ComputePool(
-        provider=AWS(),
+        provider=Verda(),
         # nodes=2,
-        accelerator=Accelerator.NVIDIA.T4(count=0.2),
+        accelerator=Accelerator.NVIDIA.A100(mig=['3g.40gb', '3g.40gb']),
         image=Image(
             pip=["keras>=3.2", "jax[cuda12]"],
             env={"KERAS_BACKEND": "jax"},
         ),
         spot="always",
-        timeout=1200,
+        timeout=600,
     ) as pool:
         print("=" * 60)
         print("Vision Transformer (ViT) - MNIST Classification")

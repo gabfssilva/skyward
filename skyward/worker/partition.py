@@ -13,7 +13,6 @@ from typing import Final
 from skyward.accelerator import (
     MIG_CAPABLE,
     MIG_MAX_INSTANCES,
-    MIG_PROFILE_SLICES,
     _AMD_VALUES,
     _HABANA_VALUES,
     _INFERENTIA_VALUES,

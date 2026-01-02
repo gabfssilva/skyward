@@ -20,13 +20,12 @@ Example:
 """
 
 # Accelerator utilities
+# Distributed training decorators
+from skyward import distributed
 from skyward.accelerator import (
     is_nvidia,
     is_trainium,
 )
-
-# Distributed training decorators
-from skyward import distributed
 
 # Callback system
 from skyward.callback import Callback, compose, emit, use_callback
@@ -55,8 +54,11 @@ from skyward.events import (
     PoolStarted,
     PoolStopping,
     SkywardEvent,
-
 )
+
+# Image
+from skyward.image import Image
+from skyward.multi_pool import MultiPool
 
 # Lazy computation API
 from skyward.pending import (
@@ -70,9 +72,6 @@ from skyward.pending import (
 
 # Pool
 from skyward.pool import ComputePool
-
-# Image
-from skyward.image import Image
 
 # Providers
 from skyward.providers import AWS, DigitalOcean, Verda
@@ -108,6 +107,7 @@ __all__ = [
     "ComputeFunction",
     # Pool
     "ComputePool",
+    "MultiPool",
     # Image
     "Image",
     # Distributed training

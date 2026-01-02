@@ -5,8 +5,7 @@ from __future__ import annotations
 import functools
 import json
 import os
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
@@ -177,51 +176,6 @@ _FRAMEWORK_INITIALIZERS: dict[str, Callable[[InstanceInfo], None]] = {
     "jax": _init_jax,
     "tensorflow": _init_tensorflow,
 }
-
-
-@dataclass(frozen=True, slots=True)
-class DistributedConfig:
-    """Configuration for distributed training setup."""
-
-    env_vars: Mapping[str, str]
-    framework: Framework
-    backend: Backend
-
-
-def build_distributed_config(
-    pool: InstanceInfo,
-    framework: Framework,
-    backend: Backend,
-) -> DistributedConfig:
-    """Build distributed training configuration."""
-    effective_framework = backend if framework == "keras" and backend else framework
-    builder = _ENV_VAR_BUILDERS.get(effective_framework)
-    env_vars = builder(pool) if builder else {}
-
-    return DistributedConfig(
-        env_vars=env_vars,
-        framework=framework,
-        backend=backend,
-    )
-
-
-def apply_distributed_config(config: DistributedConfig, pool: InstanceInfo) -> None:
-    """Apply distributed configuration: set env vars and initialize framework."""
-    for key, value in config.env_vars.items():
-        os.environ[key] = value
-
-    effective_framework = (
-        config.backend
-        if config.framework == "keras" and config.backend
-        else config.framework
-    )
-
-    initializer = _FRAMEWORK_INITIALIZERS.get(effective_framework)
-    if initializer:
-        initializer(pool)
-
-    if config.framework == "keras":
-        _init_keras(pool)
 
 
 def detect_framework(

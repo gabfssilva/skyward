@@ -123,37 +123,10 @@ def use_callback(cb: Callback) -> Iterator[None]:
         _callback.reset(token)
 
 
-def only(*event_types: type[SkywardEvent]) -> Callable[[Callback], Callback]:
-    """Decorator that filters a callback to only receive specific event types.
-
-    Args:
-        *event_types: Event types to pass through.
-
-    Returns:
-        A decorator that wraps the callback with filtering.
-
-    Example:
-        @only(Error, BootstrapCompleted)
-        def my_callback(event):
-            print(event)  # Only receives Error and BootstrapCompleted
-    """
-
-    def decorator(cb: Callback) -> Callback:
-        def filtered(event: SkywardEvent) -> CallbackResult:
-            if isinstance(event, event_types):
-                return cb(event)
-            return None
-
-        return filtered
-
-    return decorator
-
-
 __all__ = [
     "Callback",
     "CallbackResult",
     "emit",
     "compose",
     "use_callback",
-    "only",
 ]

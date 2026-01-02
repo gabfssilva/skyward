@@ -33,7 +33,7 @@ from skyward.providers.base import (
     get_private_key_path,
 )
 from skyward.providers.common import (
-    install_skyward_wheel,
+    install_skyward_wheel_via_transport,
     wait_for_ssh_bootstrap,
 )
 from skyward.spec import Spot, _SpotNever, normalize_spot
@@ -47,7 +47,6 @@ from skyward.types import (
 )
 
 from .discovery import (
-    NoAvailableRegionError,
     fetch_available_instances,
     find_available_region,
 )
@@ -410,6 +409,9 @@ class Verda(Provider):
     @override
     def setup(self, instances: tuple[Instance, ...], compute: ComputeSpec) -> None:
         """Setup instances (wait for bootstrap to complete)."""
+        from contextlib import contextmanager
+        from typing import Generator
+
         try:
             for inst in instances:
                 emit(BootstrapStarting(instance_id=inst.id))
@@ -419,8 +421,14 @@ class Verda(Provider):
             def get_ip(inst: Instance) -> str:
                 return inst.get_meta("instance_ip") or inst.public_ip or ""
 
+            @contextmanager
+            def ssh_transport(inst: Instance) -> Generator[SSHTransport, None, None]:
+                ip = get_ip(inst)
+                username = inst.get_meta("username", self._username)
+                yield SSHTransport(host=ip, username=username, key_path=key_path)
+
             wait_for_ssh_bootstrap(instances, get_ip, timeout=300, key_path=key_path)
-            install_skyward_wheel(instances, get_ip, key_path=key_path)
+            install_skyward_wheel_via_transport(instances, ssh_transport, compute=compute)
 
             for inst in instances:
                 emit(BootstrapCompleted(instance_id=inst.id))

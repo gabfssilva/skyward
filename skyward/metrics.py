@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import contextlib
 import contextvars
 import threading
-from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
 from skyward.callback import emit
@@ -80,30 +78,3 @@ class MetricsPoller:
                 gpu_temperature=data.get("gpu_temperature"),
             )
         )
-
-
-@contextlib.contextmanager
-def metrics_polling(
-    instances: tuple[Instance, ...],
-) -> Iterator[None]:
-    """Context manager that polls metrics during execution.
-
-    Args:
-        instances: Instances to poll metrics from.
-
-    Example:
-        with metrics_polling(instances):
-            result = run_function_on_instances(...)
-    """
-    pollers: list[MetricsPoller] = []
-
-    for instance in instances:
-        poller = MetricsPoller(instance)
-        poller.start()
-        pollers.append(poller)
-
-    try:
-        yield
-    finally:
-        for poller in pollers:
-            poller.stop()

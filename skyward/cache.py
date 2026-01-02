@@ -8,7 +8,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
-from typing import Any, ParamSpec, TypeVar, overload
+from typing import Any, overload
 
 import cloudpickle
 

@@ -45,14 +45,12 @@ class InstanceState(StrEnum):
 
 SKYWARD_DIR: Final = "/opt/skyward"
 VENV_DIR: Final = f"{SKYWARD_DIR}/.venv"
-SYSTEMD_SERVICE: Final = "/etc/systemd/system/skyward-rpyc.service"
 
 
 # =============================================================================
 # Bootstrap Configuration
 # =============================================================================
 
-SSM_WAIT_SECONDS: Final = 5
 UV_INSTALL_URL: Final = "https://astral.sh/uv/install.sh"
 DEFAULT_PYTHON: Final = "3.13"
 RPYC_PORT: Final = 18861

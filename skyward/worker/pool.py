@@ -88,6 +88,10 @@ class WorkerPool:
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _conn_locks: dict[str, threading.Lock] = field(default_factory=dict, repr=False)
 
+    # Round-robin state
+    _instance_order: list[str] = field(default_factory=list, repr=False)
+    _next_instance_idx: int = field(default=0, repr=False)
+
     def register_instance(
         self,
         instance: Instance,
@@ -112,6 +116,9 @@ class WorkerPool:
             )
             self._available[instance.id] = workers
             self._instances[instance.id] = instance
+            # Track instance order for round-robin
+            if instance.id not in self._instance_order:
+                self._instance_order.append(instance.id)
 
     def acquire(self, n: int = 1) -> tuple[Worker, ...]:
         """Acquire workers for execution.
@@ -143,18 +150,27 @@ class WorkerPool:
         return tuple(workers)
 
     def _acquire_one(self) -> Worker:
-        """Acquire a single worker, blocking until available."""
+        """Acquire a single worker, blocking until available.
+
+        Uses round-robin across instances for fair distribution.
+        """
         while True:
             with self._lock:
-                # Try each instance's queue
-                for instance_id, queue in self._available.items():
+                n_instances = len(self._instance_order)
+                if n_instances == 0:
+                    raise RuntimeError("No workers available - no instances registered")
+
+                # Try each instance starting from current rotation point
+                for _ in range(n_instances):
+                    instance_id = self._instance_order[self._next_instance_idx]
+                    self._next_instance_idx = (self._next_instance_idx + 1) % n_instances
+                    queue = self._available.get(instance_id)
                     if queue:
                         worker = queue.popleft()
                         self._in_use.add(worker.key)
                         return worker
 
             # No workers available, wait and retry
-            # In a real implementation, use a condition variable
             import time
             time.sleep(0.01)
 

@@ -6,14 +6,15 @@ import json
 import threading
 import uuid
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, override
+from typing import TYPE_CHECKING, override
 
 from botocore.exceptions import ClientError
 
 from skyward.callback import emit
-from skyward.constants import RPYC_PORT, SKYWARD_DIR, SkywardTag
+from skyward.constants import SkywardTag
 from skyward.events import (
     BootstrapCompleted,
     BootstrapStarting,
@@ -28,14 +29,13 @@ from skyward.events import (
     RegionAutoSelected,
 )
 from skyward.exceptions import InstanceTerminatedError
+from skyward.providers.base import SSHTransport
 from skyward.providers.base.ssh_keys import find_local_ssh_key, get_private_key_path
 from skyward.providers.common import (
     Checkpoint,
-    build_wheel,
     create_tunnel,
     find_available_port,
-    scp_upload,
-    ssh_run,
+    install_skyward_wheel_via_transport,
     wait_for_bootstrap as _wait_for_bootstrap_common,
 )
 from skyward.spec import AllocationStrategy, normalize_spot
@@ -45,7 +45,6 @@ from .discovery import (
     DLAMI_GPU_SSM,
     UBUNTU_BASE_SSM,
     Architecture,
-    NoAvailableRegionError,
     build_instance_specs,
     discover_all_instances,
     find_available_region,
@@ -337,8 +336,6 @@ class AWS(Provider):
         acc: "Accelerator | None" = None,
     ) -> str:
         """Resolve AMI ID based on configuration and architecture."""
-        from skyward.accelerator import Accelerator
-
         if self.ami:
             return self.ami
 
@@ -448,27 +445,35 @@ class AWS(Provider):
     # Skyward Wheel Installation
     # =========================================================================
 
-    def _install_skyward_wheel(self, instances: tuple[Instance, ...]) -> None:
-        """Install skyward wheel on all instances via SSM SSH tunnel.
+    def _ssh_transport_via_ssm(
+        self, instance: Instance
+    ) -> AbstractContextManager[SSHTransport]:
+        """Create SSHTransport via SSM tunnel for wheel installation.
 
-        Creates an SSM tunnel to port 22 and uses SSH/SCP to transfer
-        and install the wheel, same approach as Verda/DigitalOcean.
+        This context manager:
+        1. Ensures SSM agent is ready
+        2. Waits for sshd to be running
+        3. Creates SSM tunnel to port 22
+        4. Yields SSHTransport(localhost, local_port, ...)
+        5. Cleans up tunnel on exit
+
+        Returns:
+            Context manager yielding SSHTransport.
         """
-        from skyward.bootstrap.worker import rpyc_service_unit
-        from skyward.conc import for_each_async
+        from contextlib import contextmanager
+        from typing import Generator
 
-        # Build wheel locally
-        wheel_path = build_wheel()
-        key_path = get_private_key_path()
         ssm = self._get_ssm_session()
+        key_path = get_private_key_path()
 
-        def install_on_instance(inst: Instance) -> None:
-            # Ensure SSM agent is ready for sessions (may have just started with cached AMI)
-            ssm.wait_for_ssm_agent(inst.id, timeout=120)
+        @contextmanager
+        def _transport() -> Generator[SSHTransport, None, None]:
+            # Ensure SSM agent is ready (may have just started with cached AMI)
+            ssm.wait_for_ssm_agent(instance.id, timeout=120)
 
-            # Wait for SSH daemon to be ready (critical for cached AMIs where sshd may not be up yet)
+            # Wait for SSH daemon to be ready
             ssm.run_command(
-                inst.id,
+                instance.id,
                 "for i in $(seq 1 30); do nc -z 127.0.0.1 22 && break || sleep 1; done",
                 timeout=60,
             )
@@ -480,7 +485,7 @@ class AWS(Provider):
                 "ssm",
                 "start-session",
                 "--target",
-                inst.id,
+                instance.id,
                 "--document-name",
                 "AWS-StartPortForwardingSession",
                 "--parameters",
@@ -493,95 +498,20 @@ class AWS(Provider):
                 "--region",
                 self._active_region,
             ]
-            # Give more time for tunnel (Session Manager can be slower than RunCommand)
             local_port, tunnel_proc = create_tunnel(tunnel_cmd, local_port, timeout=60)
 
             try:
-                username = inst.get_meta("username", "ubuntu")
-
-                # Upload wheel to /tmp first (user has write access), then move to SKYWARD_DIR
-                tmp_wheel = f"/tmp/{wheel_path.name}"
-                remote_wheel = f"{SKYWARD_DIR}/{wheel_path.name}"
-                scp_upload("localhost", username, wheel_path, tmp_wheel, port=local_port, key_path=key_path)
-
-                # Move to SKYWARD_DIR with sudo
-                ssh_run(
-                    "localhost",
-                    username,
-                    f"sudo mv {tmp_wheel} {remote_wheel}",
-                    timeout=30,
-                    port=local_port,
+                username = instance.get_meta("username", "ubuntu")
+                yield SSHTransport(
+                    host="localhost",
+                    username=username,
                     key_path=key_path,
-                )
-
-                # Find uv path
-                find_uv_result = ssh_run(
-                    "localhost",
-                    username,
-                    "which uv || find /root /home -name uv -type f 2>/dev/null | head -1",
-                    timeout=30,
                     port=local_port,
-                    key_path=key_path,
                 )
-                uv_path = find_uv_result.stdout.strip()
-                if not uv_path:
-                    uv_path = "/root/.local/bin/uv"
-
-                # Install wheel with all dependencies
-                install_result = ssh_run(
-                    "localhost",
-                    username,
-                    f"sudo bash -c 'cd {SKYWARD_DIR} && {uv_path} pip install {remote_wheel}'",
-                    timeout=120,
-                    port=local_port,
-                    key_path=key_path,
-                )
-                if install_result.returncode != 0:
-                    raise RuntimeError(f"Failed to install wheel: {install_result.stderr}")
-
-                # Create and start systemd service (only after wheel is installed)
-                # The service runs python -m skyward.rpc which requires the skyward package
-                unit_content = rpyc_service_unit()
-                unit_path = "/etc/systemd/system/skyward-rpyc.service"
-
-                # Write unit file, reload daemon, enable and start
-                setup_service_cmd = f"""sudo bash -c '
-cat > {unit_path} << EOF
-{unit_content}
-EOF
-systemctl daemon-reload
-systemctl enable skyward-rpyc
-systemctl restart skyward-rpyc
-'"""
-                ssh_run("localhost", username, setup_service_cmd, timeout=60, port=local_port, key_path=key_path)
-
-                # Wait for port to be ready
-                wait_port_cmd = f"""
-for i in $(seq 1 30); do
-    if nc -z 127.0.0.1 {RPYC_PORT} 2>/dev/null; then
-        echo "Port {RPYC_PORT} ready"
-        exit 0
-    fi
-    sleep 1
-done
-echo "Timeout waiting for port {RPYC_PORT}"
-exit 1
-"""
-                port_result = ssh_run(
-                    "localhost",
-                    username,
-                    f"sudo bash -c '{wait_port_cmd}'",
-                    timeout=60,
-                    port=local_port,
-                    key_path=key_path,
-                )
-                if port_result.returncode != 0:
-                    raise RuntimeError(f"RPyC service failed to start: {port_result.stderr}")
-
             finally:
                 tunnel_proc.terminate()
 
-        for_each_async(install_on_instance, instances)
+        return _transport()
 
     # =========================================================================
     # Provider Protocol Implementation
@@ -787,8 +717,12 @@ exit 1
 
             for_each_async(bootstrap_instance, instances)
 
-            # Install skyward wheel on all instances
-            self._install_skyward_wheel(instances)
+            # Install skyward wheel on all instances using Transport abstraction
+            install_skyward_wheel_via_transport(
+                instances,
+                get_transport=self._ssh_transport_via_ssm,
+                compute=compute,
+            )
 
         except Exception as e:
             emit(Error(message=f"Setup failed: {e}"))

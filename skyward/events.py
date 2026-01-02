@@ -22,7 +22,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Literal
 
 from skyward.callback import emit
 
@@ -34,8 +33,6 @@ class ProviderName(Enum):
     AWS = 'AWS'
     DigitalOcean = 'Digital Ocean'
     Verda = 'Verda'
-    Azure = 'Azure'
-    GCP = 'GCP'
 
 
 @dataclass(frozen=True, slots=True)

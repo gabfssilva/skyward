@@ -66,7 +66,7 @@ def gpu_computation(size: int) -> dict:
     b = torch.randn(size, size, device=device)
 
     for _ in range(10):
-        c = torch.matmul(a, b)
+        _ = torch.matmul(a, b)
         torch.cuda.synchronize()
 
     return {

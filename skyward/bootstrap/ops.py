@@ -6,8 +6,6 @@ Each operation is a function returning an Op (string or callable).
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 from skyward.constants import SKYWARD_DIR, UV_INSTALL_URL
 
 from .compose import Op
@@ -126,14 +124,6 @@ def uv_add(*packages: str, extra_index: str | None = None) -> Op:
 
     return lambda: f"cd {SKYWARD_DIR} && uv add {pkg_list}{extra}"
 
-def write(
-    path: str,
-    content: str,
-) -> Op:
-    """Write content to a file using heredoc.
-    Args:
-    """
-    return lambda: f"echo {content} > {path}"
 
 def uv_init(python: str = "3.12") -> Op:
     """Initialize uv project in SKYWARD_DIR.
