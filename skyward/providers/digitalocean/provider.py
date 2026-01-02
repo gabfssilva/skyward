@@ -245,21 +245,33 @@ class DigitalOcean(Provider):
             client = self._get_client()
 
             acc = Accelerator.from_value(compute.accelerator)
-            accelerator_type = acc.accelerator if acc else None
-            requested_gpu_count = acc.count if acc else 1
             prefer_spot = not isinstance(compute.spot, _SpotNever)
 
-            spec = select_instance(
-                self.available_instances(),
-                cpu=compute.cpu or 1,
-                memory_mb=parse_memory_mb(compute.memory),
-                accelerator=accelerator_type,
-                accelerator_count=requested_gpu_count,
-                prefer_spot=prefer_spot,
-            )
+            if compute.machine is not None:
+                # Direct instance type override
+                size = compute.machine
+                # Look up spec for metadata (accelerator_count for image selection)
+                specs = self.available_instances()
+                spec = next((s for s in specs if s.name == size), None)
+                accelerator_count = spec.accelerator_count if spec else (acc.count if acc else 0)
+            else:
+                # Infer from resources (current behavior)
+                accelerator_type = acc.accelerator if acc else None
+                requested_gpu_count = acc.count if acc else 1
 
-            if compute.accelerator:
-                os_image = get_gpu_image(cast(Accelerator, compute.accelerator), spec.accelerator_count)
+                spec = select_instance(
+                    self.available_instances(),
+                    cpu=compute.cpu or 1,
+                    memory_mb=parse_memory_mb(compute.memory),
+                    accelerator=accelerator_type,
+                    accelerator_count=requested_gpu_count,
+                    prefer_spot=prefer_spot,
+                )
+                size = spec.name
+                accelerator_count = spec.accelerator_count
+
+            if compute.accelerator or (compute.machine and accelerator_count > 0):
+                os_image = get_gpu_image(cast(Accelerator, acc) if acc else Accelerator("H100", "80GB"), accelerator_count)
                 username = "ubuntu"
             else:
                 os_image = "ubuntu-24-04-x64"
@@ -272,7 +284,7 @@ class DigitalOcean(Provider):
 
             emit(
                 InstanceLaunching(
-                    count=compute.nodes, instance_type=spec.name, provider=ProviderName.DigitalOcean
+                    count=compute.nodes, instance_type=size, provider=ProviderName.DigitalOcean
                 )
             )
 
@@ -283,7 +295,7 @@ class DigitalOcean(Provider):
                 create_data: dict[str, Any] = {
                     "name": droplet_name,
                     "region": self.region,
-                    "size": spec.name,
+                    "size": size,
                     "image": os_image,
                     "user_data": user_data,
                     "tags": ["skyward", f"skyward-cluster-{cluster_id}"],
@@ -319,7 +331,7 @@ class DigitalOcean(Provider):
                             ("droplet_id", droplet.id),
                             ("droplet_ip", droplet.ip),
                             ("username", username),
-                            ("accelerator_count", str(spec.accelerator_count)),
+                            ("accelerator_count", str(accelerator_count)),
                         ]
                     ),
                 )
@@ -331,11 +343,11 @@ class DigitalOcean(Provider):
                         node=i,
                         spot=False,
                         ip=droplet.ip,
-                        instance_type=spec.name,
+                        instance_type=size,
                         provider=ProviderName.DigitalOcean,
-                        price_on_demand=spec.price_on_demand,
-                        price_spot=spec.price_spot,
-                        billing_increment_minutes=spec.billing_increment_minutes,
+                        price_on_demand=spec.price_on_demand if spec else None,
+                        price_spot=spec.price_spot if spec else None,
+                        billing_increment_minutes=spec.billing_increment_minutes if spec else None,
                     )
                 )
 

@@ -113,6 +113,7 @@ class ComputePool:
 
     # Resource specification
     nodes: int = 1
+    machine: str | None = None  # Direct instance type override (e.g., "p5.48xlarge")
     accelerator: Accelerator | str | None = None
     cpu: int | None = None
     memory: str | None = None
@@ -372,6 +373,7 @@ class ComputePool:
             pool=self,
             fn=lambda: None,  # Placeholder
             nodes=self.nodes,
+            machine=self.machine,
             accelerator=self.accelerator,
             image=self.image,
             cpu=self.cpu,
@@ -430,6 +432,7 @@ class ComputePool:
             pool=self,
             fn=lambda: None,
             nodes=self.nodes,
+            machine=self.machine,
             accelerator=accelerator_for_provider,
             image=self.image,
             cpu=self.cpu,

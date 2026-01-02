@@ -536,23 +536,39 @@ class AWS(Provider):
 
             emit(InfraCreating())
 
-            # Select instance type first (before region discovery)
+            # Select instance type (direct override or inferred from resources)
             acc = Accelerator.from_value(compute.accelerator)
-            accelerator_type = acc.accelerator if acc else None
-            requested_gpu_count = acc.count if acc else 1
             prefer_spot = not isinstance(compute.spot, _SpotNever)
 
-            spec = select_instance(
-                self.available_instances(),
-                cpu=compute.cpu or 1,
-                memory_mb=parse_memory_mb(compute.memory),
-                accelerator=accelerator_type,
-                accelerator_count=requested_gpu_count,
-                prefer_spot=prefer_spot,
-            )
-            instance_type = spec.name
-            accelerator_count = spec.accelerator_count
-            architecture = spec.metadata.get("architecture", "x86_64")
+            if compute.machine is not None:
+                # Direct instance type override
+                instance_type = compute.machine
+                # Look up spec for metadata (architecture, accelerator_count)
+                specs = self.available_instances()
+                spec = next((s for s in specs if s.name == instance_type), None)
+                if spec:
+                    accelerator_count = spec.accelerator_count
+                    architecture = spec.metadata.get("architecture", "x86_64")
+                else:
+                    # Defaults if instance type not found in catalog
+                    accelerator_count = acc.count if acc else 0
+                    architecture = "x86_64"
+            else:
+                # Infer from resources (current behavior)
+                accelerator_type = acc.accelerator if acc else None
+                requested_gpu_count = acc.count if acc else 1
+
+                spec = select_instance(
+                    self.available_instances(),
+                    cpu=compute.cpu or 1,
+                    memory_mb=parse_memory_mb(compute.memory),
+                    accelerator=accelerator_type,
+                    accelerator_count=requested_gpu_count,
+                    prefer_spot=prefer_spot,
+                )
+                instance_type = spec.name
+                accelerator_count = spec.accelerator_count
+                architecture = spec.metadata.get("architecture", "x86_64")
 
             # Find available region for this instance type
             actual_region = find_available_region(

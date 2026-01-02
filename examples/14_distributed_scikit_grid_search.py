@@ -5,8 +5,6 @@ AND their hyperparameters using Skyward's distributed joblib backend.
 
 Uses sklearn's native Pipeline with list-of-dicts param_grid to treat
 the estimator itself as a searchable hyperparameter.
-
-See: https://scikit-learn.org/stable/modules/compose.html#access-to-nested-parameters
 """
 
 from functools import reduce
@@ -74,9 +72,9 @@ def main():
 
     with ScikitLearnPool(
         provider=AWS(),
-        nodes=10,
-        cpu=2,
+        nodes=3,
         concurrency=4,
+        machine='t4g.xlarge',
         image=Image(pip=["scikit-learn"]),
         spot="always",
     ):

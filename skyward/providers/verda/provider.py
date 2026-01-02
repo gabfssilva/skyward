@@ -277,24 +277,40 @@ class Verda(Provider):
             emit(InfraCreated(region=self.region))
 
             acc = Accelerator.from_value(compute.accelerator)
-            accelerator_type = acc.accelerator if acc else None
-            requested_gpu_count = acc.count if acc else 1
             prefer_spot = not isinstance(compute.spot, _SpotNever)
 
-            spec = select_instance(
-                self.available_instances(),
-                cpu=compute.cpu or 1,
-                memory_mb=parse_memory_mb(compute.memory),
-                accelerator=accelerator_type,
-                accelerator_count=requested_gpu_count,
-                prefer_spot=prefer_spot,
-            )
-
-            supported_os = spec.metadata.get("supported_os", ())
-            if compute.accelerator:
-                os_image = next(filter(lambda os: "cuda" in os, supported_os))
+            if compute.machine is not None:
+                # Direct instance type override
+                flavor = compute.machine
+                # Look up spec for metadata (supported_os)
+                specs = self.available_instances()
+                spec = next((s for s in specs if s.name == flavor), None)
             else:
-                os_image = supported_os[0]
+                # Infer from resources (current behavior)
+                accelerator_type = acc.accelerator if acc else None
+                requested_gpu_count = acc.count if acc else 1
+
+                spec = select_instance(
+                    self.available_instances(),
+                    cpu=compute.cpu or 1,
+                    memory_mb=parse_memory_mb(compute.memory),
+                    accelerator=accelerator_type,
+                    accelerator_count=requested_gpu_count,
+                    prefer_spot=prefer_spot,
+                )
+
+            # Determine instance type name
+            instance_type = compute.machine if compute.machine is not None else spec.name
+
+            supported_os = spec.metadata.get("supported_os", ()) if spec else ()
+            if compute.accelerator or compute.machine:
+                default_cuda_image = "ubuntu-22.04-cuda-12.1"
+                os_image = next(
+                    filter(lambda os: "cuda" in os, supported_os),
+                    supported_os[0] if supported_os else default_cuda_image,
+                )
+            else:
+                os_image = supported_os[0] if supported_os else "ubuntu-22.04"
             username = "root"
             object.__setattr__(self, "_username", username)
 
@@ -310,7 +326,7 @@ class Verda(Provider):
             # Auto-region discovery
             actual_region = find_available_region(
                 client,
-                spec.name,
+                instance_type,
                 is_spot=use_spot,
                 preferred_region=self.region,
             )
@@ -320,13 +336,13 @@ class Verda(Provider):
                     RegionAutoSelected(
                         requested_region=self.region,
                         selected_region=actual_region,
-                        instance_type=spec.name,
+                        instance_type=instance_type,
                         provider=ProviderName.Verda,
                     )
                 )
 
             emit(
-                InstanceLaunching(count=compute.nodes, instance_type=spec.name, provider=ProviderName.Verda)
+                InstanceLaunching(count=compute.nodes, instance_type=instance_type, provider=ProviderName.Verda)
             )
 
             verda_instances: list[_VerdaInstance] = []
@@ -334,7 +350,7 @@ class Verda(Provider):
                 instance_name = f"skyward-{cluster_id}-{i}"
 
                 created = client.instances.create(
-                    instance_type=spec.name,
+                    instance_type=instance_type,
                     image=os_image,
                     ssh_key_ids=[ssh_key_info.id],
                     hostname=instance_name,
@@ -385,11 +401,11 @@ class Verda(Provider):
                         node=i,
                         spot=use_spot,
                         ip=vinst.ip,
-                        instance_type=spec.name,
+                        instance_type=instance_type,
                         provider=ProviderName.Verda,
-                        price_on_demand=spec.price_on_demand,
-                        price_spot=spec.price_spot,
-                        billing_increment_minutes=spec.billing_increment_minutes,
+                        price_on_demand=spec.price_on_demand if spec else None,
+                        price_spot=spec.price_spot if spec else None,
+                        billing_increment_minutes=spec.billing_increment_minutes if spec else None,
                     )
                 )
 

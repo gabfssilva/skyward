@@ -30,6 +30,7 @@ class _PoolCompute:
     pool: ComputePool
     fn: Callable[..., Any]
     nodes: int
+    machine: str | None
     accelerator: Accelerator | list[Accelerator]
     image: Image
     cpu: int | None

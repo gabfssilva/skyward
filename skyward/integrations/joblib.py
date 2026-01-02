@@ -209,6 +209,7 @@ def JoblibPool(
     provider: Provider,
     *,
     nodes: int = 1,
+    machine: str | None = None,
     image: Image | None = None,
     accelerator: Accelerator | str | None = None,
     cpu: int | None = None,
@@ -230,6 +231,7 @@ def JoblibPool(
     Args:
         provider: Cloud provider (AWS, DigitalOcean, Verda).
         nodes: Number of nodes to provision.
+        machine: Direct instance type override (e.g., "p5.48xlarge").
         image: Base image. joblib added automatically.
         accelerator: GPU/accelerator specification.
         cpu: CPU cores per worker.
@@ -258,6 +260,7 @@ def JoblibPool(
     pool = ComputePool(
         provider=provider,
         nodes=nodes,
+        machine=machine,
         image=merged,
         accelerator=accelerator,
         cpu=cpu,
@@ -283,6 +286,7 @@ def ScikitLearnPool(
     provider: Provider,
     *,
     nodes: int = 1,
+    machine: str | None = None,
     image: Image | None = None,
     accelerator: Accelerator | str | None = None,
     cpu: int | None = None,
@@ -304,6 +308,7 @@ def ScikitLearnPool(
     Args:
         provider: Cloud provider (AWS, DigitalOcean, Verda).
         nodes: Number of nodes to provision.
+        machine: Direct instance type override (e.g., "p5.48xlarge").
         image: Base image. scikit-learn added automatically.
         accelerator: GPU/accelerator specification.
         cpu: CPU cores per worker.
@@ -333,6 +338,7 @@ def ScikitLearnPool(
     pool = ComputePool(
         provider=provider,
         nodes=nodes,
+        machine=machine,
         image=merged,
         accelerator=accelerator,
         cpu=cpu,

@@ -320,6 +320,7 @@ class ComputeSpec(Protocol):
     """
 
     nodes: int
+    machine: str | None  # Direct instance type override (e.g., "p5.48xlarge")
     accelerator: Any  # Accelerator | list[Accelerator] | str (e.g., "H100:8:16")
     image: Image  # Environment specification (python, pip, apt, env)
     cpu: int | None
