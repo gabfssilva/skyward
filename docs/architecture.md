@@ -2,6 +2,146 @@
 
 Deep dive into Skyward's internal design.
 
+## Design Philosophy: Ephemeral Compute for ML
+
+Skyward is built on a core principle: **GPU resources should not outlive your training job**.
+
+### Why ML Needs Ephemeral Infrastructure
+
+Traditional infrastructure models were designed for web services — always-on servers handling unpredictable traffic. ML workloads are fundamentally different:
+
+| Web Services | ML Training |
+|--------------|-------------|
+| Run 24/7 | Run hours to days |
+| Unpredictable load | Predictable workload |
+| Scale on demand | Fixed resources per job |
+| Stateless requests | Stateful training loop |
+| CPU-bound | GPU-bound |
+
+Applying "always-on" infrastructure patterns to ML creates waste:
+
+```
+Training job: ████████░░░░░░░░░░░░░░░░ 8 hours
+Server life:  ████████████████████████ 168 hours (1 week)
+Utilization:  4.7%
+```
+
+Ephemeral compute aligns infrastructure with workload:
+
+```
+Training job: ████████ 8 hours
+Server life:  ████████ 8 hours
+Utilization:  100%
+```
+
+### The Ephemeral ML Lifecycle
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                    EPHEMERAL ML LIFECYCLE                        │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   with ComputePool(accelerator="A100", nodes=4) as pool:         │
+│        │                                                         │
+│        ▼                                                         │
+│   ┌──────────────┐                                               │
+│   │   PROVISION  │  Launch 4x p4d.24xlarge instances            │
+│   │              │  ~60 seconds                                  │
+│   └──────┬───────┘                                               │
+│          ▼                                                       │
+│   ┌──────────────┐                                               │
+│   │   BOOTSTRAP  │  Install PyTorch, CUDA, your deps            │
+│   │              │  Configure NCCL for multi-node                │
+│   │              │  ~2-5 minutes (cached after first run)        │
+│   └──────┬───────┘                                               │
+│          ▼                                                       │
+│   ┌──────────────┐                                               │
+│   │    CONNECT   │  Establish tunnels to all nodes              │
+│   │              │  Initialize distributed process group         │
+│   └──────┬───────┘                                               │
+│          ▼                                                       │
+│   ┌──────────────┐                                               │
+│   │    TRAIN     │  @distributed.torch()                        │
+│   │              │  def train(): ...                             │
+│   │              │  train() @ pool  # Runs on all 4 nodes       │
+│   │              │  Hours of training...                         │
+│   └──────┬───────┘                                               │
+│          ▼                                                       │
+│   ┌──────────────┐                                               │
+│   │  TERMINATE   │  Close connections                           │
+│   │              │  Terminate all instances                      │
+│   │              │  Report: "4x A100, 6.2 hours, $786.32"       │
+│   └──────────────┘                                               │
+│                                                                  │
+│   # Instances gone. Checkpoints saved to S3. Nothing lingers.    │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Safety Nets for Expensive GPUs
+
+Even with context managers, things go wrong. Skyward includes multiple safety nets:
+
+**1. Timeout Auto-Termination**
+
+```python
+ComputePool(
+    accelerator="H100",
+    timeout=14400,  # 4 hours max, then auto-terminate
+)
+```
+
+The instance itself has a self-destruct timer. Even if your laptop dies, your network drops, or Python crashes — the GPU will terminate.
+
+**2. Spot Instance Handling**
+
+```python
+ComputePool(
+    accelerator="A100",
+    spot="always",  # 60-90% cheaper
+)
+```
+
+Spot instances can be reclaimed by AWS. Skyward handles interruptions gracefully — your code gets a chance to save checkpoints before termination.
+
+**3. Cost Tracking**
+
+Every pool emits real-time cost updates:
+
+```
+[cost] Running: $12.34/hr (4x A100 spot @ $3.08/hr each)
+[cost] Elapsed: 2.5 hours, Total: $30.85
+[cost] Final: 6.2 hours, $76.23 (saved $298.41 vs on-demand)
+```
+
+No surprise bills. You know exactly what you're spending.
+
+### What Persists, What Doesn't
+
+Ephemeral infrastructure doesn't mean ephemeral results:
+
+| Ephemeral (gone after job) | Persistent (you manage) |
+|---------------------------|-------------------------|
+| EC2 instances | S3 checkpoints |
+| Installed packages | Saved models |
+| /tmp files | Training logs |
+| Process state | Metrics (W&B, MLflow) |
+| Network config | Your code |
+
+Your infrastructure is disposable. Your artifacts are not.
+
+```python
+@compute
+def train():
+    model = train_model()
+
+    # These persist beyond the ephemeral infrastructure:
+    torch.save(model, "/mnt/s3/checkpoints/model.pt")  # S3 volume
+    wandb.log(metrics)                                  # External service
+
+    return metrics  # Returned to your local machine
+```
+
 ## System Overview
 
 ```
@@ -59,7 +199,7 @@ Deep dive into Skyward's internal design.
 
 1. Local machine creates SSH tunnel (or SSM tunnel for AWS)
 2. RPyC connection established through tunnel
-3. WorkerPool tracks connections per worker
+3. TaskPool tracks connections per instance
 4. Cluster info sent to each worker on first use
 
 ### Phase 4: Execute
@@ -112,7 +252,7 @@ skyward/pool.py
 
 **Key Design:**
 - Context manager pattern for resource lifecycle
-- WorkerPool manages RPyC connections
+- TaskPool manages RPyC connections
 - Round-robin distribution for batches
 
 ### Provider Abstraction
@@ -182,7 +322,7 @@ script = bootstrap(
 skyward/worker/
 ├── config.py              # WorkerConfig, ResourceLimits
 ├── partition.py           # GPU partitioning strategies
-└── pool.py                # WorkerPool, connection management
+└── pool.py                # TaskPool, connection management
 ```
 
 **Isolation Mechanisms:**
@@ -256,7 +396,7 @@ Local                           Remote
 │ ComputePool │                │ RPyC Server │
 │     │       │                │     │       │
 │     ▼       │  SSH Tunnel    │     ▼       │
-│ WorkerPool  │ ─────────────► │ Worker 0    │
+│ TaskPool    │ ─────────────► │ Worker 0    │
 │     │       │                │ Worker 1    │
 │     ▼       │                │ Worker N    │
 │ RPyC Client │                └─────────────┘
@@ -368,8 +508,8 @@ skyward/
 | `events.py` | Event definitions (ADT) |
 | `distributed.py` | Framework integration decorators |
 | `bootstrap/compose.py` | Script generation DSL |
-| `worker/partition.py` | MIG partitioning logic |
-| `providers/common.py` | Shared provider utilities |
+| `task/pool.py` | TaskPool connection management |
+| `providers/common.py` | Shared provider utilities (tunnels, bootstrap) |
 
 ## Extension Points
 

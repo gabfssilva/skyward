@@ -263,11 +263,11 @@ ComputePool(provider=AWS(), timeout=7200)  # 2 hours
 
 ### Connection issues
 
-If using AWS, enable SSM (Session Manager) for more reliable connectivity:
+AWS uses SSM (Session Manager) by default for reliable connectivity without SSH key management. If you experience connection issues:
 
-```python
-ComputePool(provider=AWS(use_ssm=True))
-```
+1. Ensure your AWS account has SSM access enabled
+2. Verify the instance has outbound internet access for SSM endpoint communication
+3. Check that IAM permissions include `AmazonSSMManagedInstanceCore`
 
 ## Next Steps
 

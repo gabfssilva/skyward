@@ -600,6 +600,131 @@ with MultiPool(
 
 ---
 
+## 14. Distributed Scikit-Learn Grid Search
+
+**File:** `examples/14_distributed_scikit_grid_search.py`
+
+Run distributed hyperparameter search with scikit-learn.
+
+```python
+from sklearn.datasets import load_digits
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.model_selection import GridSearchCV, train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.svm import SVC
+
+from skyward import AWS, Image
+from skyward.integrations import ScikitLearnPool
+
+X, y = load_digits(return_X_y=True)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+
+# Pipeline with swappable classifier
+pipe = Pipeline([("clf", SVC())])
+
+# Search across different estimators AND their hyperparameters
+param_grid = [
+    {"clf": [RandomForestClassifier()], "clf__n_estimators": [50, 100, 200]},
+    {"clf": [GradientBoostingClassifier()], "clf__learning_rate": [0.01, 0.1]},
+    {"clf": [SVC()], "clf__C": [0.1, 1, 10], "clf__kernel": ["rbf", "poly"]},
+]
+
+with ScikitLearnPool(
+    provider=AWS(),
+    nodes=3,
+    concurrency=4,
+    image=Image(pip=["scikit-learn"]),
+):
+    grid = GridSearchCV(pipe, param_grid, cv=5, n_jobs=-1)
+    grid.fit(X_train, y_train)
+
+print(f"Best: {type(grid.best_params_['clf']).__name__}")
+print(f"Test score: {grid.score(X_test, y_test):.2%}")
+```
+
+**Key Concepts:**
+- `ScikitLearnPool` - Auto-registers Skyward as joblib backend
+- `n_jobs=-1` distributes to all available slots
+- Unified search across estimator families
+
+---
+
+## 15. Concurrent Task Execution
+
+**File:** `examples/15_concurrency.py`
+
+Run many tasks concurrently using pool slots.
+
+```python
+import skyward
+import skyward.conc
+
+@skyward.compute
+def heavy_stuff(x: int, y: int) -> int:
+    from time import sleep
+    print(f"Processing {x} + {y}")
+    sleep(10)
+    return x + y
+
+with skyward.ComputePool(
+    provider=skyward.AWS(),
+    cpu=4,
+    concurrency=10,  # 10 concurrent tasks per node
+    nodes=5,         # 5 nodes = 50 total slots
+) as pool:
+    # Process 100 tasks across 50 concurrent slots
+    results = skyward.conc.map_async(
+        lambda x: heavy_stuff(x, x) >> pool,
+        list(range(100))
+    )
+    print(list(results))
+```
+
+**Key Concepts:**
+- `concurrency` parameter controls tasks per node
+- `skyward.conc.map_async` for parallel task submission
+- Total slots = `nodes * concurrency`
+
+---
+
+## 16. Joblib Integration
+
+**File:** `examples/16_joblib_concurrency.py`
+
+Use Skyward as a joblib backend for distributed parallel execution.
+
+```python
+from time import sleep
+from joblib import Parallel, delayed
+
+from skyward import AWS, Image
+from skyward.integrations import JoblibPool
+
+def slow_task(x):
+    print(f"Task {x} starting")
+    sleep(5)
+    return x * 2
+
+with JoblibPool(
+    provider=AWS(),
+    nodes=5,
+    concurrency=5,
+    image=Image(pip=["joblib"]),
+):
+    # Distribute 100 tasks across 25 slots
+    results = Parallel(n_jobs=50)(
+        delayed(slow_task)(i) for i in range(100)
+    )
+    print(results)
+```
+
+**Key Concepts:**
+- `JoblibPool` - Auto-registers Skyward as joblib backend
+- Works with existing joblib code (`Parallel`, `delayed`)
+- `n_jobs=-1` or any value uses pool slots
+
+---
+
 ## Running Examples
 
 ```bash

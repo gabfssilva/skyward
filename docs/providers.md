@@ -47,7 +47,9 @@ pool = ComputePool(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `region` | `str` | `"us-east-1"` | AWS region |
-| `use_ssm` | `bool` | `False` | Use Session Manager for connectivity |
+| `ami` | `str` | `None` | Custom AMI ID (auto-detected if None) |
+| `subnet_id` | `str` | `None` | VPC subnet (auto-created if None) |
+| `allocation_strategy` | `str` | `"price-capacity-optimized"` | Spot allocation strategy |
 
 ### Available Regions
 
@@ -69,20 +71,16 @@ pool = ComputePool(
 | `g4dn.xlarge` | 1x T4 | 16GB | Development |
 | `trn1.32xlarge` | 16x Trainium | 512GB | NeuronX training |
 
-### SSM Connectivity
+### SSM Connectivity (Default)
 
-For more reliable connectivity (avoids SSH issues):
-
-```python
-pool = ComputePool(
-    provider=AWS(use_ssm=True),
-    ...
-)
-```
+AWS uses Systems Manager (SSM) by default for all connectivity. This provides:
+- No SSH key management required
+- More reliable connections through AWS infrastructure
+- Works with private subnets (no public IP needed)
 
 SSM requires:
-- IAM role with `AmazonSSMManagedInstanceCore` policy
-- VPC with SSM endpoints or internet access
+- IAM role with `AmazonSSMManagedInstanceCore` policy (auto-created by Skyward)
+- VPC with SSM endpoints or outbound internet access
 
 ### Required IAM Permissions
 

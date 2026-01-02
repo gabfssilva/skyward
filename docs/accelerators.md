@@ -227,30 +227,14 @@ pool = ComputePool(
 | `inf2.xlarge` | 1x Inf2 | 32GB | Single model |
 | `inf2.48xlarge` | 12x Inf2 | 384GB | High throughput |
 
-## Google TPUs
+## Future Accelerator Support
 
-```python
-from skyward import Accelerator
+Support for additional accelerators is planned:
 
-# Single TPU
-Accelerator.Google.TPU(version="v5p")
+- **Google TPUs**: Cloud TPU v5p, TPU slices
+- **AMD GPUs**: MI300X, MI250X, Radeon Pro
 
-# TPU slice (pod)
-Accelerator.Google.TPUSlice("v5p-8")
-```
-
-## AMD GPUs
-
-```python
-from skyward import Accelerator
-
-# MI series
-Accelerator.AMD.MI("300X")     # MI300X
-Accelerator.AMD.MI("250X")     # MI250X
-
-# Radeon Pro
-Accelerator.AMD.RadeonPro("V710")
-```
+Check the repository for updates on accelerator support.
 
 ## Detecting GPUs at Runtime
 

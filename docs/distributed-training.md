@@ -22,7 +22,7 @@ Supported frameworks:
 ### Basic Setup
 
 ```python
-from skyward import compute, ComputePool, AWS, NVIDIA, DistributedSampler
+from skyward import compute, ComputePool, AWS, NVIDIA, DistributedSampler, Image
 
 @compute
 def train(epochs: int) -> dict:
@@ -33,7 +33,7 @@ def train(epochs: int) -> dict:
 
     from skyward import instance_info
 
-    pool = instance_info()
+    info = instance_info()
 
     # Model setup
     model = MyModel().cuda()
@@ -50,7 +50,7 @@ def train(epochs: int) -> dict:
         for batch in loader:
             train_step(model, batch)
 
-    return {"node": pool.node, "loss": final_loss}
+    return {"node": info.node, "loss": final_loss}
 
 
 # Launch on 2 nodes with A100 GPUs
@@ -58,7 +58,7 @@ with ComputePool(
     provider=AWS(),
     nodes=2,
     accelerator=NVIDIA.A100,
-    pip=["torch"],
+    image=Image(pip=["torch"]),
 ) as pool:
     results = train(epochs=10) @ pool
 ```
@@ -134,7 +134,7 @@ def train_model(epochs: int) -> dict:
     history = model.fit(x_local, y_local, epochs=epochs, batch_size=64)
 
     return {
-        "node": pool.node,
+        "node": info.node,
         "accuracy": history.history["accuracy"][-1],
     }
 
@@ -281,12 +281,12 @@ from skyward import shard, instance_info
 
 @compute
 def process_data(full_dataset):
-    pool = instance_info()
+    info = instance_info()
 
     # Automatically get this worker's portion
     local_data = shard(full_dataset)
 
-    print(f"Node {pool.node}: processing {len(local_data)} items")
+    print(f"Node {info.node}: processing {len(local_data)} items")
     return sum(local_data)
 ```
 
@@ -329,20 +329,20 @@ from skyward import instance_info
 
 @compute
 def train():
-    pool = instance_info()
+    info = instance_info()
 
     # Training code...
 
     # Only head node saves checkpoint
-    if pool.is_head:
+    if info.is_head:
         save_checkpoint(model)
         print(f"Saved checkpoint from head node")
 
     # Only head node prints progress
-    if pool.is_head:
+    if info.is_head:
         print(f"Epoch {epoch}: loss={loss:.4f}")
 
-    return {"node": pool.node, "is_head": pool.is_head}
+    return {"node": info.node, "is_head": info.is_head}
 ```
 
 ## MIG for Multi-Tenant Training
@@ -350,12 +350,12 @@ def train():
 Use MIG (Multi-Instance GPU) to run multiple training jobs on one GPU:
 
 ```python
-from skyward import ComputePool, AWS, Accelerator
+from skyward import ComputePool, AWS, Accelerator, Image
 
 with ComputePool(
     provider=AWS(),
     accelerator=Accelerator.NVIDIA.A100(mig="3g.40gb"),  # 2 workers per GPU
-    pip=["torch"],
+    image=Image(pip=["torch"]),
 ) as pool:
     # Each worker gets its own MIG partition
     results = train() @ pool
@@ -381,7 +381,8 @@ for epoch in range(epochs):
 ### 2. Use Head Node for I/O
 
 ```python
-if pool.is_head:
+info = instance_info()
+if info.is_head:
     model.save("checkpoint.pt")
     wandb.log(metrics)
 ```
@@ -395,7 +396,8 @@ import torch.distributed as dist
 dist.barrier()
 
 # Aggregate results
-if pool.is_head:
+info = instance_info()
+if info.is_head:
     aggregate_metrics()
 ```
 

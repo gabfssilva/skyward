@@ -1,8 +1,6 @@
 # Skyward
 
-> Execute Python functions on cloud GPUs with a single decorator.
-
-Skyward is a distributed computing framework for AI researchers and ML engineers. Define your function, decorate it with `@compute`, and run it on cloud infrastructure—no DevOps required.
+Cloud servers are a hassle. Skyward makes them ephemeral — spin up cloud GPUs, run your code, tear them down. No servers to maintain, no clusters to babysit.
 
 ```python
 from skyward import compute, ComputePool, AWS
@@ -16,6 +14,33 @@ def train(data):
 with ComputePool(provider=AWS(), accelerator="A100") as pool:
     result = train(my_data) >> pool
 ```
+
+## Why Ephemeral?
+
+Training ML models doesn't require servers that run forever — it requires GPUs that appear when you need them and vanish when training ends.
+
+Traditional cloud workflow:
+1. Provision GPU instance
+2. SSH in, install PyTorch, configure NCCL
+3. Run training
+4. Forget to terminate
+5. $2,400 bill for an idle p4d.24xlarge over the weekend
+
+Skyward workflow:
+```python
+with ComputePool(provider=AWS(), accelerator="A100") as pool:
+    model = train(data) >> pool
+# GPUs terminated. Impossible to forget.
+```
+
+| | Traditional | Ephemeral (Skyward) |
+|--|-------------|---------------------|
+| Setup time | Hours (Terraform, Ansible, SSH) | Seconds (Python decorator) |
+| Idle costs | $1-40/hour until you remember | Zero — auto-terminates |
+| Environment | Drifts over time | Fresh every run |
+| Cleanup | Manual, error-prone | Automatic |
+
+You're a researcher, not a cloud administrator. Spend your time on models, not infrastructure.
 
 ## Features
 
@@ -115,7 +140,7 @@ with ComputePool(provider=AWS(), nodes=4, accelerator="T4") as pool:
 ### Distributed Training (PyTorch)
 
 ```python
-from skyward import compute, ComputePool, AWS, NVIDIA, DistributedSampler
+from skyward import compute, ComputePool, AWS, NVIDIA, DistributedSampler, Image
 
 @compute
 def train(epochs: int) -> dict:
@@ -140,7 +165,7 @@ with ComputePool(
     provider=AWS(),
     nodes=2,
     accelerator=NVIDIA.A100,
-    pip=["torch"],
+    image=Image(pip=["torch"]),
 ) as pool:
     results = train(epochs=10) @ pool
 ```
@@ -199,15 +224,23 @@ The `examples/` directory contains complete working examples:
 
 | Example | Description |
 |---------|-------------|
+| `0_providers.py` | Discover available instances |
 | `1_hello.py` | Basic remote execution |
 | `2_parallel_execution.py` | `gather()` and `&` operator |
 | `3_gpu_accelerators.py` | GPU detection and benchmarks |
+| `4_digitalocean_provider.py` | DigitalOcean CPU workloads |
 | `5_broadcast.py` | `@` operator for all nodes |
 | `6_data_sharding.py` | `shard()` and `DistributedSampler` |
+| `7_cluster_coordination.py` | `instance_info()`, node roles |
+| `8_s3_volumes.py` | Mount S3 buckets |
+| `9_event_monitoring.py` | Events and callbacks |
 | `10_pytorch_distributed.py` | PyTorch DDP training |
 | `11_keras_training.py` | Keras 3 Vision Transformer |
 | `12_huggingface_finetuning.py` | Transformers fine-tuning |
-| `14_grid_search.py` | Distributed sklearn GridSearchCV |
+| `13_multi_pool.py` | Parallel pool provisioning |
+| `14_distributed_scikit_grid_search.py` | Distributed sklearn GridSearchCV |
+| `15_concurrency.py` | Concurrent task execution |
+| `16_joblib_concurrency.py` | Joblib integration |
 
 ## Requirements
 

@@ -2,6 +2,187 @@
 
 This guide explains the fundamental concepts behind Skyward's programming model.
 
+## Ephemeral Compute
+
+Skyward implements **ephemeral compute** — GPU resources that exist only for the duration of your training job.
+
+### The ML Infrastructure Problem
+
+You want to train a model. Here's what you actually do:
+
+1. Provision instance via console/Terraform (hours)
+2. SSH in, debug connection issues (minutes to hours)
+3. Install CUDA, cuDNN, PyTorch, your dependencies (hours)
+4. Discover version mismatch, reinstall (more hours)
+5. Finally run training (the actual work)
+6. Job finishes at 3am
+7. Instance runs idle until Monday
+8. $800 wasted on idle compute
+
+**This is backwards.** You're a researcher — your job is to improve models, not manage infrastructure. Yet infrastructure consumes 40%+ of ML engineering time.
+
+### Ephemeral: Infrastructure That Matches Your Workflow
+
+Training jobs have a **defined end**. Your infrastructure should too.
+
+```python
+with ComputePool(
+    provider=AWS(),
+    accelerator="H100",
+    nodes=4,
+    image=Image(pip=["torch", "transformers"]),
+) as pool:
+    # 4x H100 instances appear, configured and ready
+    metrics = train_llm(dataset) >> pool
+    # Job complete — instances terminate automatically
+```
+
+The infrastructure lifecycle matches the job lifecycle:
+
+```
+┌─────────────────────────────────────────────────┐
+│  YOUR CODE          │  INFRASTRUCTURE           │
+├─────────────────────┼───────────────────────────┤
+│  with ComputePool   │  → Instances launched     │
+│                     │  → PyTorch installed      │
+│                     │  → NCCL configured        │
+│  train() >> pool    │  → Training runs          │
+│  (end of block)     │  → Instances terminated   │
+└─────────────────────┴───────────────────────────┘
+```
+
+**Nothing persists. Nothing to forget. Nothing to clean up.**
+
+### Why Ephemeral is Perfect for ML
+
+Machine learning workloads have unique characteristics that make ephemeral compute ideal:
+
+**1. Jobs Have a Defined End**
+
+Unlike web servers, training jobs complete:
+- Fine-tuning run: 2-8 hours
+- Pretraining run: days to weeks
+- Hyperparameter sweep: hours per trial
+- Batch inference: minutes to hours
+
+When the job ends, why should the infrastructure continue?
+
+**2. Experiments Should Be Reproducible**
+
+"It worked on my GPU server" is the ML equivalent of "works on my machine."
+
+Persistent servers accumulate state:
+- Random pip installs during debugging
+- Cached datasets in /tmp
+- Environment variables set months ago
+- CUDA versions that silently changed
+
+Ephemeral compute starts fresh every time:
+```python
+# Run 1: Clean Ubuntu → your Image → training
+# Run 2: Clean Ubuntu → your Image → training
+# Identical environments, reproducible results
+```
+
+**3. GPU Idle Costs Are Brutal**
+
+| Instance | Hourly Cost | Weekend Idle Cost |
+|----------|-------------|-------------------|
+| g5.xlarge (A10G) | $1.00 | $48 |
+| p4d.24xlarge (8x A100) | $32.77 | $1,573 |
+| p5.48xlarge (8x H100) | $98.32 | $4,719 |
+
+One forgotten instance can cost more than a month of your cloud budget.
+
+**4. Different Experiments Need Different Resources**
+
+Monday: Quick prototype on a T4
+Tuesday: Full training on 4x A100
+Wednesday: Distributed training on 8 nodes
+Thursday: Inference benchmarks on H100
+
+With persistent infrastructure, you either:
+- Maintain multiple server configurations (ops burden)
+- Over-provision and waste money
+- Under-provision and wait for scaling
+
+With ephemeral compute:
+```python
+# Each experiment gets exactly what it needs
+ComputePool(accelerator="T4")           # Cheap prototyping
+ComputePool(accelerator="A100", nodes=4) # Serious training
+ComputePool(accelerator="H100", nodes=8) # Scale out
+```
+
+### Ephemeral vs Serverless for ML
+
+You might wonder: "Why not Lambda or Cloud Functions?"
+
+| | Serverless | Ephemeral (Skyward) |
+|--|------------|---------------------|
+| GPU support | None/Limited | Full (T4 to H100) |
+| Max runtime | 15 minutes | Days |
+| Memory | 10GB max | Up to 2TB |
+| Control | None | Full (instance type, spot, etc.) |
+| Distributed | Complex | Built-in (DDP, FSDP) |
+| Cold start | Every call | Once per pool |
+
+Serverless is great for web APIs. It's not designed for:
+- Loading 70B parameter models into VRAM
+- 8-hour training runs
+- Multi-node distributed training
+- GPU memory management
+
+Skyward gives you **serverless ergonomics** (no infrastructure management) with **full GPU control** (pick your hardware, run for hours).
+
+### Ephemeral vs Managed Platforms
+
+Platforms like SageMaker, Vertex AI, and Azure ML also manage infrastructure. How is Skyward different?
+
+| | Managed Platforms | Skyward |
+|--|-------------------|---------|
+| Definition | YAML/JSON configs | Python code |
+| Vendor lock-in | High | Low (multi-cloud) |
+| Framework support | Their SDK | Any Python code |
+| Local testing | Limited | Full (`fn.local()`) |
+| Debugging | Logs only | Interactive |
+| Cost | Platform markup | Direct cloud pricing |
+
+Managed platforms wrap your code in their abstractions. Skyward runs your code as-is — the only change is a decorator.
+
+```python
+# Your existing training code
+def train(config):
+    model = load_model(config.model_name)
+    model.fit(config.dataset)
+    return model.evaluate()
+
+# On Skyward: add one decorator, nothing else changes
+@compute
+def train(config):
+    model = load_model(config.model_name)
+    model.fit(config.dataset)
+    return model.evaluate()
+```
+
+### When to Use Ephemeral Compute
+
+**Perfect for:**
+- Training runs (fine-tuning, pretraining)
+- Hyperparameter sweeps (GridSearchCV, Optuna)
+- Batch inference (process dataset, generate embeddings)
+- Distributed training (multi-GPU, multi-node)
+- CI/CD for ML (test training pipelines)
+- Research experiments (quick iterations)
+
+**Not designed for:**
+- Serving models (use inference endpoints)
+- Real-time APIs (use Lambda/Cloud Run)
+- Databases (use managed databases)
+- Long-running services (use ECS/Kubernetes)
+
+If your workload **starts, runs, and ends** — it's a fit for ephemeral compute.
+
 ## The @compute Decorator
 
 The `@compute` decorator transforms a regular Python function into a **lazy computation**. When you call a decorated function, it doesn't execute immediately—instead, it returns a `PendingCompute` object that can be sent to a pool for execution.
@@ -191,15 +372,6 @@ image = Image(
 pool = ComputePool(provider=AWS(), image=image)
 ```
 
-### Shorthand
-
-For simple cases, use `pip=` directly on ComputePool:
-
-```python
-# Equivalent to Image(pip=["torch"])
-pool = ComputePool(provider=AWS(), pip=["torch"])
-```
-
 ## Data Sharding
 
 For distributed workloads, Skyward provides automatic data partitioning.
@@ -328,13 +500,19 @@ pool = ComputePool(
 )
 ```
 
-### Event Registration
+### Using Callbacks
+
+Pass a callback function to `on_event` to handle events:
 
 ```python
-with ComputePool(provider=AWS()) as pool:
-    pool.on(Metrics, lambda e: print(f"GPU: {e.gpu}%"))
-    pool.on(LogLine, lambda e: print(e.line))
+def my_handler(event):
+    match event:
+        case Metrics(cpu_percent=cpu, gpu_utilization=gpu):
+            print(f"CPU: {cpu}%, GPU: {gpu}%")
+        case LogLine(line=line):
+            print(f"[remote] {line}")
 
+with ComputePool(provider=AWS(), on_event=my_handler) as pool:
     result = train() >> pool
 ```
 

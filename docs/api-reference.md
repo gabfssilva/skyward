@@ -91,6 +91,7 @@ Context manager for cloud resource management.
 | `provider` | `Provider` | **required** | Cloud provider (AWS, DigitalOcean, Verda) |
 | `image` | `Image` | `Image()` | Environment specification |
 | `nodes` | `int` | `1` | Number of instances |
+| `machine` | `str` | `None` | Direct instance type override (e.g., "p5.48xlarge") |
 | `accelerator` | `str \| Accelerator` | `None` | GPU specification |
 | `cpu` | `int` | `None` | CPU cores per worker |
 | `memory` | `str` | `None` | Memory per worker (e.g., "32GB") |
@@ -98,6 +99,7 @@ Context manager for cloud resource management.
 | `spot` | `SpotLike` | `"always"` | Spot instance strategy |
 | `timeout` | `int` | `3600` | Auto-shutdown seconds |
 | `env` | `dict[str, str]` | `None` | Environment variables |
+| `concurrency` | `int` | `1` | Concurrent tasks per instance |
 | `display` | `str` | `"log"` | "log", "spinner", or "quiet" |
 | `on_event` | `Callback` | `None` | Custom event handler |
 | `collect_metrics` | `bool` | `True` | Enable metrics polling |
@@ -747,3 +749,75 @@ instance = select_instance(
 ```
 
 Find smallest matching instance from available options.
+
+---
+
+## Integrations
+
+### JoblibPool
+
+```python
+from skyward import AWS, Image
+from skyward.integrations import JoblibPool
+
+with JoblibPool(
+    provider=AWS(),
+    nodes=4,
+    concurrency=4,
+    image=Image(pip=["joblib"]),
+) as pool:
+    # Use joblib Parallel with n_jobs=-1
+    from joblib import Parallel, delayed
+    results = Parallel(n_jobs=-1)(delayed(fn)(x) for x in data)
+```
+
+Context manager that provisions a pool and auto-registers Skyward as joblib backend.
+
+**Parameters:**
+
+Same as `ComputePool`, plus:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `joblib_version` | `str` | `None` | Specific joblib version |
+
+### ScikitLearnPool
+
+```python
+from skyward import AWS, Image
+from skyward.integrations import ScikitLearnPool
+
+with ScikitLearnPool(
+    provider=AWS(),
+    nodes=4,
+    concurrency=4,
+    image=Image(pip=["scikit-learn"]),
+):
+    from sklearn.model_selection import GridSearchCV
+    grid = GridSearchCV(estimator, params, n_jobs=-1)
+    grid.fit(X, y)  # Distributed!
+```
+
+Context manager for distributed scikit-learn. Auto-adds sklearn to dependencies.
+
+**Parameters:**
+
+Same as `ComputePool`, plus:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `sklearn_version` | `str` | `None` | Specific sklearn version |
+
+### sklearn_backend / joblib_backend
+
+```python
+from skyward import ComputePool, AWS
+from skyward.integrations import sklearn_backend
+
+with ComputePool(provider=AWS()) as pool:
+    with sklearn_backend(pool):
+        # Any sklearn code with n_jobs=-1 uses Skyward
+        pass
+```
+
+Context manager to use an existing pool as joblib backend.
