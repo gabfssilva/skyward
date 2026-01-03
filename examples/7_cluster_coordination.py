@@ -8,13 +8,13 @@ Demonstrates how to use compute_pool() to:
 The head node (node 0) typically aggregates results or coordinates work.
 """
 
-from skyward import AWS, ComputePool, compute, instance_info, shard
+import skyward as sky
 
 
-@compute
+@sky.compute
 def get_cluster_info() -> dict:
     """Get detailed cluster information."""
-    pool = instance_info()
+    pool = sky.instance_info()
 
     return {
         "node": pool.node,
@@ -28,13 +28,13 @@ def get_cluster_info() -> dict:
     }
 
 
-@compute
+@sky.compute
 def distributed_sum(values: list[int]) -> dict:
     """Demonstrate distributed reduce pattern."""
-    pool = instance_info()
+    pool = sky.instance_info()
 
     # Each node processes its shard
-    local_values = shard(values)
+    local_values = sky.shard(values)
     local_sum = sum(local_values)
 
     result = {
@@ -53,12 +53,12 @@ def distributed_sum(values: list[int]) -> dict:
     return result
 
 
-@compute
+@sky.compute
 def worker_with_role(task_id: int) -> dict:
     """Different behavior based on node role."""
     import time
 
-    pool = instance_info()
+    pool = sky.instance_info()
 
     if pool.is_head:
         # Head node might do coordination
@@ -80,13 +80,13 @@ def worker_with_role(task_id: int) -> dict:
         }
 
 
-@compute
+@sky.compute
 def map_reduce_example(data: list[int], operation: str) -> dict:
     """Classic map-reduce pattern."""
-    pool = instance_info()
+    pool = sky.instance_info()
 
     # Map phase: each node processes its shard
-    local_data = shard(data)
+    local_data = sky.shard(data)
 
     if operation == "sum":
         local_result = sum(local_data)
@@ -110,10 +110,10 @@ def map_reduce_example(data: list[int], operation: str) -> dict:
 
 
 if __name__ == "__main__":
-    with ComputePool(
-        provider=AWS(),
+    with sky.ComputePool(
+        provider=sky.AWS(),
         nodes=4,
-        spot="always",
+        allocation="spot-if-available",
     ) as pool:
         # =================================================================
         # Get cluster information from all nodes

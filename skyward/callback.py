@@ -34,12 +34,13 @@ _callback: ContextVar[Callback | None] = ContextVar("skyward_cb", default=None)
 
 def _normalize(result: CallbackResult) -> list[SkywardEvent]:
     """Convert callback result to list of events."""
-    if result is None:
-        return []
-    # Check for Sequence but exclude string (which is Sequence[str])
-    if isinstance(result, Sequence) and not isinstance(result, str):
-        return list(result)
-    return [result]  # type: ignore[list-item]
+    match result:
+        case None:
+            return []
+        case [*events]:
+            return list(events)
+        case event:
+            return [event]
 
 
 def emit(event: SkywardEvent) -> None:

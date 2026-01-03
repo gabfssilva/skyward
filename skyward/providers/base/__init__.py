@@ -16,7 +16,6 @@ Public API:
     SSHTransport        - SSH-based transport implementation
 
     # Capability protocols
-    SpotCapable         - Provider supports spot instances
     VolumeCapable       - Provider supports volumes
     MIGCapable          - Provider supports NVIDIA MIG
     PlacementCapable    - Provider supports placement groups
@@ -30,7 +29,6 @@ Public API:
 from skyward.providers.base.capabilities import (
     MIGCapable,
     PlacementCapable,
-    SpotCapable,
     VolumeCapable,
 )
 from skyward.providers.base.mixins import (
@@ -63,7 +61,6 @@ __all__ = [
     "Transport",
     "SSHTransport",
     # Capabilities
-    "SpotCapable",
     "VolumeCapable",
     "MIGCapable",
     "PlacementCapable",

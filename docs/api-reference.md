@@ -2,14 +2,32 @@
 
 Complete reference for the Skyward API.
 
+## Contents
+
+- [Core API](#core-api) — @compute, PendingCompute, gather, ComputePool, MultiPool
+- [Image](#image) — Environment specification
+- [Providers](#providers) — AWS, DigitalOcean, Verda
+- [Accelerators](#accelerators) — GPU types and MIG
+- [Distributed Training](#distributed-training) — keras, torch, jax, tensorflow, transformers
+- [Data Sharding](#data-sharding) — shard(), DistributedSampler
+- [Cluster Information](#cluster-information) — instance_info(), InstanceInfo
+- [Events](#events) — Provision, Setup, Execute, Shutdown, Cost events
+- [Callbacks](#callbacks) — Callback type, compose(), emit()
+- [Volumes](#volumes) — S3Volume
+- [Allocation Strategies](#allocation-strategies) — always-spot, spot-if-available, on-demand, cheapest
+- [Utility Functions](#utility-functions) — is_nvidia(), is_trainium(), etc.
+- [Integrations](#integrations) — JoblibPool, ScikitLearnPool
+
+---
+
 ## Core API
 
-### @compute
+### @sky.compute
 
 ```python
-from skyward import compute
+import skyward as sky
 
-@compute
+@sky.compute
 def my_function(x: int) -> int:
     return x * 2
 ```
@@ -28,11 +46,13 @@ Decorator that makes a function lazy. When called, returns `PendingCompute[R]` i
 Represents a deferred computation.
 
 ```python
-@compute
+import skyward as sky
+
+@sky.compute
 def add(a: int, b: int) -> int:
     return a + b
 
-pending: PendingCompute[int] = add(1, 2)
+pending: sky.PendingCompute[int] = add(1, 2)
 ```
 
 **Operators:**
@@ -48,9 +68,9 @@ pending: PendingCompute[int] = add(1, 2)
 ### gather()
 
 ```python
-from skyward import gather
+import skyward as sky
 
-gather(*computations: PendingCompute) -> PendingBatch
+sky.gather(*computations: sky.PendingCompute) -> sky.PendingBatch
 ```
 
 Group computations for parallel execution.
@@ -62,7 +82,7 @@ Group computations for parallel execution.
 
 **Example:**
 ```python
-r1, r2, r3 = gather(fn(1), fn(2), fn(3)) >> pool
+r1, r2, r3 = sky.gather(fn(1), fn(2), fn(3)) >> pool
 ```
 
 ---
@@ -70,14 +90,14 @@ r1, r2, r3 = gather(fn(1), fn(2), fn(3)) >> pool
 ### ComputePool
 
 ```python
-from skyward import ComputePool, AWS, Image
+import skyward as sky
 
-pool = ComputePool(
-    provider=AWS(),
+pool = sky.ComputePool(
+    provider=sky.AWS(),
     nodes=2,
     accelerator="A100",
-    image=Image(pip=["torch"]),
-    spot="always",
+    image=sky.Image(pip=["torch"]),
+    allocation="always-spot",
     timeout=3600,
 )
 ```
@@ -96,7 +116,7 @@ Context manager for cloud resource management.
 | `cpu` | `int` | `None` | CPU cores per worker |
 | `memory` | `str` | `None` | Memory per worker (e.g., "32GB") |
 | `volume` | `Sequence[Volume]` | `None` | Mounted volumes |
-| `spot` | `SpotLike` | `"always"` | Spot instance strategy |
+| `allocation` | `AllocationLike` | `"spot-if-available"` | Instance allocation strategy |
 | `timeout` | `int` | `3600` | Auto-shutdown seconds |
 | `env` | `dict[str, str]` | `None` | Environment variables |
 | `concurrency` | `int` | `1` | Concurrent tasks per instance |
@@ -130,11 +150,11 @@ Execute on ALL workers simultaneously.
 ### MultiPool
 
 ```python
-from skyward import ComputePool, MultiPool, AWS
+import skyward as sky
 
-with MultiPool(
-    ComputePool(provider=AWS(), accelerator="T4"),
-    ComputePool(provider=AWS(), accelerator="A100"),
+with sky.MultiPool(
+    sky.ComputePool(provider=sky.AWS(), accelerator="T4"),
+    sky.ComputePool(provider=sky.AWS(), accelerator="A100"),
 ) as (pool_t4, pool_a100):
     r1 = benchmark() >> pool_t4
     r2 = benchmark() >> pool_a100
@@ -162,9 +182,9 @@ Context manager that provisions multiple pools **in parallel**.
 ## Image
 
 ```python
-from skyward import Image
+import skyward as sky
 
-image = Image(
+image = sky.Image(
     python="3.13",
     pip=["torch", "numpy"],
     apt=["ffmpeg"],
@@ -203,9 +223,9 @@ Generate idempotent shell script.
 ### AWS
 
 ```python
-from skyward import AWS
+import skyward as sky
 
-provider = AWS(
+provider = sky.AWS(
     region="us-east-1",
     use_ssm=False,
 )
@@ -221,9 +241,9 @@ provider = AWS(
 ### DigitalOcean
 
 ```python
-from skyward import DigitalOcean
+import skyward as sky
 
-provider = DigitalOcean(
+provider = sky.DigitalOcean(
     region="nyc1",
 )
 ```
@@ -239,9 +259,9 @@ provider = DigitalOcean(
 ### Verda
 
 ```python
-from skyward import Verda
+import skyward as sky
 
-provider = Verda(
+provider = sky.Verda(
     region="us-east",
 )
 ```
@@ -261,25 +281,25 @@ provider = Verda(
 Factory class for type-safe accelerator specifications.
 
 ```python
-from skyward import Accelerator
+import skyward as sky
 
 # NVIDIA GPUs
-Accelerator.NVIDIA.H100()                    # 1x H100 80GB
-Accelerator.NVIDIA.H100(count=4)             # 4x H100
-Accelerator.NVIDIA.H100(mig="3g.40gb")       # MIG partition
-Accelerator.NVIDIA.A100(memory="40GB")       # A100 40GB variant
-Accelerator.NVIDIA.T4()                      # 1x T4
+sky.Accelerator.NVIDIA.H100()                    # 1x H100 80GB
+sky.Accelerator.NVIDIA.H100(count=4)             # 4x H100
+sky.Accelerator.NVIDIA.H100(mig="3g.40gb")       # MIG partition
+sky.Accelerator.NVIDIA.A100(memory="40GB")       # A100 40GB variant
+sky.Accelerator.NVIDIA.T4()                      # 1x T4
 
 # AWS Accelerators
-Accelerator.AWS.Trainium(version=2)          # Trainium2
-Accelerator.AWS.Inferentia(version=2)        # Inferentia2
+sky.Accelerator.AWS.Trainium(version=2)          # Trainium2
+sky.Accelerator.AWS.Inferentia(version=2)        # Inferentia2
 
 # Google TPUs
-Accelerator.Google.TPU(version="v5p")
-Accelerator.Google.TPUSlice("v5p-8")
+sky.Accelerator.Google.TPU(version="v5p")
+sky.Accelerator.Google.TPUSlice("v5p-8")
 
 # AMD GPUs
-Accelerator.AMD.MI("300X")
+sky.Accelerator.AMD.MI("300X")
 ```
 
 ### NVIDIA Factory Methods
@@ -326,13 +346,13 @@ Accelerator.AMD.MI("300X")
 ### NVIDIA Literal Type
 
 ```python
-from skyward import NVIDIA
+import skyward as sky
 
 # Use as type hint
-def train(gpu: NVIDIA) -> None: ...
+def train(gpu: sky.NVIDIA) -> None: ...
 
 # Values
-NVIDIA = Literal[
+sky.NVIDIA = Literal[
     "T4", "L4", "L40", "L40S",
     "A10", "A10G",
     "A100-40GB", "A100-80GB",
@@ -346,13 +366,13 @@ NVIDIA = Literal[
 
 ## Distributed Training
 
-### distributed.keras
+### keras
 
 ```python
-from skyward import compute, distributed
+import skyward as sky
 
-@compute
-@distributed.keras(backend="jax")
+@sky.integrations.keras(backend="jax")
+@sky.compute
 def train():
     import keras
     model = keras.Sequential([...])
@@ -362,11 +382,13 @@ def train():
 **Parameters:**
 - `backend` - "jax", "tensorflow", or "torch"
 
-### distributed.torch
+### torch
 
 ```python
-@compute
-@distributed.torch(backend="nccl")
+import skyward as sky
+
+@sky.integrations.torch(backend="nccl")
+@sky.compute
 def train():
     import torch.distributed as dist
     # dist.is_initialized() is True
@@ -375,31 +397,37 @@ def train():
 **Parameters:**
 - `backend` - "nccl" (GPU) or "gloo" (CPU)
 
-### distributed.jax
+### jax
 
 ```python
-@compute
-@distributed.jax()
+import skyward as sky
+
+@sky.integrations.jax()
+@sky.compute
 def train():
     import jax
     # jax.distributed already initialized
 ```
 
-### distributed.tensorflow
+### tensorflow
 
 ```python
-@compute
-@distributed.tensorflow()
+import skyward as sky
+
+@sky.integrations.tensorflow()
+@sky.compute
 def train():
     import tensorflow as tf
     # TF_CONFIG set automatically
 ```
 
-### distributed.transformers
+### transformers
 
 ```python
-@compute
-@distributed.transformers(backend="nccl")
+import skyward as sky
+
+@sky.integrations.transformers(backend="nccl")
+@sky.compute
 def train():
     from transformers import Trainer
     # Trainer auto-detects distributed
@@ -412,9 +440,9 @@ def train():
 ### shard()
 
 ```python
-from skyward import shard
+import skyward as sky
 
-def shard(
+def sky.shard(
     *arrays,
     shuffle: bool = False,
     seed: int | None = None,
@@ -432,18 +460,20 @@ Partition data based on current worker.
 
 **Example:**
 ```python
-@compute
+import skyward as sky
+
+@sky.compute
 def process(x_full, y_full):
-    x_local, y_local = shard(x_full, y_full, shuffle=True, seed=42)
+    x_local, y_local = sky.shard(x_full, y_full, shuffle=True, seed=42)
     return train(x_local, y_local)
 ```
 
 ### DistributedSampler
 
 ```python
-from skyward import DistributedSampler
+import skyward as sky
 
-sampler = DistributedSampler(
+sampler = sky.DistributedSampler(
     dataset,
     shuffle=True,
 )
@@ -460,7 +490,9 @@ PyTorch DataLoader integration.
 
 **Example:**
 ```python
-sampler = DistributedSampler(dataset, shuffle=True)
+import skyward as sky
+
+sampler = sky.DistributedSampler(dataset, shuffle=True)
 loader = DataLoader(dataset, sampler=sampler)
 
 for epoch in range(epochs):
@@ -476,9 +508,9 @@ for epoch in range(epochs):
 ### instance_info()
 
 ```python
-from skyward import instance_info, InstanceInfo
+import skyward as sky
 
-def instance_info() -> InstanceInfo
+def sky.instance_info() -> sky.InstanceInfo
 ```
 
 Get current execution environment information.
@@ -628,9 +660,9 @@ type Callback = Callable[[SkywardEvent], SkywardEvent | None]
 ### compose()
 
 ```python
-from skyward import compose
+import skyward as sky
 
-combined = compose(callback1, callback2, callback3)
+combined = sky.compose(callback1, callback2, callback3)
 ```
 
 Merge multiple callbacks into one.
@@ -638,9 +670,9 @@ Merge multiple callbacks into one.
 ### emit()
 
 ```python
-from skyward import emit
+import skyward as sky
 
-emit(Metrics(...))
+sky.emit(sky.Metrics(...))
 ```
 
 Emit an event to all registered callbacks.
@@ -648,9 +680,9 @@ Emit an event to all registered callbacks.
 ### use_callback()
 
 ```python
-from skyward import use_callback
+import skyward as sky
 
-with use_callback(my_callback):
+with sky.use_callback(my_callback):
     # Events in this context go to my_callback
     ...
 ```
@@ -664,9 +696,9 @@ Context manager for callback registration.
 ### S3Volume
 
 ```python
-from skyward import S3Volume
+import skyward as sky
 
-volume = S3Volume(
+volume = sky.S3Volume(
     mount_path="/data",
     bucket="my-bucket",
     prefix="datasets/",
@@ -685,25 +717,39 @@ volume = S3Volume(
 
 ---
 
-## Spot Strategies
+## Allocation Strategies
+
+Control how instances are provisioned (spot vs on-demand):
 
 ```python
-from skyward import Spot
+import skyward as sky
 
 # String shortcuts
-spot = "always"       # Must use spot
-spot = "if-available" # Try spot, fallback
-spot = "never"        # Always on-demand
+allocation = "spot-if-available"  # Default: try spot, fallback to on-demand
+allocation = "always-spot"        # Must use spot, fail if unavailable
+allocation = "on-demand"          # Always on-demand
+allocation = "cheapest"           # Compare prices, pick cheapest option
 
-# Float shortcut
-spot = 0.8            # At least 80% spot
+# Float shortcut (minimum spot percentage)
+allocation = 0.8                  # At least 80% spot
 
 # Class instances
-spot = Spot.Always(retries=10, interval=1.0)
-spot = Spot.IfAvailable()
-spot = Spot.Never
-spot = Spot.Percent(0.8)
+allocation = sky.Allocation.SpotIfAvailable()
+allocation = sky.Allocation.AlwaysSpot()
+allocation = sky.Allocation.OnDemand
+allocation = sky.Allocation.Cheapest()
+allocation = sky.Allocation.Percent(spot=0.8)
 ```
+
+**Strategy comparison:**
+
+| Strategy | Behavior | Use Case |
+|----------|----------|----------|
+| `spot-if-available` | Try spot, fallback to on-demand | Default, balanced |
+| `always-spot` | Spot only, fail if unavailable | Maximum savings |
+| `on-demand` | On-demand only | Critical workloads |
+| `cheapest` | Compare spot vs on-demand prices | Optimal cost |
+| `0.8` / `Percent(spot=0.8)` | At least 80% spot | Mixed allocation |
 
 ---
 
@@ -712,35 +758,35 @@ spot = Spot.Percent(0.8)
 ### is_nvidia()
 
 ```python
-from skyward import is_nvidia
+import skyward as sky
 
-is_nvidia("H100")  # True
-is_nvidia("MI300X")  # False
+sky.is_nvidia("H100")  # True
+sky.is_nvidia("MI300X")  # False
 ```
 
 ### is_trainium()
 
 ```python
-from skyward import is_trainium
+import skyward as sky
 
-is_trainium("Trainium2")  # True
-is_trainium("H100")  # False
+sky.is_trainium("Trainium2")  # True
+sky.is_trainium("H100")  # False
 ```
 
 ### current_accelerator()
 
 ```python
-from skyward import current_accelerator
+import skyward as sky
 
-acc = current_accelerator()  # Returns accelerator type in compute context
+acc = sky.current_accelerator()  # Returns accelerator type in compute context
 ```
 
 ### select_instance()
 
 ```python
-from skyward import select_instance
+import skyward as sky
 
-instance = select_instance(
+instance = sky.select_instance(
     available_instances,
     accelerator="H100",
     cpu=32,
@@ -757,17 +803,16 @@ Find smallest matching instance from available options.
 ### JoblibPool
 
 ```python
-from skyward import AWS, Image
-from skyward.integrations import JoblibPool
+import skyward as sky
+from joblib import Parallel, delayed
 
-with JoblibPool(
-    provider=AWS(),
+with sky.integrations.JoblibPool(
+    provider=sky.AWS(),
     nodes=4,
     concurrency=4,
-    image=Image(pip=["joblib"]),
+    image=sky.Image(pip=["joblib"]),
 ) as pool:
     # Use joblib Parallel with n_jobs=-1
-    from joblib import Parallel, delayed
     results = Parallel(n_jobs=-1)(delayed(fn)(x) for x in data)
 ```
 
@@ -784,16 +829,15 @@ Same as `ComputePool`, plus:
 ### ScikitLearnPool
 
 ```python
-from skyward import AWS, Image
-from skyward.integrations import ScikitLearnPool
+import skyward as sky
+from sklearn.model_selection import GridSearchCV
 
-with ScikitLearnPool(
-    provider=AWS(),
+with sky.integrations.ScikitLearnPool(
+    provider=sky.AWS(),
     nodes=4,
     concurrency=4,
-    image=Image(pip=["scikit-learn"]),
+    image=sky.Image(pip=["scikit-learn"]),
 ):
-    from sklearn.model_selection import GridSearchCV
     grid = GridSearchCV(estimator, params, n_jobs=-1)
     grid.fit(X, y)  # Distributed!
 ```
@@ -811,13 +855,21 @@ Same as `ComputePool`, plus:
 ### sklearn_backend / joblib_backend
 
 ```python
-from skyward import ComputePool, AWS
-from skyward.integrations import sklearn_backend
+import skyward as sky
 
-with ComputePool(provider=AWS()) as pool:
-    with sklearn_backend(pool):
+with sky.ComputePool(provider=sky.AWS()) as pool:
+    with sky.integrations.sklearn_backend(pool):
         # Any sklearn code with n_jobs=-1 uses Skyward
         pass
 ```
 
 Context manager to use an existing pool as joblib backend.
+
+---
+
+## Related Topics
+
+- [Getting Started](getting-started.md) — Installation and first examples
+- [Core Concepts](concepts.md) — Understanding the programming model
+- [Examples](examples.md) — All examples explained
+- [Troubleshooting](troubleshooting.md) — Common issues and solutions

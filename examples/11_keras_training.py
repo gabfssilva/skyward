@@ -8,10 +8,8 @@ Demonstrates training a ViT with Keras 3 on Skyward:
 Architecture:
     MNIST 28x28 → Patches 4x4 (49 patches) → Embedding + Pos → Transformer × N → [CLS] → 10 classes
 """
-from typing import Literal, LiteralString
 
-from skyward import AWS, ComputePool, compute, distributed, instance_info, shard, Verda, Accelerator, Image
-
+import skyward as sky
 
 # =============================================================================
 # ViT Components
@@ -170,9 +168,8 @@ def build_vit(
 # Training Function
 # =============================================================================
 
-
-@compute
-@distributed.keras(backend="jax")
+@sky.compute
+@sky.integrations.keras(backend="jax")
 def train_vit(
     epochs: int = 10,
     batch_size: int = 128,
@@ -188,7 +185,7 @@ def train_vit(
 
     keras.config.disable_interactive_logging()
 
-    pool = instance_info()
+    pool = sky.instance_info()
 
     # =========================================================================
     # Load MNIST
@@ -205,7 +202,7 @@ def train_vit(
     # =========================================================================
     # Shard Data
     # =========================================================================
-    x_train, y_train = shard(x_train_full, y_train_full, shuffle=True, seed=42)
+    x_train, y_train = sky.shard(x_train_full, y_train_full, shuffle=True, seed=42)
 
     # =========================================================================
     # Build Model
@@ -265,15 +262,15 @@ def train_vit(
 # =============================================================================
 
 if __name__ == "__main__":
-    with ComputePool(
-        provider=Verda(),
-        # nodes=2,
-        accelerator=Accelerator.NVIDIA.A100(mig=['3g.40gb', '3g.40gb']),
-        image=Image(
+    with sky.ComputePool(
+        provider=sky.AWS(),
+        nodes=3,
+        accelerator=sky.Accelerator.NVIDIA.T4(lambda _: 2 >= _ >= 1),
+        image=sky.Image(
             pip=["keras>=3.2", "jax[cuda12]"],
             env={"KERAS_BACKEND": "jax"},
         ),
-        spot="always",
+        allocation="spot-if-available",
         timeout=600,
     ) as pool:
         print("=" * 60)

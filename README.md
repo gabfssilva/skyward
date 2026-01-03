@@ -209,14 +209,17 @@ ComputePool(accelerator=NVIDIA.A100)
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md) - Installation and first steps
-- [Core Concepts](docs/concepts.md) - Understanding the programming model
-- [API Reference](docs/api-reference.md) - Complete API documentation
-- [Distributed Training](docs/distributed-training.md) - PyTorch, Keras, JAX, HuggingFace guides
-- [Providers](docs/providers.md) - AWS, DigitalOcean, Verda setup
-- [Accelerators](docs/accelerators.md) - GPU types and MIG partitioning
-- [Examples](docs/examples.md) - All examples explained
-- [Architecture](docs/architecture.md) - Internal design
+- [Documentation Index](docs/index.md) — Complete documentation overview
+- [Getting Started](docs/getting-started.md) — Installation and first steps
+- [Core Concepts](docs/concepts.md) — Understanding the programming model
+- [API Reference](docs/api-reference.md) — Complete API documentation
+- [Distributed Training](docs/distributed-training.md) — PyTorch, Keras, JAX, HuggingFace guides
+- [Providers](docs/providers.md) — AWS, DigitalOcean, Verda setup
+- [Accelerators](docs/accelerators.md) — GPU types and MIG partitioning
+- [Examples](docs/examples.md) — All examples explained
+- [Troubleshooting](docs/troubleshooting.md) — Common issues and solutions
+- [FAQ](docs/faq.md) — Frequently asked questions
+- [Architecture](docs/architecture.md) — Internal design
 
 ## Examples
 

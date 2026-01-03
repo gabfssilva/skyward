@@ -2,26 +2,26 @@
 
 Example:
 
-    from skyward import compute, gather, ComputePool, AWS, Accelerator, Image
+    import skyward as sky
 
-    @compute
+    @sky.compute
     def train(data):
         return model.fit(data)
 
-    pool = ComputePool(
-        provider=AWS(),
-        accelerator=Accelerator.NVIDIA.A100(),
-        image=Image(pip=["torch"]),
+    pool = sky.ComputePool(
+        provider=sky.AWS(),
+        accelerator=sky.Accelerator.NVIDIA.A100(),
+        image=sky.Image(pip=["torch"]),
     )
 
     with pool:
         result = train(data) >> pool
-        r1, r2 = gather(train(d1), train(d2)) >> pool
+        r1, r2 = sky.gather(train(d1), train(d2)) >> pool
 """
 
 # Accelerator utilities
-# Distributed training decorators
-from skyward import distributed
+import skyward.conc as conc
+import skyward.integrations as integrations
 from skyward.accelerator import (
     is_nvidia,
     is_trainium,
@@ -56,6 +56,9 @@ from skyward.events import (
     SkywardEvent,
 )
 
+# Executor
+from skyward.executor import Executor
+
 # Image
 from skyward.image import Image
 from skyward.multi_pool import MultiPool
@@ -73,6 +76,9 @@ from skyward.pending import (
 # Pool
 from skyward.pool import ComputePool
 
+# Allocation strategies
+from skyward.spec import Allocation, AllocationLike
+
 # Providers
 from skyward.providers import AWS, DigitalOcean, Verda
 
@@ -81,6 +87,8 @@ from skyward.types import (
     GPU,
     NVIDIA,
     Accelerator,
+    Architecture,
+    Auto,
     ComputeSpec,
     ExitedInstance,
     Instance,
@@ -108,10 +116,9 @@ __all__ = [
     # Pool
     "ComputePool",
     "MultiPool",
+    "Executor",
     # Image
     "Image",
-    # Distributed training
-    "distributed",
     # Callback system
     "emit",
     "use_callback",
@@ -123,7 +130,12 @@ __all__ = [
     "ExitedInstance",
     "Provider",
     "ComputeSpec",
+    "Architecture",
+    "Auto",
     "select_instance",
+    # Allocation strategies
+    "Allocation",
+    "AllocationLike",
     # Events (ADT)
     "SkywardEvent",
     "InfraCreating",
@@ -163,6 +175,8 @@ __all__ = [
     "shard",
     "shard_iterator",
     "DistributedSampler",
+    "integrations",
+    "conc",
     # Version
     "__version__",
 ]

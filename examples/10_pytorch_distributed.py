@@ -10,18 +10,10 @@ Skyward automatically configures MASTER_ADDR, MASTER_PORT, WORLD_SIZE,
 RANK, and initializes the process group.
 """
 
-from skyward import (
-    AWS,
-    NVIDIA,
-    ComputePool,
-    DistributedSampler,
-    compute,
-    instance_info,
-    shard,
-)
+import skyward as sky
 
 
-@compute
+@sky.compute
 def train_model(epochs: int, batch_size: int, learning_rate: float) -> dict:
     """Train a neural network with distributed data parallelism."""
     import torch
@@ -30,7 +22,7 @@ def train_model(epochs: int, batch_size: int, learning_rate: float) -> dict:
     from torch.nn.parallel import DistributedDataParallel as DDP
     from torch.utils.data import DataLoader, TensorDataset
 
-    pool = instance_info()
+    pool = sky.instance_info()
 
     # =================================================================
     # Model Definition
@@ -73,7 +65,7 @@ def train_model(epochs: int, batch_size: int, learning_rate: float) -> dict:
     dataset = TensorDataset(x, y)
 
     # DistributedSampler shards data across nodes
-    sampler = DistributedSampler(dataset, shuffle=True)
+    sampler = sky.DistributedSampler(dataset, shuffle=True)
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -143,13 +135,13 @@ def train_model(epochs: int, batch_size: int, learning_rate: float) -> dict:
     }
 
 
-@compute
+@sky.compute
 def evaluate_model(test_data: list, test_labels: list) -> dict:
     """Evaluate model on test data (run on head node)."""
     import torch
     import torch.nn as nn
 
-    pool = instance_info()
+    pool = sky.instance_info()
 
     # Only head node evaluates
     if not pool.is_head:
@@ -188,12 +180,12 @@ if __name__ == "__main__":
     # =================================================================
     # Multi-Node Training
     # =================================================================
-    with ComputePool(
-        provider=AWS(),
+    with sky.ComputePool(
+        provider=sky.AWS(),
         nodes=2,
-        accelerator=NVIDIA.A100,
+        accelerator=sky.NVIDIA.A100,
         pip=["torch"],
-        spot="always",
+        allocation="spot-if-available",
     ) as pool:
         print("=" * 60)
         print("Starting Distributed Training")

@@ -36,7 +36,7 @@ from skyward.accelerator import Accelerator
 from skyward.callback import Callback
 from skyward.image import DEFAULT_IMAGE, Image
 from skyward.pool import ComputePool
-from skyward.spec import SpotLike
+from skyward.spec import AllocationLike
 from skyward.volume import Volume
 
 if TYPE_CHECKING:
@@ -60,9 +60,6 @@ def _make_remote_executor() -> Callable[[bytes], Any]:
     return execute_batch
 
 
-_remote_execute = _make_remote_executor()
-
-
 class SkywardBackend(ParallelBackendBase):
     """Joblib backend that dispatches tasks to Skyward.
 
@@ -81,6 +78,7 @@ class SkywardBackend(ParallelBackendBase):
         self.parallel: Parallel | None = None
         self._n_jobs = 1
         self._executor: ThreadPoolExecutor | None = None
+        self._remote_execute = _make_remote_executor()
 
     def configure(
         self,
@@ -129,7 +127,7 @@ class SkywardBackend(ParallelBackendBase):
     def _execute_on_skyward(self, func: Callable[[], Any]) -> Any:
         """Execute a function on Skyward (blocking, runs in thread)."""
         payload = cloudpickle.dumps(func)
-        pending = _remote_execute(payload)
+        pending = self._remote_execute(payload)
         return pending >> self.pool
 
     def retrieve_result_callback(self, future: Future[Any]) -> Any:
@@ -215,7 +213,7 @@ def JoblibPool(
     cpu: int | None = None,
     memory: str | None = None,
     volume: dict[str, str] | Sequence[Volume] | None = None,
-    spot: SpotLike = "always",
+    allocation: AllocationLike = "spot-if-available",
     timeout: int = 3600,
     env: dict[str, str] | None = None,
     concurrency: int = 1,
@@ -237,7 +235,7 @@ def JoblibPool(
         cpu: CPU cores per worker.
         memory: Memory per worker (e.g., "32GB").
         volume: Volumes to mount.
-        spot: Spot instance strategy.
+        allocation: Instance allocation strategy.
         timeout: Task timeout in seconds.
         env: Environment variables.
         concurrency: Concurrent tasks per node.
@@ -266,7 +264,7 @@ def JoblibPool(
         cpu=cpu,
         memory=memory,
         volume=volume,
-        spot=spot,
+        allocation=allocation,
         timeout=timeout,
         env=env,
         concurrency=concurrency,
@@ -292,7 +290,7 @@ def ScikitLearnPool(
     cpu: int | None = None,
     memory: str | None = None,
     volume: dict[str, str] | Sequence[Volume] | None = None,
-    spot: SpotLike = "always",
+    allocation: AllocationLike = "spot-if-available",
     timeout: int = 3600,
     env: dict[str, str] | None = None,
     concurrency: int = 1,
@@ -314,7 +312,7 @@ def ScikitLearnPool(
         cpu: CPU cores per worker.
         memory: Memory per worker (e.g., "32GB").
         volume: Volumes to mount.
-        spot: Spot instance strategy.
+        allocation: Instance allocation strategy.
         timeout: Task timeout in seconds.
         env: Environment variables.
         concurrency: Concurrent tasks per node.
@@ -344,7 +342,7 @@ def ScikitLearnPool(
         cpu=cpu,
         memory=memory,
         volume=volume,
-        spot=spot,
+        allocation=allocation,
         timeout=timeout,
         env=env,
         concurrency=concurrency,

@@ -224,11 +224,24 @@ done"""
 # =============================================================================
 
 
-def rpyc_service_unit() -> str:
+def rpyc_service_unit(env: dict[str, str] | None = None) -> str:
     """Generate systemd unit for single RPyC server.
+
+    Args:
+        env: Environment variables to set in the service unit.
 
     Returns the content for skyward-rpyc.service.
     """
+    # Build environment lines
+    env_lines = [f'Environment="PATH={SKYWARD_DIR}/.venv/bin:/usr/local/bin:/usr/bin:/bin"']
+    if env:
+        for key, value in env.items():
+            # Escape quotes in values for systemd
+            escaped_value = value.replace('"', '\\"')
+            env_lines.append(f'Environment="{key}={escaped_value}"')
+
+    env_section = "\n".join(env_lines)
+
     return f"""[Unit]
 Description=Skyward RPyC Server
 After=network.target
@@ -237,7 +250,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory={SKYWARD_DIR}
-Environment="PATH={SKYWARD_DIR}/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+{env_section}
 ExecStart={SKYWARD_DIR}/.venv/bin/python -m skyward.rpc
 Restart=always
 RestartSec=5

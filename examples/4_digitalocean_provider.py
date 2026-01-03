@@ -7,10 +7,10 @@ CPU-based workloads.
 Note: DigitalOcean does not support GPUs, use AWS for GPU workloads.
 """
 
-from skyward import ComputePool, DigitalOcean, compute
+import skyward as sky
 
 
-@compute
+@sky.compute
 def system_info() -> dict:
     """Get system information from the Droplet."""
     import os
@@ -25,7 +25,7 @@ def system_info() -> dict:
     }
 
 
-@compute
+@sky.compute
 def memory_info() -> dict:
     """Get memory information."""
     import psutil
@@ -38,7 +38,7 @@ def memory_info() -> dict:
     }
 
 
-@compute
+@sky.compute
 def cpu_intensive_task(iterations: int) -> dict:
     """Run a CPU-intensive computation."""
     import time
@@ -60,11 +60,11 @@ if __name__ == "__main__":
     # =================================================================
     # DigitalOcean Droplet with 4 CPUs and 8GB RAM
     # =================================================================
-    with ComputePool(
-        provider=DigitalOcean(region="nyc1"),
+    with sky.ComputePool(
+        provider=sky.DigitalOcean(region="nyc1"),
         cpu=4,
         memory=8,  # GB
-        spot="always",  # Use spot pricing when available
+        allocation="spot-if-available",  # Use spot pricing when available
     ) as pool:
         # Get system info
         sys_info = system_info() >> pool

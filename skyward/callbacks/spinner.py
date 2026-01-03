@@ -189,19 +189,25 @@ def _update_state(state: _SpinnerState, event: SkywardEvent) -> None:
         case InfraCreated(region=region):
             state.message = f"Infrastructure ready ({region})"
 
-        case InstanceLaunching(count=count, instance_type=itype):
+        case InstanceLaunching(count=count, candidates=candidates):
             if count:
                 state.total = count
-            state.message = f"Launching {count}x {itype}..."
+            itypes = [c.name for c in candidates] if candidates else []
+            if len(itypes) == 1:
+                state.message = f"Launching {count}x {itypes[0]}..."
+            elif itypes:
+                state.message = f"Launching {count} nodes ({itypes[0]} +{len(itypes)-1})..."
+            else:
+                state.message = f"Launching {count} nodes..."
 
-        case InstanceProvisioned(instance_id=iid, spot=is_spot, instance_type=itype):
+        case InstanceProvisioned(instance_id=iid, spot=is_spot, spec=spec):
             state.provisioned += 1
             if is_spot:
                 state.spot += 1
             else:
                 state.ondemand += 1
-            if itype:
-                state.instance_types.add(itype)
+            if spec:
+                state.instance_types.add(spec.name)
             spot_label = "[spot]" if is_spot else "[on-demand]"
             state.message = (
                 f"Provisioned {state.short_id(iid)} "

@@ -5,17 +5,17 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from functools import wraps
 from pathlib import Path
-from typing import Any, overload
+from typing import Any
 
 import cloudpickle
 
 CACHE_DIR = Path.home() / ".skyward" / "cache"
 CACHE_VERSION = 1
 
-class DiskCache[P, R, T]:
+class DiskCache:
     """Simple disk-based cache with cloudpickle serialization."""
 
     def __init__(self, namespace: str = "default") -> None:
@@ -32,7 +32,8 @@ class DiskCache[P, R, T]:
         """Lazy load index (tracks creation times)."""
         if self._index is None:
             self._load_index()
-        return self._index  # type: ignore
+        assert self._index is not None
+        return self._index
 
     def _load_index(self) -> None:
         if self.index_file.exists():
@@ -40,7 +41,7 @@ class DiskCache[P, R, T]:
                 raw = json.loads(self.index_file.read_text())
                 if raw.get("version") == CACHE_VERSION:
                     self._index = {
-                        k: datetime.fromisoformat(v)
+                        k: datetime.fromisoformat(v).replace(tzinfo=UTC)
                         for k, v in raw.get("entries", {}).items()
                     }
                 else:
@@ -69,28 +70,14 @@ class DiskCache[P, R, T]:
         key_data = cloudpickle.dumps((args, kwargs))
         return hashlib.sha256(key_data).hexdigest()[:16]
 
-    @overload
-    def get(self, key: str, ttl: timedelta | None = None) -> tuple[bool, Any]: ...
-
-    @overload
-    def get(
-        self, key: str, ttl: timedelta | None = None, *, dtype: type[T]
-    ) -> tuple[bool, T | None]: ...
-
-    def get(
-        self,
-        key: str,
-        ttl: timedelta | None = None,
-        *,
-        dtype: type[T] | None = None,  # noqa: ARG002 - mantido para compatibilidade
-    ) -> tuple[bool, T | None]:
+    def get(self, key: str, ttl: timedelta | None = None) -> tuple[bool, Any]:
         """Get value from cache."""
         if key not in self.index:
             return False, None
 
         if ttl is not None:
             created = self.index[key]
-            if datetime.utcnow() - created > ttl:
+            if datetime.now(UTC) - created > ttl:
                 self._delete(key)
                 return False, None
 
@@ -111,7 +98,7 @@ class DiskCache[P, R, T]:
         """Store value in cache."""
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._key_path(key).write_bytes(cloudpickle.dumps(value))
-        self.index[key] = datetime.utcnow()
+        self.index[key] = datetime.now(UTC)
         self._save_index()
 
     def _delete(self, key: str) -> None:
@@ -155,10 +142,7 @@ def cached[**P, R](
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             cache_args = args[1:] if args and hasattr(args[0], "__dict__") else args
 
-            if key_func:
-                key = key_func(*args, **kwargs)
-            else:
-                key = cache._make_key(cache_args, kwargs)
+            key = key_func(*args, **kwargs) if key_func else cache._make_key(cache_args, kwargs)
 
             hit, value = cache.get(key, ttl)
             if hit:

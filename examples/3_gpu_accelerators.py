@@ -6,16 +6,16 @@ Demonstrates how to:
 - Run GPU-accelerated computations
 """
 
-from skyward import AWS, ComputePool, compute, instance_info, InstanceInfo, Image, Verda
+import skyward as sky
 
 
-@compute
-def instance_information() -> InstanceInfo:
+@sky.compute
+def instance_information() -> sky.InstanceInfo:
     """Get information about available GPUs."""
-    return instance_info()
+    return sky.instance_info()
 
 
-@compute
+@sky.compute
 def matrix_multiply(size: int) -> dict:
     """Benchmark matrix multiplication on GPU vs CPU."""
     import time
@@ -49,7 +49,7 @@ def matrix_multiply(size: int) -> dict:
     return results
 
 
-@compute
+@sky.compute
 def heavy_matrix_ops(size: int, iterations: int) -> dict:
     """Heavy matrix operations that take ~5s on CPU.
 
@@ -103,7 +103,7 @@ def heavy_matrix_ops(size: int, iterations: int) -> dict:
     return results
 
 
-@compute
+@sky.compute
 def train_simple_model(epochs: int) -> dict:
     """Train a simple neural network on GPU."""
     import torch
@@ -145,11 +145,11 @@ def train_simple_model(epochs: int) -> dict:
 
 
 if __name__ == "__main__":
-    with ComputePool(
-        provider=Verda(),
-        image=Image(pip=["torch", "numpy"]),
+    with sky.ComputePool(
+        provider=sky.Verda(),
+        image=sky.Image(pip=["torch", "numpy"]),
         accelerator='L40S',
-        spot="always",
+        allocation="spot-if-available",
     ) as pool:
         # Get GPU information
         info = instance_information() @ pool

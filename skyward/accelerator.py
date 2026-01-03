@@ -7,12 +7,16 @@ for supported accelerators and helper functions.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal, Union, overload
 
 
 if TYPE_CHECKING:
     from skyward.cluster import InstanceInfo
+
+# Type for accelerator count: exact number or predicate function
+type AcceleratorCount = float | Callable[[int], bool]
 
 # MIG profile types for autocomplete
 type H100MIG = Literal[
@@ -113,13 +117,14 @@ class Accelerator:
     Examples:
         >>> Accelerator.NVIDIA.H100()           # 1 GPU full
         >>> Accelerator.NVIDIA.H100(count=4)    # 4 GPUs
+        >>> Accelerator.NVIDIA.H100(count=lambda c: c >= 2)  # at least 2 GPUs
         >>> Accelerator.NVIDIA.H100(mig="3g.40gb")  # 1 MIG partition
         >>> Accelerator.AMD.MI("300X")          # 1 MI300X
     """
 
     accelerator: str
     memory: str
-    count: float = 1
+    count: AcceleratorCount = 1
     multiple_instance: str | list[str] | None = None
 
     @classmethod
@@ -142,12 +147,14 @@ class Accelerator:
     @property
     def fractional(self) -> bool:
         """True if using fractional GPU (0 < count < 1)."""
+        if callable(self.count):
+            return False
         return 0 < self.count < 1
 
     class NVIDIA:
         @staticmethod
         def H100(
-            count: float = 1,
+            count: AcceleratorCount = 1,
             memory: Literal["40GB", "80GB"] = "80GB",
             form_factor: Literal["SXM", "PCIe", "NVL"] | None = None,
             mig: H100MIG | list[H100MIG] | None = None,
@@ -161,13 +168,13 @@ class Accelerator:
             return Accelerator(name, mem, count, mig)
 
         @staticmethod
-        def H200(count: float = 1) -> "Accelerator":
+        def H200(count: AcceleratorCount = 1) -> "Accelerator":
             return Accelerator("H200", "141GB", count)
 
         @staticmethod
         @overload
         def A100(
-            count: float = 1,
+            count: AcceleratorCount = 1,
             memory: Literal["80GB"] = "80GB",
             mig: A100_80GB_MIG | list[A100_80GB_MIG] | None = None,
         ) -> "Accelerator": ...
@@ -175,100 +182,100 @@ class Accelerator:
         @staticmethod
         @overload
         def A100(
-            count: float = 1,
+            count: AcceleratorCount = 1,
             memory: Literal["40GB"] = "40GB",
             mig: A100_40GB_MIG | list[A100_40GB_MIG] | None = None,
         ) -> "Accelerator": ...
 
         @staticmethod
         def A100(
-            count: float = 1,
+            count: AcceleratorCount = 1,
             memory: Literal["40GB", "80GB"] = "80GB",
             mig: A100MIG | list[A100MIG] | None = None,
         ) -> "Accelerator":
             return Accelerator("A100", memory, count, mig)
 
         @staticmethod
-        def B100(count: float = 1) -> "Accelerator":
+        def B100(count: AcceleratorCount = 1) -> "Accelerator":
             return Accelerator("B100", "192GB", count)
 
         @staticmethod
-        def B200(count: float = 1) -> "Accelerator":
+        def B200(count: AcceleratorCount = 1) -> "Accelerator":
             return Accelerator("B200", "192GB", count)
 
         @staticmethod
-        def GB200(count: float = 1) -> "Accelerator":
+        def GB200(count: AcceleratorCount = 1) -> "Accelerator":
             return Accelerator("GB200", "384GB", count)
 
         @staticmethod
-        def GH200(count: float = 1) -> "Accelerator":
+        def GH200(count: AcceleratorCount = 1) -> "Accelerator":
             return Accelerator("GH200", "96GB", count)
 
         @staticmethod
-        def L4(count: float = 1) -> "Accelerator":
+        def L4(count: AcceleratorCount = 1) -> "Accelerator":
             return Accelerator("L4", "24GB", count)
 
         @staticmethod
-        def L40(count: float = 1) -> "Accelerator":
+        def L40(count: AcceleratorCount = 1) -> "Accelerator":
             return Accelerator("L40", "48GB", count)
 
         @staticmethod
-        def L40S(count: float = 1) -> "Accelerator":
+        def L40S(count: AcceleratorCount = 1) -> "Accelerator":
             return Accelerator("L40S", "48GB", count)
 
         @staticmethod
-        def T4(count: float = 1) -> "Accelerator":
+        def T4(count: AcceleratorCount = 1) -> "Accelerator":
             return Accelerator("T4", "16GB", count)
 
         @staticmethod
-        def A10(count: float = 1) -> "Accelerator":
+        def A10(count: AcceleratorCount = 1) -> "Accelerator":
             return Accelerator("A10", "24GB", count)
 
         @staticmethod
-        def A10G(count: float = 1) -> "Accelerator":
+        def A10G(count: AcceleratorCount = 1) -> "Accelerator":
             return Accelerator("A10G", "24GB", count)
 
         @staticmethod
-        def A2(count: float = 1) -> "Accelerator":
+        def A2(count: AcceleratorCount = 1) -> "Accelerator":
             return Accelerator("A2", "16GB", count)
 
         @staticmethod
-        def V100(count: float = 1, memory: Literal["16GB", "32GB"] = "32GB") -> "Accelerator":
+        def V100(count: AcceleratorCount = 1, memory: Literal["16GB", "32GB"] = "32GB") -> "Accelerator":
             return Accelerator("V100", memory, count)
 
         @staticmethod
-        def P100(count: float = 1) -> "Accelerator":
+        def P100(count: AcceleratorCount = 1) -> "Accelerator":
             return Accelerator("P100", "16GB", count)
 
         @staticmethod
-        def P4(count: float = 1) -> "Accelerator":
+        def P4(count: AcceleratorCount = 1) -> "Accelerator":
             return Accelerator("P4", "8GB", count)
 
         @staticmethod
-        def K80(count: float = 1) -> "Accelerator":
+        def K80(count: AcceleratorCount = 1) -> "Accelerator":
             return Accelerator("K80", "12GB", count)
 
         @staticmethod
-        def RTX3080(count: float = 1) -> "Accelerator":
+        def RTX3080(count: AcceleratorCount = 1) -> "Accelerator":
             return Accelerator("RTX3080", "10GB", count)
 
         @staticmethod
-        def RTX3090(count: float = 1) -> "Accelerator":
+        def RTX3090(count: AcceleratorCount = 1) -> "Accelerator":
             return Accelerator("RTX3090", "24GB", count)
 
         @staticmethod
-        def RTX4080(count: float = 1) -> "Accelerator":
+        def RTX4080(count: AcceleratorCount = 1) -> "Accelerator":
             return Accelerator("RTX4080", "16GB", count)
 
         @staticmethod
-        def RTX4090(count: float = 1) -> "Accelerator":
+        def RTX4090(count: AcceleratorCount = 1) -> "Accelerator":
             return Accelerator("RTX4090", "24GB", count)
 
     class AMD:
         @staticmethod
         def MI(
             model: Literal["50", "100", "210", "250", "250X", "300A", "300B", "300X"],
-            count: float = 1,
+            count: AcceleratorCount = 1,
         ) -> "Accelerator":
             memory = {
                 "50": "16GB", "100": "32GB", "210": "64GB",
@@ -280,7 +287,7 @@ class Accelerator:
         @staticmethod
         def RadeonPro(
             model: Literal["V520", "V710"],
-            count: float = 1,
+            count: AcceleratorCount = 1,
         ) -> "Accelerator":
             """Radeon Pro GPUs for graphics/streaming workloads (AWS g4ad, Azure)."""
             memory = {"V520": "8GB", "V710": "16GB"}
@@ -289,7 +296,7 @@ class Accelerator:
         @staticmethod
         def Instinct(
             model: Literal["MI25"],
-            count: float = 1,
+            count: AcceleratorCount = 1,
         ) -> "Accelerator":
             """Radeon Instinct GPUs (Azure NVv4)."""
             memory = {"MI25": "16GB"}
@@ -297,19 +304,19 @@ class Accelerator:
 
     class Habana:
         @staticmethod
-        def Gaudi(version: Literal[1, 2, 3] = 3, count: float = 1) -> "Accelerator":
+        def Gaudi(version: Literal[1, 2, 3] = 3, count: AcceleratorCount = 1) -> "Accelerator":
             memory = {1: "32GB", 2: "96GB", 3: "128GB"}
             name = "Gaudi" if version == 1 else f"Gaudi{version}"
             return Accelerator(name, memory[version], count)
 
     class AWS:
         @staticmethod
-        def Trainium(version: Literal[1, 2, 3] = 2, count: float = 1) -> "Accelerator":
+        def Trainium(version: Literal[1, 2, 3] = 2, count: AcceleratorCount = 1) -> "Accelerator":
             memory = {1: "32GB", 2: "64GB", 3: "128GB"}
             return Accelerator(f"Trainium{version}", memory[version], count)
 
         @staticmethod
-        def Inferentia(version: Literal[1, 2] = 2, count: float = 1) -> "Accelerator":
+        def Inferentia(version: Literal[1, 2] = 2, count: AcceleratorCount = 1) -> "Accelerator":
             memory = {1: "8GB", 2: "32GB"}
             return Accelerator(f"Inferentia{version}", memory[version], count)
 
@@ -317,7 +324,7 @@ class Accelerator:
         @staticmethod
         def TPU(
             version: Literal["v2", "v3", "v4", "v5e", "v5p", "v6"] = "v5p",
-            count: float = 1,
+            count: AcceleratorCount = 1,
         ) -> "Accelerator":
             memory = {"v2": "8GB", "v3": "16GB", "v4": "32GB", "v5e": "16GB", "v5p": "95GB", "v6": "32GB"}
             return Accelerator(f"TPU{version}", memory[version], count)

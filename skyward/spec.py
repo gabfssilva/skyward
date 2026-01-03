@@ -1,108 +1,134 @@
-"""Spot instance strategies and allocation configuration."""
+"""Instance allocation strategies."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal
 
-# --- Spot Strategies ---
+
+# =============================================================================
+# Allocation Strategies
+# =============================================================================
 
 
 @dataclass(frozen=True, slots=True)
-class _SpotNever:
-    """Never use Spot instances. Always On-Demand."""
+class _AllocationOnDemand:
+    """Always use On-Demand instances."""
 
     def __repr__(self) -> str:
-        return "Spot.Never"
+        return "Allocation.OnDemand"
 
 
-class Spot:
-    """Spot instance strategies.
+class Allocation:
+    """Instance allocation strategies.
 
     Usage:
-        spot=Spot.IfAvailable()  # Default: try Spot, fallback to On-Demand
-        spot=Spot.Always(retries=5, interval=2.0)  # Must be Spot, error if unavailable
-        spot=Spot.Never  # Always On-Demand
-        spot=Spot.Percent(0.8)  # Minimum 80% Spot, rest On-Demand
-        spot=0.8  # Shortcut for Spot.Percent(0.8)
-
-        # String shortcuts (use default retries/interval):
-        spot="always"
-        spot="if-available"
-        spot="never"
+        allocation='spot-if-available'    # Default: try Spot, fallback to On-Demand
+        allocation='always-spot'          # Must be Spot, fail if unavailable
+        allocation='on-demand'            # Always On-Demand
+        allocation='cheapest'             # Compare all options, pick cheapest
+        allocation=0.8                    # Shortcut for Allocation.Percent(spot=0.8)
+        allocation=Allocation.Percent(spot=0.8)  # Minimum 80% Spot
     """
 
     @dataclass(frozen=True, slots=True)
-    class Always:
-        """Always use Spot instances. Raises SpotCapacityError after retries."""
+    class AlwaysSpot:
+        """Always use Spot instances. Fail if unavailable."""
 
-        retries: int = 10
-        interval: float = 1.0  # seconds between retries
+        pass
 
     @dataclass(frozen=True, slots=True)
-    class IfAvailable:
+    class SpotIfAvailable:
         """Try Spot instances, fallback to On-Demand if unavailable."""
 
-        retries: int = 10
-        interval: float = 1.0  # seconds between retries
+        pass
+
+    @dataclass(frozen=True, slots=True)
+    class Cheapest:
+        """Choose cheapest option comparing spot and on-demand prices."""
+
+        pass
 
     @dataclass(frozen=True, slots=True)
     class Percent:
         """Minimum percentage of Spot instances, rest On-Demand.
 
-        Example: Spot.Percent(0.8) means at least 80% must be Spot.
-        If minimum cannot be met, raises SpotMinimumNotMetError.
+        Example: Allocation.Percent(spot=0.8) means at least 80% must be Spot.
         """
 
-        percentage: float  # 0.0 to 1.0
+        spot: float  # 0.0 to 1.0
 
         def __post_init__(self) -> None:
-            if not 0.0 <= self.percentage <= 1.0:
-                raise ValueError(f"percentage must be between 0.0 and 1.0, got {self.percentage}")
+            if not 0.0 <= self.spot <= 1.0:
+                raise ValueError(f"spot must be between 0.0 and 1.0, got {self.spot}")
 
-    # Singleton instance for Never strategy
-    Never: _SpotNever = _SpotNever()
+    # Singleton for On-Demand strategy
+    OnDemand: _AllocationOnDemand = _AllocationOnDemand()
 
 
 # String literals for convenience
-SpotLiteral = Literal["always", "if-available", "never"]
+AllocationLiteral = Literal["always-spot", "spot-if-available", "on-demand", "cheapest"]
 
-# Input type: what users can pass to spot= parameter
-# Accepts: "always", "if-available", "never", 0.8, Spot.Always(), Spot.IfAvailable(), Spot.Percent(0.8), Spot.Never
-SpotLike = Spot.Always | Spot.IfAvailable | Spot.Percent | _SpotNever | SpotLiteral | float
+# Input type: what users can pass to allocation= parameter
+AllocationLike = (
+    Allocation.AlwaysSpot
+    | Allocation.SpotIfAvailable
+    | Allocation.Cheapest
+    | Allocation.Percent
+    | _AllocationOnDemand
+    | AllocationLiteral
+    | float
+)
 
-# Alias for backwards compatibility
-SpotStrategy = SpotLike
+# Normalized type (after normalize_allocation)
+NormalizedAllocation = (
+    Allocation.AlwaysSpot
+    | Allocation.SpotIfAvailable
+    | Allocation.Cheapest
+    | Allocation.Percent
+    | _AllocationOnDemand
+)
 
-# Normalized type (after normalize_spot)
-NormalizedSpot = Spot.Always | Spot.IfAvailable | Spot.Percent | _SpotNever
 
-
-def normalize_spot(spot: SpotLike) -> NormalizedSpot:
-    """Normalize spot strategy from string/float to class instance.
+def normalize_allocation(allocation: AllocationLike) -> NormalizedAllocation:
+    """Normalize allocation strategy from string/float to class instance.
 
     Args:
-        spot: Spot strategy as string, float, or class.
+        allocation: Allocation strategy as string, float, or class.
 
     Returns:
-        Normalized Spot strategy instance.
+        Normalized Allocation strategy instance.
     """
-    if isinstance(spot, float):
-        return Spot.Percent(spot)
-    if isinstance(spot, str):
-        match spot:
-            case "always":
-                return Spot.Always()
-            case "if-available":
-                return Spot.IfAvailable()
-            case "never":
-                return Spot.Never
-            case _:
-                raise ValueError(f"Invalid spot strategy: {spot!r}. Use 'always', 'if-available', 'never', or a float (0.0-1.0).")
-    return spot
+    match allocation:
+        case float() as f:
+            return Allocation.Percent(spot=f)
+        case "always-spot":
+            return Allocation.AlwaysSpot()
+        case "spot-if-available":
+            return Allocation.SpotIfAvailable()
+        case "on-demand":
+            return Allocation.OnDemand
+        case "cheapest":
+            return Allocation.Cheapest()
+        case (
+            Allocation.AlwaysSpot()
+            | Allocation.SpotIfAvailable()
+            | Allocation.Cheapest()
+            | Allocation.Percent()
+            | _AllocationOnDemand()
+        ):
+            return allocation
+        case _:
+            raise ValueError(
+                f"Invalid allocation strategy: {allocation!r}. "
+                "Use 'always-spot', 'spot-if-available', 'on-demand', 'cheapest', "
+                "or a float (0.0-1.0)."
+            )
 
 
-# --- Allocation Strategies (EC2 Fleet) ---
+# =============================================================================
+# Fleet Allocation Strategies (EC2-specific)
+# =============================================================================
 
 AllocationStrategy = Literal[
     "price-capacity-optimized",  # Default: balance price and capacity

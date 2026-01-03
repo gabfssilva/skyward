@@ -36,7 +36,7 @@ from skyward.providers.common import (
     install_skyward_wheel_via_transport,
     wait_for_ssh_bootstrap,
 )
-from skyward.spec import Spot, _SpotNever, normalize_spot
+from skyward.spec import _AllocationOnDemand, normalize_allocation
 from skyward.types import (
     ComputeSpec,
     ExitedInstance,
@@ -277,7 +277,8 @@ class Verda(Provider):
             emit(InfraCreated(region=self.region))
 
             acc = Accelerator.from_value(compute.accelerator)
-            prefer_spot = not isinstance(compute.spot, _SpotNever)
+            allocation = normalize_allocation(compute.allocation)
+            prefer_spot = not isinstance(allocation, _AllocationOnDemand)
 
             if compute.machine is not None:
                 # Direct instance type override
@@ -320,8 +321,7 @@ class Verda(Provider):
             script_name = f"skyward-bootstrap-{cluster_id}"
             startup_script = client.startup_scripts.create(name=script_name, script=user_data)
 
-            spot_strategy = normalize_spot(compute.spot) if hasattr(compute, "spot") else Spot.Never
-            use_spot = not isinstance(spot_strategy, _SpotNever)
+            use_spot = prefer_spot
 
             # Auto-region discovery
             actual_region = find_available_region(
@@ -342,7 +342,11 @@ class Verda(Provider):
                 )
 
             emit(
-                InstanceLaunching(count=compute.nodes, instance_type=instance_type, provider=ProviderName.Verda)
+                InstanceLaunching(
+                    count=compute.nodes,
+                    candidates=(spec,) if spec else (),
+                    provider=ProviderName.Verda,
+                )
             )
 
             verda_instances: list[_VerdaInstance] = []
@@ -400,12 +404,9 @@ class Verda(Provider):
                         instance_id=str(vinst.id),
                         node=i,
                         spot=use_spot,
-                        ip=vinst.ip,
-                        instance_type=instance_type,
                         provider=ProviderName.Verda,
-                        price_on_demand=spec.price_on_demand if spec else None,
-                        price_spot=spec.price_spot if spec else None,
-                        billing_increment_minutes=spec.billing_increment_minutes if spec else None,
+                        spec=spec,
+                        ip=vinst.ip,
                     )
                 )
 

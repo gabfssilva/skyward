@@ -3,18 +3,16 @@
 Demonstrates the @ operator for executing a function on ALL nodes in the pool.
 """
 
-from skyward import ComputePool, compute, instance_info, Verda, AWS
+import skyward as sky
 
 
-@compute
+@sky.compute
 def process_partition(data: list[int]) -> dict:
     """Process a partition of data on this node."""
-    from skyward import shard
-
-    pool = instance_info()
+    pool = sky.instance_info()
 
     # shard() automatically gives this node its portion
-    local_data = shard(data)
+    local_data = sky.shard(data)
 
     print(f"Processing {len(local_data)} items...")
 
@@ -27,11 +25,11 @@ def process_partition(data: list[int]) -> dict:
 
 
 if __name__ == "__main__":
-    with ComputePool(
-        provider=AWS(),
+    with sky.ComputePool(
+        provider=sky.AWS(),
         nodes=4,
         accelerator='T4',
-        spot="always",
+        allocation="spot-if-available",
     ) as pool:
         print("\nProcessing data across all nodes...")
         data = list(range(1000))  # Full dataset

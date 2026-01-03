@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
@@ -27,6 +28,9 @@ from skyward.events import (
     RegionAutoSelected,
     SkywardEvent,
 )
+
+if TYPE_CHECKING:
+    from skyward.types import InstanceSpec
 
 # Keycap number emojis (0-9)
 _NODE_EMOJIS = ("0️⃣", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣")
@@ -91,6 +95,36 @@ def _log_metrics(level: str, instance_id: str, node: int,  msg: str) -> None:
     _emit(f"{ts} | <yellow>{source:<20}</yellow> | {lvl} | <bold>{msg}</bold>")
 
 
+_MAX_TABLE_ROWS = 10
+
+
+def _log_instance_table(candidates: tuple[InstanceSpec, ...]) -> None:
+    """Render instance candidates as a priority-ordered table (no log prefix)."""
+    if not candidates:
+        return
+
+    total = len(candidates)
+    show = candidates[:_MAX_TABLE_ROWS]
+
+    header = "   #  Instance         Arch     vCPU   Memory   GPU              Spot       On-Demand"
+    _emit(f"<dim>{header}</dim>")
+
+    for i, spec in enumerate(show, 1):
+        arch = spec.metadata.get("architecture", "x86_64")
+        gpu = f"{spec.accelerator_count:.0f}x {spec.accelerator}" if spec.accelerator else "-"
+        spot = f"${spec.price_spot:.2f}/hr" if spec.price_spot else "-"
+        ondemand = f"${spec.price_on_demand:.2f}/hr" if spec.price_on_demand else "-"
+
+        line = (
+            f"  {i:2}  {spec.name:<15}  {arch:<6}  {spec.vcpu:4}   "
+            f"{spec.memory_gb:5.0f} GB   {gpu:<14}  {spot:>10}   {ondemand:>10}"
+        )
+        _emit(line)
+
+    if total > _MAX_TABLE_ROWS:
+        _emit(f"<dim>  ... and {total - _MAX_TABLE_ROWS} more candidates</dim>")
+
+
 def log(event: SkywardEvent) -> None:
     """Callback that prints formatted events to stdout with emojis.
 
@@ -115,12 +149,15 @@ def log(event: SkywardEvent) -> None:
         case InfraCreated(region=region):
             _log_local("INFO", f"⚙️  Infrastructure ready ({region})")
 
-        case InstanceLaunching(count=count, instance_type=itype, provider=provider):
-            _log_local("INFO", f"🚀 Launching {count}x {itype} on {provider.name}")
+        case InstanceLaunching(count=count, candidates=candidates, provider=provider):
+            _log_local("INFO", f"🚀 Launching {count} nodes on {provider.name}")
+            if candidates:
+                _log_instance_table(candidates)
 
-        case InstanceProvisioned(instance_id=iid, spot=spot, instance_type=itype, provider=provider):
+        case InstanceProvisioned(instance_id=iid, spot=spot, spec=spec, provider=prov):
             tag = "[spot]" if spot else "[on-demand]"
-            _log_local("INFO", f"📦 {iid[:12]} {tag} {itype} provisioned on {provider.name}")
+            itype = spec.name if spec else "unknown"
+            _log_local("INFO", f"📦 {iid[:12]} {tag} {itype} provisioned on {prov.name}")
 
         case ProvisioningCompleted(spot=spot, on_demand=on_demand, provider=prov, region=region, instances=instances):
             total = spot + on_demand
@@ -151,7 +188,7 @@ def log(event: SkywardEvent) -> None:
             _log_cloud("INFO", iid, node, f"☁️  {line.rstrip()}")
 
         case Metrics(node=node, instance_id=iid) as m:
-            msg = f"CPU {m.cpu_percent:.1f}% | Mem {m.memory_used_mb:.0f}/{m.memory_total_mb:.0f}MB"
+            msg = f"📊 CPU {m.cpu_percent:.1f}% | Mem {m.memory_used_mb:.0f}/{m.memory_total_mb:.0f}MB"
             if m.gpu_utilization is not None:
                 msg += f" | GPU {m.gpu_utilization:.0f}% {m.gpu_memory_used_mb:.0f}/{m.gpu_memory_total_mb:.0f}MB"
             _log_metrics("INFO", iid, node, msg)

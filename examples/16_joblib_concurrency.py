@@ -2,8 +2,7 @@ from time import sleep
 
 from joblib import Parallel, delayed
 
-from skyward import AWS, Image
-from skyward.integrations import JoblibPool
+import skyward as sky
 
 
 def slow_task(x):
@@ -14,11 +13,11 @@ def slow_task(x):
 
 
 if __name__ == '__main__':
-    with JoblibPool(
-        provider=AWS(),
+    with sky.integrations.JoblibPool(
+        provider=sky.AWS(),
         nodes=5,
         concurrency=5,
-        image=Image(pip=["joblib"])
+        image=sky.Image(pip=["joblib"])
     ):
         results = Parallel(n_jobs=50)(
             delayed(slow_task)(i) for i in range(100)

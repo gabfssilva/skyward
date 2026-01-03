@@ -7,10 +7,10 @@ Demonstrates fine-tuning a pre-trained transformer model:
 - Text classification task (sentiment analysis)
 """
 
-from skyward import AWS, NVIDIA, ComputePool, compute, instance_info
+import skyward as sky
 
 
-@compute
+@sky.compute
 def check_environment() -> dict:
     """Verify the training environment."""
     import torch
@@ -24,7 +24,7 @@ def check_environment() -> dict:
     }
 
 
-@compute
+@sky.compute
 def finetune_classifier(
     model_name: str,
     num_epochs: int,
@@ -43,7 +43,7 @@ def finetune_classifier(
         TrainingArguments,
     )
 
-    pool = instance_info()
+    pool = sky.instance_info()
 
     # =================================================================
     # Load Model and Tokenizer
@@ -145,12 +145,12 @@ def finetune_classifier(
     }
 
 
-@compute
+@sky.compute
 def inference_demo(model_name: str, texts: list[str]) -> dict:
     """Run inference with a pre-trained model."""
     from transformers import pipeline
 
-    pool = instance_info()
+    pool = sky.instance_info()
 
     # Create sentiment analysis pipeline
     classifier = pipeline(
@@ -176,10 +176,10 @@ if __name__ == "__main__":
     # =================================================================
     # Fine-tuning Setup
     # =================================================================
-    with ComputePool(
-        provider=AWS(),
+    with sky.ComputePool(
+        provider=sky.AWS(),
         nodes=2,
-        accelerator=NVIDIA.A100,
+        accelerator=sky.NVIDIA.A100,
         pip=[
             "transformers>=4.35.0",
             "datasets>=2.14.0",
@@ -187,7 +187,7 @@ if __name__ == "__main__":
             "torch>=2.0.0",
             "scikit-learn",
         ],
-        spot="always",
+        allocation="spot-if-available",
     ) as pool:
         print("=" * 60)
         print("Environment Check")

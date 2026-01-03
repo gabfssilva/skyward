@@ -34,10 +34,10 @@ aws configure
 ### Usage
 
 ```python
-from skyward import AWS, ComputePool
+import skyward as sky
 
-pool = ComputePool(
-    provider=AWS(region="us-east-1"),
+pool = sky.ComputePool(
+    provider=sky.AWS(region="us-east-1"),
     accelerator="A100",
 )
 ```
@@ -126,10 +126,10 @@ Create a token at: https://cloud.digitalocean.com/account/api/tokens
 ### Usage
 
 ```python
-from skyward import DigitalOcean, ComputePool
+import skyward as sky
 
-pool = ComputePool(
-    provider=DigitalOcean(region="nyc1"),
+pool = sky.ComputePool(
+    provider=sky.DigitalOcean(region="nyc1"),
     cpu=4,
     memory="8GB",
 )
@@ -182,10 +182,10 @@ export VERDA_API_KEY=your_api_key
 ### Usage
 
 ```python
-from skyward import Verda, ComputePool
+import skyward as sky
 
-pool = ComputePool(
-    provider=Verda(),  # Auto-discovers region
+pool = sky.ComputePool(
+    provider=sky.Verda(),  # Auto-discovers region
     accelerator="H100",
 )
 ```
@@ -209,9 +209,11 @@ pool = ComputePool(
 Verda automatically selects the best available region:
 
 ```python
+import skyward as sky
+
 # Auto-discovers region with requested GPU
-pool = ComputePool(
-    provider=Verda(),
+pool = sky.ComputePool(
+    provider=sky.Verda(),
     accelerator="H100",
 )
 ```
@@ -245,18 +247,18 @@ pool = ComputePool(
 You can use different providers for different stages:
 
 ```python
-from skyward import AWS, DigitalOcean, Verda
+import skyward as sky
 
 # Development on DigitalOcean (cheap CPU)
-with ComputePool(provider=DigitalOcean(), cpu=4) as dev_pool:
+with sky.ComputePool(provider=sky.DigitalOcean(), cpu=4) as dev_pool:
     preprocess_data() >> dev_pool
 
 # Training on AWS (H100 GPUs)
-with ComputePool(provider=AWS(), accelerator="H100") as train_pool:
+with sky.ComputePool(provider=sky.AWS(), accelerator="H100") as train_pool:
     train_model() @ train_pool
 
 # Inference on Verda (cost-effective)
-with ComputePool(provider=Verda(), accelerator="A100") as infer_pool:
+with sky.ComputePool(provider=sky.Verda(), accelerator="A100") as infer_pool:
     run_inference() >> infer_pool
 ```
 
@@ -265,7 +267,7 @@ with ComputePool(provider=Verda(), accelerator="A100") as infer_pool:
 ### AWS: "No instances available"
 
 1. Try a different region
-2. Use `spot="if-available"` to fallback to on-demand
+2. Use `allocation="spot-if-available"` to fallback to on-demand
 3. Request a service quota increase
 
 ### DigitalOcean: "Authentication failed"
@@ -277,3 +279,12 @@ with ComputePool(provider=Verda(), accelerator="A100") as infer_pool:
 
 1. Remove the `region` parameter to enable auto-discovery
 2. Check your account's region access
+
+---
+
+## Related Topics
+
+- [Getting Started](getting-started.md) — Installation and credentials setup
+- [Accelerators](accelerators.md) — GPU selection and MIG partitioning
+- [Troubleshooting](troubleshooting.md) — Common issues and solutions
+- [API Reference](api-reference.md) — Complete API documentation

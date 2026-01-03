@@ -5,18 +5,34 @@ from __future__ import annotations
 import base64
 import contextlib
 import uuid
+from dataclasses import dataclass
 from math import ceil
 from typing import TYPE_CHECKING, Any
 
 from botocore.exceptions import ClientError
 
 from skyward.constants import DEFAULT_INSTANCE_NAME, SkywardTag
-from skyward.spec import AllocationStrategy, NormalizedSpot, Spot, _SpotNever
+from skyward.spec import Allocation, AllocationStrategy, NormalizedAllocation, _AllocationOnDemand
 
 from .infra import AWSResources
 
 if TYPE_CHECKING:
     from mypy_boto3_ec2 import EC2Client
+
+
+# =============================================================================
+# Instance Configuration
+# =============================================================================
+
+
+@dataclass(frozen=True, slots=True)
+class InstanceConfig:
+    """Configuration for an instance type with its AMI and pricing."""
+
+    instance_type: str
+    ami_id: str
+    price_spot: float | None = None
+    price_on_demand: float | None = None
 
 
 # =============================================================================
@@ -28,8 +44,7 @@ def launch_fleet(
     ec2: EC2Client,
     resources: AWSResources,
     n: int,
-    instance_type: str,
-    ami_id: str,
+    instances: tuple[InstanceConfig, ...],
     user_data: str,
     requirements_hash: str,
     spot: bool = False,
@@ -38,19 +53,18 @@ def launch_fleet(
     root_device: str = "/dev/sda1",
     min_volume_size: int = 30,
 ) -> list[str]:
-    """Low-level Fleet launch with intelligent AZ selection.
+    """Low-level Fleet launch with intelligent AZ and instance type selection.
 
     Uses EC2 Fleet with type='instant' and SingleAvailabilityZone=True to:
-    1. Evaluate capacity across all availability zones
-    2. Select the best AZ based on allocation_strategy
-    3. Launch ALL instances in that single AZ (required for cluster locality)
+    1. Evaluate capacity across all availability zones and instance types
+    2. Select the best AZ + instance type based on allocation_strategy
+    3. Launch ALL instances in that single AZ with same type (cluster locality)
 
     Args:
         ec2: EC2 client
         resources: AWS resources (security group, instance profile, etc.)
         n: Number of instances to launch
-        instance_type: EC2 instance type
-        ami_id: AMI ID
+        instances: Instance configurations (type + AMI). Fleet picks one with capacity.
         user_data: User data script
         requirements_hash: Content hash for tagging
         spot: Whether to use spot instances
@@ -59,17 +73,18 @@ def launch_fleet(
         root_device: Root device name
         min_volume_size: Minimum root volume size in GB
     """
-    # Filter to subnets in AZs that support this instance type
+    # Filter to subnets in AZs that support at least one of the instance types
+    instance_types = tuple(inst.instance_type for inst in instances)
     if subnet_ids:
         target_subnets = subnet_ids
     else:
-        target_subnets = get_valid_subnets_for_instance_type(ec2, instance_type, resources.subnet_ids)
+        target_subnets = get_valid_subnets_for_instance_types(
+            ec2, instance_types, resources.subnet_ids
+        )
 
-    # Create temporary launch template
+    # Create temporary launch template (without InstanceType/ImageId - goes in overrides)
     template_name = f"skyward-{uuid.uuid4().hex[:8]}"
     template_data: dict[str, Any] = {
-        "ImageId": ami_id,
-        "InstanceType": instance_type,
         "IamInstanceProfile": {"Arn": resources.instance_profile_arn},
         "UserData": base64.b64encode(user_data.encode()).decode(),
         "SecurityGroupIds": [resources.security_group_id],
@@ -104,8 +119,13 @@ def launch_fleet(
     template_id = launch_template["LaunchTemplate"]["LaunchTemplateId"]
 
     try:
-        # Overrides with target subnets - Fleet will choose the best AZ
-        overrides = [{"SubnetId": sid} for sid in target_subnets]
+        # Overrides: cartesian product of subnets × instances
+        # Fleet will choose the best combination based on capacity and price
+        overrides = [
+            {"SubnetId": sid, "InstanceType": inst.instance_type, "ImageId": inst.ami_id}
+            for sid in target_subnets
+            for inst in instances
+        ]
 
         fleet_response = ec2.create_fleet(
             Type="instant",
@@ -166,10 +186,19 @@ def get_valid_subnets_for_instance_type(
     subnet_ids: tuple[str, ...],
 ) -> tuple[str, ...]:
     """Filter subnets to only those in AZs that support the instance type."""
-    # Get AZs that support this instance type
+    return get_valid_subnets_for_instance_types(ec2, (instance_type,), subnet_ids)
+
+
+def get_valid_subnets_for_instance_types(
+    ec2: EC2Client,
+    instance_types: tuple[str, ...],
+    subnet_ids: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Filter subnets to only those in AZs that support at least one instance type."""
+    # Get AZs that support any of these instance types
     response = ec2.describe_instance_type_offerings(
         LocationType="availability-zone",
-        Filters=[{"Name": "instance-type", "Values": [instance_type]}],
+        Filters=[{"Name": "instance-type", "Values": list(instance_types)}],
     )
     valid_azs = {o["Location"] for o in response.get("InstanceTypeOfferings", [])}
 
@@ -179,7 +208,7 @@ def get_valid_subnets_for_instance_type(
 
     if not valid_subnets:
         region = subnets["Subnets"][0]["AvailabilityZone"][:-1] if subnets["Subnets"] else "unknown"
-        raise RuntimeError(f"No AZs in {region} support {instance_type}")
+        raise RuntimeError(f"No AZs in {region} support any of {instance_types}")
 
     return tuple(valid_subnets)
 
@@ -200,7 +229,7 @@ def find_subnet_for_az(ec2: EC2Client, az: str, subnet_ids: tuple[str, ...]) -> 
 
 
 # =============================================================================
-# Instance Launch with Spot Strategy
+# Instance Launch with Allocation Strategy
 # =============================================================================
 
 
@@ -208,52 +237,60 @@ def launch_instances(
     ec2: EC2Client,
     resources: AWSResources,
     n: int,
-    instance_type: str,
-    ami_id: str,
+    instances: tuple[InstanceConfig, ...],
     user_data: str,
     requirements_hash: str,
-    spot_strategy: NormalizedSpot,
-    allocation_strategy: AllocationStrategy = "price-capacity-optimized",
+    allocation: NormalizedAllocation,
+    fleet_strategy: AllocationStrategy = "price-capacity-optimized",
     root_device: str = "/dev/sda1",
     min_volume_size: int = 30,
 ) -> list[str]:
-    """Launch instances with full SpotStrategy support.
+    """Launch instances with allocation strategy support.
 
-    Handles all spot strategies:
-    - Spot.Always(): 100% spot, fail if unavailable
-    - Spot.Never: 100% on-demand
-    - Spot.IfAvailable(): try spot, fallback to on-demand
-    - Spot.Percent(x): minimum x% spot, rest on-demand in same AZ
+    Handles all allocation strategies:
+    - Allocation.AlwaysSpot(): 100% spot, fail if unavailable
+    - Allocation.OnDemand: 100% on-demand
+    - Allocation.SpotIfAvailable(): try spot, fallback to on-demand
+    - Allocation.Percent(spot=x): minimum x% spot, rest on-demand
+    - Allocation.Cheapest(): compare spot vs on-demand prices, pick cheapest
+
+    Args:
+        instances: Instance configurations (type + AMI + prices).
+        allocation: Normalized allocation strategy.
+        fleet_strategy: EC2 Fleet allocation strategy.
     """
     common_args = {
         "ec2": ec2,
         "resources": resources,
-        "instance_type": instance_type,
-        "ami_id": ami_id,
+        "instances": instances,
         "user_data": user_data,
         "requirements_hash": requirements_hash,
-        "allocation_strategy": allocation_strategy,
+        "allocation_strategy": fleet_strategy,
         "root_device": root_device,
         "min_volume_size": min_volume_size,
     }
 
-    match spot_strategy:
-        case _SpotNever():
+    match allocation:
+        case _AllocationOnDemand():
             # 100% on-demand
             return launch_fleet(n=n, spot=False, **common_args)
 
-        case Spot.Always():
+        case Allocation.AlwaysSpot():
             # 100% spot, fail if unavailable
             return launch_fleet(n=n, spot=True, **common_args)
 
-        case Spot.IfAvailable():
+        case Allocation.SpotIfAvailable():
             # Try spot first, fallback to on-demand
             try:
                 return launch_fleet(n=n, spot=True, **common_args)
             except (RuntimeError, ClientError):
                 return launch_fleet(n=n, spot=False, **common_args)
 
-        case Spot.Percent(percentage=min_pct):
+        case Allocation.Cheapest():
+            # Compare spot vs on-demand prices and try cheapest first
+            return _launch_cheapest(n=n, **common_args)
+
+        case Allocation.Percent(spot=min_pct):
             # Minimum min_pct% spot, rest on-demand in same AZ
             min_spot = ceil(n * min_pct)
 
@@ -281,7 +318,56 @@ def launch_instances(
             return spot_ids
 
         case _:
-            raise ValueError(f"Unknown spot strategy: {spot_strategy}")
+            raise ValueError(f"Unknown allocation strategy: {allocation}")
+
+
+def _launch_cheapest(
+    ec2: EC2Client,
+    resources: AWSResources,
+    n: int,
+    instances: tuple[InstanceConfig, ...],
+    user_data: str,
+    requirements_hash: str,
+    allocation_strategy: AllocationStrategy,
+    root_device: str,
+    min_volume_size: int,
+) -> list[str]:
+    """Launch instances using cheapest option (spot or on-demand).
+
+    Compares the cheapest spot price vs cheapest on-demand price and tries
+    the cheaper market first. Falls back to the other if capacity unavailable.
+    """
+    common_args = {
+        "ec2": ec2,
+        "resources": resources,
+        "instances": instances,
+        "user_data": user_data,
+        "requirements_hash": requirements_hash,
+        "allocation_strategy": allocation_strategy,
+        "root_device": root_device,
+        "min_volume_size": min_volume_size,
+    }
+
+    # Find cheapest spot and on-demand prices
+    spot_prices = [i.price_spot for i in instances if i.price_spot is not None]
+    ondemand_prices = [i.price_on_demand for i in instances if i.price_on_demand is not None]
+
+    min_spot = min(spot_prices) if spot_prices else float("inf")
+    min_ondemand = min(ondemand_prices) if ondemand_prices else float("inf")
+
+    # Try cheapest market first, fallback to other
+    if min_spot <= min_ondemand:
+        # Spot is cheaper or equal, try spot first
+        try:
+            return launch_fleet(n=n, spot=True, **common_args)
+        except (RuntimeError, ClientError):
+            return launch_fleet(n=n, spot=False, **common_args)
+    else:
+        # On-demand is cheaper, try on-demand first
+        try:
+            return launch_fleet(n=n, spot=False, **common_args)
+        except (RuntimeError, ClientError):
+            return launch_fleet(n=n, spot=True, **common_args)
 
 
 # =============================================================================

@@ -8,19 +8,19 @@ Sharding ensures each node processes only its portion of the data,
 enabling efficient parallel processing.
 """
 
-from skyward import AWS, ComputePool, DistributedSampler, compute, instance_info, shard
+import skyward as sky
 
 
-@compute
+@sky.compute
 def train_on_shard(full_x: list, full_y: list) -> dict:
     """Train on this node's shard of the data."""
     import numpy as np
 
     # shard() automatically divides data for this node
     # All nodes use the same seed, so sharding is deterministic
-    x, y = shard(full_x, full_y, shuffle=True, seed=42)
+    x, y = sky.shard(full_x, full_y, shuffle=True, seed=42)
 
-    pool = instance_info()
+    pool = sky.instance_info()
 
     # Convert to numpy for computation
     x_arr = np.array(x)
@@ -36,24 +36,24 @@ def train_on_shard(full_x: list, full_y: list) -> dict:
     }
 
 
-@compute
+@sky.compute
 def demonstrate_shard_types() -> dict:
     """Show that shard() preserves types."""
     import numpy as np
 
-    pool = instance_info()
+    pool = sky.instance_info()
 
     # List sharding
     my_list = list(range(100))
-    sharded_list = shard(my_list)
+    sharded_list = sky.shard(my_list)
 
     # Tuple sharding
     my_tuple = tuple(range(100))
-    sharded_tuple = shard(my_tuple)
+    sharded_tuple = sky.shard(my_tuple)
 
     # NumPy array sharding
     my_array = np.arange(100)
-    sharded_array = shard(my_array)
+    sharded_array = sky.shard(my_array)
 
     return {
         "node": pool.node,
@@ -66,13 +66,13 @@ def demonstrate_shard_types() -> dict:
     }
 
 
-@compute
+@sky.compute
 def train_with_dataloader(epochs: int, batch_size: int) -> dict:
     """Use DistributedSampler with PyTorch DataLoader."""
     import torch
     from torch.utils.data import DataLoader, TensorDataset
 
-    pool = instance_info()
+    pool = sky.instance_info()
 
     # Create synthetic dataset
     x = torch.randn(1000, 10)
@@ -80,7 +80,7 @@ def train_with_dataloader(epochs: int, batch_size: int) -> dict:
     dataset = TensorDataset(x, y)
 
     # DistributedSampler automatically shards for this node
-    sampler = DistributedSampler(dataset, shuffle=True)
+    sampler = sky.DistributedSampler(dataset, shuffle=True)
     loader = DataLoader(dataset, batch_size=batch_size, sampler=sampler)
 
     # Simple model
@@ -122,11 +122,11 @@ if __name__ == "__main__":
     X = [[random.gauss(0, 1) for _ in range(10)] for _ in range(10000)]
     Y = [random.randint(0, 9) for _ in range(10000)]
 
-    with ComputePool(
-        provider=AWS(),
+    with sky.ComputePool(
+        provider=sky.AWS(),
         nodes=4,
         pip=["numpy", "torch"],
-        spot="always",
+        allocation="spot-if-available",
     ) as pool:
         # =================================================================
         # Basic sharding with shard()

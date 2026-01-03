@@ -6,7 +6,7 @@ import os
 import subprocess
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast, override
+from typing import TYPE_CHECKING, Any, override
 
 from pydo import Client
 
@@ -34,7 +34,7 @@ from skyward.providers.common import (
     install_skyward_wheel_via_transport,
     wait_for_ssh_bootstrap,
 )
-from skyward.spec import _SpotNever
+from skyward.spec import _AllocationOnDemand, normalize_allocation
 from skyward.types import (
     ComputeSpec,
     ExitedInstance,
@@ -137,7 +137,8 @@ def _wait_for_active(client: Client, droplets: list[_Droplet], timeout: float) -
         try:
             check()
         except RetryError as e:
-            raise TimeoutError(f"Droplet {droplet.id} did not become active within {timeout}s") from e
+            msg = f"Droplet {droplet.id} did not become active within {timeout}s"
+            raise TimeoutError(msg) from e
 
     for droplet in droplets:
         poll_droplet(droplet)
@@ -245,7 +246,8 @@ class DigitalOcean(Provider):
             client = self._get_client()
 
             acc = Accelerator.from_value(compute.accelerator)
-            prefer_spot = not isinstance(compute.spot, _SpotNever)
+            allocation = normalize_allocation(compute.allocation)
+            prefer_spot = not isinstance(allocation, _AllocationOnDemand)
 
             if compute.machine is not None:
                 # Direct instance type override
@@ -253,7 +255,12 @@ class DigitalOcean(Provider):
                 # Look up spec for metadata (accelerator_count for image selection)
                 specs = self.available_instances()
                 spec = next((s for s in specs if s.name == size), None)
-                accelerator_count = spec.accelerator_count if spec else (acc.count if acc else 0)
+                if spec:
+                    accelerator_count = spec.accelerator_count
+                elif acc and callable(acc.count):
+                    accelerator_count = 1  # Default when callable, actual comes from spec
+                else:
+                    accelerator_count = acc.count if acc else 0
             else:
                 # Infer from resources (current behavior)
                 accelerator_type = acc.accelerator if acc else None
@@ -271,7 +278,8 @@ class DigitalOcean(Provider):
                 accelerator_count = spec.accelerator_count
 
             if compute.accelerator or (compute.machine and accelerator_count > 0):
-                os_image = get_gpu_image(cast(Accelerator, acc) if acc else Accelerator("H100", "80GB"), accelerator_count)
+                default_acc = Accelerator("H100", "80GB")
+                os_image = get_gpu_image(acc or default_acc, accelerator_count)
                 username = "ubuntu"
             else:
                 os_image = "ubuntu-24-04-x64"
@@ -284,7 +292,9 @@ class DigitalOcean(Provider):
 
             emit(
                 InstanceLaunching(
-                    count=compute.nodes, instance_type=size, provider=ProviderName.DigitalOcean
+                    count=compute.nodes,
+                    candidates=(spec,) if spec else (),
+                    provider=ProviderName.DigitalOcean,
                 )
             )
 
@@ -342,12 +352,9 @@ class DigitalOcean(Provider):
                         instance_id=str(droplet.id),
                         node=i,
                         spot=False,
-                        ip=droplet.ip,
-                        instance_type=size,
                         provider=ProviderName.DigitalOcean,
-                        price_on_demand=spec.price_on_demand if spec else None,
-                        price_spot=spec.price_spot if spec else None,
-                        billing_increment_minutes=spec.billing_increment_minutes if spec else None,
+                        spec=spec,
+                        ip=droplet.ip,
                     )
                 )
 
@@ -370,8 +377,8 @@ class DigitalOcean(Provider):
     @override
     def setup(self, instances: tuple[Instance, ...], compute: ComputeSpec) -> None:
         """Setup instances (wait for bootstrap to complete)."""
+        from collections.abc import Generator
         from contextlib import contextmanager
-        from typing import Generator
 
         try:
             for inst in instances:
@@ -383,7 +390,7 @@ class DigitalOcean(Provider):
                 return inst.get_meta("droplet_ip") or inst.public_ip or ""
 
             @contextmanager
-            def ssh_transport(inst: Instance) -> Generator[SSHTransport, None, None]:
+            def ssh_transport(inst: Instance) -> Generator[SSHTransport]:
                 ip = get_ip(inst)
                 username = inst.get_meta("username", "root")
                 yield SSHTransport(host=ip, username=username, key_path=key_path)
@@ -403,6 +410,8 @@ class DigitalOcean(Provider):
         self, instances: tuple[Instance, ...], compute: ComputeSpec
     ) -> tuple[ExitedInstance, ...]:
         """Shutdown Droplets (destroy them)."""
+        from contextlib import suppress
+
         client = self._get_client()
 
         exited: list[ExitedInstance] = []
@@ -410,10 +419,8 @@ class DigitalOcean(Provider):
             droplet_id = inst.get_meta("droplet_id")
             if droplet_id:
                 emit(InstanceStopping(instance_id=inst.id))
-                try:
+                with suppress(Exception):
                     client.droplets.destroy(droplet_id=droplet_id)
-                except Exception:
-                    pass
 
             exited.append(
                 ExitedInstance(

@@ -308,7 +308,10 @@ def build_wheel() -> Path:
     return next(build_dir.glob("*.whl"))
 
 
-def _build_wheel_install_script(wheel_name: str) -> str:
+def _build_wheel_install_script(
+    wheel_name: str,
+    env: dict[str, str] | None = None,
+) -> str:
     """Build complete wheel installation + service setup script.
 
     Single script that does everything:
@@ -316,6 +319,10 @@ def _build_wheel_install_script(wheel_name: str) -> str:
     2. Install wheel
     3. Verify installation
     4. Setup single RPyC systemd service
+
+    Args:
+        wheel_name: Name of the wheel file to install.
+        env: Environment variables to pass to the systemd service.
 
     Returns:
         Shell script string.
@@ -345,7 +352,7 @@ $UV_PATH pip install {SKYWARD_DIR}/{wheel_name}
 """
 
     # Always use single RPyC service (concurrency handled via slots, not workers)
-    unit_content = rpyc_service_unit()
+    unit_content = rpyc_service_unit(env=env)
     service_script = bootstrap_ops(
         systemd("skyward-rpyc", unit_content),
         wait_for_port_op(RPYC_PORT, timeout=30),
@@ -369,7 +376,7 @@ def install_skyward_wheel_via_transport(
         instances: Instances to install on.
         get_transport: Factory that creates a context manager yielding a Transport
             for each instance. The context manager handles lifecycle (e.g., tunnel cleanup).
-        compute: Compute spec (unused, kept for backward compatibility).
+        compute: Compute spec containing image with environment variables.
 
     Example:
         # SSH-based providers (Verda, DigitalOcean)
@@ -394,8 +401,11 @@ def install_skyward_wheel_via_transport(
 
     wheel_path = build_wheel()
 
+    # Get environment variables from compute spec's image
+    env = compute.image.env if compute else None
+
     # Build single script that does everything (always single RPyC service)
-    install_script = _build_wheel_install_script(wheel_path.name)
+    install_script = _build_wheel_install_script(wheel_path.name, env=env)
 
     def install_on_instance(inst: Instance) -> None:
         import tempfile

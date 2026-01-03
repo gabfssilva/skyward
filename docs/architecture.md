@@ -61,7 +61,7 @@ Utilization:  100%
 │   └──────┬───────┘                                               │
 │          ▼                                                       │
 │   ┌──────────────┐                                               │
-│   │    TRAIN     │  @distributed.torch()                        │
+│   │    TRAIN     │  @torch()                                    │
 │   │              │  def train(): ...                             │
 │   │              │  train() @ pool  # Runs on all 4 nodes       │
 │   │              │  Hours of training...                         │
@@ -98,7 +98,7 @@ The instance itself has a self-destruct timer. Even if your laptop dies, your ne
 ```python
 ComputePool(
     accelerator="A100",
-    spot="always",  # 60-90% cheaper
+    allocation="always-spot",  # 60-90% cheaper
 )
 ```
 
@@ -474,7 +474,7 @@ skyward/
 ├── pool.py                # ComputePool
 ├── image.py               # Image specification
 ├── accelerator.py         # GPU types and MIG
-├── distributed.py         # Framework decorators
+├── integrations/          # Framework integrations (keras, torch, etc.)
 ├── types.py               # Core types (Instance, Provider, etc.)
 ├── events.py              # Event ADT
 ├── callback.py            # Callback system
@@ -506,7 +506,7 @@ skyward/
 | `pool.py` | Resource management (ComputePool) |
 | `types.py` | Instance, Provider protocol, accelerators |
 | `events.py` | Event definitions (ADT) |
-| `distributed.py` | Framework integration decorators |
+| `integrations/` | Framework integration decorators |
 | `bootstrap/compose.py` | Script generation DSL |
 | `task/pool.py` | TaskPool connection management |
 | `providers/common.py` | Shared provider utilities (tunnels, bootstrap) |
@@ -528,6 +528,15 @@ skyward/
 
 ### Adding a Framework Decorator
 
-1. Add decorator in `skyward/distributed.py`
+1. Create new file in `skyward/integrations/` (e.g., `myframework.py`)
 2. Implement env var builder and initializer
-3. Export in module `__all__`
+3. Export in `skyward/integrations/__init__.py`
+
+---
+
+## Related Topics
+
+- [Getting Started](getting-started.md) — First steps with Skyward
+- [Core Concepts](concepts.md) — Understanding the programming model
+- [API Reference](api-reference.md) — Complete API documentation
+- [Troubleshooting](troubleshooting.md) — Common issues and solutions

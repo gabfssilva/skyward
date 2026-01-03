@@ -36,17 +36,20 @@ from skyward.providers.common import (
     create_tunnel,
     find_available_port,
     install_skyward_wheel_via_transport,
+)
+from skyward.providers.common import (
     wait_for_bootstrap as _wait_for_bootstrap_common,
 )
-from skyward.spec import AllocationStrategy, _SpotNever, normalize_spot
+from skyward.spec import AllocationStrategy, _AllocationOnDemand, normalize_allocation
 from skyward.types import (
+    Auto,
     ComputeSpec,
     ExitedInstance,
     Instance,
     InstanceSpec,
     Provider,
     parse_memory_mb,
-    select_instance,
+    select_instances,
 )
 
 from .discovery import (
@@ -57,7 +60,7 @@ from .discovery import (
     discover_all_instances,
     find_available_region,
 )
-from .fleet import get_instance_details, launch_instances, wait_running
+from .fleet import InstanceConfig, get_instance_details, launch_instances, wait_running
 from .infra import AWSInfraManager, AWSResources, S3ObjectStore
 from .ssm import SSMSession, SSMTransport
 
@@ -66,6 +69,7 @@ if TYPE_CHECKING:
 
     from mypy_boto3_ec2 import EC2Client
 
+    from skyward.accelerator import Accelerator
     from skyward.volume import Volume
 
 
@@ -341,7 +345,7 @@ class AWS(Provider):
         self,
         compute: ComputeSpec,
         architecture: Architecture = "x86_64",
-        acc: "Accelerator | None" = None,
+        acc: Accelerator | None = None,
     ) -> str:
         """Resolve AMI ID based on configuration and architecture."""
         if self.ami:
@@ -468,14 +472,14 @@ class AWS(Provider):
         Returns:
             Context manager yielding SSHTransport.
         """
+        from collections.abc import Generator
         from contextlib import contextmanager
-        from typing import Generator
 
         ssm = self._get_ssm_session()
         key_path = get_private_key_path()
 
         @contextmanager
-        def _transport() -> Generator[SSHTransport, None, None]:
+        def _transport() -> Generator[SSHTransport]:
             # Ensure SSM agent is ready (may have just started with cached AMI)
             ssm.wait_for_ssm_agent(instance.id, timeout=120)
 
@@ -538,27 +542,32 @@ class AWS(Provider):
 
             # Select instance type (direct override or inferred from resources)
             acc = Accelerator.from_value(compute.accelerator)
-            prefer_spot = not isinstance(compute.spot, _SpotNever)
+            allocation = normalize_allocation(compute.allocation)
+            prefer_spot = not isinstance(allocation, _AllocationOnDemand)
 
             if compute.machine is not None:
                 # Direct instance type override
-                instance_type = compute.machine
                 # Look up spec for metadata (architecture, accelerator_count)
                 specs = self.available_instances()
-                spec = next((s for s in specs if s.name == instance_type), None)
+                spec = next((s for s in specs if s.name == compute.machine), None)
                 if spec:
                     accelerator_count = spec.accelerator_count
                     architecture = spec.metadata.get("architecture", "x86_64")
                 else:
                     # Defaults if instance type not found in catalog
-                    accelerator_count = acc.count if acc else 0
+                    if acc and callable(acc.count):
+                        accelerator_count = 1
+                    else:
+                        accelerator_count = acc.count if acc else 0
                     architecture = "x86_64"
+                # Will construct instance_configs after region/resources are resolved
+                filtered_candidates = None  # Signal to use direct machine override
             else:
-                # Infer from resources (current behavior)
+                # Get all matching candidates (Fleet will pick one with capacity)
                 accelerator_type = acc.accelerator if acc else None
                 requested_gpu_count = acc.count if acc else 1
 
-                spec = select_instance(
+                candidates = select_instances(
                     self.available_instances(),
                     cpu=compute.cpu or 1,
                     memory_mb=parse_memory_mb(compute.memory),
@@ -566,13 +575,33 @@ class AWS(Provider):
                     accelerator_count=requested_gpu_count,
                     prefer_spot=prefer_spot,
                 )
-                instance_type = spec.name
-                accelerator_count = spec.accelerator_count
-                architecture = spec.metadata.get("architecture", "x86_64")
 
-            # Find available region for this instance type
+                # Filter by architecture based on compute.architecture
+                match compute.architecture:
+                    case Auto():
+                        # Auto: include ALL architectures, sorted by price
+                        filtered_candidates = list(candidates)
+                    case arch:
+                        # Explicit architecture requested - filter to it
+                        filtered_candidates = [
+                            c for c in candidates
+                            if c.metadata.get("architecture") == arch
+                        ]
+
+                # AWS Fleet API has payload size limits - keep candidate list reasonable
+                _MAX_INSTANCE_TYPES = 50
+                if len(filtered_candidates) > _MAX_INSTANCE_TYPES:
+                    filtered_candidates = filtered_candidates[:_MAX_INSTANCE_TYPES]
+
+                accelerator_count = filtered_candidates[0].accelerator_count
+
+            # Find available region for any of these instance types
+            first_candidate_type = (
+                compute.machine if filtered_candidates is None
+                else filtered_candidates[0].name
+            )
             actual_region = find_available_region(
-                instance_type=instance_type,
+                instance_type=first_candidate_type,
                 preferred_region=self.region,
             )
 
@@ -583,7 +612,7 @@ class AWS(Provider):
                     RegionAutoSelected(
                         requested_region=self.region,
                         selected_region=actual_region,
-                        instance_type=instance_type,
+                        instance_type=first_candidate_type,
                         provider=ProviderName.AWS,
                     )
                 )
@@ -596,8 +625,46 @@ class AWS(Provider):
             image = compute.image
             content_hash = image.content_hash()
 
-            ami_id = self._resolve_ami_id(compute, architecture=architecture, acc=acc)
-            username = self._resolve_username(ami_id)
+            # Resolve AMI(s) and build InstanceConfigs with pricing
+            if filtered_candidates is None:
+                # Direct machine override - single AMI
+                ami_id = self._resolve_ami_id(compute, architecture=architecture, acc=acc)
+                # Look up spec from catalog for pricing and details
+                specs = self.available_instances()
+                spec = next((s for s in specs if s.name == compute.machine), None)
+                instance_configs = (
+                    InstanceConfig(
+                        instance_type=compute.machine,
+                        ami_id=ami_id,
+                        price_spot=spec.price_spot if spec else None,
+                        price_on_demand=spec.price_on_demand if spec else None,
+                    ),
+                )
+                # Use spec for candidates if found, otherwise create minimal one
+                candidates_for_log: tuple[InstanceSpec, ...] = (spec,) if spec else ()
+                username = self._resolve_username(ami_id)
+            else:
+                # Candidates from select_instances - may have mixed architectures
+                architectures = {
+                    c.metadata.get("architecture", "x86_64") for c in filtered_candidates
+                }
+                ami_by_arch = {
+                    arch: self._resolve_ami_id(compute, architecture=arch, acc=acc)
+                    for arch in architectures
+                }
+                instance_configs = tuple(
+                    InstanceConfig(
+                        instance_type=c.name,
+                        ami_id=ami_by_arch[c.metadata.get("architecture", "x86_64")],
+                        price_spot=c.price_spot,
+                        price_on_demand=c.price_on_demand,
+                    )
+                    for c in filtered_candidates
+                )
+                candidates_for_log = tuple(filtered_candidates)
+                # Use first AMI for username (all same type, so same username)
+                first_ami = next(iter(ami_by_arch.values()))
+                username = self._resolve_username(first_ami)
 
             # Get local SSH public key to inject into instance
             ssh_key_op = None
@@ -620,25 +687,29 @@ class AWS(Provider):
                 postamble=postamble,
             )
 
-            # Normalize spot strategy
-            spot_strategy = normalize_spot(compute.spot)
+            emit(
+                InstanceLaunching(
+                    count=compute.nodes,
+                    candidates=candidates_for_log,
+                    provider=ProviderName.AWS,
+                )
+            )
 
-            emit(InstanceLaunching(count=compute.nodes, instance_type=instance_type, provider=ProviderName.AWS))
+            # Get AMI block device info (use first AMI - all same type)
+            first_ami = instance_configs[0].ami_id
+            root_device, min_volume_size = self._get_ami_block_device_info(first_ami)
 
-            # Get AMI block device info
-            root_device, min_volume_size = self._get_ami_block_device_info(ami_id)
-
-            # Launch instances with full spot strategy support
+            # Launch instances with allocation strategy
+            # Fleet will pick an instance type with available capacity
             instance_ids = launch_instances(
                 ec2=self._ec2,
                 resources=resources,
                 n=compute.nodes,
-                instance_type=instance_type,
-                ami_id=ami_id,
+                instances=instance_configs,
                 user_data=user_data,
                 requirements_hash=content_hash,
-                spot_strategy=spot_strategy,
-                allocation_strategy=self.allocation_strategy,
+                allocation=allocation,
+                fleet_strategy=self.allocation_strategy,
                 root_device=root_device,
                 min_volume_size=min_volume_size,
             )
@@ -652,9 +723,16 @@ class AWS(Provider):
             # Get instance details
             instance_details = get_instance_details(self._ec2, instance_ids)
 
+            # Build spec lookup for pricing info
+            all_specs = {s.name: s for s in self.available_instances()}
+
             # Build Instance objects
             instances: list[Instance] = []
             for i, details in enumerate(instance_details):
+                # Look up spec for this instance type (for pricing info)
+                actual_type = details["instance_type"]
+                spec = all_specs.get(actual_type)
+
                 instance = Instance(
                     id=details["id"],
                     provider=self,
@@ -665,7 +743,7 @@ class AWS(Provider):
                         [
                             ("cluster_id", cluster_id),
                             ("region", self._active_region),
-                            ("instance_type", instance_type),
+                            ("instance_type", actual_type),
                             ("content_hash", content_hash),
                             ("accelerator_count", str(accelerator_count)),
                             ("username", username),
@@ -679,11 +757,9 @@ class AWS(Provider):
                         instance_id=instance.id,
                         node=i,
                         spot=instance.spot,
-                        instance_type=instance_type,
                         provider=ProviderName.AWS,
-                        price_on_demand=spec.price_on_demand,
-                        price_spot=spec.price_spot,
-                        billing_increment_minutes=spec.billing_increment_minutes,
+                        spec=spec,
+                        ip=instance.private_ip,
                     )
                 )
 

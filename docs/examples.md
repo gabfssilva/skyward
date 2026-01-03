@@ -30,15 +30,15 @@ Complete guide to all Skyward examples with explanations.
 Discover available instances from each provider.
 
 ```python
-from skyward import AWS, DigitalOcean, Verda
+import skyward as sky
 
 # List AWS GPU instances
-for instance in AWS().available_instances():
+for instance in sky.AWS().available_instances():
     if instance.accelerator:
         print(f"{instance.name}: {instance.accelerator}")
 
 # List Verda instances
-for instance in Verda().available_instances():
+for instance in sky.Verda().available_instances():
     print(f"{instance.name}: ${instance.price_spot}/hr (spot)")
 ```
 
@@ -55,14 +55,14 @@ for instance in Verda().available_instances():
 The simplest Skyward example.
 
 ```python
-from skyward import compute, ComputePool, Verda
+import skyward as sky
 
-@compute
+@sky.compute
 def remote_sum(x: int, y: int) -> int:
     print("That's one expensive sum.")
     return x + y
 
-with ComputePool(provider=Verda()) as pool:
+with sky.ComputePool(provider=sky.Verda()) as pool:
     result = remote_sum(x=1, y=2) >> pool
     print(result)  # 3
 ```
@@ -81,20 +81,20 @@ with ComputePool(provider=Verda()) as pool:
 Execute multiple functions concurrently.
 
 ```python
-from skyward import AWS, ComputePool, compute, gather
+import skyward as sky
 
-@compute
+@sky.compute
 def process_chunk(data: list[int]) -> int:
     return sum(data)
 
-@compute
+@sky.compute
 def multiply(x: int, y: int) -> int:
     return x * y
 
-with ComputePool(provider=AWS(), spot="always") as pool:
+with sky.ComputePool(provider=sky.AWS(), allocation="always-spot") as pool:
     # Using gather()
     chunks = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
-    results = gather(*[process_chunk(c) for c in chunks]) >> pool
+    results = sky.gather(*[process_chunk(c) for c in chunks]) >> pool
     print(results)  # (6, 15, 24)
 
     # Using & operator (type-safe)
@@ -116,9 +116,9 @@ with ComputePool(provider=AWS(), spot="always") as pool:
 Request GPUs and benchmark performance.
 
 ```python
-from skyward import AWS, ComputePool, compute, instance_info, Image
+import skyward as sky
 
-@compute
+@sky.compute
 def matrix_multiply(size: int) -> dict:
     import torch
 
@@ -129,11 +129,11 @@ def matrix_multiply(size: int) -> dict:
 
     return {"gpu_available": torch.cuda.is_available()}
 
-with ComputePool(
-    provider=AWS(),
-    image=Image(pip=["torch", "numpy"]),
+with sky.ComputePool(
+    provider=sky.AWS(),
+    image=sky.Image(pip=["torch", "numpy"]),
     accelerator="T4",
-    spot="always",
+    allocation="always-spot",
 ) as pool:
     result = matrix_multiply(4096) >> pool
 ```
@@ -141,7 +141,7 @@ with ComputePool(
 **Key Concepts:**
 - `accelerator="T4"` - Request specific GPU
 - `Image(pip=[...])` - Install dependencies
-- `spot="always"` - Use spot instances
+- `allocation="always-spot"` - Use spot instances
 
 ---
 
@@ -152,15 +152,15 @@ with ComputePool(
 CPU workloads on DigitalOcean.
 
 ```python
-from skyward import ComputePool, DigitalOcean, compute
+import skyward as sky
 
-@compute
+@sky.compute
 def cpu_intensive() -> dict:
     import multiprocessing
     return {"cpus": multiprocessing.cpu_count()}
 
-with ComputePool(
-    provider=DigitalOcean(region="nyc1"),
+with sky.ComputePool(
+    provider=sky.DigitalOcean(region="nyc1"),
     cpu=4,
     memory="8GB",
 ) as pool:
@@ -181,20 +181,20 @@ with ComputePool(
 Execute on ALL nodes with automatic data partitioning.
 
 ```python
-from skyward import ComputePool, compute, shard, instance_info, AWS
+import skyward as sky
 
-@compute
+@sky.compute
 def process_partition(data: list[int]) -> dict:
-    pool = instance_info()
-    local_data = shard(data)  # Auto-partition
+    info = sky.instance_info()
+    local_data = sky.shard(data)  # Auto-partition
 
     return {
-        "node": pool.node,
+        "node": info.node,
         "partition_size": len(local_data),
         "partition_sum": sum(local_data),
     }
 
-with ComputePool(provider=AWS(), nodes=4, accelerator="T4") as pool:
+with sky.ComputePool(provider=sky.AWS(), nodes=4, accelerator="T4") as pool:
     data = list(range(1000))
     results = process_partition(data) @ pool  # Broadcast!
 
@@ -216,10 +216,10 @@ with ComputePool(provider=AWS(), nodes=4, accelerator="T4") as pool:
 Distributed data loading patterns.
 
 ```python
-from skyward import compute, shard, DistributedSampler
+import skyward as sky
 from torch.utils.data import DataLoader, TensorDataset
 
-@compute
+@sky.compute
 def train_with_sampler():
     import torch
 
@@ -229,7 +229,7 @@ def train_with_sampler():
     dataset = TensorDataset(x, y)
 
     # Distributed sampler
-    sampler = DistributedSampler(dataset, shuffle=True)
+    sampler = sky.DistributedSampler(dataset, shuffle=True)
     loader = DataLoader(dataset, sampler=sampler, batch_size=64)
 
     for epoch in range(10):
@@ -238,10 +238,10 @@ def train_with_sampler():
             # Training step
             pass
 
-@compute
+@sky.compute
 def train_with_shard(x_full, y_full):
     # Simple sharding
-    x_local, y_local = shard(x_full, y_full, shuffle=True, seed=42)
+    x_local, y_local = sky.shard(x_full, y_full, shuffle=True, seed=42)
     # Train on local data
 ```
 
@@ -259,24 +259,24 @@ def train_with_shard(x_full, y_full):
 Implement distributed patterns like map-reduce.
 
 ```python
-from skyward import compute, instance_info, ComputePool, AWS
+import skyward as sky
 
-@compute
+@sky.compute
 def worker_task(data: list[int]) -> dict:
-    pool = instance_info()
+    info = sky.instance_info()
 
-    result = sum(data[pool.node::pool.total_nodes])
+    result = sum(data[info.node::info.total_nodes])
 
-    if pool.is_head:
+    if info.is_head:
         print("I am the coordinator")
 
     return {
-        "node": pool.node,
-        "is_head": pool.is_head,
+        "node": info.node,
+        "is_head": info.is_head,
         "result": result,
     }
 
-with ComputePool(provider=AWS(), nodes=4) as pool:
+with sky.ComputePool(provider=sky.AWS(), nodes=4) as pool:
     results = worker_task(list(range(100))) @ pool
 
     # Head node aggregates
@@ -297,10 +297,10 @@ with ComputePool(provider=AWS(), nodes=4) as pool:
 Mount S3 buckets as local filesystems.
 
 ```python
-from skyward import ComputePool, AWS, S3Volume, compute
+import skyward as sky
 from pathlib import Path
 
-@compute
+@sky.compute
 def use_s3_data() -> dict:
     data_path = Path("/data")
     checkpoint_path = Path("/checkpoints")
@@ -313,11 +313,11 @@ def use_s3_data() -> dict:
 
     return {"files_found": len(files)}
 
-with ComputePool(
-    provider=AWS(),
+with sky.ComputePool(
+    provider=sky.AWS(),
     volume=[
-        S3Volume(mount_path="/data", bucket="my-data", read_only=True),
-        S3Volume(mount_path="/checkpoints", bucket="my-models"),
+        sky.S3Volume(mount_path="/data", bucket="my-data", read_only=True),
+        sky.S3Volume(mount_path="/checkpoints", bucket="my-models"),
     ],
 ) as pool:
     result = use_s3_data() >> pool
@@ -337,23 +337,20 @@ with ComputePool(
 Monitor execution with events.
 
 ```python
-from skyward import (
-    ComputePool, AWS, compute,
-    Metrics, LogLine, BootstrapProgress, CostFinal,
-)
+import skyward as sky
 
 def my_callback(event):
     match event:
-        case Metrics(cpu_percent=cpu, gpu_utilization=gpu):
+        case sky.Metrics(cpu_percent=cpu, gpu_utilization=gpu):
             print(f"CPU: {cpu:.1f}%, GPU: {gpu}%")
-        case LogLine(line=line, node=node):
+        case sky.LogLine(line=line, node=node):
             print(f"[Node {node}] {line}")
-        case BootstrapProgress(step=step):
+        case sky.BootstrapProgress(step=step):
             print(f"Installing: {step}")
-        case CostFinal(total_cost=cost):
+        case sky.CostFinal(total_cost=cost):
             print(f"Total cost: ${cost:.2f}")
 
-@compute
+@sky.compute
 def long_running_task():
     import time
     for i in range(10):
@@ -361,8 +358,8 @@ def long_running_task():
         time.sleep(1)
     return "done"
 
-with ComputePool(
-    provider=AWS(),
+with sky.ComputePool(
+    provider=sky.AWS(),
     accelerator="T4",
     on_event=my_callback,
 ) as pool:
@@ -383,18 +380,15 @@ with ComputePool(
 Full DDP training example.
 
 ```python
-from skyward import (
-    AWS, NVIDIA, ComputePool, DistributedSampler,
-    compute, instance_info,
-)
+import skyward as sky
 
-@compute
+@sky.compute
 def train_model(epochs: int, batch_size: int) -> dict:
     import torch
     import torch.distributed as dist
     from torch.nn.parallel import DistributedDataParallel as DDP
 
-    pool = instance_info()
+    info = sky.instance_info()
 
     # Model
     model = SimpleNet().cuda()
@@ -403,7 +397,7 @@ def train_model(epochs: int, batch_size: int) -> dict:
 
     # Data
     dataset = create_dataset()
-    sampler = DistributedSampler(dataset, shuffle=True)
+    sampler = sky.DistributedSampler(dataset, shuffle=True)
     loader = DataLoader(dataset, sampler=sampler, batch_size=batch_size)
 
     # Training
@@ -412,16 +406,16 @@ def train_model(epochs: int, batch_size: int) -> dict:
         for batch in loader:
             train_step(model, batch)
 
-        if pool.is_head:
+        if info.is_head:
             print(f"Epoch {epoch}: loss={loss:.4f}")
 
-    return {"node": pool.node, "final_loss": loss}
+    return {"node": info.node, "final_loss": loss}
 
-with ComputePool(
-    provider=AWS(),
+with sky.ComputePool(
+    provider=sky.AWS(),
     nodes=2,
-    accelerator=NVIDIA.A100,
-    pip=["torch"],
+    accelerator=sky.NVIDIA.A100,
+    image=sky.Image(pip=["torch"]),
 ) as pool:
     results = train_model(epochs=10, batch_size=64) @ pool
 ```
@@ -441,25 +435,22 @@ with ComputePool(
 Vision Transformer with Keras 3 and JAX backend.
 
 ```python
-from skyward import (
-    compute, distributed, ComputePool, Verda,
-    Accelerator, Image, shard, instance_info,
-)
+import skyward as sky
 
-@compute
-@distributed.keras(backend="jax")
+@sky.integrations.keras(backend="jax")
+@sky.compute
 def train_vit(epochs: int) -> dict:
     import keras
     import numpy as np
 
-    pool = instance_info()
+    info = sky.instance_info()
 
     # Load MNIST
     (x_train, y_train), (x_test, y_test) = keras.datasets.mnist.load_data()
     x_train = x_train.astype(np.float32) / 255.0
 
     # Shard data
-    x_local, y_local = shard(x_train, y_train, shuffle=True)
+    x_local, y_local = sky.shard(x_train, y_train, shuffle=True)
 
     # Build ViT model
     model = build_vit(embed_dim=64, num_heads=4, num_layers=4)
@@ -471,12 +462,12 @@ def train_vit(epochs: int) -> dict:
     # Evaluate
     test_acc = model.evaluate(x_test, y_test)[1]
 
-    return {"node": pool.node, "test_accuracy": test_acc}
+    return {"node": info.node, "test_accuracy": test_acc}
 
-with ComputePool(
-    provider=Verda(),
-    accelerator=Accelerator.NVIDIA.A100(mig=["3g.40gb", "3g.40gb"]),
-    image=Image(
+with sky.ComputePool(
+    provider=sky.Verda(),
+    accelerator=sky.Accelerator.NVIDIA.A100(mig=["3g.40gb", "3g.40gb"]),
+    image=sky.Image(
         pip=["keras>=3.2", "jax[cuda12]"],
         env={"KERAS_BACKEND": "jax"},
     ),
@@ -485,7 +476,7 @@ with ComputePool(
 ```
 
 **Key Concepts:**
-- `@distributed.keras(backend="jax")` - Keras 3 distributed
+- `@keras(backend="jax")` - Keras 3 distributed from `skyward.integrations`
 - MIG partitioning for multiple workers
 - JAX backend for Keras
 
@@ -498,10 +489,10 @@ with ComputePool(
 Fine-tune transformers models.
 
 ```python
-from skyward import compute, distributed, ComputePool, AWS
+import skyward as sky
 
-@compute
-@distributed.transformers(backend="nccl")
+@sky.integrations.transformers(backend="nccl")
+@sky.compute
 def fine_tune_bert():
     from transformers import (
         AutoModelForSequenceClassification,
@@ -544,17 +535,17 @@ def fine_tune_bert():
     trainer.train()
     return trainer.evaluate()
 
-with ComputePool(
-    provider=AWS(),
+with sky.ComputePool(
+    provider=sky.AWS(),
     nodes=2,
     accelerator="A100",
-    pip=["transformers", "datasets", "torch", "accelerate"],
+    image=sky.Image(pip=["transformers", "datasets", "torch", "accelerate"]),
 ) as pool:
     results = fine_tune_bert() @ pool
 ```
 
 **Key Concepts:**
-- `@distributed.transformers` - HuggingFace integration
+- `@transformers` - HuggingFace integration from `skyward.integrations`
 - Trainer auto-detects distributed setup
 - Multi-node fine-tuning
 
@@ -567,9 +558,9 @@ with ComputePool(
 Provision multiple pools in parallel and compare performance.
 
 ```python
-from skyward import AWS, ComputePool, Image, MultiPool, compute
+import skyward as sky
 
-@compute
+@sky.compute
 def matmul_bench(size: int) -> float:
     import time
     import jax.numpy as jnp
@@ -582,11 +573,11 @@ def matmul_bench(size: int) -> float:
         (x @ x).block_until_ready()
     return time.perf_counter() - t0
 
-image = Image(pip=["jax[cuda12]"])
+image = sky.Image(pip=["jax[cuda12]"])
 
-with MultiPool(
-    ComputePool(provider=AWS(), image=image, accelerator="T4"),
-    ComputePool(provider=AWS(), image=image, accelerator="L4"),
+with sky.MultiPool(
+    sky.ComputePool(provider=sky.AWS(), image=image, accelerator="T4"),
+    sky.ComputePool(provider=sky.AWS(), image=image, accelerator="L4"),
 ) as (t4_pool, l4_pool):
     t_t4, t_l4 = matmul_bench(2048) >> t4_pool, matmul_bench(2048) >> l4_pool
     print(f"T4: {t_t4:.2f}s | L4: {t_l4:.2f}s | Speedup: {t_t4 / t_l4:.1f}x")
@@ -607,14 +598,12 @@ with MultiPool(
 Run distributed hyperparameter search with scikit-learn.
 
 ```python
+import skyward as sky
 from sklearn.datasets import load_digits
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.model_selection import GridSearchCV, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC
-
-from skyward import AWS, Image
-from skyward.integrations import ScikitLearnPool
 
 X, y = load_digits(return_X_y=True)
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
@@ -629,11 +618,11 @@ param_grid = [
     {"clf": [SVC()], "clf__C": [0.1, 1, 10], "clf__kernel": ["rbf", "poly"]},
 ]
 
-with ScikitLearnPool(
-    provider=AWS(),
+with sky.integrations.ScikitLearnPool(
+    provider=sky.AWS(),
     nodes=3,
     concurrency=4,
-    image=Image(pip=["scikit-learn"]),
+    image=sky.Image(pip=["scikit-learn"]),
 ):
     grid = GridSearchCV(pipe, param_grid, cv=5, n_jobs=-1)
     grid.fit(X_train, y_train)
@@ -656,24 +645,23 @@ print(f"Test score: {grid.score(X_test, y_test):.2%}")
 Run many tasks concurrently using pool slots.
 
 ```python
-import skyward
-import skyward.conc
+import skyward as sky
 
-@skyward.compute
+@sky.compute
 def heavy_stuff(x: int, y: int) -> int:
     from time import sleep
     print(f"Processing {x} + {y}")
     sleep(10)
     return x + y
 
-with skyward.ComputePool(
-    provider=skyward.AWS(),
+with sky.ComputePool(
+    provider=sky.AWS(),
     cpu=4,
     concurrency=10,  # 10 concurrent tasks per node
     nodes=5,         # 5 nodes = 50 total slots
 ) as pool:
     # Process 100 tasks across 50 concurrent slots
-    results = skyward.conc.map_async(
+    results = sky.conc.map_async(
         lambda x: heavy_stuff(x, x) >> pool,
         list(range(100))
     )
@@ -694,22 +682,20 @@ with skyward.ComputePool(
 Use Skyward as a joblib backend for distributed parallel execution.
 
 ```python
+import skyward as sky
 from time import sleep
 from joblib import Parallel, delayed
-
-from skyward import AWS, Image
-from skyward.integrations import JoblibPool
 
 def slow_task(x):
     print(f"Task {x} starting")
     sleep(5)
     return x * 2
 
-with JoblibPool(
-    provider=AWS(),
+with sky.integrations.JoblibPool(
+    provider=sky.AWS(),
     nodes=5,
     concurrency=5,
-    image=Image(pip=["joblib"]),
+    image=sky.Image(pip=["joblib"]),
 ):
     # Distribute 100 tasks across 25 slots
     results = Parallel(n_jobs=50)(
@@ -738,6 +724,7 @@ uv run python examples/1_hello.py
 
 ## Next Steps
 
-- [Getting Started](getting-started.md) - Installation guide
-- [Concepts](concepts.md) - Core concepts explained
-- [API Reference](api-reference.md) - Full API documentation
+- [Getting Started](getting-started.md) — Installation guide
+- [Concepts](concepts.md) — Core concepts explained
+- [API Reference](api-reference.md) — Full API documentation
+- [Troubleshooting](troubleshooting.md) — Common issues and solutions

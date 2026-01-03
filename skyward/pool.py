@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Sequence
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, suppress
 from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any, Literal
@@ -41,15 +41,15 @@ from typing import Any, Literal
 from skyward.accelerator import Accelerator
 from skyward.callback import Callback, compose, emit, use_callback
 from skyward.callbacks import cost_tracker, log, spinner
-from skyward.conc import map_async
+from skyward.conc import for_each_async, map_async
 from skyward.events import Error, LogLine, PoolStarted, PoolStopping
 from skyward.exceptions import ExecutionError, NotProvisionedError
 from skyward.image import DEFAULT_IMAGE, Image
 from skyward.metrics import MetricsPoller
 from skyward.pending import PendingBatch, PendingCompute
-from skyward.spec import SpotLike
+from skyward.spec import AllocationLike
 from skyward.task import PooledConnection, TaskPool
-from skyward.types import Instance, Provider
+from skyward.types import Architecture, Auto, Instance, Provider
 from skyward.volume import Volume, parse_volume_uri
 
 
@@ -57,18 +57,17 @@ def _parse_volumes(
     volume: dict[str, str] | Sequence[Volume] | None
 ) -> tuple[Volume, ...]:
     """Parse volume specification into Volume objects."""
-    if volume is None:
-        return ()
-
-    if isinstance(volume, Sequence) and not isinstance(volume, (str, dict)):
-        return tuple(volume)
-
-    if isinstance(volume, dict):
-        return tuple(parse_volume_uri(mount_path, uri) for mount_path, uri in volume.items())
-
-    raise TypeError(
-        f"volume must be dict or Sequence[Volume], got {type(volume).__name__}"
-    )
+    match volume:
+        case None:
+            return ()
+        case dict() as d:
+            return tuple(parse_volume_uri(mount_path, uri) for mount_path, uri in d.items())
+        case [*items]:
+            return tuple(items)
+        case _:
+            raise TypeError(
+                f"volume must be dict or Sequence[Volume], got {type(volume).__name__}"
+            )
 
 
 @dataclass
@@ -88,8 +87,17 @@ class ComputePool:
             - Accelerator.NVIDIA.H100() → 1 GPU full
             - Accelerator.NVIDIA.H100(count=8) → 8 GPUs
             - Accelerator.NVIDIA.H100(mig="3g.40gb") → 1 MIG partition
+        architecture: CPU architecture preference. Formats:
+            - Auto() → cheapest architecture (default)
+            - "arm64" → ARM instances only
+            - "x86_64" → x86_64 instances only
+        allocation: Instance allocation strategy. Formats:
+            - "spot-if-available" → try spot, fallback on-demand (default)
+            - "always-spot" → 100% spot, fail if unavailable
+            - "on-demand" → 100% on-demand
+            - "cheapest" → compare all options, pick cheapest
+            - 0.8 → minimum 80% spot
         volume: Volumes to mount.
-        spot: Spot strategy.
         cpu: CPU cores per worker (for cgroups limits).
         memory: Memory per worker (e.g., "32GB", for cgroups limits).
         env: Environment variables (merged with image.env, pool overrides).
@@ -115,10 +123,11 @@ class ComputePool:
     nodes: int = 1
     machine: str | None = None  # Direct instance type override (e.g., "p5.48xlarge")
     accelerator: Accelerator | str | None = None
+    architecture: Architecture = field(default_factory=Auto)
     cpu: int | None = None
     memory: str | None = None
     volume: dict[str, str] | Sequence[Volume] | None = None
-    spot: SpotLike = "always"
+    allocation: AllocationLike = "spot-if-available"
     timeout: int = 3600
     env: dict[str, str] | None = None
 
@@ -146,13 +155,8 @@ class ComputePool:
 
     def __post_init__(self) -> None:
         """Parse accelerator and store configuration."""
-        if self.accelerator is None:
-            return
-
-        # Convert to Accelerator if it's a string
-        cfg = Accelerator.from_value(self.accelerator)
-        if cfg is not None:
-            object.__setattr__(self, "_accelerator_cfg", cfg)
+        if self.accelerator is not None:
+            self._accelerator_cfg = Accelerator.from_value(self.accelerator)
 
     def _parse_accelerator_for_provider(self) -> str | None:
         """Get the accelerator type for the provider."""
@@ -375,11 +379,12 @@ class ComputePool:
             nodes=self.nodes,
             machine=self.machine,
             accelerator=self.accelerator,
+            architecture=self.architecture,
             image=self.image,
             cpu=self.cpu,
             memory=self.memory,
             timeout=self.timeout,
-            spot=self.spot,
+            allocation=self.allocation,
             volumes=list(_parse_volumes(self.volume)),
         )
 
@@ -419,10 +424,8 @@ class ComputePool:
 
         # Close TaskPool first if active
         if self._task_pool is not None:
-            try:
+            with suppress(Exception):
                 self._task_pool.close_all()
-            except Exception:
-                pass
             self._task_pool = None
 
         # Get accelerator type for provider
@@ -434,18 +437,17 @@ class ComputePool:
             nodes=self.nodes,
             machine=self.machine,
             accelerator=accelerator_for_provider,
+            architecture=self.architecture,
             image=self.image,
             cpu=self.cpu,
             memory=self.memory,
             timeout=self.timeout,
-            spot=self.spot,
+            allocation=self.allocation,
             volumes=list(_parse_volumes(self.volume)),
         )
 
-        try:
+        with suppress(Exception):
             self.provider.shutdown(self._instances, compute)
-        except Exception:
-            pass  # Shutdown errors are not critical
 
         self._instances = None
 
@@ -468,7 +470,7 @@ class ComputePool:
             def setup(pc: PooledConnection) -> None:
                 self._setup_cluster(pc)
 
-            map_async(setup, conns)
+            for_each_async(setup, conns)
         finally:
             for conn in conns:
                 self._task_pool.release(conn)

@@ -2,10 +2,6 @@
 
 These protocols declare optional capabilities that providers may implement.
 Use isinstance() or hasattr() checks to test for capability support.
-
-Example:
-    if isinstance(provider, SpotCapable):
-        spot_strategy = provider.normalize_spot(compute.spot)
 """
 
 from __future__ import annotations
@@ -13,29 +9,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from skyward.spec import NormalizedSpot, SpotLike
     from skyward.types import Instance
     from skyward.volume import Volume
-
-
-class SpotCapable(Protocol):
-    """Provider supports spot/preemptible instances.
-
-    Spot instances offer significant cost savings but may be interrupted.
-    Providers implementing this protocol can normalize spot preferences
-    and handle spot-specific provisioning logic.
-    """
-
-    def normalize_spot(self, spot: SpotLike) -> NormalizedSpot:
-        """Normalize spot preference to provider-specific format.
-
-        Args:
-            spot: Spot preference (e.g., "always", "if_available", 0.5)
-
-        Returns:
-            Normalized spot configuration.
-        """
-        ...
 
 
 class VolumeCapable(Protocol):

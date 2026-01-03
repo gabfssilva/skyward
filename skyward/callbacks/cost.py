@@ -236,12 +236,16 @@ def cost_tracker(
                 case InstanceProvisioned(
                     instance_id=iid,
                     spot=spot,
-                    instance_type=itype,
-                    price_on_demand=od,
-                    price_spot=sp,
-                    billing_increment_minutes=billing,
-                ) if itype:
-                    state.register(iid, spot, itype, od, sp, billing)
+                    spec=spec,
+                ) if spec:
+                    state.register(
+                        iid,
+                        spot,
+                        spec.name,
+                        spec.price_on_demand,
+                        spec.price_spot,
+                        spec.billing_increment_minutes,
+                    )
                     return None
 
                 case BootstrapCompleted(instance_id=iid):

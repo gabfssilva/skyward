@@ -8,7 +8,7 @@ Skyward implements **ephemeral compute** — GPU resources that exist only for t
 
 ### The ML Infrastructure Problem
 
-You want to train a model. Here's what you actually do:
+Training a model typically involves these infrastructure steps:
 
 1. Provision instance via console/Terraform (hours)
 2. SSH in, debug connection issues (minutes to hours)
@@ -17,20 +17,22 @@ You want to train a model. Here's what you actually do:
 5. Finally run training (the actual work)
 6. Job finishes at 3am
 7. Instance runs idle until Monday
-8. $800 wasted on idle compute
+8. $800 in idle compute costs
 
-**This is backwards.** You're a researcher — your job is to improve models, not manage infrastructure. Yet infrastructure consumes 40%+ of ML engineering time.
+This infrastructure overhead can consume significant engineering time. Researchers should focus on improving models, not managing infrastructure — yet infrastructure consumes 40%+ of ML engineering time.
 
 ### Ephemeral: Infrastructure That Matches Your Workflow
 
 Training jobs have a **defined end**. Your infrastructure should too.
 
 ```python
-with ComputePool(
-    provider=AWS(),
+import skyward as sky
+
+with sky.ComputePool(
+    provider=sky.AWS(),
     accelerator="H100",
     nodes=4,
-    image=Image(pip=["torch", "transformers"]),
+    image=sky.Image(pip=["torch", "transformers"]),
 ) as pool:
     # 4x H100 instances appear, configured and ready
     metrics = train_llm(dataset) >> pool
@@ -108,10 +110,12 @@ With persistent infrastructure, you either:
 
 With ephemeral compute:
 ```python
+import skyward as sky
+
 # Each experiment gets exactly what it needs
-ComputePool(accelerator="T4")           # Cheap prototyping
-ComputePool(accelerator="A100", nodes=4) # Serious training
-ComputePool(accelerator="H100", nodes=8) # Scale out
+sky.ComputePool(accelerator="T4")           # Cheap prototyping
+sky.ComputePool(accelerator="A100", nodes=4) # Serious training
+sky.ComputePool(accelerator="H100", nodes=8) # Scale out
 ```
 
 ### Ephemeral vs Serverless for ML
@@ -151,6 +155,8 @@ Platforms like SageMaker, Vertex AI, and Azure ML also manage infrastructure. Ho
 Managed platforms wrap your code in their abstractions. Skyward runs your code as-is — the only change is a decorator.
 
 ```python
+import skyward as sky
+
 # Your existing training code
 def train(config):
     model = load_model(config.model_name)
@@ -158,7 +164,7 @@ def train(config):
     return model.evaluate()
 
 # On Skyward: add one decorator, nothing else changes
-@compute
+@sky.compute
 def train(config):
     model = load_model(config.model_name)
     model.fit(config.dataset)
@@ -183,14 +189,14 @@ def train(config):
 
 If your workload **starts, runs, and ends** — it's a fit for ephemeral compute.
 
-## The @compute Decorator
+## The @sky.compute Decorator
 
-The `@compute` decorator transforms a regular Python function into a **lazy computation**. When you call a decorated function, it doesn't execute immediately—instead, it returns a `PendingCompute` object that can be sent to a pool for execution.
+The `@sky.compute` decorator transforms a regular Python function into a **lazy computation**. When you call a decorated function, it doesn't execute immediately—instead, it returns a `PendingCompute` object that can be sent to a pool for execution.
 
 ```python
-from skyward import compute
+import skyward as sky
 
-@compute
+@sky.compute
 def train(data: list[int]) -> float:
     return sum(data) / len(data)
 
@@ -199,7 +205,7 @@ pending = train([1, 2, 3, 4])
 print(type(pending))  # <class 'PendingCompute'>
 
 # Execution happens when sent to a pool
-with ComputePool(provider=AWS()) as pool:
+with sky.ComputePool(provider=sky.AWS()) as pool:
     result = pending >> pool  # Now it executes, returns 2.5
 ```
 
@@ -217,7 +223,9 @@ Lazy evaluation enables:
 If you need to run the original function locally (for testing or debugging), access it via `.local`:
 
 ```python
-@compute
+import skyward as sky
+
+@sky.compute
 def process(x: int) -> int:
     return x * 2
 
@@ -230,11 +238,13 @@ result = process.local(10)  # Returns 20 directly
 `PendingCompute[R]` represents a deferred computation that will return type `R` when executed.
 
 ```python
-@compute
+import skyward as sky
+
+@sky.compute
 def add(a: int, b: int) -> int:
     return a + b
 
-pending: PendingCompute[int] = add(1, 2)
+pending: sky.PendingCompute[int] = add(1, 2)
 ```
 
 ### Properties
@@ -248,14 +258,14 @@ pending: PendingCompute[int] = add(1, 2)
 `ComputePool` is a context manager that provisions cloud resources and executes computations.
 
 ```python
-from skyward import ComputePool, AWS, Image
+import skyward as sky
 
-pool = ComputePool(
-    provider=AWS(),                    # Cloud provider
+pool = sky.ComputePool(
+    provider=sky.AWS(),                # Cloud provider
     nodes=2,                           # Number of instances
     accelerator="A100",                # GPU type
-    image=Image(pip=["torch"]),        # Dependencies
-    spot="always",                     # Use spot instances
+    image=sky.Image(pip=["torch"]),    # Dependencies
+    allocation="always-spot",                     # Use spot instances
     timeout=3600,                      # Auto-shutdown after 1 hour
 )
 
@@ -278,7 +288,7 @@ with pool:
 | `nodes` | `int` | Number of instances (default: 1) |
 | `accelerator` | `str` or `Accelerator` | GPU specification |
 | `image` | `Image` | Environment (pip, apt, env vars) |
-| `spot` | `SpotLike` | Spot instance strategy |
+| `allocation` | `AllocationLike` | Instance allocation strategy |
 | `timeout` | `int` | Auto-shutdown in seconds |
 | `volume` | `Sequence[Volume]` | Mounted volumes |
 | `display` | `str` | "log", "spinner", or "quiet" |
@@ -289,11 +299,11 @@ with pool:
 For managing multiple pools with different configurations, use `MultiPool`:
 
 ```python
-from skyward import ComputePool, MultiPool, AWS
+import skyward as sky
 
-with MultiPool(
-    ComputePool(provider=AWS(), accelerator="T4"),
-    ComputePool(provider=AWS(), accelerator="A100"),
+with sky.MultiPool(
+    sky.ComputePool(provider=sky.AWS(), accelerator="T4"),
+    sky.ComputePool(provider=sky.AWS(), accelerator="A100"),
 ) as (t4_pool, a100_pool):
     # Pools provisioned in parallel
     result_t4 = benchmark() >> t4_pool
@@ -346,13 +356,13 @@ r1, r2, r3, r4, r5 = (f1() & f2() & f3() & f4() & f5()) >> pool
 Group any number of computations for parallel execution:
 
 ```python
-from skyward import gather
+import skyward as sky
 
 # Fixed number
-r1, r2, r3 = gather(fn(1), fn(2), fn(3)) >> pool
+r1, r2, r3 = sky.gather(fn(1), fn(2), fn(3)) >> pool
 
 # Dynamic (e.g., from list comprehension)
-results = gather(*[process(x) for x in data]) >> pool
+results = sky.gather(*[process(x) for x in data]) >> pool
 ```
 
 ## Image
@@ -360,16 +370,16 @@ results = gather(*[process(x) for x in data]) >> pool
 `Image` specifies the execution environment on remote workers.
 
 ```python
-from skyward import Image
+import skyward as sky
 
-image = Image(
+image = sky.Image(
     python="3.13",                    # Python version
     pip=["torch", "numpy"],           # pip packages
     apt=["ffmpeg", "libsndfile1"],    # apt packages
     env={"KERAS_BACKEND": "jax"},     # Environment variables
 )
 
-pool = ComputePool(provider=AWS(), image=image)
+pool = sky.ComputePool(provider=sky.AWS(), image=image)
 ```
 
 ## Data Sharding
@@ -381,15 +391,15 @@ For distributed workloads, Skyward provides automatic data partitioning.
 Automatically partition data based on the current worker:
 
 ```python
-from skyward import compute, shard, instance_info
+import skyward as sky
 
-@compute
+@sky.compute
 def process_data(full_dataset: list[int]) -> int:
     # shard() returns only this worker's portion
-    local_data = shard(full_dataset)
+    local_data = sky.shard(full_dataset)
     return sum(local_data)
 
-with ComputePool(provider=AWS(), nodes=4) as pool:
+with sky.ComputePool(provider=sky.AWS(), nodes=4) as pool:
     # Each node processes 1/4 of the data
     results = process_data(list(range(1000))) @ pool
     total = sum(results)
@@ -400,9 +410,11 @@ with ComputePool(provider=AWS(), nodes=4) as pool:
 Shard multiple arrays consistently:
 
 ```python
-@compute
+import skyward as sky
+
+@sky.compute
 def train(x_full, y_full):
-    x_local, y_local = shard(x_full, y_full, shuffle=True, seed=42)
+    x_local, y_local = sky.shard(x_full, y_full, shuffle=True, seed=42)
     # x_local and y_local have matching indices
     return fit(x_local, y_local)
 ```
@@ -412,12 +424,12 @@ def train(x_full, y_full):
 PyTorch DataLoader integration:
 
 ```python
-from skyward import DistributedSampler
+import skyward as sky
 from torch.utils.data import DataLoader
 
-@compute
+@sky.compute
 def train(epochs: int):
-    sampler = DistributedSampler(dataset, shuffle=True)
+    sampler = sky.DistributedSampler(dataset, shuffle=True)
     loader = DataLoader(dataset, sampler=sampler)
 
     for epoch in range(epochs):
@@ -431,11 +443,11 @@ def train(epochs: int):
 Access information about the current execution environment:
 
 ```python
-from skyward import compute, instance_info, InstanceInfo
+import skyward as sky
 
-@compute
+@sky.compute
 def worker_role() -> str:
-    info: InstanceInfo = instance_info()
+    info: sky.InstanceInfo = sky.instance_info()
 
     if info.is_head:
         return "I am the head node"
@@ -485,17 +497,17 @@ Skyward emits events throughout the execution lifecycle.
 ### Custom Callbacks
 
 ```python
-from skyward import ComputePool, Metrics, LogLine
+import skyward as sky
 
 def my_callback(event):
     match event:
-        case Metrics(cpu=cpu, gpu=gpu):
+        case sky.Metrics(cpu=cpu, gpu=gpu):
             print(f"CPU: {cpu}%, GPU: {gpu}%")
-        case LogLine(line=line):
+        case sky.LogLine(line=line):
             print(f"[remote] {line}")
 
-pool = ComputePool(
-    provider=AWS(),
+pool = sky.ComputePool(
+    provider=sky.AWS(),
     on_event=my_callback,
 )
 ```
@@ -505,39 +517,37 @@ pool = ComputePool(
 Pass a callback function to `on_event` to handle events:
 
 ```python
+import skyward as sky
+
 def my_handler(event):
     match event:
-        case Metrics(cpu_percent=cpu, gpu_utilization=gpu):
+        case sky.Metrics(cpu_percent=cpu, gpu_utilization=gpu):
             print(f"CPU: {cpu}%, GPU: {gpu}%")
-        case LogLine(line=line):
+        case sky.LogLine(line=line):
             print(f"[remote] {line}")
 
-with ComputePool(provider=AWS(), on_event=my_handler) as pool:
+with sky.ComputePool(provider=sky.AWS(), on_event=my_handler) as pool:
     result = train() >> pool
 ```
 
-## Spot Instances
+## Allocation Strategies
 
-Reduce costs by 60-90% with spot instances:
+Control how instances are provisioned to reduce costs:
 
 ```python
-from skyward import Spot
+import skyward as sky
 
-# Always use spot (fail if unavailable)
-ComputePool(spot="always")
-ComputePool(spot=Spot.Always())
+# Try spot, fall back to on-demand (default)
+sky.ComputePool(allocation="spot-if-available")
 
-# Try spot, fall back to on-demand
-ComputePool(spot="if-available")
-ComputePool(spot=Spot.IfAvailable())
+# Always use spot (fail if unavailable) - 60-90% savings
+sky.ComputePool(allocation="always-spot")
 
-# Never use spot
-ComputePool(spot="never")
-ComputePool(spot=Spot.Never)
+# Always on-demand (for critical workloads)
+sky.ComputePool(allocation="on-demand")
 
-# At least 80% spot instances
-ComputePool(spot=0.8)
-ComputePool(spot=Spot.Percent(0.8))
+# Compare prices and pick cheapest option
+sky.ComputePool(allocation="cheapest")
 ```
 
 ## Volumes
@@ -545,18 +555,18 @@ ComputePool(spot=Spot.Percent(0.8))
 Mount external storage:
 
 ```python
-from skyward import S3Volume
+import skyward as sky
 
-pool = ComputePool(
-    provider=AWS(),
+pool = sky.ComputePool(
+    provider=sky.AWS(),
     volume=[
-        S3Volume(
+        sky.S3Volume(
             mount_path="/data",
             bucket="my-bucket",
             prefix="datasets/",
             read_only=True,
         ),
-        S3Volume(
+        sky.S3Volume(
             mount_path="/checkpoints",
             bucket="my-bucket",
             prefix="models/",
@@ -568,6 +578,7 @@ pool = ComputePool(
 
 ## Next Steps
 
-- [API Reference](api-reference.md) - Complete API documentation
-- [Distributed Training](distributed-training.md) - Multi-GPU training guides
-- [Examples](examples.md) - Working code examples
+- [API Reference](api-reference.md) — Complete API documentation
+- [Distributed Training](distributed-training.md) — Multi-GPU training guides
+- [Examples](examples.md) — Working code examples
+- [Troubleshooting](troubleshooting.md) — Common issues and solutions

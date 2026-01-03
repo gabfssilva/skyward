@@ -12,7 +12,8 @@ from typing import TYPE_CHECKING, Any
 
 from skyward.accelerator import Accelerator
 from skyward.image import Image
-from skyward.spec import SpotLike
+from skyward.spec import AllocationLike
+from skyward.types import Architecture
 
 if TYPE_CHECKING:
     from skyward.pool import ComputePool
@@ -32,11 +33,12 @@ class _PoolCompute:
     nodes: int
     machine: str | None
     accelerator: Accelerator | list[Accelerator]
+    architecture: Architecture
     image: Image
     cpu: int | None
     memory: str | None
     timeout: int
-    spot: SpotLike
+    allocation: AllocationLike
     volumes: list[Volume]
 
     # Properties expected by providers

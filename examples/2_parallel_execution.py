@@ -8,22 +8,22 @@ All computations are executed on a single remote instance,
 but processed concurrently for better throughput.
 """
 
-from skyward import AWS, ComputePool, compute, gather
+import skyward as sky
 
 
-@compute
+@sky.compute
 def process_chunk(data: list[int]) -> int:
     """Sum all numbers in a chunk."""
     return sum(data)
 
 
-@compute
+@sky.compute
 def multiply(x: int, y: int) -> int:
     """Multiply two numbers."""
     return x * y
 
 
-@compute
+@sky.compute
 def factorial(n: int) -> int:
     """Calculate factorial of n."""
     result = 1
@@ -35,12 +35,12 @@ def factorial(n: int) -> int:
 if __name__ == "__main__":
     chunks = [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]
 
-    with ComputePool(provider=AWS(), spot="always") as pool:
+    with sky.ComputePool(provider=sky.AWS(), allocation="spot-if-available") as pool:
         # =================================================================
         # Using gather() for parallel execution
         # =================================================================
         # All process_chunk calls execute in parallel on the remote instance
-        results = gather(*[process_chunk(c) for c in chunks]) >> pool
+        results = sky.gather(*[process_chunk(c) for c in chunks]) >> pool
         print(f"Chunk sums: {results}")  # (6, 15, 24, 33)
 
         # =================================================================

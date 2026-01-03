@@ -16,8 +16,7 @@ from sklearn.model_selection import GridSearchCV, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.svm import SVC
 
-from skyward import AWS, Image
-from skyward.integrations import ScikitLearnPool
+import skyward as sky
 
 
 def main():
@@ -70,13 +69,13 @@ def main():
     print(f"  Total fits: {n_candidates * cv_folds}")
     print("=" * 60)
 
-    with ScikitLearnPool(
-        provider=AWS(),
+    with sky.integrations.ScikitLearnPool(
+        provider=sky.AWS(),
         nodes=3,
         concurrency=4,
         machine='t4g.xlarge',
-        image=Image(pip=["scikit-learn"]),
-        spot="always",
+        image=sky.Image(pip=["scikit-learn"]),
+        allocation="spot-if-available",
     ):
         grid_search = GridSearchCV(
             estimator=pipe,

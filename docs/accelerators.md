@@ -7,45 +7,45 @@ Comprehensive guide to GPU selection and MIG partitioning in Skyward.
 ### String Shorthand
 
 ```python
-from skyward import ComputePool, AWS
+import skyward as sky
 
 # Simple string
-pool = ComputePool(provider=AWS(), accelerator="T4")
-pool = ComputePool(provider=AWS(), accelerator="A100")
-pool = ComputePool(provider=AWS(), accelerator="H100")
+pool = sky.ComputePool(provider=sky.AWS(), accelerator="T4")
+pool = sky.ComputePool(provider=sky.AWS(), accelerator="A100")
+pool = sky.ComputePool(provider=sky.AWS(), accelerator="H100")
 ```
 
 ### Accelerator Factory
 
 ```python
-from skyward import Accelerator
+import skyward as sky
 
 # Full control
-pool = ComputePool(
-    provider=AWS(),
-    accelerator=Accelerator.NVIDIA.H100(),
+pool = sky.ComputePool(
+    provider=sky.AWS(),
+    accelerator=sky.Accelerator.NVIDIA.H100(),
 )
 
 # Multiple GPUs
-pool = ComputePool(
-    provider=AWS(),
-    accelerator=Accelerator.NVIDIA.A100(count=4),
+pool = sky.ComputePool(
+    provider=sky.AWS(),
+    accelerator=sky.Accelerator.NVIDIA.A100(count=4),
 )
 
 # Memory variant
-pool = ComputePool(
-    provider=AWS(),
-    accelerator=Accelerator.NVIDIA.A100(memory="40GB"),
+pool = sky.ComputePool(
+    provider=sky.AWS(),
+    accelerator=sky.Accelerator.NVIDIA.A100(memory="40GB"),
 )
 ```
 
 ### Literal Type
 
 ```python
-from skyward import NVIDIA
+import skyward as sky
 
 # Type-safe literal
-pool = ComputePool(provider=AWS(), accelerator=NVIDIA.A100)
+pool = sky.ComputePool(provider=sky.AWS(), accelerator=sky.NVIDIA.A100)
 ```
 
 ## NVIDIA GPUs
@@ -66,24 +66,24 @@ pool = ComputePool(provider=AWS(), accelerator=NVIDIA.A100)
 ### Factory Methods
 
 ```python
-from skyward import Accelerator
+import skyward as sky
 
 # Basic usage
-Accelerator.NVIDIA.T4()              # 1x T4
-Accelerator.NVIDIA.A100()            # 1x A100 80GB
-Accelerator.NVIDIA.H100()            # 1x H100 80GB
+sky.Accelerator.NVIDIA.T4()              # 1x T4
+sky.Accelerator.NVIDIA.A100()            # 1x A100 80GB
+sky.Accelerator.NVIDIA.H100()            # 1x H100 80GB
 
 # Multiple GPUs
-Accelerator.NVIDIA.A100(count=8)     # 8x A100
+sky.Accelerator.NVIDIA.A100(count=8)     # 8x A100
 
 # Memory variant
-Accelerator.NVIDIA.A100(memory="40GB")
-Accelerator.NVIDIA.V100(memory="32GB")
+sky.Accelerator.NVIDIA.A100(memory="40GB")
+sky.Accelerator.NVIDIA.V100(memory="32GB")
 
 # Form factor
-Accelerator.NVIDIA.H100(form_factor="SXM")
-Accelerator.NVIDIA.H100(form_factor="PCIe")
-Accelerator.NVIDIA.H100(form_factor="NVL")
+sky.Accelerator.NVIDIA.H100(form_factor="SXM")
+sky.Accelerator.NVIDIA.H100(form_factor="PCIe")
+sky.Accelerator.NVIDIA.H100(form_factor="NVL")
 ```
 
 ## MIG (Multi-Instance GPU)
@@ -121,12 +121,12 @@ MIG allows partitioning a single GPU into multiple isolated instances.
 ### Using MIG
 
 ```python
-from skyward import Accelerator, ComputePool, AWS
+import skyward as sky
 
 # Single MIG profile - creates 2 workers from 1 GPU
-pool = ComputePool(
-    provider=AWS(),
-    accelerator=Accelerator.NVIDIA.H100(mig="3g.40gb"),
+pool = sky.ComputePool(
+    provider=sky.AWS(),
+    accelerator=sky.Accelerator.NVIDIA.H100(mig="3g.40gb"),
 )
 
 # Execute on both MIG partitions
@@ -136,10 +136,12 @@ results = train() @ pool  # Returns 2 results
 ### Multiple MIG Partitions
 
 ```python
+import skyward as sky
+
 # Multiple partitions on one GPU
-pool = ComputePool(
-    provider=AWS(),
-    accelerator=Accelerator.NVIDIA.A100(mig=["3g.40gb", "3g.40gb"]),
+pool = sky.ComputePool(
+    provider=sky.AWS(),
+    accelerator=sky.Accelerator.NVIDIA.A100(mig=["3g.40gb", "3g.40gb"]),
 )
 ```
 
@@ -191,12 +193,12 @@ pool = ComputePool(
 AWS custom silicon for training:
 
 ```python
-from skyward import Accelerator, ComputePool, AWS
+import skyward as sky
 
-pool = ComputePool(
-    provider=AWS(),
-    accelerator=Accelerator.AWS.Trainium(version=2),
-    pip=["torch-neuronx"],
+pool = sky.ComputePool(
+    provider=sky.AWS(),
+    accelerator=sky.Accelerator.AWS.Trainium(version=2),
+    image=sky.Image(pip=["torch-neuronx"]),
 )
 ```
 
@@ -213,10 +215,12 @@ pool = ComputePool(
 AWS custom silicon for inference:
 
 ```python
-pool = ComputePool(
-    provider=AWS(),
-    accelerator=Accelerator.AWS.Inferentia(version=2),
-    pip=["torch-neuronx"],
+import skyward as sky
+
+pool = sky.ComputePool(
+    provider=sky.AWS(),
+    accelerator=sky.Accelerator.AWS.Inferentia(version=2),
+    image=sky.Image(pip=["torch-neuronx"]),
 )
 ```
 
@@ -239,36 +243,36 @@ Check the repository for updates on accelerator support.
 ## Detecting GPUs at Runtime
 
 ```python
-from skyward import compute, instance_info
+import skyward as sky
 
-@compute
+@sky.compute
 def check_gpu():
     import torch
 
-    pool = instance_info()
+    info = sky.instance_info()
 
     return {
         "cuda_available": torch.cuda.is_available(),
         "device_count": torch.cuda.device_count(),
         "device_name": torch.cuda.get_device_name(0),
-        "accelerators": pool.accelerators,
+        "accelerators": info.accelerators,
     }
 ```
 
 ## Helper Functions
 
 ```python
-from skyward import is_nvidia, is_trainium, current_accelerator
+import skyward as sky
 
 # Check accelerator type
-is_nvidia("H100")      # True
-is_nvidia("MI300X")    # False
-is_trainium("Trainium2")  # True
+sky.is_nvidia("H100")      # True
+sky.is_nvidia("MI300X")    # False
+sky.is_trainium("Trainium2")  # True
 
 # Get current accelerator in compute context
-@compute
+@sky.compute
 def my_function():
-    acc = current_accelerator()
+    acc = sky.current_accelerator()
     print(f"Running on: {acc}")
 ```
 
@@ -291,3 +295,12 @@ def my_function():
 1. Ensure GPU supports MIG (H100, A100 only)
 2. Check profile compatibility with GPU memory
 3. Verify no other processes are using the GPU
+
+---
+
+## Related Topics
+
+- [Providers](providers.md) — AWS, DigitalOcean, and Verda configuration
+- [Distributed Training](distributed-training.md) — Multi-GPU training guides
+- [Troubleshooting](troubleshooting.md) — Common issues and solutions
+- [API Reference](api-reference.md) — Complete API documentation

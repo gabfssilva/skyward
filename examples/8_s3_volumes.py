@@ -11,10 +11,10 @@ Uses AWS Mountpoint for Amazon S3 under the hood.
 
 from pathlib import Path
 
-from skyward import AWS, NVIDIA, ComputePool, S3Volume, compute, instance_info
+import skyward as sky
 
 
-@compute
+@sky.compute
 def list_files(data_dir: str, pattern: str = "*") -> list[str]:
     """List files in the mounted S3 volume."""
     path = Path(data_dir)
@@ -26,7 +26,7 @@ def list_files(data_dir: str, pattern: str = "*") -> list[str]:
     return [f.name for f in sorted(files)[:20]]  # Limit to first 20
 
 
-@compute
+@sky.compute
 def read_file_sample(data_dir: str, filename: str, lines: int = 5) -> dict:
     """Read first N lines of a file from S3."""
     path = Path(data_dir) / filename
@@ -44,12 +44,12 @@ def read_file_sample(data_dir: str, filename: str, lines: int = 5) -> dict:
     }
 
 
-@compute
+@sky.compute
 def save_checkpoint(checkpoint_dir: str, epoch: int, metrics: dict) -> str:
     """Save a training checkpoint to S3."""
     import json
 
-    pool = instance_info()
+    pool = sky.instance_info()
 
     # Create checkpoint data
     checkpoint = {
@@ -68,13 +68,13 @@ def save_checkpoint(checkpoint_dir: str, epoch: int, metrics: dict) -> str:
     return str(path)
 
 
-@compute
+@sky.compute
 def process_dataset(data_dir: str) -> dict:
     """Process files from S3 and return statistics."""
     import os
 
     path = Path(data_dir)
-    pool = instance_info()
+    pool = sky.instance_info()
 
     if not path.exists():
         return {"node": pool.node, "error": "Data directory not found"}
@@ -103,21 +103,21 @@ if __name__ == "__main__":
     CHECKPOINT_BUCKET = "my-ml-bucket"
     CHECKPOINT_PREFIX = "checkpoints/experiment-001/"
 
-    with ComputePool(
-        provider=AWS(),
+    with sky.ComputePool(
+        provider=sky.AWS(),
         nodes=2,
-        accelerator=NVIDIA.A100,
-        spot="always",
+        accelerator=sky.NVIDIA.A100,
+        allocation="spot-if-available",
         volumes=[
             # Read-only volume for input data
-            S3Volume(
+            sky.S3Volume(
                 mount_path="/data",
                 bucket=DATA_BUCKET,
                 prefix=DATA_PREFIX,
                 read_only=True,
             ),
             # Read-write volume for checkpoints
-            S3Volume(
+            sky.S3Volume(
                 mount_path="/checkpoints",
                 bucket=CHECKPOINT_BUCKET,
                 prefix=CHECKPOINT_PREFIX,

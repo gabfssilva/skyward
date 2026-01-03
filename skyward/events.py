@@ -22,8 +22,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from skyward.callback import emit
+
+if TYPE_CHECKING:
+    from skyward.types import InstanceSpec
 
 # =============================================================================
 # Provision Phase Events
@@ -51,10 +55,14 @@ class InfraCreated:
 
 @dataclass(frozen=True, slots=True)
 class InstanceLaunching:
-    """Instances being launched."""
+    """Instances being launched.
+
+    When multiple candidates are provided, the provider will choose
+    one with available capacity based on allocation strategy.
+    """
 
     count: int
-    instance_type: str
+    candidates: tuple[InstanceSpec, ...]
     provider: ProviderName
 
 
@@ -66,11 +74,8 @@ class InstanceProvisioned:
     node: int
     spot: bool
     provider: ProviderName
+    spec: InstanceSpec | None = None
     ip: str | None = None
-    instance_type: str | None = None
-    price_on_demand: float | None = None
-    price_spot: float | None = None
-    billing_increment_minutes: int | None = None  # None = per-second billing
 
 
 @dataclass(frozen=True, slots=True)

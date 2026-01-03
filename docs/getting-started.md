@@ -89,16 +89,16 @@ export VERDA_API_KEY=your_api_key
 Create a file `hello.py`:
 
 ```python
-from skyward import compute, ComputePool, AWS
+import skyward as sky
 
-@compute
+@sky.compute
 def hello() -> str:
     """This function runs on a remote EC2 instance."""
     import socket
     return f"Hello from {socket.gethostname()}!"
 
 if __name__ == "__main__":
-    with ComputePool(provider=AWS()) as pool:
+    with sky.ComputePool(provider=sky.AWS()) as pool:
         result = hello() >> pool
         print(result)
 ```
@@ -121,9 +121,9 @@ uv run python hello.py
 ## Your First GPU Job
 
 ```python
-from skyward import compute, ComputePool, AWS, Image
+import skyward as sky
 
-@compute
+@sky.compute
 def gpu_info() -> dict:
     """Get GPU information from the remote instance."""
     import torch
@@ -134,11 +134,11 @@ def gpu_info() -> dict:
     }
 
 if __name__ == "__main__":
-    with ComputePool(
-        provider=AWS(),
-        accelerator="T4",           # Request a T4 GPU
-        image=Image(pip=["torch"]), # Install PyTorch
-        spot="always",              # Use spot instances (cheaper)
+    with sky.ComputePool(
+        provider=sky.AWS(),
+        accelerator="T4",                 # Request a T4 GPU
+        image=sky.Image(pip=["torch"]),   # Install PyTorch
+        allocation="always-spot",                    # Use spot instances (cheaper)
     ) as pool:
         info = gpu_info() >> pool
         print(f"GPU: {info['device_name']}")
@@ -169,15 +169,15 @@ Hello from ip-172-31-0-1!
 Execute multiple functions concurrently:
 
 ```python
-from skyward import compute, ComputePool, AWS, gather
+import skyward as sky
 
-@compute
+@sky.compute
 def square(x: int) -> int:
     return x * x
 
-with ComputePool(provider=AWS()) as pool:
+with sky.ComputePool(provider=sky.AWS()) as pool:
     # Method 1: gather()
-    results = gather(square(1), square(2), square(3)) >> pool
+    results = sky.gather(square(1), square(2), square(3)) >> pool
     print(results)  # (1, 4, 9)
 
     # Method 2: & operator
@@ -190,88 +190,59 @@ with ComputePool(provider=AWS()) as pool:
 Scale to multiple instances:
 
 ```python
-from skyward import compute, ComputePool, AWS, instance_info
+import skyward as sky
 
-@compute
+@sky.compute
 def worker_info() -> dict:
-    pool = instance_info()
+    pool = sky.instance_info()
     return {
         "node": pool.node,
         "total": pool.total_nodes,
         "is_head": pool.is_head,
     }
 
-with ComputePool(provider=AWS(), nodes=4) as pool:
+with sky.ComputePool(provider=sky.AWS(), nodes=4) as pool:
     # @ broadcasts to ALL nodes
     results = worker_info() @ pool
     for r in results:
         print(f"Node {r['node']}/{r['total']} (head={r['is_head']})")
 ```
 
-### Spot Instances
+### Allocation Strategies
 
-Save up to 70% with spot pricing:
+Save up to 70% with different allocation strategies:
 
 ```python
-from skyward import ComputePool, AWS, Spot
+import skyward as sky
 
-# Always use spot (fails if unavailable)
-ComputePool(provider=AWS(), spot="always")
-ComputePool(provider=AWS(), spot=Spot.Always())
+# Try spot, fallback to on-demand (default)
+sky.ComputePool(provider=sky.AWS(), allocation="spot-if-available")
 
-# Try spot, fallback to on-demand
-ComputePool(provider=AWS(), spot="if-available")
-ComputePool(provider=AWS(), spot=Spot.IfAvailable())
+# Always use spot (fails if unavailable) - maximum savings
+sky.ComputePool(provider=sky.AWS(), allocation="always-spot")
 
-# Never use spot
-ComputePool(provider=AWS(), spot="never")
-ComputePool(provider=AWS(), spot=Spot.Never)
+# Always on-demand (for critical workloads)
+sky.ComputePool(provider=sky.AWS(), allocation="on-demand")
 
-# At least 80% spot instances
-ComputePool(provider=AWS(), spot=0.8)
-ComputePool(provider=AWS(), spot=Spot.Percent(0.8))
+# Compare prices, pick cheapest option
+sky.ComputePool(provider=sky.AWS(), allocation="cheapest")
 ```
 
 ## Troubleshooting
 
-### "No instances available"
+For common issues and solutions, see the [Troubleshooting Guide](troubleshooting.md).
 
-Your requested configuration isn't available in the region. Try:
-- Different accelerator type
-- Different region
-- `spot="if-available"` instead of `spot="always"`
+Quick fixes for the most common issues:
 
-### "Permission denied"
-
-Check your AWS IAM permissions. Skyward needs:
-- `ec2:RunInstances`, `ec2:TerminateInstances`, `ec2:DescribeInstances`
-- `ec2:CreateSecurityGroup`, `ec2:AuthorizeSecurityGroupIngress`
-- `iam:PassRole` (for instance profiles)
-
-### "Bootstrap timeout"
-
-The instance took too long to set up. This can happen with:
-- Large pip dependencies
-- Slow network in certain regions
-- Instance type limitations
-
-Try increasing the timeout:
-
-```python
-ComputePool(provider=AWS(), timeout=7200)  # 2 hours
-```
-
-### Connection issues
-
-AWS uses SSM (Session Manager) by default for reliable connectivity without SSH key management. If you experience connection issues:
-
-1. Ensure your AWS account has SSM access enabled
-2. Verify the instance has outbound internet access for SSM endpoint communication
-3. Check that IAM permissions include `AmazonSSMManagedInstanceCore`
+- **"No instances available"**: Try a different region or use `allocation="spot-if-available"`
+- **"Permission denied"**: Check your IAM/API permissions
+- **"Bootstrap timeout"**: Increase timeout with `timeout=7200`
+- **Connection issues**: Verify SSM access is enabled (AWS)
 
 ## Next Steps
 
-- [Core Concepts](concepts.md) - Understand the programming model
-- [API Reference](api-reference.md) - Complete API documentation
-- [Distributed Training](distributed-training.md) - Train models across multiple GPUs
-- [Examples](examples.md) - More example code
+- [Core Concepts](concepts.md) — Understand the programming model
+- [API Reference](api-reference.md) — Complete API documentation
+- [Distributed Training](distributed-training.md) — Train models across multiple GPUs
+- [Examples](examples.md) — More example code
+- [FAQ](faq.md) — Frequently asked questions

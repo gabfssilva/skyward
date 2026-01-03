@@ -9,27 +9,10 @@ Demonstrates Skyward's event system for monitoring:
 Events enable real-time visibility into the execution lifecycle.
 """
 
-from skyward import (
-    AWS,
-    NVIDIA,
-    BootstrapCompleted,
-    BootstrapProgress,
-    BootstrapStarting,
-    ComputePool,
-    Error,
-    InfraCreated,
-    InfraCreating,
-    InstanceLaunching,
-    InstanceProvisioned,
-    InstanceStopping,
-    Metrics,
-    PoolStarted,
-    PoolStopping,
-    compute,
-)
+import skyward as sky
 
 
-@compute
+@sky.compute
 def heavy_computation(iterations: int) -> dict:
     """CPU-intensive computation for metrics demonstration."""
     import time
@@ -51,7 +34,7 @@ def heavy_computation(iterations: int) -> dict:
     }
 
 
-@compute
+@sky.compute
 def gpu_computation(size: int) -> dict:
     """GPU computation to generate GPU metrics."""
     import torch
@@ -80,47 +63,47 @@ def gpu_computation(size: int) -> dict:
 # =============================================================================
 
 
-def on_infra_creating(event: InfraCreating):
+def on_infra_creating(event: sky.InfraCreating):
     """Called when infrastructure creation starts."""
     print(f"[INFRA] Creating infrastructure...")
 
 
-def on_infra_created(event: InfraCreated):
+def on_infra_created(event: sky.InfraCreated):
     """Called when infrastructure is ready."""
     print(f"[INFRA] Infrastructure created")
 
 
-def on_instance_launching(event: InstanceLaunching):
+def on_instance_launching(event: sky.InstanceLaunching):
     """Called when an instance is being launched."""
     print(f"[INSTANCE] Launching instance...")
 
 
-def on_instance_provisioned(event: InstanceProvisioned):
+def on_instance_provisioned(event: sky.InstanceProvisioned):
     """Called when an instance is ready."""
     print(f"[INSTANCE] Instance provisioned: {event.instance_id}")
 
 
-def on_bootstrap_starting(event: BootstrapStarting):
+def on_bootstrap_starting(event: sky.BootstrapStarting):
     """Called when bootstrap phase begins."""
     print(f"[BOOTSTRAP] Starting bootstrap...")
 
 
-def on_bootstrap_progress(event: BootstrapProgress):
+def on_bootstrap_progress(event: sky.BootstrapProgress):
     """Called during bootstrap with progress updates."""
     print(f"[BOOTSTRAP] {event.message}")
 
 
-def on_bootstrap_completed(event: BootstrapCompleted):
+def on_bootstrap_completed(event: sky.BootstrapCompleted):
     """Called when bootstrap is complete."""
     print(f"[BOOTSTRAP] Completed!")
 
 
-def on_pool_started(event: PoolStarted):
+def on_pool_started(event: sky.PoolStarted):
     """Called when the pool is ready for execution."""
     print(f"[POOL] Pool started with {event.nodes} nodes")
 
 
-def on_metrics(event: Metrics):
+def on_metrics(event: sky.Metrics):
     """Called periodically with resource metrics."""
     gpu_info = ""
     if event.gpu_utilization is not None:
@@ -132,54 +115,54 @@ def on_metrics(event: Metrics):
     )
 
 
-def on_instance_stopping(event: InstanceStopping):
+def on_instance_stopping(event: sky.InstanceStopping):
     """Called when an instance is being terminated."""
     print(f"[INSTANCE] Stopping instance: {event.instance_id}")
 
 
-def on_pool_stopping(event: PoolStopping):
+def on_pool_stopping(event: sky.PoolStopping):
     """Called when the pool is shutting down."""
     print(f"[POOL] Stopping pool...")
 
 
-def on_error(event: Error):
+def on_error(event: sky.Error):
     """Called when an error occurs."""
     print(f"[ERROR] {event.message}")
 
 
 if __name__ == "__main__":
     # Create pool
-    pool = ComputePool(
-        provider=AWS(),
-        accelerator=NVIDIA.A100,
+    pool = sky.ComputePool(
+        provider=sky.AWS(),
+        accelerator=sky.NVIDIA.A100,
         pip=["torch"],
-        spot="always",
+        allocation="spot-if-available",
     )
 
     # =================================================================
     # Register Event Handlers
     # =================================================================
     # Provision phase
-    pool.on(InfraCreating, on_infra_creating)
-    pool.on(InfraCreated, on_infra_created)
-    pool.on(InstanceLaunching, on_instance_launching)
-    pool.on(InstanceProvisioned, on_instance_provisioned)
+    pool.on(sky.InfraCreating, on_infra_creating)
+    pool.on(sky.InfraCreated, on_infra_created)
+    pool.on(sky.InstanceLaunching, on_instance_launching)
+    pool.on(sky.InstanceProvisioned, on_instance_provisioned)
 
     # Bootstrap phase
-    pool.on(BootstrapStarting, on_bootstrap_starting)
-    pool.on(BootstrapProgress, on_bootstrap_progress)
-    pool.on(BootstrapCompleted, on_bootstrap_completed)
+    pool.on(sky.BootstrapStarting, on_bootstrap_starting)
+    pool.on(sky.BootstrapProgress, on_bootstrap_progress)
+    pool.on(sky.BootstrapCompleted, on_bootstrap_completed)
 
     # Execution phase
-    pool.on(PoolStarted, on_pool_started)
-    pool.on(Metrics, on_metrics)
+    pool.on(sky.PoolStarted, on_pool_started)
+    pool.on(sky.Metrics, on_metrics)
 
     # Shutdown phase
-    pool.on(InstanceStopping, on_instance_stopping)
-    pool.on(PoolStopping, on_pool_stopping)
+    pool.on(sky.InstanceStopping, on_instance_stopping)
+    pool.on(sky.PoolStopping, on_pool_stopping)
 
     # Error handling
-    pool.on(Error, on_error)
+    pool.on(sky.Error, on_error)
 
     # =================================================================
     # Run computations with event monitoring
