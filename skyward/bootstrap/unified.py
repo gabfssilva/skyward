@@ -13,11 +13,11 @@ from .ops import (
     apt,
     checkpoint,
     env_export,
+    install_uv,
     instance_timeout,
     pip,
     systemd,
     uv,
-    install_uv,
     wait_for_port,
 )
 from .worker import rpyc_service_unit
@@ -47,7 +47,7 @@ def skyward_bootstrap(
         apt_packages: Additional apt packages to install.
         env: Environment variables to export.
         instance_timeout_secs: Auto-shutdown timeout in seconds.
-        preamble: Operations to run before everything (e.g., ssm_restart).
+        preamble: Operations to run before everything (e.g., grid_driver, inject_ssh_key).
         pip_ops: Custom pip operations. Default: pip install packages.
         wheel_ops: Custom wheel operations. Default: SCP placeholder.
         server_ops: Custom server operations. Default: single RPyC.
@@ -57,7 +57,7 @@ def skyward_bootstrap(
         Complete shell script string.
 
     Examples:
-        # SSH providers (DigitalOcean, Verda) - use defaults
+        # SSH providers (DigitalOcean, Verda, AWS) - use defaults
         script = skyward_bootstrap(
             python="3.12",
             pip_packages=("torch", "transformers"),
@@ -68,7 +68,6 @@ def skyward_bootstrap(
         script = skyward_bootstrap(
             python="3.12",
             apt_packages=("git",),
-            preamble=(ssm_restart(),),
             pip_ops=(s3_pip_install(bucket, hash), checkpoint(".step_pip")),
             wheel_ops=(s3_wheel(bucket, key), checkpoint(".step_wheel")),
         )

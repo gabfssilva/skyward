@@ -27,32 +27,6 @@ from .compose import (
     resolve,
 )
 
-# Core operations
-from .ops import (
-    activate,
-    apt,
-    cd,
-    checkpoint,
-    env_export,
-    file,
-    grid_driver,
-    inject_ssh_key,
-    instance_timeout,
-    mkdir,
-    pip,
-    s3_pip_install,
-    s3_wheel,
-    shell,
-    ssm_restart,
-    systemd,
-    systemd_template,
-    uv,
-    uv_add,
-    uv_init,
-    install_uv,
-    wait_for_port,
-)
-
 # Control flow
 from .control import (
     and_then,
@@ -66,6 +40,34 @@ from .control import (
     when,
 )
 
+# Core operations
+from .ops import (
+    activate,
+    apt,
+    cd,
+    checkpoint,
+    env_export,
+    file,
+    grid_driver,
+    inject_ssh_key,
+    install_uv,
+    instance_timeout,
+    mkdir,
+    pip,
+    s3_pip_install,
+    s3_wheel,
+    shell,
+    systemd,
+    systemd_template,
+    uv,
+    uv_add,
+    uv_init,
+    wait_for_port,
+)
+
+# Unified generator
+from .unified import skyward_bootstrap
+
 # Worker operations
 from .worker import (
     cgroups,
@@ -78,9 +80,6 @@ from .worker import (
     worker_service_template,
     worker_service_unit,
 )
-
-# Unified generator
-from .unified import skyward_bootstrap
 
 __all__ = [
     # Core types
@@ -108,7 +107,6 @@ __all__ = [
     "instance_timeout",
     "inject_ssh_key",
     # AWS operations
-    "ssm_restart",
     "grid_driver",
     "s3_pip_install",
     "s3_wheel",

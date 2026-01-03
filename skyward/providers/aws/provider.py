@@ -1,12 +1,10 @@
-"""AWS EC2 provider for Skyward GPU instances using SSM connectivity."""
+"""AWS EC2 provider for Skyward GPU instances using SSH connectivity."""
 
 from __future__ import annotations
 
-import json
 import threading
 import uuid
 from collections.abc import Callable
-from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import TYPE_CHECKING, override
@@ -33,8 +31,6 @@ from skyward.providers.base import SSHTransport
 from skyward.providers.base.ssh_keys import find_local_ssh_key, get_private_key_path
 from skyward.providers.common import (
     Checkpoint,
-    create_tunnel,
-    find_available_port,
     install_skyward_wheel_via_transport,
 )
 from skyward.providers.common import (
@@ -62,7 +58,6 @@ from .discovery import (
 )
 from .fleet import InstanceConfig, get_instance_details, launch_instances, wait_running
 from .infra import AWSInfraManager, AWSResources, S3ObjectStore
-from .ssm import SSMSession, SSMTransport
 
 if TYPE_CHECKING:
     from subprocess import Popen
@@ -129,50 +124,31 @@ def _generate_volume_script(
 
 
 # =============================================================================
-# AWS Bootstrap (SSM-based)
+# AWS Bootstrap (SSH-based)
 # =============================================================================
 
 
-def _is_instance_terminated_error(exc: BaseException) -> bool:
-    """Check if exception indicates the instance is terminated."""
-    if isinstance(exc, ClientError):
-        code = exc.response.get("Error", {}).get("Code", "")
-        return code in ("InvalidInstanceId", "InvalidInstanceId.NotFound")
-    msg = str(exc).lower()
-    return "invalidinstanceid" in msg or "not in a valid state" in msg
-
-
-def _create_ssm_runner(
-    ssm_session: SSMSession,
-    instance_id: str,
-) -> Callable[[str], str]:
-    """Create a command runner using SSM."""
+def _create_ssh_runner(transport: SSHTransport, instance_id: str) -> Callable[[str], str]:
+    """Create a command runner using SSH."""
 
     def run_command(cmd: str) -> str:
         try:
-            result = ssm_session.run_command(instance_id, cmd, timeout=30)
-            if result.success:
-                return result.stdout
-            return ""
+            return transport.run_command(cmd, timeout=30)
         except Exception as e:
-            if _is_instance_terminated_error(e):
-                raise InstanceTerminatedError(instance_id, "instance not in valid state") from e
+            if "Connection refused" in str(e) or "timed out" in str(e).lower():
+                raise InstanceTerminatedError(instance_id, "instance not reachable") from e
             raise
 
     return run_command
 
 
-def wait_for_bootstrap(
-    ssm_session: SSMSession,
+def wait_for_bootstrap_ssh(
+    transport: SSHTransport,
     instance_id: str,
-    verified_instances: set[str] | None = None,
     timeout: int = 600,
 ) -> None:
-    """Wait for instance bootstrap with progress tracking."""
-    if verified_instances is None:
-        verified_instances = set()
-
-    runner = _create_ssm_runner(ssm_session, instance_id)
+    """Wait for instance bootstrap with progress tracking via SSH."""
+    runner = _create_ssh_runner(transport, instance_id)
 
     try:
         _wait_for_bootstrap_common(
@@ -181,33 +157,26 @@ def wait_for_bootstrap(
             timeout=timeout,
             extra_checkpoints=AWS_EXTRA_CHECKPOINTS,
         )
-        verified_instances.add(instance_id)
     except RuntimeError:
         error_file = ""
         bootstrap_log = ""
         cloud_init_logs = ""
 
         try:
-            result = ssm_session.run_command(
-                instance_id,
+            error_file = transport.run_command(
                 "cat /opt/skyward/.error 2>/dev/null || echo ''",
                 timeout=30,
-            )
-            error_file = result.stdout.strip() if result.success else ""
+            ).strip()
 
-            result = ssm_session.run_command(
-                instance_id,
+            bootstrap_log = transport.run_command(
                 "tail -100 /opt/skyward/bootstrap.log 2>/dev/null || echo ''",
                 timeout=30,
-            )
-            bootstrap_log = result.stdout.strip() if result.success else ""
+            ).strip()
 
-            result = ssm_session.run_command(
-                instance_id,
+            cloud_init_logs = transport.run_command(
                 "cat /var/log/cloud-init-output.log 2>/dev/null || echo ''",
                 timeout=30,
-            )
-            cloud_init_logs = result.stdout.strip() if result.success else ""
+            ).strip()
         except Exception:
             pass
 
@@ -236,12 +205,12 @@ _resources_lock = threading.Lock()
 
 @dataclass(frozen=True, slots=True)
 class AWS(Provider):
-    """Provider for AWS EC2 with SSM connectivity.
+    """Provider for AWS EC2 with SSH connectivity.
 
     Executes functions on EC2 instances using UV for fast dependency installation.
     Supports NVIDIA GPUs, Trainium, distributed clusters, and spot instances.
 
-    Uses SSM (Systems Manager) for all connectivity - no SSH required.
+    Uses SSH for connectivity. Instances must have public IPs.
     Infrastructure (S3 bucket, IAM roles, security groups) is auto-created.
 
     Example:
@@ -279,8 +248,6 @@ class AWS(Provider):
     _resolved_region: str | None = field(default=None, compare=False, repr=False, hash=False)
     _resources: AWSResources | None = field(default=None, compare=False, repr=False, hash=False)
     _store: S3ObjectStore | None = field(default=None, compare=False, repr=False, hash=False)
-    _ssm_session: SSMSession | None = field(default=None, compare=False, repr=False, hash=False)
-    _verified_instances: set[str] = field(default_factory=set, compare=False, repr=False, hash=False)
 
     @property
     @override
@@ -316,19 +283,12 @@ class AWS(Provider):
             object.__setattr__(self, "_resources", resources)
             return resources
 
-    def _get_ssm_session(self) -> SSMSession:
-        """Get or create SSM session."""
-        if self._ssm_session is not None:
-            return self._ssm_session
-
-        resources = self._get_resources()
-        session = SSMSession(region=resources.region)
-        object.__setattr__(self, "_ssm_session", session)
-        return session
-
-    def _get_transport(self, instance: Instance) -> SSMTransport:
-        """Get SSMTransport for an instance."""
-        return SSMTransport(instance_id=instance.id, region=self._active_region)
+    def _get_transport(self, instance: Instance) -> SSHTransport:
+        """Get SSHTransport for an instance."""
+        key_path = get_private_key_path()
+        username = instance.get_meta("username", "ubuntu")
+        ip = instance.public_ip or instance.private_ip
+        return SSHTransport(host=ip, username=username, key_path=key_path)
 
     @property
     def _ec2(self) -> EC2Client:
@@ -454,78 +414,6 @@ class AWS(Provider):
             return "ec2-user"
 
     # =========================================================================
-    # Skyward Wheel Installation
-    # =========================================================================
-
-    def _ssh_transport_via_ssm(
-        self, instance: Instance
-    ) -> AbstractContextManager[SSHTransport]:
-        """Create SSHTransport via SSM tunnel for wheel installation.
-
-        This context manager:
-        1. Ensures SSM agent is ready
-        2. Waits for sshd to be running
-        3. Creates SSM tunnel to port 22
-        4. Yields SSHTransport(localhost, local_port, ...)
-        5. Cleans up tunnel on exit
-
-        Returns:
-            Context manager yielding SSHTransport.
-        """
-        from collections.abc import Generator
-        from contextlib import contextmanager
-
-        ssm = self._get_ssm_session()
-        key_path = get_private_key_path()
-
-        @contextmanager
-        def _transport() -> Generator[SSHTransport]:
-            # Ensure SSM agent is ready (may have just started with cached AMI)
-            ssm.wait_for_ssm_agent(instance.id, timeout=120)
-
-            # Wait for SSH daemon to be ready
-            ssm.run_command(
-                instance.id,
-                "for i in $(seq 1 30); do nc -z 127.0.0.1 22 && break || sleep 1; done",
-                timeout=60,
-            )
-
-            # Create SSM tunnel to SSH port (22)
-            local_port = find_available_port()
-            tunnel_cmd = [
-                "aws",
-                "ssm",
-                "start-session",
-                "--target",
-                instance.id,
-                "--document-name",
-                "AWS-StartPortForwardingSession",
-                "--parameters",
-                json.dumps(
-                    {
-                        "portNumber": ["22"],
-                        "localPortNumber": [str(local_port)],
-                    }
-                ),
-                "--region",
-                self._active_region,
-            ]
-            local_port, tunnel_proc = create_tunnel(tunnel_cmd, local_port, timeout=60)
-
-            try:
-                username = instance.get_meta("username", "ubuntu")
-                yield SSHTransport(
-                    host="localhost",
-                    username=username,
-                    key_path=key_path,
-                    port=local_port,
-                )
-            finally:
-                tunnel_proc.terminate()
-
-        return _transport()
-
-    # =========================================================================
     # Provider Protocol Implementation
     # =========================================================================
 
@@ -533,7 +421,7 @@ class AWS(Provider):
     def provision(self, compute: ComputeSpec) -> tuple[Instance, ...]:
         """Provision EC2 instances."""
         from skyward.accelerator import Accelerator
-        from skyward.bootstrap import grid_driver, group, inject_ssh_key, ssm_restart
+        from skyward.bootstrap import grid_driver, group, inject_ssh_key
 
         try:
             cluster_id = str(uuid.uuid4())[:8]
@@ -674,8 +562,9 @@ class AWS(Provider):
                 ssh_key_op = inject_ssh_key(public_key)
 
             # Generate bootstrap script
-            base_preamble = group(ssm_restart(), grid_driver()) if acc and acc.fractional else ssm_restart()
-            preamble = group(base_preamble, ssh_key_op) if ssh_key_op else base_preamble
+            # For fractional GPU, include GRID driver installation
+            base_preamble = grid_driver() if acc and acc.fractional else None
+            preamble = group(base_preamble, ssh_key_op) if base_preamble and ssh_key_op else (ssh_key_op or base_preamble)
 
             # Build postamble (volume mounting)
             volume_script = _generate_volume_script(compute.volumes, username)
@@ -717,10 +606,7 @@ class AWS(Provider):
             # Wait for instances to be running
             wait_running(self._ec2, instance_ids)
 
-            # Wait for SSM agent in parallel
-            self._wait_ssm_parallel(instance_ids)
-
-            # Get instance details
+            # Get instance details (includes public_ip)
             instance_details = get_instance_details(self._ec2, instance_ids)
 
             # Build spec lookup for pricing info
@@ -738,6 +624,7 @@ class AWS(Provider):
                     provider=self,
                     spot=details["spot"],
                     private_ip=details["private_ip"],
+                    public_ip=details.get("public_ip"),
                     node=i,
                     metadata=frozenset(
                         [
@@ -780,36 +667,22 @@ class AWS(Provider):
             emit(Error(message=f"Provision failed: {e}"))
             raise
 
-    def _wait_ssm_parallel(self, instance_ids: list[str]) -> None:
-        """Wait for SSM agent to be ready on all instances."""
-        from skyward.conc import for_each_async
-
-        if not instance_ids:
-            return
-
-        ssm = self._get_ssm_session()
-
-        def wait_ssm(iid: str) -> None:
-            ssm.wait_for_ssm_agent(iid, timeout=600)
-
-        for_each_async(wait_ssm, instance_ids)
-
     @override
     def setup(self, instances: tuple[Instance, ...], compute: ComputeSpec) -> None:
-        """Setup instances (bootstrap, install dependencies)."""
+        """Setup instances (bootstrap, install dependencies) via SSH."""
+        from contextlib import contextmanager
+
         from skyward.conc import for_each_async
 
         try:
-            ssm_session = self._get_ssm_session()
-
             def bootstrap_instance(inst: Instance) -> None:
                 try:
                     emit(BootstrapStarting(instance_id=inst.id))
 
-                    wait_for_bootstrap(
-                        ssm_session=ssm_session,
+                    transport = self._get_transport(inst)
+                    wait_for_bootstrap_ssh(
+                        transport=transport,
                         instance_id=inst.id,
-                        verified_instances=self._verified_instances,
                     )
 
                     emit(BootstrapCompleted(instance_id=inst.id))
@@ -820,9 +693,13 @@ class AWS(Provider):
             for_each_async(bootstrap_instance, instances)
 
             # Install skyward wheel on all instances using Transport abstraction
+            @contextmanager
+            def get_transport(inst: Instance):
+                yield self._get_transport(inst)
+
             install_skyward_wheel_via_transport(
                 instances,
-                get_transport=self._ssh_transport_via_ssm,
+                get_transport=get_transport,
                 compute=compute,
             )
 
@@ -847,28 +724,19 @@ class AWS(Provider):
             emit(InstanceStopping(instance_id=inst.id))
             exited.append(ExitedInstance(instance=inst, exit_code=0, exit_reason="terminated"))
 
-        # Cleanup SSM session
-        if self._ssm_session is not None:
-            self._ssm_session.cleanup()
-
-        self._verified_instances.clear()
-
         return tuple(exited)
 
     @override
     def create_tunnel(self, instance: Instance, remote_port: int = 18861) -> tuple[int, Popen[bytes]]:
-        """Create SSM tunnel to instance."""
+        """Create SSH tunnel to instance."""
         transport = self._get_transport(instance)
         return transport.create_tunnel(remote_port)
 
     @override
     def run_command(self, instance: Instance, command: str, timeout: int = 30) -> str:
-        """Run shell command on instance via SSM."""
-        ssm = self._get_ssm_session()
-        result = ssm.run_command(instance.id, command, timeout)
-        if not result.success:
-            raise RuntimeError(f"Command failed on {instance.id}: {result.stderr}")
-        return result.stdout
+        """Run shell command on instance via SSH."""
+        transport = self._get_transport(instance)
+        return transport.run_command(command, timeout)
 
     @override
     def discover_peers(self, cluster_id: str) -> tuple[Instance, ...]:

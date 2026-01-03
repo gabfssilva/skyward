@@ -87,7 +87,15 @@ def launch_fleet(
     template_data: dict[str, Any] = {
         "IamInstanceProfile": {"Arn": resources.instance_profile_arn},
         "UserData": base64.b64encode(user_data.encode()).decode(),
-        "SecurityGroupIds": [resources.security_group_id],
+        # Use NetworkInterfaces to ensure public IP is assigned (required for SSH)
+        # SubnetId comes from Fleet overrides, not here
+        "NetworkInterfaces": [
+            {
+                "DeviceIndex": 0,
+                "AssociatePublicIpAddress": True,
+                "Groups": [resources.security_group_id],
+            }
+        ],
         "BlockDeviceMappings": [
             {
                 "DeviceName": root_device,
@@ -406,6 +414,7 @@ def get_instance_details(ec2: EC2Client, instance_ids: list[str]) -> list[dict[s
                 {
                     "id": i["InstanceId"],
                     "private_ip": i.get("PrivateIpAddress", ""),
+                    "public_ip": i.get("PublicIpAddress"),
                     "spot": i.get("InstanceLifecycle") == "spot",
                     "instance_type": i.get("InstanceType", ""),
                 }

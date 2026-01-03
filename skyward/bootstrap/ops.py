@@ -10,7 +10,6 @@ from skyward.constants import SKYWARD_DIR, UV_INSTALL_URL
 
 from .compose import Op
 
-
 # =============================================================================
 # Package Operations
 # =============================================================================
@@ -391,22 +390,6 @@ def cd(path: str) -> Op:
 # =============================================================================
 # AWS Operations
 # =============================================================================
-
-
-def ssm_restart(wait_seconds: int = 5) -> Op:
-    """Restart AWS SSM agent to pick up IAM role credentials.
-
-    Args:
-        wait_seconds: Seconds to wait after restart.
-
-    Example:
-        >>> ssm_restart(5)()
-        'systemctl restart amazon-ssm-agent...'
-    """
-    return lambda: f"""# Restart SSM agent to pick up IAM role credentials
-systemctl restart amazon-ssm-agent 2>/dev/null || \\
-systemctl restart snap.amazon-ssm-agent.amazon-ssm-agent.service 2>/dev/null || true
-sleep {wait_seconds}"""
 
 
 def grid_driver() -> Op:

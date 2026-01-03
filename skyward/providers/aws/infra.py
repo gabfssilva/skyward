@@ -15,7 +15,6 @@ if TYPE_CHECKING:
     from mypy_boto3_iam import IAMClient
     from mypy_boto3_s3 import S3Client
     from mypy_boto3_s3.literals import BucketLocationConstraintType
-    from mypy_boto3_ssm import SSMClient
     from mypy_boto3_sts import STSClient
 
 
@@ -167,31 +166,6 @@ class AWSInfraManager:
                 ],
                 "Resource": ["arn:aws:s3:::*", "arn:aws:s3:::*/*"],
             },
-            {
-                "Sid": "SSMCore",
-                "Effect": "Allow",
-                "Action": [
-                    "ssm:UpdateInstanceInformation",
-                    "ssmmessages:CreateControlChannel",
-                    "ssmmessages:CreateDataChannel",
-                    "ssmmessages:OpenControlChannel",
-                    "ssmmessages:OpenDataChannel",
-                ],
-                "Resource": "*",
-            },
-            {
-                "Sid": "EC2Messages",
-                "Effect": "Allow",
-                "Action": [
-                    "ec2messages:AcknowledgeMessage",
-                    "ec2messages:DeleteMessage",
-                    "ec2messages:FailMessage",
-                    "ec2messages:GetEndpoint",
-                    "ec2messages:GetMessages",
-                    "ec2messages:SendReply",
-                ],
-                "Resource": "*",
-            },
         ],
     }
 
@@ -233,12 +207,6 @@ class AWSInfraManager:
         import boto3
 
         return boto3.client("sts", region_name=self.region)
-
-    @cached_property
-    def _ssm(self) -> SSMClient:
-        import boto3
-
-        return boto3.client("ssm", region_name=self.region)
 
     @cached_property
     def _account_id(self) -> str:
@@ -344,14 +312,6 @@ class AWSInfraManager:
         )
 
         try:
-            self._iam.attach_role_policy(
-                RoleName=role_name,
-                PolicyArn="arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
-            )
-        except self._iam.exceptions.EntityAlreadyExistsException:
-            pass
-
-        try:
             get_profile_resp = self._iam.get_instance_profile(InstanceProfileName=profile_name)
             profile_arn = get_profile_resp["InstanceProfile"]["Arn"]
 
@@ -381,31 +341,47 @@ class AWSInfraManager:
 
         return role_arn, profile_arn
 
-    def _ensure_self_ref_rule(self, sg_id: str) -> None:
+    def _ensure_security_group_rules(self, sg_id: str) -> None:
+        """Ensure security group has required rules (self-ref for NCCL, SSH for access)."""
         sg_resp = self._ec2.describe_security_groups(GroupIds=[sg_id])
         rules = sg_resp["SecurityGroups"][0].get("IpPermissions", [])
 
         has_self_ref = False
+        has_ssh = False
+
         for rule in rules:
             if rule.get("IpProtocol") == "-1":
                 for pair in rule.get("UserIdGroupPairs", []):
                     if pair.get("GroupId") == sg_id:
                         has_self_ref = True
+            if rule.get("IpProtocol") == "tcp" and rule.get("FromPort") == 22:
+                has_ssh = True
+
+        permissions_to_add = []
 
         if not has_self_ref:
-            self._ec2.authorize_security_group_ingress(
-                GroupId=sg_id,
-                IpPermissions=[
+            permissions_to_add.append({
+                "IpProtocol": "-1",
+                "UserIdGroupPairs": [
                     {
-                        "IpProtocol": "-1",
-                        "UserIdGroupPairs": [
-                            {
-                                "GroupId": sg_id,
-                                "Description": "All traffic from same security group (DDP/NCCL)",
-                            }
-                        ],
+                        "GroupId": sg_id,
+                        "Description": "All traffic from same security group (DDP/NCCL)",
                     }
                 ],
+            })
+
+        if not has_ssh:
+            permissions_to_add.append({
+                "IpProtocol": "tcp",
+                "FromPort": 22,
+                "ToPort": 22,
+                "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "SSH access"}],
+            })
+
+        if permissions_to_add:
+            self._ec2.authorize_security_group_ingress(
+                GroupId=sg_id,
+                IpPermissions=permissions_to_add,
             )
 
     def _ensure_security_group(self) -> str:
@@ -417,7 +393,7 @@ class AWSInfraManager:
             )
             if describe_sg_resp["SecurityGroups"]:
                 sg_id = describe_sg_resp["SecurityGroups"][0]["GroupId"]
-                self._ensure_self_ref_rule(sg_id)
+                self._ensure_security_group_rules(sg_id)
                 return sg_id
         except Exception:
             pass
@@ -455,7 +431,13 @@ class AWSInfraManager:
                             "Description": "All traffic from same security group (DDP/NCCL)",
                         }
                     ],
-                }
+                },
+                {
+                    "IpProtocol": "tcp",
+                    "FromPort": 22,
+                    "ToPort": 22,
+                    "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "SSH access"}],
+                },
             ],
         )
 
