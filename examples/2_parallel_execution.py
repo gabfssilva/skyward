@@ -32,35 +32,37 @@ def factorial(n: int) -> int:
     return result
 
 
-if __name__ == "__main__":
+@sky.pool(provider=sky.AWS(), allocation="spot-if-available")
+def main():
     chunks = [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]
 
-    with sky.ComputePool(provider=sky.AWS(), allocation="spot-if-available") as pool:
-        # =================================================================
-        # Using gather() for parallel execution
-        # =================================================================
-        # All process_chunk calls execute in parallel on the remote instance
-        results = sky.gather(*[process_chunk(c) for c in chunks]) >> pool
-        print(f"Chunk sums: {results}")  # (6, 15, 24, 33)
+    # =================================================================
+    # Using gather() for parallel execution
+    # =================================================================
+    # All process_chunk calls execute in parallel on the remote instance
+    results = sky.gather(*[process_chunk(c) for c in chunks]) >> sky
+    print(f"Chunk sums: {results}")  # (6, 15, 24, 33)
 
-        # =================================================================
-        # Using & operator for type-safe parallel execution
-        # =================================================================
-        # The & operator chains computations and preserves types
-        a, b = (multiply(2, 3) & multiply(4, 5)) >> pool
-        print(f"Products: {a}, {b}")  # 6, 20
+    # =================================================================
+    # Using & operator for type-safe parallel execution
+    # =================================================================
+    # The & operator chains computations and preserves types
+    a, b = (multiply(2, 3) & multiply(4, 5)) >> sky
+    print(f"Products: {a}, {b}")  # 6, 20
 
-        # Chain up to 8 computations with full type inference
-        f3, f4, f5 = (factorial(3) & factorial(4) & factorial(5)) >> pool
-        print(f"Factorials: 3!={f3}, 4!={f4}, 5!={f5}")  # 6, 24, 120
+    # Chain up to 8 computations with full type inference
+    f3, f4, f5 = (factorial(3) & factorial(4) & factorial(5)) >> sky
+    print(f"Factorials: 3!={f3}, 4!={f4}, 5!={f5}")  # 6, 24, 120
 
-        # =================================================================
-        # Mixing different computations
-        # =================================================================
-        sum_result, product_result, fact_result = (
-            process_chunk([1, 2, 3, 4, 5])
-            & multiply(10, 20)
-            & factorial(6)
-        ) >> pool
+    # =================================================================
+    # Mixing different computations
+    # =================================================================
+    sum_result, product_result, fact_result = (
+        process_chunk([1, 2, 3, 4, 5]) & multiply(10, 20) & factorial(6)
+    ) >> sky
 
-        print(f"Mixed: sum={sum_result}, product={product_result}, factorial={fact_result}")
+    print(f"Mixed: sum={sum_result}, product={product_result}, factorial={fact_result}")
+
+
+if __name__ == "__main__":
+    main()

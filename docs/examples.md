@@ -62,15 +62,16 @@ def remote_sum(x: int, y: int) -> int:
     print("That's one expensive sum.")
     return x + y
 
-with sky.ComputePool(provider=sky.Verda()) as pool:
-    result = remote_sum(x=1, y=2) >> pool
+@sky.pool(provider=sky.AWS())
+def main():
+    result = remote_sum(x=1, y=2) >> sky
     print(result)  # 3
 ```
 
 **Key Concepts:**
 - `@compute` - Makes function remotely executable
-- `>> pool` - Execute on single worker
-- `ComputePool` - Context manager for resources
+- `@pool` - Decorator for resource management
+- `>> sky` - Execute on the pool from context
 
 ---
 
@@ -91,14 +92,15 @@ def process_chunk(data: list[int]) -> int:
 def multiply(x: int, y: int) -> int:
     return x * y
 
-with sky.ComputePool(provider=sky.AWS(), allocation="always-spot") as pool:
+@sky.pool(provider=sky.AWS(), allocation="spot-if-available")
+def main():
     # Using gather()
     chunks = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
-    results = sky.gather(*[process_chunk(c) for c in chunks]) >> pool
+    results = sky.gather(*[process_chunk(c) for c in chunks]) >> sky
     print(results)  # (6, 15, 24)
 
     # Using & operator (type-safe)
-    a, b = (multiply(2, 3) & multiply(4, 5)) >> pool
+    a, b = (multiply(2, 3) & multiply(4, 5)) >> sky
     print(a, b)  # 6, 20
 ```
 
@@ -129,19 +131,20 @@ def matrix_multiply(size: int) -> dict:
 
     return {"gpu_available": torch.cuda.is_available()}
 
-with sky.ComputePool(
-    provider=sky.AWS(),
+@sky.pool(
+    provider=sky.Verda(),
     image=sky.Image(pip=["torch", "numpy"]),
-    accelerator="T4",
-    allocation="always-spot",
-) as pool:
-    result = matrix_multiply(4096) >> pool
+    accelerator="L40S",
+    allocation="spot-if-available",
+)
+def main():
+    result = matrix_multiply(4096) >> sky
 ```
 
 **Key Concepts:**
-- `accelerator="T4"` - Request specific GPU
+- `accelerator="L40S"` - Request specific GPU
 - `Image(pip=[...])` - Install dependencies
-- `allocation="always-spot"` - Use spot instances
+- `allocation="spot-if-available"` - Use spot instances when available
 
 ---
 
@@ -159,12 +162,13 @@ def cpu_intensive() -> dict:
     import multiprocessing
     return {"cpus": multiprocessing.cpu_count()}
 
-with sky.ComputePool(
+@sky.pool(
     provider=sky.DigitalOcean(region="nyc1"),
     cpu=4,
     memory="8GB",
-) as pool:
-    result = cpu_intensive() >> pool
+)
+def main():
+    result = cpu_intensive() >> sky
 ```
 
 **Key Concepts:**
@@ -194,16 +198,17 @@ def process_partition(data: list[int]) -> dict:
         "partition_sum": sum(local_data),
     }
 
-with sky.ComputePool(provider=sky.AWS(), nodes=4, accelerator="T4") as pool:
+@sky.pool(provider=sky.AWS(), nodes=4, accelerator="T4")
+def main():
     data = list(range(1000))
-    results = process_partition(data) @ pool  # Broadcast!
+    results = process_partition(data) @ sky  # Broadcast!
 
     total = sum(r["partition_sum"] for r in results)
     print(f"Total: {total}")  # 499500
 ```
 
 **Key Concepts:**
-- `@ pool` - Broadcast to ALL nodes
+- `@ sky` - Broadcast to ALL nodes
 - `shard(data)` - Automatic data partitioning
 - Returns tuple of results (one per node)
 
@@ -217,11 +222,11 @@ Distributed data loading patterns.
 
 ```python
 import skyward as sky
-from torch.utils.data import DataLoader, TensorDataset
 
 @sky.compute
 def train_with_sampler():
     import torch
+    from torch.utils.data import DataLoader, TensorDataset
 
     # Create dataset
     x = torch.randn(10000, 100)
@@ -243,6 +248,10 @@ def train_with_shard(x_full, y_full):
     # Simple sharding
     x_local, y_local = sky.shard(x_full, y_full, shuffle=True, seed=42)
     # Train on local data
+
+@sky.pool(provider=sky.AWS(), nodes=4, image=sky.Image(pip=["torch"]))
+def main():
+    results = train_with_sampler() @ sky
 ```
 
 **Key Concepts:**
@@ -265,7 +274,8 @@ import skyward as sky
 def worker_task(data: list[int]) -> dict:
     info = sky.instance_info()
 
-    result = sum(data[info.node::info.total_nodes])
+    local_data = sky.shard(data)
+    result = sum(local_data)
 
     if info.is_head:
         print("I am the coordinator")
@@ -276,8 +286,9 @@ def worker_task(data: list[int]) -> dict:
         "result": result,
     }
 
-with sky.ComputePool(provider=sky.AWS(), nodes=4) as pool:
-    results = worker_task(list(range(100))) @ pool
+@sky.pool(provider=sky.AWS(), nodes=4)
+def main():
+    results = worker_task(list(range(100))) @ sky
 
     # Head node aggregates
     total = sum(r["result"] for r in results)
@@ -285,8 +296,8 @@ with sky.ComputePool(provider=sky.AWS(), nodes=4) as pool:
 
 **Key Concepts:**
 - `instance_info()` - Access cluster topology
-- `pool.is_head` - Identify coordinator
-- `pool.node`, `pool.total_nodes` - Node identity
+- `info.is_head` - Identify coordinator
+- `info.node`, `info.total_nodes` - Node identity
 
 ---
 
@@ -654,15 +665,16 @@ def heavy_stuff(x: int, y: int) -> int:
     sleep(10)
     return x + y
 
-with sky.ComputePool(
+@sky.pool(
     provider=sky.AWS(),
     cpu=4,
     concurrency=10,  # 10 concurrent tasks per node
     nodes=5,         # 5 nodes = 50 total slots
-) as pool:
+)
+def main():
     # Process 100 tasks across 50 concurrent slots
     results = sky.conc.map_async(
-        lambda x: heavy_stuff(x, x) >> pool,
+        lambda x: heavy_stuff(x, x) >> sky,
         list(range(100))
     )
     print(list(results))

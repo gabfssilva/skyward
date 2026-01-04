@@ -10,6 +10,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, override
 
 from botocore.exceptions import ClientError
+from loguru import logger
 
 from skyward.callback import emit
 from skyward.constants import SkywardTag
@@ -425,6 +426,8 @@ class AWS(Provider):
 
         try:
             cluster_id = str(uuid.uuid4())[:8]
+            logger.info(f"Provisioning {compute.nodes} EC2 instances in {self.region}")
+            logger.debug(f"Cluster ID: {cluster_id}, accelerator: {compute.accelerator}")
 
             emit(InfraCreating())
 
@@ -506,7 +509,9 @@ class AWS(Provider):
                 )
 
             # Now create resources in the actual region
+            logger.debug(f"Ensuring infrastructure in {self._active_region}")
             resources = self._get_resources()
+            logger.debug(f"Infrastructure ready: subnets={resources.subnet_ids}")
             emit(InfraCreated(region=self._active_region))
 
             # Get image from compute spec
@@ -590,6 +595,7 @@ class AWS(Provider):
 
             # Launch instances with allocation strategy
             # Fleet will pick an instance type with available capacity
+            logger.debug(f"Launching {compute.nodes} instances with {len(instance_configs)} candidate types")
             instance_ids = launch_instances(
                 ec2=self._ec2,
                 resources=resources,
@@ -602,9 +608,12 @@ class AWS(Provider):
                 root_device=root_device,
                 min_volume_size=min_volume_size,
             )
+            logger.debug(f"Fleet launched: {instance_ids}")
 
             # Wait for instances to be running
+            logger.debug("Waiting for instances to reach running state...")
             wait_running(self._ec2, instance_ids)
+            logger.debug("All instances running")
 
             # Get instance details (includes public_ip)
             instance_details = get_instance_details(self._ec2, instance_ids)
@@ -651,6 +660,10 @@ class AWS(Provider):
                 )
 
             spot_count = sum(1 for inst in instances if inst.spot)
+            logger.info(
+                f"Provisioned {len(instances)} instances: {spot_count} spot, "
+                f"{len(instances) - spot_count} on-demand"
+            )
             emit(
                 ProvisioningCompleted(
                     spot=spot_count,
@@ -664,6 +677,7 @@ class AWS(Provider):
             return tuple(instances)
 
         except Exception as e:
+            logger.error(f"Provision failed: {e}")
             emit(Error(message=f"Provision failed: {e}"))
             raise
 
@@ -674,9 +688,12 @@ class AWS(Provider):
 
         from skyward.conc import for_each_async
 
+        logger.info(f"Setting up {len(instances)} instances...")
+
         try:
             def bootstrap_instance(inst: Instance) -> None:
                 try:
+                    logger.debug(f"Starting bootstrap for {inst.id}")
                     emit(BootstrapStarting(instance_id=inst.id))
 
                     transport = self._get_transport(inst)
@@ -685,14 +702,19 @@ class AWS(Provider):
                         instance_id=inst.id,
                     )
 
+                    logger.debug(f"Bootstrap completed for {inst.id}")
                     emit(BootstrapCompleted(instance_id=inst.id))
                 except Exception as e:
+                    logger.error(f"Bootstrap failed on {inst.id}: {e}")
                     emit(Error(message=f"Bootstrap failed on {inst.id}: {e}", instance_id=inst.id))
                     raise
 
             for_each_async(bootstrap_instance, instances)
+            logger.debug("All instances bootstrapped")
 
             # Install skyward wheel on all instances using Transport abstraction
+            logger.debug("Installing skyward wheel on instances...")
+
             @contextmanager
             def get_transport(inst: Instance):
                 yield self._get_transport(inst)
@@ -702,8 +724,10 @@ class AWS(Provider):
                 get_transport=get_transport,
                 compute=compute,
             )
+            logger.info(f"Setup complete for {len(instances)} instances")
 
         except Exception as e:
+            logger.error(f"Setup failed: {e}")
             emit(Error(message=f"Setup failed: {e}"))
             raise
 
@@ -714,6 +738,8 @@ class AWS(Provider):
             return ()
 
         instance_ids = [inst.id for inst in instances]
+        logger.info(f"Terminating {len(instances)} instances...")
+        logger.debug(f"Instance IDs: {instance_ids}")
 
         # Terminate all instances
         self._ec2.terminate_instances(InstanceIds=instance_ids)
@@ -724,6 +750,7 @@ class AWS(Provider):
             emit(InstanceStopping(instance_id=inst.id))
             exited.append(ExitedInstance(instance=inst, exit_code=0, exit_reason="terminated"))
 
+        logger.info(f"Terminated {len(instances)} instances")
         return tuple(exited)
 
     @override

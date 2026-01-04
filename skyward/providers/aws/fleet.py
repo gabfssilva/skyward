@@ -10,6 +10,7 @@ from math import ceil
 from typing import TYPE_CHECKING, Any
 
 from botocore.exceptions import ClientError
+from loguru import logger
 
 from skyward.constants import DEFAULT_INSTANCE_NAME, SkywardTag
 from skyward.spec import Allocation, AllocationStrategy, NormalizedAllocation, _AllocationOnDemand
@@ -75,12 +76,17 @@ def launch_fleet(
     """
     # Filter to subnets in AZs that support at least one of the instance types
     instance_types = tuple(inst.instance_type for inst in instances)
+    market_type = "spot" if spot else "on-demand"
+    logger.info(f"Launching EC2 fleet: {n} {market_type} instances")
+    logger.debug(f"Candidate instance types: {instance_types[:5]}{'...' if len(instance_types) > 5 else ''}")
+
     if subnet_ids:
         target_subnets = subnet_ids
     else:
         target_subnets = get_valid_subnets_for_instance_types(
             ec2, instance_types, resources.subnet_ids
         )
+    logger.debug(f"Target subnets: {target_subnets}")
 
     # Create temporary launch template (without InstanceType/ImageId - goes in overrides)
     template_name = f"skyward-{uuid.uuid4().hex[:8]}"
@@ -175,11 +181,14 @@ def launch_fleet(
         errors = fleet_response.get("Errors", [])
         if errors and not instance_ids:
             error_msgs = [f"{e.get('ErrorCode', 'Unknown')}: {e.get('ErrorMessage', '')}" for e in errors]
+            logger.error(f"Fleet launch failed: {'; '.join(error_msgs)}")
             raise RuntimeError(f"Fleet launch failed: {'; '.join(error_msgs)}")
 
         if len(instance_ids) < n:
+            logger.error(f"Fleet launched {len(instance_ids)}/{n} instances. Errors: {errors}")
             raise RuntimeError(f"Fleet launched {len(instance_ids)}/{n} instances. " f"Errors: {errors}")
 
+        logger.info(f"Fleet launched {len(instance_ids)} instances: {instance_ids}")
         return instance_ids
 
     finally:
@@ -278,20 +287,26 @@ def launch_instances(
         "min_volume_size": min_volume_size,
     }
 
+    logger.debug(f"Launch strategy: {type(allocation).__name__}")
+
     match allocation:
         case _AllocationOnDemand():
             # 100% on-demand
+            logger.debug("Using on-demand allocation")
             return launch_fleet(n=n, spot=False, **common_args)
 
         case Allocation.AlwaysSpot():
             # 100% spot, fail if unavailable
+            logger.debug("Using always-spot allocation")
             return launch_fleet(n=n, spot=True, **common_args)
 
         case Allocation.SpotIfAvailable():
             # Try spot first, fallback to on-demand
+            logger.debug("Using spot-if-available allocation")
             try:
                 return launch_fleet(n=n, spot=True, **common_args)
-            except (RuntimeError, ClientError):
+            except (RuntimeError, ClientError) as e:
+                logger.warning(f"Spot not available: {e}, falling back to on-demand")
                 return launch_fleet(n=n, spot=False, **common_args)
 
         case Allocation.Cheapest():
@@ -390,6 +405,7 @@ def wait_running(ec2: EC2Client, instance_ids: list[str]) -> None:
     if not instance_ids:
         return
 
+    logger.debug(f"Waiting for {len(instance_ids)} instances to reach running state...")
     waiter = ec2.get_waiter("instance_running")
     waiter.wait(
         InstanceIds=instance_ids,
@@ -398,6 +414,7 @@ def wait_running(ec2: EC2Client, instance_ids: list[str]) -> None:
             "MaxAttempts": INSTANCE_RUNNING_MAX_ATTEMPTS,
         },
     )
+    logger.debug(f"All {len(instance_ids)} instances are running")
 
 
 def get_instance_details(ec2: EC2Client, instance_ids: list[str]) -> list[dict[str, Any]]:

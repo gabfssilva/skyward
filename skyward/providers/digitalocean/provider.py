@@ -8,6 +8,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, override
 
+from loguru import logger
 from pydo import Client
 
 from skyward.accelerator import Accelerator
@@ -238,6 +239,8 @@ class DigitalOcean(Provider):
         """Provision DigitalOcean Droplets."""
         try:
             cluster_id = str(uuid.uuid4())[:8]
+            logger.info(f"Provisioning {compute.nodes} DigitalOcean droplets in {self.region}")
+            logger.debug(f"Cluster ID: {cluster_id}")
             emit(InfraCreating())
 
             fingerprint = self._ensure_ssh_key()
@@ -285,6 +288,7 @@ class DigitalOcean(Provider):
                 os_image = "ubuntu-24-04-x64"
                 username = "root"
 
+            logger.debug(f"Using image: {os_image}, username: {username}")
             object.__setattr__(self, "_username", username)
 
             # Generate bootstrap script using Image.bootstrap()
@@ -301,6 +305,7 @@ class DigitalOcean(Provider):
             droplets: list[_Droplet] = []
             for i in range(compute.nodes):
                 droplet_name = f"skyward-{cluster_id}-{i}"
+                logger.debug(f"Creating droplet {droplet_name} with size {size}")
 
                 create_data: dict[str, Any] = {
                     "name": droplet_name,
@@ -321,7 +326,9 @@ class DigitalOcean(Provider):
                         ip="",
                     )
                 )
+                logger.debug(f"Droplet {droplet_name} created with id {droplet_data['id']}")
 
+            logger.debug(f"Waiting for {len(droplets)} droplets to become active...")
             _wait_for_active(client, droplets, timeout=300)
 
             object.__setattr__(self, "_droplets", droplets)
@@ -368,9 +375,11 @@ class DigitalOcean(Provider):
                 )
             )
 
+            logger.info(f"Provisioned {len(instances)} droplets: {[d.id for d in droplets]}")
             return tuple(instances)
 
         except Exception as e:
+            logger.error(f"DigitalOcean provisioning failed: {e}")
             emit(Error(message=f"Provision failed: {e}"))
             raise
 
@@ -380,6 +389,7 @@ class DigitalOcean(Provider):
         from collections.abc import Generator
         from contextlib import contextmanager
 
+        logger.info(f"Setting up {len(instances)} DigitalOcean instances...")
         try:
             for inst in instances:
                 emit(BootstrapStarting(instance_id=inst.id))
@@ -401,7 +411,10 @@ class DigitalOcean(Provider):
             for inst in instances:
                 emit(BootstrapCompleted(instance_id=inst.id))
 
+            logger.info(f"Setup completed for {len(instances)} instances")
+
         except Exception as e:
+            logger.error(f"DigitalOcean setup failed: {e}")
             emit(Error(message=f"Setup failed: {e}"))
             raise
 
@@ -412,6 +425,7 @@ class DigitalOcean(Provider):
         """Shutdown Droplets (destroy them)."""
         from contextlib import suppress
 
+        logger.info(f"Shutting down {len(instances)} DigitalOcean droplets...")
         client = self._get_client()
 
         exited: list[ExitedInstance] = []
@@ -419,6 +433,7 @@ class DigitalOcean(Provider):
             droplet_id = inst.get_meta("droplet_id")
             if droplet_id:
                 emit(InstanceStopping(instance_id=inst.id))
+                logger.debug(f"Destroying droplet {droplet_id}")
                 with suppress(Exception):
                     client.droplets.destroy(droplet_id=droplet_id)
 
@@ -431,6 +446,7 @@ class DigitalOcean(Provider):
             )
 
         object.__setattr__(self, "_droplets", [])
+        logger.info(f"Shutdown complete: {len(exited)} droplets destroyed")
         return tuple(exited)
 
     @override
@@ -438,6 +454,7 @@ class DigitalOcean(Provider):
         self, instance: Instance, remote_port: int = 18861
     ) -> tuple[int, subprocess.Popen[bytes]]:
         """Create SSH tunnel to Droplet using SSHTransport."""
+        logger.debug(f"Creating tunnel to droplet {instance.id} port {remote_port}")
         transport = self._get_transport(instance)
         return transport.create_tunnel(remote_port)
 

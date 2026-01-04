@@ -37,6 +37,9 @@ __all__ = [
     # Architecture
     "Auto",
     "Architecture",
+    # Memory
+    "Megabytes",
+    "Memory",
     # Protocols
     "ComputeSpec",
     "Provider",
@@ -46,6 +49,23 @@ class Auto:
     pass
 
 type Architecture = Literal['arm64', 'x86_64'] | Auto
+
+type Megabytes = int
+
+type Memory = Literal[
+    '512MiB',
+    '1GiB',
+    '2GiB',
+    '4GiB',
+    '8GiB',
+    '16GiB',
+    '32GiB',
+    '64GiB',
+    '128GiB',
+    '256GiB',
+    '512GiB',
+] | Megabytes | Auto
+
 
 @dataclass(frozen=True, slots=True)
 class InstanceSpec:
@@ -67,25 +87,29 @@ class InstanceSpec:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-def parse_memory_mb(memory: str | int | None) -> int:
+def parse_memory_mb(memory: Memory | None) -> int:
     """Parse memory to MB.
 
     Args:
         memory: Memory specification. Can be:
-            - None: Returns 1024 MB (1GB) default
+            - None or Auto(): Returns 1024 MB (1GB) default
             - int: Treated as MB directly
-            - str: Parsed with suffix (e.g., '8GB', '4096MB', '8G', '4096M')
+            - str: Parsed with suffix (e.g., '8GiB', '4096MB', '8G', '4096M')
 
     Returns:
         Memory in MB.
     """
     match memory:
-        case None:
+        case None | Auto():
             return 1024
         case int() as mb:
             return mb
         case str() as s:
             s = s.strip().upper()
+            if s.endswith("GIB"):
+                return int(float(s[:-3]) * 1024)
+            if s.endswith("MIB"):
+                return int(float(s[:-3]))
             if s.endswith("GB"):
                 return int(float(s[:-2]) * 1024)
             if s.endswith("MB"):
@@ -452,7 +476,7 @@ class ComputeSpec(Protocol):
     architecture: Architecture  # Auto (cheapest) or explicit arm64/x86_64
     image: Image  # Environment specification (python, pip, apt, env)
     cpu: int | None
-    memory: str | None
+    memory: Memory | None
     timeout: int
     allocation: Any  # AllocationLike
     volumes: list[Any]  # list[Volume]

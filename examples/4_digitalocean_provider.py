@@ -56,40 +56,44 @@ def cpu_intensive_task(iterations: int) -> dict:
     }
 
 
+# =================================================================
+# DigitalOcean Droplet with 4 CPUs and 8GB RAM
+# =================================================================
+@sky.pool(
+    provider=sky.DigitalOcean(region="nyc1"),
+    cpu=4,
+    memory="8GB",
+    allocation="spot-if-available",
+)
+def main():
+    # Get system info
+    sys_info = system_info() >> sky
+    print("System Info:")
+    for key, value in sys_info.items():
+        print(f"  {key}: {value}")
+
+    # Get memory info
+    mem_info = memory_info() >> sky
+    print("\nMemory Info:")
+    for key, value in mem_info.items():
+        print(f"  {key}: {value}")
+
+    # Run CPU-intensive task
+    result = cpu_intensive_task(10_000_000) >> sky
+    print(f"\nCPU Task: {result['iterations']:,} iterations in {result['elapsed_seconds']}s")
+
+
 if __name__ == "__main__":
-    # =================================================================
-    # DigitalOcean Droplet with 4 CPUs and 8GB RAM
-    # =================================================================
-    with sky.ComputePool(
-        provider=sky.DigitalOcean(region="nyc1"),
-        cpu=4,
-        memory=8,  # GB
-        allocation="spot-if-available",  # Use spot pricing when available
-    ) as pool:
-        # Get system info
-        sys_info = system_info() >> pool
-        print("System Info:")
-        for key, value in sys_info.items():
-            print(f"  {key}: {value}")
+    main()
 
-        # Get memory info
-        mem_info = memory_info() >> pool
-        print("\nMemory Info:")
-        for key, value in mem_info.items():
-            print(f"  {key}: {value}")
-
-        # Run CPU-intensive task
-        result = cpu_intensive_task(10_000_000) >> pool
-        print(f"\nCPU Task: {result['iterations']:,} iterations in {result['elapsed_seconds']}s")
-
-    # =================================================================
-    # Available DigitalOcean regions
-    # =================================================================
-    # nyc1, nyc3  - New York
-    # sfo2, sfo3  - San Francisco
-    # ams3        - Amsterdam
-    # sgp1        - Singapore
-    # lon1        - London
-    # fra1        - Frankfurt
-    # tor1        - Toronto
-    # blr1        - Bangalore
+# =================================================================
+# Available DigitalOcean regions
+# =================================================================
+# nyc1, nyc3  - New York
+# sfo2, sfo3  - San Francisco
+# ams3        - Amsterdam
+# sgp1        - Singapore
+# lon1        - London
+# fra1        - Frankfurt
+# tor1        - Toronto
+# blr1        - Bangalore

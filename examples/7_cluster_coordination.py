@@ -109,56 +109,60 @@ def map_reduce_example(data: list[int], operation: str) -> dict:
     }
 
 
+@sky.pool(
+    provider=sky.AWS(),
+    nodes=4,
+    allocation="spot-if-available",
+)
+def main():
+    # =================================================================
+    # Get cluster information from all nodes
+    # =================================================================
+    print("Cluster Information:")
+    cluster_info = get_cluster_info() @ sky
+
+    for info in cluster_info:
+        role = "HEAD" if info["is_head"] else "WORKER"
+        print(f"  Node {info['node']} ({role}): {info['accelerators']} accelerators")
+
+    head_info = cluster_info[0]
+    print(f"\nCluster: {head_info['total_nodes']} nodes, job_id={head_info['job_id'][:8]}...")
+
+    # =================================================================
+    # Distributed sum with role awareness
+    # =================================================================
+    print("\nDistributed Sum:")
+    data = list(range(1000))
+    sum_results = distributed_sum(data) @ sky
+
+    total = 0
+    for r in sum_results:
+        print(f"  {r['role'].capitalize()} {r['node']}: {r['local_count']} items, sum={r['local_sum']}")
+        total += r["local_sum"]
+
+    print(f"  Total: {total} (expected: {sum(data)})")
+
+    # =================================================================
+    # Different behavior per role
+    # =================================================================
+    print("\nRole-based behavior:")
+    role_results = worker_with_role(task_id=42) @ sky
+
+    for r in role_results:
+        if r["role"] == "coordinator":
+            print(f"  Node {r['node']} (coordinator): {r['action']}")
+        else:
+            print(f"  Node {r['node']} (worker): computed result={r['result']}")
+
+    # =================================================================
+    # Map-Reduce Pattern
+    # =================================================================
+    print("\nMap-Reduce Pattern:")
+    for op in ["sum", "count"]:
+        mr_results = map_reduce_example(list(range(100)), op) @ sky
+        aggregated = sum(r["local_result"] for r in mr_results)
+        print(f"  {op}: {aggregated}")
+
+
 if __name__ == "__main__":
-    with sky.ComputePool(
-        provider=sky.AWS(),
-        nodes=4,
-        allocation="spot-if-available",
-    ) as pool:
-        # =================================================================
-        # Get cluster information from all nodes
-        # =================================================================
-        print("Cluster Information:")
-        cluster_info = get_cluster_info() @ pool
-
-        for info in cluster_info:
-            role = "HEAD" if info["is_head"] else "WORKER"
-            print(f"  Node {info['node']} ({role}): {info['accelerators']} accelerators")
-
-        head_info = cluster_info[0]
-        print(f"\nCluster: {head_info['total_nodes']} nodes, job_id={head_info['job_id'][:8]}...")
-
-        # =================================================================
-        # Distributed sum with role awareness
-        # =================================================================
-        print("\nDistributed Sum:")
-        data = list(range(1000))
-        sum_results = distributed_sum(data) @ pool
-
-        total = 0
-        for r in sum_results:
-            print(f"  {r['role'].capitalize()} {r['node']}: {r['local_count']} items, sum={r['local_sum']}")
-            total += r["local_sum"]
-
-        print(f"  Total: {total} (expected: {sum(data)})")
-
-        # =================================================================
-        # Different behavior per role
-        # =================================================================
-        print("\nRole-based behavior:")
-        role_results = worker_with_role(task_id=42) @ pool
-
-        for r in role_results:
-            if r["role"] == "coordinator":
-                print(f"  Node {r['node']} (coordinator): {r['action']}")
-            else:
-                print(f"  Node {r['node']} (worker): computed result={r['result']}")
-
-        # =================================================================
-        # Map-Reduce Pattern
-        # =================================================================
-        print("\nMap-Reduce Pattern:")
-        for op in ["sum", "count"]:
-            mr_results = map_reduce_example(list(range(100)), op) @ pool
-            aggregated = sum(r["local_result"] for r in mr_results)
-            print(f"  {op}: {aggregated}")
+    main()

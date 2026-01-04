@@ -38,18 +38,21 @@ from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any, Literal
 
+from loguru import logger
+
 from skyward.accelerator import Accelerator
 from skyward.callback import Callback, compose, emit, use_callback
-from skyward.callbacks import cost_tracker, log, spinner
+from skyward.callbacks import cost_tracker, spinner
 from skyward.conc import for_each_async, map_async
 from skyward.events import Error, LogLine, PoolStarted, PoolStopping
 from skyward.exceptions import ExecutionError, NotProvisionedError
 from skyward.image import DEFAULT_IMAGE, Image
+from skyward.logging import LogConfig, _setup_logging, _teardown_logging
 from skyward.metrics import MetricsPoller
 from skyward.pending import PendingBatch, PendingCompute
 from skyward.spec import AllocationLike
 from skyward.task import PooledConnection, TaskPool
-from skyward.types import Architecture, Auto, Instance, Provider
+from skyward.types import Architecture, Auto, Instance, Memory, Provider
 from skyward.volume import Volume, parse_volume_uri
 
 
@@ -125,7 +128,7 @@ class ComputePool:
     accelerator: Accelerator | str | None = None
     architecture: Architecture = field(default_factory=Auto)
     cpu: int | None = None
-    memory: str | None = None
+    memory: Memory | None = None
     volume: dict[str, str] | Sequence[Volume] | None = None
     allocation: AllocationLike = "spot-if-available"
     timeout: int = 3600
@@ -135,12 +138,17 @@ class ComputePool:
     concurrency: int = 1  # Number of concurrent tasks per instance
 
     # Display settings
-    display: Literal["spinner", "log", "quiet"] = "spinner"
+    display: Literal["spinner", "quiet"] = "spinner"
     on_event: Callback | None = None
     collect_metrics: bool = True
 
+    # Logging configuration
+    logging: LogConfig | bool = False
+
     # Internal state
     _active: bool = field(default=False, init=False, repr=False)
+    _log_config: LogConfig | None = field(default=None, init=False, repr=False)
+    _log_handler_ids: list[int] = field(default_factory=list, init=False, repr=False)
     _instances: tuple[Instance, ...] | None = field(default=None, init=False, repr=False)
     _callback_ctx: AbstractContextManager[None] | None = field(
         default=None, init=False, repr=False
@@ -155,9 +163,18 @@ class ComputePool:
     _exit_stack: ExitStack | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        """Parse accelerator and store configuration."""
+        """Parse accelerator and logging configuration."""
         if self.accelerator is not None:
             self._accelerator_cfg = Accelerator.from_value(self.accelerator)
+
+        # Parse logging configuration
+        match self.logging:
+            case True:
+                self._log_config = LogConfig()
+            case LogConfig() as cfg:
+                self._log_config = cfg
+            case False:
+                self._log_config = None
 
     def _parse_accelerator_for_provider(self) -> str | None:
         """Get the accelerator type for the provider."""
@@ -193,9 +210,19 @@ class ComputePool:
         """Enter pool context and provision resources."""
         import uuid
 
+        # Setup logging first (before any log statements)
+        if self._log_config:
+            self._log_handler_ids = _setup_logging(self._log_config)
+
         with ExitStack() as stack:
             self._active = True
             self._job_id = str(uuid.uuid4())[:8]
+
+            logger.info(f"Starting pool with {self.nodes} nodes on {self.provider.name}")
+            logger.debug(
+                f"Pool config: accelerator={self.accelerator}, "
+                f"allocation={self.allocation}, concurrency={self.concurrency}"
+            )
 
             # 1. Callback context (cleanup: exits context)
             self._event_callback = self._build_callback()
@@ -211,7 +238,10 @@ class ComputePool:
             stack.callback(lambda: emit(PoolStopping()))
 
             # 4. Provision (may fail with KeyboardInterrupt)
+            logger.debug("Starting provisioning...")
             self._provision()
+
+            logger.info(f"Pool ready with {len(self._instances or [])} instances")
 
             # Success - transfer ownership
             self._exit_stack = stack.pop_all()
@@ -225,12 +255,19 @@ class ComputePool:
         exc_tb: TracebackType | None,
     ) -> None:
         """Exit pool context and release resources."""
+        logger.info("Stopping pool...")
         try:
             if self._exit_stack is not None:
                 self._exit_stack.__exit__(exc_type, exc_val, exc_tb)
                 self._exit_stack = None
         finally:
             self._active = False
+
+            # Teardown logging last
+            if self._log_handler_ids:
+                logger.debug("Pool shutdown complete")
+                _teardown_logging(self._log_handler_ids)
+                self._log_handler_ids = []
 
     def run[R](self, pending: PendingCompute[R]) -> R:
         """Execute a single computation on the pool.
@@ -249,9 +286,12 @@ class ComputePool:
         if not self._active or self._task_pool is None:
             raise NotProvisionedError()
 
+        logger.debug(f"Executing task: {pending.fn.__name__}")
         conn = self._task_pool.acquire()
         try:
-            return self._execute_on_connection(conn, pending)
+            result = self._execute_on_connection(conn, pending)
+            logger.debug(f"Task {pending.fn.__name__} completed successfully")
+            return result
         finally:
             self._task_pool.release(conn)
 
@@ -274,6 +314,7 @@ class ComputePool:
 
         computations = list(batch.computations)
         n_computations = len(computations)
+        logger.debug(f"Executing batch of {n_computations} tasks")
 
         # Acquire as many connections as we need (up to available)
         n_conns = min(n_computations, self._task_pool.total_slots)
@@ -382,6 +423,8 @@ class ComputePool:
         """Provision resources for the pool."""
         from skyward.pool_compute import _PoolCompute
 
+        logger.debug(f"Creating compute spec: nodes={self.nodes}, machine={self.machine}")
+
         # Create a Compute-like object that the provider expects
         compute = _PoolCompute(
             pool=self,
@@ -399,10 +442,15 @@ class ComputePool:
         )
 
         # Provision and setup (providers use emit() directly)
+        logger.info(f"Provisioning {self.nodes} instances via {self.provider.name}...")
         self._instances = self.provider.provision(compute)
+        logger.debug(f"Provisioned {len(self._instances)} instances")
+
+        logger.debug("Running instance setup/bootstrap...")
         self.provider.setup(self._instances, compute)
 
         # Initialize TaskPool (creates tunnels and connections in parallel)
+        logger.debug("Initializing task pool and connections...")
         self._task_pool = TaskPool(
             provider=self.provider,
             instances=self._instances,
@@ -410,10 +458,12 @@ class ComputePool:
         )
 
         # Setup cluster on all instances in parallel (once per instance)
+        logger.debug("Setting up cluster environment on instances...")
         self._setup_all_instances()
 
         # Start metrics polling if enabled
         if self.collect_metrics:
+            logger.debug("Starting metrics polling...")
             for instance in self._instances:
                 poller = MetricsPoller(instance, callback=self._event_callback)
                 poller.start()
@@ -426,13 +476,19 @@ class ComputePool:
 
         from skyward.pool_compute import _PoolCompute
 
+        instance_count = len(self._instances)
+        logger.debug(f"Shutting down {instance_count} instances...")
+
         # Stop metrics polling
-        for poller in self._metrics_pollers:
-            poller.stop()
-        self._metrics_pollers.clear()
+        if self._metrics_pollers:
+            logger.debug("Stopping metrics polling...")
+            for poller in self._metrics_pollers:
+                poller.stop()
+            self._metrics_pollers.clear()
 
         # Close TaskPool first if active
         if self._task_pool is not None:
+            logger.debug("Closing task pool connections...")
             with suppress(Exception):
                 self._task_pool.close_all()
             self._task_pool = None
@@ -455,9 +511,11 @@ class ComputePool:
             volumes=list(_parse_volumes(self.volume)),
         )
 
+        logger.debug("Terminating instances...")
         with suppress(Exception):
             self.provider.shutdown(self._instances, compute)
 
+        logger.info(f"Terminated {instance_count} instances")
         self._instances = None
 
     def _setup_all_instances(self) -> None:
@@ -540,8 +598,6 @@ class ComputePool:
 
         # Display callback
         match self.display:
-            case "log":
-                callbacks.append(log)
             case "spinner":
                 callbacks.append(spinner())
             case "quiet":

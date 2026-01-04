@@ -1,11 +1,38 @@
+"""
+Monte Carlo π estimation.
+
+    ┌─────────────┐
+    │ ·  ·  ○  ·  │   ○ = inside quarter circle
+    │  ○  ○    ○  │   · = outside
+    │   ○  ○  ○   │
+    │  ○  ○  ○  · │   π ≈ 4 × (○ count) / total
+    │ ○  ○  ·  ·  │
+    └─────────────┘
+"""
+
 import skyward as sky
 
-@sky.compute
-def remote_sum(x: int, y: int) -> int:
-    print("That's one expensive sum.")
-    return x + y
 
-if __name__ == '__main__':
-    with sky.ComputePool(provider=sky.AWS(), machine='t4g.small') as pool:
-        result = remote_sum(x=1, y=2) >> pool
-        print(result)
+@sky.compute
+def estimate_pi(samples: int, seed: int = 0) -> float:
+    """Estimate π via Monte Carlo"""
+    from jax import random
+
+    key = random.PRNGKey(seed)
+    x, y = random.uniform(key, (2, samples))
+
+    return float(4 * ((x**2 + y**2) <= 1).mean())
+
+
+@sky.pool(
+    provider=sky.AWS(),
+    accelerator="L40S",
+    image=sky.Image(pip=["jax[cuda12]"]),
+)
+def main():
+    π = estimate_pi(samples=100_000_000) >> sky
+    print(f"π ≈ {π}")
+
+
+if __name__ == "__main__":
+    main()

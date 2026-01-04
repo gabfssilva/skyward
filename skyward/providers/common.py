@@ -15,6 +15,7 @@ from pathlib import Path
 from subprocess import PIPE, Popen
 from typing import TYPE_CHECKING
 
+from loguru import logger
 from tenacity import (
     RetryError,
     retry,
@@ -47,6 +48,7 @@ def find_available_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port: int = s.getsockname()[1]
+        logger.debug(f"Found available local port: {port}")
         return port
 
 
@@ -78,12 +80,15 @@ def create_tunnel(
     timeout: int = 30,
 ) -> tuple[int, Popen[bytes]]:
     """Create a tunnel process and wait for it to be ready."""
+    logger.debug(f"Creating tunnel on port {local_port} with cmd: {cmd[:3]}...")
     proc = subprocess.Popen(cmd, stdin=PIPE, stdout=PIPE, stderr=PIPE)
 
     try:
         wait_for_tunnel(local_port, timeout=timeout)
+        logger.debug(f"Tunnel ready on port {local_port}")
         return local_port, proc
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Tunnel creation failed on port {local_port}: {e}")
         proc.terminate()
         raise
 
@@ -159,6 +164,7 @@ def wait_for_bootstrap(
     extra_checkpoints: tuple[Checkpoint, ...] = (),
 ) -> None:
     """Wait for instance bootstrap with progress tracking."""
+    logger.debug(f"Waiting for bootstrap on {instance_id} (timeout={timeout}s)")
     all_checkpoints = CHECKPOINTS + extra_checkpoints
 
     checkpoint_files = " ".join(c.file for c in all_checkpoints)
@@ -202,15 +208,19 @@ def wait_for_bootstrap(
 
         if ".ready" in found_files:
             # Bootstrap complete - service will be started after wheel installation
+            logger.debug(f"Bootstrap ready on {instance_id}")
             return
 
         raise BootstrapNotReadyError()
 
     try:
         _poll_bootstrap()
+        logger.info(f"Bootstrap completed on {instance_id}")
     except BootstrapFailedError as e:
+        logger.error(f"Bootstrap failed on {instance_id}: {e.error_msg}")
         raise RuntimeError(f"Bootstrap failed on {instance_id}:\n{e.error_msg}") from None
     except (RetryError, BootstrapNotReadyError) as e:
+        logger.error(f"Bootstrap timed out on {instance_id} after {timeout}s")
         raise RuntimeError(f"Bootstrap timed out on {instance_id}") from e
 
 
@@ -290,6 +300,7 @@ def create_ssh_runner(
 
 def build_wheel() -> Path:
     """Build skyward wheel locally."""
+    logger.debug("Building skyward wheel locally...")
     skyward_dir = Path(__file__).parent.parent
     project_dir = skyward_dir.parent
 
@@ -303,9 +314,12 @@ def build_wheel() -> Path:
         text=True,
     )
     if result.returncode != 0:
+        logger.error(f"Failed to build wheel: {result.stderr}")
         raise RuntimeError(f"Failed to build wheel: {result.stderr}")
 
-    return next(build_dir.glob("*.whl"))
+    wheel_path = next(build_dir.glob("*.whl"))
+    logger.info(f"Built wheel: {wheel_path.name}")
+    return wheel_path
 
 
 def _build_wheel_install_script(
@@ -399,6 +413,7 @@ def install_skyward_wheel_via_transport(
     """
     from skyward.conc import for_each_async
 
+    logger.info(f"Installing skyward wheel on {len(instances)} instances...")
     wheel_path = build_wheel()
 
     # Get environment variables from compute spec's image
@@ -410,10 +425,12 @@ def install_skyward_wheel_via_transport(
     def install_on_instance(inst: Instance) -> None:
         import tempfile
 
+        logger.debug(f"Installing wheel on {inst.id}...")
         with get_transport(inst) as transport:
             # Upload wheel to /tmp (user has write access, script will move to SKYWARD_DIR)
             tmp_wheel = f"/tmp/{wheel_path.name}"
             transport.upload_file(wheel_path, tmp_wheel)
+            logger.debug(f"Uploaded wheel to {inst.id}:{tmp_wheel}")
 
             # Upload install script to /tmp (safer than passing via bash -c with escaping issues)
             with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as f:
@@ -425,11 +442,14 @@ def install_skyward_wheel_via_transport(
                 transport.upload_file(local_script, remote_script)
 
                 # Single remote call: execute script (runs as sudo to have write access)
+                logger.debug(f"Running install script on {inst.id}...")
                 transport.run_command(f"sudo bash {remote_script}", timeout=180)
+                logger.info(f"Wheel installed on {inst.id}")
             finally:
                 local_script.unlink(missing_ok=True)
 
     for_each_async(install_on_instance, instances)
+    logger.info(f"Wheel installation complete on all {len(instances)} instances")
 
 
 def wait_for_ssh_bootstrap(
@@ -441,6 +461,8 @@ def wait_for_ssh_bootstrap(
     """Wait for bootstrap to complete on all instances via SSH (concurrent)."""
     from skyward.conc import for_each_async
 
+    logger.info(f"Waiting for SSH bootstrap on {len(instances)} instances...")
+
     extra_checkpoints = (
         Checkpoint(".step_venv", "venv"),
         Checkpoint(".step_base", "base deps"),
@@ -450,6 +472,7 @@ def wait_for_ssh_bootstrap(
 
     def wait_for_instance(inst: Instance) -> None:
         ip = get_ip(inst)
+        logger.debug(f"Checking bootstrap status for {inst.id} at {ip}")
         runner = create_ssh_runner(ip, username, key_path)
         wait_for_bootstrap(
             run_command=runner,
@@ -459,5 +482,6 @@ def wait_for_ssh_bootstrap(
         )
 
     for_each_async(wait_for_instance, instances)
+    logger.info(f"All {len(instances)} instances bootstrapped successfully")
 
 

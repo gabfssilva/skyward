@@ -23,15 +23,19 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, Literal
 
 import cloudpickle
+from loguru import logger
 
 from skyward.callback import Callback
 from skyward.image import DEFAULT_IMAGE, Image
+from skyward.logging import LogConfig
 from skyward.pool import ComputePool
 from skyward.spec import AllocationLike
 from skyward.volume import Volume
 
 if TYPE_CHECKING:
     from skyward.types import Accelerator, Provider
+
+from skyward.types import Memory
 
 
 def _make_remote_executor() -> Callable[[bytes, bytes, bytes], Any]:
@@ -101,15 +105,16 @@ class Executor(Executor):
         image: Image | None = None,
         accelerator: Accelerator | str | None = None,
         cpu: int | None = None,
-        memory: str | None = None,
+        memory: Memory | None = None,
         volume: dict[str, str] | Sequence[Volume] | None = None,
         allocation: AllocationLike = "spot-if-available",
         timeout: int = 3600,
         env: dict[str, str] | None = None,
         concurrency: int = 1,
-        display: Literal["spinner", "log", "quiet"] = "spinner",
+        display: Literal["spinner", "quiet"] = "spinner",
         on_event: Callback | None = None,
         collect_metrics: bool = True,
+        logging: LogConfig | bool = False,
     ) -> None:
         self._provider = provider
         self._nodes = nodes
@@ -126,6 +131,7 @@ class Executor(Executor):
         self._display = display
         self._on_event = on_event
         self._collect_metrics = collect_metrics
+        self._logging = logging
 
         self._pool: ComputePool | None = None
         self._thread_executor: ThreadPoolExecutor | None = None
@@ -134,6 +140,8 @@ class Executor(Executor):
 
     def __enter__(self) -> Executor:
         """Enter context and provision cloud resources."""
+        logger.debug(f"Initializing executor with {self._nodes} nodes, concurrency={self._concurrency}")
+
         self._pool = ComputePool(
             provider=self._provider,
             nodes=self._nodes,
@@ -150,12 +158,14 @@ class Executor(Executor):
             display=self._display,
             on_event=self._on_event,
             collect_metrics=self._collect_metrics,
+            logging=self._logging,
         )
         self._pool.__enter__()
 
         # Thread executor for async future management
         # Use total_slots as max_workers to match pool capacity
         self._thread_executor = ThreadPoolExecutor(max_workers=self._pool.total_slots)
+        logger.debug(f"Executor ready with {self._pool.total_slots} execution slots")
 
         return self
 
@@ -200,6 +210,7 @@ class Executor(Executor):
         if self._pool is None or self._thread_executor is None:
             raise RuntimeError("Executor not active. Use within context manager.")
 
+        logger.debug(f"Submitting task: {fn.__name__}")
         # Propagate contextvars to worker thread
         ctx = contextvars.copy_context()
         return self._thread_executor.submit(ctx.run, self._execute_on_pool, fn, args, kwargs)
@@ -272,15 +283,20 @@ class Executor(Executor):
         if self._shutdown:
             return
 
+        logger.debug(f"Shutting down executor (wait={wait}, cancel_futures={cancel_futures})")
         self._shutdown = True
 
         # Shutdown thread executor first
         if self._thread_executor is not None:
+            logger.debug("Shutting down thread executor...")
             self._thread_executor.shutdown(wait=wait, cancel_futures=cancel_futures)
             self._thread_executor = None
 
         # Then shutdown cloud pool
         if self._pool is not None:
+            logger.debug("Shutting down cloud pool...")
             with suppress(Exception):
                 self._pool.__exit__(None, None, None)
             self._pool = None
+
+        logger.debug("Executor shutdown complete")

@@ -31,12 +31,14 @@ from typing import TYPE_CHECKING, Any, Literal
 import cloudpickle
 from joblib import parallel_backend
 from joblib.parallel import ParallelBackendBase, register_parallel_backend
+from loguru import logger
 
 from skyward.accelerator import Accelerator
 from skyward.callback import Callback
 from skyward.image import DEFAULT_IMAGE, Image
 from skyward.pool import ComputePool
 from skyward.spec import AllocationLike
+from skyward.types import Memory
 from skyward.volume import Volume
 
 if TYPE_CHECKING:
@@ -92,6 +94,7 @@ class SkywardBackend(ParallelBackendBase):
         self.parallel = parallel
         self._n_jobs = n_jobs
         effective = self.effective_n_jobs(n_jobs)
+        logger.debug(f"Configuring SkywardBackend with n_jobs={n_jobs}, effective={effective}")
         self._executor = ThreadPoolExecutor(max_workers=effective)
         return effective
 
@@ -118,6 +121,7 @@ class SkywardBackend(ParallelBackendBase):
         if self._executor is None:
             raise RuntimeError("Backend not configured")
 
+        logger.debug("Submitting task to Skyward backend")
         ctx = contextvars.copy_context()
         future = self._executor.submit(ctx.run, self._execute_on_skyward, func)
         if callback is not None:
@@ -126,9 +130,12 @@ class SkywardBackend(ParallelBackendBase):
 
     def _execute_on_skyward(self, func: Callable[[], Any]) -> Any:
         """Execute a function on Skyward (blocking, runs in thread)."""
+        logger.debug("Executing task on Skyward pool")
         payload = cloudpickle.dumps(func)
         pending = self._remote_execute(payload)
-        return pending >> self.pool
+        result = pending >> self.pool
+        logger.debug("Task execution completed")
+        return result
 
     def retrieve_result_callback(self, future: Future[Any]) -> Any:
         """Extract result from future (called from callback)."""
@@ -161,9 +168,11 @@ def _setup_backend(pool: ComputePool) -> None:
         return SkywardBackend(pool)
 
     if not _backend_registered:
+        logger.debug("Registering Skyward joblib backend")
         register_parallel_backend("skyward", backend_factory)
         _backend_registered = True
     else:
+        logger.debug("Re-registering Skyward joblib backend")
         register_parallel_backend("skyward", backend_factory, make_default=False)
 
 
@@ -183,9 +192,11 @@ def sklearn_backend(pool: ComputePool) -> Iterator[None]:
                 grid_search = GridSearchCV(estimator, param_grid, n_jobs=-1)
                 grid_search.fit(X, y)  # Distributed!
     """
+    logger.info("Activating sklearn/joblib backend with Skyward pool")
     _setup_backend(pool)
     with parallel_backend("skyward"):
         yield
+    logger.debug("sklearn/joblib backend deactivated")
 
 
 joblib_backend = sklearn_backend
@@ -211,13 +222,13 @@ def JoblibPool(
     image: Image | None = None,
     accelerator: Accelerator | str | None = None,
     cpu: int | None = None,
-    memory: str | None = None,
+    memory: Memory | None = None,
     volume: dict[str, str] | Sequence[Volume] | None = None,
     allocation: AllocationLike = "spot-if-available",
     timeout: int = 3600,
     env: dict[str, str] | None = None,
     concurrency: int = 1,
-    display: Literal["spinner", "log", "quiet"] = "spinner",
+    display: Literal["spinner", "quiet"] = "spinner",
     on_event: Callback | None = None,
     collect_metrics: bool = True,
     joblib_version: str | None = None,
@@ -251,6 +262,7 @@ def JoblibPool(
         with JoblibPool(provider=AWS(), nodes=4, concurrency=4) as pool:
             results = Parallel(n_jobs=-1)(delayed(fn)(x) for x in data)
     """
+    logger.info(f"Creating JoblibPool with {nodes} nodes, concurrency={concurrency}")
     base = image or DEFAULT_IMAGE
     pkg = f"joblib=={joblib_version}" if joblib_version else "joblib"
     merged = _merge_pip(base, pkg)
@@ -288,13 +300,13 @@ def ScikitLearnPool(
     image: Image | None = None,
     accelerator: Accelerator | str | None = None,
     cpu: int | None = None,
-    memory: str | None = None,
+    memory: Memory | None = None,
     volume: dict[str, str] | Sequence[Volume] | None = None,
     allocation: AllocationLike = "spot-if-available",
     timeout: int = 3600,
     env: dict[str, str] | None = None,
     concurrency: int = 1,
-    display: Literal["spinner", "log", "quiet"] = "spinner",
+    display: Literal["spinner", "quiet"] = "spinner",
     on_event: Callback | None = None,
     collect_metrics: bool = True,
     sklearn_version: str | None = None,
@@ -329,6 +341,7 @@ def ScikitLearnPool(
             grid = GridSearchCV(model, params, n_jobs=-1)
             grid.fit(X, y)  # Distributed!
     """
+    logger.info(f"Creating ScikitLearnPool with {nodes} nodes, concurrency={concurrency}")
     base = image or DEFAULT_IMAGE
     pkg = f"scikit-learn=={sklearn_version}" if sklearn_version else "scikit-learn"
     merged = _merge_pip(base, pkg)

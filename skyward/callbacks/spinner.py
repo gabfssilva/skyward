@@ -188,7 +188,7 @@ class SpinnerController:
 
     @handle.register
     def _(self, event: PoolStarted) -> None:
-        self._sp = yaspin(Spinners.dots12, text="Initializing...", color="blue")
+        self._sp = yaspin(text="Initializing...", color="blue")
         self._sp.start()
         self._redirect_streams()
 

@@ -233,6 +233,64 @@ def process(x: int) -> int:
 result = process.local(10)  # Returns 20 directly
 ```
 
+## The @sky.pool Decorator
+
+For simpler, more declarative code, use the `@sky.pool` decorator instead of the context manager:
+
+```python
+import skyward as sky
+
+@sky.compute
+def train(data):
+    return model.fit(data)
+
+@sky.pool(provider=sky.AWS(), accelerator="A100", nodes=4)
+def main():
+    result = train(data) >> sky
+    return result
+
+main()  # provisions -> executes -> terminates
+```
+
+The decorator:
+1. Provisions resources when the function is called
+2. Sets up a context so `>> sky` knows which pool to use
+3. Automatically terminates when the function returns (or raises)
+
+### Implicit Execution with `>> sky`
+
+Inside a `@pool`-decorated function, use `>> sky` instead of `>> pool`:
+
+```python
+@sky.pool(provider=sky.AWS(), accelerator="T4")
+def main():
+    result = train(x) >> sky          # Execute on one worker
+    all_results = init() @ sky        # Broadcast to all nodes
+    a, b = (fn1() & fn2()) >> sky     # Parallel execution
+```
+
+The `sky` module acts as a proxy that retrieves the current pool from context.
+
+### When to Use Each Approach
+
+| Use `@sky.pool` when... | Use `with ComputePool` when... |
+|-------------------------|-------------------------------|
+| Simple, self-contained jobs | Need pool access before execution |
+| Cleaner, more declarative code | Custom event handlers with `pool.on()` |
+| Single entry point | Dynamic pool creation |
+| Most use cases | Advanced patterns |
+
+**Example: Event handlers require `with`:**
+
+```python
+# Event handlers need pool.on() before entering context
+pool = sky.ComputePool(provider=sky.AWS())
+pool.on(sky.Metrics, my_metrics_handler)  # Register before entering
+
+with pool:
+    result = train() >> pool
+```
+
 ## PendingCompute
 
 `PendingCompute[R]` represents a deferred computation that will return type `R` when executed.
@@ -321,7 +379,7 @@ Skyward uses Python operators to control how computations are executed.
 Execute on one worker, return single result:
 
 ```python
-result = my_function(x) >> pool
+result = my_function(x) >> sky
 ```
 
 ### `@` (Broadcast)
@@ -329,11 +387,13 @@ result = my_function(x) >> pool
 Execute on ALL workers, return tuple of results:
 
 ```python
-# With 4 nodes, returns tuple of 4 results
-results = my_function(x) @ pool
+@sky.pool(provider=sky.AWS(), nodes=4)
+def main():
+    # With 4 nodes, returns tuple of 4 results
+    results = my_function(x) @ sky
 
-# Useful for initialization
-models = load_model(path) @ pool  # Load on all nodes
+    # Useful for initialization
+    models = load_model(path) @ sky  # Load on all nodes
 ```
 
 ### `&` (Parallel Chain)
@@ -341,14 +401,16 @@ models = load_model(path) @ pool  # Load on all nodes
 Chain multiple computations for parallel execution with type safety:
 
 ```python
-# Full type inference
-a: int
-b: float
-c: str
-a, b, c = (fn1() & fn2() & fn3()) >> pool
+@sky.pool(provider=sky.AWS())
+def main():
+    # Full type inference
+    a: int
+    b: float
+    c: str
+    a, b, c = (fn1() & fn2() & fn3()) >> sky
 
-# Supports up to 8 chained computations
-r1, r2, r3, r4, r5 = (f1() & f2() & f3() & f4() & f5()) >> pool
+    # Supports up to 8 chained computations
+    r1, r2, r3, r4, r5 = (f1() & f2() & f3() & f4() & f5()) >> sky
 ```
 
 ### `gather()` (Dynamic Parallel)
@@ -358,11 +420,13 @@ Group any number of computations for parallel execution:
 ```python
 import skyward as sky
 
-# Fixed number
-r1, r2, r3 = sky.gather(fn(1), fn(2), fn(3)) >> pool
+@sky.pool(provider=sky.AWS())
+def main():
+    # Fixed number
+    r1, r2, r3 = sky.gather(fn(1), fn(2), fn(3)) >> sky
 
-# Dynamic (e.g., from list comprehension)
-results = sky.gather(*[process(x) for x in data]) >> pool
+    # Dynamic (e.g., from list comprehension)
+    results = sky.gather(*[process(x) for x in data]) >> sky
 ```
 
 ## Image

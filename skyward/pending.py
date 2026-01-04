@@ -30,10 +30,26 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from types import ModuleType
 from typing import TYPE_CHECKING, Any, TypeVar, overload
 
 if TYPE_CHECKING:
     from skyward.pool import ComputePool
+
+# Type alias for pool target (explicit pool or implicit via module)
+type PoolTarget = ComputePool | ModuleType
+
+
+def _resolve_pool(target: PoolTarget) -> ComputePool:
+    """Resolve pool from target (explicit pool or implicit via module context)."""
+    match target:
+        case ModuleType():
+            from skyward._context import get_current_pool
+
+            return get_current_pool()
+        case _:
+            return target
+
 
 # Type variables for generic return types
 R = TypeVar("R")
@@ -81,22 +97,23 @@ class PendingCompute[R]:
         """
         return PendingBatch2(self, other)
 
-    def __rshift__(self, pool: ComputePool) -> R:
+    def __rshift__(self, target: PoolTarget) -> R:
         """Execute this computation on the given pool.
 
         Args:
-            pool: Pool to execute on.
+            target: Pool to execute on, or skyward module for implicit pool.
 
         Returns:
             The result of the computation.
         """
+        pool = _resolve_pool(target)
         return pool.run(self)
 
-    def __matmul__(self, pool: ComputePool) -> tuple[R, ...]:
+    def __matmul__(self, target: PoolTarget) -> tuple[R, ...]:
         """Broadcast: execute on ALL nodes in the pool.
 
         Args:
-            pool: Pool to execute on.
+            target: Pool to execute on, or skyward module for implicit pool.
 
         Returns:
             Tuple of results, one per node.
@@ -105,7 +122,7 @@ class PendingCompute[R]:
             # Execute on all 4 nodes
             results = load_model(path) @ pool  # tuple of 4 results
         """
-        return pool.broadcast(self)
+        return _resolve_pool(target).broadcast(self)
 
     @property
     def kwargs_dict(self) -> dict[str, Any]:
@@ -130,16 +147,16 @@ class PendingBatch:
 
     computations: tuple[PendingCompute[Any], ...]
 
-    def __rshift__(self, pool: ComputePool) -> tuple[Any, ...]:
+    def __rshift__(self, target: PoolTarget) -> tuple[Any, ...]:
         """Execute all computations in parallel on the given pool.
 
         Args:
-            pool: Pool to execute on.
+            target: Pool to execute on, or skyward module for implicit pool.
 
         Returns:
             Tuple of results in the same order as the computations.
         """
-        return pool.run_batch(self)
+        return _resolve_pool(target).run_batch(self)
 
 
 # =============================================================================
@@ -157,8 +174,8 @@ class PendingBatch2[R1, R2]:
     def __and__[R3](self, other: PendingCompute[R3]) -> PendingBatch3[R1, R2, R3]:
         return PendingBatch3(self.c1, self.c2, other)
 
-    def __rshift__(self, pool: ComputePool) -> tuple[R1, R2]:
-        return pool.run_batch(PendingBatch((self.c1, self.c2)))
+    def __rshift__(self, target: PoolTarget) -> tuple[R1, R2]:
+        return _resolve_pool(target).run_batch(PendingBatch((self.c1, self.c2)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,8 +189,8 @@ class PendingBatch3[R1, R2, R3]:
     def __and__[R4](self, other: PendingCompute[R4]) -> PendingBatch4[R1, R2, R3, R4]:
         return PendingBatch4(self.c1, self.c2, self.c3, other)
 
-    def __rshift__(self, pool: ComputePool) -> tuple[R1, R2, R3]:
-        return pool.run_batch(PendingBatch((self.c1, self.c2, self.c3)))
+    def __rshift__(self, target: PoolTarget) -> tuple[R1, R2, R3]:
+        return _resolve_pool(target).run_batch(PendingBatch((self.c1, self.c2, self.c3)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,8 +205,8 @@ class PendingBatch4[R1, R2, R3, R4]:
     def __and__[R5](self, other: PendingCompute[R5]) -> PendingBatch5[R1, R2, R3, R4, R5]:
         return PendingBatch5(self.c1, self.c2, self.c3, self.c4, other)
 
-    def __rshift__(self, pool: ComputePool) -> tuple[R1, R2, R3, R4]:
-        return pool.run_batch(PendingBatch((self.c1, self.c2, self.c3, self.c4)))
+    def __rshift__(self, target: PoolTarget) -> tuple[R1, R2, R3, R4]:
+        return _resolve_pool(target).run_batch(PendingBatch((self.c1, self.c2, self.c3, self.c4)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,8 +222,8 @@ class PendingBatch5[R1, R2, R3, R4, R5]:
     def __and__[R6](self, other: PendingCompute[R6]) -> PendingBatch6[R1, R2, R3, R4, R5, R6]:
         return PendingBatch6(self.c1, self.c2, self.c3, self.c4, self.c5, other)
 
-    def __rshift__(self, pool: ComputePool) -> tuple[R1, R2, R3, R4, R5]:
-        return pool.run_batch(PendingBatch((self.c1, self.c2, self.c3, self.c4, self.c5)))
+    def __rshift__(self, target: PoolTarget) -> tuple[R1, R2, R3, R4, R5]:
+        return _resolve_pool(target).run_batch(PendingBatch((self.c1, self.c2, self.c3, self.c4, self.c5)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,8 +240,8 @@ class PendingBatch6[R1, R2, R3, R4, R5, R6]:
     def __and__[R7](self, other: PendingCompute[R7]) -> PendingBatch7[R1, R2, R3, R4, R5, R6, R7]:
         return PendingBatch7(self.c1, self.c2, self.c3, self.c4, self.c5, self.c6, other)
 
-    def __rshift__(self, pool: ComputePool) -> tuple[R1, R2, R3, R4, R5, R6]:
-        return pool.run_batch(PendingBatch((self.c1, self.c2, self.c3, self.c4, self.c5, self.c6)))
+    def __rshift__(self, target: PoolTarget) -> tuple[R1, R2, R3, R4, R5, R6]:
+        return _resolve_pool(target).run_batch(PendingBatch((self.c1, self.c2, self.c3, self.c4, self.c5, self.c6)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,8 +259,8 @@ class PendingBatch7[R1, R2, R3, R4, R5, R6, R7]:
     def __and__[R8](self, other: PendingCompute[R8]) -> PendingBatch8[R1, R2, R3, R4, R5, R6, R7, R8]:
         return PendingBatch8(self.c1, self.c2, self.c3, self.c4, self.c5, self.c6, self.c7, other)
 
-    def __rshift__(self, pool: ComputePool) -> tuple[R1, R2, R3, R4, R5, R6, R7]:
-        return pool.run_batch(PendingBatch((self.c1, self.c2, self.c3, self.c4, self.c5, self.c6, self.c7)))
+    def __rshift__(self, target: PoolTarget) -> tuple[R1, R2, R3, R4, R5, R6, R7]:
+        return _resolve_pool(target).run_batch(PendingBatch((self.c1, self.c2, self.c3, self.c4, self.c5, self.c6, self.c7)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,8 +276,8 @@ class PendingBatch8[R1, R2, R3, R4, R5, R6, R7, R8]:
     c7: PendingCompute[R7]
     c8: PendingCompute[R8]
 
-    def __rshift__(self, pool: ComputePool) -> tuple[R1, R2, R3, R4, R5, R6, R7, R8]:
-        return pool.run_batch(PendingBatch((self.c1, self.c2, self.c3, self.c4, self.c5, self.c6, self.c7, self.c8)))
+    def __rshift__(self, target: PoolTarget) -> tuple[R1, R2, R3, R4, R5, R6, R7, R8]:
+        return _resolve_pool(target).run_batch(PendingBatch((self.c1, self.c2, self.c3, self.c4, self.c5, self.c6, self.c7, self.c8)))
 
 
 # =============================================================================

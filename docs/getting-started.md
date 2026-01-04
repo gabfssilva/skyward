@@ -97,10 +97,13 @@ def hello() -> str:
     import socket
     return f"Hello from {socket.gethostname()}!"
 
+@sky.pool(provider=sky.AWS())
+def main():
+    result = hello() >> sky
+    print(result)
+
 if __name__ == "__main__":
-    with sky.ComputePool(provider=sky.AWS()) as pool:
-        result = hello() >> pool
-        print(result)
+    main()
 ```
 
 Run it:
@@ -133,16 +136,19 @@ def gpu_info() -> dict:
         "device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
     }
 
+@sky.pool(
+    provider=sky.AWS(),
+    accelerator="T4",                 # Request a T4 GPU
+    image=sky.Image(pip=["torch"]),   # Install PyTorch
+    allocation="always-spot",         # Use spot instances (cheaper)
+)
+def main():
+    info = gpu_info() >> sky
+    print(f"GPU: {info['device_name']}")
+    print(f"CUDA devices: {info['device_count']}")
+
 if __name__ == "__main__":
-    with sky.ComputePool(
-        provider=sky.AWS(),
-        accelerator="T4",                 # Request a T4 GPU
-        image=sky.Image(pip=["torch"]),   # Install PyTorch
-        allocation="always-spot",                    # Use spot instances (cheaper)
-    ) as pool:
-        info = gpu_info() >> pool
-        print(f"GPU: {info['device_name']}")
-        print(f"CUDA devices: {info['device_count']}")
+    main()
 ```
 
 ## Understanding the Output
@@ -175,13 +181,14 @@ import skyward as sky
 def square(x: int) -> int:
     return x * x
 
-with sky.ComputePool(provider=sky.AWS()) as pool:
+@sky.pool(provider=sky.AWS())
+def main():
     # Method 1: gather()
-    results = sky.gather(square(1), square(2), square(3)) >> pool
+    results = sky.gather(square(1), square(2), square(3)) >> sky
     print(results)  # (1, 4, 9)
 
     # Method 2: & operator
-    a, b, c = (square(4) & square(5) & square(6)) >> pool
+    a, b, c = (square(4) & square(5) & square(6)) >> sky
     print(a, b, c)  # 16 25 36
 ```
 
@@ -194,16 +201,17 @@ import skyward as sky
 
 @sky.compute
 def worker_info() -> dict:
-    pool = sky.instance_info()
+    info = sky.instance_info()
     return {
-        "node": pool.node,
-        "total": pool.total_nodes,
-        "is_head": pool.is_head,
+        "node": info.node,
+        "total": info.total_nodes,
+        "is_head": info.is_head,
     }
 
-with sky.ComputePool(provider=sky.AWS(), nodes=4) as pool:
+@sky.pool(provider=sky.AWS(), nodes=4)
+def main():
     # @ broadcasts to ALL nodes
-    results = worker_info() @ pool
+    results = worker_info() @ sky
     for r in results:
         print(f"Node {r['node']}/{r['total']} (head={r['is_head']})")
 ```

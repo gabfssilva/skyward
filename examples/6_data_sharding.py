@@ -114,51 +114,55 @@ def train_with_dataloader(epochs: int, batch_size: int) -> dict:
     }
 
 
-if __name__ == "__main__":
-    # Generate full dataset (this stays on the local machine)
+@sky.pool(
+    provider=sky.AWS(),
+    nodes=4,
+    image=sky.Image(pip=["numpy", "torch"]),
+    allocation="spot-if-available",
+)
+def main():
+    # Generate full dataset
     import random
 
     random.seed(42)
     X = [[random.gauss(0, 1) for _ in range(10)] for _ in range(10000)]
     Y = [random.randint(0, 9) for _ in range(10000)]
 
-    with sky.ComputePool(
-        provider=sky.AWS(),
-        nodes=4,
-        pip=["numpy", "torch"],
-        allocation="spot-if-available",
-    ) as pool:
-        # =================================================================
-        # Basic sharding with shard()
-        # =================================================================
-        print("Training on sharded data...")
-        results = train_on_shard(X, Y) @ pool
+    # =================================================================
+    # Basic sharding with shard()
+    # =================================================================
+    print("Training on sharded data...")
+    results = train_on_shard(X, Y) @ sky
 
-        for r in results:
-            print(f"  Node {r['node']}: {r['shard_size']} samples, mean={r['x_mean']:.3f}")
+    for r in results:
+        print(f"  Node {r['node']}: {r['shard_size']} samples, mean={r['x_mean']:.3f}")
 
-        # =================================================================
-        # Type preservation demonstration
-        # =================================================================
-        print("\nType preservation:")
-        type_results = demonstrate_shard_types() @ pool
+    # =================================================================
+    # Type preservation demonstration
+    # =================================================================
+    print("\nType preservation:")
+    type_results = demonstrate_shard_types() @ sky
 
-        for r in type_results:
-            print(
-                f"  Node {r['node']}: "
-                f"list={r['list_type']}({r['list_len']}), "
-                f"array={r['array_type']}({r['array_len']})"
-            )
+    for r in type_results:
+        print(
+            f"  Node {r['node']}: "
+            f"list={r['list_type']}({r['list_len']}), "
+            f"array={r['array_type']}({r['array_len']})"
+        )
 
-        # =================================================================
-        # DistributedSampler with DataLoader
-        # =================================================================
-        print("\nTraining with DistributedSampler:")
-        dl_results = train_with_dataloader(epochs=5, batch_size=32) @ pool
+    # =================================================================
+    # DistributedSampler with DataLoader
+    # =================================================================
+    print("\nTraining with DistributedSampler:")
+    dl_results = train_with_dataloader(epochs=5, batch_size=32) @ sky
 
-        for r in dl_results:
-            print(
-                f"  Node {r['node']}: "
-                f"{r['samples_per_node']} samples, "
-                f"loss={r['final_loss']:.4f}"
-            )
+    for r in dl_results:
+        print(
+            f"  Node {r['node']}: "
+            f"{r['samples_per_node']} samples, "
+            f"loss={r['final_loss']:.4f}"
+        )
+
+
+if __name__ == "__main__":
+    main()

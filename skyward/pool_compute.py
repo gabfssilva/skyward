@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 from skyward.accelerator import Accelerator
 from skyward.image import Image
 from skyward.spec import AllocationLike
-from skyward.types import Architecture
+from skyward.types import Architecture, Memory
 
 if TYPE_CHECKING:
     from skyward.pool import ComputePool
@@ -36,7 +36,7 @@ class _PoolCompute:
     architecture: Architecture
     image: Image
     cpu: int | None
-    memory: str | None
+    memory: Memory | None
     timeout: int
     allocation: AllocationLike
     volumes: list[Volume]

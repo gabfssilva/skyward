@@ -4,7 +4,7 @@ Complete reference for the Skyward API.
 
 ## Contents
 
-- [Core API](#core-api) — @compute, PendingCompute, gather, ComputePool, MultiPool
+- [Core API](#core-api) — @compute, PendingCompute, gather, ComputePool, @pool, MultiPool
 - [Image](#image) — Environment specification
 - [Providers](#providers) — AWS, DigitalOcean, Verda
 - [Accelerators](#accelerators) — GPU types and MIG
@@ -59,9 +59,11 @@ pending: sky.PendingCompute[int] = add(1, 2)
 
 | Operator | Method | Result |
 |----------|--------|--------|
-| `>> pool` | `__rshift__` | Execute, return `R` |
-| `@ pool` | `__matmul__` | Broadcast, return `tuple[R, ...]` |
+| `>> pool` or `>> sky` | `__rshift__` | Execute, return `R` |
+| `@ pool` or `@ sky` | `__matmul__` | Broadcast, return `tuple[R, ...]` |
 | `& other` | `__and__` | Chain, return `PendingBatch` |
+
+Note: `>> sky` and `@ sky` work inside `@sky.pool`-decorated functions.
 
 ---
 
@@ -144,6 +146,50 @@ Execute on ALL workers simultaneously.
 **Properties:**
 - `is_active: bool` - True if pool is provisioned
 - `instance_count: int` - Number of instances
+
+---
+
+### @sky.pool
+
+```python
+import skyward as sky
+
+@sky.pool(
+    provider=sky.AWS(),
+    accelerator="A100",
+    nodes=4,
+)
+def main():
+    result = train(data) >> sky
+    return result
+
+main()  # provisions -> executes -> terminates
+```
+
+Decorator that provisions a pool for the duration of the function.
+
+**Parameters:** Same as `ComputePool`
+
+**Implicit Execution:**
+
+Inside a `@pool`-decorated function, use `>> sky` instead of `>> pool`:
+
+| Operator | Syntax | Description |
+|----------|--------|-------------|
+| `>>` | `fn() >> sky` | Execute on one worker |
+| `@` | `fn() @ sky` | Broadcast to all workers |
+| `&` | `fn1() & fn2() >> sky` | Parallel execution |
+| `gather()` | `sky.gather(*fns) >> sky` | Dynamic parallel execution |
+
+**When to use:**
+- Simple, self-contained jobs with a single entry point
+- Cleaner, more declarative code
+- Most common use cases
+
+**When to use `with ComputePool` instead:**
+- Need pool access before execution (e.g., `pool.on()` for event handlers)
+- Dynamic pool creation
+- Advanced patterns
 
 ---
 

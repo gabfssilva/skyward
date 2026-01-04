@@ -18,14 +18,11 @@ def train(epochs: int) -> dict:
 
     return {"final_loss": loss.item()}
 
-with sky.ComputePool(
-    provider=sky.AWS(),
-    accelerator="T4",
-    image=sky.Image(pip=["torch"]),
-) as pool:
-    result = train(epochs=100) >> pool
-    print(result)
-# GPU terminated automatically
+@sky.pool(provider=sky.AWS(), accelerator="T4", image=sky.Image(pip=["torch"]))
+def main():
+    return train(epochs=100) >> sky
+
+print(main())
 ```
 
 ## Why Ephemeral?
@@ -66,20 +63,22 @@ export VERDA_API_KEY=...
 
 | Operator | Syntax | Description |
 |----------|--------|-------------|
-| `>>` | `fn() >> pool` | Execute on one worker, return result |
-| `@` | `fn() @ pool` | Broadcast to all workers, return tuple |
-| `&` | `fn1() & fn2() >> pool` | Parallel execution with type inference |
-| `gather()` | `gather(*fns) >> pool` | Dynamic parallel execution |
+| `>>` | `fn() >> sky` | Execute on one worker, return result |
+| `@` | `fn() @ sky` | Broadcast to all workers, return tuple |
+| `&` | `fn1() & fn2() >> sky` | Parallel execution with type inference |
+| `gather()` | `gather(*fns) >> sky` | Dynamic parallel execution |
 
 ```python
-# Parallel execution
-a, b, c = (process(1) & process(2) & process(3)) >> pool
+@sky.pool(provider=sky.AWS(), nodes=4)
+def main():
+    # Parallel execution
+    a, b, c = (process(1) & process(2) & process(3)) >> sky
 
-# Broadcast to all nodes
-results = init_model() @ pool  # Runs on every node
+    # Broadcast to all nodes
+    results = init_model() @ sky  # Runs on every node
 
-# Dynamic parallelism
-results = sky.gather(*[task(x) for x in data]) >> pool
+    # Dynamic parallelism
+    results = sky.gather(*[task(x) for x in data]) >> sky
 ```
 
 ## Providers & GPUs
@@ -134,8 +133,9 @@ def train_distributed():
     # MASTER_ADDR, MASTER_PORT, RANK, WORLD_SIZE all set
     ...
 
-with sky.ComputePool(provider=sky.AWS(), nodes=4, accelerator="A100") as pool:
-    results = train_distributed() @ pool  # Runs on all 4 nodes
+@sky.pool(provider=sky.AWS(), nodes=4, accelerator="A100")
+def main():
+    results = train_distributed() @ sky  # Runs on all 4 nodes
 ```
 
 Other frameworks:
@@ -156,8 +156,9 @@ def process(full_data: list[int]) -> int:
     local_data = sky.shard(full_data)  # Each worker gets its portion
     return sum(local_data)
 
-with sky.ComputePool(provider=sky.AWS(), nodes=4) as pool:
-    results = process(list(range(10000))) @ pool
+@sky.pool(provider=sky.AWS(), nodes=4)
+def main():
+    results = process(list(range(10000))) @ sky
     total = sum(results)
 ```
 

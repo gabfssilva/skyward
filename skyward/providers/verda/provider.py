@@ -8,6 +8,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, override
 
+from loguru import logger
 from verda import VerdaClient
 from verda.constants import Actions
 
@@ -267,6 +268,8 @@ class Verda(Provider):
         """Provision Verda GPU instances."""
         try:
             cluster_id = str(uuid.uuid4())[:8]
+            logger.info(f"Provisioning {compute.nodes} Verda instances in {self.region}")
+            logger.debug(f"Cluster ID: {cluster_id}")
             emit(InfraCreating())
 
             client = self._get_client()
@@ -313,6 +316,7 @@ class Verda(Provider):
             else:
                 os_image = supported_os[0] if supported_os else "ubuntu-22.04"
             username = "root"
+            logger.debug(f"Using image: {os_image}, instance type: {instance_type}")
             object.__setattr__(self, "_username", username)
 
             # Generate bootstrap script using Image.bootstrap()
@@ -352,6 +356,7 @@ class Verda(Provider):
             verda_instances: list[_VerdaInstance] = []
             for i in range(compute.nodes):
                 instance_name = f"skyward-{cluster_id}-{i}"
+                logger.debug(f"Creating instance {instance_name} (type={instance_type}, spot={use_spot})")
 
                 created = client.instances.create(
                     instance_type=instance_type,
@@ -372,7 +377,9 @@ class Verda(Provider):
                         status="provisioning",
                     )
                 )
+                logger.debug(f"Instance {instance_name} created with id {created.id}")
 
+            logger.debug(f"Waiting for {len(verda_instances)} instances to become running...")
             _wait_for_running(client, verda_instances, timeout=300)
 
             object.__setattr__(self, "_instances", verda_instances)
@@ -420,9 +427,11 @@ class Verda(Provider):
                 )
             )
 
+            logger.info(f"Provisioned {len(instances)} Verda instances: {[v.id for v in verda_instances]}")
             return tuple(instances)
 
         except Exception as e:
+            logger.error(f"Verda provisioning failed: {e}")
             emit(Error(message=f"Provision failed: {e}"))
             raise
 
@@ -432,6 +441,7 @@ class Verda(Provider):
         from contextlib import contextmanager
         from typing import Generator
 
+        logger.info(f"Setting up {len(instances)} Verda instances...")
         try:
             for inst in instances:
                 emit(BootstrapStarting(instance_id=inst.id))
@@ -453,7 +463,10 @@ class Verda(Provider):
             for inst in instances:
                 emit(BootstrapCompleted(instance_id=inst.id))
 
+            logger.info(f"Setup completed for {len(instances)} instances")
+
         except Exception as e:
+            logger.error(f"Verda setup failed: {e}")
             emit(Error(message=f"Setup failed: {e}"))
             raise
 
@@ -462,6 +475,7 @@ class Verda(Provider):
         self, instances: tuple[Instance, ...], compute: ComputeSpec
     ) -> tuple[ExitedInstance, ...]:
         """Shutdown instances (delete them)."""
+        logger.info(f"Shutting down {len(instances)} Verda instances...")
         client = self._get_client()
 
         exited: list[ExitedInstance] = []
@@ -469,6 +483,7 @@ class Verda(Provider):
             instance_id = inst.get_meta("instance_id") or inst.id
             if instance_id:
                 emit(InstanceStopping(instance_id=inst.id))
+                logger.debug(f"Deleting instance {instance_id}")
                 try:
                     client.instances.action(instance_id, Actions.DELETE)
                 except Exception:
@@ -483,6 +498,7 @@ class Verda(Provider):
             )
 
         object.__setattr__(self, "_instances", [])
+        logger.info(f"Shutdown complete: {len(exited)} instances deleted")
         return tuple(exited)
 
     @override
@@ -490,6 +506,7 @@ class Verda(Provider):
         self, instance: Instance, remote_port: int = 18861
     ) -> tuple[int, subprocess.Popen[bytes]]:
         """Create SSH tunnel to instance using SSHTransport."""
+        logger.debug(f"Creating tunnel to instance {instance.id} port {remote_port}")
         transport = self._get_transport(instance)
         return transport.create_tunnel(remote_port)
 
