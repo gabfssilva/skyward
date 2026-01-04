@@ -38,7 +38,7 @@ from skyward.callback import Callback
 from skyward.image import DEFAULT_IMAGE, Image
 from skyward.pool import ComputePool
 from skyward.spec import AllocationLike
-from skyward.types import Memory
+from skyward.types import Memory, ProviderConfig
 from skyward.volume import Volume
 
 if TYPE_CHECKING:
@@ -215,7 +215,7 @@ def _merge_pip(base: Image, *packages: str) -> Image:
 
 @contextmanager
 def JoblibPool(
-    provider: Provider,
+    provider: ProviderConfig,
     *,
     nodes: int = 1,
     machine: str | None = None,
@@ -290,10 +290,9 @@ def JoblibPool(
         with parallel_backend("skyward"):
             yield pool
 
-
 @contextmanager
 def ScikitLearnPool(
-    provider: Provider,
+    provider: ProviderConfig,
     *,
     nodes: int = 1,
     machine: str | None = None,

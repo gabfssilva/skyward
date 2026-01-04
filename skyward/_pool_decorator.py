@@ -30,15 +30,14 @@ from skyward.image import Image
 from skyward.logging import LogConfig
 from skyward.pool import ComputePool
 from skyward.spec import AllocationLike
-from skyward.types import Accelerator, Architecture, Auto, Memory, Provider
+from skyward.types import Accelerator, Architecture, Auto, Memory, ProviderConfig
 from skyward.volume import Volume
-
 P = ParamSpec("P")
 R = TypeVar("R")
 
 
 def pool(
-    provider: Provider,
+    provider: ProviderConfig,
     *,
     image: Image | None = None,
     nodes: int = 1,

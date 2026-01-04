@@ -5,8 +5,8 @@ from __future__ import annotations
 import os
 import subprocess
 import uuid
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, override
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from verda import VerdaClient
@@ -178,12 +178,9 @@ def _wait_for_running(client: VerdaClient, instances: list[_VerdaInstance], time
 # =============================================================================
 
 
-@dataclass(frozen=True)
-class Verda(Provider):
-    """Provider for Verda Cloud (formerly DataCrunch) GPU instances.
-
-    Executes functions on Verda GPU instances via SSH.
-    Supports NVIDIA GPUs: V100, A100, H100, H200, L40S, GB200.
+@dataclass(frozen=True, slots=True)
+class Verda:
+    """Verda Cloud provider configuration.
 
     SSH keys are automatically detected from ~/.ssh/id_ed25519.pub or
     ~/.ssh/id_rsa.pub and registered on Verda if needed.
@@ -220,13 +217,47 @@ class Verda(Provider):
     ssh_key_id: str | None = None
     instance_timeout: int = 300
 
-    _resolved_ssh_key_id: str | None = field(default=None, repr=False, compare=False, hash=False)
-    _username: str = field(default="root", repr=False, compare=False, hash=False)
-    _instances: list[_VerdaInstance] = field(default_factory=list, repr=False, compare=False, hash=False)
-    _cluster_id: str | None = field(default=None, repr=False, compare=False, hash=False)
+    def build(self) -> VerdaProvider:
+        """Build a stateful VerdaProvider from this configuration."""
+        return VerdaProvider(
+            region=self.region,
+            client_id=self.client_id,
+            client_secret=self.client_secret,
+            ssh_key_id=self.ssh_key_id,
+            instance_timeout=self.instance_timeout,
+        )
+
+
+class VerdaProvider(Provider):
+    """Stateful Verda provider service.
+
+    This class manages GPU instances and maintains runtime state.
+    Created by Verda.build() or automatically by ComputePool.
+
+    Implements the Provider protocol with provision/setup/shutdown lifecycle.
+    """
+
+    def __init__(
+        self,
+        region: str,
+        client_id: str | None,
+        client_secret: str | None,
+        ssh_key_id: str | None,
+        instance_timeout: int,
+    ) -> None:
+        self.region = region
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.ssh_key_id = ssh_key_id
+        self.instance_timeout = instance_timeout
+
+        # Mutable runtime state
+        self._resolved_ssh_key_id: str | None = None
+        self._username: str = "root"
+        self._instances: list[_VerdaInstance] = []
+        self._cluster_id: str | None = None
 
     @property
-    @override
     def name(self) -> str:
         return "verda"
 
@@ -263,7 +294,6 @@ class Verda(Provider):
         key_path = get_private_key_path()
         return SSHTransport(host=ip, username=username, key_path=key_path)
 
-    @override
     def provision(self, compute: ComputeSpec) -> tuple[Instance, ...]:
         """Provision Verda GPU instances."""
         try:
@@ -275,7 +305,7 @@ class Verda(Provider):
             client = self._get_client()
 
             ssh_key_info = _get_or_create_ssh_key(client)
-            object.__setattr__(self, "_resolved_ssh_key_id", ssh_key_info.id)
+            self._resolved_ssh_key_id = ssh_key_info.id
 
             emit(InfraCreated(region=self.region))
 
@@ -317,7 +347,7 @@ class Verda(Provider):
                 os_image = supported_os[0] if supported_os else "ubuntu-22.04"
             username = "root"
             logger.debug(f"Using image: {os_image}, instance type: {instance_type}")
-            object.__setattr__(self, "_username", username)
+            self._username = username
 
             # Generate bootstrap script using Image.bootstrap()
             user_data = compute.image.bootstrap(ttl=compute.timeout)
@@ -382,8 +412,8 @@ class Verda(Provider):
             logger.debug(f"Waiting for {len(verda_instances)} instances to become running...")
             _wait_for_running(client, verda_instances, timeout=300)
 
-            object.__setattr__(self, "_instances", verda_instances)
-            object.__setattr__(self, "_cluster_id", cluster_id)
+            self._instances = verda_instances
+            self._cluster_id = cluster_id
 
             instances: list[Instance] = []
             for i, vinst in enumerate(verda_instances):
@@ -435,7 +465,6 @@ class Verda(Provider):
             emit(Error(message=f"Provision failed: {e}"))
             raise
 
-    @override
     def setup(self, instances: tuple[Instance, ...], compute: ComputeSpec) -> None:
         """Setup instances (wait for bootstrap to complete)."""
         from contextlib import contextmanager
@@ -470,7 +499,6 @@ class Verda(Provider):
             emit(Error(message=f"Setup failed: {e}"))
             raise
 
-    @override
     def shutdown(
         self, instances: tuple[Instance, ...], compute: ComputeSpec
     ) -> tuple[ExitedInstance, ...]:
@@ -497,11 +525,10 @@ class Verda(Provider):
                 )
             )
 
-        object.__setattr__(self, "_instances", [])
+        self._instances = []
         logger.info(f"Shutdown complete: {len(exited)} instances deleted")
         return tuple(exited)
 
-    @override
     def create_tunnel(
         self, instance: Instance, remote_port: int = 18861
     ) -> tuple[int, subprocess.Popen[bytes]]:
@@ -510,13 +537,11 @@ class Verda(Provider):
         transport = self._get_transport(instance)
         return transport.create_tunnel(remote_port)
 
-    @override
     def run_command(self, instance: Instance, command: str, timeout: int = 30) -> str:
         """Run shell command on instance via SSH using SSHTransport."""
         transport = self._get_transport(instance)
         return transport.run_command(command, timeout)
 
-    @override
     def discover_peers(self, cluster_id: str) -> tuple[Instance, ...]:
         """Discover peer instances in a cluster via Verda API."""
         client = self._get_client()
@@ -568,7 +593,6 @@ class Verda(Provider):
             for idx, inst in enumerate(instances)
         )
 
-    @override
     def available_instances(self) -> tuple[InstanceSpec, ...]:
         """List all available instance types."""
         client = self._get_client()

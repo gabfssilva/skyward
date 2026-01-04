@@ -27,8 +27,6 @@ def process_partition(data: list[int]) -> dict:
 @sky.pool(
     provider=sky.AWS(),
     nodes=4,
-    accelerator="T4",
-    allocation="spot-if-available",
 )
 def main():
     print("\nProcessing data across all nodes...")

@@ -5,8 +5,8 @@ from __future__ import annotations
 import os
 import subprocess
 import uuid
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, override
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from pydo import Client
@@ -150,12 +150,9 @@ def _wait_for_active(client: Client, droplets: list[_Droplet], timeout: float) -
 # =============================================================================
 
 
-@dataclass(frozen=True)
-class DigitalOcean(Provider):
-    """Provider for DigitalOcean Droplets.
-
-    Executes functions on DigitalOcean Droplets via SSH.
-    Supports GPU Droplets with NVIDIA H100, H200, L40S, and more.
+@dataclass(frozen=True, slots=True)
+class DigitalOcean:
+    """DigitalOcean provider configuration.
 
     SSH keys are automatically detected from ~/.ssh/id_ed25519.pub or
     ~/.ssh/id_rsa.pub and registered on DigitalOcean if needed.
@@ -186,12 +183,43 @@ class DigitalOcean(Provider):
     ssh_key_fingerprint: str | None = None
     instance_timeout: int = 300
 
-    _resolved_fingerprint: str | None = field(default=None, repr=False, compare=False, hash=False)
-    _username: str = field(default="root", repr=False, compare=False, hash=False)
-    _droplets: list[_Droplet] = field(default_factory=list, repr=False, compare=False, hash=False)
+    def build(self) -> DigitalOceanProvider:
+        """Build a stateful DigitalOceanProvider from this configuration."""
+        return DigitalOceanProvider(
+            region=self.region,
+            token=self.token,
+            ssh_key_fingerprint=self.ssh_key_fingerprint,
+            instance_timeout=self.instance_timeout,
+        )
+
+
+class DigitalOceanProvider(Provider):
+    """Stateful DigitalOcean provider service.
+
+    This class manages Droplets and maintains runtime state.
+    Created by DigitalOcean.build() or automatically by ComputePool.
+
+    Implements the Provider protocol with provision/setup/shutdown lifecycle.
+    """
+
+    def __init__(
+        self,
+        region: str,
+        token: str | None,
+        ssh_key_fingerprint: str | None,
+        instance_timeout: int,
+    ) -> None:
+        self.region = region
+        self.token = token
+        self.ssh_key_fingerprint = ssh_key_fingerprint
+        self.instance_timeout = instance_timeout
+
+        # Mutable runtime state
+        self._resolved_fingerprint: str | None = None
+        self._username: str = "root"
+        self._droplets: list[_Droplet] = []
 
     @property
-    @override
     def name(self) -> str:
         return "digitalocean"
 
@@ -224,7 +252,7 @@ class DigitalOcean(Provider):
 
         client = self._get_client()
         key_info = _get_or_create_ssh_key(client)
-        object.__setattr__(self, "_resolved_fingerprint", key_info.fingerprint)
+        self._resolved_fingerprint = key_info.fingerprint
         return key_info.fingerprint
 
     def _get_transport(self, instance: Instance) -> SSHTransport:
@@ -234,7 +262,6 @@ class DigitalOcean(Provider):
         key_path = get_private_key_path()
         return SSHTransport(host=ip, username=username, key_path=key_path)
 
-    @override
     def provision(self, compute: ComputeSpec) -> tuple[Instance, ...]:
         """Provision DigitalOcean Droplets."""
         try:
@@ -289,7 +316,7 @@ class DigitalOcean(Provider):
                 username = "root"
 
             logger.debug(f"Using image: {os_image}, username: {username}")
-            object.__setattr__(self, "_username", username)
+            self._username = username
 
             # Generate bootstrap script using Image.bootstrap()
             user_data = compute.image.bootstrap(ttl=self.instance_timeout)
@@ -331,7 +358,7 @@ class DigitalOcean(Provider):
             logger.debug(f"Waiting for {len(droplets)} droplets to become active...")
             _wait_for_active(client, droplets, timeout=300)
 
-            object.__setattr__(self, "_droplets", droplets)
+            self._droplets = droplets
 
             instances: list[Instance] = []
             for i, droplet in enumerate(droplets):
@@ -383,7 +410,6 @@ class DigitalOcean(Provider):
             emit(Error(message=f"Provision failed: {e}"))
             raise
 
-    @override
     def setup(self, instances: tuple[Instance, ...], compute: ComputeSpec) -> None:
         """Setup instances (wait for bootstrap to complete)."""
         from collections.abc import Generator
@@ -418,7 +444,6 @@ class DigitalOcean(Provider):
             emit(Error(message=f"Setup failed: {e}"))
             raise
 
-    @override
     def shutdown(
         self, instances: tuple[Instance, ...], compute: ComputeSpec
     ) -> tuple[ExitedInstance, ...]:
@@ -445,11 +470,10 @@ class DigitalOcean(Provider):
                 )
             )
 
-        object.__setattr__(self, "_droplets", [])
+        self._droplets = []
         logger.info(f"Shutdown complete: {len(exited)} droplets destroyed")
         return tuple(exited)
 
-    @override
     def create_tunnel(
         self, instance: Instance, remote_port: int = 18861
     ) -> tuple[int, subprocess.Popen[bytes]]:
@@ -458,13 +482,11 @@ class DigitalOcean(Provider):
         transport = self._get_transport(instance)
         return transport.create_tunnel(remote_port)
 
-    @override
     def run_command(self, instance: Instance, command: str, timeout: int = 30) -> str:
         """Run shell command on Droplet via SSH using SSHTransport."""
         transport = self._get_transport(instance)
         return transport.run_command(command, timeout)
 
-    @override
     def discover_peers(self, cluster_id: str) -> tuple[Instance, ...]:
         """Discover peer instances in a cluster via DigitalOcean API."""
         client = self._get_client()
@@ -519,7 +541,6 @@ class DigitalOcean(Provider):
             for idx, inst in enumerate(instances)
         )
 
-    @override
     def available_instances(self) -> tuple[InstanceSpec, ...]:
         """List all available droplet sizes."""
         client = self._get_client()

@@ -52,7 +52,7 @@ from skyward.metrics import MetricsPoller
 from skyward.pending import PendingBatch, PendingCompute
 from skyward.spec import AllocationLike
 from skyward.task import PooledConnection, TaskPool
-from skyward.types import Architecture, Auto, Instance, Memory, Provider
+from skyward.types import Architecture, Auto, Instance, Memory, Provider, ProviderConfig
 from skyward.volume import Volume, parse_volume_uri
 
 
@@ -117,7 +117,7 @@ class ComputePool:
     """
 
     # Required
-    provider: Provider
+    provider: ProviderConfig
 
     # Environment specification
     image: Image = field(default_factory=lambda: DEFAULT_IMAGE)
@@ -147,6 +147,7 @@ class ComputePool:
 
     # Internal state
     _active: bool = field(default=False, init=False, repr=False)
+    _built_provider: Provider | None = field(default=None, init=False, repr=False)
     _log_config: LogConfig | None = field(default=None, init=False, repr=False)
     _log_handler_ids: list[int] = field(default_factory=list, init=False, repr=False)
     _instances: tuple[Instance, ...] | None = field(default=None, init=False, repr=False)
@@ -218,7 +219,10 @@ class ComputePool:
             self._active = True
             self._job_id = str(uuid.uuid4())[:8]
 
-            logger.info(f"Starting pool with {self.nodes} nodes on {self.provider.name}")
+            # Build provider from config
+            self._built_provider = self.provider.build()
+
+            logger.info(f"Starting pool with {self.nodes} nodes on {self._built_provider.name}")
             logger.debug(
                 f"Pool config: accelerator={self.accelerator}, "
                 f"allocation={self.allocation}, concurrency={self.concurrency}"
@@ -442,17 +446,17 @@ class ComputePool:
         )
 
         # Provision and setup (providers use emit() directly)
-        logger.info(f"Provisioning {self.nodes} instances via {self.provider.name}...")
-        self._instances = self.provider.provision(compute)
+        logger.info(f"Provisioning {self.nodes} instances via {self._built_provider.name}...")
+        self._instances = self._built_provider.provision(compute)
         logger.debug(f"Provisioned {len(self._instances)} instances")
 
         logger.debug("Running instance setup/bootstrap...")
-        self.provider.setup(self._instances, compute)
+        self._built_provider.setup(self._instances, compute)
 
         # Initialize TaskPool (creates tunnels and connections in parallel)
         logger.debug("Initializing task pool and connections...")
         self._task_pool = TaskPool(
-            provider=self.provider,
+            provider=self._built_provider,
             instances=self._instances,
             concurrency=self.concurrency,
         )
@@ -513,7 +517,7 @@ class ComputePool:
 
         logger.debug("Terminating instances...")
         with suppress(Exception):
-            self.provider.shutdown(self._instances, compute)
+            self._built_provider.shutdown(self._instances, compute)
 
         logger.info(f"Terminated {instance_count} instances")
         self._instances = None
@@ -621,7 +625,11 @@ class ComputePool:
 
     def __repr__(self) -> str:
         status = "active" if self.is_active else "inactive"
+        provider_name = (
+            self._built_provider.name if self._built_provider
+            else type(self.provider).__name__
+        )
         return (
-            f"Pool(provider={self.provider.name}, nodes={self.nodes}, "
+            f"Pool(provider={provider_name}, nodes={self.nodes}, "
             f"accelerator={self.accelerator}, {status})"
         )

@@ -5,9 +5,9 @@ from __future__ import annotations
 import threading
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import lru_cache
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING
 
 from botocore.exceptions import ClientError
 from loguru import logger
@@ -68,22 +68,11 @@ if TYPE_CHECKING:
     from skyward.accelerator import Accelerator
     from skyward.volume import Volume
 
-
-# =============================================================================
-# Constants
-# =============================================================================
-
 # AWS-specific bootstrap checkpoints (in addition to common ones)
 AWS_EXTRA_CHECKPOINTS: tuple[Checkpoint, ...] = (
     Checkpoint(".step_download", "downloading deps"),
     Checkpoint(".step_volumes", "volumes"),
 )
-
-
-# =============================================================================
-# Volume Script Generation
-# =============================================================================
-
 
 def _generate_volume_script(
     volumes: tuple[Volume, ...],
@@ -122,12 +111,6 @@ def _generate_volume_script(
             lines.append(expanded_cmd)
 
     return "\n".join(lines)
-
-
-# =============================================================================
-# AWS Bootstrap (SSH-based)
-# =============================================================================
-
 
 def _create_ssh_runner(transport: SSHTransport, instance_id: str) -> Callable[[str], str]:
     """Create a command runner using SSH."""
@@ -194,25 +177,12 @@ def wait_for_bootstrap_ssh(
 
         raise RuntimeError("\n".join(msg_parts)) from None
 
-
-# =============================================================================
-# AWS Provider
-# =============================================================================
-
-# Cache for AWS resources per region
 _resources_cache: dict[str, AWSResources] = {}
 _resources_lock = threading.Lock()
 
-
 @dataclass(frozen=True, slots=True)
-class AWS(Provider):
-    """Provider for AWS EC2 with SSH connectivity.
-
-    Executes functions on EC2 instances using UV for fast dependency installation.
-    Supports NVIDIA GPUs, Trainium, distributed clusters, and spot instances.
-
-    Uses SSH for connectivity. Instances must have public IPs.
-    Infrastructure (S3 bucket, IAM roles, security groups) is auto-created.
+class AWS:
+    """AWS provider configuration.
 
     Example:
         from skyward import ComputePool, AWS, compute
@@ -245,13 +215,55 @@ class AWS(Provider):
     instance_timeout: int = 300
     allocation_strategy: AllocationStrategy = "price-capacity-optimized"
 
-    # Mutable state (not part of equality/hash)
-    _resolved_region: str | None = field(default=None, compare=False, repr=False, hash=False)
-    _resources: AWSResources | None = field(default=None, compare=False, repr=False, hash=False)
-    _store: S3ObjectStore | None = field(default=None, compare=False, repr=False, hash=False)
+    def build(self) -> AWSProvider:
+        """Build a stateful AWSProvider from this configuration."""
+        return AWSProvider(
+            region=self.region,
+            ami=self.ami,
+            subnet_id=self.subnet_id,
+            security_group_id=self.security_group_id,
+            instance_profile_arn=self.instance_profile_arn,
+            username=self.username,
+            instance_timeout=self.instance_timeout,
+            allocation_strategy=self.allocation_strategy,
+        )
+
+
+class AWSProvider(Provider):
+    """Stateful AWS provider service.
+
+    This class manages EC2 instances and maintains runtime state.
+    Created by AWS.build() or automatically by ComputePool.
+
+    Implements the Provider protocol with provision/setup/shutdown lifecycle.
+    """
+
+    def __init__(
+        self,
+        region: str,
+        ami: str | None,
+        subnet_id: str | None,
+        security_group_id: str | None,
+        instance_profile_arn: str | None,
+        username: str | None,
+        instance_timeout: int,
+        allocation_strategy: AllocationStrategy,
+    ) -> None:
+        self.region = region
+        self.ami = ami
+        self.subnet_id = subnet_id
+        self.security_group_id = security_group_id
+        self.instance_profile_arn = instance_profile_arn
+        self.username = username
+        self.instance_timeout = instance_timeout
+        self.allocation_strategy = allocation_strategy
+
+        # Mutable runtime state
+        self._resolved_region: str | None = None
+        self._resources: AWSResources | None = None
+        self._store: S3ObjectStore | None = None
 
     @property
-    @override
     def name(self) -> str:
         return "aws"
 
@@ -275,13 +287,13 @@ class AWS(Provider):
         with _resources_lock:
             if cache_key in _resources_cache:
                 resources = _resources_cache[cache_key]
-                object.__setattr__(self, "_resources", resources)
+                self._resources = resources
                 return resources
 
             infra = AWSInfraManager(region=region)
             resources = infra.ensure_infrastructure()
             _resources_cache[cache_key] = resources
-            object.__setattr__(self, "_resources", resources)
+            self._resources = resources
             return resources
 
     def _get_transport(self, instance: Instance) -> SSHTransport:
@@ -418,7 +430,6 @@ class AWS(Provider):
     # Provider Protocol Implementation
     # =========================================================================
 
-    @override
     def provision(self, compute: ComputeSpec) -> tuple[Instance, ...]:
         """Provision EC2 instances."""
         from skyward.accelerator import Accelerator
@@ -498,7 +509,7 @@ class AWS(Provider):
 
             # Set resolved region if different from configured
             if actual_region != self.region:
-                object.__setattr__(self, "_resolved_region", actual_region)
+                self._resolved_region = actual_region
                 emit(
                     RegionAutoSelected(
                         requested_region=self.region,
@@ -681,7 +692,6 @@ class AWS(Provider):
             emit(Error(message=f"Provision failed: {e}"))
             raise
 
-    @override
     def setup(self, instances: tuple[Instance, ...], compute: ComputeSpec) -> None:
         """Setup instances (bootstrap, install dependencies) via SSH."""
         from contextlib import contextmanager
@@ -731,7 +741,6 @@ class AWS(Provider):
             emit(Error(message=f"Setup failed: {e}"))
             raise
 
-    @override
     def shutdown(self, instances: tuple[Instance, ...], compute: ComputeSpec) -> tuple[ExitedInstance, ...]:
         """Terminate instances."""
         if not instances:
@@ -753,19 +762,16 @@ class AWS(Provider):
         logger.info(f"Terminated {len(instances)} instances")
         return tuple(exited)
 
-    @override
     def create_tunnel(self, instance: Instance, remote_port: int = 18861) -> tuple[int, Popen[bytes]]:
         """Create SSH tunnel to instance."""
         transport = self._get_transport(instance)
         return transport.create_tunnel(remote_port)
 
-    @override
     def run_command(self, instance: Instance, command: str, timeout: int = 30) -> str:
         """Run shell command on instance via SSH."""
         transport = self._get_transport(instance)
         return transport.run_command(command, timeout)
 
-    @override
     def discover_peers(self, cluster_id: str) -> tuple[Instance, ...]:
         """Discover peer instances in a cluster via EC2 API."""
         response = self._ec2.describe_instances(
@@ -812,7 +818,6 @@ class AWS(Provider):
             for idx, inst in enumerate(instances)
         )
 
-    @override
     def available_instances(self) -> tuple[InstanceSpec, ...]:
         """List all available instance types in this region with pricing."""
         instance_data = discover_all_instances(self._ec2, self._active_region)

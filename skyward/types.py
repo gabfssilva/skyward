@@ -43,6 +43,7 @@ __all__ = [
     # Protocols
     "ComputeSpec",
     "Provider",
+    "ProviderConfig",
 ]
 
 class Auto:
@@ -460,6 +461,26 @@ class ExitedInstance:
 # =============================================================================
 # Protocols
 # =============================================================================
+
+
+@runtime_checkable
+class ProviderConfig(Protocol):
+    """Protocol for provider configuration.
+
+    ProviderConfig represents immutable cloud provider configuration.
+    It provides a build() method to create a stateful Provider instance.
+
+    Example:
+        config = AWS(region="us-east-1")  # Pure config, no side effects
+        provider = config.build()          # Creates stateful provider
+
+        # Or let ComputePool build it:
+        pool = ComputePool(provider=config)  # build() called in __enter__
+    """
+
+    def build(self) -> "Provider":
+        """Build a stateful Provider from this configuration."""
+        ...
 
 
 @runtime_checkable
