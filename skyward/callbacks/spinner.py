@@ -1,11 +1,17 @@
-"""Spinner callback that renders animated terminal UI."""
+"""Spinner callback using yaspin for animated terminal UI."""
 
 from __future__ import annotations
 
 import sys
-import threading
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from functools import singledispatchmethod
+from io import TextIOBase
+from typing import TYPE_CHECKING, TextIO
+
+from termcolor import colored
+from yaspin import yaspin
+from yaspin.core import Yaspin
+from yaspin.spinners import Spinners
 
 from skyward.events import (
     BootstrapCompleted,
@@ -27,254 +33,323 @@ from skyward.events import (
 if TYPE_CHECKING:
     from skyward.callback import Callback
 
-SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
-SPINNER_INTERVAL = 0.08
-CHECKMARK = "✓"
-CROSS = "✗"
+# Thresholds for color coding (low, high)
+_CPU_THRESHOLDS = (60, 85)
+_GPU_THRESHOLDS = (70, 90)
+_MEM_THRESHOLDS = (70, 90)
 
 
-@dataclass
-class _SpinnerState:
-    """Internal state for spinner animation."""
+class _SpinnerStream(TextIOBase):
+    """Stream wrapper that redirects output through yaspin.write()."""
 
-    is_tty: bool = field(default_factory=lambda: sys.stdout.isatty())
+    def __init__(self, sp: Yaspin, original: TextIO) -> None:
+        self._sp = sp
+        self._original = original
+        self._buffer = ""
+
+    def write(self, text: str) -> int:
+        if not text:
+            return 0
+
+        self._buffer += text
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            if line.strip():
+                self._sp.write(line)
+        return len(text)
+
+    def flush(self) -> None:
+        if self._buffer.strip():
+            self._sp.write(self._buffer)
+        self._buffer = ""
+
+    def fileno(self) -> int:
+        return self._original.fileno()
+
+    def isatty(self) -> bool:
+        return self._original.isatty()
+
+
+@dataclass(slots=True)
+class _Tracking:
+    """Pure data for tracking cluster state."""
+
     phase: str = "init"
-    message: str = "Initializing..."
-
-    # Instance tracking
     total: int = 0
     provisioned: int = 0
     ready: int = 0
     spot: int = 0
     ondemand: int = 0
-
-    # Metrics
     node_metrics: dict[int, dict[str, float | None]] = field(default_factory=dict)
     instance_types: set[str] = field(default_factory=set)
-
-    # Cost/time
     cost: float = 0.0
     elapsed_seconds: float = 0.0
 
-    # Animation
-    stop_event: threading.Event = field(default_factory=threading.Event)
-    thread: threading.Thread | None = None
-    frame_idx: int = 0
-    last_line_len: int = 0
-    table_lines: int = 0
-    paused: bool = False
 
-    def short_id(self, instance_id: str) -> str:
-        return instance_id[:12] if len(instance_id) > 12 else instance_id
+def _short_id(instance_id: str) -> str:
+    return instance_id[:12] if len(instance_id) > 12 else instance_id
 
 
-def _start_animation(state: _SpinnerState, lock: threading.Lock) -> None:
-    """Start the spinner animation thread."""
-    if not state.is_tty:
-        return
+def _color_metric(
+    value: float | None,
+    label: str,
+    thresholds: tuple[float, float],
+    *,
+    invert: bool = False,
+) -> str:
+    """Color a metric based on thresholds. Green=good, Magenta=warn, Red=bad."""
+    if value is None:
+        return f"{label} --"
 
-    state.stop_event.clear()
-    state.thread = threading.Thread(
-        target=_animate,
-        args=(state, lock),
-        daemon=True,
-        name="SpinnerCallback-animation",
-    )
-    state.thread.start()
+    low, high = thresholds
+    if invert:
+        color = "green" if value >= high else ("magenta" if value >= low else "red")
+    else:
+        color = "green" if value < low else ("magenta" if value < high else "red")
 
-
-def _stop_animation(state: _SpinnerState) -> None:
-    """Stop the spinner animation thread."""
-    state.stop_event.set()
-    if state.thread and state.thread.is_alive():
-        state.thread.join(timeout=1.0)
+    return colored(f"{label} {value:.0f}%", color)
 
 
-def _animate(state: _SpinnerState, lock: threading.Lock) -> None:
-    """Background animation loop."""
-    while not state.stop_event.is_set():
-        with lock:
-            frame = SPINNER_FRAMES[state.frame_idx]
-            phase = state.phase
-            message = state.message
-            node_metrics = dict(state.node_metrics)
+def _avg_metrics(node_metrics: dict[int, dict[str, float | None]]) -> dict[str, float | None]:
+    """Calculate average metrics across all nodes."""
+    if not node_metrics:
+        return {"cpu": None, "gpu": None, "mem": None, "gpu_mem": None}
 
-        if phase == "executing" and node_metrics:
-            # Multi-line table mode
-            with lock:
-                table = _build_table(state)
-            n_lines = table.count("\n") + 1
-            if state.table_lines > 0:
-                sys.stdout.write(f"\033[{state.table_lines}A\033[J")
-            sys.stdout.write(f"{frame} {table}\n")
-            sys.stdout.flush()
-            state.table_lines = n_lines
+    keys = ("cpu", "gpu", "mem", "gpu_mem")
+    totals = dict.fromkeys(keys, 0.0)
+    counts = dict.fromkeys(keys, 0)
+
+    for m in node_metrics.values():
+        for k in keys:
+            if (v := m.get(k)) is not None:
+                totals[k] += v
+                counts[k] += 1
+
+    return {k: (totals[k] / counts[k] if counts[k] > 0 else None) for k in keys}
+
+
+def _format_metrics(tracking: _Tracking) -> str:
+    """Build colored metrics text."""
+    avg = _avg_metrics(tracking.node_metrics)
+    parts: list[str] = []
+
+    n = len(tracking.node_metrics) or tracking.total
+    if n > 1:
+        parts.append(colored(f"{n} nodes", "blue", attrs=["bold"]))
+
+    if avg["cpu"] is not None:
+        parts.append(_color_metric(avg["cpu"], "CPU", _CPU_THRESHOLDS))
+    if avg["gpu"] is not None:
+        parts.append(_color_metric(avg["gpu"], "GPU", _GPU_THRESHOLDS, invert=True))
+    if avg["mem"] is not None:
+        parts.append(_color_metric(avg["mem"], "Mem", _MEM_THRESHOLDS))
+
+    if tracking.cost > 0:
+        mins, secs = divmod(int(tracking.elapsed_seconds), 60)
+        time_str = f"{mins}m{secs:02d}s" if mins else f"{secs}s"
+        parts.append(colored(f"${tracking.cost:.4f}", "green") + f"/{time_str}")
+
+    return " │ ".join(parts) if parts else colored("Executing...", "blue")
+
+
+class SpinnerController:
+    """Controls the yaspin spinner lifecycle and display."""
+
+    def __init__(self) -> None:
+        self._sp: Yaspin | None = None
+        self._tracking = _Tracking()
+        self._is_tty = sys.stdout.isatty()
+        self._original_stdout: TextIO | None = None
+        self._original_stderr: TextIO | None = None
+
+    def _set_text(self, text: str) -> None:
+        if self._sp:
+            self._sp.text = text
+
+    def _redirect_streams(self) -> None:
+        if not self._sp or not self._is_tty:
+            return
+        self._original_stdout = sys.stdout
+        self._original_stderr = sys.stderr
+        sys.stdout = _SpinnerStream(self._sp, self._original_stdout)  # type: ignore[assignment]
+        sys.stderr = _SpinnerStream(self._sp, self._original_stderr)  # type: ignore[assignment]
+
+    def _restore_streams(self) -> None:
+        if self._original_stdout:
+            sys.stdout = self._original_stdout
+            self._original_stdout = None
+        if self._original_stderr:
+            sys.stderr = self._original_stderr
+            self._original_stderr = None
+
+    @singledispatchmethod
+    def handle(self, event: SkywardEvent) -> None:
+        """Handle unknown events - ignore."""
+
+    @handle.register
+    def _(self, event: PoolStarted) -> None:
+        self._sp = yaspin(Spinners.dots12, text="Initializing...", color="blue")
+        self._sp.start()
+        self._redirect_streams()
+
+    @handle.register
+    def _(self, event: PoolStopping) -> None:
+        self._restore_streams()
+        if self._sp:
+            if self._tracking.phase == "error":
+                self._sp.fail(colored("✗", "red"))
+            else:
+                self._sp.ok(colored("✓", "green"))
+            self._sp = None
+
+    @handle.register
+    def _(self, event: LogLine) -> None:
+        if event.line.strip() and self._sp:
+            prefix = colored(f"[node {event.node}]", "blue")
+            self._sp.write(f"{prefix} {event.line}")
+
+    @handle.register
+    def _(self, event: InfraCreating) -> None:
+        self._tracking.phase = "provision"
+        self._set_text(colored("Provisioning infrastructure...", "blue"))
+
+    @handle.register
+    def _(self, event: InfraCreated) -> None:
+        self._set_text(colored("Infrastructure ready ", "green") + f"({event.region})")
+
+    @handle.register
+    def _(self, event: InstanceLaunching) -> None:
+        if event.count:
+            self._tracking.total = event.count
+        itypes = [c.name for c in event.candidates] if event.candidates else []
+
+        main_types = ', '.join(itypes[:5])
+
+        suffix = f"one of {main_types}"
+
+        if len(itypes) > 5:
+            suffix = f"{suffix} and others {len(itypes) - 5}"
+
+        text = (
+            colored(f"Attempting to launch {event.count} nodes ({suffix})", "blue")
+            + f"({itypes[0]} +{len(itypes) - 1})"
+        )
+
+        self._set_text(text)
+
+    @handle.register
+    def _(self, event: InstanceProvisioned) -> None:
+        t = self._tracking
+        t.provisioned += 1
+        if event.spot:
+            t.spot += 1
         else:
-            # Single line mode
-            line = f"\r{frame} {message}"
-            padding = max(0, state.last_line_len - len(line))
-            sys.stdout.write(line + " " * padding)
-            sys.stdout.flush()
-            state.last_line_len = len(line)
+            t.ondemand += 1
+        if event.spec:
+            t.instance_types.add(event.spec.name)
 
-        state.frame_idx = (state.frame_idx + 1) % len(SPINNER_FRAMES)
-        state.stop_event.wait(SPINNER_INTERVAL)
+        spot_color = "magenta" if event.spot else "blue"
+        spot_label = "spot" if event.spot else "on-demand"
+        self._set_text(
+            colored("Provisioned ", "green")
+            + colored(_short_id(event.instance_id), attrs=["bold"])
+            + f" [{t.provisioned}/{t.total or '?'}] "
+            + colored(f"[{spot_label}]", spot_color)
+        )
 
+    @handle.register
+    def _(self, event: BootstrapProgress) -> None:
+        t = self._tracking
+        t.phase = "setup"
+        self._set_text(
+            colored("Bootstrapping ", "blue")
+            + colored(_short_id(event.instance_id), attrs=["bold"])
+            + colored(f" ({event.step}) ", "blue")
+            + f"({t.ready}/{t.total or '?'})"
+        )
 
-def _build_table(state: _SpinnerState) -> str:
-    """Build metrics table for display."""
-    types_str = "/".join(sorted(state.instance_types)) or "unknown"
-    n = len(state.node_metrics) or state.total
+    @handle.register
+    def _(self, event: BootstrapCompleted) -> None:
+        t = self._tracking
+        t.ready += 1
+        total = t.total or t.provisioned
 
-    mins, secs = divmod(int(state.elapsed_seconds), 60)
-    time_str = f"{mins}m{secs:02d}s" if mins else f"{secs}s"
-    cost_str = f"${state.cost:.4f}" if state.cost > 0 else "$0.0000"
-
-    spot_str = f"[{state.spot} spot]" if state.spot else "[on-demand]"
-    header = f"{n}x {types_str} {spot_str} | {time_str} | {cost_str}"
-
-    lines = [header, "", "Node   CPU    GPU    Mem    GPU Mem"]
-
-    for node in sorted(state.node_metrics.keys()):
-        m = state.node_metrics[node]
-        cpu = f"{m['cpu']:.0f}%" if m["cpu"] is not None else "N/A"
-        gpu = f"{m['gpu']:.0f}%" if m["gpu"] is not None else "N/A"
-        mem = f"{m['mem']:.0f}%" if m["mem"] is not None else "N/A"
-        gpu_mem = f"{m['gpu_mem']:.0f}%" if m["gpu_mem"] is not None else "N/A"
-        lines.append(f"  {node}    {cpu:>4}   {gpu:>4}   {mem:>4}     {gpu_mem:>4}")
-
-    return "\n".join(lines)
-
-
-def _print_final(state: _SpinnerState) -> None:
-    """Print final status line."""
-    symbol = CROSS if state.phase == "error" else CHECKMARK
-
-    if state.is_tty:
-        padding = max(0, state.last_line_len - len(state.message) - 2)
-        sys.stdout.write(f"\r{symbol} {state.message}" + " " * padding + "\n")
-    else:
-        print(f"{symbol} {state.message}")
-
-    sys.stdout.flush()
-
-
-def _print_log_line(state: _SpinnerState, node: int, line: str) -> None:
-    """Print log line above the spinner."""
-    if not line.strip():
-        return
-
-    if not state.is_tty:
-        print(f"[node {node}] {line}")
-        return
-
-    # Clear current display
-    if state.table_lines > 0:
-        sys.stdout.write(f"\033[{state.table_lines}A\033[J")
-        state.table_lines = 0
-    else:
-        sys.stdout.write("\r" + " " * state.last_line_len + "\r")
-
-    print(f"[node {node}] {line}")
-    sys.stdout.flush()
-
-
-def _update_state(state: _SpinnerState, event: SkywardEvent) -> None:
-    """Update spinner state based on event."""
-    match event:
-        case InfraCreating():
-            state.phase = "provision"
-            state.message = "Provisioning infrastructure..."
-
-        case InfraCreated(region=region):
-            state.message = f"Infrastructure ready ({region})"
-
-        case InstanceLaunching(count=count, candidates=candidates):
-            if count:
-                state.total = count
-            itypes = [c.name for c in candidates] if candidates else []
-            if len(itypes) == 1:
-                state.message = f"Launching {count}x {itypes[0]}..."
-            elif itypes:
-                state.message = f"Launching {count} nodes ({itypes[0]} +{len(itypes)-1})..."
+        if t.ready >= total > 0:
+            t.phase = "executing"
+            if t.spot > 0 and t.ondemand > 0:
+                market = (
+                    colored(f"[{t.spot} spot", "magenta")
+                    + ", "
+                    + colored(f"{t.ondemand} on-demand]", "blue")
+                )
+            elif t.spot > 0:
+                market = colored("[spot]", "magenta")
             else:
-                state.message = f"Launching {count} nodes..."
-
-        case InstanceProvisioned(instance_id=iid, spot=is_spot, spec=spec):
-            state.provisioned += 1
-            if is_spot:
-                state.spot += 1
-            else:
-                state.ondemand += 1
-            if spec:
-                state.instance_types.add(spec.name)
-            spot_label = "[spot]" if is_spot else "[on-demand]"
-            state.message = (
-                f"Provisioned {state.short_id(iid)} "
-                f"[{state.provisioned}/{state.total or '?'}] {spot_label}"
+                market = colored("[on-demand]", "blue")
+            self._set_text(
+                colored("Cluster ready ", "green", attrs=["bold"])
+                + f"({total}/{total}) "
+                + market
+            )
+        else:
+            self._set_text(
+                colored("Instance ", "green")
+                + colored(_short_id(event.instance_id), attrs=["bold"])
+                + colored(" ready ", "green")
+                + f"({t.ready}/{total})"
             )
 
-        case BootstrapProgress(instance_id=iid, step=step):
-            state.phase = "setup"
-            state.message = (
-                f"Bootstrapping {state.short_id(iid)} ({step}) "
-                f"({state.ready}/{state.total or '?'})"
-            )
+    @handle.register
+    def _(self, event: Metrics) -> None:
+        print(event)
 
-        case BootstrapCompleted(instance_id=iid):
-            state.ready += 1
-            total = state.total or state.provisioned
-            state.message = (
-                f"Instance {state.short_id(iid)} ready "
-                f"({state.ready}/{total})"
-            )
+        t = self._tracking
+        gpu_mem_pct = None
+        if event.gpu_memory_used_mb is not None and event.gpu_memory_total_mb:
+            gpu_mem_pct = (event.gpu_memory_used_mb / event.gpu_memory_total_mb) * 100
+        t.node_metrics[event.node] = {
+            "cpu": event.cpu_percent,
+            "gpu": event.gpu_utilization,
+            "mem": event.memory_percent,
+            "gpu_mem": gpu_mem_pct,
+        }
+        self._set_text(_format_metrics(t))
 
-            if state.ready >= total > 0:
-                state.phase = "done"
-                if state.spot > 0 and state.ondemand > 0:
-                    market = f" [{state.spot} spot, {state.ondemand} on-demand]"
-                elif state.spot > 0:
-                    market = " [spot]"
-                else:
-                    market = " [on-demand]"
-                state.message = f"Cluster ready ({total}/{total}){market}"
+    @handle.register
+    def _(self, event: CostUpdate) -> None:
+        print(event)
+        t = self._tracking
+        t.cost = event.accumulated_cost
+        t.elapsed_seconds = event.elapsed_seconds
+        if t.node_metrics:
+            self._set_text(_format_metrics(t))
 
-        case Metrics(
-            node=node,
-            cpu_percent=cpu,
-            gpu_utilization=gpu,
-            memory_percent=mem,
-            gpu_memory_used_mb=gpu_mem,
-            gpu_memory_total_mb=gpu_mem_total,
-        ):
-            gpu_mem_pct = None
-            if gpu_mem is not None and gpu_mem_total:
-                gpu_mem_pct = (gpu_mem / gpu_mem_total) * 100
-            state.node_metrics[node] = {
-                "cpu": cpu,
-                "gpu": gpu,
-                "mem": mem,
-                "gpu_mem": gpu_mem_pct,
-            }
+    @handle.register
+    def _(self, event: InstanceStopping) -> None:
+        self._tracking.phase = "shutdown"
+        self._set_text(
+            colored("Stopping ", "magenta")
+            + colored(_short_id(event.instance_id), attrs=["bold"])
+        )
 
-        case CostUpdate(accumulated_cost=cost, elapsed_seconds=elapsed):
-            state.cost = cost
-            state.elapsed_seconds = elapsed
-
-        case InstanceStopping(instance_id=iid):
-            state.phase = "shutdown"
-            state.message = f"Stopping {state.short_id(iid)}..."
-
-        case Error(message=msg):
-            state.phase = "error"
-            state.message = f"Error: {msg[:50]}"
+    @handle.register
+    def _(self, event: Error) -> None:
+        self._tracking.phase = "error"
+        self._set_text(
+            colored("Error: ", "red", attrs=["bold"]) + colored(event.message[:50], "red")
+        )
 
 
 def spinner() -> Callback:
     """Create a spinner callback for animated terminal UI.
 
     The spinner shows progress during provisioning and setup,
-    then displays a metrics table during execution.
+    then displays aggregated metrics during execution.
+
+    Features:
+        - Color-coded metrics (green/magenta/red based on thresholds)
+        - Redirects stdout/stderr to print above spinner
+        - Handles log lines from remote nodes
 
     Returns:
         A callback that renders animated spinner/progress.
@@ -286,60 +361,4 @@ def spinner() -> Callback:
             # ... spinner animates ...
             emit(PoolStopping())
     """
-    state = _SpinnerState()
-    lock = threading.Lock()
-
-    def handle(event: SkywardEvent) -> None:
-        # Handle LogLine separately (prints above spinner)
-        if isinstance(event, LogLine):
-            _print_log_line(state, event.node, event.line)
-            return
-
-        should_pause = False
-        should_resume = False
-
-        with lock:
-            match event:
-                case PoolStarted():
-                    _start_animation(state, lock)
-                    return
-
-                case PoolStopping():
-                    if not state.paused:
-                        _stop_animation(state)
-                        _print_final(state)
-                    return
-
-                case _:
-                    _update_state(state, event)
-
-                    # Check if we should pause after cluster ready
-                    if state.phase == "done" and not state.paused:
-                        should_pause = True
-
-                    # Check if we should resume for metrics
-                    if isinstance(event, Metrics) and state.paused:
-                        should_resume = True
-
-        # Pause/resume outside lock
-        if should_pause:
-            _stop_animation(state)
-            if state.is_tty:
-                padding = max(0, state.last_line_len - len(state.message) - 2)
-                sys.stdout.write(
-                    f"\r{CHECKMARK} {state.message}" + " " * padding + "\n"
-                )
-                sys.stdout.flush()
-            state.paused = True
-
-        if should_resume:
-            state.paused = False
-            state.phase = "executing"
-            _start_animation(state, lock)
-
-        # Non-TTY fallback
-        if not state.is_tty and not state.paused:
-            event_name = type(event).__name__
-            print(f"[{event_name}] {state.message}")
-
-    return handle
+    return SpinnerController().handle

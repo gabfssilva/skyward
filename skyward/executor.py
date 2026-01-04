@@ -107,7 +107,7 @@ class Executor(Executor):
         timeout: int = 3600,
         env: dict[str, str] | None = None,
         concurrency: int = 1,
-        display: Literal["spinner", "log", "quiet"] = "log",
+        display: Literal["spinner", "log", "quiet"] = "spinner",
         on_event: Callback | None = None,
         collect_metrics: bool = True,
     ) -> None:

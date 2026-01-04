@@ -38,11 +38,25 @@ class Tunnel:
 
     def close(self) -> None:
         """Close the tunnel."""
+        import signal
+
+        if self.proc.poll() is not None:
+            return  # Already dead
+
+        # Try graceful termination first
+        self.proc.terminate()
         try:
-            self.proc.terminate()
-            self.proc.wait(timeout=5)
-        except Exception:
+            self.proc.wait(timeout=2)
+            return
+        except subprocess.TimeoutExpired:
             pass
+
+        # SSH -N ignores SIGTERM - force kill
+        self.proc.send_signal(signal.SIGKILL)
+        try:
+            self.proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            pass  # Best effort - process is orphaned
 
 
 # =============================================================================

@@ -67,10 +67,10 @@ class Allocation:
 
 
 # String literals for convenience
-AllocationLiteral = Literal["always-spot", "spot-if-available", "on-demand", "cheapest"]
+type AllocationLiteral = Literal["always-spot", "spot-if-available", "on-demand", "cheapest"]
 
 # Input type: what users can pass to allocation= parameter
-AllocationLike = (
+type AllocationLike = (
     Allocation.AlwaysSpot
     | Allocation.SpotIfAvailable
     | Allocation.Cheapest
@@ -81,7 +81,7 @@ AllocationLike = (
 )
 
 # Normalized type (after normalize_allocation)
-NormalizedAllocation = (
+type NormalizedAllocation = (
     Allocation.AlwaysSpot
     | Allocation.SpotIfAvailable
     | Allocation.Cheapest

@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Sequence
-from contextlib import AbstractContextManager, suppress
+from contextlib import AbstractContextManager, ExitStack, suppress
 from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any, Literal
@@ -135,7 +135,7 @@ class ComputePool:
     concurrency: int = 1  # Number of concurrent tasks per instance
 
     # Display settings
-    display: Literal["spinner", "log", "quiet"] = "log"
+    display: Literal["spinner", "log", "quiet"] = "spinner"
     on_event: Callback | None = None
     collect_metrics: bool = True
 
@@ -152,6 +152,7 @@ class ComputePool:
     _task_pool: TaskPool | None = field(default=None, init=False, repr=False)
     _metrics_pollers: list[MetricsPoller] = field(default_factory=list, init=False, repr=False)
     _event_callback: Callback | None = field(default=None, init=False, repr=False)
+    _exit_stack: ExitStack | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Parse accelerator and store configuration."""
@@ -192,18 +193,29 @@ class ComputePool:
         """Enter pool context and provision resources."""
         import uuid
 
-        self._active = True
-        self._job_id = str(uuid.uuid4())[:8]
+        with ExitStack() as stack:
+            self._active = True
+            self._job_id = str(uuid.uuid4())[:8]
 
-        # Build and store callback for direct access (bypasses ContextVar issues with joblib)
-        self._event_callback = self._build_callback()
+            # 1. Callback context (cleanup: exits context)
+            self._event_callback = self._build_callback()
+            self._callback_ctx = use_callback(self._event_callback)
+            stack.enter_context(self._callback_ctx)
 
-        # Setup callback context for emit() usage
-        self._callback_ctx = use_callback(self._event_callback)
-        self._callback_ctx.__enter__()
+            # 2. Shutdown (cleanup: terminates instances)
+            #    Registered BEFORE provisioning to capture partial failures
+            stack.callback(self._shutdown)
 
-        emit(PoolStarted())
-        self._provision()
+            # 3. Spinner (cleanup: stops spinner)
+            emit(PoolStarted())
+            stack.callback(lambda: emit(PoolStopping()))
+
+            # 4. Provision (may fail with KeyboardInterrupt)
+            self._provision()
+
+            # Success - transfer ownership
+            self._exit_stack = stack.pop_all()
+
         return self
 
     def __exit__(
@@ -214,13 +226,11 @@ class ComputePool:
     ) -> None:
         """Exit pool context and release resources."""
         try:
-            emit(PoolStopping())
-            self._shutdown()
+            if self._exit_stack is not None:
+                self._exit_stack.__exit__(exc_type, exc_val, exc_tb)
+                self._exit_stack = None
         finally:
             self._active = False
-            if self._callback_ctx is not None:
-                self._callback_ctx.__exit__(exc_type, exc_val, exc_tb)
-                self._callback_ctx = None
 
     def run[R](self, pending: PendingCompute[R]) -> R:
         """Execute a single computation on the pool.
@@ -389,14 +399,13 @@ class ComputePool:
         )
 
         # Provision and setup (providers use emit() directly)
-        instances = self.provider.provision(compute)
-        self.provider.setup(instances, compute)
-        self._instances = instances
+        self._instances = self.provider.provision(compute)
+        self.provider.setup(self._instances, compute)
 
         # Initialize TaskPool (creates tunnels and connections in parallel)
         self._task_pool = TaskPool(
             provider=self.provider,
-            instances=instances,
+            instances=self._instances,
             concurrency=self.concurrency,
         )
 
@@ -405,7 +414,7 @@ class ComputePool:
 
         # Start metrics polling if enabled
         if self.collect_metrics:
-            for instance in instances:
+            for instance in self._instances:
                 poller = MetricsPoller(instance, callback=self._event_callback)
                 poller.start()
                 self._metrics_pollers.append(poller)
