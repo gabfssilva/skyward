@@ -105,6 +105,15 @@ from skyward.pool import ComputePool
 # Providers
 from skyward.providers import AWS, DigitalOcean, Verda
 
+# Provider selection
+from skyward.selection import (
+    AllProvidersFailedError,
+    NoAvailableProviderError,
+    select_available,
+    select_cheapest,
+    select_first,
+)
+
 # Allocation strategies
 from skyward.spec import Allocation, AllocationLike
 
@@ -121,6 +130,10 @@ from skyward.types import (
     InstanceSpec,
     Provider,
     ProviderConfig,
+    ProviderLike,
+    ProviderSelector,
+    SelectionLike,
+    SelectionStrategy,
     Trainium,
     current_accelerator,
     select_instance,
@@ -196,6 +209,16 @@ __all__ = [
     "AWS",
     "DigitalOcean",
     "Verda",
+    # Provider selection
+    "SelectionStrategy",
+    "ProviderSelector",
+    "SelectionLike",
+    "ProviderLike",
+    "select_first",
+    "select_cheapest",
+    "select_available",
+    "NoAvailableProviderError",
+    "AllProvidersFailedError",
     # Volumes
     "Volume",
     "S3Volume",

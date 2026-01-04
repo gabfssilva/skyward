@@ -242,9 +242,81 @@ pool = sky.ComputePool(
 - You want automatic region selection
 - Competitive GPU pricing
 
-## Multi-Provider Workflows
+## Multi-Provider Selection
 
-You can use different providers for different stages:
+Use multiple providers with automatic fallback:
+
+```python
+import skyward as sky
+
+@sky.pool(
+    provider=[sky.AWS(), sky.Verda()],
+    selection="cheapest",
+    accelerator="A100",
+)
+def main():
+    return train() >> sky
+```
+
+### Selection Strategies
+
+| Strategy | Description | Use Case |
+|----------|-------------|----------|
+| `"first"` | Use first provider in list | Explicit priority |
+| `"cheapest"` | Compare spot/on-demand prices | Cost optimization |
+| `"available"` | First with matching instances | Availability priority |
+| Custom callable | Your selection logic | Complex requirements |
+
+### Automatic Fallback
+
+If the selected provider fails (no capacity, provisioning error), Skyward automatically tries the next:
+
+```python
+import skyward as sky
+
+# AWS first, fallback to Verda if AWS fails
+pool = sky.ComputePool(
+    provider=[sky.AWS(), sky.Verda()],
+    selection="first",
+    accelerator="H100",
+)
+```
+
+### Custom Selection
+
+```python
+import skyward as sky
+
+def prefer_us_east(providers, spec):
+    """Prefer providers with us-east region."""
+    for p in providers:
+        if hasattr(p.config, 'region') and "us-east" in (p.config.region or ""):
+            return p
+    return providers[0]
+
+pool = sky.ComputePool(
+    provider=[sky.AWS(), sky.Verda(), sky.DigitalOcean()],
+    selection=prefer_us_east,
+    accelerator="A100",
+)
+```
+
+### String Shortcuts
+
+```python
+import skyward as sky
+
+# Instead of sky.AWS(), you can use strings:
+pool = sky.ComputePool(
+    provider=["aws", "verda"],
+    selection="cheapest",
+    accelerator="A100",
+)
+```
+
+### Sequential Multi-Provider Workflows
+
+You can also use different providers for different stages:
 
 ```python
 import skyward as sky

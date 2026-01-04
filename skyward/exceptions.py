@@ -22,6 +22,10 @@ class ProvisioningError(SkywardError):
     """Raised when instance provisioning fails."""
 
 
+class NoMatchingInstanceError(ProvisioningError):
+    """Raised when no instance type matches the requirements."""
+
+
 class ExecutionError(SkywardError):
     """Raised when remote function execution fails."""
 

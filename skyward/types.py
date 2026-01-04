@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
@@ -19,6 +19,7 @@ from skyward.accelerator import (
     Trainium,
     current_accelerator,
 )
+from skyward.exceptions import NoMatchingInstanceError
 
 __all__ = [
     # Accelerators
@@ -44,6 +45,11 @@ __all__ = [
     "ComputeSpec",
     "Provider",
     "ProviderConfig",
+    # Provider selection types
+    "SelectionStrategy",
+    "ProviderSelector",
+    "SelectionLike",
+    "ProviderLike",
 ]
 
 class Auto:
@@ -184,7 +190,7 @@ def select_instance(
         candidates = [
             s for s in instances
             if s.accelerator
-            and _normalize_accelerator_name(s.accelerator) == acc_normalized
+            and _normalize_accelerator_name(s.accelerator).startswith(acc_normalized)
             and _matches_count(s.accelerator_count, accelerator_count)
             and s.vcpu >= cpu
             and s.memory_gb >= memory_gb
@@ -194,16 +200,16 @@ def select_instance(
             available_counts = sorted({
                 int(s.accelerator_count) for s in instances
                 if s.accelerator
-                and _normalize_accelerator_name(s.accelerator) == acc_normalized
+                and _normalize_accelerator_name(s.accelerator).startswith(acc_normalized)
             })
             if available_counts:
-                raise ValueError(
+                raise NoMatchingInstanceError(
                     f"No instance type found for {accelerator_count}x {accelerator} "
                     f"with {cpu} vCPU, {memory_gb}GB RAM. "
                     f"Available counts for {accelerator}: {available_counts}"
                 )
             available = sorted({s.accelerator for s in instances if s.accelerator})
-            raise ValueError(
+            raise NoMatchingInstanceError(
                 f"No instance type found for {accelerator}. "
                 f"Available accelerator types: {available}"
             )
@@ -229,7 +235,7 @@ def select_instance(
     if not candidates:
         max_vcpu = max((s.vcpu for s in instances), default=0)
         max_mem = max((s.memory_gb for s in instances), default=0)
-        raise ValueError(
+        raise NoMatchingInstanceError(
             f"No instance type found for {cpu} vCPU, {memory_gb}GB RAM. "
             f"Maximum available: {max_vcpu} vCPU, {max_mem}GB RAM"
         )
@@ -280,7 +286,7 @@ def select_instances(
         candidates = [
             s for s in instances
             if s.accelerator
-            and _normalize_accelerator_name(s.accelerator) == acc_normalized
+            and _normalize_accelerator_name(s.accelerator).startswith(acc_normalized)
             and _matches_count(s.accelerator_count, accelerator_count)
             and s.vcpu >= cpu
             and s.memory_gb >= memory_gb
@@ -290,16 +296,16 @@ def select_instances(
             available_counts = sorted({
                 int(s.accelerator_count) for s in instances
                 if s.accelerator
-                and _normalize_accelerator_name(s.accelerator) == acc_normalized
+                and _normalize_accelerator_name(s.accelerator).startswith(acc_normalized)
             })
             if available_counts:
-                raise ValueError(
+                raise NoMatchingInstanceError(
                     f"No instance type found for {accelerator_count}x {accelerator} "
                     f"with {cpu} vCPU, {memory_gb}GB RAM. "
                     f"Available counts for {accelerator}: {available_counts}"
                 )
             available = sorted({s.accelerator for s in instances if s.accelerator})
-            raise ValueError(
+            raise NoMatchingInstanceError(
                 f"No instance type found for {accelerator}. "
                 f"Available accelerator types: {available}"
             )
@@ -325,7 +331,7 @@ def select_instances(
     if not candidates:
         max_vcpu = max((s.vcpu for s in instances), default=0)
         max_mem = max((s.memory_gb for s in instances), default=0)
-        raise ValueError(
+        raise NoMatchingInstanceError(
             f"No instance type found for {cpu} vCPU, {memory_gb}GB RAM. "
             f"Maximum available: {max_vcpu} vCPU, {max_mem}GB RAM"
         )
@@ -478,7 +484,7 @@ class ProviderConfig(Protocol):
         pool = ComputePool(provider=config)  # build() called in __enter__
     """
 
-    def build(self) -> "Provider":
+    def build(self) -> Provider:
         """Build a stateful Provider from this configuration."""
         ...
 
@@ -656,3 +662,24 @@ class Provider(Protocol):
             Tuple of InstanceSpec with available instance types.
         """
         ...
+
+
+# =============================================================================
+# Provider Selection Types
+# =============================================================================
+
+type ProviderLiteral = Literal['aws', 'verda', 'digital_ocean']
+
+type SelectionStrategy = Literal["first", "cheapest", "available"]
+"""Built-in provider selection strategies."""
+
+type ProviderSelector = Callable[[tuple[Provider, ...], ComputeSpec], Provider]
+"""Callable that selects a provider from a list based on compute requirements."""
+
+type SelectionLike = SelectionStrategy | ProviderSelector
+"""Either a built-in strategy name or a custom selector function."""
+
+type SingleProvider = ProviderConfig | ProviderLiteral
+
+type ProviderLike = SingleProvider | Sequence[SingleProvider]
+"""Single provider config or sequence of configs for multi-provider selection."""

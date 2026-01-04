@@ -45,14 +45,27 @@ from skyward.callback import Callback, compose, emit, use_callback
 from skyward.callbacks import cost_tracker, spinner
 from skyward.conc import for_each_async, map_async
 from skyward.events import Error, LogLine, PoolStarted, PoolStopping
-from skyward.exceptions import ExecutionError, NotProvisionedError
+from skyward.exceptions import ExecutionError, NotProvisionedError, ProvisioningError
 from skyward.image import DEFAULT_IMAGE, Image
 from skyward.logging import LogConfig, _setup_logging, _teardown_logging
 from skyward.metrics import MetricsPoller
 from skyward.pending import PendingBatch, PendingCompute
+from skyward.selection import (
+    AllProvidersFailedError,
+    normalize_providers,
+    normalize_selector,
+)
 from skyward.spec import AllocationLike
 from skyward.task import PooledConnection, TaskPool
-from skyward.types import Architecture, Auto, Instance, Memory, Provider, ProviderConfig
+from skyward.types import (
+    Architecture,
+    Auto,
+    Instance,
+    Memory,
+    Provider,
+    ProviderLike,
+    SelectionLike,
+)
 from skyward.volume import Volume, parse_volume_uri
 
 
@@ -117,7 +130,10 @@ class ComputePool:
     """
 
     # Required
-    provider: ProviderConfig
+    provider: ProviderLike
+
+    # Provider selection (when multiple providers given)
+    selection: SelectionLike = "first"
 
     # Environment specification
     image: Image = field(default_factory=lambda: DEFAULT_IMAGE)
@@ -219,10 +235,13 @@ class ComputePool:
             self._active = True
             self._job_id = str(uuid.uuid4())[:8]
 
-            # Build provider from config
-            self._built_provider = self.provider.build()
+            # Normalize and build all providers
+            configs = normalize_providers(self.provider)
+            built_providers = tuple(config.build() for config in configs)
+            selector = normalize_selector(self.selection)
 
-            logger.info(f"Starting pool with {self.nodes} nodes on {self._built_provider.name}")
+            provider_names = [p.name for p in built_providers]
+            logger.info(f"Starting pool with {self.nodes} nodes, providers: {provider_names}")
             logger.debug(
                 f"Pool config: accelerator={self.accelerator}, "
                 f"allocation={self.allocation}, concurrency={self.concurrency}"
@@ -241,9 +260,27 @@ class ComputePool:
             emit(PoolStarted())
             stack.callback(lambda: emit(PoolStopping()))
 
-            # 4. Provision (may fail with KeyboardInterrupt)
-            logger.debug("Starting provisioning...")
-            self._provision()
+            # 4. Select provider and provision with fallback
+            compute = self._build_compute_spec()
+            selected = selector(built_providers, compute)
+
+            # Order: selected first, then remaining for fallback
+            ordered = (selected,) + tuple(p for p in built_providers if p is not selected)
+
+            errors: list[tuple[Provider, Exception]] = []
+            for provider in ordered:
+                try:
+                    logger.info(f"Trying provider: {provider.name}")
+                    self._built_provider = provider
+                    self._provision()
+                    break
+                except ProvisioningError as e:
+                    logger.warning(f"Provider {provider.name} failed: {e}")
+                    errors.append((provider, e))
+                    self._instances = None  # Reset for next attempt
+                    continue
+            else:
+                raise AllProvidersFailedError(errors)
 
             logger.info(f"Pool ready with {len(self._instances or [])} instances")
 
@@ -423,14 +460,11 @@ class ComputePool:
             emit(Error(message=f"Execution failed on {pc.instance_id}: {e}"))
             raise
 
-    def _provision(self) -> None:
-        """Provision resources for the pool."""
+    def _build_compute_spec(self) -> Any:
+        """Build compute spec for provider selection and provisioning."""
         from skyward.pool_compute import _PoolCompute
 
-        logger.debug(f"Creating compute spec: nodes={self.nodes}, machine={self.machine}")
-
-        # Create a Compute-like object that the provider expects
-        compute = _PoolCompute(
+        return _PoolCompute(
             pool=self,
             fn=lambda: None,  # Placeholder
             nodes=self.nodes,
@@ -444,6 +478,11 @@ class ComputePool:
             allocation=self.allocation,
             volumes=list(_parse_volumes(self.volume)),
         )
+
+    def _provision(self) -> None:
+        """Provision resources for the pool."""
+        logger.debug(f"Creating compute spec: nodes={self.nodes}, machine={self.machine}")
+        compute = self._build_compute_spec()
 
         # Provision and setup (providers use emit() directly)
         logger.info(f"Provisioning {self.nodes} instances via {self._built_provider.name}...")

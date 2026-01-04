@@ -301,8 +301,6 @@ class SpinnerController:
 
     @handle.register
     def _(self, event: Metrics) -> None:
-        print(event)
-
         t = self._tracking
         gpu_mem_pct = None
         if event.gpu_memory_used_mb is not None and event.gpu_memory_total_mb:

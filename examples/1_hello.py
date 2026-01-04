@@ -25,8 +25,8 @@ def estimate_pi(samples: int, seed: int = 0) -> float:
 
 
 @sky.pool(
-    provider=sky.AWS(),
-    accelerator="L40S",
+    provider=['aws', 'verda'],
+    accelerator='T4',
     image=sky.Image(pip=["jax[cuda12]"]),
 )
 def main():

@@ -38,13 +38,11 @@ from skyward.callback import Callback
 from skyward.image import DEFAULT_IMAGE, Image
 from skyward.pool import ComputePool
 from skyward.spec import AllocationLike
-from skyward.types import Memory, ProviderConfig
+from skyward.types import Memory, ProviderLike
 from skyward.volume import Volume
 
 if TYPE_CHECKING:
     from joblib import Parallel
-
-    from skyward.types import Provider
 
 
 def _make_remote_executor() -> Callable[[bytes], Any]:
@@ -215,7 +213,7 @@ def _merge_pip(base: Image, *packages: str) -> Image:
 
 @contextmanager
 def JoblibPool(
-    provider: ProviderConfig,
+    provider: ProviderLike,
     *,
     nodes: int = 1,
     machine: str | None = None,
@@ -292,7 +290,7 @@ def JoblibPool(
 
 @contextmanager
 def ScikitLearnPool(
-    provider: ProviderConfig,
+    provider: ProviderLike,
     *,
     nodes: int = 1,
     machine: str | None = None,

@@ -110,7 +110,8 @@ Context manager for cloud resource management.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `provider` | `Provider` | **required** | Cloud provider (AWS, DigitalOcean, Verda) |
+| `provider` | `ProviderLike` | **required** | Single provider or list for multi-provider |
+| `selection` | `SelectionLike` | `"first"` | Provider selection strategy |
 | `image` | `Image` | `Image()` | Environment specification |
 | `nodes` | `int` | `1` | Number of instances |
 | `machine` | `str` | `None` | Direct instance type override (e.g., "p5.48xlarge") |
@@ -146,6 +147,75 @@ Execute on ALL workers simultaneously.
 **Properties:**
 - `is_active: bool` - True if pool is provisioned
 - `instance_count: int` - Number of instances
+
+---
+
+### Provider Selection
+
+When using multiple providers, the `selection` parameter controls which one is tried first:
+
+```python
+import skyward as sky
+
+pool = sky.ComputePool(
+    provider=[sky.AWS(), sky.Verda()],
+    selection="cheapest",
+    accelerator="A100",
+)
+```
+
+**Selection Strategies:**
+
+| Strategy | Behavior |
+|----------|----------|
+| `"first"` | Use first provider in list (default) |
+| `"cheapest"` | Compare prices across providers, pick lowest |
+| `"available"` | First provider with matching instances |
+| `callable` | Custom `(tuple[Provider, ...], ComputeSpec) -> Provider` |
+
+**Automatic Fallback:** If the selected provider fails (no capacity, provisioning error), Skyward automatically tries the next provider in the list.
+
+**Custom Selector Example:**
+
+```python
+def prefer_spot(providers, spec):
+    """Prefer providers with spot capacity."""
+    for p in providers:
+        if p.has_spot_capacity(spec):
+            return p
+    return providers[0]
+
+pool = sky.ComputePool(
+    provider=[sky.AWS(), sky.Verda()],
+    selection=prefer_spot,
+    accelerator="A100",
+)
+```
+
+**Types:**
+
+| Type | Definition |
+|------|------------|
+| `ProviderLike` | `ProviderConfig \| Sequence[ProviderConfig]` |
+| `SelectionLike` | `Literal["first", "cheapest", "available"] \| ProviderSelector` |
+| `ProviderSelector` | `Callable[[tuple[Provider, ...], ComputeSpec], Provider]` |
+
+**Built-in Selector Functions:**
+
+```python
+import skyward as sky
+
+sky.select_first      # Use first provider
+sky.select_cheapest   # Compare prices
+sky.select_available  # First with matching instances
+```
+
+**Exceptions:**
+
+| Exception | Description |
+|-----------|-------------|
+| `NoAvailableProviderError` | No provider has instances matching requirements |
+| `AllProvidersFailedError` | All providers failed during provisioning |
 
 ---
 

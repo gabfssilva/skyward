@@ -89,6 +89,19 @@ def main():
 | `DigitalOcean()` | CPU only | No | 9 |
 | `Verda()` | A100, H100 | Yes | 3 |
 
+### Multi-Provider Fallback
+
+```python
+# Try AWS first, fallback to Verda if unavailable
+@sky.pool(
+    provider=[sky.AWS(), sky.Verda()],
+    selection="cheapest",  # or "first", "available", custom callable
+    accelerator="A100",
+)
+def main():
+    return train() >> sky
+```
+
 ## ComputePool Options
 
 ```python

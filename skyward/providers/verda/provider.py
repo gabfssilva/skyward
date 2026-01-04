@@ -45,12 +45,14 @@ from skyward.types import (
     InstanceSpec,
     Provider,
     parse_memory_mb,
-    select_instance,
+    select_instances,
 )
 
 from .discovery import (
+    NoAvailableRegionError,
     fetch_available_instances,
     find_available_region,
+    get_availability,
 )
 
 if TYPE_CHECKING:
@@ -320,17 +322,41 @@ class VerdaProvider(Provider):
                 specs = self.available_instances()
                 spec = next((s for s in specs if s.name == flavor), None)
             else:
-                # Infer from resources (current behavior)
+                # Infer from resources with availability filtering
                 accelerator_type = acc.accelerator if acc else None
                 requested_gpu_count = acc.count if acc else 1
 
-                spec = select_instance(
+                # 1. Get all matching candidates (sorted by price)
+                candidates = select_instances(
                     self.available_instances(),
                     cpu=compute.cpu or 1,
                     memory_mb=parse_memory_mb(compute.memory),
                     accelerator=accelerator_type,
                     accelerator_count=requested_gpu_count,
                     prefer_spot=prefer_spot,
+                )
+
+                # 2. Get availability for spot/on-demand
+                availability = get_availability(client, is_spot=prefer_spot)
+                available_types: set[str] = set()
+                for region_types in availability.values():
+                    available_types.update(region_types)
+
+                # 3. Filter to only available candidates
+                available_candidates = [c for c in candidates if c.name in available_types]
+
+                if not available_candidates:
+                    raise NoAvailableRegionError(
+                        candidates[0].name if candidates else "unknown",
+                        prefer_spot,
+                        list(availability.keys()),
+                    )
+
+                # 4. Use best available (first = cheapest)
+                spec = available_candidates[0]
+                logger.debug(
+                    f"Selected {spec.name} from {len(candidates)} candidates "
+                    f"({len(available_candidates)} available)"
                 )
 
             # Determine instance type name
