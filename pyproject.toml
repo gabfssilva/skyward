@@ -33,6 +33,7 @@ dependencies = [
     "psutil>=5.9.0",
     "loguru>=0.7.3",
     "yaspin>=3.4.0",
+    "rich>=14.2.0",
 ]
 
 [project.optional-dependencies]

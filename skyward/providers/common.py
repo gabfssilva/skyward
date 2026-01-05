@@ -27,7 +27,7 @@ from tenacity import (
 
 from skyward.callback import emit
 from skyward.constants import RPYC_PORT, SKYWARD_DIR
-from skyward.events import BootstrapProgress
+from skyward.events import BootstrapProgress, ProvisionedInstance
 
 if TYPE_CHECKING:
     from skyward.providers.base import Transport
@@ -159,11 +159,12 @@ def _wait_for_rpyc_service(
 
 def wait_for_bootstrap(
     run_command: CommandRunner,
-    instance_id: str,
+    instance: ProvisionedInstance,
     timeout: int = 300,
     extra_checkpoints: tuple[Checkpoint, ...] = (),
 ) -> None:
     """Wait for instance bootstrap with progress tracking."""
+    instance_id = instance.instance_id
     logger.debug(f"Waiting for bootstrap on {instance_id} (timeout={timeout}s)")
     all_checkpoints = CHECKPOINTS + extra_checkpoints
 
@@ -203,7 +204,7 @@ def wait_for_bootstrap(
 
         for checkpoint in all_checkpoints:
             if checkpoint.file in found_files and checkpoint.name not in completed_steps:
-                emit(BootstrapProgress(instance_id=instance_id, step=checkpoint.name))
+                emit(BootstrapProgress(instance=instance, step=checkpoint.name))
                 completed_steps.add(checkpoint.name)
 
         if ".ready" in found_files:
@@ -455,6 +456,7 @@ def install_skyward_wheel_via_transport(
 def wait_for_ssh_bootstrap(
     instances: tuple[Instance, ...],
     get_ip: Callable[[Instance], str],
+    make_provisioned: Callable[[Instance], ProvisionedInstance],
     timeout: int = 300,
     key_path: str | None = None,
 ) -> None:
@@ -474,9 +476,10 @@ def wait_for_ssh_bootstrap(
         ip = get_ip(inst)
         logger.debug(f"Checking bootstrap status for {inst.id} at {ip}")
         runner = create_ssh_runner(ip, username, key_path)
+        provisioned = make_provisioned(inst)
         wait_for_bootstrap(
             run_command=runner,
-            instance_id=inst.id,
+            instance=provisioned,
             timeout=timeout,
             extra_checkpoints=extra_checkpoints,
         )

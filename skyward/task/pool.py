@@ -190,10 +190,13 @@ class TaskPool:
     instances: tuple[Instance, ...]
     concurrency: int
     _pool: ObjectPool[PooledConnection] = field(init=False, repr=False)
+    # Timing data for PoolReady event (consolidated in pool.py)
+    tunnel_count: int = field(init=False, repr=False)
+    connection_count: int = field(init=False, repr=False)
+    init_duration_seconds: float = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         from skyward.conc import map_async
-        from skyward.events import TaskPoolInitCompleted, emit
 
         t0 = time.perf_counter()
         logger.info(f"Initializing task pool: {len(self.instances)} instances, concurrency={self.concurrency}")
@@ -247,11 +250,10 @@ class TaskPool:
         duration = time.perf_counter() - t0
         logger.info(f"Task pool ready: {len(specs)} connections in {duration:.1f}s")
 
-        emit(TaskPoolInitCompleted(
-            tunnels=len(tunnels),
-            connections=len(specs),
-            duration_seconds=duration,
-        ))
+        # Store timing data for PoolReady event (emitted by pool.py)
+        self.tunnel_count = len(tunnels)
+        self.connection_count = len(specs)
+        self.init_duration_seconds = duration
 
     def acquire(self) -> PooledConnection:
         """Acquire connection from pool (blocks if empty)."""

@@ -18,13 +18,14 @@ from skyward.events import (
     BootstrapCompleted,
     BootstrapStarting,
     Error,
-    InfraCreated,
-    InfraCreating,
     InstanceLaunching,
     InstanceProvisioned,
     InstanceStopping,
+    NetworkReady,
     ProviderName,
+    ProvisionedInstance,
     ProvisioningCompleted,
+    ProvisioningStarted,
     RegionAutoSelected,
 )
 from skyward.providers.base import (
@@ -296,20 +297,33 @@ class VerdaProvider(Provider):
         key_path = get_private_key_path()
         return SSHTransport(host=ip, username=username, key_path=key_path)
 
+    def _make_provisioned(
+        self, inst: Instance, spec: InstanceSpec | None = None
+    ) -> ProvisionedInstance:
+        """Create ProvisionedInstance from Instance for events."""
+        return ProvisionedInstance(
+            instance_id=inst.id,
+            node=inst.node,
+            provider=ProviderName.Verda,
+            spot=inst.spot,
+            spec=spec,
+            ip=inst.public_ip or inst.private_ip,
+        )
+
     def provision(self, compute: ComputeSpec) -> tuple[Instance, ...]:
         """Provision Verda GPU instances."""
         try:
             cluster_id = str(uuid.uuid4())[:8]
             logger.info(f"Provisioning {compute.nodes} Verda instances in {self.region}")
             logger.debug(f"Cluster ID: {cluster_id}")
-            emit(InfraCreating())
+            emit(ProvisioningStarted())
 
             client = self._get_client()
 
             ssh_key_info = _get_or_create_ssh_key(client)
             self._resolved_ssh_key_id = ssh_key_info.id
 
-            emit(InfraCreated(region=self.region))
+            emit(NetworkReady(region=self.region))
 
             acc = Accelerator.from_value(compute.accelerator)
             allocation = normalize_allocation(compute.allocation)
@@ -391,12 +405,12 @@ class VerdaProvider(Provider):
                 preferred_region=self.region,
             )
 
-            if actual_region != self.region:
+            if actual_region != self.region and spec:
                 emit(
                     RegionAutoSelected(
                         requested_region=self.region,
                         selected_region=actual_region,
-                        instance_type=instance_type,
+                        spec=spec,
                         provider=ProviderName.Verda,
                     )
                 )
@@ -442,6 +456,8 @@ class VerdaProvider(Provider):
             self._cluster_id = cluster_id
 
             instances: list[Instance] = []
+            provisioned_instances: list[ProvisionedInstance] = []
+
             for i, vinst in enumerate(verda_instances):
                 instance = Instance(
                     id=str(vinst.id),
@@ -462,24 +478,22 @@ class VerdaProvider(Provider):
                 )
                 instances.append(instance)
 
-                emit(
-                    InstanceProvisioned(
-                        instance_id=str(vinst.id),
-                        node=i,
-                        spot=use_spot,
-                        provider=ProviderName.Verda,
-                        spec=spec,
-                        ip=vinst.ip,
-                    )
+                provisioned = ProvisionedInstance(
+                    instance_id=str(vinst.id),
+                    node=i,
+                    provider=ProviderName.Verda,
+                    spot=use_spot,
+                    spec=spec,
+                    ip=vinst.ip,
                 )
+                provisioned_instances.append(provisioned)
+                emit(InstanceProvisioned(instance=provisioned))
 
             emit(
                 ProvisioningCompleted(
-                    spot=len([i for i in instances if i.spot]),
-                    on_demand=len([i for i in instances if not i.spot]),
+                    instances=tuple(provisioned_instances),
                     provider=ProviderName.Verda,
                     region=actual_region,
-                    instances=[inst.id for inst in instances],
                 )
             )
 
@@ -498,13 +512,19 @@ class VerdaProvider(Provider):
 
         logger.info(f"Setting up {len(instances)} Verda instances...")
         try:
+            # Build provisioned lookup for events
+            provisioned_map = {inst.id: self._make_provisioned(inst) for inst in instances}
+
             for inst in instances:
-                emit(BootstrapStarting(instance_id=inst.id))
+                emit(BootstrapStarting(instance=provisioned_map[inst.id]))
 
             key_path = get_private_key_path()
 
             def get_ip(inst: Instance) -> str:
                 return inst.get_meta("instance_ip") or inst.public_ip or ""
+
+            def make_provisioned(inst: Instance) -> ProvisionedInstance:
+                return provisioned_map[inst.id]
 
             @contextmanager
             def ssh_transport(inst: Instance) -> Generator[SSHTransport, None, None]:
@@ -512,11 +532,13 @@ class VerdaProvider(Provider):
                 username = inst.get_meta("username", self._username)
                 yield SSHTransport(host=ip, username=username, key_path=key_path)
 
-            wait_for_ssh_bootstrap(instances, get_ip, timeout=300, key_path=key_path)
+            wait_for_ssh_bootstrap(
+                instances, get_ip, make_provisioned, timeout=300, key_path=key_path
+            )
             install_skyward_wheel_via_transport(instances, ssh_transport, compute=compute)
 
             for inst in instances:
-                emit(BootstrapCompleted(instance_id=inst.id))
+                emit(BootstrapCompleted(instance=provisioned_map[inst.id]))
 
             logger.info(f"Setup completed for {len(instances)} instances")
 
@@ -536,7 +558,8 @@ class VerdaProvider(Provider):
         for inst in instances:
             instance_id = inst.get_meta("instance_id") or inst.id
             if instance_id:
-                emit(InstanceStopping(instance_id=inst.id))
+                provisioned = self._make_provisioned(inst)
+                emit(InstanceStopping(instance=provisioned))
                 logger.debug(f"Deleting instance {instance_id}")
                 try:
                     client.instances.action(instance_id, Actions.DELETE)

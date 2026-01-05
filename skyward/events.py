@@ -1,21 +1,24 @@
 """Algebraic Data Type (ADT) for Skyward events.
 
 This module defines strongly-typed events for all provider phases:
-- Provision: InfraCreating, InfraCreated, InstanceLaunching, InstanceProvisioned
-- Setup: BootstrapStarting, BootstrapProgress, BootstrapCompleted
-- Execute: Metrics
+- Provision: ProvisioningStarted, NetworkReady, InstanceLaunching, InstanceProvisioned
+- Setup: BootstrapStarting, BootstrapProgress, BootstrapCompleted, InstanceReady
+- Pool: PoolStarted, PoolReady, PoolStopping
+- Execute: Metrics, LogLine, FunctionCall
 - Shutdown: InstanceStopping
 - Errors: Error
 
-Use pattern matching to handle events in consumers:
+All instance-related events use ProvisionedInstance for consistent data:
 
     match event:
-        case Metrics(cpu_percent=cpu, gpu_utilization=gpu):
-            print(f"CPU: {cpu}%, GPU: {gpu}%")
-        case BootstrapCompleted(instance_id=id):
-            print(f"Instance {id} ready")
-        case Error(message=msg):
-            raise RuntimeError(msg)
+        case BootstrapCompleted(instance=inst):
+            print(f"Node {inst.node} ({inst.instance_id}) ready")
+            if inst.spot:
+                print("  (spot instance)")
+
+        case ProvisioningCompleted(instances=insts, region=region):
+            spot = sum(1 for i in insts if i.spot)
+            print(f"Provisioned {len(insts)} instances ({spot} spot) in {region}")
 """
 
 from __future__ import annotations
@@ -29,26 +32,56 @@ from skyward.callback import emit
 if TYPE_CHECKING:
     from skyward.types import InstanceSpec
 
+
+# =============================================================================
+# Enums and Base Types
+# =============================================================================
+
+
+class ProviderName(Enum):
+    AWS = "AWS"
+    DigitalOcean = "Digital Ocean"
+    Verda = "Verda"
+
+
+@dataclass(frozen=True, slots=True)
+class ProvisionedInstance:
+    """Information about a provisioned instance.
+
+    Used by all instance-related events for consistent data access.
+    """
+
+    instance_id: str
+    node: int
+    provider: ProviderName
+    spot: bool
+    spec: InstanceSpec | None = None
+    ip: str | None = None
+
+
 # =============================================================================
 # Provision Phase Events
 # =============================================================================
 
-class ProviderName(Enum):
-    AWS = 'AWS'
-    DigitalOcean = 'Digital Ocean'
-    Verda = 'Verda'
-
 
 @dataclass(frozen=True, slots=True)
-class InfraCreating:
-    """Infrastructure provisioning started."""
+class ProvisioningStarted:
+    """Provisioning phase has begun.
+
+    Emitted at the start of provision(), indicating the pool
+    is beginning to acquire cloud resources.
+    """
 
     pass
 
 
 @dataclass(frozen=True, slots=True)
-class InfraCreated:
-    """Infrastructure ready."""
+class NetworkReady:
+    """Network infrastructure is ready.
+
+    Emitted after VPC, subnet, and security groups have been
+    validated or created. Instances can now be launched.
+    """
 
     region: str
 
@@ -68,25 +101,18 @@ class InstanceLaunching:
 
 @dataclass(frozen=True, slots=True)
 class InstanceProvisioned:
-    """Instance provisioned and ready."""
+    """Instance provisioned and running."""
 
-    instance_id: str
-    node: int
-    spot: bool
-    provider: ProviderName
-    spec: InstanceSpec | None = None
-    ip: str | None = None
+    instance: ProvisionedInstance
 
 
 @dataclass(frozen=True, slots=True)
 class ProvisioningCompleted:
     """All instances have been provisioned."""
 
-    spot: int
-    on_demand: int
+    instances: tuple[ProvisionedInstance, ...]
     provider: ProviderName
     region: str
-    instances: list[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +125,7 @@ class RegionAutoSelected:
 
     requested_region: str
     selected_region: str
-    instance_type: str
+    spec: InstanceSpec
     provider: ProviderName
 
 
@@ -112,14 +138,14 @@ class RegionAutoSelected:
 class BootstrapStarting:
     """Bootstrap starting on instance."""
 
-    instance_id: str
+    instance: ProvisionedInstance
 
 
 @dataclass(frozen=True, slots=True)
 class BootstrapProgress:
     """Bootstrap step completed."""
 
-    instance_id: str
+    instance: ProvisionedInstance
     step: str  # "uv", "apt", "deps", "skyward", "server", "volumes"
 
 
@@ -127,7 +153,18 @@ class BootstrapProgress:
 class BootstrapCompleted:
     """Bootstrap finished on instance."""
 
-    instance_id: str
+    instance: ProvisionedInstance
+
+
+@dataclass(frozen=True, slots=True)
+class InstanceReady:
+    """Instance is fully ready to receive work.
+
+    Emitted after bootstrap AND cluster setup is complete for this instance.
+    The instance can now execute tasks.
+    """
+
+    instance: ProvisionedInstance
 
 
 # =============================================================================
@@ -139,8 +176,7 @@ class BootstrapCompleted:
 class Metrics:
     """Runtime metrics from instance."""
 
-    instance_id: str
-    node: int
+    instance: ProvisionedInstance
     cpu_percent: float
     memory_percent: float
     memory_used_mb: float
@@ -155,10 +191,38 @@ class Metrics:
 class LogLine:
     """Log line from remote execution stdout."""
 
-    node: int
-    instance_id: str
+    instance: ProvisionedInstance
     line: str
     timestamp: float
+
+
+@dataclass(frozen=True, slots=True)
+class FunctionCall:
+    """Remote function call started.
+
+    Emitted when a @compute-decorated function is invoked on a remote instance.
+    Used by panel callback to show recent function calls in the event tree.
+    """
+
+    function_name: str
+    instance: ProvisionedInstance
+    timestamp: float
+
+
+@dataclass(frozen=True, slots=True)
+class FunctionResult:
+    """Remote function call completed.
+
+    Emitted when a @compute-decorated function returns on a remote instance.
+    Used by panel callback to track function completion.
+    """
+
+    function_name: str
+    instance: ProvisionedInstance
+    timestamp: float
+    duration_seconds: float
+    success: bool = True
+    error: str | None = None
 
 
 # =============================================================================
@@ -170,7 +234,7 @@ class LogLine:
 class InstanceStopping:
     """Instance being stopped/destroyed."""
 
-    instance_id: str
+    instance: ProvisionedInstance
 
 
 # =============================================================================
@@ -202,25 +266,22 @@ class CostFinal:
 
 
 # =============================================================================
-# Pool Initialization Events
+# Pool Events
 # =============================================================================
 
 
 @dataclass(frozen=True, slots=True)
-class TaskPoolInitCompleted:
-    """Task pool initialization completed (tunnels + connections ready)."""
+class PoolReady:
+    """Pool is fully ready for execution.
 
+    Emitted after all instances are bootstrapped, all tunnels and
+    connections are established, and cluster environment is configured.
+    """
+
+    instances: tuple[ProvisionedInstance, ...]
     tunnels: int
     connections: int
-    duration_seconds: float
-
-
-@dataclass(frozen=True, slots=True)
-class ClusterSetupCompleted:
-    """Cluster environment setup completed on all instances."""
-
-    instance_count: int
-    duration_seconds: float
+    total_duration_seconds: float
 
 
 # =============================================================================
@@ -236,7 +297,7 @@ class PoolStarted:
     Consumers should initialize resources (threads, displays) when receiving this.
     """
 
-    pass
+    nodes: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,7 +321,7 @@ class Error:
     """Error occurred."""
 
     message: str
-    instance_id: str | None = None
+    instance: ProvisionedInstance | None = None
 
 
 # =============================================================================
@@ -268,8 +329,8 @@ class Error:
 # =============================================================================
 
 type SkywardEvent = (
-    InfraCreating
-    | InfraCreated
+    ProvisioningStarted
+    | NetworkReady
     | InstanceLaunching
     | InstanceProvisioned
     | ProvisioningCompleted
@@ -277,43 +338,48 @@ type SkywardEvent = (
     | BootstrapStarting
     | BootstrapProgress
     | BootstrapCompleted
+    | InstanceReady
     | Metrics
     | LogLine
+    | FunctionCall
+    | FunctionResult
     | InstanceStopping
     | CostUpdate
     | CostFinal
-    | TaskPoolInitCompleted
-    | ClusterSetupCompleted
+    | PoolReady
     | PoolStarted
     | PoolStopping
     | Error
 )
 
 __all__ = [
+    # Base types
+    "ProviderName",
+    "ProvisionedInstance",
     # Provision
-    "InfraCreating",
-    "InfraCreated",
+    "ProvisioningStarted",
+    "NetworkReady",
     "InstanceLaunching",
     "InstanceProvisioned",
     "ProvisioningCompleted",
     "RegionAutoSelected",
-    "ProviderName",
     # Setup
     "BootstrapStarting",
     "BootstrapProgress",
     "BootstrapCompleted",
+    "InstanceReady",
     # Execute
     "Metrics",
     "LogLine",
+    "FunctionCall",
+    "FunctionResult",
     # Shutdown
     "InstanceStopping",
     # Cost
     "CostUpdate",
     "CostFinal",
-    # Pool Init
-    "TaskPoolInitCompleted",
-    "ClusterSetupCompleted",
-    # Lifecycle
+    # Pool
+    "PoolReady",
     "PoolStarted",
     "PoolStopping",
     # Errors

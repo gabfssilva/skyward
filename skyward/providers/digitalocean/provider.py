@@ -17,13 +17,14 @@ from skyward.events import (
     BootstrapCompleted,
     BootstrapStarting,
     Error,
-    InfraCreated,
-    InfraCreating,
     InstanceLaunching,
     InstanceProvisioned,
     InstanceStopping,
+    NetworkReady,
     ProviderName,
+    ProvisionedInstance,
     ProvisioningCompleted,
+    ProvisioningStarted,
 )
 from skyward.providers.base import (
     SSHKeyInfo,
@@ -262,16 +263,29 @@ class DigitalOceanProvider(Provider):
         key_path = get_private_key_path()
         return SSHTransport(host=ip, username=username, key_path=key_path)
 
+    def _make_provisioned(
+        self, inst: Instance, spec: InstanceSpec | None = None
+    ) -> ProvisionedInstance:
+        """Create ProvisionedInstance from Instance for events."""
+        return ProvisionedInstance(
+            instance_id=inst.id,
+            node=inst.node,
+            provider=ProviderName.DigitalOcean,
+            spot=inst.spot,
+            spec=spec,
+            ip=inst.public_ip or inst.private_ip,
+        )
+
     def provision(self, compute: ComputeSpec) -> tuple[Instance, ...]:
         """Provision DigitalOcean Droplets."""
         try:
             cluster_id = str(uuid.uuid4())[:8]
             logger.info(f"Provisioning {compute.nodes} DigitalOcean droplets in {self.region}")
             logger.debug(f"Cluster ID: {cluster_id}")
-            emit(InfraCreating())
+            emit(ProvisioningStarted())
 
             fingerprint = self._ensure_ssh_key()
-            emit(InfraCreated(region=self.region))
+            emit(NetworkReady(region=self.region))
 
             client = self._get_client()
 
@@ -361,6 +375,8 @@ class DigitalOceanProvider(Provider):
             self._droplets = droplets
 
             instances: list[Instance] = []
+            provisioned_instances: list[ProvisionedInstance] = []
+
             for i, droplet in enumerate(droplets):
                 instance = Instance(
                     id=str(droplet.id),
@@ -381,24 +397,22 @@ class DigitalOceanProvider(Provider):
                 )
                 instances.append(instance)
 
-                emit(
-                    InstanceProvisioned(
-                        instance_id=str(droplet.id),
-                        node=i,
-                        spot=False,
-                        provider=ProviderName.DigitalOcean,
-                        spec=spec,
-                        ip=droplet.ip,
-                    )
+                provisioned = ProvisionedInstance(
+                    instance_id=str(droplet.id),
+                    node=i,
+                    provider=ProviderName.DigitalOcean,
+                    spot=False,
+                    spec=spec,
+                    ip=droplet.ip,
                 )
+                provisioned_instances.append(provisioned)
+                emit(InstanceProvisioned(instance=provisioned))
 
             emit(
                 ProvisioningCompleted(
-                    spot=0,
-                    on_demand=len(instances),
+                    instances=tuple(provisioned_instances),
                     provider=ProviderName.DigitalOcean,
                     region=self.region,
-                    instances=[inst.id for inst in instances],
                 )
             )
 
@@ -417,13 +431,19 @@ class DigitalOceanProvider(Provider):
 
         logger.info(f"Setting up {len(instances)} DigitalOcean instances...")
         try:
+            # Build provisioned lookup for events
+            provisioned_map = {inst.id: self._make_provisioned(inst) for inst in instances}
+
             for inst in instances:
-                emit(BootstrapStarting(instance_id=inst.id))
+                emit(BootstrapStarting(instance=provisioned_map[inst.id]))
 
             key_path = get_private_key_path()
 
             def get_ip(inst: Instance) -> str:
                 return inst.get_meta("droplet_ip") or inst.public_ip or ""
+
+            def make_provisioned(inst: Instance) -> ProvisionedInstance:
+                return provisioned_map[inst.id]
 
             @contextmanager
             def ssh_transport(inst: Instance) -> Generator[SSHTransport]:
@@ -431,11 +451,11 @@ class DigitalOceanProvider(Provider):
                 username = inst.get_meta("username", "root")
                 yield SSHTransport(host=ip, username=username, key_path=key_path)
 
-            wait_for_ssh_bootstrap(instances, get_ip, timeout=300)
+            wait_for_ssh_bootstrap(instances, get_ip, make_provisioned, timeout=300)
             install_skyward_wheel_via_transport(instances, ssh_transport, compute=compute)
 
             for inst in instances:
-                emit(BootstrapCompleted(instance_id=inst.id))
+                emit(BootstrapCompleted(instance=provisioned_map[inst.id]))
 
             logger.info(f"Setup completed for {len(instances)} instances")
 
@@ -457,7 +477,8 @@ class DigitalOceanProvider(Provider):
         for inst in instances:
             droplet_id = inst.get_meta("droplet_id")
             if droplet_id:
-                emit(InstanceStopping(instance_id=inst.id))
+                provisioned = self._make_provisioned(inst)
+                emit(InstanceStopping(instance=provisioned))
                 logger.debug(f"Destroying droplet {droplet_id}")
                 with suppress(Exception):
                     client.droplets.destroy(droplet_id=droplet_id)

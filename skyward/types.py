@@ -448,7 +448,7 @@ class Instance:
                 "r=fn(*args,**kwargs);"
                 "print(base64.b64encode(cloudpickle.dumps(r)).decode())"
             )
-            stdout = self.run_command(f"/opt/skyward/.venv/bin/python -c \"{script}\"")
+            stdout = self.run_command(f"sudo /opt/skyward/.venv/bin/python -c \"{script}\"")
             return cloudpickle.loads(base64.b64decode(stdout.strip()))  # type: ignore[return-value]
 
         return wrapper

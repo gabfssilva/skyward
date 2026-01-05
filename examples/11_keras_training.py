@@ -75,9 +75,9 @@ def train_vit(
     }
 
 @sky.pool(
-    provider=sky.AWS(),
-    nodes=3,
-    accelerator=sky.Accelerator.NVIDIA.T4(lambda _: 2 >= _ >= 1),
+    provider='aws',
+    nodes=2,
+    accelerator='T4',
     image=sky.Image(
         pip=["keras>=3.2", "jax[cuda12]"],
         env={"KERAS_BACKEND": "jax"},

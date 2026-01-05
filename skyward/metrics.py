@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING, Any
 
-from skyward.events import Metrics
+from skyward.events import Metrics, ProviderName, ProvisionedInstance
 
 if TYPE_CHECKING:
     from skyward.callback import Callback
@@ -24,12 +24,23 @@ class MetricsPoller:
         instance: Instance,
         callback: Callback | None = None,
         interval: float = 2.0,
+        provider_name: ProviderName = ProviderName.AWS,
     ) -> None:
         self.instance = instance
         self.callback = callback
         self.interval = interval
+        self.provider_name = provider_name
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        # Cache ProvisionedInstance
+        self._provisioned = ProvisionedInstance(
+            instance_id=instance.id,
+            node=instance.node,
+            provider=provider_name,
+            spot=instance.spot,
+            spec=None,
+            ip=instance.private_ip,
+        )
 
     def start(self) -> None:
         """Start polling in background thread."""
@@ -60,8 +71,7 @@ class MetricsPoller:
 
         self.callback(
             Metrics(
-                instance_id=self.instance.id,
-                node=self.instance.node,
+                instance=self._provisioned,
                 cpu_percent=data.get("cpu_percent", 0.0),
                 memory_percent=data.get("memory_percent", 0.0),
                 memory_used_mb=data.get("memory_used_mb", 0.0),

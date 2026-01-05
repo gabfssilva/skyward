@@ -11,22 +11,23 @@ from typing import TYPE_CHECKING, TextIO
 from termcolor import colored
 from yaspin import yaspin
 from yaspin.core import Yaspin
-from yaspin.spinners import Spinners
 
 from skyward.events import (
     BootstrapCompleted,
     BootstrapProgress,
     CostUpdate,
     Error,
-    InfraCreated,
-    InfraCreating,
     InstanceLaunching,
     InstanceProvisioned,
+    InstanceReady,
     InstanceStopping,
     LogLine,
     Metrics,
+    NetworkReady,
+    PoolReady,
     PoolStarted,
     PoolStopping,
+    ProvisioningStarted,
     SkywardEvent,
 )
 
@@ -97,15 +98,15 @@ def _color_metric(
     *,
     invert: bool = False,
 ) -> str:
-    """Color a metric based on thresholds. Green=good, Magenta=warn, Red=bad."""
+    """Color a metric based on thresholds. Green=good, green=warn, Red=bad."""
     if value is None:
         return f"{label} --"
 
     low, high = thresholds
     if invert:
-        color = "green" if value >= high else ("magenta" if value >= low else "red")
+        color = "green" if value >= high else ("green" if value >= low else "red")
     else:
-        color = "green" if value < low else ("magenta" if value < high else "red")
+        color = "green" if value < low else ("green" if value < high else "red")
 
     return colored(f"{label} {value:.0f}%", color)
 
@@ -205,17 +206,17 @@ class SpinnerController:
     @handle.register
     def _(self, event: LogLine) -> None:
         if event.line.strip() and self._sp:
-            prefix = colored(f"[node {event.node}]", "blue")
+            prefix = colored(f"[node {event.instance.node}]", "blue")
             self._sp.write(f"{prefix} {event.line}")
 
     @handle.register
-    def _(self, event: InfraCreating) -> None:
+    def _(self, event: ProvisioningStarted) -> None:
         self._tracking.phase = "provision"
-        self._set_text(colored("Provisioning infrastructure...", "blue"))
+        self._set_text(colored("Starting provisioning...", "blue"))
 
     @handle.register
-    def _(self, event: InfraCreated) -> None:
-        self._set_text(colored("Infrastructure ready ", "green") + f"({event.region})")
+    def _(self, event: NetworkReady) -> None:
+        self._set_text(colored("Network ready ", "green") + f"({event.region})")
 
     @handle.register
     def _(self, event: InstanceLaunching) -> None:
@@ -223,12 +224,12 @@ class SpinnerController:
             self._tracking.total = event.count
         itypes = [c.name for c in event.candidates] if event.candidates else []
 
-        main_types = ', '.join(itypes[:5])
+        main_types = ', '.join(itypes[:3])
 
-        suffix = f"one of {main_types}"
+        suffix = f"candidates are {main_types}"
 
         if len(itypes) > 5:
-            suffix = f"{suffix} and others {len(itypes) - 5}"
+            suffix = f"{suffix} and other {len(itypes) - 3}"
 
         text = (
             colored(f"Attempting to launch {event.count} nodes ({suffix})", "blue")
@@ -240,20 +241,22 @@ class SpinnerController:
     @handle.register
     def _(self, event: InstanceProvisioned) -> None:
         t = self._tracking
+        inst = event.instance
         t.provisioned += 1
-        if event.spot:
+        if inst.spot:
             t.spot += 1
         else:
             t.ondemand += 1
-        if event.spec:
-            t.instance_types.add(event.spec.name)
+        if inst.spec:
+            t.instance_types.add(inst.spec.name)
 
-        spot_color = "magenta" if event.spot else "blue"
-        spot_label = "spot" if event.spot else "on-demand"
+        spot_color = "green" if inst.spot else "blue"
+        spot_label = "spot" if inst.spot else "on-demand"
+
         self._set_text(
             colored("Provisioned ", "green")
-            + colored(_short_id(event.instance_id), attrs=["bold"])
-            + f" [{t.provisioned}/{t.total or '?'}] "
+            + colored(_short_id(inst.instance_id), attrs=["bold"])
+            + f" [{inst.spec.name} {t.provisioned}/{t.total or '?'}] "
             + colored(f"[{spot_label}]", spot_color)
         )
 
@@ -263,7 +266,7 @@ class SpinnerController:
         t.phase = "setup"
         self._set_text(
             colored("Bootstrapping ", "blue")
-            + colored(_short_id(event.instance_id), attrs=["bold"])
+            + colored(_short_id(event.instance.instance_id), attrs=["bold"])
             + colored(f" ({event.step}) ", "blue")
             + f"({t.ready}/{t.total or '?'})"
         )
@@ -278,23 +281,24 @@ class SpinnerController:
             t.phase = "executing"
             if t.spot > 0 and t.ondemand > 0:
                 market = (
-                    colored(f"[{t.spot} spot", "magenta")
+                    colored(f"[{t.spot} spot", "green")
                     + ", "
                     + colored(f"{t.ondemand} on-demand]", "blue")
                 )
             elif t.spot > 0:
-                market = colored("[spot]", "magenta")
+                market = colored("[spot] ", "green")
             else:
-                market = colored("[on-demand]", "blue")
+                market = colored("[on-demand] ", "blue")
             self._set_text(
                 colored("Cluster ready ", "green", attrs=["bold"])
                 + f"({total}/{total}) "
                 + market
+                + colored(f"[{event.instance.spec.name}] ", "blue")
             )
         else:
             self._set_text(
                 colored("Instance ", "green")
-                + colored(_short_id(event.instance_id), attrs=["bold"])
+                + colored(_short_id(event.instance.instance_id), attrs=["bold"])
                 + colored(" ready ", "green")
                 + f"({t.ready}/{total})"
             )
@@ -305,7 +309,7 @@ class SpinnerController:
         gpu_mem_pct = None
         if event.gpu_memory_used_mb is not None and event.gpu_memory_total_mb:
             gpu_mem_pct = (event.gpu_memory_used_mb / event.gpu_memory_total_mb) * 100
-        t.node_metrics[event.node] = {
+        t.node_metrics[event.instance.node] = {
             "cpu": event.cpu_percent,
             "gpu": event.gpu_utilization,
             "mem": event.memory_percent,
@@ -315,7 +319,6 @@ class SpinnerController:
 
     @handle.register
     def _(self, event: CostUpdate) -> None:
-        print(event)
         t = self._tracking
         t.cost = event.accumulated_cost
         t.elapsed_seconds = event.elapsed_seconds
@@ -323,11 +326,45 @@ class SpinnerController:
             self._set_text(_format_metrics(t))
 
     @handle.register
+    def _(self, event: InstanceReady) -> None:
+        inst = event.instance
+        spot_label = "spot" if inst.spot else "on-demand"
+        spot_color = "green" if inst.spot else "blue"
+        self._set_text(
+            colored("Instance ", "green")
+            + colored(_short_id(inst.instance_id), attrs=["bold"])
+            + colored(" ready ", "green")
+            + colored(f"[{spot_label}]", spot_color)
+        )
+
+    @handle.register
+    def _(self, event: PoolReady) -> None:
+        t = self._tracking
+        t.phase = "executing"
+        spot_count = sum(1 for i in event.instances if i.spot)
+        ondemand_count = len(event.instances) - spot_count
+        if spot_count > 0 and ondemand_count > 0:
+            market = (
+                colored(f"[{spot_count} spot", "green")
+                + ", "
+                + colored(f"{ondemand_count} on-demand]", "blue")
+            )
+        elif spot_count > 0:
+            market = colored("[spot]", "green")
+        else:
+            market = colored("[on-demand]", "blue")
+        self._set_text(
+            colored("Pool ready ", "green", attrs=["bold"])
+            + f"({len(event.instances)} instances, {event.connections} connections) "
+            + market
+        )
+
+    @handle.register
     def _(self, event: InstanceStopping) -> None:
         self._tracking.phase = "shutdown"
         self._set_text(
-            colored("Stopping ", "magenta")
-            + colored(_short_id(event.instance_id), attrs=["bold"])
+            colored("Stopping ", "green")
+            + colored(_short_id(event.instance.instance_id), attrs=["bold"])
         )
 
     @handle.register
@@ -345,7 +382,7 @@ def spinner() -> Callback:
     then displays aggregated metrics during execution.
 
     Features:
-        - Color-coded metrics (green/magenta/red based on thresholds)
+        - Color-coded metrics (green/green/red based on thresholds)
         - Redirects stdout/stderr to print above spinner
         - Handles log lines from remote nodes
 

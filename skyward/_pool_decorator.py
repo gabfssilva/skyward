@@ -32,6 +32,7 @@ from skyward.pool import ComputePool
 from skyward.spec import AllocationLike
 from skyward.types import Accelerator, Architecture, Auto, Memory, ProviderLike
 from skyward.volume import Volume
+
 P = ParamSpec("P")
 R = TypeVar("R")
 
@@ -51,7 +52,7 @@ def pool(
     timeout: int = 3600,
     env: dict[str, str] | None = None,
     concurrency: int = 1,
-    display: Literal["spinner", "quiet"] = "spinner",
+    display: Literal["panel", "spinner", "quiet"] = "panel",
     on_event: Callback | None = None,
     collect_metrics: bool = True,
     logging: LogConfig | bool = False,

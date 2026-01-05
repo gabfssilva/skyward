@@ -18,13 +18,14 @@ from skyward.events import (
     BootstrapCompleted,
     BootstrapStarting,
     Error,
-    InfraCreated,
-    InfraCreating,
     InstanceLaunching,
     InstanceProvisioned,
     InstanceStopping,
+    NetworkReady,
     ProviderName,
+    ProvisionedInstance,
     ProvisioningCompleted,
+    ProvisioningStarted,
     RegionAutoSelected,
 )
 from skyward.exceptions import InstanceTerminatedError
@@ -128,16 +129,16 @@ def _create_ssh_runner(transport: SSHTransport, instance_id: str) -> Callable[[s
 
 def wait_for_bootstrap_ssh(
     transport: SSHTransport,
-    instance_id: str,
+    instance: ProvisionedInstance,
     timeout: int = 600,
 ) -> None:
     """Wait for instance bootstrap with progress tracking via SSH."""
-    runner = _create_ssh_runner(transport, instance_id)
+    runner = _create_ssh_runner(transport, instance.instance_id)
 
     try:
         _wait_for_bootstrap_common(
             run_command=runner,
-            instance_id=instance_id,
+            instance=instance,
             timeout=timeout,
             extra_checkpoints=AWS_EXTRA_CHECKPOINTS,
         )
@@ -164,7 +165,7 @@ def wait_for_bootstrap_ssh(
         except Exception:
             pass
 
-        msg_parts = [f"Bootstrap failed on {instance_id}."]
+        msg_parts = [f"Bootstrap failed on {instance.instance_id}."]
 
         if error_file:
             msg_parts.append(f"\n--- Error file ---\n{error_file}")
@@ -440,7 +441,7 @@ class AWSProvider(Provider):
             logger.info(f"Provisioning {compute.nodes} EC2 instances in {self.region}")
             logger.debug(f"Cluster ID: {cluster_id}, accelerator: {compute.accelerator}")
 
-            emit(InfraCreating())
+            emit(ProvisioningStarted())
 
             # Select instance type (direct override or inferred from resources)
             acc = Accelerator.from_value(compute.accelerator)
@@ -510,20 +511,26 @@ class AWSProvider(Provider):
             # Set resolved region if different from configured
             if actual_region != self.region:
                 self._resolved_region = actual_region
-                emit(
-                    RegionAutoSelected(
-                        requested_region=self.region,
-                        selected_region=actual_region,
-                        instance_type=first_candidate_type,
-                        provider=ProviderName.AWS,
-                    )
+                # Get the spec for the first candidate for the event
+                first_spec = (
+                    filtered_candidates[0] if filtered_candidates
+                    else next((s for s in self.available_instances() if s.name == compute.machine), None)
                 )
+                if first_spec:
+                    emit(
+                        RegionAutoSelected(
+                            requested_region=self.region,
+                            selected_region=actual_region,
+                            spec=first_spec,
+                            provider=ProviderName.AWS,
+                        )
+                    )
 
             # Now create resources in the actual region
             logger.debug(f"Ensuring infrastructure in {self._active_region}")
             resources = self._get_resources()
             logger.debug(f"Infrastructure ready: subnets={resources.subnet_ids}")
-            emit(InfraCreated(region=self._active_region))
+            emit(NetworkReady(region=self._active_region))
 
             # Get image from compute spec
             image = compute.image
@@ -632,8 +639,10 @@ class AWSProvider(Provider):
             # Build spec lookup for pricing info
             all_specs = {s.name: s for s in self.available_instances()}
 
-            # Build Instance objects
+            # Build Instance objects and ProvisionedInstance for events
             instances: list[Instance] = []
+            provisioned_instances: list[ProvisionedInstance] = []
+
             for i, details in enumerate(instance_details):
                 # Look up spec for this instance type (for pricing info)
                 actual_type = details["instance_type"]
@@ -659,16 +668,18 @@ class AWSProvider(Provider):
                 )
                 instances.append(instance)
 
-                emit(
-                    InstanceProvisioned(
-                        instance_id=instance.id,
-                        node=i,
-                        spot=instance.spot,
-                        provider=ProviderName.AWS,
-                        spec=spec,
-                        ip=instance.private_ip,
-                    )
+                # Create ProvisionedInstance for events
+                provisioned = ProvisionedInstance(
+                    instance_id=instance.id,
+                    node=i,
+                    provider=ProviderName.AWS,
+                    spot=instance.spot,
+                    spec=spec,
+                    ip=instance.private_ip,
                 )
+                provisioned_instances.append(provisioned)
+
+                emit(InstanceProvisioned(instance=provisioned))
 
             spot_count = sum(1 for inst in instances if inst.spot)
             logger.info(
@@ -677,11 +688,9 @@ class AWSProvider(Provider):
             )
             emit(
                 ProvisioningCompleted(
-                    spot=spot_count,
-                    on_demand=len(instances) - spot_count,
+                    instances=tuple(provisioned_instances),
                     provider=ProviderName.AWS,
                     region=self._active_region,
-                    instances=[inst.id for inst in instances],
                 )
             )
 
@@ -691,6 +700,21 @@ class AWSProvider(Provider):
             logger.error(f"Provision failed: {e}")
             emit(Error(message=f"Provision failed: {e}"))
             raise
+
+    def _make_provisioned(self, inst: Instance) -> ProvisionedInstance:
+        """Create ProvisionedInstance from Instance for events."""
+        instance_type = inst.get_meta("instance_type", "")
+        all_specs = {s.name: s for s in self.available_instances()}
+        spec = all_specs.get(instance_type)
+
+        return ProvisionedInstance(
+            instance_id=inst.id,
+            node=inst.node,
+            provider=ProviderName.AWS,
+            spot=inst.spot,
+            spec=spec,
+            ip=inst.private_ip,
+        )
 
     def setup(self, instances: tuple[Instance, ...], compute: ComputeSpec) -> None:
         """Setup instances (bootstrap, install dependencies) via SSH."""
@@ -702,21 +726,22 @@ class AWSProvider(Provider):
 
         try:
             def bootstrap_instance(inst: Instance) -> None:
+                provisioned = self._make_provisioned(inst)
                 try:
                     logger.debug(f"Starting bootstrap for {inst.id}")
-                    emit(BootstrapStarting(instance_id=inst.id))
+                    emit(BootstrapStarting(instance=provisioned))
 
                     transport = self._get_transport(inst)
                     wait_for_bootstrap_ssh(
                         transport=transport,
-                        instance_id=inst.id,
+                        instance=provisioned,
                     )
 
                     logger.debug(f"Bootstrap completed for {inst.id}")
-                    emit(BootstrapCompleted(instance_id=inst.id))
+                    emit(BootstrapCompleted(instance=provisioned))
                 except Exception as e:
                     logger.error(f"Bootstrap failed on {inst.id}: {e}")
-                    emit(Error(message=f"Bootstrap failed on {inst.id}: {e}", instance_id=inst.id))
+                    emit(Error(message=f"Bootstrap failed on {inst.id}: {e}", instance=provisioned))
                     raise
 
             for_each_async(bootstrap_instance, instances)
@@ -756,7 +781,8 @@ class AWSProvider(Provider):
         # Build ExitedInstance objects
         exited: list[ExitedInstance] = []
         for inst in instances:
-            emit(InstanceStopping(instance_id=inst.id))
+            provisioned = self._make_provisioned(inst)
+            emit(InstanceStopping(instance=provisioned))
             exited.append(ExitedInstance(instance=inst, exit_code=0, exit_reason="terminated"))
 
         logger.info(f"Terminated {len(instances)} instances")

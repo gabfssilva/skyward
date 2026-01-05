@@ -289,6 +289,7 @@ def build_instance_specs(
             accelerator_memory_gb=s.get("accelerator_memory_gb", 0),
             price_on_demand=od,
             price_spot=sp,
+            billing_increment_minutes=1,  # AWS charges per minute
             metadata={
                 "architecture": s.get("architecture", "x86_64"),
                 "supports_cluster_placement": s.get("supports_cluster_placement", False),

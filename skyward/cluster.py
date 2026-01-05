@@ -105,13 +105,6 @@ class InstanceInfo(BaseModel):
         """True if this is the head worker (global_worker_index == 0)."""
         return self.global_worker_index == 0
 
-    @property
-    def is_trainium(self) -> bool:
-        """Check if using AWS Trainium accelerator."""
-        if self.accelerator is None:
-            return False
-        return bool(self.accelerator.get("is_trainium", False))
-
     @classmethod
     def current(cls) -> Self | None:
         """Get pool info from COMPUTE_POOL environment variable.

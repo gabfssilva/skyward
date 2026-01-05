@@ -42,9 +42,17 @@ from loguru import logger
 
 from skyward.accelerator import Accelerator
 from skyward.callback import Callback, compose, emit, use_callback
-from skyward.callbacks import cost_tracker, spinner
+from skyward.callbacks import cost_tracker, panel, spinner
 from skyward.conc import for_each_async, map_async
-from skyward.events import Error, LogLine, PoolStarted, PoolStopping
+from skyward.events import (
+    Error,
+    FunctionCall,
+    LogLine,
+    PoolStarted,
+    PoolStopping,
+    ProviderName,
+    ProvisionedInstance,
+)
 from skyward.exceptions import ExecutionError, NotProvisionedError, ProvisioningError
 from skyward.image import DEFAULT_IMAGE, Image
 from skyward.logging import LogConfig, _setup_logging, _teardown_logging
@@ -154,7 +162,7 @@ class ComputePool:
     concurrency: int = 1  # Number of concurrent tasks per instance
 
     # Display settings
-    display: Literal["spinner", "quiet"] = "spinner"
+    display: Literal["panel", "spinner", "quiet"] = "panel"
     on_event: Callback | None = None
     collect_metrics: bool = True
 
@@ -257,7 +265,7 @@ class ComputePool:
             stack.callback(self._shutdown)
 
             # 3. Spinner (cleanup: stops spinner)
-            emit(PoolStarted())
+            emit(PoolStarted(nodes=self.nodes))
             stack.callback(lambda: emit(PoolStopping()))
 
             # 4. Select provider and provision with fallback
@@ -437,16 +445,29 @@ class ComputePool:
 
         event_callback = self._event_callback
 
+        # Create ProvisionedInstance for events
+        provisioned = self._make_provisioned(pc.instance)
+
         def stdout_callback(line: str) -> None:
             if event_callback is not None:
                 event_callback(
                     LogLine(
-                        node=pc.node_idx,
-                        instance_id=pc.instance_id,
+                        instance=provisioned,
                         line=line,
                         timestamp=time.time(),
                     )
                 )
+
+        # Emit FunctionCall event
+        fn_name = getattr(pending.fn, "__name__", str(pending.fn))
+        if event_callback is not None:
+            event_callback(
+                FunctionCall(
+                    function_name=fn_name,
+                    instance=provisioned,
+                    timestamp=time.time(),
+                )
+            )
 
         try:
             result_bytes = conn.root.execute(fn_bytes, args_bytes, kwargs_bytes, stdout_callback)
@@ -457,7 +478,7 @@ class ComputePool:
         except ExecutionError:
             raise
         except Exception as e:
-            emit(Error(message=f"Execution failed on {pc.instance_id}: {e}"))
+            emit(Error(message=f"Execution failed on {pc.instance_id}: {e}", instance=provisioned))
             raise
 
     def _build_compute_spec(self) -> Any:
@@ -507,8 +528,13 @@ class ComputePool:
         # Start metrics polling if enabled
         if self.collect_metrics:
             logger.debug("Starting metrics polling...")
+            provider_name = self._get_provider_name()
             for instance in self._instances:
-                poller = MetricsPoller(instance, callback=self._event_callback)
+                poller = MetricsPoller(
+                    instance,
+                    callback=self._event_callback,
+                    provider_name=provider_name,
+                )
                 poller.start()
                 self._metrics_pollers.append(poller)
 
@@ -561,11 +587,34 @@ class ComputePool:
         logger.info(f"Terminated {instance_count} instances")
         self._instances = None
 
+    def _get_provider_name(self) -> ProviderName:
+        """Get ProviderName enum from the built provider."""
+        provider_name_map = {
+            "aws": ProviderName.AWS,
+            "digitalocean": ProviderName.DigitalOcean,
+            "verda": ProviderName.Verda,
+        }
+        return provider_name_map.get(
+            getattr(self._built_provider, "name", "aws").lower(),
+            ProviderName.AWS,
+        )
+
+    def _make_provisioned(self, inst: Instance) -> ProvisionedInstance:
+        """Create ProvisionedInstance from Instance for events."""
+        return ProvisionedInstance(
+            instance_id=inst.id,
+            node=inst.node,
+            provider=self._get_provider_name(),
+            spot=inst.spot,
+            spec=None,  # Spec not available at this point
+            ip=inst.private_ip,
+        )
+
     def _setup_all_instances(self) -> None:
         """Setup cluster environment on all instances in parallel."""
         import time as _time
 
-        from skyward.events import ClusterSetupCompleted
+        from skyward.events import InstanceReady, PoolReady
 
         assert self._task_pool is not None
         assert self._instances is not None
@@ -575,19 +624,29 @@ class ComputePool:
         # Acquire one connection per instance (first N connections are interleaved)
         conns = [self._task_pool.acquire() for _ in range(len(self._instances))]
 
+        # Build provisioned instances for events
+        provisioned_list = [self._make_provisioned(inst) for inst in self._instances]
+
         try:
-            # Setup in parallel
+            # Setup in parallel and emit InstanceReady for each
             def setup(pc: PooledConnection) -> None:
                 self._setup_cluster(pc)
+                provisioned = self._make_provisioned(pc.instance)
+                emit(InstanceReady(instance=provisioned))
 
             for_each_async(setup, conns)
         finally:
             for conn in conns:
                 self._task_pool.release(conn)
 
-        emit(ClusterSetupCompleted(
-            instance_count=len(self._instances),
-            duration_seconds=_time.perf_counter() - t0,
+        cluster_setup_duration = _time.perf_counter() - t0
+
+        # Emit consolidated PoolReady event
+        emit(PoolReady(
+            instances=tuple(provisioned_list),
+            tunnels=self._task_pool.tunnel_count,
+            connections=self._task_pool.connection_count,
+            total_duration_seconds=self._task_pool.init_duration_seconds + cluster_setup_duration,
         ))
 
     def _setup_cluster(self, pc: PooledConnection) -> None:
@@ -631,17 +690,18 @@ class ComputePool:
         """Build the composite callback for this pool."""
         callbacks: list[Callback] = []
 
-        # Cost tracking (always active)
-        callbacks.append(
-            cost_tracker(
-                region=getattr(self.provider, "region", "us-east-1"),
-                provider=getattr(self.provider, "name", "aws"),
-            )
-        )
-
-        # Display callback
+        # Display callback (panel has built-in cost tracking)
         match self.display:
+            case "panel":
+                callbacks.append(panel())
             case "spinner":
+                # Spinner needs cost_tracker for cost events
+                callbacks.append(
+                    cost_tracker(
+                        region=getattr(self.provider, "region", "us-east-1"),
+                        provider=getattr(self.provider, "name", "aws"),
+                    )
+                )
                 callbacks.append(spinner())
             case "quiet":
                 pass

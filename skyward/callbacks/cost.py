@@ -50,7 +50,8 @@ class _InstanceCost:
         elapsed_minutes = self.elapsed_seconds / 60
         if self.billing_increment_minutes is not None:
             # Round up to next billing increment
-            billable_minutes = ceil(elapsed_minutes / self.billing_increment_minutes) * self.billing_increment_minutes
+            increment = self.billing_increment_minutes
+            billable_minutes = ceil(elapsed_minutes / increment) * increment
         else:
             # Per-second billing
             billable_minutes = elapsed_minutes
@@ -233,27 +234,23 @@ def cost_tracker(
         # Lock is released BEFORE dispatcher processes returned events
         with lock:
             match event:
-                case InstanceProvisioned(
-                    instance_id=iid,
-                    spot=spot,
-                    spec=spec,
-                ) if spec:
+                case InstanceProvisioned(instance=inst) if inst.spec:
                     state.register(
-                        iid,
-                        spot,
-                        spec.name,
-                        spec.price_on_demand,
-                        spec.price_spot,
-                        spec.billing_increment_minutes,
+                        inst.instance_id,
+                        inst.spot,
+                        inst.spec.name,
+                        inst.spec.price_on_demand,
+                        inst.spec.price_spot,
+                        inst.spec.billing_increment_minutes,
                     )
                     return None
 
-                case BootstrapCompleted(instance_id=iid):
-                    state.start_billing(iid)
+                case BootstrapCompleted(instance=inst):
+                    state.start_billing(inst.instance_id)
                     return None
 
-                case InstanceStopping(instance_id=iid):
-                    state.stop_billing(iid)
+                case InstanceStopping(instance=inst):
+                    state.stop_billing(inst.instance_id)
                     return None
 
                 case Metrics():
