@@ -42,6 +42,7 @@ class ProviderName(Enum):
     AWS = "AWS"
     DigitalOcean = "Digital Ocean"
     Verda = "Verda"
+    VastAI = "Vast.ai"
 
 
 @dataclass(frozen=True, slots=True)

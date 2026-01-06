@@ -110,9 +110,8 @@ from skyward.pending import (
 # Pool
 from skyward.pool import ComputePool
 
-# Providers
-from skyward.providers import AWS, DigitalOcean, Verda
-
+# Providers - import from skyward.providers directly for lazy loading
+# e.g.: from skyward.providers import AWS, VastAI
 # Provider selection
 from skyward.selection import (
     AllProvidersFailedError,

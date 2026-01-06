@@ -172,17 +172,25 @@ def normalize_providers(provider: ProviderLike) -> tuple[ProviderConfig, ...]:
     from skyward.types import ProviderConfig
 
     def normalize_single(single: ProviderLike) -> ProviderConfig:
-        from skyward import AWS, Verda, DigitalOcean
-
         match single:
             case ProviderConfig():
                 return single
             case str("aws"):
+                from skyward.providers import AWS
+
                 return AWS()
             case str("verda"):
+                from skyward.providers import Verda
+
                 return Verda()
             case str("digital_ocean"):
+                from skyward.providers import DigitalOcean
+
                 return DigitalOcean()
+            case str("vastai"):
+                from skyward.providers import VastAI
+
+                return VastAI()
 
         raise Exception(f"Unknown provider: {single!r}")
 

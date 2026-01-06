@@ -684,7 +684,7 @@ class Provider(Protocol):
 # Provider Selection Types
 # =============================================================================
 
-type ProviderLiteral = Literal['aws', 'verda', 'digital_ocean']
+type ProviderLiteral = Literal['aws', 'verda', 'digital_ocean', 'vastai']
 
 type SelectionStrategy = Literal["first", "cheapest", "available"]
 """Built-in provider selection strategies."""

@@ -21,7 +21,6 @@ from tenacity import (
     retry,
     retry_if_exception_type,
     stop_after_delay,
-    wait_exponential,
     wait_fixed,
 )
 
@@ -52,7 +51,7 @@ def find_available_port() -> int:
         return port
 
 
-def wait_for_tunnel(port: int, timeout: int = 30) -> None:
+def wait_for_tunnel(port: int, timeout: int = 300) -> None:
     """Wait for tunnel to accept connections."""
 
     @retry(
@@ -122,7 +121,7 @@ class BootstrapNotReadyError(Exception):
 class BootstrapFailedError(Exception):
     """Raised when bootstrap script failed with an error."""
 
-    def __init__(self, error_msg: str):
+    def __init__(self, error_msg: str) -> None:
         self.error_msg = error_msg
         super().__init__(error_msg)
 
@@ -131,7 +130,7 @@ CommandRunner = Callable[[str], str]
 
 
 @retry(
-    stop=stop_after_delay(30),
+    stop=stop_after_delay(300),
     wait=wait_fixed(1),
     retry=retry_if_exception_type(BootstrapNotReadyError),
     reraise=True,
@@ -153,8 +152,8 @@ def _wait_for_rpyc_service(
             raise BootstrapNotReadyError()
     except BootstrapNotReadyError:
         raise
-    except Exception:
-        raise BootstrapNotReadyError()
+    except Exception as e:
+        raise BootstrapNotReadyError() from e
 
 
 def wait_for_bootstrap(
@@ -180,7 +179,7 @@ def wait_for_bootstrap(
 
     @retry(
         stop=stop_after_delay(timeout),
-        wait=wait_exponential(multiplier=1, min=2, max=30),
+        wait=wait_fixed(1),
         retry=retry_if_exception_type((BootstrapNotReadyError, TimeoutError)),
         reraise=True,
     )
@@ -287,11 +286,12 @@ def create_ssh_runner(
     ip: str,
     username: str,
     key_path: str | None = None,
+    port: int | None = None,
 ) -> Callable[[str], str]:
     """Create a command runner using SSH."""
 
     def run_command(cmd: str) -> str:
-        result = ssh_run(ip, username, cmd, timeout=30, key_path=key_path)
+        result = ssh_run(ip, username, cmd, timeout=30, key_path=key_path, port=port)
         if result.returncode != 0:
             raise RuntimeError(f"SSH command failed (exit {result.returncode}): {result.stderr}")
         return result.stdout
@@ -326,6 +326,7 @@ def build_wheel() -> Path:
 def _build_wheel_install_script(
     wheel_name: str,
     env: dict[str, str] | None = None,
+    use_systemd: bool = True,
 ) -> str:
     """Build complete wheel installation + service setup script.
 
@@ -333,17 +334,18 @@ def _build_wheel_install_script(
     1. Find uv
     2. Install wheel
     3. Verify installation
-    4. Setup single RPyC systemd service
+    4. Setup single RPyC service (systemd or nohup)
 
     Args:
         wheel_name: Name of the wheel file to install.
-        env: Environment variables to pass to the systemd service.
+        env: Environment variables to pass to the service.
+        use_systemd: If True, use systemd. If False, use nohup (for Docker).
 
     Returns:
         Shell script string.
     """
     from skyward.bootstrap import bootstrap as bootstrap_ops
-    from skyward.bootstrap import systemd
+    from skyward.bootstrap import nohup_service, systemd
     from skyward.bootstrap import wait_for_port as wait_for_port_op
     from skyward.bootstrap.worker import rpyc_service_unit
 
@@ -366,13 +368,30 @@ $UV_PATH pip install {SKYWARD_DIR}/{wheel_name}
 {SKYWARD_DIR}/.venv/bin/python -c 'import skyward; print(skyward.__file__)'
 """
 
-    # Always use single RPyC service (concurrency handled via slots, not workers)
-    unit_content = rpyc_service_unit(env=env)
-    service_script = bootstrap_ops(
-        systemd("skyward-rpyc", unit_content),
-        wait_for_port_op(RPYC_PORT, timeout=30),
-        header="",
-    )
+    if use_systemd:
+        # Use systemd for VMs (EC2, etc.)
+        unit_content = rpyc_service_unit(env=env)
+        service_script = bootstrap_ops(
+            systemd("skyward-rpyc", unit_content),
+            wait_for_port_op(RPYC_PORT, timeout=30),
+            header="",
+        )
+    else:
+        # Use nohup for Docker containers (Vast.ai, etc.)
+        env_with_path = {"PATH": f"{SKYWARD_DIR}/.venv/bin:/usr/local/bin:/usr/bin:/bin"}
+        if env:
+            env_with_path.update(env)
+
+        service_script = bootstrap_ops(
+            nohup_service(
+                name="skyward-rpyc",
+                command=f"{SKYWARD_DIR}/.venv/bin/python -m skyward.rpc",
+                working_dir=SKYWARD_DIR,
+                env=env_with_path,
+            ),
+            wait_for_port_op(RPYC_PORT, timeout=30),
+            header="",
+        )
 
     return f"#!/bin/bash\nset -e\n{preamble}\n{service_script}"
 
@@ -381,6 +400,7 @@ def install_skyward_wheel_via_transport(
     instances: tuple[Instance, ...],
     get_transport: Callable[[Instance], AbstractContextManager[Transport]],
     compute: ComputeSpec | None = None,
+    use_systemd: bool = True,
 ) -> None:
     """Build and install skyward wheel on all instances using Transport abstraction.
 
@@ -392,6 +412,8 @@ def install_skyward_wheel_via_transport(
         get_transport: Factory that creates a context manager yielding a Transport
             for each instance. The context manager handles lifecycle (e.g., tunnel cleanup).
         compute: Compute spec containing image with environment variables.
+        use_systemd: If True, use systemd to manage the RPyC service.
+            If False, use nohup (for Docker containers without systemd).
 
     Example:
         # SSH-based providers (Verda, DigitalOcean)
@@ -411,6 +433,9 @@ def install_skyward_wheel_via_transport(
                 tunnel.terminate()
 
         install_skyward_wheel_via_transport(instances, ssm_ssh_transport, compute)
+
+        # Docker containers (Vast.ai)
+        install_skyward_wheel_via_transport(instances, transport, compute, use_systemd=False)
     """
     from skyward.conc import for_each_async
 
@@ -421,7 +446,7 @@ def install_skyward_wheel_via_transport(
     env = compute.image.env if compute else None
 
     # Build single script that does everything (always single RPyC service)
-    install_script = _build_wheel_install_script(wheel_path.name, env=env)
+    install_script = _build_wheel_install_script(wheel_path.name, env=env, use_systemd=use_systemd)
 
     def install_on_instance(inst: Instance) -> None:
         import tempfile
@@ -459,6 +484,7 @@ def wait_for_ssh_bootstrap(
     make_provisioned: Callable[[Instance], ProvisionedInstance],
     timeout: int = 300,
     key_path: str | None = None,
+    get_port: Callable[[Instance], int] | None = None,
 ) -> None:
     """Wait for bootstrap to complete on all instances via SSH (concurrent)."""
     from skyward.conc import for_each_async
@@ -474,8 +500,9 @@ def wait_for_ssh_bootstrap(
 
     def wait_for_instance(inst: Instance) -> None:
         ip = get_ip(inst)
-        logger.debug(f"Checking bootstrap status for {inst.id} at {ip}")
-        runner = create_ssh_runner(ip, username, key_path)
+        port = get_port(inst) if get_port else None
+        logger.debug(f"Checking bootstrap status for {inst.id} at {ip}:{port or 22}")
+        runner = create_ssh_runner(ip, username, key_path, port=port)
         provisioned = make_provisioned(inst)
         wait_for_bootstrap(
             run_command=runner,

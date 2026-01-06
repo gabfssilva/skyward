@@ -142,9 +142,10 @@ def create_header(
     """
     header = Text()
     marker = "●" if blink_on else "○"
+    header.append("   ")
     header.append(f"{marker} ", style="cyan bold")
     header.append("skyward", style="bold")
-    header.append(f" · {format_duration(elapsed_seconds)} · ~ ${cost:.2f} · ", style="dim")
+    header.append(f" · {format_duration(elapsed_seconds)} · ${cost:.2f} · ", style="dim")
 
     # Find current active phase
     active_phase = None
@@ -429,12 +430,11 @@ def create_metrics_table(
         expand=False,
     )
 
-    # Sparkline columns have equal width, TEMP is smaller (no sparkline)
     table.add_column("#", style="dim", no_wrap=True, width=col_width, justify="center")
-    table.add_column("cpu", style="bold", no_wrap=True, width=col_width, justify="center")
-    table.add_column("gpu", style="bold", no_wrap=True, width=col_width, justify="center")
-    table.add_column("vram", style="bold", no_wrap=True, width=col_width, justify="center")
-    table.add_column("ram", style="bold", no_wrap=True, width=col_width, justify="center")
+    table.add_column("cpu", style="dim", no_wrap=True, width=col_width, justify="center")
+    table.add_column("gpu", style="dim", no_wrap=True, width=col_width, justify="center")
+    table.add_column("vram", style="dim", no_wrap=True, width=col_width, justify="center")
+    table.add_column("ram", style="dim", no_wrap=True, width=col_width, justify="center")
     table.add_column("temp", style="dim", no_wrap=True, width=temp_width, justify="center")
 
     # Instance rows (current page only)

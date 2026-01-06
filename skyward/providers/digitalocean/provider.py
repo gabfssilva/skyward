@@ -116,7 +116,7 @@ def _wait_for_active(client: Client, droplets: list[_Droplet], timeout: float) -
     def poll_droplet(droplet: _Droplet) -> None:
         @retry(
             stop=stop_after_delay(timeout),
-            wait=wait_fixed(5),
+            wait=wait_fixed(1),
             retry=retry_if_exception_type(_DropletPendingError),
             reraise=True,
         )

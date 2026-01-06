@@ -24,11 +24,8 @@ dependencies = [
     "pydantic>=2.12.5",
     "httpx>=0.28.1",
     "typer>=0.15.1",
-    "boto3>=1.42.3",
     "rpyc>=6.0.0",
     "tqdm>=4.67.1",
-    "pydo>=0.22.0",
-    "verda>=1.0.0",
     "tenacity>=8.0.0",
     "psutil>=5.9.0",
     "loguru>=0.7.3",
@@ -36,19 +33,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-pytorch = [
-    "torch==2.8.0",
-    "torchvision==0.23.0",
-]
-huggingface = [
-    "transformers>=4.57.3",
-    "accelerate>=1.12.0",
-    "datasets>=4.4.1",
-    "neuronx-distributed>=0.1",
-]
+# Provider SDKs - only needed on client side
 aws = [
-    "boto3==1.42.5",
-    "boto3-stubs[s3,ec2,ecr,sts,iam]==1.42.5",
+    "boto3>=1.42.3",
+    "boto3-stubs[s3,ec2,ecr,sts,iam]>=1.42.3",
+]
+digitalocean = [
+    "pydo>=0.22.0",
+]
+verda = [
+    "verda>=1.0.0",
+]
+vastai = [
+    "vastai-sdk>=0.2.6",
 ]
 gcp = [
     "google-cloud-run>=0.10",
@@ -57,7 +54,18 @@ gcp = [
 azure = [
     "azure-mgmt-containerinstance>=10.0",
 ]
-all = ["skyward[pytorch,aws,gcp,azure]"]
+providers = ["skyward[aws,digitalocean,verda,vastai,gcp,azure]"]
+# ML frameworks
+pytorch = [
+    "torch==2.8.0",
+    "torchvision==0.23.0",
+]
+huggingface = [
+    "transformers>=4.57.3",
+    "accelerate>=1.12.0",
+    "datasets>=4.4.1",
+]
+all = ["skyward[providers,pytorch,huggingface]"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=4.0",

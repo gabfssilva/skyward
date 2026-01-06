@@ -133,7 +133,7 @@ def _wait_for_running(client: VerdaClient, instances: list[_VerdaInstance], time
         retry,
         retry_if_exception_type,
         stop_after_delay,
-        wait_exponential,
+        wait_fixed,
     )
 
     class _InstancePendingError(Exception):
@@ -142,7 +142,7 @@ def _wait_for_running(client: VerdaClient, instances: list[_VerdaInstance], time
     def poll_instance(vinst: _VerdaInstance) -> None:
         @retry(
             stop=stop_after_delay(timeout),
-            wait=wait_exponential(multiplier=1, min=2, max=10),
+            wait=wait_fixed(1),
             retry=retry_if_exception_type(_InstancePendingError),
             reraise=True,
         )

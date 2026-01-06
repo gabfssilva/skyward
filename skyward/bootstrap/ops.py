@@ -251,6 +251,41 @@ def systemd_template(name: str, unit: str) -> Op:
     return file(f"/etc/systemd/system/{name}@.service", unit)
 
 
+def nohup_service(
+    name: str,
+    command: str,
+    working_dir: str = SKYWARD_DIR,
+    env: dict[str, str] | None = None,
+    log_file: str | None = None,
+) -> Op:
+    """Start a service in background using nohup (for Docker containers without systemd).
+
+    Args:
+        name: Service name (for identification).
+        command: Command to run.
+        working_dir: Working directory.
+        env: Environment variables.
+        log_file: Path to log file (default: /var/log/{name}.log).
+
+    Example:
+        >>> nohup_service("myservice", "python -m myapp", env={"FOO": "bar"})()
+        '# Start myservice in background\\ncd /opt/skyward\\nFOO="bar" nohup python...'
+    """
+
+    def generate() -> str:
+        log = log_file or f"/var/log/{name}.log"
+        env_exports = ""
+        if env:
+            env_exports = " ".join(f'{k}="{v}"' for k, v in env.items()) + " "
+
+        return f"""# Start {name} in background
+cd {working_dir}
+{env_exports}nohup {command} > {log} 2>&1 &
+echo $! > /var/run/{name}.pid"""
+
+    return generate
+
+
 def wait_for_port(port: int, timeout: int = 60, interval: float = 0.5) -> Op:
     """Wait for a port to be listening.
 

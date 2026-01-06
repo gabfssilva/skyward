@@ -33,7 +33,7 @@ def _find_available_port() -> int:
         return port
 
 
-def _wait_for_tunnel(port: int, timeout: int = 30) -> None:
+def _wait_for_tunnel(port: int, timeout: int = 300) -> None:
     """Wait for tunnel to accept connections."""
 
     @retry(

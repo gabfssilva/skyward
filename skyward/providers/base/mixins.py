@@ -14,7 +14,6 @@ from tenacity import (
     retry,
     retry_if_exception_type,
     stop_after_delay,
-    wait_exponential,
     wait_fixed,
 )
 
@@ -27,7 +26,6 @@ def create_instance_poller[T](
     fetch_status: Callable[[T], tuple[str, dict[str, Any]]],
     target_status: str,
     timeout: float = 300,
-    wait_strategy: str = "exponential",
 ) -> Callable[[T], dict[str, Any]]:
     """Create a polling function for instance state transitions.
 
@@ -43,7 +41,6 @@ def create_instance_poller[T](
                      updated fields like ip, private_ip, etc.
         target_status: Status string to wait for (e.g., "active", "running").
         timeout: Maximum wait time in seconds.
-        wait_strategy: Either "exponential" (2-10s) or "fixed" (5s).
 
     Returns:
         A function that polls until target_status is reached.
@@ -66,15 +63,10 @@ def create_instance_poller[T](
         info = poll(droplet)  # Blocks until active
         droplet.ip = info["ip"]
     """
-    wait = (
-        wait_exponential(multiplier=1, min=2, max=10)
-        if wait_strategy == "exponential"
-        else wait_fixed(5)
-    )
 
     @retry(
         stop=stop_after_delay(timeout),
-        wait=wait,
+        wait=wait_fixed(1),
         retry=retry_if_exception_type(InstancePendingError),
         reraise=True,
     )
@@ -93,7 +85,6 @@ def poll_instances[T](
     target_status: str,
     update_instance: Callable[[T, dict[str, Any]], None],
     timeout: float = 300,
-    wait_strategy: str = "exponential",
 ) -> None:
     """Poll multiple instances concurrently until all reach target status.
 
@@ -108,7 +99,6 @@ def poll_instances[T](
         target_status: Status string to wait for.
         update_instance: Function to update instance with fetched info.
         timeout: Maximum wait time per instance.
-        wait_strategy: Either "exponential" or "fixed".
 
     Example:
         def fetch_status(droplet: _Droplet) -> tuple[str, dict]:
@@ -133,7 +123,6 @@ def poll_instances[T](
         fetch_status=fetch_status,
         target_status=target_status,
         timeout=timeout,
-        wait_strategy=wait_strategy,
     )
 
     def poll_and_update(instance: T) -> None:

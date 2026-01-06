@@ -8,8 +8,8 @@ for supported accelerators and helper functions.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, Literal, Union, overload
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Final, Literal, Union, overload
 
 
 if TYPE_CHECKING:
@@ -126,6 +126,7 @@ class Accelerator:
     memory: str
     count: AcceleratorCount = 1
     multiple_instance: str | list[str] | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_name(cls, name: str) -> "Accelerator | None":
@@ -165,11 +166,11 @@ class Accelerator:
             else:
                 name = "H100"
                 mem = memory
-            return Accelerator(name, mem, count, mig)
+            return Accelerator(name, mem, count, mig, {"cuda": {"min": "11.8", "max": "13.1"}})
 
         @staticmethod
         def H200(count: AcceleratorCount = 1) -> "Accelerator":
-            return Accelerator("H200", "141GB", count)
+            return Accelerator("H200", "141GB", count, metadata={"cuda": {"min": "11.8", "max": "13.1"}})
 
         @staticmethod
         @overload
@@ -193,83 +194,91 @@ class Accelerator:
             memory: Literal["40GB", "80GB"] = "80GB",
             mig: A100MIG | list[A100MIG] | None = None,
         ) -> "Accelerator":
-            return Accelerator("A100", memory, count, mig)
+            return Accelerator("A100", memory, count, mig, {"cuda": {"min": "11.0", "max": "13.1"}})
 
         @staticmethod
         def B100(count: AcceleratorCount = 1) -> "Accelerator":
-            return Accelerator("B100", "192GB", count)
+            return Accelerator("B100", "192GB", count, metadata={"cuda": {"min": "12.8", "max": "13.1"}})
 
         @staticmethod
         def B200(count: AcceleratorCount = 1) -> "Accelerator":
-            return Accelerator("B200", "192GB", count)
+            return Accelerator("B200", "192GB", count, metadata={"cuda": {"min": "12.8", "max": "13.1"}})
 
         @staticmethod
         def GB200(count: AcceleratorCount = 1) -> "Accelerator":
-            return Accelerator("GB200", "384GB", count)
+            return Accelerator("GB200", "384GB", count, metadata={"cuda": {"min": "12.8", "max": "13.1"}})
 
         @staticmethod
         def GH200(count: AcceleratorCount = 1) -> "Accelerator":
-            return Accelerator("GH200", "96GB", count)
+            return Accelerator("GH200", "96GB", count, metadata={"cuda": {"min": "11.8", "max": "13.1"}})
 
         @staticmethod
         def L4(count: AcceleratorCount = 1) -> "Accelerator":
-            return Accelerator("L4", "24GB", count)
+            return Accelerator("L4", "24GB", count, metadata={"cuda": {"min": "11.8", "max": "13.1"}})
 
         @staticmethod
         def L40(count: AcceleratorCount = 1) -> "Accelerator":
-            return Accelerator("L40", "48GB", count)
+            return Accelerator("L40", "48GB", count, metadata={"cuda": {"min": "11.8", "max": "13.1"}})
 
         @staticmethod
         def L40S(count: AcceleratorCount = 1) -> "Accelerator":
-            return Accelerator("L40S", "48GB", count)
+            return Accelerator("L40S", "48GB", count, metadata={"cuda": {"min": "11.8", "max": "13.1"}})
 
         @staticmethod
         def T4(count: AcceleratorCount = 1) -> "Accelerator":
-            return Accelerator("T4", "16GB", count)
+            return Accelerator("T4", "16GB", count, metadata={"cuda": {"min": "10.0", "max": "13.1"}})
 
         @staticmethod
         def A10(count: AcceleratorCount = 1) -> "Accelerator":
-            return Accelerator("A10", "24GB", count)
+            return Accelerator("A10", "24GB", count, metadata={"cuda": {"min": "11.0", "max": "13.1"}})
 
         @staticmethod
         def A10G(count: AcceleratorCount = 1) -> "Accelerator":
-            return Accelerator("A10G", "24GB", count)
+            return Accelerator("A10G", "24GB", count, metadata={"cuda": {"min": "11.0", "max": "13.1"}})
 
         @staticmethod
         def A2(count: AcceleratorCount = 1) -> "Accelerator":
-            return Accelerator("A2", "16GB", count)
+            return Accelerator("A2", "16GB", count, metadata={"cuda": {"min": "11.0", "max": "13.1"}})
 
         @staticmethod
         def V100(count: AcceleratorCount = 1, memory: Literal["16GB", "32GB"] = "32GB") -> "Accelerator":
-            return Accelerator("V100", memory, count)
+            return Accelerator("V100", memory, count, metadata={"cuda": {"min": "9.0", "max": "12.6"}})
 
         @staticmethod
         def P100(count: AcceleratorCount = 1) -> "Accelerator":
-            return Accelerator("P100", "16GB", count)
+            return Accelerator("P100", "16GB", count, metadata={"cuda": {"min": "8.0", "max": "12.6"}})
 
         @staticmethod
         def P4(count: AcceleratorCount = 1) -> "Accelerator":
-            return Accelerator("P4", "8GB", count)
+            return Accelerator("P4", "8GB", count, metadata={"cuda": {"min": "8.0", "max": "12.6"}})
 
         @staticmethod
         def K80(count: AcceleratorCount = 1) -> "Accelerator":
-            return Accelerator("K80", "12GB", count)
+            return Accelerator("K80", "12GB", count, metadata={"cuda": {"min": "5.5", "max": "10.2"}})
 
         @staticmethod
         def RTX3080(count: AcceleratorCount = 1) -> "Accelerator":
-            return Accelerator("RTX3080", "10GB", count)
+            return Accelerator("RTX 3080", "10GB", count, metadata={"cuda": {"min": "11.1", "max": "13.1"}})
 
         @staticmethod
         def RTX3090(count: AcceleratorCount = 1) -> "Accelerator":
-            return Accelerator("RTX3090", "24GB", count)
+            return Accelerator("RTX 3090", "24GB", count, metadata={"cuda": {"min": "11.1", "max": "13.1"}})
+
+        @staticmethod
+        def RTX3080Ti(count: AcceleratorCount = 1) -> "Accelerator":
+            return Accelerator("RTX 3080 Ti", "12GB", count, metadata={"cuda": {"min": "11.1", "max": "13.1"}})
 
         @staticmethod
         def RTX4080(count: AcceleratorCount = 1) -> "Accelerator":
-            return Accelerator("RTX4080", "16GB", count)
+            return Accelerator("RTX 4080", "16GB", count, metadata={"cuda": {"min": "11.8", "max": "13.1"}})
 
         @staticmethod
         def RTX4090(count: AcceleratorCount = 1) -> "Accelerator":
-            return Accelerator("RTX4090", "24GB", count)
+            return Accelerator("RTX 4090", "24GB", count, metadata={"cuda": {"min": "11.8", "max": "13.1"}})
+
+        @staticmethod
+        def RTX5090(count: AcceleratorCount = 1) -> "Accelerator":
+            return Accelerator("RTX 5090", "32GB", count, metadata={"cuda": {"min": "12.8", "max": "13.1"}})
 
     class AMD:
         @staticmethod
