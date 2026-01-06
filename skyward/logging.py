@@ -53,15 +53,15 @@ class LogConfig:
 
     Attributes:
         level: Minimum log level (DEBUG, INFO, WARNING, ERROR).
-        file: Path to log file. If provided, logs are written to this file.
+        file: Path to log file. Defaults to .skyward/skyward.log.
         console: Whether to log to stderr. Defaults to True.
         rotation: File rotation policy (e.g., "50 MB", "1 day"). Defaults to "50 MB".
         retention: Number of old log files to keep. Defaults to 10.
     """
 
     level: LogLevel = "INFO"
-    file: str | None = None
-    console: bool = True
+    file: str = ".skyward/skyward.log"
+    console: bool = False
     rotation: str = "50 MB"
     retention: int = 10
 
@@ -75,6 +75,11 @@ def _setup_logging(config: LogConfig) -> list[int]:
     Returns:
         List of handler IDs that were added (for later removal).
     """
+    from pathlib import Path
+
+    # Remove default handler (ID=0) that logs to stderr without filter
+    logger.remove()
+
     logger.enable("skyward")
     handler_ids: list[int] = []
 
@@ -91,6 +96,8 @@ def _setup_logging(config: LogConfig) -> list[int]:
 
     # File output
     if config.file:
+        # Ensure parent directory exists
+        Path(config.file).parent.mkdir(parents=True, exist_ok=True)
         hid = logger.add(
             config.file,
             level="DEBUG",  # File always captures everything
@@ -99,7 +106,7 @@ def _setup_logging(config: LogConfig) -> list[int]:
             retention=config.retention,
             compression="zip",
             diagnose=False,  # Don't expose credentials in tracebacks
-            enqueue=True,  # Thread-safe for multiprocessing
+            enqueue=False,  # Thread-safe via loguru's internal locks
             filter="skyward",
         )
         handler_ids.append(hid)

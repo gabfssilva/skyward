@@ -100,7 +100,13 @@ class Image:
             install_uv(),
             apt("python3", "curl", *self.apt),
             uv_init(self.python),
-            uv_add("cloudpickle", "rpyc", *self.pip, extra_index=self.pip_extra_index_url),
+            uv_add(
+                "cloudpickle",
+                "rpyc",
+                "nvidia-ml-py",  # NVIDIA GPU metrics (gracefully ignored if no GPU)
+                *self.pip,
+                extra_index=self.pip_extra_index_url,
+            ),
             # NOTE: systemd service is created AFTER wheel installation via SCP
             # because python -m skyward.rpc requires the skyward package
             postamble,

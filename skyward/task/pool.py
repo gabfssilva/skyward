@@ -115,7 +115,10 @@ class PooledConnection:
                 conn = rpyc.connect(
                     "127.0.0.1",
                     self.tunnel.local_port,
-                    config={"allow_pickle": True, "sync_request_timeout": 3600},
+                    config={
+                        "allow_pickle": True,
+                        "sync_request_timeout": 3600,
+                    },
                 )
                 if conn.root.ping() == "pong":
                     logger.debug(f"RPyC connected after {attempt} attempts")
@@ -262,6 +265,23 @@ class TaskPool:
     def release(self, conn: PooledConnection) -> None:
         """Return connection to the pool."""
         self._pool.release(conn)
+
+    def get_tunnel(self, instance: Instance) -> Tunnel:
+        """Get the tunnel for an instance.
+
+        Use this to create additional RPyC connections to the same instance,
+        for example for dedicated metrics streaming.
+
+        Args:
+            instance: Instance to get tunnel for.
+
+        Returns:
+            Tunnel object with local_port for connecting.
+
+        Raises:
+            KeyError: If no tunnel exists for this instance.
+        """
+        return self._tunnels[instance.id]
 
     def close_all(self) -> None:
         """Close all connections and tunnels."""

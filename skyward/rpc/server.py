@@ -10,8 +10,8 @@ import subprocess
 import sys
 import threading
 import traceback
-from collections.abc import Callable
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Iterator
+from typing import TYPE_CHECKING, Any
 
 import rpyc
 from rpyc.utils.server import ThreadedServer
@@ -21,6 +21,8 @@ from skyward.serialization import deserialize, serialize
 
 if TYPE_CHECKING:
     from typing import TextIO
+
+    from skyward.rpc.metrics import MetricsStream
 
 # Default port for RPyC server
 RPYC_PORT = 18861
@@ -99,17 +101,25 @@ def _install_dispatchers() -> None:
 
 
 class SkywardService(rpyc.Service):
-    """RPyC service exposing function execution."""
+    """RPyC service exposing function execution and metrics streaming."""
 
     ALIASES = ["skyward"]
+
+    # Shared metrics stream instance (lazy-initialized)
+    _metrics_stream: MetricsStream | None = None
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._metrics_stop: threading.Event | None = None
 
     def on_connect(self, conn: rpyc.Connection) -> None:
         """Called when a client connects."""
         pass
 
     def on_disconnect(self, conn: rpyc.Connection) -> None:
-        """Called when a client disconnects."""
-        pass
+        """Called when client disconnects - stop metrics loop."""
+        if self._metrics_stop:
+            self._metrics_stop.set()
 
     def exposed_execute(
         self,
@@ -130,6 +140,15 @@ class SkywardService(rpyc.Service):
             Cloudpickle-serialized dict with 'result' or 'error' key.
         """
         try:
+            # Wrap callback as fire-and-forget to avoid blocking on each write
+            if stdout_callback is not None:
+                async_cb = rpyc.async_(stdout_callback)
+
+                def fire_and_forget(s: str) -> None:
+                    async_cb(s)
+
+                stdout_callback = fire_and_forget
+
             with redirect_output(stdout_callback):
                 fn = deserialize(fn_bytes)
                 args = deserialize(args_bytes)
@@ -192,6 +211,116 @@ class SkywardService(rpyc.Service):
 
         return "ok"
 
+    def _get_metrics_stream(self) -> MetricsStream:
+        """Lazy-initialize metrics stream (shared across connections)."""
+        if SkywardService._metrics_stream is None:
+            from skyward.rpc.metrics import MetricsStream
+
+            SkywardService._metrics_stream = MetricsStream()
+        return SkywardService._metrics_stream
+
+    def exposed_stream_metrics(self, interval: float = 0.2) -> Iterator[dict[str, Any]]:
+        """Stream metrics via RPyC generator (pull-based).
+
+        Note: For lower latency, prefer exposed_start_metrics_push() which
+        uses server-initiated callbacks instead of generator round-trips.
+
+        Args:
+            interval: Time between samples in seconds.
+
+        Yields:
+            Dict with metrics (cpu_percent, memory_percent, etc).
+        """
+        yield from self._get_metrics_stream().stream(interval)
+
+    def exposed_start_metrics_push(
+        self,
+        callback: Callable[[dict[str, Any]], None],
+        interval: float = 0.2,
+    ) -> None:
+        """Push metrics to client via background threads.
+
+        Starts collector and sender threads, then returns immediately.
+        This keeps the server thread free to process stop_metrics_push().
+
+        Args:
+            callback: Client-side callable that receives metrics dict.
+            interval: Time between samples in seconds.
+        """
+        import logging
+        from queue import Empty, Full, Queue
+
+        logger = logging.getLogger("skyward.rpc.metrics")
+        logger.info(f"start_metrics_push called (interval={interval}s)")
+
+        # Wrap callback as fire-and-forget to avoid blocking on each push
+        async_cb = rpyc.async_(callback)
+
+        def fire_and_forget(data: dict[str, Any]) -> None:
+            async_cb(data)
+
+        stream = self._get_metrics_stream()
+        queue: Queue[dict[str, Any] | None] = Queue(maxsize=10)
+        stop = threading.Event()
+
+        # Store for on_disconnect and stop_metrics_push to signal stop
+        self._metrics_stop = stop
+
+        def sender_loop() -> None:
+            logger.debug("Sender thread started")
+            while not stop.is_set():
+                try:
+                    metrics = queue.get(timeout=1.0)
+
+                    if metrics is None:
+                        continue
+
+                    fire_and_forget(metrics)
+                except Empty:
+                    continue
+                except Exception as e:
+                    logger.error(f"Sender error: {type(e).__name__}: {e}")
+                    stop.set()
+                    break
+
+        def collector_loop() -> None:
+            """Collect metrics in background thread."""
+            collected = 0
+            logger.debug("Collector thread started")
+            try:
+                while not stop.is_set():
+                    metrics = stream.collect()
+                    collected += 1
+                    try:
+                        queue.put_nowait(metrics)
+                    except Full:
+                        pass  # Drop if queue is full
+                    stop.wait(timeout=interval)
+            except Exception as e:
+                logger.error(f"Collector error: {type(e).__name__}: {e}")
+            finally:
+                queue.put(None)
+                logger.debug(f"Collector thread exiting (collected {collected} samples)")
+
+        # Start both threads as daemons
+        sender = threading.Thread(target=sender_loop, daemon=True, name="metrics-sender")
+        collector = threading.Thread(target=collector_loop, daemon=True, name="metrics-collector")
+        sender.start()
+        collector.start()
+
+        logger.info("Metrics push threads started, returning to caller")
+
+    def exposed_stop_metrics_push(self) -> None:
+        """Stop metrics loop (called by client before closing connection)."""
+        import logging
+
+        logger = logging.getLogger("skyward.rpc.metrics")
+        if self._metrics_stop:
+            logger.info("stop_metrics_push called, setting stop event")
+            self._metrics_stop.set()
+        else:
+            logger.warning("stop_metrics_push called but no metrics loop running")
+
 
 def main() -> None:
     """Start the RPyC server.
@@ -217,6 +346,7 @@ def main() -> None:
         port=port,
         protocol_config={
             "allow_pickle": True,
+            "allow_public_attrs": True,  # Allow .get(), .items() on netref dicts
             "sync_request_timeout": 3600,  # 1 hour timeout for long computations
         },
     )

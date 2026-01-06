@@ -1,8 +1,8 @@
 """Callback-based event system for Skyward.
 
 This module provides a simple, deadlock-safe event dispatch mechanism.
-Callbacks receive events and may return derived events, which are
-processed in a queue to ensure locks are released between dispatches.
+Events are processed asynchronously in a background thread to prevent
+blocking the caller.
 
 Example:
     from skyward.callback import emit, use_callback, compose
@@ -18,9 +18,12 @@ Example:
 
 from __future__ import annotations
 
+import atexit
+import threading
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
+from queue import Queue
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -30,6 +33,11 @@ type CallbackResult = SkywardEvent | Sequence[SkywardEvent] | None
 type Callback = Callable[[SkywardEvent], CallbackResult]
 
 _callback: ContextVar[Callback | None] = ContextVar("skyward_cb", default=None)
+
+# Global event queue and worker
+_event_queue: Queue[tuple[Callback, SkywardEvent] | None] = Queue()
+_worker_thread: threading.Thread | None = None
+_worker_lock = threading.Lock()
 
 
 def _normalize(result: CallbackResult) -> list[SkywardEvent]:
@@ -43,17 +51,48 @@ def _normalize(result: CallbackResult) -> list[SkywardEvent]:
             return [event]
 
 
+def _worker_loop() -> None:
+    """Background worker that processes events."""
+    while True:
+        item = _event_queue.get()
+        if item is None:  # Shutdown signal
+            break
+        cb, event = item
+        try:
+            derived = cb(event)
+            for e in _normalize(derived):
+                _event_queue.put((cb, e))
+        except Exception:
+            pass  # Don't crash worker on callback errors
+        finally:
+            _event_queue.task_done()
+
+
+def _ensure_worker() -> None:
+    """Start worker thread if not already running."""
+    global _worker_thread
+    with _worker_lock:
+        if _worker_thread is None or not _worker_thread.is_alive():
+            _worker_thread = threading.Thread(target=_worker_loop, daemon=True)
+            _worker_thread.start()
+
+
+def _shutdown_worker() -> None:
+    """Gracefully shutdown worker thread."""
+    if _worker_thread is not None and _worker_thread.is_alive():
+        _event_queue.put(None)  # Shutdown signal
+        _worker_thread.join(timeout=2.0)
+
+
+# Register shutdown handler
+atexit.register(_shutdown_worker)
+
+
 def emit(event: SkywardEvent) -> None:
-    """Emit event to the current context's callback.
+    """Emit event to the current context's callback (non-blocking).
 
-    Processes derived events in a queue (breadth-first), ensuring
-    that any locks held by callbacks are released between dispatches.
-
-    This design prevents deadlocks when callbacks return derived events:
-    1. Callback is called with event
-    2. Callback acquires lock, computes, releases lock, returns derived events
-    3. Derived events are added to queue
-    4. Next event is processed (no locks held)
+    The event is queued and processed asynchronously in a background thread.
+    This prevents slow callbacks from blocking the caller.
 
     Args:
         event: The event to emit.
@@ -62,11 +101,17 @@ def emit(event: SkywardEvent) -> None:
     if cb is None:
         return
 
-    queue: list[SkywardEvent] = [event]
-    while queue:
-        current = queue.pop(0)
-        derived = cb(current)
-        queue.extend(_normalize(derived))
+    _ensure_worker()
+    _event_queue.put((cb, event))
+
+
+def flush() -> None:
+    """Wait for all queued events to be processed.
+
+    Useful for testing or when you need to ensure all events
+    have been handled before proceeding.
+    """
+    _event_queue.join()
 
 
 def compose(*callbacks: Callback) -> Callback:
@@ -128,6 +173,7 @@ __all__ = [
     "Callback",
     "CallbackResult",
     "emit",
+    "flush",
     "compose",
     "use_callback",
 ]

@@ -379,6 +379,22 @@ class Instance:
         return self.run_command(f"/opt/skyward/.venv/bin/python -c '{script}'", timeout)
 
     def metrics(self) -> dict[str, Any]:
+        """Fetch metrics from instance.
+
+        .. deprecated::
+            Use MetricsStreamer for efficient streaming via RPyC.
+            This method uses SSH + cloudpickle which is slow (~300-500ms per call).
+            The new MetricsStreamer uses RPyC generators (~2-5ms per sample).
+        """
+        import warnings
+
+        warnings.warn(
+            "Instance.metrics() is deprecated. Use MetricsStreamer for efficient "
+            "metrics streaming via RPyC (~60-250x faster).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
         @self.remote
         def fetch_metrics() -> dict[str, Any]:
             import subprocess

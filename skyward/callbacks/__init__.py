@@ -16,10 +16,8 @@ Example:
 
 from skyward.callbacks.cost import cost_tracker
 from skyward.callbacks.panel import panel
-from skyward.callbacks.spinner import spinner
 
 __all__ = [
     "cost_tracker",
     "panel",
-    "spinner",
 ]

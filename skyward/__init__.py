@@ -37,6 +37,7 @@ Example (implicit pool with decorator):
         return result
 
     main()  # provisions -> executes -> deprovisions
+
 """
 
 # Accelerator utilities
@@ -67,6 +68,8 @@ from skyward.events import (
     CostFinal,
     CostUpdate,
     Error,
+    FunctionCall,
+    FunctionResult,
     InstanceLaunching,
     InstanceProvisioned,
     InstanceReady,
@@ -200,6 +203,8 @@ __all__ = [
     "InstanceReady",
     "Metrics",
     "LogLine",
+    "FunctionCall",
+    "FunctionResult",
     "InstanceStopping",
     "CostUpdate",
     "CostFinal",

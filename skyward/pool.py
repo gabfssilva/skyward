@@ -38,15 +38,17 @@ from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any, Literal
 
+import rpyc
 from loguru import logger
 
 from skyward.accelerator import Accelerator
-from skyward.callback import Callback, compose, emit, use_callback
-from skyward.callbacks import cost_tracker, panel, spinner
+from skyward.callback import Callback, _callback, compose, emit, use_callback
+from skyward.callbacks import panel
 from skyward.conc import for_each_async, map_async
 from skyward.events import (
     Error,
     FunctionCall,
+    FunctionResult,
     LogLine,
     PoolStarted,
     PoolStopping,
@@ -56,7 +58,7 @@ from skyward.events import (
 from skyward.exceptions import ExecutionError, NotProvisionedError, ProvisioningError
 from skyward.image import DEFAULT_IMAGE, Image
 from skyward.logging import LogConfig, _setup_logging, _teardown_logging
-from skyward.metrics import MetricsPoller
+from skyward.metrics import MetricsStreamer
 from skyward.pending import PendingBatch, PendingCompute
 from skyward.selection import (
     AllProvidersFailedError,
@@ -162,12 +164,12 @@ class ComputePool:
     concurrency: int = 1  # Number of concurrent tasks per instance
 
     # Display settings
-    display: Literal["panel", "spinner", "quiet"] = "panel"
+    display: Literal["panel", "quiet"] = "quiet"
     on_event: Callback | None = None
     collect_metrics: bool = True
 
     # Logging configuration
-    logging: LogConfig | bool = False
+    logging: LogConfig | bool = True
 
     # Internal state
     _active: bool = field(default=False, init=False, repr=False)
@@ -183,7 +185,10 @@ class ComputePool:
     # Task pool state
     _accelerator_cfg: Accelerator | None = field(default=None, init=False, repr=False)
     _task_pool: TaskPool | None = field(default=None, init=False, repr=False)
-    _metrics_pollers: list[MetricsPoller] = field(default_factory=list, init=False, repr=False)
+    _metrics_streamers: list[MetricsStreamer] = field(default_factory=list, init=False, repr=False)
+    _metrics_connections: list[rpyc.Connection] = field(
+        default_factory=list, init=False, repr=False
+    )
     _event_callback: Callback | None = field(default=None, init=False, repr=False)
     _exit_stack: ExitStack | None = field(default=None, init=False, repr=False)
 
@@ -460,12 +465,13 @@ class ComputePool:
 
         # Emit FunctionCall event
         fn_name = getattr(pending.fn, "__name__", str(pending.fn))
+        start_time = time.time()
         if event_callback is not None:
             event_callback(
                 FunctionCall(
                     function_name=fn_name,
                     instance=provisioned,
-                    timestamp=time.time(),
+                    timestamp=start_time,
                 )
             )
 
@@ -474,10 +480,46 @@ class ComputePool:
             response = deserialize(result_bytes)
             if response.get("error"):
                 raise ExecutionError(response["error"])
+
+            # Emit FunctionResult on success
+            if event_callback is not None:
+                event_callback(
+                    FunctionResult(
+                        function_name=fn_name,
+                        instance=provisioned,
+                        timestamp=time.time(),
+                        duration_seconds=time.time() - start_time,
+                        success=True,
+                    )
+                )
             return response["result"]
         except ExecutionError:
+            # Emit FunctionResult on execution error
+            if event_callback is not None:
+                event_callback(
+                    FunctionResult(
+                        function_name=fn_name,
+                        instance=provisioned,
+                        timestamp=time.time(),
+                        duration_seconds=time.time() - start_time,
+                        success=False,
+                        error="ExecutionError",
+                    )
+                )
             raise
         except Exception as e:
+            # Emit FunctionResult on unexpected error
+            if event_callback is not None:
+                event_callback(
+                    FunctionResult(
+                        function_name=fn_name,
+                        instance=provisioned,
+                        timestamp=time.time(),
+                        duration_seconds=time.time() - start_time,
+                        success=False,
+                        error=str(e),
+                    )
+                )
             emit(Error(message=f"Execution failed on {pc.instance_id}: {e}", instance=provisioned))
             raise
 
@@ -525,18 +567,33 @@ class ComputePool:
         logger.debug("Setting up cluster environment on instances...")
         self._setup_all_instances()
 
-        # Start metrics polling if enabled
+        # Start metrics streaming if enabled (dedicated RPyC connections)
         if self.collect_metrics:
-            logger.debug("Starting metrics polling...")
+            logger.debug("Starting metrics streaming...")
             provider_name = self._get_provider_name()
+
+            # Create dedicated connections for metrics (one per instance)
             for instance in self._instances:
-                poller = MetricsPoller(
-                    instance,
+                tunnel = self._task_pool.get_tunnel(instance)
+                conn = rpyc.connect(
+                    "127.0.0.1",
+                    tunnel.local_port,
+                    config={
+                        "allow_pickle": True,
+                        "sync_request_timeout": 3600,
+                    },
+                )
+                self._metrics_connections.append(conn)
+
+                streamer = MetricsStreamer(
+                    instance=instance,
+                    conn=conn,
                     callback=self._event_callback,
+                    interval=0.2,
                     provider_name=provider_name,
                 )
-                poller.start()
-                self._metrics_pollers.append(poller)
+                streamer.start()
+                self._metrics_streamers.append(streamer)
 
     def _shutdown(self) -> None:
         """Shutdown and release pool resources."""
@@ -548,14 +605,22 @@ class ComputePool:
         instance_count = len(self._instances)
         logger.debug(f"Shutting down {instance_count} instances...")
 
-        # Stop metrics polling
-        if self._metrics_pollers:
-            logger.debug("Stopping metrics polling...")
-            for poller in self._metrics_pollers:
-                poller.stop()
-            self._metrics_pollers.clear()
+        # Stop metrics streaming
+        if self._metrics_streamers:
+            logger.debug("Stopping metrics streaming...")
+            for streamer in self._metrics_streamers:
+                streamer.stop()
+            self._metrics_streamers.clear()
 
-        # Close TaskPool first if active
+        # Close dedicated metrics connections
+        if self._metrics_connections:
+            logger.debug("Closing metrics connections...")
+            for conn in self._metrics_connections:
+                with suppress(Exception):
+                    conn.close()
+            self._metrics_connections.clear()
+
+        # Close TaskPool if active
         if self._task_pool is not None:
             logger.debug("Closing task pool connections...")
             with suppress(Exception):
@@ -690,19 +755,15 @@ class ComputePool:
         """Build the composite callback for this pool."""
         callbacks: list[Callback] = []
 
+        # Parent callback from context (e.g., from @sky.app)
+        parent_cb = _callback.get()
+        if parent_cb is not None:
+            callbacks.append(parent_cb)
+
         # Display callback (panel has built-in cost tracking)
         match self.display:
             case "panel":
                 callbacks.append(panel())
-            case "spinner":
-                # Spinner needs cost_tracker for cost events
-                callbacks.append(
-                    cost_tracker(
-                        region=getattr(self.provider, "region", "us-east-1"),
-                        provider=getattr(self.provider, "name", "aws"),
-                    )
-                )
-                callbacks.append(spinner())
             case "quiet":
                 pass
 

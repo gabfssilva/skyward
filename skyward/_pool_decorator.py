@@ -52,10 +52,10 @@ def pool(
     timeout: int = 3600,
     env: dict[str, str] | None = None,
     concurrency: int = 1,
-    display: Literal["panel", "spinner", "quiet"] = "panel",
+    display: Literal["panel", "monitor", "spinner", "quiet"] = "panel",
     on_event: Callback | None = None,
     collect_metrics: bool = True,
-    logging: LogConfig | bool = False,
+    logging: LogConfig | bool = True,
 ) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Decorator that provisions a pool for the duration of the function.
 
