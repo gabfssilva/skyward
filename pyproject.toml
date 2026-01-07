@@ -45,9 +45,7 @@ digitalocean = [
 verda = [
     "verda>=1.0.0",
 ]
-vastai = [
-    "vastai-sdk>=0.2.6",
-]
+vastai = []
 gcp = [
     "google-cloud-run>=0.10",
     "google-cloud-batch>=0.17",
