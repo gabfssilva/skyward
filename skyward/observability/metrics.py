@@ -12,9 +12,9 @@ from typing import TYPE_CHECKING, Any
 
 import rpyc
 
-from skyward.callback import emit
-from skyward.constants import RPYC_PORT
-from skyward.events import Metrics, ProviderName, ProvisionedInstance
+from skyward.core.callback import emit
+from skyward.core.constants import RPYC_PORT
+from skyward.core.events import Metrics, ProviderName, ProvisionedInstance
 
 if TYPE_CHECKING:
     from skyward.providers.ssh import SSHConnection

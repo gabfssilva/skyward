@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, Protocol, cast
 
-from skyward.cache import cached
+from skyward.utils.cache import cached
 
 if TYPE_CHECKING:
     from mypy_boto3_ec2 import EC2Client

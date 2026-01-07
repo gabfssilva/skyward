@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from skyward.types import ComputeSpec, Provider, ProviderConfig
 
-from skyward.exceptions import NoMatchingInstanceError
+from skyward.core.exceptions import NoMatchingInstanceError
 from skyward.types import (
     ProviderLike,
     ProviderSelector,

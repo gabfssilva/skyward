@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 import httpx
 
-from skyward.cache import cached
+from skyward.utils.cache import cached
 
 if TYPE_CHECKING:
     from skyward.types import Instance

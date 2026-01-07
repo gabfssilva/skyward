@@ -33,24 +33,10 @@ def keras[**P, R](
     def decorator(fn: Callable[P, R]) -> Callable[P, R]:
         effective = backend or "jax"
 
-        # Apply backend decorator (lazy import)
-        match effective:
-            case "jax":
-                from skyward.integrations.jax import jax
-
-                fn = jax()(fn)
-            case "torch":
-                from skyward.integrations.torch import torch
-
-                fn = torch()(fn)
-            case "tensorflow":
-                from skyward.integrations.tensorflow import tensorflow
-
-                fn = tensorflow()(fn)
-
+        # First wrap with Keras distribution setup
         @functools.wraps(fn)
         def inner(*args: P.args, **kwargs: P.kwargs) -> R:
-            from skyward.cluster import instance_info
+            from skyward.cluster.info import instance_info
 
             pool = instance_info()
 
@@ -69,6 +55,21 @@ def keras[**P, R](
                     )
 
             return fn(*args, **kwargs)
+
+        # Then wrap with backend initializer (runs FIRST, before list_devices)
+        match effective:
+            case "jax":
+                from skyward.integrations.jax import jax
+
+                return jax()(inner)
+            case "torch":
+                from skyward.integrations.torch import torch
+
+                return torch()(inner)
+            case "tensorflow":
+                from skyward.integrations.tensorflow import tensorflow
+
+                return tensorflow()(inner)
 
         return inner
 

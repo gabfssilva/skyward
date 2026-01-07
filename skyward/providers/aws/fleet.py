@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING, Any
 from botocore.exceptions import ClientError
 from loguru import logger
 
-from skyward.constants import DEFAULT_INSTANCE_NAME, SkywardTag
-from skyward.spec import Allocation, AllocationStrategy, NormalizedAllocation, _AllocationOnDemand
+from skyward.core.constants import DEFAULT_INSTANCE_NAME, SkywardTag
+from skyward.spec.allocation import Allocation, AllocationStrategy, NormalizedAllocation, _AllocationOnDemand
 
 from .infra import AWSResources
 
@@ -390,7 +390,7 @@ def _launch_cheapest(
 
 def wait_running(ec2: EC2Client, instance_ids: list[str]) -> None:
     """Wait for instances to be in running state."""
-    from skyward.constants import INSTANCE_RUNNING_MAX_ATTEMPTS, INSTANCE_RUNNING_WAIT_DELAY
+    from skyward.core.constants import INSTANCE_RUNNING_MAX_ATTEMPTS, INSTANCE_RUNNING_WAIT_DELAY
 
     if not instance_ids:
         return

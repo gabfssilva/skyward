@@ -20,13 +20,14 @@ from skyward.bootstrap import (
     env_export,
     install_uv,
     instance_timeout,
+    shell_vars,
     systemd,
     uv_add,
     uv_init,
     wait_for_port,
 )
 from skyward.bootstrap.worker import rpyc_service_unit
-from skyward.constants import RPYC_PORT
+from skyward.core.constants import RPYC_PORT
 
 # Skyward installation source
 type SkywardSource = Literal["local", "github", "pypi"]
@@ -42,10 +43,14 @@ class Image:
 
     Args:
         python: Python version to use (default: "3.13").
-        pip: List of pip packages to install.
+        pip: List of pip packages to install. Supports shell variable
+            interpolation via ${VAR} syntax (see shell_vars).
         pip_extra_index_url: Extra PyPI index URL.
-        apt: List of apt packages to install.
-        env: Environment variables to export.
+        apt: List of apt packages to install. Supports ${VAR} interpolation.
+        env: Environment variables to export. Supports ${VAR} interpolation.
+        shell_vars: Shell commands to execute remotely, with their output
+            captured into variables. These variables can be interpolated
+            into pip, apt, and env using ${VAR} syntax.
         skyward_source: Where to install skyward from:
             - "local": Build and SCP wheel from local machine (dev mode)
             - "github": Install from GitHub repository (default)
@@ -60,11 +65,12 @@ class Image:
             env={"HF_TOKEN": "xxx"},
         )
 
-        # Development: use local wheel via SCP
+        # Dynamic versions using shell_vars
         image = Image(
-            python="3.13",
-            pip=["torch"],
-            skyward_source="local",
+            pip=["torch==${CUDA_VER}"],
+            shell_vars={
+                "CUDA_VER": "nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1",
+            },
         )
 
         # Generate bootstrap script
@@ -79,6 +85,7 @@ class Image:
     pip_extra_index_url: str | None = None
     apt: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
+    shell_vars: dict[str, str] = field(default_factory=dict)
     skyward_source: SkywardSource = "github"
 
     def content_hash(self) -> str:
@@ -97,6 +104,7 @@ class Image:
                 "pip_extra_index_url": self.pip_extra_index_url,
                 "apt": sorted(self.apt),
                 "env": dict(sorted(self.env.items())),
+                "shell_vars": dict(sorted(self.shell_vars.items())),
                 "skyward_source": self.skyward_source,
             },
             sort_keys=True,
@@ -129,6 +137,7 @@ class Image:
         ops: list[Op | None] = [
             instance_timeout(ttl) if ttl else None,  # safety timeout ALWAYS first
             preamble,
+            shell_vars(**self.shell_vars) if self.shell_vars else None,  # resolve before use
             env_export(**self.env) if self.env else None,
             install_uv(),
             apt("python3", "curl", "git", *self.apt),  # git needed for github install

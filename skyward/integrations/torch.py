@@ -28,7 +28,7 @@ def torch[**P, R](
             assert dist.is_initialized()
             ...
     """
-    from skyward.pending import ComputeFunction
+    from skyward.compute.pending import ComputeFunction
 
     def wrapper(fn: Callable[P, R]) -> Callable[P, R]:
         @functools.wraps(fn)
@@ -36,7 +36,7 @@ def torch[**P, R](
             import torch
             import torch.distributed as dist
 
-            from skyward.cluster import instance_info
+            from skyward.cluster.info import instance_info
 
             pool = instance_info()
 

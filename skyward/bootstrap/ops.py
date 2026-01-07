@@ -6,7 +6,7 @@ Each operation is a function returning an Op (string or callable).
 
 from __future__ import annotations
 
-from skyward.constants import SKYWARD_DIR, UV_INSTALL_URL
+from skyward.core.constants import SKYWARD_DIR, UV_INSTALL_URL
 
 from .compose import Op
 
@@ -368,6 +368,40 @@ def env_export(**variables: str) -> Op:
 
     def generate() -> str:
         return "\n".join(f'export {k}="{v}"' for k, v in variables.items())
+
+    return generate
+
+
+def shell_vars(**variables: str) -> Op:
+    """Define shell variables by executing commands remotely.
+
+    Each variable is set by executing its shell command and capturing stdout.
+    Variables are exported for use in subsequent commands (pip, apt, env, etc.).
+
+    Commands run with `set -e`, so any failure aborts the bootstrap.
+
+    Args:
+        **variables: Variable name -> shell command pairs.
+
+    Example:
+        >>> shell_vars(CUDA_VER="nvidia-smi ... | head -1")()
+        '# Resolve shell variables\\nCUDA_VER=$(nvidia-smi ...)\\nexport CUDA_VER'
+
+    Usage in Image:
+        Image(
+            pip=["torch==${CUDA_VER}"],
+            shell_vars={"CUDA_VER": "nvidia-smi ... | head -1"},
+        )
+    """
+    if not variables:
+        return lambda: "# No shell variables to resolve"
+
+    def generate() -> str:
+        lines = ["# Resolve shell variables"]
+        for name, cmd in variables.items():
+            lines.append(f"{name}=$({cmd})")
+            lines.append(f"export {name}")
+        return "\n".join(lines)
 
     return generate
 

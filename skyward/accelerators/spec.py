@@ -14,7 +14,7 @@ from .catalog import SPECS
 from .types import NVIDIA, TPU, Trainium
 
 if TYPE_CHECKING:
-    from skyward.cluster import InstanceInfo
+    from skyward.cluster.info import InstanceInfo
 
 # Type for accelerator count: exact number or predicate function
 type AcceleratorCount = float | Callable[[int], bool]
@@ -66,7 +66,7 @@ def current_accelerator() -> NVIDIA | Trainium | TPU | None:
     Returns:
         Accelerator type if running in a compute pool, None otherwise.
     """
-    from skyward.cluster import instance_info
+    from skyward.cluster.info import instance_info
 
     pool: InstanceInfo | None = instance_info()
     if pool is None:

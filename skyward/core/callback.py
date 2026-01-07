@@ -27,7 +27,7 @@ from queue import Queue
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from skyward.events import SkywardEvent
+    from skyward.core.events import SkywardEvent
 
 type CallbackResult = SkywardEvent | Sequence[SkywardEvent] | None
 type Callback = Callable[[SkywardEvent], CallbackResult]

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from math import ceil
 from typing import TYPE_CHECKING, Literal
 
-from skyward.events import (
+from skyward.core.events import (
     BootstrapCompleted,
     CostFinal,
     CostUpdate,
@@ -18,10 +18,10 @@ from skyward.events import (
     PoolStopping,
     SkywardEvent,
 )
-from skyward.pricing import get_instance_pricing
+from skyward.utils.pricing import get_instance_pricing
 
 if TYPE_CHECKING:
-    from skyward.callback import Callback
+    from skyward.core.callback import Callback
 
 
 @dataclass

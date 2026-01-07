@@ -11,13 +11,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from skyward.accelerators import AcceleratorSpec
-from skyward.image import Image
-from skyward.spec import AllocationLike
+from skyward.spec.allocation import AllocationLike
+from skyward.spec.image import Image
 from skyward.types import Architecture, Memory
 
 if TYPE_CHECKING:
-    from skyward.pool import ComputePool
-    from skyward.volume import Volume
+    from skyward.pool.compute import ComputePool
+    from skyward.spec.volume import Volume
 
 
 @dataclass(frozen=True, slots=True)

@@ -30,7 +30,7 @@ from io import StringIO
 from typing import TYPE_CHECKING, Literal, TextIO
 
 if TYPE_CHECKING:
-    from skyward.cluster import InstanceInfo
+    from skyward.cluster.info import InstanceInfo
 
 # =============================================================================
 # Type Aliases
@@ -109,7 +109,7 @@ def stdout[**P, R](
     def decorator(fn: Callable[P, R]) -> Callable[P, R]:
         @wraps(fn)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-            from skyward.cluster import instance_info
+            from skyward.cluster.info import instance_info
 
             info = instance_info()
 
@@ -165,7 +165,7 @@ def stderr[**P, R](
     def decorator(fn: Callable[P, R]) -> Callable[P, R]:
         @wraps(fn)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-            from skyward.cluster import instance_info
+            from skyward.cluster.info import instance_info
 
             info = instance_info()
 

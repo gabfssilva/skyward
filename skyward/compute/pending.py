@@ -34,7 +34,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any, TypeVar, overload
 
 if TYPE_CHECKING:
-    from skyward.pool import ComputePool
+    from skyward.pool.compute import ComputePool
 
 # Type alias for pool target (explicit pool or implicit via module)
 type PoolTarget = ComputePool | ModuleType
@@ -50,7 +50,7 @@ def _resolve_pool(target: PoolTarget) -> ComputePool:
     """Resolve pool from target (explicit pool or implicit via module context)."""
     match target:
         case ModuleType():
-            from skyward._context import get_current_pool
+            from skyward.pool._context import get_current_pool
 
             return get_current_pool()
         case _:

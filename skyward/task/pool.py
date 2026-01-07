@@ -16,12 +16,12 @@ from tenacity import (
     wait_fixed,
 )
 
-from skyward.constants import RPYC_PORT
+from skyward.core.constants import RPYC_PORT
 from skyward.internal.object_pool import ObjectPool
 
 if TYPE_CHECKING:
     from skyward.providers.ssh import ChannelStream, SSHConnection
-    from skyward.types import Instance, Provider
+    from skyward.types import Instance, Instances
 
 
 # =============================================================================
@@ -152,8 +152,7 @@ class TaskPool:
 
     Example:
         pool = TaskPool(
-            provider=provider,
-            instances=instances,
+            instances=instance_pool,  # Implements Instances protocol
             concurrency=4,
         )
 
@@ -164,8 +163,7 @@ class TaskPool:
             pool.release(conn)
     """
 
-    provider: Provider
-    instances: tuple[Instance, ...]
+    instances: Instances
     concurrency: int
     _pool: ObjectPool[PooledConnection] = field(init=False, repr=False)
     # Timing data for PoolReady event (consolidated in pool.py)

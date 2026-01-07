@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from skyward.constants import RPYC_PORT, SKYWARD_DIR
+from skyward.core.constants import RPYC_PORT, SKYWARD_DIR
 
 from .compose import Op
 from .ops import systemd_template

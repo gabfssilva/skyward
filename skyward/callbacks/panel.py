@@ -24,7 +24,7 @@ from skyward.callbacks._panel_components import (
     create_infra_section,
     create_panel,
 )
-from skyward.events import (
+from skyward.core.events import (
     BootstrapCompleted,
     BootstrapProgress,
     BootstrapStarting,
@@ -47,7 +47,7 @@ from skyward.events import (
 )
 
 if TYPE_CHECKING:
-    from skyward.callback import Callback
+    from skyward.core.callback import Callback
 
 # Style constants
 STYLE_DIM = Style(color="bright_black")
@@ -405,6 +405,9 @@ class PanelController:
             total_hourly = sum(
                 c.hourly_rate for c in self._instance_costs.values()
             )
+            total_nodes = t.total_nodes or t.provisioned
+            # Calculate average price per node for correct display math
+            avg_price_per_node = total_hourly / total_nodes if total_nodes > 0 else 0
             infra = create_infra_section(InfraSpec(
                 provider=t.infra_spec.provider,
                 region=t.infra_spec.region,
@@ -414,11 +417,11 @@ class PanelController:
                 gpu_count=t.infra_spec.gpu_count,
                 gpu_model=t.infra_spec.gpu_model,
                 gpu_vram_gb=t.infra_spec.gpu_vram_gb,
-                total_nodes=t.total_nodes or t.provisioned,
+                total_nodes=total_nodes,
                 spot_count=t.spot,
                 ondemand_count=t.ondemand,
                 hourly_rate=total_hourly,
-                price_per_node=t.infra_spec.price_per_node,
+                price_per_node=avg_price_per_node,
             ))
         else:
             # Fallback during early provisioning (5 lines)

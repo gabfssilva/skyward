@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import uuid
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,13 +14,10 @@ from verda import VerdaClient
 from verda.constants import Actions
 
 from skyward.accelerators import AcceleratorSpec
-from skyward.callback import emit
-from skyward.events import (
-    BootstrapCompleted,
-    BootstrapStarting,
+from skyward.core.callback import emit
+from skyward.core.events import (
     InstanceLaunching,
     InstanceProvisioned,
-    InstanceStopping,
     NetworkReady,
     ProviderName,
     ProvisionedInstance,
@@ -33,16 +32,10 @@ from skyward.providers.base import (
     get_private_key_path,
     poll_instances,
 )
-from skyward.providers.common import (
-    install_skyward_wheel_via_transport,
-    make_provisioned,
-    wait_for_ssh_bootstrap,
-)
 from skyward.providers.ssh import SSHConfig
-from skyward.spec import _AllocationOnDemand, normalize_allocation
+from skyward.spec.allocation import _AllocationOnDemand, normalize_allocation
 from skyward.types import (
     ComputeSpec,
-    ExitedInstance,
     Instance,
     InstanceSpec,
     Provider,
@@ -410,6 +403,13 @@ class VerdaProvider(Provider):
         provisioned_instances: list[ProvisionedInstance] = []
         key_path = get_private_key_path()
 
+        def _make_destroy_fn(inst_id: str) -> Callable[[], None]:
+            def destroy() -> None:
+                with suppress(Exception):
+                    self._get_client().instances.action(inst_id, Actions.DELETE)
+
+            return destroy
+
         for i, vinst in enumerate(verda_instances):
             instance = Instance(
                 id=str(vinst.id),
@@ -432,6 +432,7 @@ class VerdaProvider(Provider):
                         ("accelerator_count", str(spec.accelerator_count)),
                     ]
                 ),
+                _destroy_fn=_make_destroy_fn(vinst.id),
             )
             instances.append(instance)
 
@@ -454,61 +455,6 @@ class VerdaProvider(Provider):
             )
         )
         return tuple(instances)
-
-    @audit("Setup")
-    def setup(self, instances: tuple[Instance, ...], compute: ComputeSpec) -> None:
-        """Setup instances (wait for bootstrap to complete)."""
-        provisioned_map = {inst.id: make_provisioned(inst, ProviderName.Verda) for inst in instances}
-
-        for inst in instances:
-            emit(BootstrapStarting(instance=provisioned_map[inst.id]))
-
-        def get_ip(inst: Instance) -> str:
-            return inst.get_meta("instance_ip") or inst.public_ip or ""
-
-        def get_provisioned(inst: Instance) -> ProvisionedInstance:
-            return provisioned_map[inst.id]
-
-        wait_for_ssh_bootstrap(instances, get_ip, get_provisioned, timeout=300)
-        install_skyward_wheel_via_transport(
-            instances,
-            get_transport=lambda inst: inst.connect(),
-            compute=compute,
-        )
-
-        for inst in instances:
-            emit(BootstrapCompleted(instance=provisioned_map[inst.id]))
-
-    def shutdown(
-        self, instances: tuple[Instance, ...], compute: ComputeSpec
-    ) -> tuple[ExitedInstance, ...]:
-        """Shutdown instances (delete them)."""
-        logger.info(f"Shutting down {len(instances)} Verda instances...")
-        client = self._get_client()
-
-        exited: list[ExitedInstance] = []
-        for inst in instances:
-            instance_id = inst.get_meta("instance_id") or inst.id
-            if instance_id:
-                provisioned = make_provisioned(inst, ProviderName.Verda)
-                emit(InstanceStopping(instance=provisioned))
-                logger.debug(f"Deleting instance {instance_id}")
-                try:
-                    client.instances.action(instance_id, Actions.DELETE)
-                except Exception:
-                    pass
-
-            exited.append(
-                ExitedInstance(
-                    instance=inst,
-                    exit_code=0,
-                    exit_reason="normal",
-                )
-            )
-
-        self._instances = []
-        logger.info(f"Shutdown complete: {len(exited)} instances deleted")
-        return tuple(exited)
 
     def discover_peers(self, cluster_id: str) -> tuple[Instance, ...]:
         """Discover peer instances in a cluster via Verda API."""
@@ -553,3 +499,7 @@ class VerdaProvider(Provider):
         """List all available instance types."""
         client = self._get_client()
         return fetch_available_instances(client)
+
+    def cleanup(self) -> None:
+        """No-op cleanup for Verda."""
+        pass

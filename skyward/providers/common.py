@@ -10,7 +10,6 @@ import socket
 import subprocess
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
 from pathlib import Path
 from subprocess import PIPE, Popen
 from typing import TYPE_CHECKING, Protocol
@@ -24,9 +23,8 @@ from tenacity import (
     wait_fixed,
 )
 
-from skyward.callback import emit
-from skyward.constants import RPYC_PORT, SKYWARD_DIR
-from skyward.events import BootstrapProgress, ProviderName, ProvisionedInstance
+from skyward.core.constants import RPYC_PORT, SKYWARD_DIR
+from skyward.core.events import ProviderName, ProvisionedInstance
 
 if TYPE_CHECKING:
     from skyward.types import ComputeSpec, Instance, InstanceSpec
@@ -55,9 +53,9 @@ class Transport(Protocol):
 
 
 def make_provisioned(
-    inst: "Instance",
+    inst: Instance,
     provider: ProviderName,
-    spec: "InstanceSpec | None" = None,
+    spec: InstanceSpec | None = None,
     ip: str | None = None,
 ) -> ProvisionedInstance:
     """Create ProvisionedInstance from Instance for events."""
@@ -78,6 +76,88 @@ def make_provisioned(
 
 class TunnelNotReadyError(Exception):
     """Tunnel not ready - retry."""
+
+
+class SSHNotReadyError(Exception):
+    """SSH not ready - retry."""
+
+
+def wait_for_ssh_ready(host: str, port: int, timeout: int = 300) -> None:
+    """Wait until SSH is reachable on host:port.
+
+    Uses socket connection to check if SSH is accepting connections.
+    Raises TimeoutError if not ready within timeout.
+
+    Args:
+        host: Hostname or IP address.
+        port: SSH port number.
+        timeout: Maximum seconds to wait.
+
+    Raises:
+        TimeoutError: If SSH is not reachable within timeout.
+    """
+
+    @retry(
+        stop=stop_after_delay(timeout),
+        wait=wait_fixed(1),
+        retry=retry_if_exception_type(SSHNotReadyError),
+        reraise=True,
+    )
+    def _check() -> None:
+        try:
+            with socket.create_connection((host, port), timeout=5):
+                return
+        except (TimeoutError, ConnectionRefusedError, OSError):
+            raise SSHNotReadyError() from None
+
+    try:
+        logger.debug(f"Waiting for SSH on {host}:{port} (timeout={timeout}s)")
+        _check()
+        logger.debug(f"SSH ready on {host}:{port}")
+    except RetryError as e:
+        raise TimeoutError(f"SSH not ready on {host}:{port} after {timeout}s") from e
+
+
+class BootstrapNotReadyError(Exception):
+    """Bootstrap not ready - retry."""
+
+
+def wait_for_ready(run_command: Callable[[str], str], timeout: int = 300) -> None:
+    """Wait for bootstrap .ready file to exist.
+
+    Polls the remote instance via SSH until the .ready file is created
+    by the bootstrap script, indicating setup is complete.
+
+    Args:
+        run_command: Function to execute remote commands (e.g., inst.run_command).
+        timeout: Maximum seconds to wait.
+
+    Raises:
+        TimeoutError: If .ready file not found within timeout.
+    """
+
+    @retry(
+        stop=stop_after_delay(timeout),
+        wait=wait_fixed(2),
+        retry=retry_if_exception_type(BootstrapNotReadyError),
+        reraise=True,
+    )
+    def _poll() -> None:
+        try:
+            result = run_command(f"test -f {SKYWARD_DIR}/.ready && echo ready")
+            if "ready" not in result:
+                raise BootstrapNotReadyError()
+        except BootstrapNotReadyError:
+            raise
+        except Exception:
+            raise BootstrapNotReadyError() from None
+
+    try:
+        logger.debug(f"Waiting for bootstrap .ready (timeout={timeout}s)")
+        _poll()
+        logger.debug("Bootstrap ready")
+    except RetryError as e:
+        raise TimeoutError(f"Bootstrap not ready after {timeout}s") from e
 
 
 def find_available_port() -> int:
@@ -131,126 +211,8 @@ def create_tunnel(
 
 
 # =============================================================================
-# Bootstrap Utilities
+# Wheel Build & Installation
 # =============================================================================
-
-
-@dataclass(frozen=True, slots=True)
-class Checkpoint:
-    """Bootstrap checkpoint for progress tracking."""
-
-    file: str
-    name: str
-
-
-CHECKPOINTS: tuple[Checkpoint, ...] = (
-    Checkpoint(".step_uv", "uv"),
-    Checkpoint(".step_apt", "apt"),
-    Checkpoint(".step_pip", "pip deps"),
-    Checkpoint(".step_wheel", "skyward"),
-    Checkpoint(".step_server", "server"),
-)
-
-
-class BootstrapNotReadyError(Exception):
-    """Raised when bootstrap check should be retried."""
-
-
-class BootstrapFailedError(Exception):
-    """Raised when bootstrap script failed with an error."""
-
-    def __init__(self, error_msg: str) -> None:
-        self.error_msg = error_msg
-        super().__init__(error_msg)
-
-CommandRunner = Callable[[str], str]
-
-def wait_for_bootstrap(
-    run_command: CommandRunner,
-    instance: ProvisionedInstance,
-    timeout: int = 300,
-    extra_checkpoints: tuple[Checkpoint, ...] = (),
-) -> None:
-    """Wait for instance bootstrap with progress tracking."""
-    instance_id = instance.instance_id
-    logger.debug(f"Waiting for bootstrap on {instance_id} (timeout={timeout}s)")
-    all_checkpoints = CHECKPOINTS + extra_checkpoints
-
-    checkpoint_files = " ".join(c.file for c in all_checkpoints)
-    check_cmd = (
-        f"cd {SKYWARD_DIR} 2>/dev/null || exit 0; "
-        f"for f in {checkpoint_files} .ready .error; do "
-        "[ -f $f ] && echo $f; done; "
-        "if [ -f .error ]; then echo '---ERROR---'; cat .error; fi; exit 0"
-    )
-
-    completed_steps: set[str] = set()
-
-    poll_count = 0
-
-    @retry(
-        stop=stop_after_delay(timeout),
-        wait=wait_fixed(1),
-        retry=retry_if_exception_type((BootstrapNotReadyError, TimeoutError)),
-        reraise=True,
-    )
-    def _poll_bootstrap() -> None:
-        nonlocal completed_steps, poll_count
-        poll_count += 1
-
-        if poll_count == 1 or poll_count % 10 == 0:
-            logger.debug(f"Bootstrap poll #{poll_count} for {instance_id}")
-
-        try:
-            logger.debug(f"Bootstrap: running check command for {instance_id}")
-            stdout = run_command(check_cmd)
-            logger.debug(f"Bootstrap: check command returned for {instance_id}")
-        except TimeoutError:
-            logger.debug(f"Bootstrap: check command timed out for {instance_id}")
-            raise
-        except Exception as e:
-            logger.debug(f"Bootstrap: check command failed for {instance_id}: {e}")
-            raise BootstrapNotReadyError() from e
-
-        stdout = stdout.strip()
-
-        if "---ERROR---" in stdout:
-            error_msg = stdout.split("---ERROR---", 1)[1].strip()
-            raise BootstrapFailedError(error_msg)
-
-        found_files = set(stdout.split("\n")) if stdout else set()
-        logger.debug(f"Bootstrap: found files for {instance_id}: {found_files}")
-
-        for checkpoint in all_checkpoints:
-            if checkpoint.file in found_files and checkpoint.name not in completed_steps:
-                emit(BootstrapProgress(instance=instance, step=checkpoint.name))
-                completed_steps.add(checkpoint.name)
-
-        if ".ready" in found_files:
-            # Bootstrap complete - service will be started after wheel installation
-            logger.debug(f"Bootstrap ready on {instance_id}")
-            return
-
-        raise BootstrapNotReadyError()
-
-    try:
-        _poll_bootstrap()
-        logger.info(f"Bootstrap completed on {instance_id}")
-    except BootstrapFailedError as e:
-        logger.error(f"Bootstrap failed on {instance_id}: {e.error_msg}")
-        raise RuntimeError(f"Bootstrap failed on {instance_id}:\n{e.error_msg}") from None
-    except (RetryError, BootstrapNotReadyError) as e:
-        logger.error(f"Bootstrap timed out on {instance_id} after {timeout}s")
-        raise RuntimeError(f"Bootstrap timed out on {instance_id}") from e
-
-
-# =============================================================================
-# SSH Utilities
-# =============================================================================
-
-# NOTE: SSHKeyInfo, SSH_KEY_PATHS, find_local_ssh_key, get_private_key_path,
-#       and compute_fingerprint have been moved to skyward.providers.base.ssh_keys
-#       and are re-exported above for backwards compatibility.
 
 
 def build_wheel() -> Path:
@@ -388,7 +350,7 @@ def install_skyward_wheel_via_transport(
             use_systemd=False,
         )
     """
-    from skyward.conc import for_each_async
+    from skyward.utils.conc import for_each_async
 
     # Skip if skyward was installed via user-data (github/pypi)
     if compute and compute.image.skyward_source != "local":
@@ -437,42 +399,27 @@ def install_skyward_wheel_via_transport(
     logger.info(f"Wheel installation complete on all {len(instances)} instances")
 
 
-def wait_for_ssh_bootstrap(
-    instances: tuple[Instance, ...],
-    get_ip: Callable[[Instance], str],
-    make_provisioned: Callable[[Instance], ProvisionedInstance],
-    timeout: int = 300,
-    key_path: str | None = None,  # Deprecated, uses instance.ssh
-    get_port: Callable[[Instance], int] | None = None,  # Deprecated, uses instance.ssh
+def install_wheel_on_instance(
+    instance: Instance,
+    compute: ComputeSpec,
+    use_systemd: bool = True,
 ) -> None:
-    """Wait for bootstrap to complete on all instances via SSH (concurrent).
+    """Install skyward wheel on a single instance.
 
-    Note: key_path and get_port are deprecated. SSH config is now in instance.ssh.
+    Convenience wrapper around install_skyward_wheel_via_transport for
+    single-instance operations. Uses instance.connect() for SSH transport.
+
+    Args:
+        instance: Instance to install on.
+        compute: Compute spec containing image with environment variables.
+        use_systemd: If True, use systemd to manage RPyC service.
+            If False, use nohup (for Docker containers without systemd).
     """
-    from skyward.conc import for_each_async
-
-    logger.info(f"Waiting for SSH bootstrap on {len(instances)} instances...")
-
-    extra_checkpoints = (
-        Checkpoint(".step_venv", "venv"),
-        Checkpoint(".step_base", "base deps"),
+    install_skyward_wheel_via_transport(
+        instances=(instance,),
+        get_transport=lambda inst: inst.connect(),
+        compute=compute,
+        use_systemd=use_systemd,
     )
-
-    def wait_for_instance(inst: Instance) -> None:
-        logger.debug(f"Checking bootstrap status for {inst.id}")
-
-        def runner(cmd: str) -> str:
-            return inst.run_command(cmd, timeout=30)
-
-        provisioned = make_provisioned(inst)
-        wait_for_bootstrap(
-            run_command=runner,
-            instance=provisioned,
-            timeout=timeout,
-            extra_checkpoints=extra_checkpoints,
-        )
-
-    for_each_async(wait_for_instance, instances)
-    logger.info(f"All {len(instances)} instances bootstrapped successfully")
 
 

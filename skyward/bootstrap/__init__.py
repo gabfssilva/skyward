@@ -58,6 +58,7 @@ from .ops import (
     s3_pip_install,
     s3_wheel,
     shell,
+    shell_vars,
     systemd,
     systemd_template,
     uv,
@@ -108,6 +109,7 @@ __all__ = [
     "env_export",
     "instance_timeout",
     "inject_ssh_key",
+    "shell_vars",
     # AWS operations
     "grid_driver",
     "s3_pip_install",

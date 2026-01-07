@@ -48,27 +48,27 @@ if TYPE_CHECKING:
     from skyward.providers.vastai import VastAI as VastAI
     from skyward.providers.verda import Verda as Verda
 
-# Accelerator utilities
-import skyward.conc as conc
+# Utilities
 import skyward.integrations as integrations
+import skyward.utils.conc as conc
 
 # Pool decorator (implicit context)
-from skyward._pool_decorator import pool
-from skyward.accelerators import (
-    Accelerator,
-)
+from skyward.pool._decorator import pool
+
+# Accelerators
+from skyward.accelerators import Accelerator
 
 # Callback system
-from skyward.callback import Callback, compose, emit, use_callback
+from skyward.core.callback import Callback, compose, emit, use_callback
 
 # Cluster utilities
-from skyward.cluster import InstanceInfo, instance_info
+from skyward.cluster.info import InstanceInfo, instance_info
 
 # Data sharding utilities
-from skyward.data import DistributedSampler, shard, shard_iterator
+from skyward.cluster.data import DistributedSampler, shard, shard_iterator
 
 # Events (ADT)
-from skyward.events import (
+from skyward.core.events import (
     BootstrapCompleted,
     BootstrapProgress,
     BootstrapStarting,
@@ -95,16 +95,16 @@ from skyward.events import (
 )
 
 # Executor
-from skyward.executor import Executor
+from skyward.pool.executor import Executor
 
 # Image
-from skyward.image import Image, SkywardSource
+from skyward.spec.image import Image, SkywardSource
 
 # Logging configuration
-from skyward.logging import LogConfig
+from skyward.observability.logging import LogConfig
 
 # Output control for distributed execution
-from skyward.output import (
+from skyward.observability.output import (
     OutputPredicate,
     OutputSpec,
     is_head,
@@ -112,10 +112,12 @@ from skyward.output import (
     stderr,
     stdout,
 )
-from skyward.multi_pool import MultiPool
+
+# MultiPool
+from skyward.pool.multi import MultiPool
 
 # Lazy computation API
-from skyward.pending import (
+from skyward.compute.pending import (
     ComputeFunction,
     PendingBatch,
     PendingCompute,
@@ -124,12 +126,10 @@ from skyward.pending import (
 )
 
 # Pool
-from skyward.pool import ComputePool
+from skyward.pool.compute import ComputePool
 
-# Providers - import from skyward.providers directly for lazy loading
-# e.g.: from skyward.providers import AWS, VastAI
 # Provider selection
-from skyward.selection import (
+from skyward.pool.selection import (
     AllProvidersFailedError,
     NoAvailableProviderError,
     select_available,
@@ -138,7 +138,7 @@ from skyward.selection import (
 )
 
 # Allocation strategies
-from skyward.spec import Allocation, AllocationLike
+from skyward.spec.allocation import Allocation, AllocationLike
 
 # Types
 from skyward.types import (
@@ -163,7 +163,7 @@ from skyward.types import (
 )
 
 # Volumes
-from skyward.volume import S3Volume, Volume
+from skyward.spec.volume import S3Volume, Volume
 
 __version__ = "0.2.0"
 
@@ -333,8 +333,8 @@ class _SkywardModule(_ModuleType):
 
         The pool is retrieved from the context set by @sky.pool decorator.
         """
-        from skyward._context import get_current_pool
-        from skyward.pending import PendingBatch
+        from skyward.pool._context import get_current_pool
+        from skyward.compute.pending import PendingBatch
 
         pool = get_current_pool()
 

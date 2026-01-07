@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING, Any
 import rpyc
 from rpyc.utils.server import ThreadedServer
 
-from skyward.output import redirect_output
-from skyward.serialization import deserialize, serialize
+from skyward.observability.output import redirect_output
+from skyward.utils.serialization import deserialize, serialize
 
 if TYPE_CHECKING:
     from typing import TextIO

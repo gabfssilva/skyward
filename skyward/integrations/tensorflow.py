@@ -23,12 +23,12 @@ def tensorflow[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
             # TF_CONFIG already set
             ...
     """
-    from skyward.pending import ComputeFunction
+    from skyward.compute.pending import ComputeFunction
 
     def wrapper(fn: Callable[P, R]) -> Callable[P, R]:
         @functools.wraps(fn)
         def inner(*args: P.args, **kwargs: P.kwargs) -> R:
-            from skyward.cluster import instance_info
+            from skyward.cluster.info import instance_info
 
             pool = instance_info()
 

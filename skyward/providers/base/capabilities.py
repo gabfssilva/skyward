@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from skyward.types import Instance
-    from skyward.volume import Volume
+    from skyward.spec.volume import Volume
 
 
 class VolumeCapable(Protocol):

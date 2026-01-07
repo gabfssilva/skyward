@@ -24,14 +24,14 @@ from collections.abc import Callable, Sequence
 from functools import wraps
 from typing import Literal, ParamSpec, TypeVar
 
-from skyward._context import reset_current_pool, set_current_pool
-from skyward.callback import Callback
-from skyward.image import Image
-from skyward.logging import LogConfig
-from skyward.pool import ComputePool
-from skyward.spec import AllocationLike
+from skyward.core.callback import Callback
+from skyward.observability.logging import LogConfig
+from skyward.pool._context import reset_current_pool, set_current_pool
+from skyward.pool.compute import ComputePool
+from skyward.spec.allocation import AllocationLike
+from skyward.spec.image import Image
+from skyward.spec.volume import Volume
 from skyward.types import AcceleratorSpec, Architecture, Auto, Memory, ProviderLike
-from skyward.volume import Volume
 
 P = ParamSpec("P")
 R = TypeVar("R")

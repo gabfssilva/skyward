@@ -117,7 +117,7 @@ def poll_instances[T](
             update_instance=update_droplet,
         )
     """
-    from skyward.conc import for_each_async
+    from skyward.utils.conc import for_each_async
 
     poll = create_instance_poller(
         fetch_status=fetch_status,

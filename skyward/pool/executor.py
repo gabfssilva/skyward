@@ -25,12 +25,12 @@ from typing import TYPE_CHECKING, Any, Literal
 import cloudpickle
 from loguru import logger
 
-from skyward.callback import Callback
-from skyward.image import DEFAULT_IMAGE, Image
-from skyward.logging import LogConfig
-from skyward.pool import ComputePool
-from skyward.spec import AllocationLike
-from skyward.volume import Volume
+from skyward.core.callback import Callback
+from skyward.observability.logging import LogConfig
+from skyward.pool.compute import ComputePool
+from skyward.spec.allocation import AllocationLike
+from skyward.spec.image import DEFAULT_IMAGE, Image
+from skyward.spec.volume import Volume
 
 if TYPE_CHECKING:
     from skyward.types import AcceleratorSpec, Provider

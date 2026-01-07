@@ -34,12 +34,12 @@ from joblib.parallel import ParallelBackendBase, register_parallel_backend
 from loguru import logger
 
 from skyward.accelerators import AcceleratorSpec
-from skyward.callback import Callback
-from skyward.image import DEFAULT_IMAGE, Image
-from skyward.pool import ComputePool
-from skyward.spec import AllocationLike
+from skyward.core.callback import Callback
+from skyward.spec.image import DEFAULT_IMAGE, Image
+from skyward.pool.compute import ComputePool
+from skyward.spec.allocation import AllocationLike
 from skyward.types import Memory, ProviderLike
-from skyward.volume import Volume
+from skyward.spec.volume import Volume
 
 if TYPE_CHECKING:
     from joblib import Parallel

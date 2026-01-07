@@ -15,7 +15,7 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from skyward.pool import ComputePool
+    from skyward.pool.compute import ComputePool
 
 _current_pool: ContextVar[ComputePool | None] = ContextVar("current_pool", default=None)
 

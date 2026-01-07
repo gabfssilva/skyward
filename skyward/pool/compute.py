@@ -41,29 +41,29 @@ from typing import Any, Literal
 from loguru import logger
 
 from skyward.accelerators import AcceleratorSpec
-from skyward.callback import Callback, _callback, compose, emit, use_callback
 from skyward.callbacks import panel
-from skyward.conc import for_each_async, map_async
-from skyward.events import (
+from skyward.compute.pending import PendingBatch, PendingCompute
+from skyward.core.callback import Callback, _callback, compose, emit, use_callback
+from skyward.core.events import (
     Error,
     FunctionCall,
     FunctionResult,
     LogLine,
     PoolStarted,
     PoolStopping,
-    ProviderName,
     ProvisionedInstance,
 )
-from skyward.exceptions import ExecutionError, NotProvisionedError, ProvisioningError
-from skyward.image import DEFAULT_IMAGE, Image
-from skyward.logging import LogConfig, _setup_logging, _teardown_logging
-from skyward.pending import PendingBatch, PendingCompute
-from skyward.selection import (
+from skyward.core.exceptions import ExecutionError, NotProvisionedError, ProvisioningError
+from skyward.observability.logging import LogConfig, _setup_logging, _teardown_logging
+from skyward.pool.instance import InstancePool, _get_provider_name
+from skyward.pool.selection import (
     AllProvidersFailedError,
     normalize_providers,
     normalize_selector,
 )
-from skyward.spec import AllocationLike
+from skyward.spec.allocation import AllocationLike
+from skyward.spec.image import DEFAULT_IMAGE, Image
+from skyward.spec.volume import Volume, parse_volume_uri
 from skyward.task import PooledConnection, TaskPool
 from skyward.types import (
     Architecture,
@@ -74,7 +74,7 @@ from skyward.types import (
     ProviderLike,
     SelectionLike,
 )
-from skyward.volume import Volume, parse_volume_uri
+from skyward.utils.conc import for_each_async, map_async
 
 
 def _parse_volumes(
@@ -174,7 +174,7 @@ class ComputePool:
     _built_provider: Provider | None = field(default=None, init=False, repr=False)
     _log_config: LogConfig | None = field(default=None, init=False, repr=False)
     _log_handler_ids: list[int] = field(default_factory=list, init=False, repr=False)
-    _instances: tuple[Instance, ...] | None = field(default=None, init=False, repr=False)
+    _instance_pool: InstancePool | None = field(default=None, init=False, repr=False)
     _callback_ctx: AbstractContextManager[None] | None = field(
         default=None, init=False, repr=False
     )
@@ -200,35 +200,10 @@ class ComputePool:
             case False:
                 self._log_config = None
 
-    def _parse_accelerator_for_provider(self) -> str | None:
-        """Get the accelerator type for the provider."""
-        if self._accelerator_cfg is not None:
-            return self._accelerator_cfg.accelerator
-        return None
-
-    @property
-    def workers_per_instance(self) -> int:
-        """Number of workers per instance.
-
-        Always returns 1 - one RPyC server per instance.
-        Concurrency is controlled by the `concurrency` parameter.
-        """
-        return 1
-
     @property
     def total_slots(self) -> int:
         """Total number of execution slots (nodes * concurrency)."""
         return self.nodes * self.concurrency
-
-    def _get_worker_isolation_data(
-        self, device_count: int
-    ) -> tuple[None, None, str]:
-        """Get worker isolation configuration.
-
-        Always returns (None, None, "") - no worker isolation.
-        We use a single RPyC server per instance with concurrent slots.
-        """
-        return None, None, ""
 
     def __enter__(self) -> ComputePool:
         """Enter pool context and provision resources."""
@@ -284,12 +259,13 @@ class ComputePool:
                 except ProvisioningError as e:
                     logger.warning(f"Provider {provider.name} failed: {e}")
                     errors.append((provider, e))
-                    self._instances = None  # Reset for next attempt
+                    self._instance_pool = None  # Reset for next attempt
                     continue
             else:
                 raise AllProvidersFailedError(errors)
 
-            logger.info(f"Pool ready with {len(self._instances or [])} instances")
+            instance_count = len(self._instance_pool) if self._instance_pool else 0
+            logger.info(f"Pool ready with {instance_count} instances")
 
             # Success - transfer ownership
             self._exit_stack = stack.pop_all()
@@ -432,11 +408,11 @@ class ComputePool:
     ) -> R:
         """Execute a computation on a pooled connection."""
         assert self._task_pool is not None
-        assert self._instances is not None
+        assert self._instance_pool is not None
 
         conn = pc.conn
 
-        from skyward.serialization import deserialize, serialize
+        from skyward.utils.serialization import deserialize, serialize
 
         fn_bytes = serialize(pending.fn)
         args_bytes = serialize(pending.args)
@@ -495,7 +471,7 @@ class ComputePool:
 
     def _build_compute_spec(self) -> Any:
         """Build compute spec for provider selection and provisioning."""
-        from skyward.pool_compute import _PoolCompute
+        from skyward.compute.spec import _PoolCompute
 
         return _PoolCompute(
             pool=self,
@@ -517,19 +493,23 @@ class ComputePool:
         logger.debug(f"Creating compute spec: nodes={self.nodes}, machine={self.machine}")
         compute = self._build_compute_spec()
 
-        # Provision and setup (providers use emit() directly)
+        # Create and provision via InstancePool
         logger.info(f"Provisioning {self.nodes} instances via {self._built_provider.name}...")
-        self._instances = self._built_provider.provision(compute)
-        logger.debug(f"Provisioned {len(self._instances)} instances")
+        self._instance_pool = InstancePool(
+            provider=self._built_provider,
+            compute=compute,
+        )
+        self._instance_pool.provision()
+        logger.debug(f"Provisioned {len(self._instance_pool)} instances")
 
-        logger.debug("Running instance setup/bootstrap...")
-        self._built_provider.setup(self._instances, compute)
+        # Bootstrap instances (wait for ready, install wheel)
+        logger.debug("Running instance bootstrap...")
+        self._instance_pool.setup(timeout=300)
 
         # Initialize TaskPool (creates tunnels and connections in parallel)
         logger.debug("Initializing task pool and connections...")
         self._task_pool = TaskPool(
-            provider=self._built_provider,
-            instances=self._instances,
+            instances=self._instance_pool,
             concurrency=self.concurrency,
         )
 
@@ -540,18 +520,16 @@ class ComputePool:
         # Start metrics streaming on each instance
         if self.collect_metrics:
             logger.debug("Starting metrics streaming...")
-            provider_name = self._get_provider_name()
-            for instance in self._instances:
+            provider_name = _get_provider_name(self._built_provider)
+            for instance in self._instance_pool:
                 instance.start_metrics(interval=0.2, provider_name=provider_name)
 
     def _shutdown(self) -> None:
         """Shutdown and release pool resources."""
-        if self._instances is None:
+        if self._instance_pool is None:
             return
 
-        from skyward.pool_compute import _PoolCompute
-
-        instance_count = len(self._instances)
+        instance_count = len(self._instance_pool)
         logger.debug(f"Shutting down {instance_count} instances...")
 
         # Close TaskPool
@@ -561,56 +539,23 @@ class ComputePool:
                 self._task_pool.close_all()
             self._task_pool = None
 
-        # Close instances (stops metrics + closes SSH pools)
-        logger.debug("Closing instances...")
-        for instance in self._instances:
-            with suppress(Exception):
-                instance.close()
-
-        # Get accelerator type for provider
-        accelerator_for_provider = self._parse_accelerator_for_provider()
-
-        compute = _PoolCompute(
-            pool=self,
-            fn=lambda: None,
-            nodes=self.nodes,
-            machine=self.machine,
-            accelerator=accelerator_for_provider,
-            architecture=self.architecture,
-            image=self.image,
-            cpu=self.cpu,
-            memory=self.memory,
-            timeout=self.timeout,
-            allocation=self.allocation,
-            volumes=list(_parse_volumes(self.volume)),
-        )
-
+        # Shutdown instances via InstancePool (emits InstanceStopping, calls destroy)
         logger.debug("Terminating instances...")
+        self._instance_pool.shutdown()
+
+        # Clean up provider-level resources (e.g., VastAI overlay network)
         with suppress(Exception):
-            self._built_provider.shutdown(self._instances, compute)
+            self._built_provider.cleanup()
 
         logger.info(f"Terminated {instance_count} instances")
-        self._instances = None
-
-    def _get_provider_name(self) -> ProviderName:
-        """Get ProviderName enum from the built provider."""
-        provider_name_map = {
-            "aws": ProviderName.AWS,
-            "digitalocean": ProviderName.DigitalOcean,
-            "verda": ProviderName.Verda,
-            "vastai": ProviderName.VastAI,
-        }
-        return provider_name_map.get(
-            getattr(self._built_provider, "name", "aws").lower(),
-            ProviderName.AWS,
-        )
+        self._instance_pool = None
 
     def _make_provisioned(self, inst: Instance) -> ProvisionedInstance:
         """Create ProvisionedInstance from Instance for events."""
         return ProvisionedInstance(
             instance_id=inst.id,
             node=inst.node,
-            provider=self._get_provider_name(),
+            provider=_get_provider_name(self._built_provider),
             spot=inst.spot,
             spec=None,  # Spec not available at this point
             ip=inst.private_ip,
@@ -620,18 +565,15 @@ class ComputePool:
         """Setup cluster environment on all instances in parallel."""
         import time as _time
 
-        from skyward.events import InstanceReady, PoolReady
-
-        assert self._task_pool is not None
-        assert self._instances is not None
+        from skyward.core.events import InstanceReady, PoolReady
 
         t0 = _time.perf_counter()
 
         # Acquire one connection per instance (first N connections are interleaved)
-        conns = [self._task_pool.acquire() for _ in range(len(self._instances))]
+        conns = [self._task_pool.acquire() for _ in range(len(self._instance_pool))]
 
         # Build provisioned instances for events
-        provisioned_list = [self._make_provisioned(inst) for inst in self._instances]
+        provisioned_list = [self._make_provisioned(inst) for inst in self._instance_pool]
 
         try:
             # Setup in parallel and emit InstanceReady for each
@@ -657,22 +599,20 @@ class ComputePool:
     def _setup_cluster(self, pc: PooledConnection) -> None:
         """Setup cluster environment on instance (called once per instance)."""
         from skyward.providers.pool_info import build_pool_info
-        from skyward.serialization import serialize
+        from skyward.utils.serialization import serialize
 
-        # Build peer info (instances is guaranteed non-None when called)
-        instances = self._instances
-        assert instances is not None
+        instances = self._instance_pool.instances
+
+        # Build peer info
         peers = [
             {"node": i, "private_ip": inst.private_ip, "addr": inst.private_ip}
             for i, inst in enumerate(instances)
         ]
 
-        # Resolve accelerator by probing instance
         from skyward.providers.accelerator_detection import resolve_accelerator
 
         accelerator_type, accelerator_count = resolve_accelerator(pc.instance)
 
-        # Get network interface from instance metadata (set by providers like VastAI for overlay)
         network_interface = instances[0].get_meta("network_interface")
 
         pool_info = build_pool_info(
@@ -685,12 +625,9 @@ class ComputePool:
             job_id=self._job_id,
             peers=peers,
             accelerator_type=accelerator_type,
-            worker=0,  # Always 0 since we have single RPyC server per instance
-            workers_per_node=1,  # Always 1 since we use concurrency, not workers
-            placement_group=network_interface,  # Used for NCCL interface config
+            placement_group=network_interface,
         )
 
-        # Merge env from image and pool (pool overrides image)
         merged_env = {**self.image.env, **(self.env or {})}
         env_bytes = serialize(merged_env)
         pc.conn.root.setup_cluster(pool_info.model_dump_json(), env_bytes)
@@ -720,12 +657,7 @@ class ComputePool:
     @property
     def is_active(self) -> bool:
         """True if pool is provisioned and ready."""
-        return self._active and self._instances is not None
-
-    @property
-    def instance_count(self) -> int:
-        """Number of provisioned instances."""
-        return len(self._instances) if self._instances else 0
+        return self._active and self._instance_pool is not None
 
     def __repr__(self) -> str:
         status = "active" if self.is_active else "inactive"

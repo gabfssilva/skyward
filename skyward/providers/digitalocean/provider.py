@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import uuid
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -11,13 +13,10 @@ from loguru import logger
 from pydo import Client
 
 from skyward.accelerators import AcceleratorSpec
-from skyward.callback import emit
-from skyward.events import (
-    BootstrapCompleted,
-    BootstrapStarting,
+from skyward.core.callback import emit
+from skyward.core.events import (
     InstanceLaunching,
     InstanceProvisioned,
-    InstanceStopping,
     NetworkReady,
     ProviderName,
     ProvisionedInstance,
@@ -31,16 +30,10 @@ from skyward.providers.base import (
     get_private_key_path,
     poll_instances,
 )
-from skyward.providers.common import (
-    install_skyward_wheel_via_transport,
-    make_provisioned,
-    wait_for_ssh_bootstrap,
-)
 from skyward.providers.ssh import SSHConfig
-from skyward.spec import _AllocationOnDemand, normalize_allocation
+from skyward.spec.allocation import _AllocationOnDemand, normalize_allocation
 from skyward.types import (
     ComputeSpec,
-    ExitedInstance,
     Instance,
     InstanceSpec,
     Provider,
@@ -341,6 +334,14 @@ class DigitalOceanProvider(Provider):
         provisioned_instances: list[ProvisionedInstance] = []
 
         key_path = get_private_key_path()
+
+        def _make_destroy_fn(did: int) -> Callable[[], None]:
+            def destroy() -> None:
+                with suppress(Exception):
+                    self._get_client().droplets.destroy(droplet_id=did)
+
+            return destroy
+
         for i, droplet in enumerate(droplets):
             instance = Instance(
                 id=str(droplet.id),
@@ -363,6 +364,7 @@ class DigitalOceanProvider(Provider):
                         ("accelerator_count", str(accelerator_count)),
                     ]
                 ),
+                _destroy_fn=_make_destroy_fn(droplet.id),
             )
             instances.append(instance)
 
@@ -386,61 +388,6 @@ class DigitalOceanProvider(Provider):
         )
 
         return tuple(instances)
-
-    @audit("Setup")
-    def setup(self, instances: tuple[Instance, ...], compute: ComputeSpec) -> None:
-        """Setup instances (wait for bootstrap to complete)."""
-        provisioned_map = {inst.id: make_provisioned(inst, ProviderName.DigitalOcean) for inst in instances}
-
-        for inst in instances:
-            emit(BootstrapStarting(instance=provisioned_map[inst.id]))
-
-        def get_ip(inst: Instance) -> str:
-            return inst.get_meta("droplet_ip") or inst.public_ip or ""
-
-        def get_provisioned(inst: Instance) -> ProvisionedInstance:
-            return provisioned_map[inst.id]
-
-        wait_for_ssh_bootstrap(instances, get_ip, get_provisioned, timeout=300)
-        install_skyward_wheel_via_transport(
-            instances,
-            get_transport=lambda inst: inst.connect(),
-            compute=compute,
-        )
-
-        for inst in instances:
-            emit(BootstrapCompleted(instance=provisioned_map[inst.id]))
-
-    def shutdown(
-        self, instances: tuple[Instance, ...], compute: ComputeSpec
-    ) -> tuple[ExitedInstance, ...]:
-        """Shutdown Droplets (destroy them)."""
-        from contextlib import suppress
-
-        logger.info(f"Shutting down {len(instances)} DigitalOcean droplets...")
-        client = self._get_client()
-
-        exited: list[ExitedInstance] = []
-        for inst in instances:
-            droplet_id = inst.get_meta("droplet_id")
-            if droplet_id:
-                provisioned = make_provisioned(inst, ProviderName.DigitalOcean)
-                emit(InstanceStopping(instance=provisioned))
-                logger.debug(f"Destroying droplet {droplet_id}")
-                with suppress(Exception):
-                    client.droplets.destroy(droplet_id=droplet_id)
-
-            exited.append(
-                ExitedInstance(
-                    instance=inst,
-                    exit_code=0,
-                    exit_reason="normal",
-                )
-            )
-
-        self._droplets = []
-        logger.info(f"Shutdown complete: {len(exited)} droplets destroyed")
-        return tuple(exited)
 
     def discover_peers(self, cluster_id: str) -> tuple[Instance, ...]:
         """Discover peer instances in a cluster via DigitalOcean API."""
@@ -492,3 +439,7 @@ class DigitalOceanProvider(Provider):
         """List all available droplet sizes."""
         client = self._get_client()
         return fetch_available_instances(client)
+
+    def cleanup(self) -> None:
+        """No-op cleanup for DigitalOcean."""
+        pass

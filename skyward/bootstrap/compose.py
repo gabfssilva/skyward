@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Final
 
-from skyward.constants import SKYWARD_DIR
+from skyward.core.constants import SKYWARD_DIR
 
 # =============================================================================
 # Core Types

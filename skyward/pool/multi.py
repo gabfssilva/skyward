@@ -7,10 +7,10 @@ from dataclasses import dataclass, field
 from types import TracebackType
 from typing import TYPE_CHECKING
 
-from skyward.conc import map_async
+from skyward.utils.conc import map_async
 
 if TYPE_CHECKING:
-    from skyward.pool import ComputePool
+    from skyward.pool.compute import ComputePool
 
 
 @dataclass

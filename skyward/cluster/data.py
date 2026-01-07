@@ -24,7 +24,7 @@ def _get_pool_info() -> tuple[int, int]:
 
     Returns (0, 1) when not in a pool (local mode).
     """
-    from skyward import instance_info
+    from skyward.cluster.info import instance_info
 
     pool = instance_info()
     if pool is None:

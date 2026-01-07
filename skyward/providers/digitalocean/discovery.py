@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from skyward.cache import cached
+from skyward.utils.cache import cached
 from skyward.types import InstanceSpec
 
 if TYPE_CHECKING:

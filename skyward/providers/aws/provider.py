@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import threading
 import uuid
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING
@@ -11,14 +13,11 @@ from typing import TYPE_CHECKING
 from botocore.exceptions import ClientError
 from loguru import logger
 
-from skyward.callback import emit
-from skyward.constants import SkywardTag
-from skyward.events import (
-    BootstrapCompleted,
-    BootstrapStarting,
+from skyward.core.callback import emit
+from skyward.core.constants import SkywardTag
+from skyward.core.events import (
     InstanceLaunching,
     InstanceProvisioned,
-    InstanceStopping,
     NetworkReady,
     ProviderName,
     ProvisionedInstance,
@@ -26,22 +25,13 @@ from skyward.events import (
     ProvisioningStarted,
     RegionAutoSelected,
 )
-from skyward.exceptions import InstanceTerminatedError
 from skyward.internal.decorators import audit
 from skyward.providers.base.ssh_keys import find_local_ssh_key, get_private_key_path
-from skyward.providers.common import (
-    Checkpoint,
-    install_skyward_wheel_via_transport,
-)
-from skyward.providers.common import (
-    wait_for_bootstrap as _wait_for_bootstrap_common,
-)
 from skyward.providers.ssh import SSHConfig
-from skyward.spec import AllocationStrategy, _AllocationOnDemand, normalize_allocation
+from skyward.spec.allocation import AllocationStrategy, _AllocationOnDemand, normalize_allocation
 from skyward.types import (
     Auto,
     ComputeSpec,
-    ExitedInstance,
     Instance,
     InstanceSpec,
     Provider,
@@ -64,13 +54,7 @@ if TYPE_CHECKING:
     from mypy_boto3_ec2 import EC2Client
 
     from skyward.accelerators import AcceleratorSpec
-    from skyward.volume import Volume
-
-# AWS-specific bootstrap checkpoints (in addition to common ones)
-AWS_EXTRA_CHECKPOINTS: tuple[Checkpoint, ...] = (
-    Checkpoint(".step_download", "downloading deps"),
-    Checkpoint(".step_volumes", "volumes"),
-)
+    from skyward.spec.volume import Volume
 
 
 def _generate_volume_script(
@@ -110,65 +94,6 @@ def _generate_volume_script(
             lines.append(expanded_cmd)
 
     return "\n".join(lines)
-
-
-def wait_for_bootstrap_ssh(
-    inst: Instance,
-    provisioned: ProvisionedInstance,
-    timeout: int = 600,
-) -> None:
-    """Wait for instance bootstrap with progress tracking via SSH."""
-
-    def runner(cmd: str) -> str:
-        try:
-            return inst.run_command(cmd, timeout=30)
-        except Exception as e:
-            if "Connection refused" in str(e) or "timed out" in str(e).lower():
-                raise InstanceTerminatedError(inst.id, "instance not reachable") from e
-            raise
-
-    try:
-        _wait_for_bootstrap_common(
-            run_command=runner,
-            instance=provisioned,
-            timeout=timeout,
-            extra_checkpoints=AWS_EXTRA_CHECKPOINTS,
-        )
-    except RuntimeError:
-        error_file = ""
-        bootstrap_log = ""
-        cloud_init_logs = ""
-
-        try:
-            error_file = inst.run_command(
-                "cat /opt/skyward/.error 2>/dev/null || echo ''",
-                timeout=30,
-            ).strip()
-
-            bootstrap_log = inst.run_command(
-                "tail -100 /opt/skyward/bootstrap.log 2>/dev/null || echo ''",
-                timeout=30,
-            ).strip()
-
-            cloud_init_logs = inst.run_command(
-                "cat /var/log/cloud-init-output.log 2>/dev/null || echo ''",
-                timeout=30,
-            ).strip()
-        except Exception:
-            pass
-
-        msg_parts = [f"Bootstrap failed on {provisioned.instance_id}."]
-
-        if error_file:
-            msg_parts.append(f"\n--- Error file ---\n{error_file}")
-
-        if bootstrap_log:
-            msg_parts.append(f"\n--- Bootstrap log (last 100 lines) ---\n{bootstrap_log}")
-
-        if cloud_init_logs and not error_file and not bootstrap_log:
-            msg_parts.append(f"\n--- Cloud-init logs ---\n{cloud_init_logs}")
-
-        raise RuntimeError("\n".join(msg_parts)) from None
 
 
 _resources_cache: dict[str, AWSResources] = {}
@@ -635,6 +560,16 @@ class AWSProvider(Provider):
         provisioned_instances: list[ProvisionedInstance] = []
         key_path = get_private_key_path()
 
+        def _make_destroy_fn(instance_id: str, region: str) -> Callable[[], None]:
+            """Create a destroy callback for a specific instance."""
+            def destroy() -> None:
+                with suppress(Exception):
+                    import boto3
+
+                    ec2 = boto3.client("ec2", region_name=region)
+                    ec2.terminate_instances(InstanceIds=[instance_id])
+            return destroy
+
         for i, details in enumerate(instance_details):
             # Look up spec for this instance type (for pricing info)
             actual_type = details["instance_type"]
@@ -663,6 +598,7 @@ class AWSProvider(Provider):
                         ("username", username),
                     ]
                 ),
+                _destroy_fn=_make_destroy_fn(details["id"], self._active_region),
             )
             instances.append(instance)
 
@@ -694,64 +630,6 @@ class AWSProvider(Provider):
 
         return tuple(instances)
 
-    def _make_provisioned(self, inst: Instance) -> ProvisionedInstance:
-        """Create ProvisionedInstance from Instance for events."""
-        instance_type = inst.get_meta("instance_type", "")
-        all_specs = {s.name: s for s in self.available_instances()}
-        spec = all_specs.get(instance_type)
-
-        return ProvisionedInstance(
-            instance_id=inst.id,
-            node=inst.node,
-            provider=ProviderName.AWS,
-            spot=inst.spot,
-            spec=spec,
-            ip=inst.private_ip,
-        )
-
-    @audit("Setup")
-    def setup(self, instances: tuple[Instance, ...], compute: ComputeSpec) -> None:
-        """Setup instances (bootstrap, install dependencies) via SSH."""
-        from skyward.conc import for_each_async
-
-        def bootstrap_instance(inst: Instance) -> None:
-            provisioned = self._make_provisioned(inst)
-            emit(BootstrapStarting(instance=provisioned))
-            wait_for_bootstrap_ssh(inst, provisioned)
-            emit(BootstrapCompleted(instance=provisioned))
-
-        for_each_async(bootstrap_instance, instances)
-
-        install_skyward_wheel_via_transport(
-            instances,
-            get_transport=lambda inst: inst.connect(),
-            compute=compute,
-        )
-
-    def shutdown(
-        self, instances: tuple[Instance, ...], compute: ComputeSpec
-    ) -> tuple[ExitedInstance, ...]:
-        """Terminate instances."""
-        if not instances:
-            return ()
-
-        instance_ids = [inst.id for inst in instances]
-        logger.info(f"Terminating {len(instances)} instances...")
-        logger.debug(f"Instance IDs: {instance_ids}")
-
-        # Terminate all instances
-        self._ec2.terminate_instances(InstanceIds=instance_ids)
-
-        # Build ExitedInstance objects
-        exited: list[ExitedInstance] = []
-        for inst in instances:
-            provisioned = self._make_provisioned(inst)
-            emit(InstanceStopping(instance=provisioned))
-            exited.append(ExitedInstance(instance=inst, exit_code=0, exit_reason="terminated"))
-
-        logger.info(f"Terminated {len(instances)} instances")
-        return tuple(exited)
-
     def discover_peers(self, cluster_id: str) -> tuple[Instance, ...]:
         """Discover peer instances in a cluster via EC2 API."""
         from skyward.providers.base import assign_node_indices
@@ -766,16 +644,28 @@ class AWSProvider(Provider):
 
         key_path = get_private_key_path()
         instances = []
+        region = self._active_region
+
+        def _make_destroy_fn(instance_id: str) -> Callable[[], None]:
+            """Create a destroy callback for a specific instance."""
+            def destroy() -> None:
+                with suppress(Exception):
+                    import boto3
+
+                    ec2 = boto3.client("ec2", region_name=region)
+                    ec2.terminate_instances(InstanceIds=[instance_id])
+            return destroy
 
         for reservation in response.get("Reservations", []):
             for inst in reservation.get("Instances", []):
                 public_ip = inst.get("PublicIpAddress")
                 private_ip = inst.get("PrivateIpAddress", "")
                 ssh_host = public_ip or private_ip
+                instance_id = inst["InstanceId"]
 
                 instances.append(
                     Instance(
-                        id=inst["InstanceId"],
+                        id=instance_id,
                         provider=self,
                         ssh=SSHConfig(host=ssh_host, username="ubuntu", key_path=key_path),
                         spot=inst.get("InstanceLifecycle") == "spot",
@@ -785,8 +675,9 @@ class AWSProvider(Provider):
                         metadata=frozenset([
                             ("cluster_id", cluster_id),
                             ("instance_type", inst.get("InstanceType", "")),
-                            ("region", self._active_region),
+                            ("region", region),
                         ]),
+                        _destroy_fn=_make_destroy_fn(instance_id),
                     )
                 )
 
@@ -796,3 +687,7 @@ class AWSProvider(Provider):
         """List all available instance types in this region with pricing."""
         instance_data = discover_all_instances(self._ec2, self._active_region)
         return build_instance_specs(instance_data, self._active_region)
+
+    def cleanup(self) -> None:
+        """No-op cleanup for AWS."""
+        pass
