@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -11,12 +10,11 @@ from typing import TYPE_CHECKING, Any
 from loguru import logger
 from pydo import Client
 
-from skyward.accelerator import Accelerator
+from skyward.accelerators import AcceleratorSpec
 from skyward.callback import emit
 from skyward.events import (
     BootstrapCompleted,
     BootstrapStarting,
-    Error,
     InstanceLaunching,
     InstanceProvisioned,
     InstanceStopping,
@@ -26,16 +24,19 @@ from skyward.events import (
     ProvisioningCompleted,
     ProvisioningStarted,
 )
+from skyward.internal.decorators import audit
 from skyward.providers.base import (
     SSHKeyInfo,
     SSHKeyManager,
-    SSHTransport,
     get_private_key_path,
+    poll_instances,
 )
 from skyward.providers.common import (
     install_skyward_wheel_via_transport,
+    make_provisioned,
     wait_for_ssh_bootstrap,
 )
+from skyward.providers.ssh import SSHConfig
 from skyward.spec import _AllocationOnDemand, normalize_allocation
 from skyward.types import (
     ComputeSpec,
@@ -102,48 +103,31 @@ def _get_or_create_ssh_key(client: Client) -> SSHKeyInfo:
 
 def _wait_for_active(client: Client, droplets: list[_Droplet], timeout: float) -> None:
     """Wait for all droplets to become active and get IPs."""
-    from tenacity import (
-        RetryError,
-        retry,
-        retry_if_exception_type,
-        stop_after_delay,
-        wait_fixed,
+
+    def fetch_status(droplet: _Droplet) -> tuple[str, dict[str, Any]]:
+        resp = client.droplets.get(droplet_id=droplet.id)
+        data = resp["droplet"]
+        info: dict[str, Any] = {}
+        for network in data["networks"]["v4"]:
+            if network["type"] == "public":
+                info["ip"] = network["ip_address"]
+            elif network["type"] == "private":
+                info["private_ip"] = network["ip_address"]
+        # Treat missing IP as not ready yet
+        status = data["status"] if info.get("ip") else "pending"
+        return status, info
+
+    def update_droplet(droplet: _Droplet, info: dict[str, Any]) -> None:
+        droplet.ip = info.get("ip", "")
+        droplet.private_ip = info.get("private_ip", "")
+
+    poll_instances(
+        instances=droplets,
+        fetch_status=fetch_status,
+        target_status="active",
+        update_instance=update_droplet,
+        timeout=timeout,
     )
-
-    class _DropletPendingError(Exception):
-        """Droplet not yet active - retry."""
-
-    def poll_droplet(droplet: _Droplet) -> None:
-        @retry(
-            stop=stop_after_delay(timeout),
-            wait=wait_fixed(1),
-            retry=retry_if_exception_type(_DropletPendingError),
-            reraise=True,
-        )
-        def check() -> None:
-            resp = client.droplets.get(droplet_id=droplet.id)
-            data = resp["droplet"]
-
-            if data["status"] != "active":
-                raise _DropletPendingError()
-
-            for network in data["networks"]["v4"]:
-                if network["type"] == "public":
-                    droplet.ip = network["ip_address"]
-                elif network["type"] == "private":
-                    droplet.private_ip = network["ip_address"]
-
-            if not droplet.ip:
-                raise _DropletPendingError()
-
-        try:
-            check()
-        except RetryError as e:
-            msg = f"Droplet {droplet.id} did not become active within {timeout}s"
-            raise TimeoutError(msg) from e
-
-    for droplet in droplets:
-        poll_droplet(droplet)
 
 
 # =============================================================================
@@ -256,213 +240,176 @@ class DigitalOceanProvider(Provider):
         self._resolved_fingerprint = key_info.fingerprint
         return key_info.fingerprint
 
-    def _get_transport(self, instance: Instance) -> SSHTransport:
-        """Get SSHTransport for an instance."""
-        ip = instance.get_meta("droplet_ip") or instance.public_ip or instance.private_ip
-        username = instance.get_meta("username", self._username)
-        key_path = get_private_key_path()
-        return SSHTransport(host=ip, username=username, key_path=key_path)
-
-    def _make_provisioned(
-        self, inst: Instance, spec: InstanceSpec | None = None
-    ) -> ProvisionedInstance:
-        """Create ProvisionedInstance from Instance for events."""
-        return ProvisionedInstance(
-            instance_id=inst.id,
-            node=inst.node,
-            provider=ProviderName.DigitalOcean,
-            spot=inst.spot,
-            spec=spec,
-            ip=inst.public_ip or inst.private_ip,
-        )
-
+    @audit("Provisioning")
     def provision(self, compute: ComputeSpec) -> tuple[Instance, ...]:
         """Provision DigitalOcean Droplets."""
-        try:
-            cluster_id = str(uuid.uuid4())[:8]
-            logger.info(f"Provisioning {compute.nodes} DigitalOcean droplets in {self.region}")
-            logger.debug(f"Cluster ID: {cluster_id}")
-            emit(ProvisioningStarted())
+        cluster_id = str(uuid.uuid4())[:8]
+        logger.debug(f"Cluster ID: {cluster_id}, nodes: {compute.nodes}, region: {self.region}")
+        emit(ProvisioningStarted())
 
-            fingerprint = self._ensure_ssh_key()
-            emit(NetworkReady(region=self.region))
+        fingerprint = self._ensure_ssh_key()
+        emit(NetworkReady(region=self.region))
 
-            client = self._get_client()
+        client = self._get_client()
 
-            acc = Accelerator.from_value(compute.accelerator)
-            allocation = normalize_allocation(compute.allocation)
-            prefer_spot = not isinstance(allocation, _AllocationOnDemand)
+        acc = AcceleratorSpec.from_value(compute.accelerator)
+        allocation = normalize_allocation(compute.allocation)
+        prefer_spot = not isinstance(allocation, _AllocationOnDemand)
 
-            if compute.machine is not None:
-                # Direct instance type override
-                size = compute.machine
-                # Look up spec for metadata (accelerator_count for image selection)
-                specs = self.available_instances()
-                spec = next((s for s in specs if s.name == size), None)
-                if spec:
-                    accelerator_count = spec.accelerator_count
-                elif acc and callable(acc.count):
-                    accelerator_count = 1  # Default when callable, actual comes from spec
-                else:
-                    accelerator_count = acc.count if acc else 0
-            else:
-                # Infer from resources (current behavior)
-                accelerator_type = acc.accelerator if acc else None
-                requested_gpu_count = acc.count if acc else 1
-
-                spec = select_instance(
-                    self.available_instances(),
-                    cpu=compute.cpu or 1,
-                    memory_mb=parse_memory_mb(compute.memory),
-                    accelerator=accelerator_type,
-                    accelerator_count=requested_gpu_count,
-                    prefer_spot=prefer_spot,
-                )
-                size = spec.name
+        if compute.machine is not None:
+            # Direct instance type override
+            size = compute.machine
+            # Look up spec for metadata (accelerator_count for image selection)
+            specs = self.available_instances()
+            spec = next((s for s in specs if s.name == size), None)
+            if spec:
                 accelerator_count = spec.accelerator_count
-
-            if compute.accelerator or (compute.machine and accelerator_count > 0):
-                default_acc = Accelerator("H100", "80GB")
-                os_image = get_gpu_image(acc or default_acc, accelerator_count)
-                username = "ubuntu"
+            elif acc and callable(acc.count):
+                accelerator_count = 1  # Default when callable, actual comes from spec
             else:
-                os_image = "ubuntu-24-04-x64"
-                username = "root"
+                accelerator_count = acc.count if acc else 0
+        else:
+            # Infer from resources (current behavior)
+            accelerator_type = acc.accelerator if acc else None
+            requested_gpu_count = acc.count if acc else 1
 
-            logger.debug(f"Using image: {os_image}, username: {username}")
-            self._username = username
+            spec = select_instance(
+                self.available_instances(),
+                cpu=compute.cpu or 1,
+                memory_mb=parse_memory_mb(compute.memory),
+                accelerator=accelerator_type,
+                accelerator_count=requested_gpu_count,
+                prefer_spot=prefer_spot,
+            )
+            size = spec.name
+            accelerator_count = spec.accelerator_count
 
-            # Generate bootstrap script using Image.bootstrap()
-            user_data = compute.image.bootstrap(ttl=self.instance_timeout)
+        if compute.accelerator or (compute.machine and accelerator_count > 0):
+            default_acc = AcceleratorSpec("H100", "80GB")
+            os_image = get_gpu_image(acc or default_acc, accelerator_count)
+            username = "ubuntu"
+        else:
+            os_image = "ubuntu-24-04-x64"
+            username = "root"
 
-            emit(
-                InstanceLaunching(
-                    count=compute.nodes,
-                    candidates=(spec,) if spec else (),
-                    provider=ProviderName.DigitalOcean,
+        logger.debug(f"Using image: {os_image}, username: {username}")
+        self._username = username
+
+        # Generate bootstrap script using Image.bootstrap()
+        user_data = compute.image.bootstrap(ttl=self.instance_timeout)
+
+        emit(
+            InstanceLaunching(
+                count=compute.nodes,
+                candidates=(spec,) if spec else (),
+                provider=ProviderName.DigitalOcean,
+            )
+        )
+
+        droplets: list[_Droplet] = []
+        for i in range(compute.nodes):
+            droplet_name = f"skyward-{cluster_id}-{i}"
+            logger.debug(f"Creating droplet {droplet_name} with size {size}")
+
+            create_data: dict[str, Any] = {
+                "name": droplet_name,
+                "region": self.region,
+                "size": size,
+                "image": os_image,
+                "user_data": user_data,
+                "tags": ["skyward", f"skyward-cluster-{cluster_id}"],
+                "ssh_keys": [fingerprint],
+            }
+
+            resp = client.droplets.create(body=create_data)
+            droplet_data = resp["droplet"]
+            droplets.append(
+                _Droplet(
+                    id=droplet_data["id"],
+                    name=droplet_name,
+                    ip="",
                 )
             )
+            logger.debug(f"Droplet {droplet_name} created with id {droplet_data['id']}")
 
-            droplets: list[_Droplet] = []
-            for i in range(compute.nodes):
-                droplet_name = f"skyward-{cluster_id}-{i}"
-                logger.debug(f"Creating droplet {droplet_name} with size {size}")
+        logger.debug(f"Waiting for {len(droplets)} droplets to become active...")
+        _wait_for_active(client, droplets, timeout=300)
 
-                create_data: dict[str, Any] = {
-                    "name": droplet_name,
-                    "region": self.region,
-                    "size": size,
-                    "image": os_image,
-                    "user_data": user_data,
-                    "tags": ["skyward", f"skyward-cluster-{cluster_id}"],
-                    "ssh_keys": [fingerprint],
-                }
+        self._droplets = droplets
 
-                resp = client.droplets.create(body=create_data)
-                droplet_data = resp["droplet"]
-                droplets.append(
-                    _Droplet(
-                        id=droplet_data["id"],
-                        name=droplet_name,
-                        ip="",
-                    )
-                )
-                logger.debug(f"Droplet {droplet_name} created with id {droplet_data['id']}")
+        instances: list[Instance] = []
+        provisioned_instances: list[ProvisionedInstance] = []
 
-            logger.debug(f"Waiting for {len(droplets)} droplets to become active...")
-            _wait_for_active(client, droplets, timeout=300)
-
-            self._droplets = droplets
-
-            instances: list[Instance] = []
-            provisioned_instances: list[ProvisionedInstance] = []
-
-            for i, droplet in enumerate(droplets):
-                instance = Instance(
-                    id=str(droplet.id),
-                    provider=self,
-                    spot=False,
-                    private_ip=droplet.private_ip or droplet.ip,
-                    public_ip=droplet.ip,
-                    node=i,
-                    metadata=frozenset(
-                        [
-                            ("cluster_id", cluster_id),
-                            ("droplet_id", droplet.id),
-                            ("droplet_ip", droplet.ip),
-                            ("username", username),
-                            ("accelerator_count", str(accelerator_count)),
-                        ]
-                    ),
-                )
-                instances.append(instance)
-
-                provisioned = ProvisionedInstance(
-                    instance_id=str(droplet.id),
-                    node=i,
-                    provider=ProviderName.DigitalOcean,
-                    spot=False,
-                    spec=spec,
-                    ip=droplet.ip,
-                )
-                provisioned_instances.append(provisioned)
-                emit(InstanceProvisioned(instance=provisioned))
-
-            emit(
-                ProvisioningCompleted(
-                    instances=tuple(provisioned_instances),
-                    provider=ProviderName.DigitalOcean,
-                    region=self.region,
-                )
+        key_path = get_private_key_path()
+        for i, droplet in enumerate(droplets):
+            instance = Instance(
+                id=str(droplet.id),
+                provider=self,
+                ssh=SSHConfig(
+                    host=droplet.ip,
+                    username=username,
+                    key_path=key_path,
+                ),
+                spot=False,
+                private_ip=droplet.private_ip or droplet.ip,
+                public_ip=droplet.ip,
+                node=i,
+                metadata=frozenset(
+                    [
+                        ("cluster_id", cluster_id),
+                        ("droplet_id", droplet.id),
+                        ("droplet_ip", droplet.ip),
+                        ("username", username),
+                        ("accelerator_count", str(accelerator_count)),
+                    ]
+                ),
             )
+            instances.append(instance)
 
-            logger.info(f"Provisioned {len(instances)} droplets: {[d.id for d in droplets]}")
-            return tuple(instances)
+            provisioned = ProvisionedInstance(
+                instance_id=str(droplet.id),
+                node=i,
+                provider=ProviderName.DigitalOcean,
+                spot=False,
+                spec=spec,
+                ip=droplet.ip,
+            )
+            provisioned_instances.append(provisioned)
+            emit(InstanceProvisioned(instance=provisioned))
 
-        except Exception as e:
-            logger.error(f"DigitalOcean provisioning failed: {e}")
-            emit(Error(message=f"Provision failed: {e}"))
-            raise
+        emit(
+            ProvisioningCompleted(
+                instances=tuple(provisioned_instances),
+                provider=ProviderName.DigitalOcean,
+                region=self.region,
+            )
+        )
 
+        return tuple(instances)
+
+    @audit("Setup")
     def setup(self, instances: tuple[Instance, ...], compute: ComputeSpec) -> None:
         """Setup instances (wait for bootstrap to complete)."""
-        from collections.abc import Generator
-        from contextlib import contextmanager
+        provisioned_map = {inst.id: make_provisioned(inst, ProviderName.DigitalOcean) for inst in instances}
 
-        logger.info(f"Setting up {len(instances)} DigitalOcean instances...")
-        try:
-            # Build provisioned lookup for events
-            provisioned_map = {inst.id: self._make_provisioned(inst) for inst in instances}
+        for inst in instances:
+            emit(BootstrapStarting(instance=provisioned_map[inst.id]))
 
-            for inst in instances:
-                emit(BootstrapStarting(instance=provisioned_map[inst.id]))
+        def get_ip(inst: Instance) -> str:
+            return inst.get_meta("droplet_ip") or inst.public_ip or ""
 
-            key_path = get_private_key_path()
+        def get_provisioned(inst: Instance) -> ProvisionedInstance:
+            return provisioned_map[inst.id]
 
-            def get_ip(inst: Instance) -> str:
-                return inst.get_meta("droplet_ip") or inst.public_ip or ""
+        wait_for_ssh_bootstrap(instances, get_ip, get_provisioned, timeout=300)
+        install_skyward_wheel_via_transport(
+            instances,
+            get_transport=lambda inst: inst.connect(),
+            compute=compute,
+        )
 
-            def make_provisioned(inst: Instance) -> ProvisionedInstance:
-                return provisioned_map[inst.id]
-
-            @contextmanager
-            def ssh_transport(inst: Instance) -> Generator[SSHTransport]:
-                ip = get_ip(inst)
-                username = inst.get_meta("username", "root")
-                yield SSHTransport(host=ip, username=username, key_path=key_path)
-
-            wait_for_ssh_bootstrap(instances, get_ip, make_provisioned, timeout=300)
-            install_skyward_wheel_via_transport(instances, ssh_transport, compute=compute)
-
-            for inst in instances:
-                emit(BootstrapCompleted(instance=provisioned_map[inst.id]))
-
-            logger.info(f"Setup completed for {len(instances)} instances")
-
-        except Exception as e:
-            logger.error(f"DigitalOcean setup failed: {e}")
-            emit(Error(message=f"Setup failed: {e}"))
-            raise
+        for inst in instances:
+            emit(BootstrapCompleted(instance=provisioned_map[inst.id]))
 
     def shutdown(
         self, instances: tuple[Instance, ...], compute: ComputeSpec
@@ -477,7 +424,7 @@ class DigitalOceanProvider(Provider):
         for inst in instances:
             droplet_id = inst.get_meta("droplet_id")
             if droplet_id:
-                provisioned = self._make_provisioned(inst)
+                provisioned = make_provisioned(inst, ProviderName.DigitalOcean)
                 emit(InstanceStopping(instance=provisioned))
                 logger.debug(f"Destroying droplet {droplet_id}")
                 with suppress(Exception):
@@ -495,25 +442,14 @@ class DigitalOceanProvider(Provider):
         logger.info(f"Shutdown complete: {len(exited)} droplets destroyed")
         return tuple(exited)
 
-    def create_tunnel(
-        self, instance: Instance, remote_port: int = 18861
-    ) -> tuple[int, subprocess.Popen[bytes]]:
-        """Create SSH tunnel to Droplet using SSHTransport."""
-        logger.debug(f"Creating tunnel to droplet {instance.id} port {remote_port}")
-        transport = self._get_transport(instance)
-        return transport.create_tunnel(remote_port)
-
-    def run_command(self, instance: Instance, command: str, timeout: int = 30) -> str:
-        """Run shell command on Droplet via SSH using SSHTransport."""
-        transport = self._get_transport(instance)
-        return transport.run_command(command, timeout)
-
     def discover_peers(self, cluster_id: str) -> tuple[Instance, ...]:
         """Discover peer instances in a cluster via DigitalOcean API."""
+        from skyward.providers.base import assign_node_indices
+
         client = self._get_client()
         tag = f"skyward-cluster-{cluster_id}"
-
         response = client.droplets.list(tag_name=tag)
+        key_path = get_private_key_path()
 
         instances = []
         for droplet in response.get("droplets", []):
@@ -532,35 +468,25 @@ class DigitalOceanProvider(Provider):
                 Instance(
                     id=str(droplet["id"]),
                     provider=self,
+                    ssh=SSHConfig(
+                        host=public_ip or private_ip,
+                        username=self._username,
+                        key_path=key_path,
+                    ),
                     spot=False,
                     private_ip=private_ip or public_ip,
                     public_ip=public_ip,
                     node=0,
-                    metadata=frozenset(
-                        [
-                            ("cluster_id", cluster_id),
-                            ("droplet_id", droplet["id"]),
-                            ("droplet_ip", public_ip or private_ip),
-                            ("region", self.region),
-                        ]
-                    ),
+                    metadata=frozenset([
+                        ("cluster_id", cluster_id),
+                        ("droplet_id", droplet["id"]),
+                        ("droplet_ip", public_ip or private_ip),
+                        ("region", self.region),
+                    ]),
                 )
             )
 
-        instances.sort(key=lambda i: i.private_ip)
-
-        return tuple(
-            Instance(
-                id=inst.id,
-                provider=inst.provider,
-                spot=inst.spot,
-                private_ip=inst.private_ip,
-                public_ip=inst.public_ip,
-                node=idx,
-                metadata=inst.metadata,
-            )
-            for idx, inst in enumerate(instances)
-        )
+        return assign_node_indices(instances)
 
     def available_instances(self) -> tuple[InstanceSpec, ...]:
         """List all available droplet sizes."""

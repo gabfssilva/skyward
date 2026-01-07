@@ -10,7 +10,7 @@ from skyward.types import InstanceSpec
 if TYPE_CHECKING:
     from pydo import Client
 
-    from skyward.accelerator import Accelerator
+    from skyward.accelerators import AcceleratorSpec
 
 
 def normalize_gpu_model(model: str | None) -> str | None:
@@ -72,7 +72,7 @@ def parse_droplet_size(size: dict[str, Any]) -> InstanceSpec:
     )
 
 
-def get_gpu_image(accelerator: Accelerator, accelerator_count: int = 1) -> str:
+def get_gpu_image(accelerator: AcceleratorSpec, accelerator_count: int = 1) -> str:
     """Get the appropriate GPU image for the accelerator type.
 
     Args:
@@ -124,7 +124,7 @@ def fetch_available_instances(client: Client) -> tuple[InstanceSpec, ...]:
         sorted(
             specs,
             key=lambda s: (
-                s.accelerator or "",
+                s.Accelerator or "",
                 s.accelerator_count,
                 s.vcpu,
                 s.memory_gb,

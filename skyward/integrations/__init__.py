@@ -39,10 +39,6 @@ __all__ = [
     "tensorflow",
     "transformers",
     # Joblib/sklearn
-    "JoblibPool",
-    "ScikitLearnPool",
-    "sklearn_backend",
-    "joblib_backend",
 ]
 
 _LAZY_IMPORTS: dict[str, tuple[str, str]] = {

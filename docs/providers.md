@@ -4,14 +4,14 @@ Skyward supports multiple cloud providers with a unified API.
 
 ## Provider Comparison
 
-| Feature | AWS | DigitalOcean | Verda |
-|---------|-----|--------------|-------|
-| **GPUs** | H100, A100, T4, L4, etc. | None (CPU only) | H100, A100 |
-| **Spot Instances** | Yes (60-90% savings) | No | Yes |
-| **Regions** | 20+ | 9 | 3 |
-| **MIG Support** | Yes | N/A | Yes |
-| **SSM Connectivity** | Yes | No | No |
-| **Trainium/Inferentia** | Yes | No | No |
+| Feature | AWS | DigitalOcean | Verda | VastAI |
+|---------|-----|--------------|-------|--------|
+| **GPUs** | H100, A100, T4, L4, etc. | H100, H200, L40S, MI300X | H100, A100, H200, GB200 | Marketplace (varies) |
+| **Spot Instances** | Yes (60-90% savings) | No | Yes | Yes (bid-based) |
+| **Regions** | 20+ | 9 | 3 | Global marketplace |
+| **MIG Support** | Yes | Yes | Yes | No |
+| **SSH Connectivity** | Yes | Yes | Yes | Yes |
+| **Trainium/Inferentia** | Yes | No | No | No |
 
 ## AWS
 
@@ -167,9 +167,9 @@ pool = sky.ComputePool(
 
 ### Notes
 
-- **No GPU support**: DigitalOcean doesn't offer GPU instances
-- **No spot instances**: All instances are on-demand
-- **Good for**: CPU workloads, testing, development
+- **GPU support**: H100, H200, L40S, and MI300X available in select regions (nyc3, sfo3, tor1)
+- **No spot instances**: All instances are on-demand with per-second billing
+- **Good for**: GPU inference, development, CPU workloads
 
 ## Verda
 
@@ -198,11 +198,11 @@ pool = sky.ComputePool(
 
 ### Available Regions
 
-| Region | GPUs |
-|--------|------|
-| `us-east` | H100, A100 |
-| `us-west` | H100, A100 |
-| `eu-west` | A100 |
+| Region | Location | GPUs |
+|--------|----------|------|
+| `FIN-01` | Finland | H100, A100, H200, GB200 |
+| `ICL-01` | Iceland | H100, A100 |
+| `ISR-01` | Israel | H100, A100 |
 
 ### Auto Region Discovery
 
@@ -224,23 +224,88 @@ pool = sky.ComputePool(
 - **Spot instances**: Significant cost savings
 - **MIG support**: Multi-Instance GPU partitioning
 
+## VastAI
+
+VastAI is a GPU marketplace offering competitive pricing from independent providers worldwide.
+
+### Setup
+
+```bash
+pip install vastai
+vastai set api-key YOUR_API_KEY
+```
+
+Get your API key at: https://cloud.vast.ai/account/
+
+### Usage
+
+```python
+import skyward as sky
+
+pool = sky.ComputePool(
+    provider=sky.VastAI(geolocation="US"),
+    accelerator="RTX 4090",
+)
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `geolocation` | `str` | `None` | Filter by location (e.g., "US", "EU") |
+| `min_reliability` | `float` | `0.9` | Minimum provider reliability score (0-1) |
+| `bid_multiplier` | `float` | `1.0` | Multiplier for spot bidding |
+| `auto_shutdown` | `int` | `None` | Auto-terminate after N seconds |
+
+### Features
+
+- **Dynamic marketplace**: Real-time pricing from global providers
+- **Reliability filtering**: Filter by provider track record
+- **Geolocation**: Target specific regions for latency
+- **Overlay networks**: Multi-node NCCL support for distributed training
+- **Interruptible instances**: Significant cost savings with spot-like pricing
+
+### Overlay Networks
+
+VastAI supports overlay networks for multi-node distributed training:
+
+```python
+import skyward as sky
+
+pool = sky.ComputePool(
+    provider=sky.VastAI(geolocation="US", min_reliability=0.95),
+    accelerator="RTX 4090",
+    nodes=4,  # Automatically creates overlay network
+)
+```
+
+See [VastAI Provider](providers/vastai.md) for detailed overlay network configuration.
+
 ## Choosing a Provider
 
 ### Use AWS When:
 - You need specific GPU types (H100, Trainium)
 - Spot instances are important for cost savings
-- You need SSM connectivity for reliability
+- Enterprise-grade reliability and support
 - You're already in the AWS ecosystem
 
 ### Use DigitalOcean When:
-- CPU-only workloads
-- Cost-effective development/testing
 - Simple setup without complex IAM
+- Per-second billing for short jobs
+- H100/H200/L40S for inference workloads
+- Development and testing environments
 
 ### Use Verda When:
-- H100/A100 availability is priority
-- You want automatic region selection
-- Competitive GPU pricing
+- European data residency (Finland, Iceland, Israel)
+- H100/A100/GB200 availability
+- Automatic region selection
+- Competitive GPU pricing with spot support
+
+### Use VastAI When:
+- Maximum cost savings (marketplace pricing)
+- Consumer GPUs (RTX 4090, 3090, etc.)
+- Flexible compute requirements
+- Multi-node training with overlay networks
 
 ## Multi-Provider Selection
 
@@ -250,7 +315,7 @@ Use multiple providers with automatic fallback:
 import skyward as sky
 
 @sky.pool(
-    provider=[sky.AWS(), sky.Verda()],
+    provider=[sky.AWS(), sky.Verda(), sky.VastAI()],
     selection="cheapest",
     accelerator="A100",
 )
@@ -352,6 +417,13 @@ with sky.ComputePool(provider=sky.Verda(), accelerator="A100") as infer_pool:
 1. Remove the `region` parameter to enable auto-discovery
 2. Check your account's region access
 
+### VastAI: "No offers available"
+
+1. Lower `min_reliability` threshold (e.g., 0.8)
+2. Expand `geolocation` filter or remove it
+3. Try a different accelerator type
+4. Check marketplace availability at https://cloud.vast.ai/
+
 ---
 
 ## Related Topics
@@ -360,3 +432,10 @@ with sky.ComputePool(provider=sky.Verda(), accelerator="A100") as infer_pool:
 - [Accelerators](accelerators.md) — GPU selection and MIG partitioning
 - [Troubleshooting](troubleshooting.md) — Common issues and solutions
 - [API Reference](api-reference.md) — Complete API documentation
+
+### Provider-Specific Documentation
+
+- [AWS Provider](providers/aws.md) — Detailed AWS configuration
+- [DigitalOcean Provider](providers/digital_ocean.md) — DigitalOcean setup
+- [Verda Provider](providers/verda.md) — Verda configuration
+- [VastAI Provider](providers/vastai.md) — VastAI and overlay networks

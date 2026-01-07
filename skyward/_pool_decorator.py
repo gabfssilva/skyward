@@ -30,7 +30,7 @@ from skyward.image import Image
 from skyward.logging import LogConfig
 from skyward.pool import ComputePool
 from skyward.spec import AllocationLike
-from skyward.types import Accelerator, Architecture, Auto, Memory, ProviderLike
+from skyward.types import AcceleratorSpec, Architecture, Auto, Memory, ProviderLike
 from skyward.volume import Volume
 
 P = ParamSpec("P")
@@ -43,7 +43,7 @@ def pool(
     image: Image | None = None,
     nodes: int = 1,
     machine: str | None = None,
-    accelerator: Accelerator | str | None = None,
+    accelerator: AcceleratorSpec | str | None = None,
     architecture: Architecture | None = None,
     cpu: int | None = None,
     memory: Memory | None = None,

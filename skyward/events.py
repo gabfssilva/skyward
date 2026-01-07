@@ -275,12 +275,11 @@ class CostFinal:
 class PoolReady:
     """Pool is fully ready for execution.
 
-    Emitted after all instances are bootstrapped, all tunnels and
+    Emitted after all instances are bootstrapped, SSH channels and
     connections are established, and cluster environment is configured.
     """
 
     instances: tuple[ProvisionedInstance, ...]
-    tunnels: int
     connections: int
     total_duration_seconds: float
 

@@ -23,19 +23,19 @@ import skyward as sky
 # Full control
 pool = sky.ComputePool(
     provider=sky.AWS(),
-    accelerator=sky.Accelerator.NVIDIA.H100(),
+    accelerator=sky.AcceleratorSpec.NVIDIA.H100(),
 )
 
 # Multiple GPUs
 pool = sky.ComputePool(
     provider=sky.AWS(),
-    accelerator=sky.Accelerator.NVIDIA.A100(count=4),
+    accelerator=sky.AcceleratorSpec.NVIDIA.A100(count=4),
 )
 
 # Memory variant
 pool = sky.ComputePool(
     provider=sky.AWS(),
-    accelerator=sky.Accelerator.NVIDIA.A100(memory="40GB"),
+    accelerator=sky.AcceleratorSpec.NVIDIA.A100(memory="40GB"),
 )
 ```
 
@@ -69,21 +69,21 @@ pool = sky.ComputePool(provider=sky.AWS(), accelerator=sky.NVIDIA.A100)
 import skyward as sky
 
 # Basic usage
-sky.Accelerator.NVIDIA.T4()              # 1x T4
-sky.Accelerator.NVIDIA.A100()            # 1x A100 80GB
-sky.Accelerator.NVIDIA.H100()            # 1x H100 80GB
+sky.AcceleratorSpec.NVIDIA.T4()  # 1x T4
+sky.AcceleratorSpec.NVIDIA.A100()  # 1x A100 80GB
+sky.AcceleratorSpec.NVIDIA.H100()  # 1x H100 80GB
 
 # Multiple GPUs
-sky.Accelerator.NVIDIA.A100(count=8)     # 8x A100
+sky.AcceleratorSpec.NVIDIA.A100(count=8)  # 8x A100
 
 # Memory variant
-sky.Accelerator.NVIDIA.A100(memory="40GB")
-sky.Accelerator.NVIDIA.V100(memory="32GB")
+sky.AcceleratorSpec.NVIDIA.A100(memory="40GB")
+sky.AcceleratorSpec.NVIDIA.V100(memory="32GB")
 
 # Form factor
-sky.Accelerator.NVIDIA.H100(form_factor="SXM")
-sky.Accelerator.NVIDIA.H100(form_factor="PCIe")
-sky.Accelerator.NVIDIA.H100(form_factor="NVL")
+sky.AcceleratorSpec.NVIDIA.H100(form_factor="SXM")
+sky.AcceleratorSpec.NVIDIA.H100(form_factor="PCIe")
+sky.AcceleratorSpec.NVIDIA.H100(form_factor="NVL")
 ```
 
 ## MIG (Multi-Instance GPU)
@@ -126,7 +126,7 @@ import skyward as sky
 # Single MIG profile - creates 2 workers from 1 GPU
 pool = sky.ComputePool(
     provider=sky.AWS(),
-    accelerator=sky.Accelerator.NVIDIA.H100(mig="3g.40gb"),
+    accelerator=sky.AcceleratorSpec.NVIDIA.H100(mig="3g.40gb"),
 )
 
 # Execute on both MIG partitions
@@ -141,7 +141,7 @@ import skyward as sky
 # Multiple partitions on one GPU
 pool = sky.ComputePool(
     provider=sky.AWS(),
-    accelerator=sky.Accelerator.NVIDIA.A100(mig=["3g.40gb", "3g.40gb"]),
+    accelerator=sky.AcceleratorSpec.NVIDIA.A100(mig=["3g.40gb", "3g.40gb"]),
 )
 ```
 
@@ -197,7 +197,7 @@ import skyward as sky
 
 pool = sky.ComputePool(
     provider=sky.AWS(),
-    accelerator=sky.Accelerator.AWS.Trainium(version=2),
+    accelerator=sky.AcceleratorSpec.AWS.Trainium(version=2),
     image=sky.Image(pip=["torch-neuronx"]),
 )
 ```
@@ -219,7 +219,7 @@ import skyward as sky
 
 pool = sky.ComputePool(
     provider=sky.AWS(),
-    accelerator=sky.Accelerator.AWS.Inferentia(version=2),
+    accelerator=sky.AcceleratorSpec.AWS.Inferentia(version=2),
     image=sky.Image(pip=["torch-neuronx"]),
 )
 ```

@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-import functools
-import os
 from collections.abc import Callable
 from typing import Literal
-
-from skyward.integrations.torch import _pytorch_env_vars
 
 __all__ = ["transformers"]
 
@@ -31,32 +27,6 @@ def transformers[**P, R](
             from transformers import Trainer
             ...
     """
-    from skyward.pending import ComputeFunction
+    from skyward.integrations.torch import torch
 
-    def wrapper(fn: Callable[P, R]) -> Callable[P, R]:
-        @functools.wraps(fn)
-        def inner(*args: P.args, **kwargs: P.kwargs) -> R:
-            from skyward.cluster import instance_info
-
-            pool = instance_info()
-            if pool is not None:
-                for key, value in _pytorch_env_vars(pool).items():
-                    os.environ[key] = value
-
-                import torch
-                import torch.distributed as dist
-
-                if not dist.is_initialized():
-                    be = backend if backend else ("nccl" if torch.cuda.is_available() else "gloo")
-                    dist.init_process_group(backend=be, init_method="env://")
-
-            return fn(*args, **kwargs)
-
-        return inner
-
-    def decorator(fn: Callable[P, R]) -> Callable[P, R]:
-        if isinstance(fn, ComputeFunction):
-            return ComputeFunction(fn=wrapper(fn.fn), name=fn.name)
-        return wrapper(fn)
-
-    return decorator
+    return torch(backend=backend)

@@ -103,24 +103,24 @@ provider = sky.DigitalOcean(
 
 ```python
 # H100
-sky.Accelerator.NVIDIA.H100()           # 1x H100-80GB
-sky.Accelerator.NVIDIA.H100(count=8)    # 8x H100-80GB
+sky.AcceleratorSpec.NVIDIA.H100()  # 1x H100-80GB
+sky.AcceleratorSpec.NVIDIA.H100(count=8)  # 8x H100-80GB
 
 # H200
-sky.Accelerator.NVIDIA.H200()
-sky.Accelerator.NVIDIA.H200(count=8)
+sky.AcceleratorSpec.NVIDIA.H200()
+sky.AcceleratorSpec.NVIDIA.H200(count=8)
 
 # L40S
-sky.Accelerator.NVIDIA.L40S()
-sky.Accelerator.NVIDIA.L40S(count=4)
+sky.AcceleratorSpec.NVIDIA.L40S()
+sky.AcceleratorSpec.NVIDIA.L40S(count=4)
 ```
 
 ### AMD GPUs
 
 ```python
 # MI300X
-sky.Accelerator.AMD.MI("300X")
-sky.Accelerator.AMD.MI("300X", count=8)
+sky.AcceleratorSpec.AMD.MI("300X")
+sky.AcceleratorSpec.AMD.MI("300X", count=8)
 ```
 
 ### MIG Support
@@ -128,8 +128,8 @@ sky.Accelerator.AMD.MI("300X", count=8)
 MIG is supported on H100 and A100 GPUs:
 
 ```python
-sky.Accelerator.NVIDIA.H100(mig="3g.40gb")
-sky.Accelerator.NVIDIA.H100(mig="7g.80gb")
+sky.AcceleratorSpec.NVIDIA.H100(mig="3g.40gb")
+sky.AcceleratorSpec.NVIDIA.H100(mig="7g.80gb")
 ```
 
 ## Available Regions
@@ -245,7 +245,7 @@ import skyward as sky
 
 pool = sky.ComputePool(
     provider=sky.DigitalOcean(region="sfo3"),
-    accelerator=sky.Accelerator.AMD.MI("300X", count=8),
+    accelerator=sky.AcceleratorSpec.AMD.MI("300X", count=8),
     image=sky.Image(
         pip=["torch", "torchvision"],
     ),

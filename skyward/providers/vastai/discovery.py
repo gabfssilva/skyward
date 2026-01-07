@@ -7,10 +7,8 @@ change frequently based on availability and host pricing.
 
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
-from skyward.cache import cached
 from skyward.types import InstanceSpec
 
 if TYPE_CHECKING:
@@ -127,6 +125,7 @@ def build_search_query(
     min_disk_gb: float | None = None,
     geolocation: str | None = None,
     verified_only: bool = False,
+    require_cluster: bool = False,
 ) -> str:
     """Build Vast.ai search query string.
 
@@ -140,6 +139,8 @@ def build_search_query(
         min_disk_gb: Minimum available disk space in GB.
         geolocation: Country/region code (e.g., "US", "EU").
         verified_only: Only include verified hosts.
+        require_cluster: If True, only return offers in physical clusters
+                        (required for overlay networking in multi-node setups).
 
     Returns:
         Query string for Vast.ai search API.
@@ -150,8 +151,10 @@ def build_search_query(
     """
     parts = []
 
+    # NOTE: gpu_name filter is buggy in VastAI when combined with other filters.
+    # The combination often returns empty results even when valid offers exist.
+    # GPU filtering should be done client-side instead.
     if gpu_name:
-        # Vast.ai expects underscores in GPU names, preserve case
         gpu_query = gpu_name.replace(" ", "_")
         parts.append(f"gpu_name={gpu_query}")
 
@@ -164,8 +167,11 @@ def build_search_query(
     if min_memory_gb:
         parts.append(f"cpu_ram>={min_memory_gb}")
 
-    if min_cuda_version:
-        parts.append(f"cuda_vers>={min_cuda_version}")
+    # NOTE: cuda_vers filter is buggy in VastAI when combined with gpu_name.
+    # The combination returns empty results even when valid offers exist.
+    # CUDA filtering should be done client-side instead.
+    # if min_cuda_version:
+    #     parts.append(f"cuda_vers>={min_cuda_version}")
 
     if min_disk_gb:
         parts.append(f"disk_space>={min_disk_gb}")
@@ -179,18 +185,18 @@ def build_search_query(
     if verified_only:
         parts.append("verified=true")
 
+    # NOTE: cluster_id is NOT a searchable field in VastAI CLI.
+    # Filtering by cluster must be done client-side after fetching offers.
+    # The require_cluster parameter is kept for API compatibility but does nothing.
+
     # Always filter to rentable offers
     parts.append("rentable=true")
 
     return " ".join(parts)
 
 
-@cached(namespace="vastai", ttl=timedelta(minutes=5))
 def search_offers(client: VastAI, query: str) -> list[dict[str, Any]]:
     """Search Vast.ai offers with caching.
-
-    Results are cached for 5 minutes (shorter than other providers
-    because Vast.ai marketplace is dynamic).
 
     Args:
         client: Authenticated VastAI client.
@@ -199,7 +205,7 @@ def search_offers(client: VastAI, query: str) -> list[dict[str, Any]]:
     Returns:
         List of offer dicts from Vast.ai API.
     """
-    result = client.search_offers(query=query)
+    result = client.search_offers(query=query, limit=1000)
 
     if not result:
         return []
@@ -241,9 +247,85 @@ def fetch_available_offers(
         sorted(
             specs,
             key=lambda s: (
-                s.accelerator or "",
+                s.Accelerator or "",
                 s.accelerator_count,
                 s.price_on_demand or float("inf"),
             ),
         )
     )
+
+
+def group_offers_by_cluster(
+    offers: list[dict[str, Any]],
+) -> dict[int, list[dict[str, Any]]]:
+    """Group offers by their physical cluster_id.
+
+    Physical clusters are groups of machines with fast local networking,
+    required for overlay network creation.
+
+    Args:
+        offers: List of VastAI offer dicts.
+
+    Returns:
+        Dict mapping cluster_id -> list of offers in that cluster.
+        Offers without cluster_id (None) are excluded.
+    """
+    clusters: dict[int, list[dict[str, Any]]] = {}
+
+    for offer in offers:
+        cluster_id = offer.get("cluster_id")
+        if cluster_id is not None:
+            clusters.setdefault(cluster_id, []).append(offer)
+
+    return clusters
+
+
+def select_best_cluster(
+    offers: list[dict[str, Any]],
+    nodes_needed: int,
+    use_interruptible: bool = True,
+) -> tuple[int, list[dict[str, Any]]] | None:
+    """Select the best cluster that can accommodate required nodes.
+
+    Finds the physical cluster with the lowest total cost for the
+    required number of nodes.
+
+    Args:
+        offers: List of VastAI offers (should include cluster_id field).
+        nodes_needed: Number of instances to provision.
+        use_interruptible: If True, sort by min_bid; otherwise by dph_total.
+
+    Returns:
+        Tuple of (cluster_id, sorted list of offers) or None if no cluster
+        has enough capacity.
+    """
+    clusters = group_offers_by_cluster(offers)
+
+    # Filter clusters with enough capacity
+    valid_clusters = [
+        (cid, cluster_offers)
+        for cid, cluster_offers in clusters.items()
+        if len(cluster_offers) >= nodes_needed
+    ]
+
+    if not valid_clusters:
+        return None
+
+    # Sort offers within each cluster by price
+    price_key = "min_bid" if use_interruptible else "dph_total"
+
+    for _, cluster_offers in valid_clusters:
+        cluster_offers.sort(key=lambda o: o.get(price_key) or float("inf"))
+
+    # Select cluster with lowest total cost for required nodes
+    def cluster_cost(item: tuple[int, list[dict[str, Any]]]) -> float:
+        _, cluster_offers = item
+        return sum(
+            o.get(price_key) or float("inf")
+            for o in cluster_offers[:nodes_needed]
+        )
+
+    valid_clusters.sort(key=cluster_cost)
+
+    cluster_id, cluster_offers = valid_clusters[0]
+    return cluster_id, cluster_offers

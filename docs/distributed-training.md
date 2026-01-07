@@ -353,7 +353,7 @@ import skyward as sky
 
 with sky.ComputePool(
     provider=sky.AWS(),
-    accelerator=sky.Accelerator.NVIDIA.A100(mig="3g.40gb"),  # 2 workers per GPU
+    accelerator=sky.AcceleratorSpec.NVIDIA.A100(mig="3g.40gb"),  # 2 workers per GPU
     image=sky.Image(pip=["torch"]),
 ) as pool:
     # Each worker gets its own MIG partition

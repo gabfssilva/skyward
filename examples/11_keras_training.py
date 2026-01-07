@@ -20,23 +20,25 @@ import skyward as sky
 
 @sky.compute
 @sky.integrations.keras(backend="jax")
+@sky.stdout(only=lambda i: i.node == 0)
 def train_vit(
     vit_config: ViTConfig | None = None,
     training_config: TrainingConfig | None = None,
 ) -> dict:
     """Train Vision Transformer on MNIST shard."""
-    keras.config.disable_interactive_logging()
-
     vit_config = vit_config or ViTConfig()
     training_config = training_config or TrainingConfig()
     pool = sky.instance_info()
 
+    keras.config.disable_interactive_logging()
     # Load and shard data
     (x_train_full, y_train_full), (x_test, y_test) = load_mnist()
     x_train, y_train = sky.shard(x_train_full, y_train_full, shuffle=True, seed=42)
+    keras.config.enable_interactive_logging()
 
     # Build model
     model = ViT(vit_config)
+
     model.compile(
         optimizer=keras.optimizers.AdamW(
             learning_rate=training_config.learning_rate,
@@ -56,10 +58,9 @@ def train_vit(
         epochs=training_config.epochs,
         batch_size=training_config.batch_size,
         validation_split=training_config.validation_split,
-        verbose=0,
+        verbose=1,
     )
 
-    # Evaluate
     test_loss, test_acc = model.evaluate(x_test, y_test, verbose=0)
 
     return {
@@ -75,16 +76,28 @@ def train_vit(
     }
 
 @sky.pool(
-    provider='aws',
+    provider=sky.VastAI(),
     nodes=2,
-    accelerator='T4',
+    accelerator=sky.Accelerator('RTX 3060'),
     image=sky.Image(
-        pip=["keras>=3.2", "jax[cuda12]"],
-        env={"KERAS_BACKEND": "jax"},
+        pip=[ "keras>=3.2", "jax[cuda12]" ],
+        env={ "KERAS_BACKEND": "jax"  },
+        skyward_source='local'
     ),
 )
 def clustered_train() -> tuple[dict, ...]:
     return train_vit() @ sky
+
+
+def load_mnist() -> tuple[tuple[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]]:
+    """Load and preprocess MNIST dataset."""
+    (x_train, y_train), (x_test, y_test) = keras.datasets.mnist.load_data()
+
+    # Normalize to [0, 1] and add channel dimension
+    x_train = np.expand_dims(x_train.astype(np.float32) / 255.0, axis=-1)
+    x_test = np.expand_dims(x_test.astype(np.float32) / 255.0, axis=-1)
+
+    return (x_train, y_train), (x_test, y_test)
 
 @dataclass(frozen=True, slots=True)
 class ViTConfig:
@@ -275,17 +288,6 @@ class ViT(keras.Model):
                 "dropout": self.config.dropout,
             },
         }
-
-def load_mnist() -> tuple[tuple[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]]:
-    """Load and preprocess MNIST dataset."""
-    (x_train, y_train), (x_test, y_test) = keras.datasets.mnist.load_data()
-
-    # Normalize to [0, 1] and add channel dimension
-    x_train = np.expand_dims(x_train.astype(np.float32) / 255.0, axis=-1)
-    x_test = np.expand_dims(x_test.astype(np.float32) / 255.0, axis=-1)
-
-    return (x_train, y_train), (x_test, y_test)
-
 
 if __name__ == "__main__":
     results = clustered_train()

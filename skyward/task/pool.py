@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -18,49 +17,11 @@ from tenacity import (
 )
 
 from skyward.constants import RPYC_PORT
-from skyward.task.object_pool import ObjectPool
+from skyward.internal.object_pool import ObjectPool
 
 if TYPE_CHECKING:
+    from skyward.providers.ssh import ChannelStream, SSHConnection
     from skyward.types import Instance, Provider
-
-
-# =============================================================================
-# Tunnel
-# =============================================================================
-
-
-@dataclass
-class Tunnel:
-    """SSH/SSM tunnel to an instance."""
-
-    proc: subprocess.Popen[bytes]
-    local_port: int
-    instance_id: str
-
-    def close(self) -> None:
-        """Close the tunnel."""
-        import signal
-
-        if self.proc.poll() is not None:
-            return  # Already dead
-
-        logger.debug(f"Closing tunnel for {self.instance_id} (port {self.local_port})")
-
-        # Try graceful termination first
-        self.proc.terminate()
-        try:
-            self.proc.wait(timeout=2)
-            return
-        except subprocess.TimeoutExpired:
-            pass
-
-        # SSH -N ignores SIGTERM - force kill
-        logger.debug(f"Force killing tunnel process for {self.instance_id}")
-        self.proc.send_signal(signal.SIGKILL)
-        try:
-            self.proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            pass  # Best effort - process is orphaned
 
 
 # =============================================================================
@@ -74,19 +35,27 @@ class _RPyCNotReadyError(Exception):
 
 @dataclass
 class PooledConnection:
-    """Pooled connection with its instance and tunnel.
+    """Pooled connection with its instance and SSH channel.
 
+    Uses Paramiko direct-tcpip channel (no subprocess tunnel).
     Connection is established eagerly at construction time.
     """
 
     instance: Instance
     node_idx: int
-    tunnel: Tunnel
+    _ssh_conn: SSHConnection = field(init=False, repr=False)
+    _channel: ChannelStream = field(init=False, repr=False)
     _conn: rpyc.Connection = field(init=False, repr=False)
+    _bg_thread: rpyc.BgServingThread = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        logger.debug(f"Connecting to instance {self.instance.id} via port {self.tunnel.local_port}")
+        logger.debug(f"Connecting to instance {self.instance.id} via SSH channel")
+        # Acquire SSH connection and open channel
+        self._ssh_conn = self.instance.pool.acquire()
+        self._channel = self._ssh_conn.open_tunnel(RPYC_PORT)
         self._conn = self._connect_rpyc()
+        # Start background thread to handle server callbacks (e.g., stdout)
+        self._bg_thread = rpyc.BgServingThread(self._conn)
         logger.info(f"Connected to instance {self.instance.id}")
 
     @property
@@ -99,7 +68,7 @@ class PooledConnection:
         return self._conn
 
     def _connect_rpyc(self) -> rpyc.Connection:
-        """Connect to RPyC server with retry."""
+        """Connect to RPyC server via channel with retry."""
         attempt = 0
 
         @retry(
@@ -112,11 +81,11 @@ class PooledConnection:
             nonlocal attempt
             attempt += 1
             try:
-                conn = rpyc.connect(
-                    "127.0.0.1",
-                    self.tunnel.local_port,
+                conn = rpyc.connect_stream(
+                    self._channel,
                     config={
                         "allow_pickle": True,
+                        "allow_public_attrs": True,
                         "sync_request_timeout": 3600,
                     },
                 )
@@ -143,12 +112,19 @@ class PooledConnection:
             return False
 
     def close(self) -> None:
-        """Close the connection."""
+        """Close the connection and release SSH."""
+        from contextlib import suppress
+
         logger.debug(f"Closing connection to {self.instance.id}")
-        try:
-            self._conn.close()
-        except Exception:
-            pass
+        for cleanup in [
+            lambda: self._bg_thread.stop(),
+            lambda: setattr(self._conn, "_closed", True),
+            lambda: self._channel.close(),
+            lambda: self.instance.pool.release(self._ssh_conn),
+        ]:
+            with suppress(Exception):
+                cleanup()
+        logger.debug(f"Connection closed for {self.instance.id}")
 
 # =============================================================================
 # Connection Spec (for ObjectPool creation)
@@ -161,7 +137,6 @@ class _ConnectionSpec:
 
     instance: Instance
     node_idx: int
-    tunnel: Tunnel
 
 
 # =============================================================================
@@ -194,44 +169,28 @@ class TaskPool:
     concurrency: int
     _pool: ObjectPool[PooledConnection] = field(init=False, repr=False)
     # Timing data for PoolReady event (consolidated in pool.py)
-    tunnel_count: int = field(init=False, repr=False)
     connection_count: int = field(init=False, repr=False)
     init_duration_seconds: float = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        from skyward.conc import map_async
-
         t0 = time.perf_counter()
-        logger.info(f"Initializing task pool: {len(self.instances)} instances, concurrency={self.concurrency}")
+        n = len(self.instances)
+        logger.info(f"Initializing task pool: {n} instances, concurrency={self.concurrency}")
 
-        # 1. Create all tunnels in parallel (one per instance)
-        logger.debug(f"Creating {len(self.instances)} tunnels...")
-
-        def create_tunnel(instance: Instance) -> Tunnel:
-            logger.debug(f"Creating tunnel for {instance.id}")
-            local_port, proc = self.provider.create_tunnel(instance, RPYC_PORT)
-            logger.debug(f"Tunnel created for {instance.id} -> localhost:{local_port}")
-            return Tunnel(proc, local_port, instance.id)
-
-        tunnels = dict(zip(
-            [inst.id for inst in self.instances],
-            map_async(create_tunnel, self.instances),
-        ))
-        logger.debug(f"All {len(tunnels)} tunnels created")
-
-        # 2. Build specs interleaved: (node0, conn0), (node1, conn0), ..., (nodeN, connM)
+        # Build specs interleaved: (node0, conn0), (node1, conn0), ..., (nodeN, connM)
         # This distributes load across nodes when acquiring connections
         specs: list[_ConnectionSpec] = []
         for _ in range(self.concurrency):
             for node_idx, instance in enumerate(self.instances):
-                specs.append(_ConnectionSpec(instance, node_idx, tunnels[instance.id]))
+                specs.append(_ConnectionSpec(instance, node_idx))
 
-        # 3. Create all connections in parallel via ObjectPool
+        # Create all connections in parallel via ObjectPool
+        # Each PooledConnection creates its own SSH channel internally
         logger.debug(f"Creating {len(specs)} connections...")
 
         def create(i: int) -> PooledConnection:
             spec = specs[i]
-            return PooledConnection(spec.instance, spec.node_idx, spec.tunnel)
+            return PooledConnection(spec.instance, spec.node_idx)
 
         def close(pc: PooledConnection) -> None:
             pc.close()
@@ -240,21 +199,18 @@ class TaskPool:
             return pc.is_alive()
 
         self._pool = ObjectPool(
-            size=len(specs),
             create=create,
             close=close,
             check=check,
-            interval=10.0,
+            max_size=len(specs),
+            min_size=len(specs),  # Pre-warm all RPyC connections
+            health_interval=10.0,
         )
-
-        # Store tunnels for cleanup
-        self._tunnels = tunnels
 
         duration = time.perf_counter() - t0
         logger.info(f"Task pool ready: {len(specs)} connections in {duration:.1f}s")
 
         # Store timing data for PoolReady event (emitted by pool.py)
-        self.tunnel_count = len(tunnels)
         self.connection_count = len(specs)
         self.init_duration_seconds = duration
 
@@ -266,30 +222,11 @@ class TaskPool:
         """Return connection to the pool."""
         self._pool.release(conn)
 
-    def get_tunnel(self, instance: Instance) -> Tunnel:
-        """Get the tunnel for an instance.
-
-        Use this to create additional RPyC connections to the same instance,
-        for example for dedicated metrics streaming.
-
-        Args:
-            instance: Instance to get tunnel for.
-
-        Returns:
-            Tunnel object with local_port for connecting.
-
-        Raises:
-            KeyError: If no tunnel exists for this instance.
-        """
-        return self._tunnels[instance.id]
-
     def close_all(self) -> None:
-        """Close all connections and tunnels."""
-        logger.debug(f"Closing all connections and tunnels...")
+        """Close all connections."""
+        logger.debug("Closing all connections...")
         self._pool.close_all()
-        for tunnel in self._tunnels.values():
-            tunnel.close()
-        logger.debug("All connections and tunnels closed")
+        logger.debug("All connections closed")
 
     @property
     def total_slots(self) -> int:

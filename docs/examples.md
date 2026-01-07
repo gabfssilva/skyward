@@ -20,6 +20,15 @@ Complete guide to all Skyward examples with explanations.
 | 11 | [Keras ViT](#11-keras-vit) | Keras 3, JAX backend | Advanced |
 | 12 | [HuggingFace](#12-huggingface) | Transformers, fine-tuning | Advanced |
 | 13 | [MultiPool](#13-multipool) | Parallel provisioning, comparison | Intermediate |
+| 14 | [Grid Search](#14-distributed-scikit-learn-grid-search) | ScikitLearnPool | Intermediate |
+| 15 | [Concurrency](#15-concurrent-task-execution) | concurrency, map_async | Intermediate |
+| 16 | [Joblib](#16-joblib-integration) | JoblibPool | Intermediate |
+| 17 | [Executor](#17-executor) | concurrent.futures API | Intermediate |
+| 18 | [MultiPool Advanced](#18-multipool-advanced) | Multi-stage workflows | Intermediate |
+| 19 | [Executor API](#19-executor-api) | submit, map, as_completed | Intermediate |
+| 20 | [S3 Volumes](#20-s3-volumes-advanced) | Volume mounting patterns | Intermediate |
+| 21 | [Custom Callbacks](#21-custom-callbacks) | Event handling, compose | Advanced |
+| 22 | [VastAI Overlay](#22-vastai-overlay) | NCCL, overlay networks | Advanced |
 
 ---
 
@@ -34,8 +43,8 @@ import skyward as sky
 
 # List AWS GPU instances
 for instance in sky.AWS().available_instances():
-    if instance.accelerator:
-        print(f"{instance.name}: {instance.accelerator}")
+    if instance.Accelerator:
+        print(f"{instance.name}: {instance.Accelerator}")
 
 # List Verda instances
 for instance in sky.Verda().available_instances():
@@ -174,7 +183,7 @@ def main():
 **Key Concepts:**
 - `DigitalOcean(region="nyc1")` - Alternative provider
 - `cpu=4, memory="8GB"` - Resource specification
-- No GPU support on DigitalOcean
+- GPU support available in select regions (nyc3, sfo3, tor1)
 
 ---
 
@@ -448,6 +457,7 @@ Vision Transformer with Keras 3 and JAX backend.
 ```python
 import skyward as sky
 
+
 @sky.integrations.keras(backend="jax")
 @sky.compute
 def train_vit(epochs: int) -> dict:
@@ -475,9 +485,10 @@ def train_vit(epochs: int) -> dict:
 
     return {"node": info.node, "test_accuracy": test_acc}
 
+
 with sky.ComputePool(
     provider=sky.Verda(),
-    accelerator=sky.Accelerator.NVIDIA.A100(mig=["3g.40gb", "3g.40gb"]),
+    accelerator=sky.AcceleratorSpec.NVIDIA.A100(mig=["3g.40gb", "3g.40gb"]),
     image=sky.Image(
         pip=["keras>=3.2", "jax[cuda12]"],
         env={"KERAS_BACKEND": "jax"},
@@ -720,6 +731,372 @@ with sky.integrations.JoblibPool(
 - `JoblibPool` - Auto-registers Skyward as joblib backend
 - Works with existing joblib code (`Parallel`, `delayed`)
 - `n_jobs=-1` or any value uses pool slots
+
+---
+
+## 17. Executor
+
+**File:** `examples/17_executor.py`
+
+Drop-in replacement for `concurrent.futures.ThreadPoolExecutor`.
+
+```python
+import skyward as sky
+from concurrent.futures import as_completed
+
+def slow_task(x: int) -> int:
+    from time import sleep
+    print(f"Task {x} starting")
+    sleep(5)
+    return x * 2
+
+# Executor works exactly like ThreadPoolExecutor
+with sky.Executor(
+    provider=sky.AWS(),
+    nodes=5,
+    concurrency=5,  # 25 total slots
+) as executor:
+    # submit() individual tasks
+    futures = [executor.submit(slow_task, i) for i in range(25)]
+
+    # as_completed() for results as they finish
+    for future in as_completed(futures):
+        print(f"Result: {future.result()}")
+
+    # map() for ordered results
+    results = list(executor.map(slow_task, range(25, 50)))
+```
+
+**Key Concepts:**
+- `Executor` - Drop-in for `ThreadPoolExecutor`
+- `submit()` - Submit individual tasks
+- `as_completed()` - Process results as they arrive
+- `map()` - Ordered results
+
+---
+
+## 18. MultiPool Advanced
+
+**File:** `examples/18_multipool.py`
+
+Multi-stage workflows with parallel pool provisioning.
+
+```python
+import skyward as sky
+
+@sky.compute
+def preprocess(data: list) -> list:
+    return [x * 2 for x in data]
+
+@sky.compute
+def train(data: list) -> dict:
+    import torch
+    # GPU training logic
+    return {"loss": 0.01, "accuracy": 0.99}
+
+@sky.compute
+def evaluate(model_path: str) -> dict:
+    return {"test_accuracy": 0.98}
+
+# Provision all pools in parallel
+with sky.MultiPool(
+    sky.ComputePool(provider=sky.AWS(), cpu=8, name="preprocess"),
+    sky.ComputePool(provider=sky.AWS(), accelerator="A100", name="train"),
+    sky.ComputePool(provider=sky.AWS(), accelerator="T4", name="eval"),
+) as (prep_pool, train_pool, eval_pool):
+    # Stage 1: Preprocess on CPU
+    processed = preprocess(raw_data) >> prep_pool
+
+    # Stage 2: Train on A100
+    model = train(processed) >> train_pool
+
+    # Stage 3: Evaluate on T4
+    metrics = evaluate(model) >> eval_pool
+```
+
+**Key Concepts:**
+- `MultiPool` - Parallel pool provisioning
+- Named pools for clarity
+- Pipeline stages with different hardware requirements
+- Total setup time = `max(pool_setup_times)` instead of sum
+
+---
+
+## 19. Executor API
+
+**File:** `examples/19_executor.py`
+
+Complete `concurrent.futures` API compatibility.
+
+```python
+import skyward as sky
+import concurrent.futures
+
+def process_item(item: int) -> dict:
+    import time
+    time.sleep(0.5)
+    return {"item": item, "result": item ** 2}
+
+with sky.Executor(
+    provider=sky.AWS(),
+    nodes=4,
+    concurrency=4,  # 16 parallel slots
+    cpu=2,
+    memory="4GB",
+    allocation="spot-if-available",
+) as executor:
+    print(f"Ready with {executor.total_slots} slots")
+
+    # submit() - individual tasks
+    future = executor.submit(process_item, 42)
+    result = future.result()
+
+    # map() - preserves order
+    results = list(executor.map(process_item, range(5)))
+
+    # as_completed() - results as they finish
+    futures = [executor.submit(process_item, x) for x in range(20)]
+    for future in concurrent.futures.as_completed(futures):
+        result = future.result()
+        print(f"Completed: {result}")
+
+    # Exception handling
+    def might_fail(x: int) -> int:
+        if x == 7:
+            raise ValueError("Unlucky!")
+        return x * 2
+
+    futures = [executor.submit(might_fail, x) for x in range(10)]
+    for i, future in enumerate(futures):
+        try:
+            print(f"Item {i}: {future.result()}")
+        except ValueError as e:
+            print(f"Item {i}: Error - {e}")
+```
+
+**Key Concepts:**
+- Full `concurrent.futures.Executor` interface
+- `executor.total_slots` - Total parallel capacity
+- Exception handling via `future.result()`
+- Works with `as_completed()` from stdlib
+
+---
+
+## 20. S3 Volumes Advanced
+
+**File:** `examples/20_volumes.py`
+
+S3 volume mounting patterns.
+
+```python
+import skyward as sky
+
+@sky.compute
+def list_data_files() -> list[str]:
+    import os
+    files = []
+    for root, _, filenames in os.walk("/data"):
+        for f in filenames:
+            path = os.path.join(root, f)
+            size = os.path.getsize(path)
+            files.append(f"{path} ({size} bytes)")
+    return files[:10]
+
+@sky.compute
+def save_checkpoint(data: dict) -> str:
+    import json, os
+    os.makedirs("/checkpoints/run1", exist_ok=True)
+    path = "/checkpoints/run1/checkpoint.json"
+    with open(path, "w") as f:
+        json.dump(data, f)
+    return f"Saved to {path}"
+
+# Read-only volume for input data
+data_volume = sky.S3Volume(
+    mount_path="/data",
+    bucket="my-ml-datasets",
+    prefix="training/",
+    read_only=True,
+)
+
+# Read-write volume for outputs
+checkpoint_volume = sky.S3Volume(
+    mount_path="/checkpoints",
+    bucket="my-ml-outputs",
+    prefix="checkpoints/",
+    read_only=False,
+)
+
+# Dict syntax also works
+volumes_dict = {
+    "/data": "s3://my-ml-datasets/training/",
+    "/checkpoints": "s3://my-ml-outputs/checkpoints/",
+}
+
+with sky.ComputePool(
+    provider=sky.AWS(),
+    accelerator="T4",
+    volume=[data_volume, checkpoint_volume],
+    image=sky.Image(pip=["numpy"]),
+) as pool:
+    files = list_data_files() >> pool
+    result = save_checkpoint({"epoch": 10, "loss": 0.01}) >> pool
+```
+
+**Key Concepts:**
+- `S3Volume` - Mount S3 as local filesystem
+- `read_only=True` - Read-only access (faster)
+- `prefix` - Mount subdirectory of bucket
+- Dict syntax: `{"/mount": "s3://bucket/prefix/"}`
+
+---
+
+## 21. Custom Callbacks
+
+**File:** `examples/21_custom_callbacks.py`
+
+Event monitoring with custom callbacks.
+
+```python
+import skyward as sky
+from skyward.callback import compose, use_callback
+from skyward.events import (
+    ProvisioningStarted, InstanceProvisioned, BootstrapProgress,
+    PoolReady, FunctionCall, FunctionResult, CostUpdate, CostFinal,
+    Metrics, SkywardEvent,
+)
+
+def logging_callback(event: SkywardEvent) -> None:
+    match event:
+        case ProvisioningStarted():
+            print("[LOG] Provisioning started...")
+        case InstanceProvisioned(instance=inst):
+            print(f"[LOG] Instance {inst.instance_id} at {inst.ip}")
+        case PoolReady():
+            print("[LOG] Pool ready!")
+        case FunctionResult(function_name=name, duration_ms=ms):
+            print(f"[LOG] {name} completed in {ms:.1f}ms")
+
+def cost_tracker(event: SkywardEvent) -> None:
+    match event:
+        case CostUpdate(total_cost=cost, hourly_rate=rate):
+            print(f"[COST] Running: ${cost:.3f} (${rate:.2f}/hr)")
+        case CostFinal(total_cost=cost, duration_seconds=secs):
+            print(f"[COST] Final: ${cost:.3f} ({secs/60:.1f} min)")
+
+def metrics_monitor(event: SkywardEvent) -> None:
+    match event:
+        case Metrics(gpu_utilization=gpu) if gpu and gpu > 80:
+            print(f"[METRICS] GPU high: {gpu}%")
+
+@sky.compute
+def train_step(batch_id: int) -> dict:
+    import time
+    time.sleep(0.1)
+    return {"batch": batch_id, "loss": 1.0 / (batch_id + 1)}
+
+# Compose multiple callbacks
+combined = compose(logging_callback, cost_tracker, metrics_monitor)
+
+# Option 1: use_callback context manager
+with use_callback(combined):
+    with sky.ComputePool(
+        provider=sky.AWS(),
+        accelerator="T4",
+        collect_metrics=True,
+    ) as pool:
+        for i in range(5):
+            result = train_step(i) >> pool
+
+# Option 2: on_event parameter
+with sky.ComputePool(
+    provider=sky.AWS(),
+    accelerator="T4",
+    on_event=logging_callback,
+) as pool:
+    result = train_step(0) >> pool
+```
+
+**Key Concepts:**
+- `compose()` - Combine multiple callbacks
+- `use_callback()` - Context manager for callbacks
+- `on_event=` - Pool parameter for callbacks
+- Pattern matching on event types
+- `collect_metrics=True` - Enable GPU/CPU metrics
+
+---
+
+## 22. VastAI Overlay
+
+**File:** `examples/22_vastai_overlay.py`
+
+VastAI multi-node with overlay networks for NCCL.
+
+```python
+import skyward as sky
+
+@sky.compute
+@sky.integrations.torch()
+def distributed_train(batch_data: list) -> dict:
+    import torch
+    import torch.distributed as dist
+
+    # Initialize distributed (env vars set by torch integration)
+    dist.init_process_group(backend="nccl")
+
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+    info = sky.instance_info()
+
+    # All-reduce example
+    tensor = torch.tensor([rank + 1.0]).cuda()
+    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+
+    expected_sum = sum(range(1, world_size + 1))
+    dist.destroy_process_group()
+
+    return {
+        "rank": rank,
+        "world_size": world_size,
+        "node": info.node,
+        "is_head": info.is_head,
+        "overlay_ip": info.peers[info.node].ip if info.peers else "N/A",
+        "all_reduce_result": tensor.item(),
+        "nccl_working": tensor.item() == expected_sum,
+    }
+
+# VastAI with overlay networking
+provider = sky.VastAI(
+    geolocation="US",
+    min_reliability=0.95,
+    bid_multiplier=1.3,
+    use_overlay=True,  # Enable overlay (default for nodes > 1)
+)
+
+with sky.ComputePool(
+    provider=provider,
+    accelerator="RTX 4090",
+    nodes=4,  # Multi-node triggers overlay creation
+    image=sky.Image(
+        pip=["torch"],
+        env={"NCCL_DEBUG": "INFO"},
+    ),
+    allocation="spot-if-available",
+) as pool:
+    # Broadcast to all nodes
+    results = distributed_train([]) @ pool
+
+    # Verify NCCL
+    all_working = all(r["nccl_working"] for r in results)
+    print(f"NCCL: {'SUCCESS' if all_working else 'FAILED'}")
+```
+
+**Key Concepts:**
+- `VastAI(use_overlay=True)` - Enable overlay networking
+- Overlay creates virtual LAN for NCCL
+- `geolocation`, `min_reliability` - Filter marketplace GPUs
+- `bid_multiplier` - Bid above minimum for faster provisioning
+- `@sky.integrations.torch()` - Auto-setup NCCL env vars
 
 ---
 

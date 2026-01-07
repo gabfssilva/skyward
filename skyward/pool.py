@@ -38,10 +38,9 @@ from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any, Literal
 
-import rpyc
 from loguru import logger
 
-from skyward.accelerator import Accelerator
+from skyward.accelerators import AcceleratorSpec
 from skyward.callback import Callback, _callback, compose, emit, use_callback
 from skyward.callbacks import panel
 from skyward.conc import for_each_async, map_async
@@ -58,7 +57,6 @@ from skyward.events import (
 from skyward.exceptions import ExecutionError, NotProvisionedError, ProvisioningError
 from skyward.image import DEFAULT_IMAGE, Image
 from skyward.logging import LogConfig, _setup_logging, _teardown_logging
-from skyward.metrics import MetricsStreamer
 from skyward.pending import PendingBatch, PendingCompute
 from skyward.selection import (
     AllProvidersFailedError,
@@ -151,7 +149,7 @@ class ComputePool:
     # Resource specification
     nodes: int = 1
     machine: str | None = None  # Direct instance type override (e.g., "p5.48xlarge")
-    accelerator: Accelerator | str | None = None
+    accelerator: AcceleratorSpec | str | None = None
     architecture: Architecture = field(default_factory=Auto)
     cpu: int | None = None
     memory: Memory | None = None
@@ -183,19 +181,15 @@ class ComputePool:
     _job_id: str = field(default="", init=False, repr=False)
 
     # Task pool state
-    _accelerator_cfg: Accelerator | None = field(default=None, init=False, repr=False)
+    _accelerator_cfg: AcceleratorSpec | None = field(default=None, init=False, repr=False)
     _task_pool: TaskPool | None = field(default=None, init=False, repr=False)
-    _metrics_streamers: list[MetricsStreamer] = field(default_factory=list, init=False, repr=False)
-    _metrics_connections: list[rpyc.Connection] = field(
-        default_factory=list, init=False, repr=False
-    )
     _event_callback: Callback | None = field(default=None, init=False, repr=False)
     _exit_stack: ExitStack | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Parse accelerator and logging configuration."""
         if self.accelerator is not None:
-            self._accelerator_cfg = Accelerator.from_value(self.accelerator)
+            self._accelerator_cfg = AcceleratorSpec.from_value(self.accelerator)
 
         # Parse logging configuration
         match self.logging:
@@ -448,32 +442,14 @@ class ComputePool:
         args_bytes = serialize(pending.args)
         kwargs_bytes = serialize(pending.kwargs_dict)
 
-        event_callback = self._event_callback
-
-        # Create ProvisionedInstance for events
         provisioned = self._make_provisioned(pc.instance)
 
         def stdout_callback(line: str) -> None:
-            if event_callback is not None:
-                event_callback(
-                    LogLine(
-                        instance=provisioned,
-                        line=line,
-                        timestamp=time.time(),
-                    )
-                )
+            emit(LogLine(instance=provisioned, line=line, timestamp=time.time()))
 
-        # Emit FunctionCall event
         fn_name = getattr(pending.fn, "__name__", str(pending.fn))
         start_time = time.time()
-        if event_callback is not None:
-            event_callback(
-                FunctionCall(
-                    function_name=fn_name,
-                    instance=provisioned,
-                    timestamp=start_time,
-                )
-            )
+        emit(FunctionCall(function_name=fn_name, instance=provisioned, timestamp=start_time))
 
         try:
             result_bytes = conn.root.execute(fn_bytes, args_bytes, kwargs_bytes, stdout_callback)
@@ -481,45 +457,39 @@ class ComputePool:
             if response.get("error"):
                 raise ExecutionError(response["error"])
 
-            # Emit FunctionResult on success
-            if event_callback is not None:
-                event_callback(
-                    FunctionResult(
-                        function_name=fn_name,
-                        instance=provisioned,
-                        timestamp=time.time(),
-                        duration_seconds=time.time() - start_time,
-                        success=True,
-                    )
+            emit(
+                FunctionResult(
+                    function_name=fn_name,
+                    instance=provisioned,
+                    timestamp=time.time(),
+                    duration_seconds=time.time() - start_time,
+                    success=True,
                 )
+            )
             return response["result"]
         except ExecutionError:
-            # Emit FunctionResult on execution error
-            if event_callback is not None:
-                event_callback(
-                    FunctionResult(
-                        function_name=fn_name,
-                        instance=provisioned,
-                        timestamp=time.time(),
-                        duration_seconds=time.time() - start_time,
-                        success=False,
-                        error="ExecutionError",
-                    )
+            emit(
+                FunctionResult(
+                    function_name=fn_name,
+                    instance=provisioned,
+                    timestamp=time.time(),
+                    duration_seconds=time.time() - start_time,
+                    success=False,
+                    error="ExecutionError",
                 )
+            )
             raise
         except Exception as e:
-            # Emit FunctionResult on unexpected error
-            if event_callback is not None:
-                event_callback(
-                    FunctionResult(
-                        function_name=fn_name,
-                        instance=provisioned,
-                        timestamp=time.time(),
-                        duration_seconds=time.time() - start_time,
-                        success=False,
-                        error=str(e),
-                    )
+            emit(
+                FunctionResult(
+                    function_name=fn_name,
+                    instance=provisioned,
+                    timestamp=time.time(),
+                    duration_seconds=time.time() - start_time,
+                    success=False,
+                    error=str(e),
                 )
+            )
             emit(Error(message=f"Execution failed on {pc.instance_id}: {e}", instance=provisioned))
             raise
 
@@ -567,33 +537,12 @@ class ComputePool:
         logger.debug("Setting up cluster environment on instances...")
         self._setup_all_instances()
 
-        # Start metrics streaming if enabled (dedicated RPyC connections)
+        # Start metrics streaming on each instance
         if self.collect_metrics:
             logger.debug("Starting metrics streaming...")
             provider_name = self._get_provider_name()
-
-            # Create dedicated connections for metrics (one per instance)
             for instance in self._instances:
-                tunnel = self._task_pool.get_tunnel(instance)
-                conn = rpyc.connect(
-                    "127.0.0.1",
-                    tunnel.local_port,
-                    config={
-                        "allow_pickle": True,
-                        "sync_request_timeout": 3600,
-                    },
-                )
-                self._metrics_connections.append(conn)
-
-                streamer = MetricsStreamer(
-                    instance=instance,
-                    conn=conn,
-                    callback=self._event_callback,
-                    interval=0.2,
-                    provider_name=provider_name,
-                )
-                streamer.start()
-                self._metrics_streamers.append(streamer)
+                instance.start_metrics(interval=0.2, provider_name=provider_name)
 
     def _shutdown(self) -> None:
         """Shutdown and release pool resources."""
@@ -605,27 +554,18 @@ class ComputePool:
         instance_count = len(self._instances)
         logger.debug(f"Shutting down {instance_count} instances...")
 
-        # Stop metrics streaming
-        if self._metrics_streamers:
-            logger.debug("Stopping metrics streaming...")
-            for streamer in self._metrics_streamers:
-                streamer.stop()
-            self._metrics_streamers.clear()
-
-        # Close dedicated metrics connections
-        if self._metrics_connections:
-            logger.debug("Closing metrics connections...")
-            for conn in self._metrics_connections:
-                with suppress(Exception):
-                    conn.close()
-            self._metrics_connections.clear()
-
-        # Close TaskPool if active
+        # Close TaskPool
         if self._task_pool is not None:
             logger.debug("Closing task pool connections...")
             with suppress(Exception):
                 self._task_pool.close_all()
             self._task_pool = None
+
+        # Close instances (stops metrics + closes SSH pools)
+        logger.debug("Closing instances...")
+        for instance in self._instances:
+            with suppress(Exception):
+                instance.close()
 
         # Get accelerator type for provider
         accelerator_for_provider = self._parse_accelerator_for_provider()
@@ -658,6 +598,7 @@ class ComputePool:
             "aws": ProviderName.AWS,
             "digitalocean": ProviderName.DigitalOcean,
             "verda": ProviderName.Verda,
+            "vastai": ProviderName.VastAI,
         }
         return provider_name_map.get(
             getattr(self._built_provider, "name", "aws").lower(),
@@ -709,7 +650,6 @@ class ComputePool:
         # Emit consolidated PoolReady event
         emit(PoolReady(
             instances=tuple(provisioned_list),
-            tunnels=self._task_pool.tunnel_count,
             connections=self._task_pool.connection_count,
             total_duration_seconds=self._task_pool.init_duration_seconds + cluster_setup_duration,
         ))
@@ -732,6 +672,9 @@ class ComputePool:
 
         accelerator_type, accelerator_count = resolve_accelerator(pc.instance)
 
+        # Get network interface from instance metadata (set by providers like VastAI for overlay)
+        network_interface = instances[0].get_meta("network_interface")
+
         pool_info = build_pool_info(
             node=pc.node_idx,
             total_nodes=len(instances),
@@ -744,6 +687,7 @@ class ComputePool:
             accelerator_type=accelerator_type,
             worker=0,  # Always 0 since we have single RPyC server per instance
             workers_per_node=1,  # Always 1 since we use concurrency, not workers
+            placement_group=network_interface,  # Used for NCCL interface config
         )
 
         # Merge env from image and pool (pool overrides image)

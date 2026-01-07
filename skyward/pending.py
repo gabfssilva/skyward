@@ -29,7 +29,7 @@ Example:
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, TypeVar, overload
 
@@ -38,6 +38,12 @@ if TYPE_CHECKING:
 
 # Type alias for pool target (explicit pool or implicit via module)
 type PoolTarget = ComputePool | ModuleType
+
+
+def _run_batch(batch: Any, target: PoolTarget) -> tuple[Any, ...]:
+    """Execute a typed batch on the given pool."""
+    computations = tuple(getattr(batch, f.name) for f in fields(batch))
+    return _resolve_pool(target).run_batch(PendingBatch(computations))
 
 
 def _resolve_pool(target: PoolTarget) -> ComputePool:
@@ -175,7 +181,7 @@ class PendingBatch2[R1, R2]:
         return PendingBatch3(self.c1, self.c2, other)
 
     def __rshift__(self, target: PoolTarget) -> tuple[R1, R2]:
-        return _resolve_pool(target).run_batch(PendingBatch((self.c1, self.c2)))
+        return _run_batch(self, target)
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,7 +196,7 @@ class PendingBatch3[R1, R2, R3]:
         return PendingBatch4(self.c1, self.c2, self.c3, other)
 
     def __rshift__(self, target: PoolTarget) -> tuple[R1, R2, R3]:
-        return _resolve_pool(target).run_batch(PendingBatch((self.c1, self.c2, self.c3)))
+        return _run_batch(self, target)
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,7 +212,7 @@ class PendingBatch4[R1, R2, R3, R4]:
         return PendingBatch5(self.c1, self.c2, self.c3, self.c4, other)
 
     def __rshift__(self, target: PoolTarget) -> tuple[R1, R2, R3, R4]:
-        return _resolve_pool(target).run_batch(PendingBatch((self.c1, self.c2, self.c3, self.c4)))
+        return _run_batch(self, target)
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,7 +229,7 @@ class PendingBatch5[R1, R2, R3, R4, R5]:
         return PendingBatch6(self.c1, self.c2, self.c3, self.c4, self.c5, other)
 
     def __rshift__(self, target: PoolTarget) -> tuple[R1, R2, R3, R4, R5]:
-        return _resolve_pool(target).run_batch(PendingBatch((self.c1, self.c2, self.c3, self.c4, self.c5)))
+        return _run_batch(self, target)
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,7 +247,7 @@ class PendingBatch6[R1, R2, R3, R4, R5, R6]:
         return PendingBatch7(self.c1, self.c2, self.c3, self.c4, self.c5, self.c6, other)
 
     def __rshift__(self, target: PoolTarget) -> tuple[R1, R2, R3, R4, R5, R6]:
-        return _resolve_pool(target).run_batch(PendingBatch((self.c1, self.c2, self.c3, self.c4, self.c5, self.c6)))
+        return _run_batch(self, target)
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,11 +262,13 @@ class PendingBatch7[R1, R2, R3, R4, R5, R6, R7]:
     c6: PendingCompute[R6]
     c7: PendingCompute[R7]
 
-    def __and__[R8](self, other: PendingCompute[R8]) -> PendingBatch8[R1, R2, R3, R4, R5, R6, R7, R8]:
+    def __and__[R8](
+        self, other: PendingCompute[R8]
+    ) -> PendingBatch8[R1, R2, R3, R4, R5, R6, R7, R8]:
         return PendingBatch8(self.c1, self.c2, self.c3, self.c4, self.c5, self.c6, self.c7, other)
 
     def __rshift__(self, target: PoolTarget) -> tuple[R1, R2, R3, R4, R5, R6, R7]:
-        return _resolve_pool(target).run_batch(PendingBatch((self.c1, self.c2, self.c3, self.c4, self.c5, self.c6, self.c7)))
+        return _run_batch(self, target)
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,7 +285,7 @@ class PendingBatch8[R1, R2, R3, R4, R5, R6, R7, R8]:
     c8: PendingCompute[R8]
 
     def __rshift__(self, target: PoolTarget) -> tuple[R1, R2, R3, R4, R5, R6, R7, R8]:
-        return _resolve_pool(target).run_batch(PendingBatch((self.c1, self.c2, self.c3, self.c4, self.c5, self.c6, self.c7, self.c8)))
+        return _run_batch(self, target)
 
 
 # =============================================================================
@@ -460,11 +468,3 @@ def compute[**P, R](fn: Callable[P, R]) -> Callable[P, PendingCompute[R]]:
         result = pending | pool  # Returns 2.5
     """
     return ComputeFunction(fn=fn, name=fn.__name__)
-
-
-# =============================================================================
-# Aliases for convenience
-# =============================================================================
-
-# Allow using @lazy as an alias for @compute
-lazy = compute

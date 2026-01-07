@@ -13,7 +13,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from subprocess import PIPE, Popen
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from loguru import logger
 from tenacity import (
@@ -26,11 +26,49 @@ from tenacity import (
 
 from skyward.callback import emit
 from skyward.constants import RPYC_PORT, SKYWARD_DIR
-from skyward.events import BootstrapProgress, ProvisionedInstance
+from skyward.events import BootstrapProgress, ProviderName, ProvisionedInstance
 
 if TYPE_CHECKING:
-    from skyward.providers.base import Transport
-    from skyward.types import ComputeSpec, Instance
+    from skyward.types import ComputeSpec, Instance, InstanceSpec
+
+
+# =============================================================================
+# Transport Protocol
+# =============================================================================
+
+
+class Transport(Protocol):
+    """Protocol for remote command execution and file transfer."""
+
+    def run_command(self, command: str, timeout: int = 30) -> str:
+        """Execute command on remote instance."""
+        ...
+
+    def upload_file(self, local_path: Path, remote_path: str) -> None:
+        """Upload file to remote instance."""
+        ...
+
+
+# =============================================================================
+# Event Helpers
+# =============================================================================
+
+
+def make_provisioned(
+    inst: "Instance",
+    provider: ProviderName,
+    spec: "InstanceSpec | None" = None,
+    ip: str | None = None,
+) -> ProvisionedInstance:
+    """Create ProvisionedInstance from Instance for events."""
+    return ProvisionedInstance(
+        instance_id=inst.id,
+        node=inst.node,
+        provider=provider,
+        spot=inst.spot,
+        spec=spec,
+        ip=ip or inst.public_ip or inst.private_ip,
+    )
 
 
 # =============================================================================
@@ -125,36 +163,7 @@ class BootstrapFailedError(Exception):
         self.error_msg = error_msg
         super().__init__(error_msg)
 
-
 CommandRunner = Callable[[str], str]
-
-
-@retry(
-    stop=stop_after_delay(300),
-    wait=wait_fixed(1),
-    retry=retry_if_exception_type(BootstrapNotReadyError),
-    reraise=True,
-)
-def _wait_for_rpyc_service(
-    run_command: CommandRunner,
-    instance_id: str,
-    port: int = RPYC_PORT,
-) -> None:
-    """Esperar a porta RPyC estar aceitando conexões.
-
-    Importante para AMIs onde o checkpoint .ready já existe mas
-    o serviço ainda está iniciando via systemd.
-    """
-    check_cmd = f"nc -z 127.0.0.1 {port} && echo OK || echo WAITING"
-    try:
-        result = run_command(check_cmd)
-        if "OK" not in result:
-            raise BootstrapNotReadyError()
-    except BootstrapNotReadyError:
-        raise
-    except Exception as e:
-        raise BootstrapNotReadyError() from e
-
 
 def wait_for_bootstrap(
     run_command: CommandRunner,
@@ -177,6 +186,8 @@ def wait_for_bootstrap(
 
     completed_steps: set[str] = set()
 
+    poll_count = 0
+
     @retry(
         stop=stop_after_delay(timeout),
         wait=wait_fixed(1),
@@ -184,13 +195,21 @@ def wait_for_bootstrap(
         reraise=True,
     )
     def _poll_bootstrap() -> None:
-        nonlocal completed_steps
+        nonlocal completed_steps, poll_count
+        poll_count += 1
+
+        if poll_count == 1 or poll_count % 10 == 0:
+            logger.debug(f"Bootstrap poll #{poll_count} for {instance_id}")
 
         try:
+            logger.debug(f"Bootstrap: running check command for {instance_id}")
             stdout = run_command(check_cmd)
+            logger.debug(f"Bootstrap: check command returned for {instance_id}")
         except TimeoutError:
+            logger.debug(f"Bootstrap: check command timed out for {instance_id}")
             raise
         except Exception as e:
+            logger.debug(f"Bootstrap: check command failed for {instance_id}: {e}")
             raise BootstrapNotReadyError() from e
 
         stdout = stdout.strip()
@@ -200,6 +219,7 @@ def wait_for_bootstrap(
             raise BootstrapFailedError(error_msg)
 
         found_files = set(stdout.split("\n")) if stdout else set()
+        logger.debug(f"Bootstrap: found files for {instance_id}: {found_files}")
 
         for checkpoint in all_checkpoints:
             if checkpoint.file in found_files and checkpoint.name not in completed_steps:
@@ -231,72 +251,6 @@ def wait_for_bootstrap(
 # NOTE: SSHKeyInfo, SSH_KEY_PATHS, find_local_ssh_key, get_private_key_path,
 #       and compute_fingerprint have been moved to skyward.providers.base.ssh_keys
 #       and are re-exported above for backwards compatibility.
-
-
-def ssh_run(
-    ip: str,
-    username: str,
-    command: str,
-    timeout: int = 60,
-    key_path: str | None = None,
-    port: int | None = None,
-) -> subprocess.CompletedProcess[str]:
-    """Run SSH command on remote instance."""
-    ssh_cmd = [
-        "ssh",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "LogLevel=ERROR",
-        "-o", "ConnectTimeout=10",
-    ]
-    if key_path:
-        ssh_cmd.extend(["-i", key_path])
-    if port:
-        ssh_cmd.extend(["-p", str(port)])
-    ssh_cmd.extend([f"{username}@{ip}", command])
-    return subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=timeout)
-
-
-def scp_upload(
-    ip: str,
-    username: str,
-    local_path: Path,
-    remote_path: str,
-    key_path: str | None = None,
-    port: int | None = None,
-) -> None:
-    """Upload file to remote via SCP."""
-    scp_cmd = [
-        "scp",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "LogLevel=ERROR",
-    ]
-    if key_path:
-        scp_cmd.extend(["-i", key_path])
-    if port:
-        scp_cmd.extend(["-P", str(port)])
-    scp_cmd.extend([str(local_path), f"{username}@{ip}:{remote_path}"])
-    result = subprocess.run(scp_cmd, capture_output=True, text=True, timeout=60)
-    if result.returncode != 0:
-        raise RuntimeError(f"SCP failed: {result.stderr}")
-
-
-def create_ssh_runner(
-    ip: str,
-    username: str,
-    key_path: str | None = None,
-    port: int | None = None,
-) -> Callable[[str], str]:
-    """Create a command runner using SSH."""
-
-    def run_command(cmd: str) -> str:
-        result = ssh_run(ip, username, cmd, timeout=30, key_path=key_path, port=port)
-        if result.returncode != 0:
-            raise RuntimeError(f"SSH command failed (exit {result.returncode}): {result.stderr}")
-        return result.stdout
-
-    return run_command
 
 
 def build_wheel() -> Path:
@@ -407,6 +361,9 @@ def install_skyward_wheel_via_transport(
     This is the preferred way to install the wheel - it works with any transport
     (SSH, SSM tunneled SSH, etc.) via the Transport protocol.
 
+    If the compute spec's image has skyward_source != "local", this function
+    skips installation since skyward was already installed via user-data.
+
     Args:
         instances: Instances to install on.
         get_transport: Factory that creates a context manager yielding a Transport
@@ -416,28 +373,30 @@ def install_skyward_wheel_via_transport(
             If False, use nohup (for Docker containers without systemd).
 
     Example:
-        # SSH-based providers (Verda, DigitalOcean)
-        @contextmanager
-        def ssh_transport(inst):
-            yield SSHTransport(host=get_ip(inst), username="root", key_path=key_path)
+        # Use instance.connect() for all providers
+        install_skyward_wheel_via_transport(
+            instances,
+            get_transport=lambda inst: inst.connect(),
+            compute=compute,
+        )
 
-        install_skyward_wheel_via_transport(instances, ssh_transport, compute)
-
-        # AWS with SSM tunnel
-        @contextmanager
-        def ssm_ssh_transport(inst):
-            local_port, tunnel = ssm.create_tunnel_to_ssh(inst.id)
-            try:
-                yield SSHTransport(host="localhost", port=local_port, ...)
-            finally:
-                tunnel.terminate()
-
-        install_skyward_wheel_via_transport(instances, ssm_ssh_transport, compute)
-
-        # Docker containers (Vast.ai)
-        install_skyward_wheel_via_transport(instances, transport, compute, use_systemd=False)
+        # Docker containers (Vast.ai) - disable systemd
+        install_skyward_wheel_via_transport(
+            instances,
+            get_transport=lambda inst: inst.connect(),
+            compute=compute,
+            use_systemd=False,
+        )
     """
     from skyward.conc import for_each_async
+
+    # Skip if skyward was installed via user-data (github/pypi)
+    if compute and compute.image.skyward_source != "local":
+        logger.info(
+            f"Skyward installed via user-data ({compute.image.skyward_source}), "
+            "skipping wheel installation"
+        )
+        return
 
     logger.info(f"Installing skyward wheel on {len(instances)} instances...")
     wheel_path = build_wheel()
@@ -483,10 +442,13 @@ def wait_for_ssh_bootstrap(
     get_ip: Callable[[Instance], str],
     make_provisioned: Callable[[Instance], ProvisionedInstance],
     timeout: int = 300,
-    key_path: str | None = None,
-    get_port: Callable[[Instance], int] | None = None,
+    key_path: str | None = None,  # Deprecated, uses instance.ssh
+    get_port: Callable[[Instance], int] | None = None,  # Deprecated, uses instance.ssh
 ) -> None:
-    """Wait for bootstrap to complete on all instances via SSH (concurrent)."""
+    """Wait for bootstrap to complete on all instances via SSH (concurrent).
+
+    Note: key_path and get_port are deprecated. SSH config is now in instance.ssh.
+    """
     from skyward.conc import for_each_async
 
     logger.info(f"Waiting for SSH bootstrap on {len(instances)} instances...")
@@ -496,13 +458,12 @@ def wait_for_ssh_bootstrap(
         Checkpoint(".step_base", "base deps"),
     )
 
-    username = instances[0].get_meta("username", "root")
-
     def wait_for_instance(inst: Instance) -> None:
-        ip = get_ip(inst)
-        port = get_port(inst) if get_port else None
-        logger.debug(f"Checking bootstrap status for {inst.id} at {ip}:{port or 22}")
-        runner = create_ssh_runner(ip, username, key_path, port=port)
+        logger.debug(f"Checking bootstrap status for {inst.id}")
+
+        def runner(cmd: str) -> str:
+            return inst.run_command(cmd, timeout=30)
+
         provisioned = make_provisioned(inst)
         wait_for_bootstrap(
             run_command=runner,

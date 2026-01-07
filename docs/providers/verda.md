@@ -132,41 +132,41 @@ Availability varies by region and demand.
 
 ```python
 # V100
-sky.Accelerator.NVIDIA.V100()
-sky.Accelerator.NVIDIA.V100(memory="32GB")
+sky.AcceleratorSpec.NVIDIA.V100()
+sky.AcceleratorSpec.NVIDIA.V100(memory="32GB")
 
 # A100
-sky.Accelerator.NVIDIA.A100()                  # 80GB default
-sky.Accelerator.NVIDIA.A100(memory="40GB")
-sky.Accelerator.NVIDIA.A100(count=8)
+sky.AcceleratorSpec.NVIDIA.A100()  # 80GB default
+sky.AcceleratorSpec.NVIDIA.A100(memory="40GB")
+sky.AcceleratorSpec.NVIDIA.A100(count=8)
 
 # H100
-sky.Accelerator.NVIDIA.H100()
-sky.Accelerator.NVIDIA.H100(count=8)
-sky.Accelerator.NVIDIA.H100(form_factor="SXM")
+sky.AcceleratorSpec.NVIDIA.H100()
+sky.AcceleratorSpec.NVIDIA.H100(count=8)
+sky.AcceleratorSpec.NVIDIA.H100(form_factor="SXM")
 
 # H200
-sky.Accelerator.NVIDIA.H200()
-sky.Accelerator.NVIDIA.H200(count=8)
+sky.AcceleratorSpec.NVIDIA.H200()
+sky.AcceleratorSpec.NVIDIA.H200(count=8)
 
 # L40S
-sky.Accelerator.NVIDIA.L40S()
-sky.Accelerator.NVIDIA.L40S(count=4)
+sky.AcceleratorSpec.NVIDIA.L40S()
+sky.AcceleratorSpec.NVIDIA.L40S(count=4)
 
 # GB200 (latest generation)
-sky.Accelerator.NVIDIA.GB200()
+sky.AcceleratorSpec.NVIDIA.GB200()
 ```
 
 ### AMD GPUs
 
 ```python
 # MI250X
-sky.Accelerator.AMD.MI("250X")
-sky.Accelerator.AMD.MI("250X", count=8)
+sky.AcceleratorSpec.AMD.MI("250X")
+sky.AcceleratorSpec.AMD.MI("250X", count=8)
 
 # MI300X
-sky.Accelerator.AMD.MI("300X")
-sky.Accelerator.AMD.MI("300X", count=8)
+sky.AcceleratorSpec.AMD.MI("300X")
+sky.AcceleratorSpec.AMD.MI("300X", count=8)
 ```
 
 ### MIG Support
@@ -175,20 +175,20 @@ Full MIG support on H100 and A100:
 
 ```python
 # H100 MIG profiles
-sky.Accelerator.NVIDIA.H100(mig="1g.10gb")
-sky.Accelerator.NVIDIA.H100(mig="2g.20gb")
-sky.Accelerator.NVIDIA.H100(mig="3g.40gb")
-sky.Accelerator.NVIDIA.H100(mig="4g.40gb")
-sky.Accelerator.NVIDIA.H100(mig="7g.80gb")
+sky.AcceleratorSpec.NVIDIA.H100(mig="1g.10gb")
+sky.AcceleratorSpec.NVIDIA.H100(mig="2g.20gb")
+sky.AcceleratorSpec.NVIDIA.H100(mig="3g.40gb")
+sky.AcceleratorSpec.NVIDIA.H100(mig="4g.40gb")
+sky.AcceleratorSpec.NVIDIA.H100(mig="7g.80gb")
 
 # A100-80GB MIG profiles
-sky.Accelerator.NVIDIA.A100(mig="1g.10gb")
-sky.Accelerator.NVIDIA.A100(mig="3g.40gb")
-sky.Accelerator.NVIDIA.A100(mig="7g.80gb")
+sky.AcceleratorSpec.NVIDIA.A100(mig="1g.10gb")
+sky.AcceleratorSpec.NVIDIA.A100(mig="3g.40gb")
+sky.AcceleratorSpec.NVIDIA.A100(mig="7g.80gb")
 
 # A100-40GB MIG profiles
-sky.Accelerator.NVIDIA.A100(memory="40GB", mig="1g.5gb")
-sky.Accelerator.NVIDIA.A100(memory="40GB", mig="3g.20gb")
+sky.AcceleratorSpec.NVIDIA.A100(memory="40GB", mig="1g.5gb")
+sky.AcceleratorSpec.NVIDIA.A100(memory="40GB", mig="3g.20gb")
 ```
 
 ## Spot Instances
@@ -252,16 +252,18 @@ import skyward as sky
 # Skyward finds the best region with H100 availability
 pool = sky.ComputePool(
     provider=sky.Verda(),  # Auto-discover region
-    accelerator=sky.Accelerator.NVIDIA.H100(count=8),
+    accelerator=sky.AcceleratorSpec.NVIDIA.H100(count=8),
     image=sky.Image(
         pip=["torch", "transformers", "accelerate"],
     ),
 )
 
+
 @sky.compute
 def train_model(config: dict) -> dict:
     # Training code here
     return {"loss": 0.01, "accuracy": 0.99}
+
 
 with pool:
     results = train_model(training_config)
@@ -298,7 +300,7 @@ import skyward as sky
 
 pool = sky.ComputePool(
     provider=sky.Verda(region="FIN-01"),
-    accelerator=sky.Accelerator.AMD.MI("300X", count=8),
+    accelerator=sky.AcceleratorSpec.AMD.MI("300X", count=8),
     image=sky.Image(
         pip=["torch", "transformers"],
         env={"HSA_OVERRIDE_GFX_VERSION": "11.0.0"},
@@ -314,7 +316,7 @@ import skyward as sky
 # Run multiple workloads on partitioned GPU
 pool = sky.ComputePool(
     provider=sky.Verda(region="FIN-01"),
-    accelerator=sky.Accelerator.NVIDIA.H100(mig="3g.40gb"),
+    accelerator=sky.AcceleratorSpec.NVIDIA.H100(mig="3g.40gb"),
 )
 ```
 

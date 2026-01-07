@@ -10,9 +10,10 @@ Skyward is a Python library for ephemeral GPU compute. Spin up cloud GPUs, run y
 | [Core Concepts](concepts.md) | Understanding the programming model and ephemeral compute |
 | [API Reference](api-reference.md) | Complete API documentation |
 | [Distributed Training](distributed-training.md) | Multi-GPU training with PyTorch, Keras, JAX, and HuggingFace |
-| [Providers](providers.md) | AWS, DigitalOcean, and Verda configuration |
+| [Providers](providers.md) | AWS, DigitalOcean, Verda, and VastAI configuration |
 | [Accelerators](accelerators.md) | GPU selection and MIG partitioning |
-| [Examples](examples.md) | All 16 examples explained |
+| [Integrations](integrations/index.md) | PyTorch, Keras, JAX, Transformers, and Joblib |
+| [Examples](examples.md) | All 22 examples explained |
 | [Architecture](architecture.md) | Internal design and extension points |
 
 ## Quick Links
@@ -50,8 +51,8 @@ with sky.ComputePool(provider=sky.AWS(), accelerator="A100") as pool:
 
 ## Requirements
 
-- Python 3.13+
-- Cloud provider credentials (AWS, DigitalOcean, or Verda)
+- Python 3.12+
+- Cloud provider credentials (AWS, DigitalOcean, Verda, or VastAI)
 
 ## Getting Help
 

@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from skyward.accelerator import Accelerator
+from skyward.accelerators import AcceleratorSpec
 from skyward.image import Image
 from skyward.spec import AllocationLike
 from skyward.types import Architecture, Memory
@@ -32,7 +32,7 @@ class _PoolCompute:
     fn: Callable[..., Any]
     nodes: int
     machine: str | None
-    accelerator: Accelerator | list[Accelerator]
+    accelerator: AcceleratorSpec | list[AcceleratorSpec]
     architecture: Architecture
     image: Image
     cpu: int | None

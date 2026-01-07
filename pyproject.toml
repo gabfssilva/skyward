@@ -30,6 +30,7 @@ dependencies = [
     "psutil>=5.9.0",
     "loguru>=0.7.3",
     "rich>=14.2.0",
+    "paramiko>=4.0.0",
 ]
 
 [project.optional-dependencies]
@@ -100,6 +101,7 @@ ignore = [
     "ANN401",  # Allow Any for serialization functions
     "UP046",   # Keep Generic[T] style for broader IDE support
     "UP047",   # Keep Generic function style for broader IDE support
+    "N802",    # Allow PascalCase for constructor-style functions
 ]
 
 [tool.pytest.ini_options]

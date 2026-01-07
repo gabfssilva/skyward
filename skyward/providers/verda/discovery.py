@@ -224,7 +224,7 @@ def fetch_available_instances(client: VerdaClient) -> tuple[InstanceSpec, ...]:
         sorted(
             [parse_instance_type(t) for t in instance_types],
             key=lambda s: (
-                s.accelerator or "",
+                s.Accelerator or "",
                 s.accelerator_count,
                 s.vcpu,
                 s.memory_gb,

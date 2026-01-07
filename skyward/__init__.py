@@ -10,7 +10,7 @@ Example (explicit pool):
 
     pool = sky.ComputePool(
         provider=sky.AWS(),
-        accelerator=sky.Accelerator.NVIDIA.A100(),
+        accelerator=sky.accelerator('A100'),
         image=sky.Image(pip=["torch"]),
     )
 
@@ -28,7 +28,7 @@ Example (implicit pool with decorator):
 
     @sky.pool(
         provider=sky.AWS(),
-        accelerator=sky.Accelerator.NVIDIA.A100(),
+        accelerator=sky.accelerator('A100', count=4),
         image=sky.Image(pip=["torch"]),
     )
     def main():
@@ -40,15 +40,22 @@ Example (implicit pool with decorator):
 
 """
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from skyward.providers.aws import AWS as AWS
+    from skyward.providers.digitalocean import DigitalOcean as DigitalOcean
+    from skyward.providers.vastai import VastAI as VastAI
+    from skyward.providers.verda import Verda as Verda
+
 # Accelerator utilities
 import skyward.conc as conc
 import skyward.integrations as integrations
 
 # Pool decorator (implicit context)
 from skyward._pool_decorator import pool
-from skyward.accelerator import (
-    is_nvidia,
-    is_trainium,
+from skyward.accelerators import (
+    Accelerator,
 )
 
 # Callback system
@@ -91,10 +98,20 @@ from skyward.events import (
 from skyward.executor import Executor
 
 # Image
-from skyward.image import Image
+from skyward.image import Image, SkywardSource
 
 # Logging configuration
 from skyward.logging import LogConfig
+
+# Output control for distributed execution
+from skyward.output import (
+    OutputPredicate,
+    OutputSpec,
+    is_head,
+    silent,
+    stderr,
+    stdout,
+)
 from skyward.multi_pool import MultiPool
 
 # Lazy computation API
@@ -104,7 +121,6 @@ from skyward.pending import (
     PendingCompute,
     compute,
     gather,
-    lazy,
 )
 
 # Pool
@@ -128,7 +144,7 @@ from skyward.spec import Allocation, AllocationLike
 from skyward.types import (
     GPU,
     NVIDIA,
-    Accelerator,
+    AcceleratorSpec,
     Architecture,
     Auto,
     ComputeSpec,
@@ -155,7 +171,6 @@ __all__ = [
     # === Lazy API ===
     # Lazy computation
     "compute",
-    "lazy",  # Alias for compute
     "gather",
     "PendingCompute",
     "PendingBatch",
@@ -167,6 +182,7 @@ __all__ = [
     "pool",  # Decorator for implicit context
     # Image
     "Image",
+    "SkywardSource",
     # Callback system
     "emit",
     "use_callback",
@@ -174,6 +190,13 @@ __all__ = [
     "Callback",
     # Logging
     "LogConfig",
+    # Output control
+    "stdout",
+    "stderr",
+    "silent",
+    "is_head",
+    "OutputPredicate",
+    "OutputSpec",
     # === Types ===
     "Instance",
     "InstanceSpec",
@@ -213,15 +236,15 @@ __all__ = [
     "Error",
     # Accelerators
     "Accelerator",
+    "AcceleratorSpec",
     "GPU",
     "NVIDIA",
     "Trainium",
     "current_accelerator",
-    "is_trainium",
-    "is_nvidia",
     # Providers
     "AWS",
     "DigitalOcean",
+    "VastAI",
     "Verda",
     # Provider selection
     "SelectionStrategy",
@@ -282,6 +305,26 @@ class _SkywardModule(_ModuleType):
     def __reduce__(self) -> tuple[object, tuple[()]]:
         """Make the module picklable by returning a function that imports it."""
         return (_unpickle_skyward_module, ())
+
+    def __getattr__(self, name: str) -> _Any:
+        """Lazy import providers when accessed as sky.AWS(), sky.VastAI(), etc."""
+        if name == "AWS":
+            from skyward.providers.aws import AWS
+
+            return AWS
+        if name == "DigitalOcean":
+            from skyward.providers.digitalocean import DigitalOcean
+
+            return DigitalOcean
+        if name == "VastAI":
+            from skyward.providers.vastai import VastAI
+
+            return VastAI
+        if name == "Verda":
+            from skyward.providers.verda import Verda
+
+            return Verda
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
     def __rrshift__(self, pending: _Any) -> _Any:
         """Execute pending computation on the current pool from context.

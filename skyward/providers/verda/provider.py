@@ -3,21 +3,19 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from loguru import logger
 from verda import VerdaClient
 from verda.constants import Actions
 
-from skyward.accelerator import Accelerator
+from skyward.accelerators import AcceleratorSpec
 from skyward.callback import emit
 from skyward.events import (
     BootstrapCompleted,
     BootstrapStarting,
-    Error,
     InstanceLaunching,
     InstanceProvisioned,
     InstanceStopping,
@@ -28,16 +26,19 @@ from skyward.events import (
     ProvisioningStarted,
     RegionAutoSelected,
 )
+from skyward.internal.decorators import audit
 from skyward.providers.base import (
     SSHKeyInfo,
     SSHKeyManager,
-    SSHTransport,
     get_private_key_path,
+    poll_instances,
 )
 from skyward.providers.common import (
     install_skyward_wheel_via_transport,
+    make_provisioned,
     wait_for_ssh_bootstrap,
 )
+from skyward.providers.ssh import SSHConfig
 from skyward.spec import _AllocationOnDemand, normalize_allocation
 from skyward.types import (
     ComputeSpec,
@@ -56,14 +57,9 @@ from .discovery import (
     get_availability,
 )
 
-if TYPE_CHECKING:
-    pass
-
-
 # =============================================================================
 # Internal Types
 # =============================================================================
-
 
 @dataclass
 class _VerdaInstance:
@@ -128,52 +124,28 @@ def _get_or_create_ssh_key(client: VerdaClient) -> SSHKeyInfo:
 
 def _wait_for_running(client: VerdaClient, instances: list[_VerdaInstance], timeout: float) -> None:
     """Wait for all instances to become running and get IPs."""
-    from tenacity import (
-        RetryError,
-        retry,
-        retry_if_exception_type,
-        stop_after_delay,
-        wait_fixed,
+
+    def fetch_status(vinst: _VerdaInstance) -> tuple[str, dict[str, Any]]:
+        all_instances = client.instances.get()
+        for inst in all_instances:
+            if inst.id == vinst.id:
+                ip = getattr(inst, "ip", "") or ""
+                # Treat missing IP as not ready yet
+                status = inst.status if ip else "pending"
+                return status, {"ip": ip, "status": inst.status}
+        return "not_found", {}
+
+    def update_instance(vinst: _VerdaInstance, info: dict[str, Any]) -> None:
+        vinst.ip = info.get("ip", "")
+        vinst.status = info.get("status", "")
+
+    poll_instances(
+        instances=instances,
+        fetch_status=fetch_status,
+        target_status="running",
+        update_instance=update_instance,
+        timeout=timeout,
     )
-
-    class _InstancePendingError(Exception):
-        """Instance not yet running - retry."""
-
-    def poll_instance(vinst: _VerdaInstance) -> None:
-        @retry(
-            stop=stop_after_delay(timeout),
-            wait=wait_fixed(1),
-            retry=retry_if_exception_type(_InstancePendingError),
-            reraise=True,
-        )
-        def check() -> None:
-            all_instances = client.instances.get()
-            data = None
-            for inst in all_instances:
-                if inst.id == vinst.id:
-                    data = inst
-                    break
-
-            if data is None:
-                raise _InstancePendingError(f"Instance {vinst.id} not found")
-
-            vinst.status = data.status
-
-            if data.status != "running":
-                raise _InstancePendingError(f"Instance {vinst.id} status: {data.status}")
-
-            if hasattr(data, "ip") and data.ip:
-                vinst.ip = data.ip
-            else:
-                raise _InstancePendingError(f"Instance {vinst.id} has no IP yet")
-
-        try:
-            check()
-        except RetryError as e:
-            raise TimeoutError(f"Instance {vinst.id} did not become running within {timeout}s") from e
-
-    for vinst in instances:
-        poll_instance(vinst)
 
 
 # =============================================================================
@@ -290,262 +262,222 @@ class VerdaProvider(Provider):
         """Create authenticated Verda client."""
         return VerdaClient(self._client_id, self._client_secret)
 
-    def _get_transport(self, instance: Instance) -> SSHTransport:
-        """Get SSHTransport for an instance."""
-        ip = instance.get_meta("instance_ip") or instance.public_ip or instance.private_ip
-        username = instance.get_meta("username", self._username)
-        key_path = get_private_key_path()
-        return SSHTransport(host=ip, username=username, key_path=key_path)
-
-    def _make_provisioned(
-        self, inst: Instance, spec: InstanceSpec | None = None
-    ) -> ProvisionedInstance:
-        """Create ProvisionedInstance from Instance for events."""
-        return ProvisionedInstance(
-            instance_id=inst.id,
-            node=inst.node,
-            provider=ProviderName.Verda,
-            spot=inst.spot,
-            spec=spec,
-            ip=inst.public_ip or inst.private_ip,
-        )
-
+    @audit("Provisioning")
     def provision(self, compute: ComputeSpec) -> tuple[Instance, ...]:
         """Provision Verda GPU instances."""
-        try:
-            cluster_id = str(uuid.uuid4())[:8]
-            logger.info(f"Provisioning {compute.nodes} Verda instances in {self.region}")
-            logger.debug(f"Cluster ID: {cluster_id}")
-            emit(ProvisioningStarted())
+        cluster_id = str(uuid.uuid4())[:8]
+        logger.debug(f"Cluster ID: {cluster_id}, nodes: {compute.nodes}, region: {self.region}")
+        emit(ProvisioningStarted())
 
-            client = self._get_client()
+        client = self._get_client()
 
-            ssh_key_info = _get_or_create_ssh_key(client)
-            self._resolved_ssh_key_id = ssh_key_info.id
+        ssh_key_info = _get_or_create_ssh_key(client)
+        self._resolved_ssh_key_id = ssh_key_info.id
 
-            emit(NetworkReady(region=self.region))
+        emit(NetworkReady(region=self.region))
 
-            acc = Accelerator.from_value(compute.accelerator)
-            allocation = normalize_allocation(compute.allocation)
-            prefer_spot = not isinstance(allocation, _AllocationOnDemand)
+        acc = AcceleratorSpec.from_value(compute.accelerator)
+        allocation = normalize_allocation(compute.allocation)
+        prefer_spot = not isinstance(allocation, _AllocationOnDemand)
 
-            if compute.machine is not None:
-                # Direct instance type override
-                flavor = compute.machine
-                # Look up spec for metadata (supported_os)
-                specs = self.available_instances()
-                spec = next((s for s in specs if s.name == flavor), None)
-            else:
-                # Infer from resources with availability filtering
-                accelerator_type = acc.accelerator if acc else None
-                requested_gpu_count = acc.count if acc else 1
+        if compute.machine is not None:
+            # Direct instance type override
+            flavor = compute.machine
+            # Look up spec for metadata (supported_os)
+            specs = self.available_instances()
+            spec = next((s for s in specs if s.name == flavor), None)
+        else:
+            # Infer from resources with availability filtering
+            accelerator_type = acc.accelerator if acc else None
+            requested_gpu_count = acc.count if acc else 1
 
-                # 1. Get all matching candidates (sorted by price)
-                candidates = select_instances(
-                    self.available_instances(),
-                    cpu=compute.cpu or 1,
-                    memory_mb=parse_memory_mb(compute.memory),
-                    accelerator=accelerator_type,
-                    accelerator_count=requested_gpu_count,
-                    prefer_spot=prefer_spot,
-                )
-
-                # 2. Get availability for spot/on-demand
-                availability = get_availability(client, is_spot=prefer_spot)
-                available_types: set[str] = set()
-                for region_types in availability.values():
-                    available_types.update(region_types)
-
-                # 3. Filter to only available candidates
-                available_candidates = [c for c in candidates if c.name in available_types]
-
-                if not available_candidates:
-                    raise NoAvailableRegionError(
-                        candidates[0].name if candidates else "unknown",
-                        prefer_spot,
-                        list(availability.keys()),
-                    )
-
-                # 4. Use best available (first = cheapest)
-                spec = available_candidates[0]
-                logger.debug(
-                    f"Selected {spec.name} from {len(candidates)} candidates "
-                    f"({len(available_candidates)} available)"
-                )
-
-            # Determine instance type name
-            instance_type = compute.machine if compute.machine is not None else spec.name
-
-            supported_os = spec.metadata.get("supported_os", ()) if spec else ()
-            if compute.accelerator or compute.machine:
-                default_cuda_image = "ubuntu-22.04-cuda-12.1"
-                os_image = next(
-                    filter(lambda os: "cuda" in os, supported_os),
-                    supported_os[0] if supported_os else default_cuda_image,
-                )
-            else:
-                os_image = supported_os[0] if supported_os else "ubuntu-22.04"
-            username = "root"
-            logger.debug(f"Using image: {os_image}, instance type: {instance_type}")
-            self._username = username
-
-            # Generate bootstrap script using Image.bootstrap()
-            user_data = compute.image.bootstrap(ttl=compute.timeout)
-
-            script_name = f"skyward-bootstrap-{cluster_id}"
-            startup_script = client.startup_scripts.create(name=script_name, script=user_data)
-
-            use_spot = prefer_spot
-
-            # Auto-region discovery
-            actual_region = find_available_region(
-                client,
-                instance_type,
-                is_spot=use_spot,
-                preferred_region=self.region,
+            # 1. Get all matching candidates (sorted by price)
+            candidates = select_instances(
+                self.available_instances(),
+                cpu=compute.cpu or 1,
+                memory_mb=parse_memory_mb(compute.memory),
+                accelerator=accelerator_type,
+                accelerator_count=requested_gpu_count,
+                prefer_spot=prefer_spot,
             )
 
-            if actual_region != self.region and spec:
-                emit(
-                    RegionAutoSelected(
-                        requested_region=self.region,
-                        selected_region=actual_region,
-                        spec=spec,
-                        provider=ProviderName.Verda,
-                    )
+            # 2. Get availability for spot/on-demand
+            availability = get_availability(client, is_spot=prefer_spot)
+            available_types: set[str] = set()
+            for region_types in availability.values():
+                available_types.update(region_types)
+
+            # 3. Filter to only available candidates
+            available_candidates = [c for c in candidates if c.name in available_types]
+
+            if not available_candidates:
+                raise NoAvailableRegionError(
+                    candidates[0].name if candidates else "unknown",
+                    prefer_spot,
+                    list(availability.keys()),
                 )
 
+            # 4. Use best available (first = cheapest)
+            spec = available_candidates[0]
+            logger.debug(
+                f"Selected {spec.name} from {len(candidates)} candidates "
+                f"({len(available_candidates)} available)"
+            )
+
+        # Determine instance type name
+        instance_type = compute.machine if compute.machine is not None else spec.name
+
+        supported_os = spec.metadata.get("supported_os", ()) if spec else ()
+        if compute.accelerator or compute.machine:
+            default_cuda_image = "ubuntu-22.04-cuda-12.1"
+            os_image = next(
+                filter(lambda os: "cuda" in os, supported_os),
+                supported_os[0] if supported_os else default_cuda_image,
+            )
+        else:
+            os_image = supported_os[0] if supported_os else "ubuntu-22.04"
+        username = "root"
+        logger.debug(f"Using image: {os_image}, instance type: {instance_type}")
+        self._username = username
+
+        # Generate bootstrap script using Image.bootstrap()
+        user_data = compute.image.bootstrap(ttl=compute.timeout)
+
+        script_name = f"skyward-bootstrap-{cluster_id}"
+        startup_script = client.startup_scripts.create(name=script_name, script=user_data)
+
+        use_spot = prefer_spot
+
+        # Auto-region discovery
+        actual_region = find_available_region(
+            client,
+            instance_type,
+            is_spot=use_spot,
+            preferred_region=self.region,
+        )
+
+        if actual_region != self.region and spec:
             emit(
-                InstanceLaunching(
-                    count=compute.nodes,
-                    candidates=(spec,) if spec else (),
-                    provider=ProviderName.Verda,
-                )
-            )
-
-            verda_instances: list[_VerdaInstance] = []
-            for i in range(compute.nodes):
-                instance_name = f"skyward-{cluster_id}-{i}"
-                logger.debug(f"Creating instance {instance_name} (type={instance_type}, spot={use_spot})")
-
-                created = client.instances.create(
-                    instance_type=instance_type,
-                    image=os_image,
-                    ssh_key_ids=[ssh_key_info.id],
-                    hostname=instance_name,
-                    description=f"Skyward managed instance - cluster {cluster_id}",
-                    startup_script_id=startup_script.id,
-                    location=actual_region,
-                    is_spot=use_spot,
-                )
-
-                verda_instances.append(
-                    _VerdaInstance(
-                        id=created.id,
-                        name=instance_name,
-                        ip="",
-                        status="provisioning",
-                    )
-                )
-                logger.debug(f"Instance {instance_name} created with id {created.id}")
-
-            logger.debug(f"Waiting for {len(verda_instances)} instances to become running...")
-            _wait_for_running(client, verda_instances, timeout=300)
-
-            self._instances = verda_instances
-            self._cluster_id = cluster_id
-
-            instances: list[Instance] = []
-            provisioned_instances: list[ProvisionedInstance] = []
-
-            for i, vinst in enumerate(verda_instances):
-                instance = Instance(
-                    id=str(vinst.id),
-                    provider=self,
-                    spot=use_spot,
-                    private_ip=vinst.private_ip or vinst.ip,
-                    public_ip=vinst.ip,
-                    node=i,
-                    metadata=frozenset(
-                        [
-                            ("cluster_id", cluster_id),
-                            ("instance_id", vinst.id),
-                            ("instance_ip", vinst.ip),
-                            ("username", username),
-                            ("accelerator_count", str(spec.accelerator_count)),
-                        ]
-                    ),
-                )
-                instances.append(instance)
-
-                provisioned = ProvisionedInstance(
-                    instance_id=str(vinst.id),
-                    node=i,
-                    provider=ProviderName.Verda,
-                    spot=use_spot,
+                RegionAutoSelected(
+                    requested_region=self.region,
+                    selected_region=actual_region,
                     spec=spec,
-                    ip=vinst.ip,
-                )
-                provisioned_instances.append(provisioned)
-                emit(InstanceProvisioned(instance=provisioned))
-
-            emit(
-                ProvisioningCompleted(
-                    instances=tuple(provisioned_instances),
                     provider=ProviderName.Verda,
-                    region=actual_region,
                 )
             )
 
-            logger.info(f"Provisioned {len(instances)} Verda instances: {[v.id for v in verda_instances]}")
-            return tuple(instances)
+        emit(
+            InstanceLaunching(
+                count=compute.nodes,
+                candidates=(spec,) if spec else (),
+                provider=ProviderName.Verda,
+            )
+        )
 
-        except Exception as e:
-            logger.error(f"Verda provisioning failed: {e}")
-            emit(Error(message=f"Provision failed: {e}"))
-            raise
+        verda_instances: list[_VerdaInstance] = []
+        for i in range(compute.nodes):
+            instance_name = f"skyward-{cluster_id}-{i}"
+            logger.debug(f"Creating instance {instance_name} (type={instance_type}, spot={use_spot})")
 
+            created = client.instances.create(
+                instance_type=instance_type,
+                image=os_image,
+                ssh_key_ids=[ssh_key_info.id],
+                hostname=instance_name,
+                description=f"Skyward managed instance - cluster {cluster_id}",
+                startup_script_id=startup_script.id,
+                location=actual_region,
+                is_spot=use_spot,
+            )
+
+            verda_instances.append(
+                _VerdaInstance(
+                    id=created.id,
+                    name=instance_name,
+                    ip="",
+                    status="provisioning",
+                )
+            )
+            logger.debug(f"Instance {instance_name} created with id {created.id}")
+
+        logger.debug(f"Waiting for {len(verda_instances)} instances to become running...")
+        _wait_for_running(client, verda_instances, timeout=300)
+
+        self._instances = verda_instances
+        self._cluster_id = cluster_id
+
+        instances: list[Instance] = []
+        provisioned_instances: list[ProvisionedInstance] = []
+        key_path = get_private_key_path()
+
+        for i, vinst in enumerate(verda_instances):
+            instance = Instance(
+                id=str(vinst.id),
+                provider=self,
+                ssh=SSHConfig(
+                    host=vinst.ip,
+                    username=username,
+                    key_path=key_path,
+                ),
+                spot=use_spot,
+                private_ip=vinst.private_ip or vinst.ip,
+                public_ip=vinst.ip,
+                node=i,
+                metadata=frozenset(
+                    [
+                        ("cluster_id", cluster_id),
+                        ("instance_id", vinst.id),
+                        ("instance_ip", vinst.ip),
+                        ("username", username),
+                        ("accelerator_count", str(spec.accelerator_count)),
+                    ]
+                ),
+            )
+            instances.append(instance)
+
+            provisioned = ProvisionedInstance(
+                instance_id=str(vinst.id),
+                node=i,
+                provider=ProviderName.Verda,
+                spot=use_spot,
+                spec=spec,
+                ip=vinst.ip,
+            )
+            provisioned_instances.append(provisioned)
+            emit(InstanceProvisioned(instance=provisioned))
+
+        emit(
+            ProvisioningCompleted(
+                instances=tuple(provisioned_instances),
+                provider=ProviderName.Verda,
+                region=actual_region,
+            )
+        )
+        return tuple(instances)
+
+    @audit("Setup")
     def setup(self, instances: tuple[Instance, ...], compute: ComputeSpec) -> None:
         """Setup instances (wait for bootstrap to complete)."""
-        from contextlib import contextmanager
-        from typing import Generator
+        provisioned_map = {inst.id: make_provisioned(inst, ProviderName.Verda) for inst in instances}
 
-        logger.info(f"Setting up {len(instances)} Verda instances...")
-        try:
-            # Build provisioned lookup for events
-            provisioned_map = {inst.id: self._make_provisioned(inst) for inst in instances}
+        for inst in instances:
+            emit(BootstrapStarting(instance=provisioned_map[inst.id]))
 
-            for inst in instances:
-                emit(BootstrapStarting(instance=provisioned_map[inst.id]))
+        def get_ip(inst: Instance) -> str:
+            return inst.get_meta("instance_ip") or inst.public_ip or ""
 
-            key_path = get_private_key_path()
+        def get_provisioned(inst: Instance) -> ProvisionedInstance:
+            return provisioned_map[inst.id]
 
-            def get_ip(inst: Instance) -> str:
-                return inst.get_meta("instance_ip") or inst.public_ip or ""
+        wait_for_ssh_bootstrap(instances, get_ip, get_provisioned, timeout=300)
+        install_skyward_wheel_via_transport(
+            instances,
+            get_transport=lambda inst: inst.connect(),
+            compute=compute,
+        )
 
-            def make_provisioned(inst: Instance) -> ProvisionedInstance:
-                return provisioned_map[inst.id]
-
-            @contextmanager
-            def ssh_transport(inst: Instance) -> Generator[SSHTransport, None, None]:
-                ip = get_ip(inst)
-                username = inst.get_meta("username", self._username)
-                yield SSHTransport(host=ip, username=username, key_path=key_path)
-
-            wait_for_ssh_bootstrap(
-                instances, get_ip, make_provisioned, timeout=300, key_path=key_path
-            )
-            install_skyward_wheel_via_transport(instances, ssh_transport, compute=compute)
-
-            for inst in instances:
-                emit(BootstrapCompleted(instance=provisioned_map[inst.id]))
-
-            logger.info(f"Setup completed for {len(instances)} instances")
-
-        except Exception as e:
-            logger.error(f"Verda setup failed: {e}")
-            emit(Error(message=f"Setup failed: {e}"))
-            raise
+        for inst in instances:
+            emit(BootstrapCompleted(instance=provisioned_map[inst.id]))
 
     def shutdown(
         self, instances: tuple[Instance, ...], compute: ComputeSpec
@@ -558,7 +490,7 @@ class VerdaProvider(Provider):
         for inst in instances:
             instance_id = inst.get_meta("instance_id") or inst.id
             if instance_id:
-                provisioned = self._make_provisioned(inst)
+                provisioned = make_provisioned(inst, ProviderName.Verda)
                 emit(InstanceStopping(instance=provisioned))
                 logger.debug(f"Deleting instance {instance_id}")
                 try:
@@ -578,25 +510,14 @@ class VerdaProvider(Provider):
         logger.info(f"Shutdown complete: {len(exited)} instances deleted")
         return tuple(exited)
 
-    def create_tunnel(
-        self, instance: Instance, remote_port: int = 18861
-    ) -> tuple[int, subprocess.Popen[bytes]]:
-        """Create SSH tunnel to instance using SSHTransport."""
-        logger.debug(f"Creating tunnel to instance {instance.id} port {remote_port}")
-        transport = self._get_transport(instance)
-        return transport.create_tunnel(remote_port)
-
-    def run_command(self, instance: Instance, command: str, timeout: int = 30) -> str:
-        """Run shell command on instance via SSH using SSHTransport."""
-        transport = self._get_transport(instance)
-        return transport.run_command(command, timeout)
-
     def discover_peers(self, cluster_id: str) -> tuple[Instance, ...]:
         """Discover peer instances in a cluster via Verda API."""
-        client = self._get_client()
+        from skyward.providers.base import assign_node_indices
 
+        client = self._get_client()
         hostname_pattern = f"skyward-{cluster_id}-"
         all_instances = client.instances.get()
+        key_path = get_private_key_path()
 
         instances = []
         for vinst in all_instances:
@@ -612,35 +533,21 @@ class VerdaProvider(Provider):
                 Instance(
                     id=str(vinst.id),
                     provider=self,
+                    ssh=SSHConfig(host=ip, username=self._username, key_path=key_path),
                     spot=getattr(vinst, "is_spot", False),
                     private_ip=ip,
                     public_ip=ip,
                     node=0,
-                    metadata=frozenset(
-                        [
-                            ("cluster_id", cluster_id),
-                            ("instance_id", vinst.id),
-                            ("instance_ip", ip),
-                            ("username", self._username),
-                        ]
-                    ),
+                    metadata=frozenset([
+                        ("cluster_id", cluster_id),
+                        ("instance_id", vinst.id),
+                        ("instance_ip", ip),
+                        ("username", self._username),
+                    ]),
                 )
             )
 
-        instances.sort(key=lambda i: i.private_ip)
-
-        return tuple(
-            Instance(
-                id=inst.id,
-                provider=inst.provider,
-                spot=inst.spot,
-                private_ip=inst.private_ip,
-                public_ip=inst.public_ip,
-                node=idx,
-                metadata=inst.metadata,
-            )
-            for idx, inst in enumerate(instances)
-        )
+        return assign_node_indices(instances)
 
     def available_instances(self) -> tuple[InstanceSpec, ...]:
         """List all available instance types."""

@@ -50,12 +50,6 @@ AWS_NEURON_NAME_MAP: Final[dict[str, str]] = {
     "Inferentia2": "Inferentia2",
 }
 
-# SSM parameter paths for public AMIs
-AL2023_CPU_SSM: dict[Architecture, str] = {
-    "x86_64": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64",
-    "arm64": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-arm64",
-}
-
 DLAMI_GPU_SSM: dict[Architecture, str] = {
     "x86_64": "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-22.04/latest/ami-id",
     "arm64": "/aws/service/deeplearning/ami/arm64/base-oss-nvidia-driver-gpu-ubuntu-22.04/latest/ami-id",
@@ -143,7 +137,7 @@ def parse_instance_info(info: dict[str, Any]) -> dict[str, Any]:
 
         # Fractional GPU: count=0 but has memory (e.g., G6f instances)
         if count == 0 and gpu_memory_mib > 0:
-            from skyward.accelerator import Accelerator as Acc
+            from skyward.accelerators import AcceleratorSpec as Acc
 
             base = Acc.from_name(aws_name)
             if base and base.memory:

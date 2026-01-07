@@ -400,22 +400,22 @@ Factory class for type-safe accelerator specifications.
 import skyward as sky
 
 # NVIDIA GPUs
-sky.Accelerator.NVIDIA.H100()                    # 1x H100 80GB
-sky.Accelerator.NVIDIA.H100(count=4)             # 4x H100
-sky.Accelerator.NVIDIA.H100(mig="3g.40gb")       # MIG partition
-sky.Accelerator.NVIDIA.A100(memory="40GB")       # A100 40GB variant
-sky.Accelerator.NVIDIA.T4()                      # 1x T4
+sky.AcceleratorSpec.NVIDIA.H100()  # 1x H100 80GB
+sky.AcceleratorSpec.NVIDIA.H100(count=4)  # 4x H100
+sky.AcceleratorSpec.NVIDIA.H100(mig="3g.40gb")  # MIG partition
+sky.AcceleratorSpec.NVIDIA.A100(memory="40GB")  # A100 40GB variant
+sky.AcceleratorSpec.NVIDIA.T4()  # 1x T4
 
 # AWS Accelerators
-sky.Accelerator.AWS.Trainium(version=2)          # Trainium2
-sky.Accelerator.AWS.Inferentia(version=2)        # Inferentia2
+sky.AcceleratorSpec.AWS.Trainium(version=2)  # Trainium2
+sky.AcceleratorSpec.AWS.Inferentia(version=2)  # Inferentia2
 
 # Google TPUs
-sky.Accelerator.Google.TPU(version="v5p")
-sky.Accelerator.Google.TPUSlice("v5p-8")
+sky.AcceleratorSpec.Google.TPU(version="v5p")
+sky.AcceleratorSpec.Google.TPUSlice("v5p-8")
 
 # AMD GPUs
-sky.Accelerator.AMD.MI("300X")
+sky.AcceleratorSpec.AMD.MI("300X")
 ```
 
 ### NVIDIA Factory Methods

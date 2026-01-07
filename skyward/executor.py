@@ -33,7 +33,7 @@ from skyward.spec import AllocationLike
 from skyward.volume import Volume
 
 if TYPE_CHECKING:
-    from skyward.types import Accelerator, Provider
+    from skyward.types import AcceleratorSpec, Provider
 
 from skyward.types import Memory
 
@@ -103,7 +103,7 @@ class Executor(Executor):
         nodes: int = 1,
         machine: str | None = None,
         image: Image | None = None,
-        accelerator: Accelerator | str | None = None,
+        accelerator: AcceleratorSpec | str | None = None,
         cpu: int | None = None,
         memory: Memory | None = None,
         volume: dict[str, str] | Sequence[Volume] | None = None,

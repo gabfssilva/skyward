@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
-import subprocess
-from collections.abc import Callable, Sequence
+import threading
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from skyward.image import Image
+    from skyward.internal.object_pool import ObjectPool
+    from skyward.providers.ssh import ChannelStream, SSHConfig, SSHConnection
 
-# Re-export from accelerator module for convenience
-from skyward.accelerator import (
+from skyward.accelerators import (
     GPU,
     NVIDIA,
-    Accelerator,
     AcceleratorCount,
+    AcceleratorSpec,
     Trainium,
     current_accelerator,
 )
@@ -26,7 +28,7 @@ __all__ = [
     "NVIDIA",
     "Trainium",
     "GPU",
-    "Accelerator",
+    "AcceleratorSpec",
     "current_accelerator",
     # Core types
     "InstanceSpec",
@@ -129,9 +131,9 @@ def parse_memory_mb(memory: Memory | None) -> int:
             return int(float(s))
 
 
-def _normalize_accelerator_name(acc: str | Accelerator) -> str:
+def _normalize_accelerator_name(acc: str | AcceleratorSpec) -> str:
     """Normalize accelerator name for comparison."""
-    acc_str = acc.accelerator if isinstance(acc, Accelerator) else str(acc)
+    acc_str = acc.accelerator if isinstance(acc, AcceleratorSpec) else str(acc)
     return acc_str.upper().replace("-", "").replace("_", "")
 
 
@@ -154,7 +156,7 @@ def select_instance(
     instances: tuple[InstanceSpec, ...],
     cpu: int = 1,
     memory_mb: int = 1024,
-    accelerator: str | Accelerator | None = None,
+    accelerator: str | AcceleratorSpec | None = None,
     accelerator_count: AcceleratorCount = 1,
     prefer_spot: bool = False,
 ) -> InstanceSpec:
@@ -248,7 +250,7 @@ def select_instances(
     instances: tuple[InstanceSpec, ...],
     cpu: int = 1,
     memory_mb: int = 1024,
-    accelerator: str | Accelerator | None = None,
+    accelerator: str | AcceleratorSpec | None = None,
     accelerator_count: AcceleratorCount = 1,
     prefer_spot: bool = False,
 ) -> tuple[InstanceSpec, ...]:
@@ -340,7 +342,7 @@ def select_instances(
     return tuple(candidates)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass
 class Instance:
     """Represents a provisioned compute instance.
 
@@ -350,6 +352,7 @@ class Instance:
 
     id: str
     provider: Provider
+    ssh: SSHConfig = field(repr=False)
     spot: bool = False
     private_ip: str = ""
     public_ip: str | None = None
@@ -359,6 +362,17 @@ class Instance:
     # AWS: {"instance_id": "i-xxx", "region": "us-east-1"}
     # DigitalOcean: {"droplet_id": 12345}
     metadata: frozenset[tuple[str, Any]] = field(default_factory=frozenset)
+
+    # Lock for thread-safe pool initialization (per-instance)
+    _pool_lock: threading.Lock = field(
+        default_factory=threading.Lock,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    # Metrics streamer (managed by start_metrics/stop_metrics)
+    _metrics: Any = field(default=None, init=False, repr=False, compare=False)
 
     @property
     def is_head(self) -> bool:
@@ -372,8 +386,94 @@ class Instance:
                 return v
         return default
 
+    @property
+    def pool(self) -> ObjectPool[SSHConnection]:
+        """Thread-safe lazy SSH connection pool."""
+        # Fast path: already initialized
+        if "_pool" in self.__dict__:
+            return self.__dict__["_pool"]
+
+        # Slow path: initialize with lock
+        with self._pool_lock:
+            # Double-check after acquiring lock
+            if "_pool" in self.__dict__:
+                return self.__dict__["_pool"]
+
+            from skyward.providers.ssh import SSHPool
+
+            self.__dict__["_pool"] = SSHPool(self.ssh)
+            return self.__dict__["_pool"]
+
+    @contextmanager
+    def connect(self) -> Iterator[SSHConnection]:
+        """Connect with auto-commit on exit."""
+        conn = self.pool.acquire()
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            self.pool.release(conn)
+
     def run_command(self, command: str, timeout: int = 30) -> str:
-        return self.provider.run_command(self, command, timeout)
+        """Execute single command immediately."""
+        from loguru import logger
+
+        logger.debug(f"Instance.run_command: acquiring SSH connection for {self.id}")
+        with self.pool() as conn:
+            logger.debug(f"Instance.run_command: got connection for {self.id}, executing")
+            result = conn.exec(command, timeout)
+            logger.debug(f"Instance.run_command: command completed for {self.id}")
+            return result
+
+    def start_metrics(
+        self,
+        interval: float = 0.2,
+        provider_name: Any = None,
+    ) -> None:
+        """Start streaming metrics from this instance.
+
+        Args:
+            interval: Time between samples in seconds.
+            provider_name: ProviderName enum for event metadata.
+        """
+        if self._metrics is not None:
+            return  # Already streaming
+
+        from skyward.events import ProviderName
+        from skyward.metrics import MetricsStreamer
+
+        self._metrics = MetricsStreamer(
+            instance=self,
+            interval=interval,
+            provider_name=provider_name or ProviderName.AWS,
+        )
+        self._metrics.start()
+
+    def stop_metrics(self) -> None:
+        """Stop streaming metrics."""
+        if self._metrics is not None:
+            self._metrics.stop()
+            self._metrics = None
+
+    def close(self) -> None:
+        """Close instance resources (metrics + SSH pool)."""
+        self.stop_metrics()
+        if "_pool" in self.__dict__:
+            self.__dict__["_pool"].close_all()
+            del self.__dict__["_pool"]
+
+    @contextmanager
+    def open_channel(self, remote_port: int = 18861) -> Iterator[ChannelStream]:
+        """Open SSH tunnel channel to remote port.
+
+        Uses Paramiko direct-tcpip channel - no subprocess needed.
+        The channel implements RPyC Stream interface for use with rpyc.connect_stream().
+        """
+        conn = self.pool.acquire()
+        try:
+            yield conn.open_tunnel(remote_port)
+        finally:
+            self.pool.release(conn)
 
     def run_python(self, script: str, timeout: int = 30) -> str:
         return self.run_command(f"/opt/skyward/.venv/bin/python -c '{script}'", timeout)
@@ -617,41 +717,6 @@ class Provider(Protocol):
         """
         ...
 
-    def create_tunnel(
-        self,
-        instance: Instance,
-        remote_port: int = 18861,
-    ) -> tuple[int, subprocess.Popen[bytes]]:
-        """Create tunnel to instance for RPyC connection.
-
-        Args:
-            instance: Instance to connect to.
-            remote_port: Remote port to tunnel to (default: 18861).
-                        For worker isolation, use 18861 + worker_id.
-
-        Returns:
-            Tuple of (local_port, tunnel_process).
-        """
-        ...
-
-    def run_command(self, instance: Instance, command: str, timeout: int = 30) -> str:
-        """Run shell command on instance, return stdout.
-
-        This method abstracts the transport layer (SSM for AWS, SSH for
-        DigitalOcean) allowing common scripts to be executed on any provider.
-
-        Args:
-            instance: Target instance.
-            command: Shell command string to execute.
-            timeout: Maximum time to wait in seconds.
-
-        Returns:
-            stdout from the command.
-
-        Raises:
-            RuntimeError: If command fails (non-zero exit code).
-        """
-        ...
 
     def discover_peers(self, cluster_id: str) -> tuple[Instance, ...]:
         """Discover peer instances in a cluster.

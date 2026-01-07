@@ -120,32 +120,3 @@ def attach_ssh_key_to_instance(
 
     except Exception as e:
         logger.warning(f"Failed to attach SSH key to instance {instance_id}: {e}")
-
-
-def parse_ssh_url(ssh_url: str) -> tuple[str, int, str]:
-    """Parse Vast.ai SSH URL into components.
-
-    Args:
-        ssh_url: SSH URL in format "ssh://user@host:port"
-
-    Returns:
-        Tuple of (host, port, username).
-
-    Raises:
-        ValueError: If URL format is invalid.
-
-    Examples:
-        >>> parse_ssh_url("ssh://root@vast-host.example.com:22222")
-        ('vast-host.example.com', 22222, 'root')
-    """
-    import re
-
-    match = re.match(r"ssh://(\w+)@([\w.\-]+):(\d+)", ssh_url)
-    if not match:
-        raise ValueError(f"Invalid SSH URL format: {ssh_url}")
-
-    username = match.group(1)
-    host = match.group(2)
-    port = int(match.group(3))
-
-    return host, port, username

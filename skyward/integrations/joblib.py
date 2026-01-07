@@ -33,7 +33,7 @@ from joblib import parallel_backend
 from joblib.parallel import ParallelBackendBase, register_parallel_backend
 from loguru import logger
 
-from skyward.accelerator import Accelerator
+from skyward.accelerators import AcceleratorSpec
 from skyward.callback import Callback
 from skyward.image import DEFAULT_IMAGE, Image
 from skyward.pool import ComputePool
@@ -218,7 +218,7 @@ def JoblibPool(
     nodes: int = 1,
     machine: str | None = None,
     image: Image | None = None,
-    accelerator: Accelerator | str | None = None,
+    accelerator: AcceleratorSpec | str | None = None,
     cpu: int | None = None,
     memory: Memory | None = None,
     volume: dict[str, str] | Sequence[Volume] | None = None,
@@ -295,7 +295,7 @@ def ScikitLearnPool(
     nodes: int = 1,
     machine: str | None = None,
     image: Image | None = None,
-    accelerator: Accelerator | str | None = None,
+    accelerator: AcceleratorSpec | str | None = None,
     cpu: int | None = None,
     memory: Memory | None = None,
     volume: dict[str, str] | Sequence[Volume] | None = None,

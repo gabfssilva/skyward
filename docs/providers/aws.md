@@ -226,22 +226,22 @@ G6f instances provide fractional access to A10G GPUs:
 
 ```python
 # H100 variants
-sky.Accelerator.NVIDIA.H100()                      # 1x H100-80GB
-sky.Accelerator.NVIDIA.H100(count=8)               # 8x H100-80GB
-sky.Accelerator.NVIDIA.H100(form_factor="SXM")     # H100-SXM
-sky.Accelerator.NVIDIA.H100(form_factor="PCIe")    # H100-PCIe
-sky.Accelerator.NVIDIA.H100(form_factor="NVL")     # H100-NVL
+sky.AcceleratorSpec.NVIDIA.H100()  # 1x H100-80GB
+sky.AcceleratorSpec.NVIDIA.H100(count=8)  # 8x H100-80GB
+sky.AcceleratorSpec.NVIDIA.H100(form_factor="SXM")  # H100-SXM
+sky.AcceleratorSpec.NVIDIA.H100(form_factor="PCIe")  # H100-PCIe
+sky.AcceleratorSpec.NVIDIA.H100(form_factor="NVL")  # H100-NVL
 
 # A100 variants
-sky.Accelerator.NVIDIA.A100()                      # 1x A100-80GB
-sky.Accelerator.NVIDIA.A100(memory="40GB")         # A100-40GB
-sky.Accelerator.NVIDIA.A100(count=8)               # 8x A100
+sky.AcceleratorSpec.NVIDIA.A100()  # 1x A100-80GB
+sky.AcceleratorSpec.NVIDIA.A100(memory="40GB")  # A100-40GB
+sky.AcceleratorSpec.NVIDIA.A100(count=8)  # 8x A100
 
 # Other GPUs
-sky.Accelerator.NVIDIA.L4()
-sky.Accelerator.NVIDIA.L40S()
-sky.Accelerator.NVIDIA.T4()
-sky.Accelerator.NVIDIA.V100()
+sky.AcceleratorSpec.NVIDIA.L4()
+sky.AcceleratorSpec.NVIDIA.L40S()
+sky.AcceleratorSpec.NVIDIA.T4()
+sky.AcceleratorSpec.NVIDIA.V100()
 ```
 
 ### MIG Support
@@ -250,30 +250,30 @@ Multi-Instance GPU (MIG) is supported on H100 and A100:
 
 ```python
 # H100 MIG profiles
-sky.Accelerator.NVIDIA.H100(mig="1g.10gb")   # 1 compute slice, 10GB
-sky.Accelerator.NVIDIA.H100(mig="3g.40gb")   # 3 compute slices, 40GB
-sky.Accelerator.NVIDIA.H100(mig="7g.80gb")   # 7 compute slices, 80GB
+sky.AcceleratorSpec.NVIDIA.H100(mig="1g.10gb")  # 1 compute slice, 10GB
+sky.AcceleratorSpec.NVIDIA.H100(mig="3g.40gb")  # 3 compute slices, 40GB
+sky.AcceleratorSpec.NVIDIA.H100(mig="7g.80gb")  # 7 compute slices, 80GB
 
 # A100-80GB MIG profiles
-sky.Accelerator.NVIDIA.A100(mig="1g.10gb")
-sky.Accelerator.NVIDIA.A100(mig="2g.20gb")
-sky.Accelerator.NVIDIA.A100(mig="3g.40gb")
-sky.Accelerator.NVIDIA.A100(mig="7g.80gb")
+sky.AcceleratorSpec.NVIDIA.A100(mig="1g.10gb")
+sky.AcceleratorSpec.NVIDIA.A100(mig="2g.20gb")
+sky.AcceleratorSpec.NVIDIA.A100(mig="3g.40gb")
+sky.AcceleratorSpec.NVIDIA.A100(mig="7g.80gb")
 
 # A100-40GB MIG profiles
-sky.Accelerator.NVIDIA.A100(memory="40GB", mig="1g.5gb")
-sky.Accelerator.NVIDIA.A100(memory="40GB", mig="3g.20gb")
+sky.AcceleratorSpec.NVIDIA.A100(memory="40GB", mig="1g.5gb")
+sky.AcceleratorSpec.NVIDIA.A100(memory="40GB", mig="3g.20gb")
 ```
 
 ### AWS Trainium/Inferentia
 
 ```python
 # Trainium for training
-sky.Accelerator.AWS.Trainium(version=1)
-sky.Accelerator.AWS.Trainium(version=2)
+sky.AcceleratorSpec.AWS.Trainium(version=1)
+sky.AcceleratorSpec.AWS.Trainium(version=2)
 
 # Inferentia for inference
-sky.Accelerator.AWS.Inferentia(version=2)
+sky.AcceleratorSpec.AWS.Inferentia(version=2)
 ```
 
 ## Spot Instances

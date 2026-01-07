@@ -145,7 +145,7 @@ def train_simple_model(epochs: int) -> dict:
 
 
 @sky.pool(
-    provider=sky.Verda(),
+    provider=sky.VastAI(),
     image=sky.Image(pip=["torch", "numpy"]),
     accelerator="L40S",
     allocation="spot-if-available",

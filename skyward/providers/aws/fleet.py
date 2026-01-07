@@ -196,16 +196,6 @@ def launch_fleet(
         with contextlib.suppress(ClientError):
             ec2.delete_launch_template(LaunchTemplateId=template_id)
 
-
-def get_valid_subnets_for_instance_type(
-    ec2: EC2Client,
-    instance_type: str,
-    subnet_ids: tuple[str, ...],
-) -> tuple[str, ...]:
-    """Filter subnets to only those in AZs that support the instance type."""
-    return get_valid_subnets_for_instance_types(ec2, (instance_type,), subnet_ids)
-
-
 def get_valid_subnets_for_instance_types(
     ec2: EC2Client,
     instance_types: tuple[str, ...],

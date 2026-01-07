@@ -11,10 +11,6 @@ Public API:
     get_private_key_path - Get path to private key
     compute_fingerprint - Compute MD5 fingerprint of SSH key
 
-    # Transport abstraction
-    Transport           - Protocol for remote command execution
-    SSHTransport        - SSH-based transport implementation
-
     # Capability protocols
     VolumeCapable       - Provider supports volumes
     MIGCapable          - Provider supports NVIDIA MIG
@@ -31,6 +27,9 @@ from skyward.providers.base.capabilities import (
     PlacementCapable,
     VolumeCapable,
 )
+from skyward.providers.base.discovery import (
+    assign_node_indices,
+)
 from skyward.providers.base.mixins import (
     InstancePendingError,
     create_instance_poller,
@@ -44,10 +43,6 @@ from skyward.providers.base.ssh_keys import (
     find_local_ssh_key,
     get_private_key_path,
 )
-from skyward.providers.base.transport import (
-    SSHTransport,
-    Transport,
-)
 
 __all__ = [
     # SSH keys
@@ -57,9 +52,6 @@ __all__ = [
     "find_local_ssh_key",
     "get_private_key_path",
     "compute_fingerprint",
-    # Transport
-    "Transport",
-    "SSHTransport",
     # Capabilities
     "VolumeCapable",
     "MIGCapable",
@@ -68,4 +60,6 @@ __all__ = [
     "InstancePendingError",
     "create_instance_poller",
     "poll_instances",
+    # Discovery
+    "assign_node_indices",
 ]

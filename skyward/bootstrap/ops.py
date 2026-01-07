@@ -124,16 +124,20 @@ def uv_add(*packages: str, extra_index: str | None = None) -> Op:
     return lambda: f"cd {SKYWARD_DIR} && uv add {pkg_list}{extra}"
 
 
-def uv_init(python: str = "3.12") -> Op:
+def uv_init(python: str = "3.12", name: str | None = None) -> Op:
     """Initialize uv project in SKYWARD_DIR.
 
     Creates a pyproject.toml with the specified Python version.
-    Uses --no-readme --no-pin-python to keep it minimal.
+    Uses --no-readme to keep it minimal.
 
     Args:
         python: Python version to use (e.g., "3.13").
+        name: Custom project name. If None, uses directory name.
+              Use a custom name to avoid self-dependency issues when
+              installing a package with the same name as the directory.
     """
-    return lambda: f"cd {SKYWARD_DIR} && uv init --python {python} --no-readme"
+    name_flag = f"--name {name} " if name else ""
+    return lambda: f"cd {SKYWARD_DIR} && uv init {name_flag}--python {python} --no-readme"
 
 # =============================================================================
 # File Operations

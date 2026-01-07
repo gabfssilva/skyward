@@ -4,8 +4,8 @@ This guide will help you install Skyward and run your first cloud computation.
 
 ## Prerequisites
 
-- Python 3.13 or higher
-- Cloud provider credentials (AWS, DigitalOcean, or Verda)
+- Python 3.12 or higher
+- Cloud provider credentials (AWS, DigitalOcean, Verda, or VastAI)
 
 ## Installation
 
@@ -81,8 +81,18 @@ Create a token at: https://cloud.digitalocean.com/account/api/tokens
 ### Verda
 
 ```bash
-export VERDA_API_KEY=your_api_key
+export VERDA_CLIENT_ID=your_client_id
+export VERDA_CLIENT_SECRET=your_client_secret
 ```
+
+### VastAI
+
+```bash
+pip install vastai
+vastai set api-key YOUR_API_KEY
+```
+
+Get your API key at: https://cloud.vast.ai/account/
 
 ## Your First Remote Function
 

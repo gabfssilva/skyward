@@ -154,8 +154,8 @@ The requested GPU isn't available in your region or provider.
 1. Check GPU availability for your region:
    ```python
    for instance in sky.AWS().available_instances():
-       if instance.accelerator:
-           print(f"{instance.name}: {instance.accelerator}")
+       if instance.Accelerator:
+           print(f"{instance.name}: {instance.Accelerator}")
    ```
 2. Try a different region
 3. Request a service quota increase
@@ -213,6 +213,104 @@ AWS service quotas limit instance launches.
    sky.ComputePool(provider=sky.Verda())  # Auto-discovers
    ```
 2. Check your account's region access
+
+### VastAI: Authentication Failed
+
+**Solutions:**
+1. Verify your API key at https://cloud.vast.ai/account/
+2. Ensure `~/.vastai` exists with your API key:
+   ```bash
+   echo "YOUR_API_KEY" > ~/.vastai
+   ```
+3. Or set the environment variable:
+   ```bash
+   export VASTAI_API_KEY=your_api_key
+   ```
+
+### VastAI: No Instances Found
+
+VastAI is a GPU marketplace - availability varies constantly.
+
+**Solutions:**
+1. Lower `min_reliability` threshold:
+   ```python
+   sky.VastAI(min_reliability=0.90)  # Instead of 0.95
+   ```
+2. Try different geolocation filter:
+   ```python
+   sky.VastAI(geolocation="EU")  # Or remove for worldwide
+   ```
+3. Increase `bid_multiplier` to outbid others:
+   ```python
+   sky.VastAI(bid_multiplier=1.5)  # 50% above minimum
+   ```
+4. Try a different GPU type - consumer GPUs often have better availability
+
+### VastAI: Overlay Network Issues
+
+Overlay networks enable NCCL communication between instances.
+
+**"Overlay creation failed":**
+1. Ensure multi-node is enabled (nodes > 1)
+2. Check your VastAI account has overlay network permissions
+3. Try explicit overlay configuration:
+   ```python
+   sky.VastAI(use_overlay=True)
+   ```
+
+**"NCCL timeout on overlay network":**
+1. Increase NCCL timeout:
+   ```python
+   image=sky.Image(env={"NCCL_SOCKET_TIMEOUT": "600"})
+   ```
+2. Filter to same geolocation for lower latency:
+   ```python
+   sky.VastAI(geolocation="US")
+   ```
+3. Enable NCCL debugging:
+   ```python
+   image=sky.Image(env={"NCCL_DEBUG": "INFO"})
+   ```
+
+**"Instances not seeing each other":**
+1. Verify overlay IPs are assigned:
+   ```python
+   info = sky.instance_info()
+   print(f"Peers: {info.peers}")
+   ```
+2. Wait for overlay setup to complete (can take 30-60s)
+3. Check that all instances joined the same overlay
+
+### VastAI: Instance Preemption
+
+VastAI spot instances can be preempted if outbid.
+
+**Solutions:**
+1. Use higher bid multiplier:
+   ```python
+   sky.VastAI(bid_multiplier=1.5)  # 50% above minimum
+   ```
+2. Filter for more reliable hosts:
+   ```python
+   sky.VastAI(min_reliability=0.98)
+   ```
+3. Implement checkpointing in your training code
+4. Use `allocation="on-demand"` for critical workloads (if supported)
+
+### VastAI: SSH Connection Issues
+
+**Solutions:**
+1. Ensure you have an SSH key:
+   ```bash
+   ls ~/.ssh/id_rsa.pub  # Or id_ed25519.pub
+   ```
+2. Upload SSH key to VastAI (done automatically on first use)
+3. Check instance status on VastAI dashboard
+4. For manual debugging:
+   ```bash
+   vastai show instances
+   vastai ssh-url <instance_id>
+   ```
 
 ---
 
