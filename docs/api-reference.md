@@ -125,7 +125,6 @@ Context manager for cloud resource management.
 | `concurrency` | `int` | `1` | Concurrent tasks per instance |
 | `display` | `str` | `"log"` | "log", "spinner", or "quiet" |
 | `on_event` | `Callback` | `None` | Custom event handler |
-| `collect_metrics` | `bool` | `True` | Enable metrics polling |
 
 **Methods:**
 

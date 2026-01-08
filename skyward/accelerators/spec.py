@@ -84,32 +84,41 @@ def current_accelerator() -> NVIDIA | Trainium | TPU | None:
 # NVIDIA - single memory option
 @overload
 def Accelerator(name: Literal[
-    "T4",
-    "L4",
-    "L40",
-    "L40S",
-    "P100",
-    "P4",
-    "K80",
-    "A10",
-    "A10G",
-    "A2",
-    "H200",
-    "B100",
-    "B200",
-    "GB200",
-    "GH200",
-
+    # Datacenter - Legacy
+    "K80", "P4", "P40", "P100",
+    # Datacenter - Turing/Ampere
+    "T4", "A2", "A10", "A10G", "A40", "A800",
+    # Datacenter - Ada Lovelace
+    "L4", "L40", "L40S",
+    # Datacenter - Hopper
+    "H200", "H200-NVL", "GH200",
+    # Datacenter - Blackwell
+    "B100", "B200", "GB200",
+    # Consumer GTX - Pascal
+    "GTX 1060", "GTX 1070", "GTX 1070 Ti", "GTX 1080", "GTX 1080 Ti", "Titan Xp",
+    # Consumer GTX - Turing
+    "GTX 1660", "GTX 1660 Super", "GTX 1660 Ti",
+    # Consumer RTX - Turing (20 series)
     "RTX 2060", "RTX 2060 Super", "RTX 2070", "RTX 2070 Super",
     "RTX 2080", "RTX 2080 Super", "RTX 2080 Ti",
-
-    "RTX 3060", "RTX 3060 Ti", "RTX 3070", "RTX 3070 Ti",
+    # Consumer RTX - Ampere (30 series)
+    "RTX 3050", "RTX 3060", "RTX 3060 Ti", "RTX 3060 Laptop", "RTX 3070", "RTX 3070 Ti",
     "RTX 3080", "RTX 3080 Ti", "RTX 3090", "RTX 3090 Ti",
-
+    # Consumer RTX - Ada Lovelace (40 series)
     "RTX 4060", "RTX 4060 Ti", "RTX 4070", "RTX 4070 Super",
-    "RTX 4070 Ti", "RTX 4070 Ti Super", "RTX 4080", "RTX 4080 Super", "RTX 4090",
-
-    "RTX 5070", "RTX 5070 Ti", "RTX 5080", "RTX 5090"
+    "RTX 4070 Ti", "RTX 4070 Ti Super", "RTX 4080", "RTX 4080 Super", "RTX 4090", "RTX 4090D",
+    # Consumer RTX - Blackwell (50 series)
+    "RTX 5060", "RTX 5060 Ti", "RTX 5070", "RTX 5070 Ti", "RTX 5080", "RTX 5090",
+    # Workstation - Pascal/Volta
+    "Quadro P4000", "Titan V",
+    # Workstation - Turing
+    "Quadro RTX 4000", "Quadro RTX 6000", "Quadro RTX 8000",
+    # Workstation - Ampere
+    "RTX A2000", "RTX A4000", "RTX A5000", "RTX A6000",
+    # Workstation - Ada Lovelace
+    "RTX 5000 Ada", "RTX 5880 Ada", "RTX 6000 Ada",
+    # Workstation - Blackwell
+    "RTX PRO 4000", "RTX PRO 6000",
 ], *, count: AcceleratorCount = 1) -> AcceleratorSpec: ...
 
 

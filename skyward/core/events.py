@@ -148,6 +148,7 @@ class BootstrapProgress:
 
     instance: ProvisionedInstance
     step: str  # "uv", "apt", "deps", "skyward", "server", "volumes"
+    message: str | None = None  # Optional console output
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +156,68 @@ class BootstrapCompleted:
     """Bootstrap finished on instance."""
 
     instance: ProvisionedInstance
+    duration: float | None = None
+
+
+# -----------------------------------------------------------------------------
+# Bootstrap Streaming Events (from JSONL)
+# -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class BootstrapConsole:
+    """Console output during bootstrap (from JSONL stream).
+
+    These events are parsed from the bootstrap.jsonl file on the instance
+    and represent real-time stdout/stderr output.
+    """
+
+    content: str
+    stream: str = "stdout"  # "stdout" or "stderr"
+
+
+@dataclass(frozen=True, slots=True)
+class BootstrapPhase:
+    """Phase event during bootstrap (from JSONL stream).
+
+    These events mark the start, completion, or failure of bootstrap phases
+    like "apt", "pip", "uv", "skyward", etc.
+    """
+
+    event: str  # "started", "completed", "failed"
+    phase: str  # "apt", "pip", "uv", "skyward", "bootstrap"
+    elapsed: float | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BootstrapCommand:
+    """Command being executed during bootstrap phase (from JSONL stream).
+
+    Emitted after BootstrapPhase(event="started") to show the actual
+    command being executed in that phase.
+    """
+
+    command: str
+
+
+@dataclass(frozen=True, slots=True)
+class BootstrapMetrics:
+    """Metrics event from JSONL stream.
+
+    Emitted by the metrics daemon running on the instance. Contains
+    CPU, memory, and optional GPU metrics.
+    """
+
+    ts: float
+    cpu: float
+    mem: float
+    mem_used_mb: int
+    mem_total_mb: int
+    gpu_util: float | None = None
+    gpu_mem_used: int | None = None
+    gpu_mem_total: int | None = None
+    gpu_temp: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,11 +253,12 @@ class Metrics:
 
 @dataclass(frozen=True, slots=True)
 class LogLine:
-    """Log line from remote execution stdout."""
+    """Log line from remote execution stdout/stderr."""
 
     instance: ProvisionedInstance
     line: str
     timestamp: float
+    stream: str = "stdout"  # "stdout" or "stderr"
 
 
 @dataclass(frozen=True, slots=True)
@@ -338,6 +402,10 @@ type SkywardEvent = (
     | BootstrapStarting
     | BootstrapProgress
     | BootstrapCompleted
+    | BootstrapConsole
+    | BootstrapPhase
+    | BootstrapCommand
+    | BootstrapMetrics
     | InstanceReady
     | Metrics
     | LogLine
@@ -367,6 +435,10 @@ __all__ = [
     "BootstrapStarting",
     "BootstrapProgress",
     "BootstrapCompleted",
+    "BootstrapConsole",
+    "BootstrapPhase",
+    "BootstrapCommand",
+    "BootstrapMetrics",
     "InstanceReady",
     # Execute
     "Metrics",

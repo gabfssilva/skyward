@@ -54,7 +54,6 @@ def pool(
     concurrency: int = 1,
     display: Literal["panel", "monitor", "spinner", "quiet"] = "panel",
     on_event: Callback | None = None,
-    collect_metrics: bool = True,
     logging: LogConfig | bool = True,
 ) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Decorator that provisions a pool for the duration of the function.
@@ -79,7 +78,6 @@ def pool(
         concurrency: Number of concurrent tasks per instance.
         display: Display mode ("spinner" or "quiet").
         on_event: Callback for events.
-        collect_metrics: Whether to collect metrics.
         logging: Logging configuration.
 
     Returns:
@@ -114,7 +112,6 @@ def pool(
                 concurrency=concurrency,
                 display=display,
                 on_event=on_event,
-                collect_metrics=collect_metrics,
                 logging=logging,
             )
             with p:

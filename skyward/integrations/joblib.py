@@ -228,7 +228,6 @@ def JoblibPool(
     concurrency: int = 1,
     display: Literal["panel", "spinner", "quiet"] = "panel",
     on_event: Callback | None = None,
-    collect_metrics: bool = True,
     joblib_version: str | None = None,
 ) -> Iterator[ComputePool]:
     """Compute pool with joblib backend for distributed parallel execution.
@@ -250,7 +249,6 @@ def JoblibPool(
         concurrency: Concurrent tasks per node.
         display: Output display mode.
         on_event: Event callback.
-        collect_metrics: Whether to collect metrics.
         joblib_version: Specific joblib version (e.g., "1.3.0"). None for latest.
 
     Yields:
@@ -280,7 +278,6 @@ def JoblibPool(
         concurrency=concurrency,
         display=display,
         on_event=on_event,
-        collect_metrics=collect_metrics,
     )
 
     with pool:
@@ -305,7 +302,6 @@ def ScikitLearnPool(
     concurrency: int = 1,
     display: Literal["panel", "spinner", "quiet"] = "panel",
     on_event: Callback | None = None,
-    collect_metrics: bool = True,
     sklearn_version: str | None = None,
 ) -> Iterator[ComputePool]:
     """Compute pool with scikit-learn for distributed ML training.
@@ -327,7 +323,6 @@ def ScikitLearnPool(
         concurrency: Concurrent tasks per node.
         display: Output display mode.
         on_event: Event callback.
-        collect_metrics: Whether to collect metrics.
         sklearn_version: Specific sklearn version (e.g., "1.4.0"). None for latest.
 
     Yields:
@@ -358,7 +353,6 @@ def ScikitLearnPool(
         concurrency=concurrency,
         display=display,
         on_event=on_event,
-        collect_metrics=collect_metrics,
     )
 
     with pool:

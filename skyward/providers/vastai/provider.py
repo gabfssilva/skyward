@@ -55,6 +55,25 @@ from .client import (
 )
 
 # =============================================================================
+# Minimal Onstart Script
+# =============================================================================
+
+
+def _generate_minimal_onstart() -> str:
+    """Generate minimal onstart script for VastAI containers.
+
+    VastAI has a 4048-character limit on onstart_cmd, but the full bootstrap
+    script is much larger. This minimal script just prepares the container
+    for SSH access - the full bootstrap is executed later via SSH.
+    """
+    return """#!/bin/bash
+set -e
+mkdir -p /opt/skyward
+tail -f /dev/null
+"""
+
+
+# =============================================================================
 # Internal Types
 # =============================================================================
 
@@ -228,61 +247,6 @@ class VastAIProvider(Provider):
         """Destroy Vast.ai instance."""
         with suppress(Exception):
             self._get_client().destroy_instance(instance_id)
-
-    def _generate_onstart_script(self, compute: ComputeSpec) -> str:
-        """Generate onstart script for Vast.ai container."""
-        script = f"""#!/bin/bash
-set -e
-
-mkdir -p /opt/skyward
-cd /opt/skyward
-
-curl -LsSf https://astral.sh/uv/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
-
-uv venv --python {compute.image.python}
-source .venv/bin/activate
-touch /opt/skyward/.step_uv
-
-uv pip install cloudpickle rpyc nvidia-ml-py
-touch /opt/skyward/.step_pip
-"""
-
-        if compute.image.pip:
-            pip_pkgs = " ".join(f'"{pkg}"' for pkg in compute.image.pip)
-            if compute.image.pip_extra_index_url:
-                extra_url = compute.image.pip_extra_index_url
-                script += f'uv pip install --extra-index-url "{extra_url}" {pip_pkgs}\n'
-            else:
-                script += f"uv pip install {pip_pkgs}\n"
-
-        if compute.image.env:
-            for key, value in compute.image.env.items():
-                script += f'export {key}="{value}"\n'
-
-        if compute.image.skyward_source == "github":
-            script += 'uv pip install "git+https://github.com/gabfssilva/skyward.git"\n'
-            script += "touch /opt/skyward/.step_wheel\n"
-        elif compute.image.skyward_source == "pypi":
-            script += "uv pip install skyward\ntouch /opt/skyward/.step_wheel\n"
-
-        if compute.image.skyward_source != "local":
-            script += """
-cd /opt/skyward
-nohup .venv/bin/python -m skyward.rpc > /var/log/skyward-rpyc.log 2>&1 &
-echo $! > /var/run/skyward-rpyc.pid
-
-for i in $(seq 1 30); do
-    (echo > /dev/tcp/127.0.0.1/18861) 2>/dev/null && break || sleep 1
-done
-touch /opt/skyward/.step_server
-"""
-
-        script += """
-touch /opt/skyward/.ready
-tail -f /dev/null
-"""
-        return script
 
     def _wait_for_running(
         self,
@@ -607,7 +571,12 @@ echo "$IFACE $IP"
             )
         )
 
-        onstart_script = self._generate_onstart_script(compute)
+        # VastAI has 4048-char limit on onstart_cmd - use minimal script
+        # Full bootstrap will be executed via SSH after container starts
+        onstart_script = _generate_minimal_onstart()
+
+        # Generate full bootstrap script (with nohup since Docker has no systemd)
+        full_bootstrap = compute.image.bootstrap(ttl=compute.timeout, use_systemd=False)
 
         if needs_overlay:
             self._create_overlay_network(client)
@@ -735,6 +704,17 @@ echo "$IFACE $IP"
                 region=self.geolocation or "global",
             )
         )
+
+        # Execute full bootstrap via SSH (two-stage bootstrap)
+        # The minimal onstart just started the container - now run the real bootstrap
+        from skyward.providers.common import wait_for_ssh_ready
+
+        logger.info("Executing bootstrap via SSH...")
+        for inst in instances:
+            # Wait for SSH to be ready
+            wait_for_ssh_ready(inst.ssh.host, inst.ssh.port, timeout=300)
+            # Upload and execute bootstrap script
+            inst.bootstrap(full_bootstrap)
 
         return tuple(instances)
 

@@ -5,6 +5,12 @@ from pathlib import Path
 
 import paramiko
 from loguru import logger
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_delay,
+    wait_exponential,
+)
 
 from skyward.internal.object_pool import ObjectPool
 
@@ -100,6 +106,24 @@ class SSHConnection:
             raise RuntimeError(f"Command failed ({code}): {stderr.read().decode()}")
         return stdout.read().decode()
 
+    def exec_background(self, command: str) -> None:
+        """Execute command in background without waiting for completion.
+
+        Use this for long-running commands that should run detached.
+        The command should redirect its own I/O (e.g., using nohup).
+        """
+        cmd_preview = command[:80] + "..." if len(command) > 80 else command
+        logger.debug(f"SSHConnection.exec_background: {cmd_preview}")
+        # Open channel, send command, close immediately
+        transport = self._client.get_transport()
+        if transport is None:
+            raise RuntimeError("SSH transport not available")
+        channel = transport.open_session()
+        channel.exec_command(command)
+        # Don't wait for exit status - just close the channel
+        channel.close()
+        logger.debug("SSHConnection.exec_background: command sent")
+
     # Transport protocol compatibility
     def run_command(self, command: str, timeout: int = 30) -> str:
         """Execute command (Transport protocol)."""
@@ -134,6 +158,11 @@ class SSHConnection:
         transport = self._client.get_transport()
         return transport is not None and transport.is_active()
 
+    @property
+    def client(self) -> paramiko.SSHClient:
+        """Expose underlying Paramiko client for advanced operations."""
+        return self._client
+
     def open_tunnel(self, remote_port: int) -> ChannelStream:
         """Open direct-tcpip channel for port forwarding."""
         logger.debug(f"SSH.open_tunnel: opening channel to port {remote_port}")
@@ -154,13 +183,23 @@ class SSHConnection:
 
 
 def SSHPool(config: SSHConfig, max_size: int = 4) -> ObjectPool[SSHConnection]:
-    """Create lazy SSH connection pool.
+    """Create lazy SSH connection pool with auth retry.
 
     Pool initializes instantly without blocking. Connections are created
     on-demand up to max_size, with one pre-warmed in background.
+    Retries on AuthenticationException (key may not be injected yet).
     """
+
+    @retry(
+        stop=stop_after_delay(60),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type(paramiko.ssh_exception.AuthenticationException),
+    )
+    def create_with_retry(_: int) -> SSHConnection:
+        return SSHConnection(config)
+
     return ObjectPool(
-        create=lambda _: SSHConnection(config),
+        create=create_with_retry,
         close=SSHConnection.close,
         check=SSHConnection.is_alive,
         max_size=max_size,

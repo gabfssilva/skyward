@@ -53,6 +53,7 @@ def launch_fleet(
     allocation_strategy: AllocationStrategy = "price-capacity-optimized",
     root_device: str = "/dev/sda1",
     min_volume_size: int = 30,
+    key_name: str | None = None,
 ) -> list[str]:
     """Low-level Fleet launch with intelligent AZ and instance type selection.
 
@@ -93,6 +94,8 @@ def launch_fleet(
     template_data: dict[str, Any] = {
         "IamInstanceProfile": {"Arn": resources.instance_profile_arn},
         "UserData": base64.b64encode(user_data.encode()).decode(),
+        # KeyName ensures SSH key is injected by cloud-init before user-data runs
+        **({"KeyName": key_name} if key_name else {}),
         # Use NetworkInterfaces to ensure public IP is assigned (required for SSH)
         # SubnetId comes from Fleet overrides, not here
         "NetworkInterfaces": [
@@ -251,6 +254,7 @@ def launch_instances(
     fleet_strategy: AllocationStrategy = "price-capacity-optimized",
     root_device: str = "/dev/sda1",
     min_volume_size: int = 30,
+    key_name: str | None = None,
 ) -> list[str]:
     """Launch instances with allocation strategy support.
 
@@ -275,6 +279,7 @@ def launch_instances(
         "allocation_strategy": fleet_strategy,
         "root_device": root_device,
         "min_volume_size": min_volume_size,
+        "key_name": key_name,
     }
 
     logger.debug(f"Launch strategy: {type(allocation).__name__}")
@@ -344,6 +349,7 @@ def _launch_cheapest(
     allocation_strategy: AllocationStrategy,
     root_device: str,
     min_volume_size: int,
+    key_name: str | None = None,
 ) -> list[str]:
     """Launch instances using cheapest option (spot or on-demand).
 
@@ -359,6 +365,7 @@ def _launch_cheapest(
         "allocation_strategy": allocation_strategy,
         "root_device": root_device,
         "min_volume_size": min_volume_size,
+        "key_name": key_name,
     }
 
     # Find cheapest spot and on-demand prices

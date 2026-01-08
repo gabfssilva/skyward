@@ -224,6 +224,41 @@ class AWSProvider(Provider):
         return boto3.client("ec2", region_name=self._active_region)
 
     # =========================================================================
+    # SSH Key Pair Management
+    # =========================================================================
+
+    def _ensure_key_pair(self, public_key: str) -> str:
+        """Import SSH key pair if not exists, return key name.
+
+        Uses fingerprint-based naming for idempotency - same key always
+        gets the same name, avoiding duplicate imports.
+        """
+        import hashlib
+
+        # Name based on fingerprint (idempotent)
+        fingerprint = hashlib.md5(public_key.encode()).hexdigest()[:12]
+        key_name = f"skyward-{fingerprint}"
+
+        ec2 = self._ec2
+
+        # Check if already exists
+        try:
+            ec2.describe_key_pairs(KeyNames=[key_name])
+            logger.debug(f"SSH key pair '{key_name}' already exists")
+            return key_name
+        except ClientError as e:
+            if "InvalidKeyPair.NotFound" not in str(e):
+                raise
+
+        # Import the key
+        logger.debug(f"Importing SSH key pair '{key_name}'")
+        ec2.import_key_pair(
+            KeyName=key_name,
+            PublicKeyMaterial=public_key.encode(),
+        )
+        return key_name
+
+    # =========================================================================
     # AMI Resolution
     # =========================================================================
 
@@ -347,7 +382,7 @@ class AWSProvider(Provider):
     def provision(self, compute: ComputeSpec) -> tuple[Instance, ...]:
         """Provision EC2 instances."""
         from skyward.accelerators import AcceleratorSpec
-        from skyward.bootstrap import grid_driver, group, inject_ssh_key
+        from skyward.bootstrap import grid_driver
 
         cluster_id = str(uuid.uuid4())[:8]
         logger.debug(f"Cluster ID: {cluster_id}, nodes: {compute.nodes}, region: {self.region}")
@@ -487,21 +522,17 @@ class AWSProvider(Provider):
             first_ami = next(iter(ami_by_arch.values()))
             username = self._resolve_username(first_ami)
 
-        # Get local SSH public key to inject into instance
-        ssh_key_op = None
+        # Get local SSH public key and register as EC2 key pair
+        # This ensures the key is injected by cloud-init before user-data runs
+        key_name = None
         key_info = find_local_ssh_key()
         if key_info:
             _, public_key = key_info
-            ssh_key_op = inject_ssh_key(public_key)
+            key_name = self._ensure_key_pair(public_key)
 
         # Generate bootstrap script
         # For fractional GPU, include GRID driver installation
-        base_preamble = grid_driver() if acc and acc.fractional else None
-        preamble = (
-            group(base_preamble, ssh_key_op)
-            if base_preamble and ssh_key_op
-            else (ssh_key_op or base_preamble)
-        )
+        preamble = grid_driver() if acc and acc.fractional else None
 
         # Build postamble (volume mounting)
         volume_script = _generate_volume_script(compute.volumes, username)
@@ -541,6 +572,7 @@ class AWSProvider(Provider):
             fleet_strategy=self.allocation_strategy,
             root_device=root_device,
             min_volume_size=min_volume_size,
+            key_name=key_name,
         )
         logger.debug(f"Fleet launched: {instance_ids}")
 

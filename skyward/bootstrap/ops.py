@@ -192,6 +192,9 @@ def file(
 def checkpoint(name: str) -> Op:
     """Create a checkpoint file for progress tracking.
 
+    DEPRECATED: Use phase() or phase_simple() instead for JSONL streaming.
+    Checkpoint files are being replaced by real-time JSONL events.
+
     Args:
         name: Checkpoint name (e.g., ".step_apt", ".ready").
 
@@ -523,3 +526,84 @@ def s3_wheel(bucket: str, wheel_key: str) -> Op:
     return lambda: f"""WHEEL_FILE="/tmp/$(basename "{wheel_key}")"
 aws s3 cp "s3://{bucket}/skyward/{wheel_key}" "$WHEEL_FILE"
 cd {SKYWARD_DIR} && uv add "$WHEEL_FILE\""""
+
+
+# =============================================================================
+# Phase Operations (for JSONL streaming)
+# =============================================================================
+
+
+def phase(name: str, *ops: Op) -> Op:
+    """Wrap operations in a named phase with JSONL streaming.
+
+    Emits phase started/completed events and streams command output line by line.
+    Each line of output becomes a console event in the JSONL log.
+
+    Args:
+        name: Phase name (e.g., "apt", "pip", "uv").
+        *ops: Operations to run in this phase.
+
+    Example:
+        >>> phase("apt", apt("python3", "curl"))()
+        'emit_phase "started" "apt"\\n...\\nemit_phase "completed" "apt" "$elapsed"'
+    """
+    from .compose import resolve
+
+    def generate() -> str:
+        inner = "\n".join(resolve(op) for op in ops if op is not None)
+        # Use run_phase for streaming output
+        # Escape single quotes in the inner script
+        escaped = inner.replace("'", "'\"'\"'")
+        return f"run_phase \"{name}\" bash -c '{escaped}'"
+
+    return generate
+
+
+def phase_simple(name: str, *ops: Op) -> Op:
+    """Wrap operations in a phase without output streaming.
+
+    Use this for fast operations where line-by-line output streaming
+    is not needed. Still emits phase started/completed events.
+
+    Args:
+        name: Phase name.
+        *ops: Operations to run.
+    """
+    from .compose import resolve
+
+    def generate() -> str:
+        inner = "\n".join(resolve(op) for op in ops if op is not None)
+        return f"""emit_phase "started" "{name}"
+_phase_start=$(date +%s%N)
+{inner}
+_phase_elapsed=$(awk "BEGIN {{printf \\"%.2f\\", ($(date +%s%N) - $_phase_start) / 1000000000}}")
+emit_phase "completed" "{name}" "$_phase_elapsed\""""
+
+    return generate
+
+
+def emit_bootstrap_complete() -> Op:
+    """Emit the final bootstrap completed event.
+
+    Call this at the end of the bootstrap script to signal completion.
+    """
+    return lambda: 'emit_phase "completed" "bootstrap"'
+
+
+def start_metrics() -> Op:
+    """Start the metrics daemon after bootstrap.
+
+    The daemon emits metrics events to events.jsonl every 200ms.
+    GPU metrics are cached and only updated every ~1s (5 iterations).
+
+    Should be called after emit_bootstrap_complete().
+    """
+    return lambda: "start_metrics_daemon"
+
+
+def stop_metrics() -> Op:
+    """Stop the metrics daemon.
+
+    Kills the background process that emits metrics.
+    """
+    return lambda: "stop_metrics_daemon"

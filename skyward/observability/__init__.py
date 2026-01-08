@@ -1,10 +1,9 @@
-"""Observability module - logging, metrics, and output control.
+"""Observability module - logging and output control.
 
-Contains logging configuration, metrics collection, and output control.
+Contains logging configuration and output control.
 """
 
 from skyward.observability.logging import LogConfig, _setup_logging, _teardown_logging
-from skyward.observability.metrics import MetricsPoller, MetricsStreamer
 from skyward.observability.output import (
     CallbackWriter,
     is_head,
@@ -19,9 +18,6 @@ __all__ = [
     "LogConfig",
     "_setup_logging",
     "_teardown_logging",
-    # Metrics
-    "MetricsStreamer",
-    "MetricsPoller",
     # Output
     "stdout",
     "stderr",

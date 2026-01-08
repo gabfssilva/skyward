@@ -79,7 +79,6 @@ class Executor(Executor):
         concurrency: Concurrent tasks per node.
         display: Output display mode.
         on_event: Event callback.
-        collect_metrics: Whether to collect metrics.
 
     Example:
         with SkywardExecutor(provider=AWS(), nodes=4, concurrency=4) as executor:
@@ -113,7 +112,6 @@ class Executor(Executor):
         concurrency: int = 1,
         display: Literal["panel", "spinner", "quiet"] = "panel",
         on_event: Callback | None = None,
-        collect_metrics: bool = True,
         logging: LogConfig | bool = False,
     ) -> None:
         self._provider = provider
@@ -130,7 +128,6 @@ class Executor(Executor):
         self._concurrency = concurrency
         self._display = display
         self._on_event = on_event
-        self._collect_metrics = collect_metrics
         self._logging = logging
 
         self._pool: ComputePool | None = None
@@ -157,7 +154,6 @@ class Executor(Executor):
             concurrency=self._concurrency,
             display=self._display,
             on_event=self._on_event,
-            collect_metrics=self._collect_metrics,
             logging=self._logging,
         )
         self._pool.__enter__()

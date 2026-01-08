@@ -721,7 +721,33 @@ class PanelController:
             t = self._tracking
             t.phase = "Bootstrapping"
             inst_id = _short_id(event.instance.instance_id)
-            t.action = f"Bootstrapping {inst_id} ({event.step})"
+
+            # Update action with step info
+            if event.step == "command" and event.message:
+                # For command events, show in logs with $ prefix
+                cmd = event.message.strip()
+                if cmd:
+                    log = Text()
+                    log.append(f"[{inst_id}] ", style=STYLE_DIM)
+                    log.append("$ ", style="bold cyan")
+                    # Truncate long commands
+                    display_cmd = cmd[:70] + "..." if len(cmd) > 70 else cmd
+                    log.append(display_cmd, style="cyan")
+                    self._add_log_line(log)
+            elif event.step == "console" and event.message:
+                # For console output, show in logs (only non-empty lines)
+                msg = event.message.strip()
+                if msg and not msg.startswith("#"):
+                    log = Text()
+                    log.append(f"[{inst_id}] ", style=STYLE_DIM)
+                    # Truncate long lines
+                    display_msg = msg[:80] + "..." if len(msg) > 80 else msg
+                    log.append(display_msg, style=STYLE_DIM)
+                    self._add_log_line(log)
+            else:
+                # For phase steps, update action
+                t.action = f"Bootstrapping {inst_id} ({event.step})"
+
             self._refresh()
 
     @handle.register
@@ -736,7 +762,10 @@ class PanelController:
             milestone = Text()
             milestone.append("✓ ", style=STYLE_SUCCESS)
             milestone.append(_short_id(inst_id), style="bold")
-            milestone.append(" ready", style=STYLE_DIM)
+            if event.duration:
+                milestone.append(f" ready ({_format_duration(event.duration)})", style=STYLE_DIM)
+            else:
+                milestone.append(" ready", style=STYLE_DIM)
             self._add_milestone(milestone)
 
             if t.ready >= total > 0:
@@ -844,7 +873,7 @@ class PanelController:
         with self._lock:
             if event.line.strip():
                 log = Text()
-                log.append(f"[node {event.instance.node}] ", style=STYLE_INFO)
+                log.append(f"[{_short_id(event.instance.instance_id)}] ", style=STYLE_INFO)
                 log.append(event.line.strip(), style=STYLE_DIM)
                 self._add_log_line(log)  # Goes to log_lines, not milestones
                 self._refresh()

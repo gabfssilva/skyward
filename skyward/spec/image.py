@@ -16,11 +16,15 @@ from skyward.bootstrap import (
     Op,
     apt,
     bootstrap,
-    checkpoint,
+    emit_bootstrap_complete,
     env_export,
     install_uv,
     instance_timeout,
+    nohup_service,
+    phase,
+    phase_simple,
     shell_vars,
+    start_metrics,
     systemd,
     uv_add,
     uv_init,
@@ -116,6 +120,7 @@ class Image:
         ttl: int = 0,
         preamble: Op | None = None,
         postamble: Op | None = None,
+        use_systemd: bool = True,
     ) -> str:
         """Generate bootstrap script - identical for all clouds.
 
@@ -130,6 +135,8 @@ class Image:
             ttl: Auto-shutdown in seconds (0 = disabled).
             preamble: Op to execute first (e.g., ssm_restart() on AWS).
             postamble: Op to execute last (e.g., volume mounts).
+            use_systemd: If True, use systemd to manage RPyC service.
+                If False, use nohup (for Docker containers without systemd).
 
         Returns:
             Complete shell script for cloud-init/user_data.
@@ -137,38 +144,63 @@ class Image:
         ops: list[Op | None] = [
             instance_timeout(ttl) if ttl else None,  # safety timeout ALWAYS first
             preamble,
-            shell_vars(**self.shell_vars) if self.shell_vars else None,  # resolve before use
-            env_export(**self.env) if self.env else None,
-            install_uv(),
-            apt("python3", "curl", "git", *self.apt),  # git needed for github install
-            uv_init(self.python, name="skyward-bootstrap"),  # custom name to avoid self-dependency
-            uv_add(
-                "cloudpickle",
-                "rpyc",
-                "nvidia-ml-py",  # NVIDIA GPU metrics (gracefully ignored if no GPU)
-                *self.pip,
-                extra_index=self.pip_extra_index_url,
+            # Environment setup (fast, no streaming needed)
+            phase_simple(
+                "env",
+                shell_vars(**self.shell_vars) if self.shell_vars else None,
+                env_export(**self.env) if self.env else None,
+            ) if self.shell_vars or self.env else None,
+            # UV setup (fast)
+            phase_simple("uv", install_uv(), uv_init(self.python, name="skyward-bootstrap")),
+            # APT packages (streaming useful for progress)
+            phase("apt", apt("python3", "curl", "git", *self.apt)),
+            # Python dependencies (streaming useful)
+            phase(
+                "deps",
+                uv_add(
+                    "cloudpickle",
+                    "rpyc",
+                    "nvidia-ml-py",  # NVIDIA GPU metrics (gracefully ignored if no GPU)
+                    *self.pip,
+                    extra_index=self.pip_extra_index_url,
+                ),
             ),
-            checkpoint(".step_pip"),
         ]
 
         # Install skyward if not using local wheel
         if self.skyward_source == "github":
-            ops.append(uv_add("git+https://github.com/gabfssilva/skyward.git"))
-            ops.append(checkpoint(".step_wheel"))
+            ops.append(phase("skyward", uv_add("git+https://github.com/gabfssilva/skyward.git")))
         elif self.skyward_source == "pypi":
-            ops.append(uv_add("skyward"))
-            ops.append(checkpoint(".step_wheel"))
+            ops.append(phase("skyward", uv_add("skyward")))
         # "local" mode: skyward installed via SCP after bootstrap
 
         # Start RPyC service if skyward is installed via user-data
         if self.skyward_source != "local":
-            ops.append(systemd("skyward-rpyc", rpyc_service_unit(env=self.env)))
-            ops.append(wait_for_port(RPYC_PORT))
-            ops.append(checkpoint(".step_server"))
+            if use_systemd:
+                ops.append(
+                    phase_simple(
+                        "server",
+                        systemd("skyward-rpyc", rpyc_service_unit(env=self.env)),
+                        wait_for_port(RPYC_PORT),
+                    )
+                )
+            else:
+                # Docker containers without systemd - use nohup
+                ops.append(
+                    phase_simple(
+                        "server",
+                        nohup_service(
+                            "skyward-rpyc",
+                            ".venv/bin/python -m skyward.rpc",
+                            env=self.env,
+                        ),
+                        wait_for_port(RPYC_PORT),
+                    )
+                )
 
         ops.append(postamble)
-        ops.append(checkpoint(".ready"))
+        ops.append(emit_bootstrap_complete())
+        ops.append(start_metrics())  # Start metrics daemon after bootstrap
 
         return bootstrap(*ops)
 

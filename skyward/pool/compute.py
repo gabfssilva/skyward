@@ -48,7 +48,6 @@ from skyward.core.events import (
     Error,
     FunctionCall,
     FunctionResult,
-    LogLine,
     PoolStarted,
     PoolStopping,
     ProvisionedInstance,
@@ -164,7 +163,6 @@ class ComputePool:
     # Display settings
     display: Literal["panel", "quiet"] = "quiet"
     on_event: Callback | None = None
-    collect_metrics: bool = True
 
     # Logging configuration
     logging: LogConfig | bool = True
@@ -420,15 +418,13 @@ class ComputePool:
 
         provisioned = self._make_provisioned(pc.instance)
 
-        def stdout_callback(line: str) -> None:
-            emit(LogLine(instance=provisioned, line=line, timestamp=time.time()))
-
         fn_name = getattr(pending.fn, "__name__", str(pending.fn))
         start_time = time.time()
         emit(FunctionCall(function_name=fn_name, instance=provisioned, timestamp=start_time))
 
         try:
-            result_bytes = conn.root.execute(fn_bytes, args_bytes, kwargs_bytes, stdout_callback)
+            # Stdout/stderr now streamed via events.jsonl (same as bootstrap/metrics)
+            result_bytes = conn.root.execute(fn_bytes, args_bytes, kwargs_bytes)
             response = deserialize(result_bytes)
             if response.get("error"):
                 raise ExecutionError(response["error"])
@@ -516,13 +512,6 @@ class ComputePool:
         # Setup cluster on all instances in parallel (once per instance)
         logger.debug("Setting up cluster environment on instances...")
         self._setup_all_instances()
-
-        # Start metrics streaming on each instance
-        if self.collect_metrics:
-            logger.debug("Starting metrics streaming...")
-            provider_name = _get_provider_name(self._built_provider)
-            for instance in self._instance_pool:
-                instance.start_metrics(interval=0.2, provider_name=provider_name)
 
     def _shutdown(self) -> None:
         """Shutdown and release pool resources."""

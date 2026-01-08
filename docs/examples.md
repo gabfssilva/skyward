@@ -1003,7 +1003,6 @@ with use_callback(combined):
     with sky.ComputePool(
         provider=sky.AWS(),
         accelerator="T4",
-        collect_metrics=True,
     ) as pool:
         for i in range(5):
             result = train_step(i) >> pool
@@ -1022,7 +1021,6 @@ with sky.ComputePool(
 - `use_callback()` - Context manager for callbacks
 - `on_event=` - Pool parameter for callbacks
 - Pattern matching on event types
-- `collect_metrics=True` - Enable GPU/CPU metrics
 
 ---
 

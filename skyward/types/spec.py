@@ -72,10 +72,37 @@ def parse_memory_mb(memory: Memory | None) -> int:
             return int(float(s))
 
 
-def _normalize_accelerator_name(acc: str | AcceleratorSpec) -> str:
-    """Normalize accelerator name for comparison (e.g., 'RTX 5090' -> 'RTX_5090')."""
-    acc_str = acc.accelerator if isinstance(acc, AcceleratorSpec) else str(acc)
-    return acc_str.upper().replace("-", "_").replace(" ", "_")
+def _accelerator_matches(instance_acc: str, requested_acc: str) -> bool:
+    """Check if instance accelerator matches the requested one.
+
+    Handles:
+    - Exact matches (case-insensitive)
+    - Hyphen-separated variants (A100 matches A100-40, H100 matches H100-SXM)
+
+    Does NOT match:
+    - Different GPUs with similar prefixes (L4 vs L40, L40S)
+    - Space-separated variants (RTX 5070 vs RTX 5070 Ti are different GPUs)
+
+    Examples:
+        - "L4" matches "L4" ✓
+        - "L4" matches "L40" ✗ (different GPU)
+        - "A100-40" matches "A100" ✓ (hyphen = memory variant)
+        - "H100-SXM" matches "H100" ✓ (hyphen = form factor)
+        - "RTX 5070 Ti" matches "RTX 5070" ✗ (different GPU)
+    """
+    # Normalize: uppercase, trim whitespace
+    inst_norm = instance_acc.upper().strip()
+    req_norm = requested_acc.upper().strip()
+
+    # Exact match
+    if inst_norm == req_norm:
+        return True
+
+    # Hyphen-separated variant: A100 matches A100-40, H100 matches H100-SXM
+    if inst_norm.startswith(req_norm + "-"):
+        return True
+
+    return False
 
 
 def _matches_count(spec_count: float, requirement: AcceleratorCount) -> bool:
@@ -129,12 +156,12 @@ def select_instance(
         return s.price_on_demand or float("inf")
 
     if accelerator:
-        acc_normalized = _normalize_accelerator_name(accelerator)
+        acc_name = accelerator.accelerator if isinstance(accelerator, AcceleratorSpec) else accelerator
         candidates = [
             s
             for s in instances
             if s.accelerator
-            and _normalize_accelerator_name(s.accelerator).startswith(acc_normalized)
+            and _accelerator_matches(s.accelerator, acc_name)
             and _matches_count(s.accelerator_count, accelerator_count)
             and s.vcpu >= cpu
             and s.memory_gb >= memory_gb
@@ -145,10 +172,7 @@ def select_instance(
                 {
                     int(s.accelerator_count)
                     for s in instances
-                    if s.accelerator
-                    and _normalize_accelerator_name(s.accelerator).startswith(
-                        acc_normalized
-                    )
+                    if s.accelerator and _accelerator_matches(s.accelerator, acc_name)
                 }
             )
             if available_counts:
@@ -229,12 +253,12 @@ def select_instances(
         return s.price_on_demand or float("inf")
 
     if accelerator:
-        acc_normalized = _normalize_accelerator_name(accelerator)
+        acc_name = accelerator.accelerator if isinstance(accelerator, AcceleratorSpec) else accelerator
         candidates = [
             s
             for s in instances
             if s.accelerator
-            and _normalize_accelerator_name(s.accelerator).startswith(acc_normalized)
+            and _accelerator_matches(s.accelerator, acc_name)
             and _matches_count(s.accelerator_count, accelerator_count)
             and s.vcpu >= cpu
             and s.memory_gb >= memory_gb
@@ -245,10 +269,7 @@ def select_instances(
                 {
                     int(s.accelerator_count)
                     for s in instances
-                    if s.accelerator
-                    and _normalize_accelerator_name(s.accelerator).startswith(
-                        acc_normalized
-                    )
+                    if s.accelerator and _accelerator_matches(s.accelerator, acc_name)
                 }
             )
             if available_counts:

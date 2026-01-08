@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import socket
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from pathlib import Path
 from subprocess import PIPE, Popen
 from typing import TYPE_CHECKING, Protocol
 
 from loguru import logger
+from paramiko import SSHClient
 from tenacity import (
     RetryError,
     retry,
@@ -24,7 +26,14 @@ from tenacity import (
 )
 
 from skyward.core.constants import RPYC_PORT, SKYWARD_DIR
-from skyward.core.events import ProviderName, ProvisionedInstance
+from skyward.core.events import (
+    BootstrapCommand,
+    BootstrapConsole,
+    BootstrapMetrics,
+    BootstrapPhase,
+    ProviderName,
+    ProvisionedInstance,
+)
 
 if TYPE_CHECKING:
     from skyward.types import ComputeSpec, Instance, InstanceSpec
@@ -122,42 +131,211 @@ class BootstrapNotReadyError(Exception):
     """Bootstrap not ready - retry."""
 
 
-def wait_for_ready(run_command: Callable[[str], str], timeout: int = 300) -> None:
-    """Wait for bootstrap .ready file to exist.
+# =============================================================================
+# Bootstrap Streaming
+# =============================================================================
 
-    Polls the remote instance via SSH until the .ready file is created
-    by the bootstrap script, indicating setup is complete.
+class BootstrapError(Exception):
+    """Bootstrap failed."""
+
+
+@dataclass(frozen=True, slots=True)
+class LogEvent:
+    """Log line from remote execution (internal, for JSONL streaming)."""
+
+    content: str
+    stream: str = "stdout"
+
+
+# Type alias for all streamable events
+type StreamEvent = (
+    BootstrapConsole | BootstrapPhase | BootstrapCommand | BootstrapMetrics | LogEvent
+)
+
+
+def parse_bootstrap_line(line: str) -> StreamEvent | None:
+    """Parse a single JSONL line from events log.
 
     Args:
-        run_command: Function to execute remote commands (e.g., inst.run_command).
-        timeout: Maximum seconds to wait.
+        line: Raw line from events.jsonl.
 
-    Raises:
-        TimeoutError: If .ready file not found within timeout.
+    Returns:
+        Parsed event or None if line is invalid.
     """
-
-    @retry(
-        stop=stop_after_delay(timeout),
-        wait=wait_fixed(2),
-        retry=retry_if_exception_type(BootstrapNotReadyError),
-        reraise=True,
-    )
-    def _poll() -> None:
-        try:
-            result = run_command(f"test -f {SKYWARD_DIR}/.ready && echo ready")
-            if "ready" not in result:
-                raise BootstrapNotReadyError()
-        except BootstrapNotReadyError:
-            raise
-        except Exception:
-            raise BootstrapNotReadyError() from None
+    import json
 
     try:
-        logger.debug(f"Waiting for bootstrap .ready (timeout={timeout}s)")
-        _poll()
-        logger.debug("Bootstrap ready")
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        logger.warning(f"Invalid JSON in events log: {line[:100]}")
+        return None
+
+    match data.get("type"):
+        case "console":
+            return BootstrapConsole(
+                content=data.get("content", ""),
+                stream=data.get("stream", "stdout"),
+            )
+        case "phase":
+            return BootstrapPhase(
+                event=data.get("event", ""),
+                phase=data.get("phase", ""),
+                elapsed=data.get("elapsed"),
+                error=data.get("error"),
+            )
+        case "command":
+            return BootstrapCommand(command=data.get("command", ""))
+        case "metrics":
+            return BootstrapMetrics(
+                ts=data.get("ts", 0.0),
+                cpu=data.get("cpu", 0.0),
+                mem=data.get("mem", 0.0),
+                mem_used_mb=data.get("mem_used_mb", 0),
+                mem_total_mb=data.get("mem_total_mb", 0),
+                gpu_util=data.get("gpu_util"),
+                gpu_mem_used=data.get("gpu_mem_used"),
+                gpu_mem_total=data.get("gpu_mem_total"),
+                gpu_temp=data.get("gpu_temp"),
+            )
+        case "log":
+            return LogEvent(
+                content=data.get("content", ""),
+                stream=data.get("stream", "stdout"),
+            )
+        case _:
+            logger.warning(f"Unknown event type: {data.get('type')}")
+            return None
+
+
+def stream_events(
+    ssh_client: SSHClient,
+    log_path: str = f"{SKYWARD_DIR}/events.jsonl",
+    timeout: float = 600,
+) -> Iterator[StreamEvent]:
+    """Stream events via SSH tail -F (follows rotation).
+
+    Connects to the instance via SSH and streams the JSONL events log
+    in real-time using tail -F. Yields events as they are emitted.
+
+    Uses tail -F (capital F) to follow file rotation, which is important
+    when the events.jsonl file is rotated to prevent unbounded growth.
+
+    The stream does NOT automatically terminate on bootstrap completion.
+    The caller should handle BootstrapPhase events and decide when to stop.
+    The stream terminates when:
+    - A phase event with event="failed" is received (raises BootstrapError)
+    - The timeout is exceeded (raises TimeoutError)
+    - The SSH connection is lost
+
+    Args:
+        ssh_client: Paramiko SSHClient connected to the instance.
+        log_path: Path to the events JSONL log file.
+        timeout: Maximum time to wait (refreshed on each event received).
+
+    Yields:
+        Bootstrap events (console, phase, command) and metrics events.
+
+    Raises:
+        BootstrapError: If bootstrap fails.
+        TimeoutError: If no events received within timeout.
+    """
+    import select
+    import time
+
+    from skyward.core.events import BootstrapPhase
+
+    logger.debug(f"stream_events: waiting for log file {log_path}")
+    deadline = time.monotonic() + timeout
+
+    # Wait for log file to exist before starting tail
+    @retry(
+        stop=stop_after_delay(min(60, timeout)),
+        wait=wait_fixed(1),
+        retry=retry_if_exception_type(FileNotFoundError),
+        reraise=True,
+    )
+    def wait_for_log_file() -> None:
+        _, stdout, _ = ssh_client.exec_command(f"test -f {log_path} && echo exists")
+        if "exists" not in stdout.read().decode():
+            raise FileNotFoundError(f"Log file {log_path} not found")
+
+    try:
+        wait_for_log_file()
+        logger.debug("stream_events: log file found, starting tail -F")
     except RetryError as e:
-        raise TimeoutError(f"Bootstrap not ready after {timeout}s") from e
+        logger.error("stream_events: log file not found after timeout")
+        raise TimeoutError("Events log file not created within timeout") from e
+
+    # Start tail -F (capital F follows rotation)
+    transport = ssh_client.get_transport()
+    if transport is None:
+        raise RuntimeError("SSH transport not available")
+
+    channel = transport.open_session()
+    channel.exec_command(f"tail -F {log_path}")
+    channel.setblocking(0)
+    logger.debug("stream_events: tail -F started, entering read loop")
+
+    buffer = ""
+
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"Events stream timeout after {timeout}s")
+
+            # Use select to wait for data with timeout
+            ready, _, _ = select.select([channel], [], [], min(1.0, remaining))
+
+            if ready:
+                try:
+                    data = channel.recv(4096).decode(errors="replace")
+                    if not data:
+                        # Channel closed
+                        break
+                    buffer += data
+
+                    # Process complete lines
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
+                        if not line:
+                            continue
+
+                        event = parse_bootstrap_line(line)
+                        if event is None:
+                            continue
+
+                        yield event
+
+                        # Refresh deadline on event received
+                        deadline = time.monotonic() + timeout
+
+                        # Check for failure events (but NOT completion - caller decides)
+                        match event:
+                            case BootstrapPhase(event="failed", error=error):
+                                raise BootstrapError(
+                                    f"Bootstrap phase '{event.phase}' failed: {error}"
+                                )
+                except Exception as e:
+                    if "Socket is closed" in str(e):
+                        break
+                    raise
+
+            # Check if channel is still open
+            if channel.exit_status_ready():
+                break
+
+    finally:
+        channel.close()
+
+    # Process any remaining buffer
+    for line in buffer.split("\n"):
+        line = line.strip()
+        if line:
+            event = parse_bootstrap_line(line)
+            if event:
+                yield event
 
 
 def find_available_port() -> int:

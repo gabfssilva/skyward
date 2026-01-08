@@ -6,150 +6,96 @@ It is accessed via SSM port forwarding (AWS) or SSH tunnel (other providers).
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import threading
 import traceback
-from collections.abc import Callable, Iterator
-from typing import TYPE_CHECKING, Any
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
+from typing import Any
 
 import rpyc
 from rpyc.utils.server import ThreadedServer
 
-from skyward.observability.output import redirect_output
+from skyward.core.constants import SKYWARD_DIR
 from skyward.utils.serialization import deserialize, serialize
-
-if TYPE_CHECKING:
-    from typing import TextIO
-
-    from skyward.rpc.metrics import MetricsStream
 
 # Default port for RPyC server
 RPYC_PORT = 18861
 
+# Events log path (same as bootstrap/metrics)
+EVENTS_LOG = f"{SKYWARD_DIR}/events.jsonl"
+
 
 # =============================================================================
-# Thread-Local Stdout Dispatcher
+# JSONL Stdout Writer
 # =============================================================================
 
 
-class ThreadLocalStdout:
-    """Stdout dispatcher that routes writes to thread-local callbacks.
+class JsonlStdoutWriter(StringIO):
+    """Writes stdout/stderr to events.jsonl for unified streaming.
 
-    Installed once at server startup. Each thread registers its own
-    callback for the duration of function execution. This avoids race
-    conditions when multiple threads execute concurrently.
+    Each write appends a JSON log event to the events file.
+    Thread-safe via file append mode (atomic writes on Linux).
     """
 
-    def __init__(self, original: TextIO) -> None:
-        self.original = original
-        self._local = threading.local()
-
-    def register(self, callback: Callable[[str], None]) -> None:
-        """Register callback for current thread."""
-        self._local.callback = callback
-
-    def unregister(self) -> None:
-        """Unregister callback for current thread."""
-        self._local.callback = None
+    def __init__(self, stream: str = "stdout") -> None:
+        super().__init__()
+        self._stream = stream
+        self._lock = threading.Lock()
 
     def write(self, data: str) -> int:
-        """Write to thread's callback if registered, else discard."""
-        if data:
-            callback = getattr(self._local, "callback", None)
-            if callback is not None:
-                try:
-                    callback(data)
-                except Exception:
-                    pass  # Don't fail execution for callback errors
-        return len(data)
+        if not data:
+            return 0
+
+        # Split into lines and write each as a JSON event
+        for line in data.splitlines():
+            if line.strip():
+                event = {
+                    "type": "log",
+                    "content": line,
+                    "stream": self._stream,
+                }
+                with self._lock, open(EVENTS_LOG, "a") as f:
+                    f.write(json.dumps(event) + "\n")
+
+        # Also write to parent StringIO for potential capture
+        return super().write(data)
 
     def flush(self) -> None:
-        """No-op - data is sent immediately."""
-        pass
-
-    def isatty(self) -> bool:
-        """Not a TTY."""
-        return False
-
-    @property
-    def encoding(self) -> str:
-        """Forward encoding from original stream."""
-        return self.original.encoding
-
-    def fileno(self) -> int:
-        """Forward fileno from original stream."""
-        return self.original.fileno()
-
-
-# Global dispatchers (installed once at server startup)
-_stdout_dispatcher: ThreadLocalStdout | None = None
-_stderr_dispatcher: ThreadLocalStdout | None = None
-
-
-def _install_dispatchers() -> None:
-    """Install thread-local stdout/stderr dispatchers (once)."""
-    global _stdout_dispatcher, _stderr_dispatcher
-
-    if _stdout_dispatcher is None:
-        _stdout_dispatcher = ThreadLocalStdout(sys.stdout)
-        sys.stdout = _stdout_dispatcher  # type: ignore[assignment]
-
-    if _stderr_dispatcher is None:
-        _stderr_dispatcher = ThreadLocalStdout(sys.stderr)
-        sys.stderr = _stderr_dispatcher  # type: ignore[assignment]
+        pass  # Flushed per write
 
 
 class SkywardService(rpyc.Service):
-    """RPyC service exposing function execution and metrics streaming."""
+    """RPyC service exposing function execution."""
 
     ALIASES = ["skyward"]
-
-    # Shared metrics stream instance (lazy-initialized)
-    _metrics_stream: MetricsStream | None = None
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._metrics_stop: threading.Event | None = None
-
-    def on_connect(self, conn: rpyc.Connection) -> None:
-        """Called when a client connects."""
-        pass
-
-    def on_disconnect(self, conn: rpyc.Connection) -> None:
-        """Called when client disconnects - stop metrics loop."""
-        if self._metrics_stop:
-            self._metrics_stop.set()
 
     def exposed_execute(
         self,
         fn_bytes: bytes,
         args_bytes: bytes,
         kwargs_bytes: bytes,
-        stdout_callback: Callable[[str], None] | None = None,
     ) -> bytes:
         """Execute a serialized function and return serialized result.
+
+        Stdout/stderr are redirected to events.jsonl for unified streaming
+        via the same tail -F mechanism used for bootstrap and metrics.
 
         Args:
             fn_bytes: Cloudpickle-serialized function.
             args_bytes: Cloudpickle-serialized args tuple.
             kwargs_bytes: Cloudpickle-serialized kwargs dict.
-            stdout_callback: Optional callback for streaming stdout to client.
 
         Returns:
             Cloudpickle-serialized dict with 'result' or 'error' key.
         """
         try:
-            # Wrap callback as fire-and-forget to avoid blocking on each write
-            if stdout_callback is not None:
-                async_cb = rpyc.async_(stdout_callback)
+            stdout_writer = JsonlStdoutWriter("stdout")
+            stderr_writer = JsonlStdoutWriter("stderr")
 
-                def fire_and_forget(s: str) -> None:
-                    async_cb(s)
-
-                stdout_callback = fire_and_forget
-
-            with redirect_output(stdout_callback):
+            with redirect_stdout(stdout_writer), redirect_stderr(stderr_writer):
                 fn = deserialize(fn_bytes)
                 args = deserialize(args_bytes)
                 kwargs = deserialize(kwargs_bytes)
@@ -211,116 +157,6 @@ class SkywardService(rpyc.Service):
 
         return "ok"
 
-    def _get_metrics_stream(self) -> MetricsStream:
-        """Lazy-initialize metrics stream (shared across connections)."""
-        if SkywardService._metrics_stream is None:
-            from skyward.rpc.metrics import MetricsStream
-
-            SkywardService._metrics_stream = MetricsStream()
-        return SkywardService._metrics_stream
-
-    def exposed_stream_metrics(self, interval: float = 0.2) -> Iterator[dict[str, Any]]:
-        """Stream metrics via RPyC generator (pull-based).
-
-        Note: For lower latency, prefer exposed_start_metrics_push() which
-        uses server-initiated callbacks instead of generator round-trips.
-
-        Args:
-            interval: Time between samples in seconds.
-
-        Yields:
-            Dict with metrics (cpu_percent, memory_percent, etc).
-        """
-        yield from self._get_metrics_stream().stream(interval)
-
-    def exposed_start_metrics_push(
-        self,
-        callback: Callable[[dict[str, Any]], None],
-        interval: float = 0.2,
-    ) -> None:
-        """Push metrics to client via background threads.
-
-        Starts collector and sender threads, then returns immediately.
-        This keeps the server thread free to process stop_metrics_push().
-
-        Args:
-            callback: Client-side callable that receives metrics dict.
-            interval: Time between samples in seconds.
-        """
-        import logging
-        from queue import Empty, Full, Queue
-
-        logger = logging.getLogger("skyward.rpc.metrics")
-        logger.info(f"start_metrics_push called (interval={interval}s)")
-
-        # Wrap callback as fire-and-forget to avoid blocking on each push
-        async_cb = rpyc.async_(callback)
-
-        def fire_and_forget(data: dict[str, Any]) -> None:
-            async_cb(data)
-
-        stream = self._get_metrics_stream()
-        queue: Queue[dict[str, Any] | None] = Queue(maxsize=10)
-        stop = threading.Event()
-
-        # Store for on_disconnect and stop_metrics_push to signal stop
-        self._metrics_stop = stop
-
-        def sender_loop() -> None:
-            logger.debug("Sender thread started")
-            while not stop.is_set():
-                try:
-                    metrics = queue.get(timeout=1.0)
-
-                    if metrics is None:
-                        continue
-
-                    fire_and_forget(metrics)
-                except Empty:
-                    continue
-                except Exception as e:
-                    logger.error(f"Sender error: {type(e).__name__}: {e}")
-                    stop.set()
-                    break
-
-        def collector_loop() -> None:
-            """Collect metrics in background thread."""
-            collected = 0
-            logger.debug("Collector thread started")
-            try:
-                while not stop.is_set():
-                    metrics = stream.collect()
-                    collected += 1
-                    try:
-                        queue.put_nowait(metrics)
-                    except Full:
-                        pass  # Drop if queue is full
-                    stop.wait(timeout=interval)
-            except Exception as e:
-                logger.error(f"Collector error: {type(e).__name__}: {e}")
-            finally:
-                queue.put(None)
-                logger.debug(f"Collector thread exiting (collected {collected} samples)")
-
-        # Start both threads as daemons
-        sender = threading.Thread(target=sender_loop, daemon=True, name="metrics-sender")
-        collector = threading.Thread(target=collector_loop, daemon=True, name="metrics-collector")
-        sender.start()
-        collector.start()
-
-        logger.info("Metrics push threads started, returning to caller")
-
-    def exposed_stop_metrics_push(self) -> None:
-        """Stop metrics loop (called by client before closing connection)."""
-        import logging
-
-        logger = logging.getLogger("skyward.rpc.metrics")
-        if self._metrics_stop:
-            logger.info("stop_metrics_push called, setting stop event")
-            self._metrics_stop.set()
-        else:
-            logger.warning("stop_metrics_push called but no metrics loop running")
-
 
 def main() -> None:
     """Start the RPyC server.
@@ -331,9 +167,6 @@ def main() -> None:
     3. Default RPYC_PORT (18861)
     """
     import os
-
-    # Install thread-local stdout/stderr dispatchers before starting server
-    _install_dispatchers()
 
     # Priority: env var > command line > default
     port = int(os.environ.get("SKYWARD_WORKER_PORT", "0")) or RPYC_PORT
