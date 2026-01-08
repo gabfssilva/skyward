@@ -33,7 +33,7 @@ from skyward.spec.image import DEFAULT_IMAGE, Image
 from skyward.spec.volume import Volume
 
 if TYPE_CHECKING:
-    from skyward.types import AcceleratorSpec, Provider
+    from skyward.types import AcceleratorSpec, ProviderLike
 
 from skyward.types import Memory
 
@@ -76,6 +76,7 @@ class Executor(Executor):
         allocation: Instance allocation strategy.
         timeout: Task timeout in seconds.
         env: Environment variables.
+        max_hourly_cost: Maximum USD/hour for entire cluster.
         concurrency: Concurrent tasks per node.
         display: Output display mode.
         on_event: Event callback.
@@ -97,7 +98,7 @@ class Executor(Executor):
 
     def __init__(
         self,
-        provider: Provider,
+        provider: ProviderLike,
         *,
         nodes: int = 1,
         machine: str | None = None,
@@ -109,10 +110,11 @@ class Executor(Executor):
         allocation: AllocationLike = "spot-if-available",
         timeout: int = 3600,
         env: dict[str, str] | None = None,
+        max_hourly_cost: float | None = None,
         concurrency: int = 1,
         display: Literal["panel", "spinner", "quiet"] = "panel",
         on_event: Callback | None = None,
-        logging: LogConfig | bool = False,
+        logging: LogConfig | bool = True,
     ) -> None:
         self._provider = provider
         self._nodes = nodes
@@ -125,6 +127,7 @@ class Executor(Executor):
         self._allocation = allocation
         self._timeout = timeout
         self._env = env
+        self._max_hourly_cost = max_hourly_cost
         self._concurrency = concurrency
         self._display = display
         self._on_event = on_event
@@ -151,6 +154,7 @@ class Executor(Executor):
             allocation=self._allocation,
             timeout=self._timeout,
             env=self._env,
+            max_hourly_cost=self._max_hourly_cost,
             concurrency=self._concurrency,
             display=self._display,
             on_event=self._on_event,

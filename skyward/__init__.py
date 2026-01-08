@@ -78,8 +78,10 @@ from skyward.core.events import (
     FunctionCall,
     FunctionResult,
     InstanceLaunching,
+    InstancePreempted,
     InstanceProvisioned,
     InstanceReady,
+    InstanceReplaced,
     InstanceStopping,
     LogLine,
     Metrics,
@@ -128,6 +130,9 @@ from skyward.compute.pending import (
 # Pool
 from skyward.pool.compute import ComputePool
 
+# Exceptions
+from skyward.core.exceptions import BudgetExceededError
+
 # Provider selection
 from skyward.pool.selection import (
     AllProvidersFailedError,
@@ -139,6 +144,9 @@ from skyward.pool.selection import (
 
 # Allocation strategies
 from skyward.spec.allocation import Allocation, AllocationLike
+
+# Preemption handling
+from skyward.spec.preemption import Preemption
 
 # Types
 from skyward.types import (
@@ -210,6 +218,8 @@ __all__ = [
     # Allocation strategies
     "Allocation",
     "AllocationLike",
+    # Preemption handling
+    "Preemption",
     # Events (ADT)
     "SkywardEvent",
     "ProvisionedInstance",
@@ -223,6 +233,8 @@ __all__ = [
     "BootstrapProgress",
     "BootstrapCompleted",
     "InstanceReady",
+    "InstancePreempted",
+    "InstanceReplaced",
     "Metrics",
     "LogLine",
     "FunctionCall",
@@ -256,6 +268,7 @@ __all__ = [
     "select_available",
     "NoAvailableProviderError",
     "AllProvidersFailedError",
+    "BudgetExceededError",
     # Volumes
     "Volume",
     "S3Volume",

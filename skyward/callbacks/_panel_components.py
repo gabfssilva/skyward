@@ -136,37 +136,19 @@ def create_header(
     tick: int = 0,
     blink_on: bool = True,
 ) -> Text:
-    """Create the header with cost, elapsed time, and current phase status.
+    """Create the header with cost and elapsed time.
 
-    Format: ● skyward · 2:40 · ~ $0.01 · Preparing ⠇
+    Format: ● skyward  ·  $0.09  ·  2:34
     """
     header = Text()
-    marker = "●" if blink_on else "○"
-    header.append("   ")
-    header.append(f"{marker} ", style="cyan bold")
-    header.append("skyward", style="bold")
-    header.append(f" · {format_duration(elapsed_seconds)} · ${cost:.2f} · ", style="dim")
+    has_active = any(s == "in_progress" for s in phases.values())
+    all_done = all(s == "completed" for s in phases.values())
+    marker = "○" if all_done else ("●" if blink_on else "○") if has_active else "●"
+    marker_style = "green bold" if all_done else "cyan bold" if has_active else "dim"
 
-    # Find current active phase
-    active_phase = None
-    for name, status in phases.items():
-        if status == "in_progress":
-            active_phase = name
-            break
-
-    # Status and spinner
-    if active_phase is None:
-        all_completed = all(s == "completed" for s in phases.values())
-        if all_completed:
-            header.append("done", style="green bold")
-        else:
-            header.append("waiting...", style="dim")
-    else:
-        # Convert phase name to gerund (Provision -> Provisioning, Execute -> Executing)
-        gerund = f"{active_phase[:-1]}ing" if active_phase.endswith("e") else f"{active_phase}ing"
-        spinner = _SPINNER_CHARS[tick % len(_SPINNER_CHARS)]
-        header.append(gerund.lower(), style="bold")
-        header.append(f" {spinner}", style="cyan bold")
+    header.append(f"{marker} ", style=marker_style)
+    header.append("s k y w a r d", style="bold")
+    header.append(f"  ·  ${cost:.2f}  ·  {format_duration(elapsed_seconds)}", style="dim")
 
     return header
 
@@ -313,9 +295,10 @@ def _make_metrics_cells(
     mem.append(render_sparkline(inst.mem_history, spark_width), style="cyan")
     mem.append(f" {inst.mem_current:>3.0f}%", style="cyan bold")
 
-    # Column 6: TEMP (simple value, no sparkline)
+    # Column 6: TEMP (with sparkline, color based on temp value)
     temp = Text()
-    temp.append(f"{inst.temp_current:>3.0f}°", style=f"{_temp_color(inst.temp_current)} bold")
+    temp.append(render_sparkline(inst.temp_history, spark_width), style="yellow")
+    temp.append(f" {inst.temp_current:>3.0f}°", style=f"{_temp_color(inst.temp_current)} bold")
 
     return node, cpu, gpu, vram, mem, temp
 
@@ -358,9 +341,9 @@ def _make_cluster_cells(
         avg_vram_history.append(sum(vram_vals) / len(vram_vals) if vram_vals else 0.0)
         avg_mem_history.append(sum(mem_vals) / len(mem_vals) if mem_vals else 0.0)
 
-    # Column 1: NODE (average label)
+    # Column 1: NODE (cluster label)
     node = Text()
-    node.append("avg", style="dim")
+    node.append("cluster", style="bold")
 
     # Column 2: CPU
     cpu = Text()
@@ -382,33 +365,24 @@ def _make_cluster_cells(
     mem.append(render_sparkline(avg_mem_history, spark_width), style="cyan")
     mem.append(f" {avg_mem:>3.0f}%", style="cyan bold")
 
-    # Column 6: TEMP (simple value, no sparkline)
+    # Column 6: TEMP (with sparkline)
+    avg_temp_history: list[float] = []
+    for idx in range(max_len):
+        temp_vals = [i.temp_history[idx] for i in instances if idx < len(i.temp_history)]
+        avg_temp_history.append(sum(temp_vals) / len(temp_vals) if temp_vals else 0.0)
+
     temp = Text()
-    temp.append(f"{avg_temp:>3.0f}°", style=f"{_temp_color(avg_temp)} bold")
+    temp.append(render_sparkline(avg_temp_history, spark_width), style="yellow")
+    temp.append(f" {avg_temp:>3.0f}°", style=f"{_temp_color(avg_temp)} bold")
 
     return node, cpu, gpu, vram, mem, temp
 
-
-def _make_pagination_row(
-    visible_count: int,
-    total_count: int,
-    current_page: int,
-    total_pages: int,
-) -> tuple[Text, Text, Text, Text, Text, Text]:
-    """Create pagination separator row spanning all columns."""
-    # First column: node count
-
-    total_nodes = Text(f"{visible_count}/{total_count} nodes")
-    total_pages = Text(f"Page {current_page}/{total_pages}")
-
-    return Text("─" * 3), Text(), Text(), total_nodes, total_pages, Text()
 
 def create_metrics_table(
     visible_instances: list[InstanceMetrics],
     all_instances: list[InstanceMetrics],
     spark_width: int,
     max_visible: int,
-    page_info: tuple[int, int] | None = None,
 ) -> Table:
     """Create the metrics table with Rich Table.
 
@@ -417,10 +391,8 @@ def create_metrics_table(
         all_instances: All instances (used for cluster average calculation).
         spark_width: Width of sparkline charts.
         max_visible: Maximum visible instances per page (for padding).
-        page_info: Optional (current_page, total_pages) tuple for pagination indicator.
     """
     col_width = spark_width + 5  # spark + space + value
-    temp_width = 4  # just "XX°" value, no sparkline
 
     table = Table(
         box=None,
@@ -430,12 +402,12 @@ def create_metrics_table(
         expand=False,
     )
 
-    table.add_column("#", style="dim", no_wrap=True, width=col_width, justify="center")
-    table.add_column("cpu", style="dim", no_wrap=True, width=col_width, justify="center")
-    table.add_column("gpu", style="dim", no_wrap=True, width=col_width, justify="center")
-    table.add_column("vram", style="dim", no_wrap=True, width=col_width, justify="center")
-    table.add_column("ram", style="dim", no_wrap=True, width=col_width, justify="center")
-    table.add_column("temp", style="dim", no_wrap=True, width=temp_width, justify="center")
+    table.add_column("#", header_style="dim", no_wrap=True, width=col_width, justify="center")
+    table.add_column("cpu", header_style="dim", no_wrap=True, width=col_width, justify="center")
+    table.add_column("gpu", header_style="dim", no_wrap=True, width=col_width, justify="center")
+    table.add_column("vram", header_style="dim", no_wrap=True, width=col_width, justify="center")
+    table.add_column("mem", header_style="dim", no_wrap=True, width=col_width, justify="center")
+    table.add_column("temp", header_style="dim", no_wrap=True, width=col_width, justify="center")
 
     # Instance rows (current page only)
     for inst in visible_instances:
@@ -449,18 +421,8 @@ def create_metrics_table(
     # Cluster average row (computed from ALL instances, not just visible)
     # Always shown when there are multiple total instances
     if len(all_instances) > 1:
-        # Separator with pagination info spanning all columns
-        if page_info:
-            current_page, total_pages = page_info
-            pagination_row = _make_pagination_row(
-                visible_count=len(visible_instances),
-                total_count=len(all_instances),
-                current_page=current_page,
-                total_pages=total_pages,
-            )
-            table.add_row(*pagination_row)
-        else:
-            table.add_row()  # Empty row for visual separation
+        # Empty row for visual separation
+        table.add_row()
 
         avg_row = _make_cluster_cells(all_instances, spark_width)
         table.add_row(*avg_row)
@@ -482,7 +444,7 @@ def create_left_table(
     table = Table(box=None, show_header=False, padding=0, expand=False)
     table.add_column(width=left_col, no_wrap=True)
 
-    table.add_row(header)
+    table.add_row(Align.center(header))
     table.add_row(Text("─" * left_col, style="dim"))
     table.add_row(Align.center(infra1))
     table.add_row(Align.center(infra2))
@@ -495,16 +457,14 @@ def create_left_table(
 
 def calculate_spark_width(terminal_width: int, left_col: int = 46) -> int:
     """Calculate sparkline width based on terminal size for box.MINIMAL Table."""
-    spark_columns = 5  # NODE, CPU, GPU, VRAM, MEM (with sparklines)
-    value_width = 5  # " XX%" (space + 3 digits + symbol)
-    temp_width = 4  # "XX°" (no sparkline)
+    spark_columns = 6  # NODE, CPU, GPU, VRAM, MEM, TEMP (all with sparklines now)
+    value_width = 5  # " XX%" or " XX°" (space + 3 digits + symbol)
     outer_padding = 4  # padding between left and right columns (1 char × 2 sides × 2 cols)
     cell_padding = 6 * 2  # padding=(0,1) adds 1 char each side × 6 cols
 
     fixed = (
         left_col + outer_padding
         + spark_columns * value_width
-        + temp_width
         + cell_padding
     )
     available = terminal_width - fixed
@@ -529,7 +489,6 @@ def create_panel(
     visible_instances: list[InstanceMetrics],
     all_instances: list[InstanceMetrics],
     max_visible: int,
-    page_info: tuple[int, int] | None = None,
     terminal_width: int = 120,
     left_col: int = 46,
 ) -> Table:
@@ -541,18 +500,21 @@ def create_panel(
         visible_instances: Current page of instances to display.
         all_instances: All instances (for cluster average).
         max_visible: Maximum visible instances per page (for padding).
-        page_info: Optional (current_page, total_pages) for pagination.
         terminal_width: Terminal width for sizing.
         left_col: Width of left column.
     """
     spark_width = calculate_spark_width(terminal_width, left_col)
 
-    # Create left column table (7 rows: header, separator, infra×5)
-    left = create_left_table(header, infra, left_col)
+    # Create left column table (header, separator, infra×5)
+    left = create_left_table(
+        header=header,
+        infra=infra,
+        left_col=left_col,
+    )
 
-    # Create right column metrics table with pagination
+    # Create right column metrics table
     right = create_metrics_table(
-        visible_instances, all_instances, spark_width, max_visible, page_info
+        visible_instances, all_instances, spark_width, max_visible
     )
 
     # Combine in outer table with separation between left and right

@@ -62,6 +62,7 @@ from skyward.pool.selection import (
 )
 from skyward.spec.allocation import AllocationLike
 from skyward.spec.image import DEFAULT_IMAGE, Image
+from skyward.spec.preemption import PreemptionConfig, normalize_preemption
 from skyward.spec.volume import Volume, parse_volume_uri
 from skyward.task import PooledConnection, TaskPool
 from skyward.types import (
@@ -156,6 +157,10 @@ class ComputePool:
     allocation: AllocationLike = "spot-if-available"
     timeout: int = 3600
     env: dict[str, str] | None = None
+    max_hourly_cost: float | None = None  # Max USD/hour for cluster
+
+    # Preemption handling for spot/bid instances
+    preemption: PreemptionConfig = None
 
     # Concurrency
     concurrency: int = 1  # Number of concurrent tasks per instance
@@ -482,6 +487,8 @@ class ComputePool:
             timeout=self.timeout,
             allocation=self.allocation,
             volumes=list(_parse_volumes(self.volume)),
+            max_hourly_cost=self.max_hourly_cost,
+            concurrency=self.concurrency,
         )
 
     def _provision(self) -> None:
@@ -500,7 +507,10 @@ class ComputePool:
 
         # Bootstrap instances (wait for ready, install wheel)
         logger.debug("Running instance bootstrap...")
-        self._instance_pool.setup(timeout=300)
+        self._instance_pool.setup(
+            timeout=300,
+            preemption=normalize_preemption(self.preemption),
+        )
 
         # Initialize TaskPool (creates tunnels and connections in parallel)
         logger.debug("Initializing task pool and connections...")

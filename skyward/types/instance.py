@@ -49,6 +49,9 @@ class Instance:
     # Callback to destroy this instance (injected by provider)
     _destroy_fn: Callable[[], None] | None = field(default=None, repr=False, compare=False)
 
+    # SSH pool size (number of concurrent SSH connections per instance)
+    ssh_pool_size: int = field(default=4, repr=False, compare=False)
+
     # Lock for thread-safe pool initialization (per-instance)
     _pool_lock: threading.Lock = field(
         default_factory=threading.Lock,
@@ -84,7 +87,7 @@ class Instance:
 
             from skyward.providers.ssh import SSHPool
 
-            self.__dict__["_pool"] = SSHPool(self.ssh)
+            self.__dict__["_pool"] = SSHPool(self.ssh, max_size=self.ssh_pool_size)
             return self.__dict__["_pool"]
 
     @contextmanager

@@ -266,6 +266,11 @@ class DigitalOceanProvider(Provider):
             accelerator_type = acc.accelerator if acc else None
             requested_gpu_count = acc.count if acc else 1
 
+            max_price = (
+                compute.max_hourly_cost / compute.nodes
+                if compute.max_hourly_cost
+                else None
+            )
             spec = select_instance(
                 self.available_instances(),
                 cpu=compute.cpu or 1,
@@ -273,6 +278,7 @@ class DigitalOceanProvider(Provider):
                 accelerator=accelerator_type,
                 accelerator_count=requested_gpu_count,
                 prefer_spot=prefer_spot,
+                max_price=max_price,
             )
             size = spec.name
             accelerator_count = spec.accelerator_count
@@ -365,6 +371,7 @@ class DigitalOceanProvider(Provider):
                     ]
                 ),
                 _destroy_fn=_make_destroy_fn(droplet.id),
+                ssh_pool_size=compute.concurrency * 2,
             )
             instances.append(instance)
 

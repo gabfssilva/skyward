@@ -10,7 +10,7 @@ from skyward.types.core import Architecture, Memory
 if TYPE_CHECKING:
     from skyward.spec.image import Image
     from skyward.types.instance import Instance
-    from skyward.types.spec import InstanceSpec
+    from skyward.types.spec import InstanceSpec, InstanceStatus
 
 __all__ = [
     "Instances",
@@ -69,6 +69,8 @@ class ComputeSpec(Protocol):
     timeout: int
     allocation: Any  # AllocationLike
     volumes: list[Any]  # list[Volume]
+    max_hourly_cost: float | None  # USD per hour for entire cluster
+    concurrency: int  # Concurrent tasks per node (for SSH pool sizing)
 
     @property
     def name(self) -> str:
@@ -170,5 +172,32 @@ class Provider(Protocol):
         Used for cleaning up cluster-level resources like overlay networks.
 
         Default implementation does nothing. Override if provider needs cleanup.
+        """
+        ...
+
+    def get_instance_status(self, instance_id: str) -> InstanceStatus | None:
+        """Get current status of an instance.
+
+        Used by preemption monitoring to detect when instances are interrupted.
+
+        Args:
+            instance_id: Instance identifier.
+
+        Returns:
+            InstanceStatus with current state, or None if instance not found.
+        """
+        ...
+
+    def classify_preemption(self, status: str) -> str | None:
+        """Classify if a status string indicates preemption.
+
+        Maps provider-specific status values to preemption reasons.
+
+        Args:
+            status: Provider-specific status string (e.g., "outbid", "exited").
+
+        Returns:
+            Preemption reason ("outbid", "capacity", "maintenance") or None
+            if the status does not indicate preemption.
         """
         ...

@@ -26,6 +26,10 @@ class NoMatchingInstanceError(ProvisioningError):
     """Raised when no instance type matches the requirements."""
 
 
+class BudgetExceededError(ProvisioningError):
+    """Raised when no instance fits within the budget."""
+
+
 class ExecutionError(SkywardError):
     """Raised when remote function execution fails."""
 
@@ -53,6 +57,25 @@ class InstanceTerminatedError(SkywardError):
         self.instance_id = instance_id
         self.reason = reason
         super().__init__(f"Instance {instance_id} terminated: {reason}")
+
+
+class PreemptionError(SkywardError):
+    """Raised when a spot/bid instance is preempted and cannot be replaced.
+
+    This exception is raised when:
+    - policy="fail" and an instance is preempted
+    - policy="replace" but all replacement attempts failed
+    """
+
+    def __init__(self, instance_id: str, reason: str, attempts: int = 0) -> None:
+        self.instance_id = instance_id
+        self.reason = reason
+        self.attempts = attempts
+        if attempts > 0:
+            msg = f"Instance {instance_id} preempted ({reason}), failed after {attempts} replacement attempts"
+        else:
+            msg = f"Instance {instance_id} preempted: {reason}"
+        super().__init__(msg)
 
 
 class ConnectionLostError(ConnectionError):

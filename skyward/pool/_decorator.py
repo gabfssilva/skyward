@@ -30,6 +30,7 @@ from skyward.pool._context import reset_current_pool, set_current_pool
 from skyward.pool.compute import ComputePool
 from skyward.spec.allocation import AllocationLike
 from skyward.spec.image import Image
+from skyward.spec.preemption import PreemptionConfig
 from skyward.spec.volume import Volume
 from skyward.types import AcceleratorSpec, Architecture, Auto, Memory, ProviderLike
 
@@ -51,6 +52,8 @@ def pool(
     allocation: AllocationLike = "spot-if-available",
     timeout: int = 3600,
     env: dict[str, str] | None = None,
+    max_hourly_cost: float | None = None,
+    preemption: PreemptionConfig = "fail",
     concurrency: int = 1,
     display: Literal["panel", "monitor", "spinner", "quiet"] = "panel",
     on_event: Callback | None = None,
@@ -75,6 +78,12 @@ def pool(
         allocation: Instance allocation strategy.
         timeout: Maximum execution time in seconds.
         env: Environment variables.
+        max_hourly_cost: Maximum USD/hour for entire cluster.
+        preemption: Preemption handling for spot/bid instances.
+            - "replace": Auto-replace preempted instances.
+            - "fail": Raise PreemptionError on preemption (default behavior).
+            - "ignore": Log and continue without the instance.
+            - Preemption(...): Full configuration object.
         concurrency: Number of concurrent tasks per instance.
         display: Display mode ("spinner" or "quiet").
         on_event: Callback for events.
@@ -109,6 +118,8 @@ def pool(
                 allocation=allocation,
                 timeout=timeout,
                 env=env,
+                max_hourly_cost=max_hourly_cost,
+                preemption=preemption,
                 concurrency=concurrency,
                 display=display,
                 on_event=on_event,

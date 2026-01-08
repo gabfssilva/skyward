@@ -302,6 +302,34 @@ class InstanceStopping:
     instance: ProvisionedInstance
 
 
+@dataclass(frozen=True, slots=True)
+class InstancePreempted:
+    """Instance was preempted (spot/bid instances only).
+
+    Emitted when a spot/interruptible instance is interrupted. Common reasons:
+    - outbid: Another user placed a higher bid
+    - capacity: Provider reclaimed capacity
+    - maintenance: Host machine maintenance
+
+    The instance may be automatically replaced depending on pool configuration.
+    """
+
+    instance: ProvisionedInstance
+    reason: str  # "outbid", "capacity", "maintenance", "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class InstanceReplaced:
+    """Instance was replaced after being preempted.
+
+    Emitted when a new instance successfully replaces one that was preempted.
+    """
+
+    old_instance: ProvisionedInstance
+    new_instance: ProvisionedInstance
+    retry_attempt: int
+
+
 # =============================================================================
 # Cost Events
 # =============================================================================
@@ -412,6 +440,8 @@ type SkywardEvent = (
     | FunctionCall
     | FunctionResult
     | InstanceStopping
+    | InstancePreempted
+    | InstanceReplaced
     | CostUpdate
     | CostFinal
     | PoolReady
@@ -447,6 +477,9 @@ __all__ = [
     "FunctionResult",
     # Shutdown
     "InstanceStopping",
+    # Preemption
+    "InstancePreempted",
+    "InstanceReplaced",
     # Cost
     "CostUpdate",
     "CostFinal",

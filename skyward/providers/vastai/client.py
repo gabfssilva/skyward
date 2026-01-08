@@ -139,10 +139,20 @@ class InstanceInfo:
     label: str | None
     is_bid: bool
     dph_total: float  # Actual $/hr being charged
+    public_ipaddr: str  # Direct connection IP
+    direct_port: int | None  # Direct SSH port (from ports mapping)
 
     @classmethod
     def from_api(cls, data: dict[str, object]) -> InstanceInfo:
         """Parse API response to InstanceInfo."""
+        # Extract direct SSH port from ports mapping
+        direct_port = None
+        ports = data.get("ports")
+        if isinstance(ports, dict):
+            ssh_mapping = ports.get("22/tcp")
+            if isinstance(ssh_mapping, list) and ssh_mapping:
+                direct_port = int(ssh_mapping[0].get("HostPort", 0)) or None
+
         return cls(
             id=int(data.get("id") or 0),
             actual_status=str(data.get("actual_status") or ""),
@@ -154,6 +164,8 @@ class InstanceInfo:
             label=str(data["label"]) if data.get("label") else None,
             is_bid=bool(data.get("is_bid", False)),
             dph_total=float(data.get("dph_total") or 0),
+            public_ipaddr=str(data.get("public_ipaddr") or ""),
+            direct_port=direct_port,
         )
 
 
@@ -197,6 +209,36 @@ class OverlayNetwork:
 # Query Builder
 # =============================================================================
 
+# Known GPU variants for base model names (Vast.ai uses spaces, not hyphens)
+_GPU_VARIANTS: dict[str, list[str]] = {
+    "H100": ["H100", "H100 NVL", "H100 SXM", "H100 PCIe"],
+    "H200": ["H200", "H200 NVL", "H200 SXM"],
+    "A100": ["A100", "A100 SXM4", "A100 PCIe", "A100 SXM"],
+    "A800": ["A800", "A800 PCIe", "A800 SXM"],
+    "L40": ["L40", "L40S"],
+    "RTX 4090": ["RTX 4090", "RTX 4090D"],
+    "RTX 5090": ["RTX 5090", "RTX 5090D"],
+}
+
+
+def _get_gpu_variants(gpu_name: str) -> list[str]:
+    """Get all known variants for a GPU name.
+
+    Args:
+        gpu_name: GPU name with spaces (e.g., "H100", "RTX 4090").
+
+    Returns:
+        List of variant names to search for.
+    """
+    # Check if it's a known base name with variants
+    upper = gpu_name.upper()
+    for base, variants in _GPU_VARIANTS.items():
+        if upper == base.upper():
+            return variants
+
+    # Return as-is if no variants known
+    return [gpu_name]
+
 
 def build_search_query(
     *,
@@ -224,7 +266,12 @@ def build_search_query(
         query["cluster_id"] = {"neq": None}
 
     if gpu_name:
-        query["gpu_name"] = {"eq": gpu_name.replace("_", " ")}
+        normalized = gpu_name.replace("_", " ")
+        variants = _get_gpu_variants(normalized)
+        if len(variants) == 1:
+            query["gpu_name"] = {"eq": variants[0]}
+        else:
+            query["gpu_name"] = {"in": variants}
     if num_gpus:
         query["num_gpus"] = {"gte": num_gpus}
     if min_cpu:
@@ -740,6 +787,21 @@ def select_best_cluster(
     Returns:
         Tuple of (cluster_id, sorted offers) or None if no cluster has capacity.
     """
+    all_clusters = select_all_valid_clusters(offers, nodes_needed, use_interruptible)
+    return all_clusters[0] if all_clusters else None
+
+
+def select_all_valid_clusters(
+    offers: list[Offer],
+    nodes_needed: int,
+    use_interruptible: bool = True,
+) -> list[tuple[int, list[Offer]]]:
+    """Select all valid clusters with enough capacity, sorted by price.
+
+    Returns:
+        List of (cluster_id, sorted offers) tuples, sorted by total cluster cost.
+        Empty list if no clusters have sufficient capacity.
+    """
     clusters = group_offers_by_cluster(offers)
 
     valid = [
@@ -749,22 +811,22 @@ def select_best_cluster(
     ]
 
     if not valid:
-        return None
+        return []
 
-    # Sort by price
+    # Sort offers within each cluster by price
     for _, cluster_offers in valid:
         cluster_offers.sort(
             key=lambda o: o.min_bid if use_interruptible else o.dph_total
         )
 
-    # Pick cheapest cluster
+    # Sort clusters by total cost
     def cluster_cost(item: tuple[int, list[Offer]]) -> float:
         _, cluster_offers = item
         price_fn = (lambda o: o.min_bid) if use_interruptible else (lambda o: o.dph_total)
         return sum(price_fn(o) for o in cluster_offers[:nodes_needed])
 
     valid.sort(key=cluster_cost)
-    return valid[0]
+    return valid
 
 
 __all__ = [
@@ -777,4 +839,5 @@ __all__ = [
     "extract_cuda_version",
     "group_offers_by_cluster",
     "select_best_cluster",
+    "select_all_valid_clusters",
 ]

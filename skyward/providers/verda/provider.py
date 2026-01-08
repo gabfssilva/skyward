@@ -285,6 +285,11 @@ class VerdaProvider(Provider):
             requested_gpu_count = acc.count if acc else 1
 
             # 1. Get all matching candidates (sorted by price)
+            max_price = (
+                compute.max_hourly_cost / compute.nodes
+                if compute.max_hourly_cost
+                else None
+            )
             candidates = select_instances(
                 self.available_instances(),
                 cpu=compute.cpu or 1,
@@ -292,6 +297,7 @@ class VerdaProvider(Provider):
                 accelerator=accelerator_type,
                 accelerator_count=requested_gpu_count,
                 prefer_spot=prefer_spot,
+                max_price=max_price,
             )
 
             # 2. Get availability for spot/on-demand
@@ -433,6 +439,7 @@ class VerdaProvider(Provider):
                     ]
                 ),
                 _destroy_fn=_make_destroy_fn(vinst.id),
+                ssh_pool_size=compute.concurrency * 2,
             )
             instances.append(instance)
 

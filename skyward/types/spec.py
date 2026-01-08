@@ -6,11 +6,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from skyward.accelerators import AcceleratorCount, AcceleratorSpec
-from skyward.core.exceptions import NoMatchingInstanceError
+from skyward.core.exceptions import BudgetExceededError, NoMatchingInstanceError
 from skyward.types.core import Auto, Memory
 
 __all__ = [
     "InstanceSpec",
+    "InstanceStatus",
     "parse_memory_mb",
     "select_instance",
     "select_instances",
@@ -35,6 +36,20 @@ class InstanceSpec:
     price_spot: float | None = None  # USD per hour (if available)
     billing_increment_minutes: int | None = None  # None = per-second billing
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class InstanceStatus:
+    """Current status of a cloud instance.
+
+    Used by providers to report instance state for monitoring purposes.
+    The `status` field contains provider-specific status strings
+    (e.g., "running", "stopped", "outbid" for Vast.ai).
+    """
+
+    instance_id: str
+    status: str
+    ssh_available: bool = True
 
 
 def parse_memory_mb(memory: Memory | None) -> int:
@@ -78,16 +93,18 @@ def _accelerator_matches(instance_acc: str, requested_acc: str) -> bool:
     Handles:
     - Exact matches (case-insensitive)
     - Hyphen-separated variants (A100 matches A100-40, H100 matches H100-SXM)
+    - Space-separated form factors (H100 NVL matches H100, A100 SXM4 matches A100)
 
     Does NOT match:
     - Different GPUs with similar prefixes (L4 vs L40, L40S)
-    - Space-separated variants (RTX 5070 vs RTX 5070 Ti are different GPUs)
+    - Space-separated GPU variants (RTX 5070 vs RTX 5070 Ti are different GPUs)
 
     Examples:
         - "L4" matches "L4" ✓
         - "L4" matches "L40" ✗ (different GPU)
         - "A100-40" matches "A100" ✓ (hyphen = memory variant)
         - "H100-SXM" matches "H100" ✓ (hyphen = form factor)
+        - "H100 NVL" matches "H100" ✓ (space + form factor suffix)
         - "RTX 5070 Ti" matches "RTX 5070" ✗ (different GPU)
     """
     # Normalize: uppercase, trim whitespace
@@ -101,6 +118,14 @@ def _accelerator_matches(instance_acc: str, requested_acc: str) -> bool:
     # Hyphen-separated variant: A100 matches A100-40, H100 matches H100-SXM
     if inst_norm.startswith(req_norm + "-"):
         return True
+
+    # Space-separated form factor: H100 NVL matches H100, A100 SXM4 matches A100
+    # Only match known form factor suffixes (NVL, SXM, SXM4, PCIe, PCIE)
+    if inst_norm.startswith(req_norm + " "):
+        suffix = inst_norm[len(req_norm) + 1:]
+        form_factors = {"NVL", "SXM", "SXM4", "SXM5", "PCIE", "NVLINK"}
+        if suffix in form_factors:
+            return True
 
     return False
 
@@ -127,6 +152,7 @@ def select_instance(
     accelerator: str | AcceleratorSpec | None = None,
     accelerator_count: AcceleratorCount = 1,
     prefer_spot: bool = False,
+    max_price: float | None = None,
 ) -> InstanceSpec:
     """Select cheapest instance that meets requirements.
 
@@ -141,12 +167,14 @@ def select_instance(
             - int: Exact count (e.g., 2 means exactly 2 GPUs)
             - Callable[[int], bool]: Predicate function (e.g., lambda c: c >= 2)
         prefer_spot: If True, sort by spot price; otherwise by on-demand price.
+        max_price: Maximum price per hour (USD). None means no limit.
 
     Returns:
         InstanceSpec that meets requirements (cheapest option).
 
     Raises:
-        ValueError: If no instance type meets the requirements.
+        NoMatchingInstanceError: If no instance type meets the requirements.
+        BudgetExceededError: If no instance fits within the budget.
     """
     memory_gb = memory_mb / 1024
 
@@ -188,6 +216,17 @@ def select_instance(
             )
 
         candidates.sort(key=_price_key)
+
+        # Apply budget filter
+        if max_price is not None:
+            cheapest_price = _price_key(candidates[0])
+            candidates = [c for c in candidates if _price_key(c) <= max_price]
+            if not candidates:
+                raise BudgetExceededError(
+                    f"No instance found within budget ${max_price:.2f}/hr. "
+                    f"Cheapest matching instance: ${cheapest_price:.2f}/hr"
+                )
+
         return candidates[0]
 
     # Standard instances (no accelerator)
@@ -212,6 +251,17 @@ def select_instance(
         )
 
     candidates.sort(key=_price_key)
+
+    # Apply budget filter
+    if max_price is not None:
+        cheapest_price = _price_key(candidates[0])
+        candidates = [c for c in candidates if _price_key(c) <= max_price]
+        if not candidates:
+            raise BudgetExceededError(
+                f"No instance found within budget ${max_price:.2f}/hr. "
+                f"Cheapest matching instance: ${cheapest_price:.2f}/hr"
+            )
+
     return candidates[0]
 
 
@@ -222,6 +272,7 @@ def select_instances(
     accelerator: str | AcceleratorSpec | None = None,
     accelerator_count: AcceleratorCount = 1,
     prefer_spot: bool = False,
+    max_price: float | None = None,
 ) -> tuple[InstanceSpec, ...]:
     """Select all instances that meet requirements, sorted by price.
 
@@ -238,12 +289,14 @@ def select_instances(
             - int: Exact count (e.g., 2 means exactly 2 GPUs)
             - Callable[[int], bool]: Predicate function (e.g., lambda c: c >= 2)
         prefer_spot: If True, sort by spot price; otherwise by on-demand price.
+        max_price: Maximum price per hour (USD). None means no limit.
 
     Returns:
         Tuple of InstanceSpecs that meet requirements, sorted by price (cheapest first).
 
     Raises:
-        ValueError: If no instance type meets the requirements.
+        NoMatchingInstanceError: If no instance type meets the requirements.
+        BudgetExceededError: If no instance fits within the budget.
     """
     memory_gb = memory_mb / 1024
 
@@ -285,6 +338,17 @@ def select_instances(
             )
 
         candidates.sort(key=_price_key)
+
+        # Apply budget filter
+        if max_price is not None:
+            cheapest_price = _price_key(candidates[0])
+            candidates = [c for c in candidates if _price_key(c) <= max_price]
+            if not candidates:
+                raise BudgetExceededError(
+                    f"No instance found within budget ${max_price:.2f}/hr. "
+                    f"Cheapest matching instance: ${cheapest_price:.2f}/hr"
+                )
+
         return tuple(candidates)
 
     # Standard instances (no accelerator)
@@ -309,4 +373,15 @@ def select_instances(
         )
 
     candidates.sort(key=_price_key)
+
+    # Apply budget filter
+    if max_price is not None:
+        cheapest_price = _price_key(candidates[0])
+        candidates = [c for c in candidates if _price_key(c) <= max_price]
+        if not candidates:
+            raise BudgetExceededError(
+                f"No instance found within budget ${max_price:.2f}/hr. "
+                f"Cheapest matching instance: ${cheapest_price:.2f}/hr"
+            )
+
     return tuple(candidates)

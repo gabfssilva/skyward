@@ -13,6 +13,10 @@ import string
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from skyward.types.spec import InstanceStatus
 
 from loguru import logger
 from tenacity import (
@@ -51,6 +55,7 @@ from .client import (
     VastAIClient,
     VastAIError,
     extract_cuda_version,
+    select_all_valid_clusters,
     select_best_cluster,
 )
 
@@ -88,6 +93,8 @@ class _VastInstance:
     ssh_port: int = 22
     actual_status: str = ""
     dph_total: float = 0.0  # Actual $/hr being charged
+    public_ipaddr: str = ""  # Direct connection IP
+    direct_port: int | None = None  # Direct SSH port
 
 
 # =============================================================================
@@ -152,6 +159,15 @@ class VastAI:
     disk_gb: int = 100
     use_overlay: bool = True
     overlay_timeout: int = 120
+
+    @classmethod
+    def ubuntu(
+        cls,
+        version: Literal["22.04", "24.04", "26.04"] | str = "24.04",
+        cuda: Literal["12.9.1", "13.1.0", "13.0.1"] | str = "12.9.1",
+        cuda_dist: Literal['devel', 'runtime'] = "runtime",
+    ) -> str:
+        return f"nvcr.io/nvidia/cuda:{cuda}-{cuda_dist}-ubuntu{version}"
 
     def build(self) -> VastAIProvider:
         """Build a stateful VastAIProvider from this configuration."""
@@ -256,7 +272,7 @@ class VastAIProvider(Provider):
     ) -> None:
         """Wait for all instances to be running and populate SSH info."""
 
-        def fetch_status(inst: _VastInstance) -> tuple[str, dict[str, str | int | float]]:
+        def fetch_status(inst: _VastInstance) -> tuple[str, dict[str, str | int | float | None]]:
             info = client.get_instance(inst.id)
             if not info:
                 return "pending", {}
@@ -270,13 +286,17 @@ class VastAIProvider(Provider):
                 "ssh_host": info.ssh_host,
                 "ssh_port": info.ssh_port,
                 "dph_total": info.dph_total,
+                "public_ipaddr": info.public_ipaddr,
+                "direct_port": info.direct_port,
             }
 
-        def update_instance(inst: _VastInstance, info: dict[str, str | int | float]) -> None:
+        def update_instance(inst: _VastInstance, info: dict[str, str | int | float | None]) -> None:
             inst.actual_status = str(info.get("actual_status", ""))
             inst.ssh_host = str(info.get("ssh_host", ""))
-            inst.ssh_port = int(info.get("ssh_port", 22))
-            inst.dph_total = float(info.get("dph_total", 0))
+            inst.ssh_port = int(info.get("ssh_port") or 22)
+            inst.dph_total = float(info.get("dph_total") or 0)
+            inst.public_ipaddr = str(info.get("public_ipaddr") or "")
+            inst.direct_port = int(info["direct_port"]) if info.get("direct_port") else None
 
         poll_instances(
             instances=instances,
@@ -429,8 +449,8 @@ echo "$IFACE $IP"
                 cuda_versions.append(v)
                 v = round(v - 0.1, 1)
         else:
-            docker_image = "nvcr.io/nvidia/cuda:12.4.1-runtime-ubuntu22.04"
-            cuda_versions = [12.4]
+            docker_image = VastAI.ubuntu(cuda="12.9.1")
+            cuda_versions = [12.9]
 
         # Search for offers
         gpu_name = None
@@ -459,9 +479,14 @@ echo "$IFACE $IP"
 
         logger.debug(f"Found {len(all_offers)} offers")
 
-        # Filter by GPU name
+        # Filter by GPU name (with variant matching: H100 matches H100_NVL, H100_SXM, etc.)
         if gpu_name:
-            all_offers = [o for o in all_offers if o.gpu_name.replace(" ", "_") == gpu_name]
+            req_norm = gpu_name.upper()
+            all_offers = [
+                o for o in all_offers
+                if (offer_norm := o.gpu_name.replace(" ", "_").upper()) == req_norm
+                or offer_norm.startswith(req_norm + "_")
+            ]
             logger.debug(f"Filtered to {len(all_offers)} offers for {gpu_name}")
 
         # Filter by exact GPU count
@@ -535,19 +560,45 @@ echo "$IFACE $IP"
         # Sort by price
         offers.sort(key=lambda o: o.min_bid if use_interruptible else o.dph_total)
 
-        # Select cluster for multi-node
+        # Filter by budget
+        if compute.max_hourly_cost:
+            max_per_instance = compute.max_hourly_cost / compute.nodes
+
+            def offer_price(o: Offer) -> float:
+                return o.min_bid * self.bid_multiplier if use_interruptible else o.dph_total
+
+            before_filter = len(offers)
+            offers = [o for o in offers if offer_price(o) <= max_per_instance]
+
+            if not offers:
+                from skyward.core.exceptions import BudgetExceededError
+
+                raise BudgetExceededError(
+                    f"No Vast.ai offers found within budget ${max_per_instance:.2f}/hr per instance. "
+                    f"Filtered out {before_filter} offers."
+                )
+            logger.debug(f"Budget filter: {len(offers)}/{before_filter} offers within ${max_per_instance:.2f}/hr")
+
+        # Select clusters for multi-node (may need to try multiple if overlay creation fails)
+        valid_clusters: list[tuple[int, list[Offer]]] = []
         if needs_overlay:
             if preselected_cluster:
-                self._overlay_cluster_id, offers = preselected_cluster
+                # Start with preselected, but also get alternatives
+                valid_clusters = select_all_valid_clusters(offers, compute.nodes, use_interruptible)
+                # Ensure preselected is first
+                if preselected_cluster[0] != valid_clusters[0][0]:
+                    valid_clusters = [preselected_cluster] + [
+                        c for c in valid_clusters if c[0] != preselected_cluster[0]
+                    ]
             else:
-                cluster_result = select_best_cluster(offers, compute.nodes, use_interruptible)
-                if cluster_result is None:
-                    raise RuntimeError(
-                        f"No cluster with {compute.nodes} nodes for {compute.accelerator}"
-                    )
-                self._overlay_cluster_id, offers = cluster_result
+                valid_clusters = select_all_valid_clusters(offers, compute.nodes, use_interruptible)
 
-            logger.info(f"Selected cluster {self._overlay_cluster_id} with {len(offers)} offers")
+            if not valid_clusters:
+                raise RuntimeError(
+                    f"No cluster with {compute.nodes} nodes for {compute.accelerator}"
+                )
+
+            logger.info(f"Found {len(valid_clusters)} valid cluster(s) for multi-node provisioning")
 
         # Convert to InstanceSpec for events
         specs = tuple(o.to_instance_spec() for o in offers)
@@ -578,8 +629,36 @@ echo "$IFACE $IP"
         # Generate full bootstrap script (with nohup since Docker has no systemd)
         full_bootstrap = compute.image.bootstrap(ttl=compute.timeout, use_systemd=False)
 
+        # Try clusters until overlay creation succeeds
         if needs_overlay:
-            self._create_overlay_network(client)
+            overlay_created = False
+            last_overlay_error: str | None = None
+
+            for cluster_idx, (cluster_id, cluster_offers) in enumerate(valid_clusters):
+                self._overlay_cluster_id = cluster_id
+                offers = cluster_offers
+                logger.info(f"Trying cluster {cluster_id} ({cluster_idx + 1}/{len(valid_clusters)})")
+
+                try:
+                    self._create_overlay_network(client)
+                    overlay_created = True
+                    logger.info(f"Overlay created on cluster {cluster_id}")
+                    break
+                except RuntimeError as e:
+                    last_overlay_error = str(e)
+                    logger.warning(
+                        f"Overlay creation failed on cluster {cluster_id}: {e}. "
+                        f"Trying next cluster..."
+                    )
+                    # Reset overlay state for next attempt
+                    self._overlay_name = None
+                    self._overlay_cluster_id = None
+
+            if not overlay_created:
+                raise RuntimeError(
+                    f"Failed to create overlay on any of {len(valid_clusters)} clusters. "
+                    f"Last error: {last_overlay_error}"
+                )
 
         # Create instances
         instances: list[Instance] = []
@@ -641,12 +720,22 @@ echo "$IFACE $IP"
         # Build Instance objects
         key_path = get_private_key_path()
         for i, vast_inst in enumerate(vast_instances):
+            # Prefer direct connection if available
+            if vast_inst.public_ipaddr and vast_inst.direct_port:
+                ssh_host = vast_inst.public_ipaddr
+                ssh_port = vast_inst.direct_port
+                logger.debug(f"Using direct SSH: {ssh_host}:{ssh_port}")
+            else:
+                ssh_host = vast_inst.ssh_host
+                ssh_port = vast_inst.ssh_port
+                logger.debug(f"Using proxy SSH: {ssh_host}:{ssh_port}")
+
             meta_items: list[tuple[str, str]] = [
-                ("cluster_id", cluster_id),
+                ("cluster_id", str(cluster_id)),
                 ("offer_id", str(vast_inst.offer.id)),
                 ("machine_id", str(vast_inst.offer.machine_id)),
-                ("ssh_host", vast_inst.ssh_host),
-                ("ssh_port", str(vast_inst.ssh_port)),
+                ("ssh_host", ssh_host),
+                ("ssh_port", str(ssh_port)),
                 ("username", "root"),
                 ("accelerator_count", str(vast_inst.offer.num_gpus)),
             ]
@@ -655,17 +744,18 @@ echo "$IFACE $IP"
                 id=str(vast_inst.id),
                 provider=self,
                 ssh=SSHConfig(
-                    host=vast_inst.ssh_host,
+                    host=ssh_host,
                     username="root",
-                    port=vast_inst.ssh_port,
+                    port=ssh_port,
                     key_path=key_path,
                 ),
                 spot=use_interruptible,
                 private_ip=vast_inst.ssh_host,
-                public_ip=vast_inst.ssh_host,
+                public_ip=vast_inst.public_ipaddr or vast_inst.ssh_host,
                 node=i,
                 metadata=frozenset(meta_items),
                 _destroy_fn=lambda inst_id=vast_inst.id: self._destroy_instance(inst_id),
+                ssh_pool_size=compute.concurrency * 2,
             )
             instances.append(instance)
 
@@ -736,24 +826,32 @@ echo "$IFACE $IP"
             if not inst.ssh_host:
                 continue
 
+            # Prefer direct connection if available
+            if inst.public_ipaddr and inst.direct_port:
+                ssh_host = inst.public_ipaddr
+                ssh_port = inst.direct_port
+            else:
+                ssh_host = inst.ssh_host
+                ssh_port = inst.ssh_port
+
             instances.append(
                 Instance(
                     id=str(inst.id),
                     provider=self,
                     ssh=SSHConfig(
-                        host=inst.ssh_host,
+                        host=ssh_host,
                         username="root",
-                        port=inst.ssh_port,
+                        port=ssh_port,
                         key_path=key_path,
                     ),
                     spot=inst.is_bid,
                     private_ip=inst.ssh_host,
-                    public_ip=inst.ssh_host,
+                    public_ip=inst.public_ipaddr or inst.ssh_host,
                     node=0,
                     metadata=frozenset([
                         ("cluster_id", cluster_id),
-                        ("ssh_host", inst.ssh_host),
-                        ("ssh_port", str(inst.ssh_port)),
+                        ("ssh_host", ssh_host),
+                        ("ssh_port", str(ssh_port)),
                     ]),
                     _destroy_fn=lambda inst_id=inst.id: self._destroy_instance(inst_id),
                 )
@@ -787,3 +885,41 @@ echo "$IFACE $IP"
     def cleanup(self) -> None:
         """Clean up overlay network after all instances are destroyed."""
         self._cleanup_overlay()
+
+    def get_instance_status(self, instance_id: str) -> InstanceStatus | None:
+        """Get current status of an instance.
+
+        Args:
+            instance_id: Vast.ai instance ID.
+
+        Returns:
+            InstanceStatus with current state, or None if not found.
+        """
+        from skyward.types.spec import InstanceStatus
+
+        info = self._get_client().get_instance(int(instance_id))
+        if not info:
+            return None
+
+        return InstanceStatus(
+            instance_id=instance_id,
+            status=info.actual_status,
+            ssh_available=bool(info.ssh_host and info.ssh_port),
+        )
+
+    def classify_preemption(self, status: str) -> str | None:
+        """Classify if a status indicates preemption.
+
+        Maps Vast.ai status strings to preemption reasons.
+
+        Args:
+            status: Vast.ai actual_status value.
+
+        Returns:
+            Preemption reason or None if not preempted.
+        """
+        return {
+            "outbid": "outbid",
+            "exited": "terminated",
+            "offline": "maintenance",
+        }.get(status)

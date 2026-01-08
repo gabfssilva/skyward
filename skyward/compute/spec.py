@@ -40,6 +40,8 @@ class _PoolCompute:
     timeout: int
     allocation: AllocationLike
     volumes: list[Volume]
+    max_hourly_cost: float | None
+    concurrency: int = 1  # Concurrent tasks per node (for SSH pool sizing)
 
     # Properties expected by providers
 

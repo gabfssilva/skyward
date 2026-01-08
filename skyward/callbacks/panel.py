@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from functools import singledispatchmethod
 from math import ceil
 from threading import Event, Lock, Thread
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from rich.align import Align
 from rich.console import Console
@@ -220,15 +220,15 @@ class PanelController:
         """Calculate panel height based on number of visible instances.
 
         Left panel is always 7 rows (header, separator, infra×5).
-        Right panel: header(1) + visible_instances + (separator + average if >1 total).
+        Right panel: header(1) + visible_instances + (empty + pagination + average if >1 total).
         When paginating, always use MAX_VISIBLE_NODES to keep average position fixed.
         """
         num_instances = len(self._instance_costs)
         # When paginating, use full MAX_VISIBLE_NODES for consistent height
         is_paginating = num_instances > self._MAX_VISIBLE_NODES
         visible = self._MAX_VISIBLE_NODES if is_paginating else num_instances
-        # Right panel rows: header(1) + visible + separator(1) + average(1) if total > 1
-        right_rows = 2 if num_instances <= 1 else 1 + visible + 2
+        # Right panel rows: header(1) + visible + empty(1) + average(1) if total > 1
+        right_rows = 2 if num_instances <= 1 else 1 + visible + 3
         # Left panel is 7 rows
         return max(7, right_rows)
 
@@ -293,11 +293,14 @@ class PanelController:
             gpu_mem=sum(gpu_mem_vals) / len(gpu_mem_vals) if gpu_mem_vals else None,
         )
 
-    def _build_pipeline_phases(self) -> dict[str, str]:
+    def _build_pipeline_phases(
+        self,
+    ) -> dict[str, Literal["pending", "in_progress", "completed"]]:
         """Build 3-phase pipeline: Provision → Prepare → Execute."""
         t = self._tracking
 
         # Provision: covers network + instance provisioning
+        provision_status: Literal["pending", "in_progress", "completed"]
         if "provision" in t.phase_times:
             provision_status = "completed"
         elif t.phase in ("Provisioning", "Initializing"):
@@ -306,6 +309,7 @@ class PanelController:
             provision_status = "pending"
 
         # Prepare: covers bootstrap
+        prepare_status: Literal["pending", "in_progress", "completed"]
         if "bootstrap" in t.phase_times:
             prepare_status = "completed"
         elif t.phase == "Bootstrapping":
@@ -314,6 +318,7 @@ class PanelController:
             prepare_status = "pending"
 
         # Execute: running user code
+        execute_status: Literal["pending", "in_progress", "completed"]
         if self._is_done:
             execute_status = "completed"
         elif t.phase == "Executing":
@@ -436,11 +441,6 @@ class PanelController:
         # Instance metrics (paginated)
         visible_instances, all_instances = self._build_instance_metrics()
 
-        # Calculate pagination info for display
-        total_instances = len(all_instances)
-        total_pages = ceil(total_instances / self._MAX_VISIBLE_NODES) if total_instances > 0 else 1
-        page_info = (self._current_page + 1, total_pages) if total_pages > 1 else None
-
         # Assemble panel
         return create_panel(
             header=header,
@@ -448,7 +448,6 @@ class PanelController:
             visible_instances=visible_instances,
             all_instances=all_instances,
             max_visible=self._MAX_VISIBLE_NODES,
-            page_info=page_info,
             terminal_width=self._console.size.width,
         )
 
