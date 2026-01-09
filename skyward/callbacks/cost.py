@@ -14,7 +14,7 @@ from skyward.core.events import (
     CostUpdate,
     InstanceProvisioned,
     InstanceStopping,
-    Metrics,
+    MetricValue,
     PoolStopping,
     SkywardEvent,
 )
@@ -253,7 +253,7 @@ def cost_tracker(
                     state.stop_billing(inst.instance_id)
                     return None
 
-                case Metrics():
+                case MetricValue():
                     return state.calculate_update()
 
                 case PoolStopping():

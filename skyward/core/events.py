@@ -201,23 +201,6 @@ class BootstrapCommand:
     command: str
 
 
-@dataclass(frozen=True, slots=True)
-class BootstrapMetrics:
-    """Metrics event from JSONL stream.
-
-    Emitted by the metrics daemon running on the instance. Contains
-    CPU, memory, and optional GPU metrics.
-    """
-
-    ts: float
-    cpu: float
-    mem: float
-    mem_used_mb: int
-    mem_total_mb: int
-    gpu_util: float | None = None
-    gpu_mem_used: int | None = None
-    gpu_mem_total: int | None = None
-    gpu_temp: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,18 +220,25 @@ class InstanceReady:
 
 
 @dataclass(frozen=True, slots=True)
-class Metrics:
-    """Runtime metrics from instance."""
+class MetricValue:
+    """Individual metric value from remote instance.
+
+    Each metric collector emits separate events, allowing:
+    - Dynamic metric names (cpu, gpu_util_0, gpu_util_1, custom_metric, etc.)
+    - Different sampling intervals per metric
+    - Easy extension with custom metrics
+
+    Attributes:
+        instance: The instance this metric came from.
+        name: Metric identifier (e.g., "cpu", "gpu_util_0", "disk_root").
+        value: The numeric value.
+        timestamp: Unix timestamp when the metric was collected.
+    """
 
     instance: ProvisionedInstance
-    cpu_percent: float
-    memory_percent: float
-    memory_used_mb: float
-    memory_total_mb: float
-    gpu_utilization: float | None = None
-    gpu_memory_used_mb: float | None = None
-    gpu_memory_total_mb: float | None = None
-    gpu_temperature: float | None = None
+    name: str
+    value: float
+    timestamp: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -433,9 +423,8 @@ type SkywardEvent = (
     | BootstrapConsole
     | BootstrapPhase
     | BootstrapCommand
-    | BootstrapMetrics
     | InstanceReady
-    | Metrics
+    | MetricValue
     | LogLine
     | FunctionCall
     | FunctionResult
@@ -468,10 +457,9 @@ __all__ = [
     "BootstrapConsole",
     "BootstrapPhase",
     "BootstrapCommand",
-    "BootstrapMetrics",
     "InstanceReady",
     # Execute
-    "Metrics",
+    "MetricValue",
     "LogLine",
     "FunctionCall",
     "FunctionResult",

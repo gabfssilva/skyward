@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 
 # Utilities
 import skyward.integrations as integrations
+import skyward.spec.metrics as metrics
 import skyward.utils.conc as conc
 
 # Pool decorator (implicit context)
@@ -84,7 +85,7 @@ from skyward.core.events import (
     InstanceReplaced,
     InstanceStopping,
     LogLine,
-    Metrics,
+    MetricValue,
     NetworkReady,
     PoolReady,
     PoolStarted,
@@ -235,7 +236,7 @@ __all__ = [
     "InstanceReady",
     "InstancePreempted",
     "InstanceReplaced",
-    "Metrics",
+    "MetricValue",
     "LogLine",
     "FunctionCall",
     "FunctionResult",
@@ -281,6 +282,8 @@ __all__ = [
     "DistributedSampler",
     "integrations",
     "conc",
+    # Metrics configuration
+    "metrics",
     # Version
     "__version__",
 ]

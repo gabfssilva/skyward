@@ -29,7 +29,6 @@ from skyward.core.constants import RPYC_PORT, SKYWARD_DIR
 from skyward.core.events import (
     BootstrapCommand,
     BootstrapConsole,
-    BootstrapMetrics,
     BootstrapPhase,
     ProviderName,
     ProvisionedInstance,
@@ -147,9 +146,22 @@ class LogEvent:
     stream: str = "stdout"
 
 
+@dataclass(frozen=True, slots=True)
+class MetricEvent:
+    """Individual metric value from JSONL stream (internal).
+
+    This is the raw event from the metrics daemon. It gets converted to
+    MetricValue (with instance info) in the pool layer.
+    """
+
+    name: str
+    value: float
+    ts: float
+
+
 # Type alias for all streamable events
 type StreamEvent = (
-    BootstrapConsole | BootstrapPhase | BootstrapCommand | BootstrapMetrics | LogEvent
+    BootstrapConsole | BootstrapPhase | BootstrapCommand | MetricEvent | LogEvent
 )
 
 
@@ -185,18 +197,20 @@ def parse_bootstrap_line(line: str) -> StreamEvent | None:
             )
         case "command":
             return BootstrapCommand(command=data.get("command", ""))
-        case "metrics":
-            return BootstrapMetrics(
-                ts=data.get("ts", 0.0),
-                cpu=data.get("cpu", 0.0),
-                mem=data.get("mem", 0.0),
-                mem_used_mb=data.get("mem_used_mb", 0),
-                mem_total_mb=data.get("mem_total_mb", 0),
-                gpu_util=data.get("gpu_util"),
-                gpu_mem_used=data.get("gpu_mem_used"),
-                gpu_mem_total=data.get("gpu_mem_total"),
-                gpu_temp=data.get("gpu_temp"),
-            )
+        case "metric":
+            # New individual metric event format
+            value = data.get("value")
+            if value is None:
+                return None
+            try:
+                return MetricEvent(
+                    name=data.get("name", ""),
+                    value=float(value),
+                    ts=data.get("ts", 0.0),
+                )
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid metric value: {value}")
+                return None
         case "log":
             return LogEvent(
                 content=data.get("content", ""),

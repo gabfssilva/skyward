@@ -371,7 +371,7 @@ class DigitalOceanProvider(Provider):
                     ]
                 ),
                 _destroy_fn=_make_destroy_fn(droplet.id),
-                ssh_pool_size=compute.concurrency * 2,
+                ssh_pool_size=compute.concurrency + 5,
             )
             instances.append(instance)
 

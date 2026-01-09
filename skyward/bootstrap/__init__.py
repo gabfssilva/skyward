@@ -21,7 +21,6 @@ from __future__ import annotations
 
 # Core types and composition
 from .compose import (
-    DEFAULT_HEADER,
     Op,
     bootstrap,
     resolve,
@@ -93,7 +92,6 @@ __all__ = [
     "Op",
     "bootstrap",
     "resolve",
-    "DEFAULT_HEADER",
     # Core operations
     "activate",
     "apt",

@@ -6,9 +6,12 @@ Core types and composition functions for the declarative bootstrap DSL.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from skyward.core.constants import SKYWARD_DIR
+
+if TYPE_CHECKING:
+    from skyward.spec.metrics import Metric
 
 # =============================================================================
 # Core Types
@@ -17,23 +20,25 @@ from skyward.core.constants import SKYWARD_DIR
 type Op = str | Callable[[], str] | list[Op]
 """Operation type: either a literal string or a function returning a string."""
 
+
 def resolve(op: Op) -> str:
     """Resolve an operation to its string representation."""
     match op:
         case str(op):
             return op
         case list(op):
-            return '\n'.join(map(lambda o: resolve(o), op))
+            return "\n".join(map(lambda o: resolve(o), op))
         case None:
             return ""
         case _:
             return op()
 
+
 # =============================================================================
-# Header Template
+# Header Template (without metrics - those are generated dynamically)
 # =============================================================================
 
-DEFAULT_HEADER: Final = f"""#!/bin/bash
+HEADER_TEMPLATE: Final = f"""#!/bin/bash
 set -e
 
 mkdir -p {SKYWARD_DIR}
@@ -42,49 +47,49 @@ export DEBIAN_FRONTEND=noninteractive
 export PATH="/root/.local/bin:$PATH"
 
 # =============================================================================
-# Events JSONL Streaming (bootstrap + metrics)
+# Events JSONL Streaming
 # =============================================================================
 
 EVENTS_LOG="{SKYWARD_DIR}/events.jsonl"
 MAX_SIZE=10485760  # 10MB rotation threshold
 
 # Base emit with automatic rotation
-emit() {{
+emit() {{{{
     echo "$1" >> "$EVENTS_LOG"
     local size=$(stat -c%s "$EVENTS_LOG" 2>/dev/null || stat -f%z "$EVENTS_LOG" 2>/dev/null || echo 0)
     if [ "$size" -gt "$MAX_SIZE" ]; then
-        mv "$EVENTS_LOG" "${{EVENTS_LOG}}.1"
+        mv "$EVENTS_LOG" "${{{{EVENTS_LOG}}}}.1"
     fi
-}}
+}}}}
 
-emit_phase() {{
-    local event="$1" phase="$2" elapsed="${{3:-null}}" error="${{4:-null}}"
-    emit "{{\\"type\\":\\"phase\\",\\"event\\":\\"$event\\",\\"phase\\":\\"$phase\\",\\"elapsed\\":$elapsed,\\"error\\":$error}}"
-}}
+emit_phase() {{{{
+    local event="$1" phase="$2" elapsed="${{{{3:-null}}}}" error="${{{{4:-null}}}}"
+    emit "{{{{\\\"type\\\":\\\"phase\\\",\\\"event\\\":\\\"$event\\\",\\\"phase\\\":\\\"$phase\\\",\\\"elapsed\\\":$elapsed,\\\"error\\\":$error}}}}"
+}}}}
 
-emit_console() {{
-    local content="$1" stream="${{2:-stdout}}"
+emit_console() {{{{
+    local content="$1" stream="${{{{2:-stdout}}}}"
     # Escape for JSON: backslash first, then quotes, then control chars
-    content="${{content//\\\\/\\\\\\\\}}"
-    content="${{content//\\"/\\\\\\"}}"
-    content="${{content//$'\\n'/\\\\n}}"
-    content="${{content//$'\\t'/\\\\t}}"
-    content="${{content//$'\\r'/\\\\r}}"
-    emit "{{\\"type\\":\\"console\\",\\"content\\":\\"$content\\",\\"stream\\":\\"$stream\\"}}"
-}}
+    content="${{{{content//\\\\/\\\\\\\\}}}}"
+    content="${{{{content//\\"/\\\\\\"}}}}"
+    content="${{{{content//$'\\n'/\\\\n}}}}"
+    content="${{{{content//$'\\t'/\\\\t}}}}"
+    content="${{{{content//$'\\r'/\\\\r}}}}"
+    emit "{{{{\\\"type\\\":\\\"console\\\",\\\"content\\\":\\\"$content\\\",\\\"stream\\\":\\\"$stream\\\"}}}}"
+}}}}
 
-emit_command() {{
+emit_command() {{{{
     local cmd="$1"
     # Escape for JSON: backslash first, then quotes, then control chars
-    cmd="${{cmd//\\\\/\\\\\\\\}}"
-    cmd="${{cmd//\\"/\\\\\\"}}"
-    cmd="${{cmd//$'\\n'/\\\\n}}"
-    cmd="${{cmd//$'\\t'/\\\\t}}"
-    cmd="${{cmd//$'\\r'/\\\\r}}"
-    emit "{{\\"type\\":\\"command\\",\\"command\\":\\"$cmd\\"}}"
-}}
+    cmd="${{{{cmd//\\\\/\\\\\\\\}}}}"
+    cmd="${{{{cmd//\\"/\\\\\\"}}}}"
+    cmd="${{{{cmd//$'\\n'/\\\\n}}}}"
+    cmd="${{{{cmd//$'\\t'/\\\\t}}}}"
+    cmd="${{{{cmd//$'\\r'/\\\\r}}}}"
+    emit "{{{{\\\"type\\\":\\\"command\\\",\\\"command\\\":\\\"$cmd\\\"}}}}"
+}}}}
 
-run_phase() {{
+run_phase() {{{{
     local phase="$1"; shift
     emit_phase "started" "$phase"
 
@@ -101,66 +106,24 @@ run_phase() {{
     "$@" 2>&1 | while IFS= read -r line; do
         emit_console "$line"
     done
-    local exit_code=${{PIPESTATUS[0]}}
+    local exit_code=${{{{PIPESTATUS[0]}}}}
     set -e
 
     local end_ns=$(date +%s%N)
-    local elapsed=$(awk "BEGIN {{printf \\"%.2f\\", ($end_ns - $start_ns) / 1000000000}}")
+    local elapsed=$(awk "BEGIN {{{{printf \\\"%.2f\\\", ($end_ns - $start_ns) / 1000000000}}}}")
 
     if [ $exit_code -eq 0 ]; then
         emit_phase "completed" "$phase" "$elapsed"
     else
-        emit_phase "failed" "$phase" "$elapsed" "\\"exit_code=$exit_code\\""
+        emit_phase "failed" "$phase" "$elapsed" "\\\"exit_code=$exit_code\\\""
         exit $exit_code
     fi
-}}
+}}}}
 
-# =============================================================================
-# Metrics Streaming
-# =============================================================================
-
-_GPU_CACHE=""
-_GPU_COUNT=0
-
-emit_metrics() {{
-    local ts=$(date +%s.%N)
-    local cpu=$(awk '/^cpu / {{printf "%.1f", ($2+$4)*100/($2+$4+$5)}}' /proc/stat)
-    local mem_data=$(free | awk '/^Mem:/ {{printf "%.1f,%d,%d", $3/$2*100, $3/1024, $2/1024}}')
-    IFS=',' read -r mem mem_used mem_total <<< "$mem_data"
-
-    # GPU only every 5 iterations (~1s) because nvidia-smi is slow
-    if [ $((_GPU_COUNT % 5)) -eq 0 ] && command -v nvidia-smi &>/dev/null; then
-        local gpu_raw=$(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu \
-                        --format=csv,noheader,nounits 2>/dev/null | tr -d ' ')
-        if [ -n "$gpu_raw" ]; then
-            IFS=',' read -r gu gmu gmt gt <<< "$gpu_raw"
-            _GPU_CACHE=",\\"gpu_util\\":$gu,\\"gpu_mem_used\\":$gmu,\\"gpu_mem_total\\":$gmt,\\"gpu_temp\\":$gt"
-        fi
-    fi
-    _GPU_COUNT=$((_GPU_COUNT + 1))
-
-    emit "{{\\"type\\":\\"metrics\\",\\"ts\\":$ts,\\"cpu\\":$cpu,\\"mem\\":$mem,\\"mem_used_mb\\":$mem_used,\\"mem_total_mb\\":$mem_total$_GPU_CACHE}}"
-}}
-
-start_metrics_daemon() {{
-    (
-        while true; do
-            emit_metrics
-            sleep 0.2
-        done
-    ) &
-    echo $! > {SKYWARD_DIR}/metrics.pid
-}}
-
-stop_metrics_daemon() {{
-    if [ -f {SKYWARD_DIR}/metrics.pid ]; then
-        kill $(cat {SKYWARD_DIR}/metrics.pid) 2>/dev/null || true
-        rm -f {SKYWARD_DIR}/metrics.pid
-    fi
-}}
+{{metrics_script}}
 
 # Error trap - emit failure event
-trap 'emit_phase "failed" "bootstrap" null "\\"$BASH_COMMAND failed\\""' ERR
+trap 'emit_phase "failed" "bootstrap" null "\\\"$BASH_COMMAND failed\\\""' ERR
 
 # Start bootstrap
 emit_phase "started" "bootstrap"
@@ -169,27 +132,161 @@ emit_phase "started" "bootstrap"
 
 
 # =============================================================================
+# Metrics Script Generation
+# =============================================================================
+
+
+def generate_metrics_script(metrics: tuple[Metric, ...] | list[Metric] | None) -> str:
+    """Generate bash script for dynamic metrics collection.
+
+    Each metric runs as a background process with its own collection interval.
+    Multi-value metrics (e.g., GPU with index=None) emit separate events for
+    each line of output (gpu_util_0, gpu_util_1, etc.).
+
+    Args:
+        metrics: Tuple of Metric definitions. If None or empty, returns no-op functions.
+
+    Returns:
+        Bash script fragment with collector functions and start/stop daemon functions.
+    """
+    if not metrics:
+        return """# =============================================================================
+# Metrics Collection (disabled)
+# =============================================================================
+
+start_metrics_daemon() { :; }
+stop_metrics_daemon() { :; }
+"""
+
+    lines = [
+        "# =============================================================================",
+        "# Metrics Collection",
+        "# =============================================================================",
+        "",
+    ]
+
+    # Generate collector function for each metric
+    for m in metrics:
+        collector = _generate_collector(m)
+        lines.append(collector)
+
+    # Generate start_metrics_daemon
+    lines.append("start_metrics_daemon() {")
+    for m in metrics:
+        safe_name = _safe_function_name(m.name)
+        lines.append(f"    _collect_{safe_name} &")
+        lines.append(f"    echo $! >> {SKYWARD_DIR}/metrics.pids")
+    lines.append("}")
+    lines.append("")
+
+    # Generate stop_metrics_daemon
+    lines.append(f"""stop_metrics_daemon() {{
+    if [ -f {SKYWARD_DIR}/metrics.pids ]; then
+        while read pid; do
+            kill "$pid" 2>/dev/null || true
+        done < {SKYWARD_DIR}/metrics.pids
+        rm -f {SKYWARD_DIR}/metrics.pids
+    fi
+}}""")
+
+    return "\n".join(lines)
+
+
+def _safe_function_name(name: str) -> str:
+    """Convert metric name to safe bash function name."""
+    return name.replace("-", "_").replace(".", "_")
+
+
+def _generate_collector(m: Metric) -> str:
+    """Generate a collector function for a single metric.
+
+    For multi-value metrics, the command output is iterated line by line,
+    emitting name_0, name_1, etc. for each line.
+    """
+    safe_name = _safe_function_name(m.name)
+
+    if m.multi:
+        # Multi-value: each line becomes name_0, name_1, etc.
+        return f"""_collect_{safe_name}() {{
+    while true; do
+        local ts=$(date +%s.%N)
+        local idx=0
+        {m.command} | while read val; do
+            if [ -n "$val" ]; then
+                emit "{{\\"type\\":\\"metric\\",\\"name\\":\\"{m.name}_$idx\\",\\"value\\":$val,\\"ts\\":$ts}}"
+            fi
+            idx=$((idx + 1))
+        done
+        sleep {m.interval}
+    done
+}}
+"""
+    else:
+        # Single value metric
+        return f"""_collect_{safe_name}() {{
+    while true; do
+        local ts=$(date +%s.%N)
+        local val=$({m.command})
+        if [ -n "$val" ]; then
+            emit "{{\\"type\\":\\"metric\\",\\"name\\":\\"{m.name}\\",\\"value\\":$val,\\"ts\\":$ts}}"
+        fi
+        sleep {m.interval}
+    done
+}}
+"""
+
+
+# =============================================================================
 # Composition
 # =============================================================================
 
 
-def bootstrap(*ops: Op | None, header: str | None = None) -> str:
+def make_header(metrics: tuple[Metric, ...] | list[Metric] | None) -> str:
+    """Create bootstrap header with dynamic metrics configuration.
+
+    Args:
+        metrics: Metrics to collect. If None, uses no-op metrics functions.
+
+    Returns:
+        Complete header string with metrics collection functions.
+    """
+    metrics_script = generate_metrics_script(metrics)
+    return HEADER_TEMPLATE.format(metrics_script=metrics_script)
+
+
+def bootstrap(
+    *ops: Op | None,
+    header: str | None = None,
+    metrics: tuple[Metric, ...] | list[Metric] | None = None,
+) -> str:
     """Compose operations into a complete bootstrap script.
 
     Args:
         *ops: Operations to compose. Can be strings or callables returning strings.
-        header: Optional custom header. Defaults to DEFAULT_HEADER.
+        header: Optional custom header. If provided, metrics parameter is ignored.
+        metrics: Metrics configuration for dynamic collection. Only used when
+            header is not provided.
 
     Returns:
         Complete shell script string.
 
     Example:
+        >>> from skyward.spec.metrics import CPU, GPU, Default
         >>> script = bootstrap(
         ...     apt("python3", "curl"),
         ...     checkpoint(".step_apt"),
-        ...     "echo 'custom command'",  # string literals work too
+        ...     "echo 'custom command'",
+        ...     metrics=Default(),
         ... )
     """
-    base = header if header is not None else DEFAULT_HEADER
+    if header is not None:
+        base = header
+    elif metrics is not None:
+        base = make_header(metrics)
+    else:
+        # Default: use Default() metrics
+        from skyward.spec.metrics import Default
+        base = make_header(Default())
+
     commands = [resolve(op) for op in ops]
     return base + "\n\n".join(commands)

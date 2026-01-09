@@ -49,6 +49,8 @@ from .discovery import (
     find_available_region,
     get_availability,
 )
+from ...utils import map_async_indexed, map_async
+
 
 # =============================================================================
 # Internal Types
@@ -374,30 +376,35 @@ class VerdaProvider(Provider):
         )
 
         verda_instances: list[_VerdaInstance] = []
-        for i in range(compute.nodes):
+
+        def create(i: int):
             instance_name = f"skyward-{cluster_id}-{i}"
             logger.debug(f"Creating instance {instance_name} (type={instance_type}, spot={use_spot})")
 
             created = client.instances.create(
-                instance_type=instance_type,
-                image=os_image,
-                ssh_key_ids=[ssh_key_info.id],
+                instance_type=instance_type, image=os_image, ssh_key_ids=[ssh_key_info.id],
                 hostname=instance_name,
                 description=f"Skyward managed instance - cluster {cluster_id}",
-                startup_script_id=startup_script.id,
-                location=actual_region,
+                startup_script_id=startup_script.id, location=actual_region,
                 is_spot=use_spot,
             )
 
-            verda_instances.append(
-                _VerdaInstance(
-                    id=created.id,
-                    name=instance_name,
-                    ip="",
-                    status="provisioning",
-                )
-            )
             logger.debug(f"Instance {instance_name} created with id {created.id}")
+
+            return _VerdaInstance(
+                id=created.id,
+                name=instance_name,
+                ip="",
+                status="provisioning"
+            )
+
+        verda_instances = list(
+            map_async(
+                lambda idx: create(idx),
+                range(compute.nodes),
+                concurrency=compute.nodes
+            )
+        )
 
         logger.debug(f"Waiting for {len(verda_instances)} instances to become running...")
         _wait_for_running(client, verda_instances, timeout=300)
@@ -439,7 +446,7 @@ class VerdaProvider(Provider):
                     ]
                 ),
                 _destroy_fn=_make_destroy_fn(vinst.id),
-                ssh_pool_size=compute.concurrency * 2,
+                ssh_pool_size=compute.concurrency + 5,
             )
             instances.append(instance)
 

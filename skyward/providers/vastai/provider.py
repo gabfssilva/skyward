@@ -755,7 +755,7 @@ echo "$IFACE $IP"
                 node=i,
                 metadata=frozenset(meta_items),
                 _destroy_fn=lambda inst_id=vast_inst.id: self._destroy_instance(inst_id),
-                ssh_pool_size=compute.concurrency * 2,
+                ssh_pool_size=compute.concurrency + 5,
             )
             instances.append(instance)
 

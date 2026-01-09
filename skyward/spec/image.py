@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from skyward.bootstrap import (
     Op,
@@ -32,6 +32,12 @@ from skyward.bootstrap import (
 )
 from skyward.bootstrap.worker import rpyc_service_unit
 from skyward.core.constants import RPYC_PORT
+
+if TYPE_CHECKING:
+    from skyward.spec.metrics import Metric
+
+# Type alias for metrics configuration
+type MetricsConfig = tuple["Metric", ...] | list["Metric"] | None
 
 # Skyward installation source
 type SkywardSource = Literal["local", "github", "pypi"]
@@ -91,6 +97,7 @@ class Image:
     env: dict[str, str] = field(default_factory=dict)
     shell_vars: dict[str, str] = field(default_factory=dict)
     skyward_source: SkywardSource = "github"
+    metrics: MetricsConfig = None  # None means use Default()
 
     def content_hash(self) -> str:
         """Generate hash for AMI/snapshot caching.
@@ -101,6 +108,14 @@ class Image:
         Returns:
             12-character hex hash of the image specification.
         """
+        # Serialize metrics config for hashing
+        metrics_key: list[tuple[str, str, float, bool]] | None = None
+        if self.metrics is not None:
+            metrics_key = [
+                (m.name, m.command, m.interval, m.multi)
+                for m in self.metrics
+            ]
+
         content = json.dumps(
             {
                 "python": self.python,
@@ -110,6 +125,7 @@ class Image:
                 "env": dict(sorted(self.env.items())),
                 "shell_vars": dict(sorted(self.shell_vars.items())),
                 "skyward_source": self.skyward_source,
+                "metrics": metrics_key,
             },
             sort_keys=True,
         )
@@ -150,17 +166,13 @@ class Image:
                 shell_vars(**self.shell_vars) if self.shell_vars else None,
                 env_export(**self.env) if self.env else None,
             ) if self.shell_vars or self.env else None,
-            # UV setup (fast)
+            phase("apt", apt("curl", "git", *self.apt)),
             phase_simple("uv", install_uv(), uv_init(self.python, name="skyward-bootstrap")),
-            # APT packages (streaming useful for progress)
-            phase("apt", apt("python3", "curl", "git", *self.apt)),
-            # Python dependencies (streaming useful)
             phase(
                 "deps",
                 uv_add(
                     "cloudpickle",
                     "rpyc",
-                    "nvidia-ml-py",  # NVIDIA GPU metrics (gracefully ignored if no GPU)
                     *self.pip,
                     extra_index=self.pip_extra_index_url,
                 ),
@@ -202,7 +214,14 @@ class Image:
         ops.append(emit_bootstrap_complete())
         ops.append(start_metrics())  # Start metrics daemon after bootstrap
 
-        return bootstrap(*ops)
+        # Determine effective metrics config
+        effective_metrics = self.metrics
+        if effective_metrics is None:
+            # Default metrics when not specified
+            from skyward.spec.metrics import Default
+            effective_metrics = Default()
+
+        return bootstrap(*ops, metrics=effective_metrics)
 
 
 # Default image for when none is specified

@@ -15,20 +15,19 @@ from skyward.core.events import (
     BootstrapCommand,
     BootstrapCompleted,
     BootstrapConsole,
-    BootstrapMetrics,
     BootstrapPhase,
     BootstrapProgress,
     BootstrapStarting,
     InstanceStopping,
     LogLine,
-    Metrics,
+    MetricValue,
     ProviderName,
     ProvisioningCompleted,
     ProvisioningStarted,
 )
 from skyward.core.monitor import Monitor, monitor
 from skyward.pool.preemption import PreemptionHandler, preemption_check
-from skyward.providers.common import BootstrapError, LogEvent, make_provisioned
+from skyward.providers.common import BootstrapError, LogEvent, MetricEvent, make_provisioned
 from skyward.utils.conc import for_each_async
 
 if TYPE_CHECKING:
@@ -185,23 +184,12 @@ class InstancePool:
                                 bootstrap_done.set()
                                 return  # Exit thread on failure
 
-                            case BootstrapMetrics() as m:
-                                gpu_mem_used = (
-                                    float(m.gpu_mem_used) if m.gpu_mem_used else None
-                                )
-                                gpu_mem_total = (
-                                    float(m.gpu_mem_total) if m.gpu_mem_total else None
-                                )
-                                emit(Metrics(
+                            case MetricEvent(name=name, value=value, ts=ts):
+                                emit(MetricValue(
                                     instance=provisioned,
-                                    cpu_percent=m.cpu,
-                                    memory_percent=m.mem,
-                                    memory_used_mb=float(m.mem_used_mb),
-                                    memory_total_mb=float(m.mem_total_mb),
-                                    gpu_utilization=m.gpu_util,
-                                    gpu_memory_used_mb=gpu_mem_used,
-                                    gpu_memory_total_mb=gpu_mem_total,
-                                    gpu_temperature=float(m.gpu_temp) if m.gpu_temp else None,
+                                    name=name,
+                                    value=value,
+                                    timestamp=ts,
                                 ))
 
                             case LogEvent(content=content, stream=stream):
