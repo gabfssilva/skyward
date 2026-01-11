@@ -1,650 +1,422 @@
-# Skyward v2 - Architecture Plan
+# Skyward v2 - Status Completo e Próximos Passos
 
-## Overview
+## Arquitetura v2
 
-Event-driven architecture with:
-- **100% event communication** between components
-- **asyncio** native (no threads)
-- **blinker** for signals
-- **injector** for DI
-- **`@component`** decorator that replaces `@dataclass` + auto-wires handlers
+**Princípios:**
+- 100% event-driven com asyncio
+- DI extensivo via `injector` library
+- Eventos via `blinker` (native async)
+- Mais OOP que funcional (service classes, @component)
+- Imutabilidade para configs/events, mutabilidade para state
 
-## Core Concepts
+**Padrões:**
+- `@component`: Auto-gera `__init__`, aplica `@inject`, registra handlers
+- `@on(EventType)`: Marca métodos como event handlers
+- `@monitor(interval)`: Background loops com DI
+- `Client[T]`: Factory que retorna async context manager (DI pattern)
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                              USER CODE                                   │
-│                                                                          │
-│  async with app_context(AppModule()) as app:                            │
-│      pool = app.get(ComputePool)                                        │
-│      await pool.start()                                                 │
-│      result = await pool.run(train, data)                               │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           AsyncEventBus                                  │
-│                                                                          │
-│  - Routes events between components                                      │
-│  - Supports request/response via correlation IDs                        │
-│  - Fire-and-forget or await patterns                                    │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-          │                    │                    │
-          ▼                    ▼                    ▼
-   ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-   │    Pool     │     │    Node     │     │  Provider   │
-   │             │     │             │     │   Handler   │
-   │ @component  │     │ @component  │     │ @component  │
-   │ @on events  │     │ @on events  │     │ @on events  │
-   └─────────────┘     └─────────────┘     └─────────────┘
-```
+---
 
-## Event Flow
+## STATUS: O Que Já Foi Feito
 
-```
-STARTUP:
-=========
-Pool.start()
-    │
-    ├──► emit ClusterRequested(provider="aws", spec=...)
-    │                                    │
-    │         ┌──────────────────────────┘
-    │         ▼
-    │    AWSHandler @on(ClusterRequested)
-    │         │
-    │         ├──► create VPC, SG, etc.
-    │         │
-    │         └──► emit ClusterProvisioned(cluster_id=...)
-    │                                    │
-    │         ┌──────────────────────────┘
-    │         ▼
-    ├──◄ Pool @on(ClusterProvisioned)
-    │         │
-    │         └──► create Nodes, call node.provision()
-    │                        │
-    │                        ▼
-    │              Node.provision()
-    │                        │
-    │                        └──► emit InstanceRequested(node=0, ...)
-    │                                              │
-    │                   ┌──────────────────────────┘
-    │                   ▼
-    │              AWSHandler @on(InstanceRequested)
-    │                   │
-    │                   ├──► launch EC2
-    │                   ├──► emit InstanceProvisioned(...)
-    │                   ├──► wait bootstrap
-    │                   └──► emit InstanceBootstrapped(...)
-    │                                              │
-    │                   ┌──────────────────────────┘
-    │                   ▼
-    │              Node @on(InstanceBootstrapped)
-    │                   │
-    │                   └──► emit NodeReady(node=0, ...)
-    │                                    │
-    │         ┌──────────────────────────┘
-    │         ▼
-    └──◄ Pool @on(NodeReady)
-              │
-              └──► when all nodes ready: emit ClusterReady(...)
+### Core (100% Completo)
 
+| Arquivo | Status | Descrição |
+|---------|--------|-----------|
+| `events.py` | ✅ | 20+ event types (Requests + Facts), type aliases, InstanceInfo |
+| `bus.py` | ✅ | AsyncEventBus com emit/emit_await/request, usa blinker send_async |
+| `app.py` | ✅ | @component, @on, @monitor, create_app, app_context, MonitorManager |
+| `spec.py` | ✅ | PoolSpec, ImageSpec, AllocationStrategy |
+| `protocols.py` | ✅ | Transport, Executor, TransportFactory, HealthChecker, PreemptionChecker |
+| `node.py` | ✅ | Node component com state machine (INIT→PROVISIONING→BOOTSTRAPPING→READY→REPLACING) |
+| `pool.py` | 🟡 | ComputePool component, start/stop funcionam, **run/broadcast são stubs** |
 
-PREEMPTION:
-===========
-Monitor detects preemption
-    │
-    └──► emit InstancePreempted(node=2, reason="spot")
-                        │
-         ┌──────────────┘
-         ▼
-    Node @on(InstancePreempted)
-         │
-         └──► emit InstanceRequested(node=2, replacing="i-xxx")
-                              │
-         ┌────────────────────┘
-         ▼
-    AWSHandler @on(InstanceRequested)
-         │
-         ├──► terminate old instance
-         ├──► launch new instance
-         └──► emit InstanceReplaced(old=..., new=...)
-                              │
-         ┌────────────────────┘
-         ▼
-    Node @on(InstanceReplaced)
-         │
-         └──► emit NodeReady(node=2, ...)
+### AWS Provider (80% Completo)
+
+| Arquivo | Status | Descrição |
+|---------|--------|-----------|
+| `providers/aws/config.py` | ✅ | AWS dataclass imutável |
+| `providers/aws/state.py` | ✅ | AWSResources, AWSClusterState, InstanceConfig |
+| `providers/aws/clients.py` | ✅ | `Client[T]` type, AWSModule com providers para EC2/S3/IAM/STS |
+| `providers/aws/handler.py` | 🟡 | @on handlers para Cluster/Instance/Shutdown, **veja pendências abaixo** |
+
+**Pendências no AWSHandler:**
+1. `_resolve_instance_config()` - Mapping accelerator→instance_type **hardcoded**
+2. `_get_dlami()` - AMI **hardcoded** por região
+3. `_generate_user_data()` - Bash básico, **deveria usar bootstrap DSL**
+4. `_wait_bootstrap()` - **STUB: apenas sleep(10)**, deveria poll SSH
+
+### Transport (100% Completo)
+
+| Arquivo | Status | Descrição |
+|---------|--------|-----------|
+| `transport/ssh.py` | ✅ | SSHTransport completo: run, run_stream, upload, download, file ops |
+| `transport/__init__.py` | ✅ | Exports |
+
+### Bootstrap (100% Completo)
+
+| Arquivo | Status | Descrição |
+|---------|--------|-----------|
+| `bootstrap/__init__.py` | ✅ | Re-export de skyward.bootstrap (DSL maduro do v1) |
+
+### Monitors (50% Completo)
+
+| Arquivo | Status | Descrição |
+|---------|--------|-----------|
+| `monitors.py` | 🟡 | InstanceRegistry ✅, MonitorModule ✅, **preemption/health são stubs** |
+
+**Pendências:**
+- `_check_instance_preemption()` - **STUB: sempre retorna False**
+- `_ping_instance()` - **STUB: sempre retorna True**
+- `check_aws_spot_interruption()` - ✅ Implementado (usa EC2 API)
+
+---
+
+## STATUS: O Que Falta Fazer
+
+### Fase 7: Completar AWS Provider
+
+#### 7.1 Bootstrap Polling via SSH
+```python
+# handler.py - _wait_bootstrap() atual:
+async def _wait_bootstrap(self, info: InstanceInfo) -> None:
+    await asyncio.sleep(10)  # STUB!
+
+# Deveria:
+async def _wait_bootstrap(self, info: InstanceInfo, timeout: float = 600) -> None:
+    transport = SSHTransport(host=info.ip, user="ubuntu", key_path=self._ssh_key)
+    async with transport:
+        # Poll for bootstrap completion marker
+        if await transport.wait_for_file("/tmp/bootstrap_complete", timeout=timeout):
+            return
+        raise TimeoutError("Bootstrap did not complete")
 ```
 
-## File Structure
+**Dependência:** Precisa de SSH key path no cluster state
+
+#### 7.2 AMI Resolution via SSM
+```python
+# handler.py - _get_dlami() atual:
+dlami_map = {"us-east-1": "ami-xxx", ...}  # HARDCODED!
+
+# Deveria:
+async def _get_dlami(self) -> str:
+    async with self.ssm() as ssm:  # Novo client
+        response = await ssm.get_parameter(
+            Name="/aws/service/ecs/optimized-ami/amazon-linux-2/gpu/recommended"
+        )
+        return response["Parameter"]["Value"]["image_id"]
+```
+
+#### 7.3 Instance Type Mapping
+```python
+# handler.py - _resolve_instance_config() atual:
+accelerator_map = {"T4": "g4dn.xlarge", ...}  # HARDCODED!
+
+# Deveria: Query EC2 API ou tabela configurável
+# Ou usar spec com instance_type explícito
+```
+
+#### 7.4 User Data com Bootstrap DSL
+```python
+# handler.py - _generate_user_data() atual:
+lines = ["#!/bin/bash", f"export KEY={value}", ...]  # Básico!
+
+# Deveria usar:
+from skyward.v2.bootstrap import bootstrap, apt, pip, checkpoint
+script = bootstrap(
+    apt(*spec.image.apt),
+    pip(*spec.image.pip),
+    checkpoint("/tmp/bootstrap_complete"),
+)
+return resolve(script)
+```
+
+### Fase 8: Pool Execution
+
+#### 8.1 Remote Function Execution
+```python
+# pool.py - run() atual:
+async def run[T](self, fn, *args, node=None, **kwargs) -> T:
+    raise NotImplementedError  # STUB!
+
+# Implementação:
+async def run[T](self, fn: Callable[..., T], *args, node: NodeId | None = None, **kwargs) -> T:
+    target_node = self._nodes[node] if node else next(iter(self._nodes.values()))
+    info = target_node.info
+
+    # Create transport + executor
+    transport = SSHTransport(host=info.ip, user="ubuntu", key_path=self._ssh_key)
+    executor = RPyCExecutor(transport)
+
+    async with transport:
+        return await executor.execute(fn, *args, **kwargs)
+```
+
+#### 8.2 RPyC Executor
+```python
+# transport/rpyc.py (NOVO)
+class RPyCExecutor:
+    def __init__(self, transport: SSHTransport):
+        self.transport = transport
+
+    async def execute[T](self, fn: Callable[..., T], *args, **kwargs) -> T:
+        # 1. Serialize with cloudpickle
+        payload = cloudpickle.dumps((fn, args, kwargs))
+
+        # 2. Send via SSH to RPyC server
+        # 3. Receive and deserialize result
+```
+
+#### 8.3 Broadcast
+```python
+# pool.py - broadcast() atual:
+async def broadcast[T](self, fn, *args, **kwargs) -> list[T]:
+    raise NotImplementedError  # STUB!
+
+# Implementação:
+async def broadcast[T](self, fn: Callable[..., T], *args, **kwargs) -> list[T]:
+    tasks = [
+        self.run(fn, *args, node=node_id, **kwargs)
+        for node_id in self._nodes
+    ]
+    return await asyncio.gather(*tasks)
+```
+
+### Fase 9: Monitors Completos
+
+#### 9.1 Preemption Detection Genérico
+```python
+# monitors.py - _check_instance_preemption() atual:
+async def _check_instance_preemption(info: InstanceInfo) -> tuple[bool, str | None]:
+    return False, None  # STUB!
+
+# Deveria: dispatch por provider
+async def _check_instance_preemption(info: InstanceInfo) -> tuple[bool, str | None]:
+    match info.provider:
+        case "aws":
+            return await check_aws_spot_interruption(info.id, region)
+        case "digitalocean":
+            return await check_do_interruption(info.id)
+        case _:
+            return False, None
+```
+
+#### 9.2 Health Check via SSH
+```python
+# monitors.py - _ping_instance() atual:
+async def _ping_instance(info: InstanceInfo) -> bool:
+    return True  # STUB!
+
+# Deveria:
+async def _ping_instance(info: InstanceInfo) -> bool:
+    try:
+        transport = SSHTransport(host=info.ip, user="ubuntu", key_path=KEY)
+        async with asyncio.timeout(10):
+            await transport.connect()
+            code, _, _ = await transport.run("echo", "ping")
+            return code == 0
+    except Exception:
+        return False
+```
+
+### Fase 10: Outros Providers
+
+#### 10.1 DigitalOcean Provider ✅ COMPLETO
+```
+providers/digitalocean/
+├── __init__.py    ✅ Exports
+├── config.py      ✅ DigitalOcean dataclass
+├── types.py       ✅ TypedDicts (DropletResponse, SizeResponse, etc)
+├── client.py      ✅ DigitalOceanClient com @component, pydo.aio async
+├── handler.py     ✅ @on handlers para Cluster/Instance/Shutdown
+└── state.py       ✅ DOClusterState
+```
+
+#### 10.2 Vast.ai Provider ✅ COMPLETO
+```
+providers/vastai/
+├── __init__.py    ✅ Exports
+├── config.py      ✅ VastAI dataclass
+├── types.py       ✅ TypedDicts (OfferResponse, InstanceResponse, etc)
+├── client.py      ✅ VastAIClient com @component, httpx async
+├── handler.py     ✅ @on handlers para Cluster/Instance/Shutdown
+└── state.py       ✅ VastAIClusterState
+```
+
+#### 10.3 Verda Provider ✅ COMPLETO
+```
+providers/verda/
+├── __init__.py    ✅ Exports
+├── config.py      ✅ Verda dataclass
+├── types.py       ✅ TypedDicts (InstanceTypeResponse, InstanceResponse, etc)
+├── client.py      ✅ VerdaClient com @component, httpx async, OAuth2
+├── handler.py     ✅ @on handlers para Cluster/Instance/Shutdown
+└── state.py       ✅ VerdaClusterState
+```
+
+### Fase 11: Callbacks/Visualization (Futuro)
+
+#### 11.1 Panel Callback (do v1)
+- Visualização em tempo real
+- Tracking de instâncias
+- Métricas (CPU, GPU, memory)
+- Logs agregados
+- Cost tracking
+
+#### 11.2 Approach v2
+- Event handlers que escutam Metric, Log, TaskStarted, etc
+- Rich/Panel para rendering
+- Pode ser módulo separado: `skyward.v2.ui`
+
+### Fase 12: Integrations (Futuro)
+
+Do v1, precisamos portar:
+- `integrations/torch.py` - Distributed setup
+- `integrations/jax.py` - JAX setup
+- `integrations/keras.py` - Keras utilities
+- `integrations/joblib.py` - Parallel execution
+
+### Fase 13: Data Utilities (Futuro)
+
+Do v1:
+- `cluster/utils.py` - InstanceInfo, instance_info()
+- `cluster/sampler.py` - DistributedSampler, shard()
+
+---
+
+## Comparação v1 vs v2
+
+| Feature | v1 | v2 | Status |
+|---------|-----|-----|--------|
+| Pool Management | ✅ | 🟡 | v2 falta run/broadcast |
+| Instance Lifecycle | ✅ | ✅ | v2 async/event-driven |
+| AWS Provider | ✅ | 🟡 | v2 falta bootstrap polling, AMI |
+| DigitalOcean | ✅ | ✅ | pydo.aio async, TypedDicts, @component |
+| Vast.ai | ✅ | ✅ | httpx async, TypedDicts, @component |
+| Verda | ✅ | ✅ | httpx async, OAuth2, TypedDicts, @component |
+| Bootstrap DSL | ✅ | ✅ | Reusado do v1 |
+| Events | ~40 | ~20 | v2 mais focado |
+| Callbacks/Panel | ✅ | ❌ | Não iniciado |
+| Execution | ✅ | ❌ | Protocol definido, impl TBD |
+| Torch/JAX/Keras | ✅ | ❌ | Não iniciado |
+| Cost Tracking | ✅ | ❌ | Não iniciado |
+
+---
+
+## Prioridade de Implementação
+
+### P0 - Crítico (Funcionalidade Básica)
+1. [ ] `_wait_bootstrap()` - Poll SSH para bootstrap completion
+2. [ ] `pool.run()` - Execute função remota
+3. [ ] `pool.broadcast()` - Execute em todos os nodes
+4. [ ] `RPyCExecutor` - Executor via RPyC over SSH
+
+### P1 - Importante (Produção)
+5. [ ] `_get_dlami()` - AMI via SSM
+6. [ ] `_generate_user_data()` - Usar bootstrap DSL
+7. [ ] `_check_instance_preemption()` - Implementar por provider
+8. [ ] `_ping_instance()` - Health check via SSH
+9. [ ] SSH key management no cluster state
+
+### P2 - Nice to Have
+10. [x] DigitalOcean provider ✅
+11. [x] Vast.ai provider ✅
+12. [x] Verda provider ✅
+13. [ ] Instance type mapping dinâmico
+
+### P3 - Futuro
+13. [ ] Panel/visualization
+14. [ ] Cost tracking
+15. [ ] Torch/JAX/Keras integrations
+16. [ ] Data utilities (samplers)
+
+---
+
+## Arquivos Modificados/Criados
 
 ```
 skyward/v2/
-│
-├── __init__.py              # Public API exports
-│
-│   # ═══════════════════════════════════════════════════════════════════
-│   # CORE INFRASTRUCTURE
-│   # ═══════════════════════════════════════════════════════════════════
-│
-├── events.py                # All events (Requests + Facts)
-├── bus.py                   # AsyncEventBus
-├── app.py                   # @component, @on, @monitor, create_app
-│
-│   # ═══════════════════════════════════════════════════════════════════
-│   # DOMAIN MODEL
-│   # ═══════════════════════════════════════════════════════════════════
-│
-├── spec.py                  # PoolSpec, ImageSpec (frozen dataclasses)
-├── pool.py                  # ComputePool (@component)
-├── node.py                  # Node (@component)
-├── protocols.py             # Instance, Transport protocols
-│
-│   # ═══════════════════════════════════════════════════════════════════
-│   # PROVIDERS
-│   # ═══════════════════════════════════════════════════════════════════
-│
-├── providers/
-│   ├── __init__.py          # Exports: AWS, VastAI, DigitalOcean, Verda
-│   ├── base.py              # Shared utilities
-│   │
-│   ├── aws/                 # AWS (complex, multiple files)
-│   │   ├── __init__.py      # Exports: AWS
-│   │   ├── config.py        # AWS config dataclass
-│   │   ├── handler.py       # AWSHandler (@component, @on)
-│   │   ├── cluster.py       # AWS cluster state
-│   │   ├── instance.py      # AWS instance wrapper
-│   │   └── infra.py         # VPC, SG, Fleet logic
-│   │
-│   ├── vastai.py            # VastAI (simpler, one file)
-│   ├── digitalocean.py      # DigitalOcean (one file)
-│   └── verda.py             # Verda (one file)
-│
-│   # ═══════════════════════════════════════════════════════════════════
-│   # MONITORS
-│   # ═══════════════════════════════════════════════════════════════════
-│
-├── monitors.py              # @monitor functions for preemption, health, metrics
-│
-│   # ═══════════════════════════════════════════════════════════════════
-│   # TRANSPORT & EXECUTION
-│   # ═══════════════════════════════════════════════════════════════════
-│
+├── __init__.py              ✅ Exports
+├── events.py                ✅ Event definitions
+├── bus.py                   ✅ AsyncEventBus
+├── app.py                   ✅ @component, @on, @monitor
+├── spec.py                  ✅ PoolSpec, ImageSpec
+├── protocols.py             ✅ Transport, Executor protocols
+├── node.py                  ✅ Node component
+├── pool.py                  🟡 run/broadcast TBD
+├── monitors.py              🟡 preemption/health stubs
+├── bootstrap/
+│   └── __init__.py          ✅ Re-export v1
 ├── transport/
-│   ├── __init__.py
-│   ├── ssh.py               # AsyncSSH transport
-│   └── rpyc.py              # RPyC over SSH
-│
-│   # ═══════════════════════════════════════════════════════════════════
-│   # BOOTSTRAP
-│   # ═══════════════════════════════════════════════════════════════════
-│
-└── bootstrap/
-    ├── __init__.py
-    ├── script.py            # Script composition
-    └── ops.py               # apt, pip, systemd operations
+│   ├── __init__.py          ✅ Exports
+│   ├── ssh.py               ✅ SSHTransport
+│   └── rpyc.py              ❌ TBD
+└── providers/
+    ├── __init__.py          ✅ Exports
+    ├── aws/
+    │   ├── __init__.py      ✅ Exports
+    │   ├── config.py        ✅ AWS config
+    │   ├── state.py         ✅ Cluster state
+    │   ├── clients.py       ✅ Client[T] factories
+    │   └── handler.py       🟡 bootstrap/AMI TBD
+    ├── digitalocean/
+    │   ├── __init__.py      ✅ Exports
+    │   ├── config.py        ✅ DigitalOcean config
+    │   ├── types.py         ✅ TypedDicts
+    │   ├── state.py         ✅ Cluster state
+    │   ├── client.py        ✅ pydo.aio async client
+    │   └── handler.py       ✅ Event handlers
+    ├── vastai/
+    │   ├── __init__.py      ✅ Exports
+    │   ├── config.py        ✅ VastAI config
+    │   ├── types.py         ✅ TypedDicts
+    │   ├── state.py         ✅ Cluster state
+    │   ├── client.py        ✅ httpx async client
+    │   └── handler.py       ✅ Event handlers
+    └── verda/
+        ├── __init__.py      ✅ Exports
+        ├── config.py        ✅ Verda config
+        ├── types.py         ✅ TypedDicts
+        ├── state.py         ✅ Cluster state
+        ├── client.py        ✅ httpx async + OAuth2
+        └── handler.py       ✅ Event handlers
 ```
 
-## Detailed File Specifications
+---
 
-### `events.py`
+## Verificação
 
+### Testes Unitários
 ```python
-"""All events - the language of the system."""
+# Test event flow
+async def test_cluster_lifecycle():
+    async with app_context(AWSModule()) as app:
+        pool = app.get(ComputePool)
+        await pool.start()
+        assert pool.is_ready
+        await pool.stop()
 
-# Type aliases
-type RequestId = str
-type ClusterId = str
-type InstanceId = str
-type NodeId = int
-type ProviderName = Literal["aws", "digitalocean", "vastai", "verda"]
-
-# Value objects
-@dataclass(frozen=True, slots=True)
-class InstanceInfo:
-    id: InstanceId
-    node: NodeId
-    provider: ProviderName
-    ip: str
-    spot: bool = False
-
-# ── Requests (commands) ──
-
-@dataclass(frozen=True, slots=True)
-class ClusterRequested:
-    """Pool requests a cluster."""
-    request_id: RequestId
-    provider: ProviderName
-    spec: PoolSpec
-
-@dataclass(frozen=True, slots=True)
-class InstanceRequested:
-    """Node requests an instance."""
-    request_id: RequestId
-    provider: ProviderName
-    cluster_id: ClusterId
-    node_id: NodeId
-    replacing: InstanceId | None = None
-
-@dataclass(frozen=True, slots=True)
-class ShutdownRequested:
-    """Pool requests shutdown."""
-    cluster_id: ClusterId
-
-# ── Facts (what happened) ──
-
-@dataclass(frozen=True, slots=True)
-class ClusterProvisioned:
-    request_id: RequestId
-    cluster_id: ClusterId
-    provider: ProviderName
-
-@dataclass(frozen=True, slots=True)
-class InstanceProvisioned:
-    request_id: RequestId
-    instance: InstanceInfo
-
-@dataclass(frozen=True, slots=True)
-class InstanceBootstrapped:
-    instance: InstanceInfo
-
-@dataclass(frozen=True, slots=True)
-class InstancePreempted:
-    instance: InstanceInfo
-    reason: str
-
-@dataclass(frozen=True, slots=True)
-class InstanceReplaced:
-    request_id: RequestId
-    old_id: InstanceId
-    new: InstanceInfo
-
-@dataclass(frozen=True, slots=True)
-class InstanceDestroyed:
-    instance_id: InstanceId
-
-@dataclass(frozen=True, slots=True)
-class NodeReady:
-    node_id: NodeId
-    instance: InstanceInfo
-
-@dataclass(frozen=True, slots=True)
-class ClusterReady:
-    cluster_id: ClusterId
-    nodes: tuple[InstanceInfo, ...]
-
-@dataclass(frozen=True, slots=True)
-class ClusterDestroyed:
-    cluster_id: ClusterId
-
-# Type unions
-type Request = ClusterRequested | InstanceRequested | ShutdownRequested
-type Fact = ClusterProvisioned | InstanceProvisioned | ...
-type Event = Request | Fact
+# Test DI
+def test_client_injection():
+    injector = Injector([AWSModule()])
+    ec2 = injector.get(Client[EC2Client])
+    assert callable(ec2)  # É uma factory
 ```
 
-### `bus.py`
-
-```python
-"""AsyncEventBus - async event routing with blinker."""
-
-class AsyncEventBus:
-    """
-    Features:
-    - emit(event) - fire and forget
-    - emit_await(event) - wait for handlers
-    - request(command) - emit and wait for correlated response
-    - connect(event_type, handler) - register handler
-    """
-
-    def __init__(self) -> None:
-        self._signals: dict[type, Signal] = {}
-        self._pending: set[asyncio.Task] = set()
-        self._waiters: dict[RequestId, asyncio.Future] = {}
-
-    def connect(self, event_type: type, handler: Callable) -> None: ...
-    def emit(self, event: Event) -> None: ...
-    async def emit_await(self, event: Event) -> None: ...
-    async def request[T](self, command: Event, timeout: float = 300) -> T: ...
-    async def drain(self) -> None: ...
-```
-
-### `app.py`
-
-```python
-"""Application infrastructure: @component, @on, @monitor."""
-
-# ── @on decorator ──
-
-def on(event_type: type) -> Callable:
-    """Mark method as event handler."""
-    def decorator(method):
-        method.__event_handlers__ = getattr(method, '__event_handlers__', [])
-        method.__event_handlers__.append(event_type)
-        return method
-    return decorator
-
-# ── @component decorator ──
-
-def component(cls: type) -> type:
-    """
-    Transform class into a component:
-    1. Generate __init__ from type hints (like @dataclass)
-    2. Apply @inject for DI
-    3. Auto-wire @on handlers to bus after init
-
-    Usage:
-        @component
-        class Node:
-            id: NodeId
-            bus: AsyncEventBus
-            provider: ProviderName
-
-            # Optional defaults
-            _count: int = 0
-
-            @on(InstancePreempted)
-            async def handle(self, sender, event): ...
-    """
-
-    # 1. Get type hints for fields
-    hints = get_type_hints(cls)
-
-    # 2. Separate required vs optional (has default)
-    required = []
-    optional = []
-    for name, type_hint in hints.items():
-        if hasattr(cls, name):
-            optional.append((name, type_hint, getattr(cls, name)))
-        else:
-            required.append((name, type_hint))
-
-    # 3. Generate __init__
-    def __init__(self, **kwargs):
-        for name, _ in required:
-            setattr(self, name, kwargs[name])
-        for name, _, default in optional:
-            setattr(self, name, kwargs.get(name, default))
-        _wire_handlers(self)
-
-    # 4. Apply @inject
-    cls.__init__ = inject(__init__)
-
-    # 5. Register for discovery
-    _COMPONENT_REGISTRY.append(cls)
-
-    return cls
-
-# ── @monitor decorator ──
-
-def monitor(interval: float = 5.0, name: str | None = None):
-    """Transform async function into background loop."""
-    def decorator(fn):
-        fn.__monitor__ = {"interval": interval, "name": name or fn.__name__}
-        return fn
-    return decorator
-
-# ── Bootstrap ──
-
-async def create_app(*modules: Module) -> tuple[Injector, MonitorManager]:
-    """Create app, wire components, start monitors."""
-    ...
-
-@asynccontextmanager
-async def app_context(*modules: Module) -> AsyncIterator[Injector]:
-    """Full lifecycle context manager."""
-    ...
-```
-
-### `pool.py`
-
-```python
-"""ComputePool - cluster orchestration."""
-
-@component
-class ComputePool:
-    # Required (injected or passed)
-    bus: AsyncEventBus
-    provider: ProviderName
-    spec: PoolSpec
-
-    # Internal state (defaults)
-    cluster_id: str = ""
-    _nodes: dict[int, Node] = field(default_factory=dict)
-    _ready: asyncio.Event = field(default_factory=asyncio.Event)
-
-    async def start(self) -> None:
-        """Request cluster and wait for ready."""
-        self.bus.emit(ClusterRequested(...))
-        await self._ready.wait()
-
-    async def stop(self) -> None:
-        """Shutdown cluster."""
-        self.bus.emit(ShutdownRequested(cluster_id=self.cluster_id))
-
-    async def run[T](self, fn: Callable[..., T], *args, **kwargs) -> T:
-        """Execute on available node."""
-        ...
-
-    @on(ClusterProvisioned)
-    async def _on_cluster_provisioned(self, _, event):
-        if event.request_id != self._request_id:
-            return
-        self.cluster_id = event.cluster_id
-        # Create nodes...
-
-    @on(NodeReady)
-    async def _on_node_ready(self, _, event):
-        # Track ready nodes, emit ClusterReady when all done
-        ...
-```
-
-### `node.py`
-
-```python
-"""Node - instance lifecycle management."""
-
-@component
-class Node:
-    # Required
-    id: NodeId
-    bus: AsyncEventBus
-    provider: ProviderName
-    cluster_id: ClusterId
-
-    # State
-    instance_id: str = ""
-    info: InstanceInfo | None = None
-
-    async def provision(self) -> None:
-        """Request initial instance."""
-        self.bus.emit(InstanceRequested(...))
-
-    async def replace(self, reason: str) -> None:
-        """Request replacement after preemption."""
-        self.bus.emit(InstanceRequested(..., replacing=self.instance_id))
-
-    @on(InstanceProvisioned)
-    async def _on_provisioned(self, _, event):
-        if event.instance.node != self.id:
-            return
-        self.instance_id = event.instance.id
-
-    @on(InstanceBootstrapped)
-    async def _on_bootstrapped(self, _, event):
-        if event.instance.node != self.id:
-            return
-        self.bus.emit(NodeReady(node_id=self.id, instance=event.instance))
-
-    @on(InstancePreempted)
-    async def _on_preempted(self, _, event):
-        if event.instance.node != self.id:
-            return
-        await self.replace(event.reason)
-```
-
-### `providers/aws/handler.py`
-
-```python
-"""AWS command handler."""
-
-@component
-class AWSHandler:
-    bus: AsyncEventBus
-    config: AWS
-
-    _clusters: dict[str, AWSClusterState] = {}
-
-    @on(ClusterRequested)
-    async def handle_cluster(self, _, event):
-        if event.provider != "aws":
-            return
-        # Create infra, emit ClusterProvisioned
-
-    @on(InstanceRequested)
-    async def handle_instance(self, _, event):
-        cluster = self._clusters.get(event.cluster_id)
-        if not cluster:
-            return
-        # Launch EC2, emit InstanceProvisioned, InstanceBootstrapped
-
-    @on(ShutdownRequested)
-    async def handle_shutdown(self, _, event):
-        cluster = self._clusters.pop(event.cluster_id, None)
-        if not cluster:
-            return
-        # Destroy all, emit ClusterDestroyed
-```
-
-### `monitors.py`
-
-```python
-"""Background monitors."""
-
-class MonitorModule(Module):
-
-    @singleton
-    @provider
-    def provide_instance_registry(self) -> InstanceRegistry:
-        return InstanceRegistry()
-
-    @monitor(interval=5.0)
-    async def check_preemption(
-        self,
-        registry: InstanceRegistry,
-        checker: PreemptionChecker,
-        bus: AsyncEventBus,
-    ):
-        """Check for spot preemptions."""
-        for instance, reason in await checker.check(registry.instances):
-            bus.emit(InstancePreempted(instance=instance, reason=reason))
-
-    @monitor(interval=10.0)
-    async def collect_metrics(
-        self,
-        registry: InstanceRegistry,
-        collector: MetricsCollector,
-        bus: AsyncEventBus,
-    ):
-        """Collect metrics from instances."""
-        for instance in registry.instances:
-            for name, value in await collector.collect(instance):
-                bus.emit(Metric(instance=instance, name=name, value=value))
-```
-
-## Usage Example
-
-```python
-from skyward.v2 import (
-    ComputePool, AWS, PoolSpec, ImageSpec,
-    app_context, ClusterReady, InstancePreempted,
-)
-from injector import Module, provider, singleton
-
-class AppModule(Module):
-    @singleton
-    @provider
-    def provide_aws(self) -> AWS:
-        return AWS(region="us-east-1")
-
-    @singleton
-    @provider
-    def provide_spec(self) -> PoolSpec:
-        return PoolSpec(
-            nodes=4,
-            accelerator="H100",
-            image=ImageSpec(pip=["torch", "transformers"]),
-        )
-
-# Custom event handler
-@component
-class MyEventLogger:
-    bus: AsyncEventBus
-
-    @on(ClusterReady)
-    async def log_ready(self, _, event: ClusterReady):
-        print(f"Cluster {event.cluster_id} ready with {len(event.nodes)} nodes")
-
-    @on(InstancePreempted)
-    async def log_preemption(self, _, event: InstancePreempted):
-        print(f"Node {event.instance.node} preempted: {event.reason}")
+### Teste Manual
+```bash
+uv run python -c "
+import asyncio
+from skyward.v2 import ComputePool, PoolSpec, ImageSpec, app_context, AWSModule
 
 async def main():
-    async with app_context(AppModule(), MonitorModule()) as app:
+    spec = PoolSpec(nodes=1, accelerator='T4', region='us-east-1')
+    async with app_context(AWSModule()) as app:
         pool = app.get(ComputePool)
-
         async with pool:
-            # All nodes ready, monitors running
-            result = await pool.run(train, dataset)
-
-            # Broadcast to all nodes
-            await pool.broadcast(load_checkpoint, "/data/model.pt")
+            print(f'Cluster ready: {pool.cluster_id}')
 
 asyncio.run(main())
+"
 ```
-
-## Implementation Order
-
-1. **Phase 1: Core Infrastructure**
-   - [ ] `events.py` - All event definitions
-   - [ ] `bus.py` - AsyncEventBus
-   - [ ] `app.py` - @component, @on, @monitor, create_app
-
-2. **Phase 2: Domain Model**
-   - [ ] `spec.py` - PoolSpec, ImageSpec
-   - [ ] `protocols.py` - Instance, Transport protocols
-   - [ ] `node.py` - Node component
-   - [ ] `pool.py` - ComputePool component
-
-3. **Phase 3: AWS Provider**
-   - [ ] `providers/aws/config.py` - AWS config
-   - [ ] `providers/aws/handler.py` - AWSHandler
-   - [ ] `providers/aws/infra.py` - VPC, SG, Fleet
-   - [ ] `providers/aws/instance.py` - Instance wrapper
-
-4. **Phase 4: Transport**
-   - [ ] `transport/ssh.py` - AsyncSSH
-   - [ ] `transport/rpyc.py` - RPyC connection
-
-5. **Phase 5: Bootstrap**
-   - [ ] `bootstrap/script.py` - Script composition
-   - [ ] `bootstrap/ops.py` - Operations
-
-6. **Phase 6: Monitors**
-   - [ ] `monitors.py` - Preemption, health, metrics
-
-7. **Phase 7: Other Providers**
-   - [ ] `providers/vastai.py`
-   - [ ] `providers/digitalocean.py`
-   - [ ] `providers/verda.py`
-
-## Key Design Decisions
-
-1. **@component replaces @dataclass** - Auto-generates `__init__`, applies DI, wires handlers
-2. **Events are the only communication** - No direct method calls between components
-3. **Node is autonomous** - Manages its own instance lifecycle, including replacement
-4. **Pool only coordinates** - Creates nodes, tracks readiness, doesn't manage instances directly
-5. **Providers are handlers** - React to requests, emit facts, don't know about Pool/Node
-6. **Monitors are functions** - Simple @monitor decorated functions in modules

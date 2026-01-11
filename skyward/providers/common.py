@@ -474,6 +474,9 @@ $UV_PATH pip install {SKYWARD_DIR}/{wheel_name}
 
 # Verify installation
 {SKYWARD_DIR}/.venv/bin/python -c 'import skyward; print(skyward.__file__)'
+
+# Verify RPyC can be imported (catches missing dependencies)
+{SKYWARD_DIR}/.venv/bin/python -c 'import rpyc; from skyward.rpc.server import SkywardService; print("RPyC imports OK")'
 """
 
     if use_systemd:

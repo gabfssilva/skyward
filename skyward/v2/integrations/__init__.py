@@ -1,0 +1,59 @@
+"""Skyward v2 integrations with third-party libraries.
+
+All imports are lazy to avoid requiring optional dependencies at import time.
+
+Available integrations:
+
+Distributed training:
+- keras: Keras 3 distributed training decorator
+- torch: PyTorch distributed training decorator
+- jax: JAX distributed training decorator
+- tensorflow: TensorFlow distributed training decorator
+- transformers: Hugging Face Transformers distributed training decorator
+
+Usage:
+    from skyward.v2 import compute
+    from skyward.v2.integrations import keras
+
+    @keras(backend="jax")
+    @compute
+    def train():
+        ...
+"""
+
+from typing import Any
+
+__all__ = [
+    # Distributed training
+    "keras",
+    "torch",
+    "jax",
+    "tensorflow",
+    "transformers",
+]
+
+_LAZY_IMPORTS: dict[str, tuple[str, str]] = {
+    # (module, attribute)
+    "keras": ("skyward.v2.integrations.keras", "keras"),
+    "torch": ("skyward.v2.integrations.torch", "torch"),
+    "jax": ("skyward.v2.integrations.jax", "jax"),
+    "tensorflow": ("skyward.v2.integrations.tensorflow", "tensorflow"),
+    "transformers": ("skyward.v2.integrations.transformers", "transformers"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name in _LAZY_IMPORTS:
+        module_path, attr = _LAZY_IMPORTS[name]
+        import importlib
+        import sys
+
+        module = importlib.import_module(module_path)
+        value = getattr(module, attr)
+
+        # Cache in module globals to prevent subsequent __getattr__ calls
+        # and override any submodule reference Python may have added
+        setattr(sys.modules[__name__], name, value)
+
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

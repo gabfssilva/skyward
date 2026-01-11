@@ -28,7 +28,7 @@ from typing import Literal
 from loguru import logger
 
 # Disable by default (library behavior)
-logger.disable("skyward")
+# logger.disable("skyward")
 
 type LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 
