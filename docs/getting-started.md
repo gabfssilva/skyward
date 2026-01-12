@@ -4,7 +4,7 @@ This guide will help you install Skyward and run your first cloud computation.
 
 ## Prerequisites
 
-- Python 3.12 or higher
+- Python 3.13 or higher
 - Cloud provider credentials (AWS, DigitalOcean, Verda, or VastAI)
 
 ## Installation
@@ -166,16 +166,20 @@ if __name__ == "__main__":
 When you run a Skyward job, you'll see events like:
 
 ```
-[InfraCreating] Creating infrastructure...
-[InstanceLaunching] Launching instance i-0abc123...
-[InstanceProvisioned] Instance ready (52.1.2.3)
-[BootstrapStarting] Installing dependencies...
-[BootstrapProgress] Installing torch...
-[BootstrapCompleted] Setup complete (45s)
-[PoolStarted] Pool ready with 1 worker(s)
+[ClusterProvisioned] Cluster ready in us-east-1
+[InstanceLaunched] Launching instance i-0abc123...
+[InstanceRunning] Instance running (52.1.2.3)
+[InstanceProvisioned] Instance provisioned, starting bootstrap
+[BootstrapPhase] Phase 'apt' started
+[BootstrapPhase] Phase 'apt' completed (12s)
+[BootstrapPhase] Phase 'pip' started
+[BootstrapPhase] Phase 'pip' completed (45s)
+[InstanceBootstrapped] Bootstrap complete
+[NodeReady] Node 0 ready
+[ClusterReady] Cluster ready with 1 node(s)
 Hello from ip-172-31-0-1!
-[InstanceStopping] Terminating i-0abc123...
-[CostFinal] Total cost: $0.12 (5 minutes @ $1.44/hr)
+[TaskCompleted] Task completed in 2.3s
+[ClusterDestroyed] Cluster terminated
 ```
 
 ## Common Patterns
@@ -260,7 +264,6 @@ Quick fixes for the most common issues:
 ## Next Steps
 
 - [Core Concepts](concepts.md) — Understand the programming model
-- [API Reference](api-reference.md) — Complete API documentation
 - [Distributed Training](distributed-training.md) — Train models across multiple GPUs
 - [Examples](examples.md) — More example code
 - [FAQ](faq.md) — Frequently asked questions

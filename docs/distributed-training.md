@@ -344,6 +344,46 @@ def train():
     return {"node": info.node, "is_head": info.is_head}
 ```
 
+### InstanceInfo Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `id` | `str` | Instance ID |
+| `node` | `int` | Node index (0-based) |
+| `provider` | `str` | Provider name |
+| `ip` | `str` | Public IP |
+| `private_ip` | `str` | Private IP (for inter-node communication) |
+| `network_interface` | `str` | NCCL interface |
+| `spot` | `bool` | True if spot instance |
+| `hourly_rate` | `float` | Actual rate (USD/hr) |
+| `instance_type` | `str` | Instance type |
+| `gpu_count` | `int` | Number of GPUs |
+| `gpu_model` | `str` | GPU model (e.g., "A100") |
+| `vcpus` | `int` | vCPUs |
+| `memory_gb` | `float` | System RAM |
+| `gpu_vram_gb` | `int` | VRAM per GPU |
+
+### Output Control
+
+Control stdout/stderr in distributed training:
+
+```python
+import skyward as sky
+from skyward import stdout, silent
+
+@stdout(only="head")
+@sky.compute
+def train():
+    # Only head node prints progress
+    print(f"Epoch {epoch}: loss={loss:.4f}")
+
+@silent
+@sky.compute
+def background_init():
+    # No output from any node
+    pass
+```
+
 ## MIG for Multi-Tenant Training
 
 Use MIG (Multi-Instance GPU) to run multiple training jobs on one GPU:
@@ -474,4 +514,3 @@ else:
 - [Accelerators](accelerators.md) — GPU selection and MIG partitioning
 - [Examples](examples.md) — Working code examples
 - [Troubleshooting](troubleshooting.md) — Common issues and solutions
-- [API Reference](api-reference.md) — Complete API documentation

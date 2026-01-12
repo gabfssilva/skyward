@@ -523,40 +523,75 @@ def worker_role() -> str:
 
 | Property | Type | Description |
 |----------|------|-------------|
+| `id` | `str` | Instance ID |
 | `node` | `int` | Current node index (0-based) |
-| `total_nodes` | `int` | Total number of nodes |
-| `is_head` | `bool` | True if this is node 0 |
-| `accelerators` | `list[str]` | Available accelerators |
-| `head_addr` | `str` | Head node IP address |
-| `head_port` | `int` | Head node port |
-| `job_id` | `str` | Unique job identifier |
+| `provider` | `str` | Provider name (aws, vastai, etc.) |
+| `ip` | `str` | Public IP address |
+| `private_ip` | `str` | Private IP (for inter-node communication) |
+| `network_interface` | `str` | Network interface for NCCL |
+| `spot` | `bool` | True if spot instance |
+| `ssh_port` | `int` | SSH port (default 22) |
+| `hourly_rate` | `float` | Actual rate in USD/hr |
+| `on_demand_rate` | `float` | On-demand equivalent rate |
+| `instance_type` | `str` | Instance type (e.g., "p4d.24xlarge") |
+| `gpu_count` | `int` | Number of GPUs |
+| `gpu_model` | `str` | GPU model (e.g., "A100") |
+| `vcpus` | `int` | Number of vCPUs |
+| `memory_gb` | `float` | System RAM in GB |
+| `gpu_vram_gb` | `int` | VRAM per GPU in GB |
+
+Use `sky.instance_info()` inside `@compute` functions to get a `PoolInfo` object with cluster topology:
+
+```python
+info = sky.instance_info()
+print(f"Node {info.node} of {info.total_nodes}")
+print(f"Is head: {info.is_head}")
+print(f"Head address: {info.head_addr}:{info.head_port}")
+```
 
 ## Events and Callbacks
 
-Skyward emits events throughout the execution lifecycle.
+Skyward emits events throughout the execution lifecycle using an event-driven architecture.
 
 ### Event Types
 
-**Provision Phase:**
-- `InfraCreating` - Infrastructure being created
-- `InfraCreated` - Infrastructure ready
-- `InstanceLaunching` - Instance starting
-- `InstanceProvisioned` - Instance ready
+**Requests (Commands):**
+- `ClusterRequested` - User wants a cluster
+- `InstanceRequested` - Node needs an instance
+- `ShutdownRequested` - Graceful shutdown requested
+- `BootstrapRequested` - Request bootstrap on running instance
 
-**Setup Phase:**
-- `BootstrapStarting` - Dependency installation starting
-- `BootstrapProgress` - Installation progress
-- `BootstrapCompleted` - Setup complete
+**Cluster Lifecycle:**
+- `ClusterProvisioned` - Infrastructure ready
+- `ClusterReady` - All nodes ready
+- `ClusterDestroyed` - Cluster fully shut down
 
-**Execute Phase:**
-- `PoolStarted` - Pool ready for computations
-- `LogLine` - stdout from remote function
-- `Metrics` - CPU/memory/GPU utilization
+**Instance Pipeline:**
+- `InstanceLaunched` - Provider launched instance, waiting for running state
+- `InstanceRunning` - Instance running with IP, ready for bootstrap
+- `InstanceProvisioned` - Instance created
+- `InstanceBootstrapped` - Instance ready for work
+- `InstancePreempted` - Spot interruption
+- `InstanceReplaced` - Replacement launched
+- `InstanceDestroyed` - Instance terminated
 
-**Shutdown Phase:**
-- `PoolStopping` - Pool shutting down
-- `InstanceStopping` - Instance terminating
-- `CostFinal` - Final cost summary
+**Node Events:**
+- `NodeReady` - Node signals readiness
+
+**Execution Events:**
+- `TaskStarted` - Task execution started
+- `TaskCompleted` - Task completed (with success/error, duration)
+
+**Bootstrap Streaming:**
+- `BootstrapConsole` - Bootstrap stdout/stderr
+- `BootstrapPhase` - Bootstrap phase progress (started/completed/failed)
+- `BootstrapCommand` - Individual command being executed
+- `BootstrapFailed` - Bootstrap failed with error details
+
+**Observability:**
+- `Log` - Log line from instance
+- `Metric` - CPU/GPU/memory metric
+- `Error` - Generic error with fatal flag
 
 ### Custom Callbacks
 
@@ -565,10 +600,12 @@ import skyward as sky
 
 def my_callback(event):
     match event:
-        case sky.Metrics(cpu=cpu, gpu=gpu):
-            print(f"CPU: {cpu}%, GPU: {gpu}%")
-        case sky.LogLine(line=line):
+        case sky.Metric(name=name, value=value):
+            print(f"{name}: {value}")
+        case sky.Log(line=line):
             print(f"[remote] {line}")
+        case sky.TaskCompleted(success=True, duration=d):
+            print(f"Task completed in {d:.2f}s")
 
 pool = sky.ComputePool(
     provider=sky.AWS(),
@@ -585,10 +622,12 @@ import skyward as sky
 
 def my_handler(event):
     match event:
-        case sky.Metrics(cpu_percent=cpu, gpu_utilization=gpu):
-            print(f"CPU: {cpu}%, GPU: {gpu}%")
-        case sky.LogLine(line=line):
-            print(f"[remote] {line}")
+        case sky.Metric(instance=inst, name="gpu_utilization", value=v):
+            print(f"Node {inst.node} GPU: {v}%")
+        case sky.Log(instance=inst, line=line):
+            print(f"[node-{inst.node}] {line}")
+        case sky.BootstrapPhase(phase=p, event="completed"):
+            print(f"Bootstrap phase '{p}' completed")
 
 with sky.ComputePool(provider=sky.AWS(), on_event=my_handler) as pool:
     result = train() >> pool
@@ -642,7 +681,6 @@ pool = sky.ComputePool(
 
 ## Next Steps
 
-- [API Reference](api-reference.md) — Complete API documentation
 - [Distributed Training](distributed-training.md) — Multi-GPU training guides
 - [Examples](examples.md) — Working code examples
 - [Troubleshooting](troubleshooting.md) — Common issues and solutions

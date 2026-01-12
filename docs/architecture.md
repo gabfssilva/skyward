@@ -334,35 +334,103 @@ skyward/worker/
 ### Event System
 
 ```
-skyward/events.py          # ADT event definitions
-skyward/callback.py        # Callback management
-skyward/callbacks/
-├── log.py                 # Logging callback
-├── cost.py                # Cost tracking
-└── spinner.py             # Progress spinner
+skyward/events.py          # Event definitions (27+ types)
+skyward/bus.py             # AsyncEventBus (blinker-based)
+skyward/app.py             # @component, @on, @monitor decorators
+skyward/orchestrator.py    # InstanceOrchestrator for event pipeline
 ```
+
+**Event-Driven Architecture:**
+
+Skyward uses a fully async event system built on **blinker**. All component communication happens through events, never direct method calls.
 
 **Event Categories:**
 
-| Phase | Events |
-|-------|--------|
-| Provision | InfraCreating, InstanceLaunching, InstanceProvisioned |
-| Setup | BootstrapStarting, BootstrapProgress, BootstrapCompleted |
-| Execute | LogLine, Metrics |
-| Shutdown | InstanceStopping, PoolStopping |
-| Cost | CostUpdate, CostFinal |
-| Errors | Error |
+| Category | Events |
+|----------|--------|
+| Requests | ClusterRequested, InstanceRequested, ShutdownRequested, BootstrapRequested |
+| Cluster | ClusterProvisioned, ClusterReady, ClusterDestroyed |
+| Pipeline | InstanceLaunched, InstanceRunning |
+| Lifecycle | InstanceProvisioned, InstanceBootstrapped, InstancePreempted, InstanceReplaced, InstanceDestroyed |
+| Nodes | NodeReady |
+| Execution | TaskStarted, TaskCompleted |
+| Bootstrap | BootstrapConsole, BootstrapPhase, BootstrapCommand, BootstrapFailed |
+| Observability | Metric, Log, Error |
 
-**Callback Pattern:**
+**Event Pipeline Pattern:**
+
+A 3-stage decoupled pipeline for instance provisioning:
+
+```
+PROVIDER LAYER              ORCHESTRATOR LAYER         POOL/NODE LAYER
+─────────────────          ──────────────────         ─────────────────
+InstanceLaunched ──→ InstanceOrchestrator ──→ InstanceProvisioned
+(launch API call)       (transforms event)       (Node tracks state)
+
+InstanceRunning ──→ InstanceOrchestrator ──→ BootstrapRequested
+(IP available)        (builds InstanceInfo)    (provider handles)
+```
+
+Benefits:
+- Providers don't duplicate bootstrap logic - orchestrator is generic
+- Clear separation between provider-specific and lifecycle events
+- Enables consistent observability across all providers
+
+**AsyncEventBus Emission Patterns:**
 
 ```python
-type Callback = Callable[[SkywardEvent], SkywardEvent | None]
+# Fire-and-forget (most common)
+bus.emit(InstancePreempted(...))
 
-def my_callback(event: SkywardEvent) -> SkywardEvent | None:
-    match event:
-        case Metrics(cpu_percent=cpu):
-            print(f"CPU: {cpu}%")
-    return None  # or return derived event
+# Await all handlers
+await bus.emit_await(ShutdownRequested(...))
+
+# Request/Response correlation
+response = await bus.request(
+    command=ClusterRequested(request_id="abc"),
+    response_type=ClusterProvisioned,
+    match=lambda r: r.request_id == "abc"
+)
+```
+
+**Handler Pattern with @on:**
+
+```python
+from skyward import component, on
+
+@component
+class Node:
+    bus: AsyncEventBus  # Injected
+
+    @on(InstanceProvisioned)
+    async def handle(self, sender, event):
+        ...
+
+    # With match filter
+    @on(InstancePreempted, match=lambda self, e: e.instance.node == self.id)
+    async def handle_preempted(self, sender, event):
+        ...
+
+    # Disable audit for noisy handlers
+    @on(Metric, audit=False)
+    async def handle_metric(self, sender, event):
+        ...
+```
+
+**MonitorManager:**
+
+```python
+from skyward import MonitorManager, monitor
+
+@monitor(interval=5.0, name="preemption")
+async def check_preemption(registry: InstanceRegistry, bus: AsyncEventBus):
+    for instance in registry.spot_instances:
+        if await is_preempted(instance):
+            bus.emit(InstancePreempted(...))
+
+manager = MonitorManager()
+manager.start("preemption", check_preemption, interval=5.0, injector=inj)
+manager.stop_all()
 ```
 
 ## Data Flow
@@ -538,5 +606,4 @@ skyward/
 
 - [Getting Started](getting-started.md) — First steps with Skyward
 - [Core Concepts](concepts.md) — Understanding the programming model
-- [API Reference](api-reference.md) — Complete API documentation
 - [Troubleshooting](troubleshooting.md) — Common issues and solutions

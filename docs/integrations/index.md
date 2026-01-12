@@ -23,22 +23,101 @@ Skyward integrates with popular ML frameworks to enable distributed training and
 
 ## Quick Start
 
-### Deep Learning
+### PyTorch
 
 ```python
 import skyward as sky
 
+@sky.integrations.torch(backend="nccl")
 @sky.compute
-@sky.integrations.torch()
 def train(data):
     import torch.distributed as dist
-    dist.init_process_group(backend="nccl")
-    # Training code
+    # dist.is_initialized() is True
     return model
 
 @sky.pool(provider=sky.AWS(), accelerator="A100", nodes=4)
 def main():
     result = train(data) @ sky  # Broadcast to all nodes
+```
+
+### Keras 3
+
+```python
+import skyward as sky
+
+@sky.integrations.keras(backend="jax")
+@sky.compute
+def train():
+    import keras
+    model = keras.Sequential([...])
+    model.fit(x, y)
+    return model
+
+@sky.pool(provider=sky.AWS(), accelerator="A100", nodes=4)
+def main():
+    result = train() @ sky
+```
+
+### JAX
+
+```python
+import skyward as sky
+
+@sky.integrations.jax()
+@sky.compute
+def train():
+    import jax
+    # jax.distributed already initialized
+    return results
+
+@sky.pool(provider=sky.AWS(), accelerator="H100", nodes=4)
+def main():
+    result = train() @ sky
+```
+
+### TensorFlow
+
+```python
+import skyward as sky
+
+@sky.integrations.tensorflow()
+@sky.compute
+def train():
+    import tensorflow as tf
+    # TF_CONFIG automatically set for MultiWorkerMirroredStrategy
+    strategy = tf.distribute.MultiWorkerMirroredStrategy()
+    with strategy.scope():
+        model = create_model()
+        model.fit(dataset)
+    return model
+
+@sky.pool(
+    provider=sky.AWS(),
+    accelerator="A100",
+    nodes=4,
+    image=sky.Image(pip=["tensorflow"]),
+)
+def main():
+    result = train() @ sky
+```
+
+### HuggingFace Transformers
+
+```python
+import skyward as sky
+
+@sky.integrations.transformers(backend="nccl")
+@sky.compute
+def fine_tune():
+    from transformers import Trainer, TrainingArguments
+    # Trainer auto-detects distributed setup
+    trainer = Trainer(...)
+    trainer.train()
+    return trainer.evaluate()
+
+@sky.pool(provider=sky.AWS(), accelerator="A100", nodes=4)
+def main():
+    result = fine_tune() @ sky
 ```
 
 ### Joblib/Scikit-learn
@@ -61,33 +140,49 @@ Skyward integrations work by:
 3. **Automatic Discovery**: Detect cluster topology via `instance_info()`
 4. **Backend Registration**: Register custom backends (joblib)
 
-### Decorator Stacking
+### Decorator Stacking Order
 
-Integration decorators should be placed **below** `@compute`:
+**IMPORTANT:** Integration decorators should be placed **above** `@compute`:
 
 ```python
-@sky.compute          # Outer: handles remote execution
-@sky.integrations.torch()  # Inner: sets up environment
+@sky.integrations.torch()  # First: sets up environment before function runs
+@sky.compute               # Second: handles remote execution
 def train(data):
     ...
 ```
+
+The integration decorator runs **inside** the remote execution context, so it needs to set up the environment before your training code runs.
 
 ### Cluster Information
 
 All integrations can access cluster topology:
 
 ```python
-@sky.compute
 @sky.integrations.torch()
+@sky.compute
 def train(data):
     info = sky.instance_info()
     print(f"Node {info.node}/{info.total_nodes}")
     print(f"Is head: {info.is_head}")
-    print(f"Peers: {info.peers}")
+    print(f"Instance: {info.instance_type} with {info.gpu_count}x {info.gpu_model}")
+```
+
+### Output Control with Integrations
+
+Combine with output control decorators:
+
+```python
+from skyward import stdout
+
+@stdout(only="head")
+@sky.integrations.torch()
+@sky.compute
+def train():
+    # Only head node prints progress
+    print(f"Training step {step}")
 ```
 
 ## Related Topics
 
 - [Distributed Training](../distributed-training.md) - Deep learning distributed training guide
 - [Joblib Integration](joblib.md) - Joblib and scikit-learn integration
-- [API Reference](../api-reference.md) - Complete API documentation
