@@ -12,14 +12,11 @@ import socket
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import asyncssh
 import rpyc
 from loguru import logger
-
-if TYPE_CHECKING:
-    pass
 
 
 # RPyC server port (same as v1)

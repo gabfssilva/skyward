@@ -10,13 +10,10 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 import asyncssh
 from loguru import logger
-
-if TYPE_CHECKING:
-    pass
 
 
 # =============================================================================

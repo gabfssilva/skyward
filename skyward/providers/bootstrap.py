@@ -7,7 +7,6 @@ via JSONL event streaming.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
 
 from loguru import logger
 
@@ -18,119 +17,14 @@ from skyward.events import (
     BootstrapFailed,
     BootstrapPhase,
     InstanceInfo,
-    Log,
-    Metric,
 )
 from skyward.transport import (
     BootstrapError,
     RawBootstrapCommand,
     RawBootstrapConsole,
     RawBootstrapPhase,
-    RawLogEvent,
-    RawMetricEvent,
     SSHTransport,
 )
-
-if TYPE_CHECKING:
-    pass
-
-
-# =============================================================================
-# Continuous Streaming
-# =============================================================================
-
-
-async def stream_instance_events(
-    transport: SSHTransport,
-    info: InstanceInfo,
-    bus: AsyncEventBus,
-    timeout: float = 600.0,
-    log_prefix: str = "",
-) -> None:
-    """Stream all events from an instance indefinitely.
-
-    Runs until cancelled or connection drops. Emits events to bus:
-    - BootstrapPhase, BootstrapCommand, BootstrapConsole (during bootstrap)
-    - Log (during execution)
-    - Metric (throughout)
-
-    Args:
-        transport: Connected SSH transport.
-        info: Instance info (for event enrichment).
-        bus: Event bus to emit events to.
-        timeout: Maximum time between events (adaptive).
-        log_prefix: Prefix for log messages.
-    """
-    logger.info(f"{log_prefix}Starting event streaming for {info.id}")
-
-    try:
-        async for raw_event in transport.stream_events(timeout=timeout):
-            match raw_event:
-                case RawBootstrapConsole(content=content, stream=stream):
-                    bus.emit(BootstrapConsole(
-                        instance=info,
-                        content=content,
-                        stream=stream,
-                    ))
-                    display = content[:100] + "..." if len(content) > 100 else content
-                    if stream == "stderr":
-                        logger.warning(f"{log_prefix}[stderr] {display}")
-                    else:
-                        logger.debug(f"{log_prefix}[stdout] {display}")
-
-                case RawBootstrapPhase(event=event, phase=phase, elapsed=elapsed, error=error):
-                    bus.emit(BootstrapPhase(
-                        instance=info,
-                        event=event,
-                        phase=phase,
-                        elapsed=elapsed,
-                        error=error,
-                    ))
-                    if event == "started":
-                        logger.info(f"{log_prefix}Phase '{phase}' started")
-                    elif event == "completed":
-                        elapsed_str = f" ({elapsed:.1f}s)" if elapsed else ""
-                        logger.info(f"{log_prefix}Phase '{phase}' completed{elapsed_str}")
-                    elif event == "failed":
-                        logger.error(f"{log_prefix}Phase '{phase}' FAILED: {error}")
-                        bus.emit(BootstrapFailed(
-                            instance=info,
-                            phase=phase,
-                            error=error or "unknown",
-                        ))
-
-                case RawBootstrapCommand(command=command):
-                    bus.emit(BootstrapCommand(
-                        instance=info,
-                        command=command,
-                    ))
-                    display = command[:80] + "..." if len(command) > 80 else command
-                    logger.debug(f"{log_prefix}Running: {display}")
-
-                case RawLogEvent(content=content, stream=stream):
-                    bus.emit(Log(
-                        instance=info,
-                        line=content,
-                        stream=stream,
-                    ))
-
-                case RawMetricEvent(name=name, value=value, ts=ts):
-                    bus.emit(Metric(
-                        instance=info,
-                        name=name,
-                        value=value,
-                        timestamp=ts,
-                    ))
-                    logger.debug(f"{log_prefix}metric {name}={value}")
-
-    except asyncio.CancelledError:
-        logger.debug(f"{log_prefix}Streaming cancelled for {info.id}")
-    except TimeoutError:
-        logger.warning(f"{log_prefix}Streaming timeout for {info.id}")
-    except Exception as e:
-        logger.error(f"{log_prefix}Streaming error for {info.id}: {e}")
-    finally:
-        logger.debug(f"{log_prefix}Streaming ended for {info.id}")
 
 
 async def wait_for_ssh(

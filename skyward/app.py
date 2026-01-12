@@ -12,14 +12,11 @@ import asyncio
 from collections.abc import Callable, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import field
-from typing import TYPE_CHECKING, Any, AsyncIterator, dataclass_transform, get_type_hints
+from typing import Any, AsyncIterator, dataclass_transform, get_type_hints
 
 from injector import Injector, Module, inject, singleton
 
 from .bus import AsyncEventBus
-
-if TYPE_CHECKING:
-    pass
 
 
 # =============================================================================

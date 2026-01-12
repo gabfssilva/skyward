@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from .metrics import MetricsConfig, Default as DefaultMetrics
 
@@ -32,9 +32,6 @@ from .bootstrap import (
     wait_for_port,
 )
 from .bootstrap import rpyc_service_unit
-
-if TYPE_CHECKING:
-    pass
 
 
 # Skyward installation source

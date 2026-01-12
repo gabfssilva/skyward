@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from injector import Module, provider, singleton
 
@@ -22,9 +22,6 @@ from .events import (
     ShutdownRequested,
 )
 from .transport import SSHTransport
-
-if TYPE_CHECKING:
-    pass
 
 
 # =============================================================================

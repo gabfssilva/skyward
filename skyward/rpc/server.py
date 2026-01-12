@@ -13,8 +13,6 @@ import threading
 import traceback
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
-from typing import Any
-
 import rpyc
 from rpyc.utils.server import ThreadedServer
 

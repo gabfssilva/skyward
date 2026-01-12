@@ -58,16 +58,10 @@ def get_provider_for_config(config: Any) -> tuple[type, type["Module"], str]:
     )
 
 
-def get_registered_providers() -> list[str]:
-    """Get list of available provider names."""
-    return ["aws", "vastai", "verda"]
-
-
 # =============================================================================
 # Exports
 # =============================================================================
 
 __all__ = [
     "get_provider_for_config",
-    "get_registered_providers",
 ]

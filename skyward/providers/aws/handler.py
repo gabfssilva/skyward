@@ -34,12 +34,7 @@ from skyward.monitors import SSHCredentialsRegistry
 
 from skyward.utils.pricing import get_instance_pricing
 
-from .clients import (
-    EC2ClientFactory,
-    IAMClientFactory,
-    S3ClientFactory,
-    STSClientFactory,
-)
+from .clients import EC2ClientFactory
 from .config import AWS, AllocationStrategy
 from .state import AWSClusterState, AWSResources, InstanceConfig
 
@@ -87,9 +82,6 @@ class AWSHandler:
     bus: AsyncEventBus
     config: AWS
     ec2: EC2ClientFactory
-    s3: S3ClientFactory
-    iam: IAMClientFactory
-    sts: STSClientFactory
     ssh_credentials: SSHCredentialsRegistry
 
     def __post_init__(self) -> None:

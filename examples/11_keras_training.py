@@ -76,10 +76,10 @@ def train_vit(
     }
 
 @sky.pool(
-    # provider=sky.AWS(),
-    # accelerator=sky.accelerators.T4(),
-    provider=sky.VastAI(),
-    accelerator=sky.accelerators.RTX_5090(),
+    provider=sky.AWS(),
+    accelerator=sky.accelerators.T4(),
+    # provider=sky.VastAI(),
+    # accelerator=sky.accelerators.RTX_5090(),
     # max_hourly_cost=3,
     nodes=2,
     image=sky.Image(

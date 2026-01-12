@@ -12,7 +12,6 @@ from typing import Literal
 NVIDIA = Literal[
     # Legacy - Pascal (CC 6.1) - CUDA 8.0-12.6
     "K80",
-    "M60",
     "P4",
     "P40",
     "P100",

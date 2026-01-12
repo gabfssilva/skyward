@@ -32,7 +32,7 @@ from contextlib import suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Literal, overload
+from typing import Any, Literal, overload
 
 from injector import Injector
 from loguru import logger
@@ -42,7 +42,6 @@ from .bus import AsyncEventBus
 from .image import DEFAULT_IMAGE, Image
 from .monitors import MonitorModule
 from .pool import ComputePool as AsyncPool
-from .pool import PoolState
 from .spec import PoolSpec
 from .observability.logging import LogConfig, _setup_logging, _teardown_logging
 
@@ -51,9 +50,6 @@ from .observability.logging import LogConfig, _setup_logging, _teardown_logging
 from .providers.aws.config import AWS
 from .providers.vastai.config import VastAI
 from .providers.verda.config import Verda
-
-if TYPE_CHECKING:
-    from .events import ProviderName
 
 # Type alias for all supported providers
 type Provider = AWS | VastAI | Verda

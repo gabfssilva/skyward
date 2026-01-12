@@ -61,60 +61,8 @@ async def wait_for_ready(
         await asyncio.sleep(interval)
 
 
-async def wait_with_backoff(
-    poll_fn: Callable[[], Awaitable[T | None]],
-    ready_check: Callable[[T], bool],
-    *,
-    terminal_check: Callable[[T], bool] | None = None,
-    timeout: float = 300.0,
-    initial_interval: float = 1.0,
-    max_interval: float = 30.0,
-    backoff_factor: float = 1.5,
-    description: str = "resource",
-) -> T:
-    """Wait with exponential backoff between polls.
-
-    Useful for resources that take longer to become ready.
-
-    Args:
-        poll_fn: Async function that polls for the resource state.
-        ready_check: Function that returns True when resource is ready.
-        terminal_check: Optional function for terminal state detection.
-        timeout: Maximum time to wait in seconds.
-        initial_interval: Initial time between polls.
-        max_interval: Maximum time between polls.
-        backoff_factor: Multiplier for interval on each poll.
-        description: Description for error messages.
-
-    Returns:
-        The ready resource.
-    """
-    loop = asyncio.get_event_loop()
-    start = loop.time()
-    interval = initial_interval
-
-    while True:
-        result = await poll_fn()
-
-        if result is not None:
-            if ready_check(result):
-                return result
-
-            if terminal_check is not None and terminal_check(result):
-                raise RuntimeError(f"{description} reached terminal state: {result}")
-
-        elapsed = loop.time() - start
-        if elapsed > timeout:
-            raise TimeoutError(
-                f"Timeout waiting for {description} after {timeout:.1f}s"
-            )
-
-        await asyncio.sleep(interval)
-        interval = min(interval * backoff_factor, max_interval)
-
-
 # =============================================================================
 # Exports
 # =============================================================================
 
-__all__ = ["wait_for_ready", "wait_with_backoff"]
+__all__ = ["wait_for_ready"]
