@@ -8,10 +8,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Final
 
-from skyward.core.constants import SKYWARD_DIR
+from ..constants import SKYWARD_DIR
 
 if TYPE_CHECKING:
-    from skyward.spec.metrics import Metric
+    from ..metrics import Metric
 
 # =============================================================================
 # Core Types
@@ -271,7 +271,7 @@ def bootstrap(
         Complete shell script string.
 
     Example:
-        >>> from skyward.spec.metrics import CPU, GPU, Default
+        >>> from skyward.metrics import CPU, GPU, Default
         >>> script = bootstrap(
         ...     apt("python3", "curl"),
         ...     checkpoint(".step_apt"),
@@ -285,7 +285,8 @@ def bootstrap(
         base = make_header(metrics)
     else:
         # Default: use Default() metrics
-        from skyward.spec.metrics import Default
+        from ..metrics import Default
+
         base = make_header(Default())
 
     commands = [resolve(op) for op in ops]

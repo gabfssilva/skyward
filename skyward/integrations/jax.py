@@ -23,13 +23,12 @@ def jax[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
             ...
     """
 
-    from skyward.compute.pending import ComputeFunction
-
-    def wrapper(fn: Callable[P, R]) -> Callable[P, R]:
+    def decorator(fn: Callable[P, R]) -> Callable[P, R]:
         @functools.wraps(fn)
-        def inner(*args: P.args, **kwargs: P.kwargs) -> R:
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             import jax
 
+            # Use v1's instance_info which reads from COMPUTE_POOL env var
             from skyward.cluster.info import instance_info
 
             pool = instance_info()
@@ -38,6 +37,7 @@ def jax[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
                 return fn(*args, **kwargs)
 
             coordinator_address = f"{pool.head_addr}:{pool.head_port}"
+            # Use workers_per_node for multi-GPU scenarios (like v1)
             total_processes = pool.total_nodes * pool.workers_per_node
             process_id = pool.node * pool.workers_per_node + pool.worker
 
@@ -53,7 +53,6 @@ def jax[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
             for key, value in env.items():
                 if not value:
                     continue
-
                 os.environ[key] = value
 
             jax.distributed.initialize(
@@ -64,11 +63,6 @@ def jax[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
 
             return fn(*args, **kwargs)
 
-        return inner
-
-    def decorator(fn: Callable[P, R]) -> Callable[P, R]:
-        if isinstance(fn, ComputeFunction):
-            return ComputeFunction(fn=wrapper(fn.fn), name=fn.name)
-        return wrapper(fn)
+        return wrapper
 
     return decorator

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from skyward.core.constants import RPYC_PORT, SKYWARD_DIR
+from ..constants import RPYC_PORT, SKYWARD_DIR
 
 from .compose import Op
 from .ops import systemd_template
@@ -89,7 +89,9 @@ def worker_envs(configs: tuple[WorkerConfig, ...]) -> Op:
         lines = []
         for config in configs:
             env_content = config.env_file_content
-            lines.append(f"cat > {SKYWARD_DIR}/worker-{config.worker_id}.env << 'EOF'\n{env_content}EOF")
+            lines.append(
+                f"cat > {SKYWARD_DIR}/worker-{config.worker_id}.env << 'EOF'\n{env_content}EOF"
+            )
         return "\n\n".join(lines)
 
     return generate
@@ -295,16 +297,20 @@ def worker_server_ops(
     ]
 
     if partition_script:
-        ops.extend([
-            mig_setup(partition_script),
-            checkpoint(".step_partition"),
-        ])
+        ops.extend(
+            [
+                mig_setup(partition_script),
+                checkpoint(".step_partition"),
+            ]
+        )
 
-    ops.extend([
-        worker_service_template(),
-        start_workers(len(configs)),
-        wait_for_workers(len(configs)),
-        checkpoint(".step_server"),
-    ])
+    ops.extend(
+        [
+            worker_service_template(),
+            start_workers(len(configs)),
+            wait_for_workers(len(configs)),
+            checkpoint(".step_server"),
+        ]
+    )
 
     return tuple(ops)

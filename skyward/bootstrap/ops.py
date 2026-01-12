@@ -6,7 +6,7 @@ Each operation is a function returning an Op (string or callable).
 
 from __future__ import annotations
 
-from skyward.core.constants import SKYWARD_DIR, UV_INSTALL_URL
+from ..constants import SKYWARD_DIR, UV_INSTALL_URL
 
 from .compose import Op
 
@@ -104,6 +104,7 @@ def install_uv() -> Op:
     curl -LsSf {UV_INSTALL_URL} | sh
 fi"""
 
+
 def uv_add(*packages: str, extra_index: str | None = None) -> Op:
     """Add packages to the uv project in SKYWARD_DIR.
 
@@ -138,6 +139,7 @@ def uv_init(python: str = "3.12", name: str | None = None) -> Op:
     """
     name_flag = f"--name {name} " if name else ""
     return lambda: f"cd {SKYWARD_DIR} && uv init {name_flag}--python {python} --no-readme"
+
 
 # =============================================================================
 # File Operations
@@ -506,7 +508,11 @@ def s3_pip_install(
         >>> s3_pip_install("mybucket", "abc123")()
         'aws s3 cp "s3://mybucket/skyward/requirements/abc123.txt"...'
     """
-    extra = f' --extra-index-url "{extra_index}" --index-strategy unsafe-best-match' if extra_index else ""
+    extra = (
+        f' --extra-index-url "{extra_index}" --index-strategy unsafe-best-match'
+        if extra_index
+        else ""
+    )
 
     return lambda: f"""aws s3 cp "s3://{bucket}/skyward/requirements/{requirements_hash}.txt" {SKYWARD_DIR}/requirements.txt
 uv pip install -r {SKYWARD_DIR}/requirements.txt{extra}"""

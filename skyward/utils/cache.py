@@ -15,6 +15,7 @@ import cloudpickle
 CACHE_DIR = Path.home() / ".skyward" / "cache"
 CACHE_VERSION = 1
 
+
 class DiskCache:
     """Simple disk-based cache with cloudpickle serialization."""
 
@@ -114,6 +115,7 @@ class DiskCache:
         self._index = {}
         if self.cache_dir.exists():
             import shutil
+
             shutil.rmtree(self.cache_dir)
 
 
@@ -142,7 +144,9 @@ def cached[**P, R](
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             cache_args = args[1:] if args and hasattr(args[0], "__dict__") else args
 
-            key = key_func(*args, **kwargs) if key_func else cache._make_key(cache_args, kwargs)
+            key = (
+                key_func(*args, **kwargs) if key_func else cache._make_key(cache_args, kwargs)
+            )
 
             hit, value = cache.get(key, ttl)
             if hit:

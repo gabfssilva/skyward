@@ -1,24 +1,6 @@
-"""Skyward - Execute Python functions on cloud compute.
+"""Skyward v2 - Event-driven compute orchestration.
 
-Example (explicit pool):
-
-    import skyward as sky
-
-    @sky.compute
-    def train(data):
-        return model.fit(data)
-
-    pool = sky.ComputePool(
-        provider=sky.AWS(),
-        accelerator=sky.accelerator('A100'),
-        image=sky.Image(pip=["torch"]),
-    )
-
-    with pool:
-        result = train(data) >> pool
-        r1, r2 = sky.gather(train(d1), train(d2)) >> pool
-
-Example (implicit pool with decorator):
+Usage as module (recommended):
 
     import skyward as sky
 
@@ -26,340 +8,385 @@ Example (implicit pool with decorator):
     def train(data):
         return model.fit(data)
 
-    @sky.pool(
-        provider=sky.AWS(),
-        accelerator=sky.accelerator('A100', count=4),
-        image=sky.Image(pip=["torch"]),
-    )
+    @sky.pool(provider=sky.AWS(), accelerator="A100", nodes=4)
     def main():
-        result = train(data) >> sky
-        r1, r2 = sky.gather(train(d1), train(d2)) >> sky
-        return result
+        result = train(data) >> sky          # execute on one node
+        results = train(data) @ sky          # broadcast to all nodes
+        a, b = (task1() & task2()) >> sky    # parallel execution
 
-    main()  # provisions -> executes -> deprovisions
+Or as context manager:
 
+    import skyward as sky
+
+    @sky.compute
+    def train(data): ...
+
+    with sky.pool(provider=sky.AWS(), accelerator="A100") as p:
+        result = train(data) >> sky  # or >> p
 """
 
-from typing import TYPE_CHECKING
+from __future__ import annotations
 
-if TYPE_CHECKING:
-    from skyward.providers.aws import AWS as AWS
-    from skyward.providers.digitalocean import DigitalOcean as DigitalOcean
-    from skyward.providers.vastai import VastAI as VastAI
-    from skyward.providers.verda import Verda as Verda
+# =============================================================================
+# User-facing API (sync facade) - PRIMARY EXPORTS
+# =============================================================================
 
-# Utilities
-import skyward.integrations as integrations
-import skyward.spec.metrics as metrics
-import skyward.utils.conc as conc
-
-# Pool decorator (implicit context)
-from skyward.pool._decorator import pool
-
-# Accelerators
-from skyward.accelerators import Accelerator
-
-# Callback system
-from skyward.core.callback import Callback, compose, emit, use_callback
-
-# Cluster utilities
-from skyward.cluster.info import InstanceInfo, instance_info
-
-# Data sharding utilities
-from skyward.cluster.data import DistributedSampler, shard, shard_iterator
-
-# Events (ADT)
-from skyward.core.events import (
-    BootstrapCompleted,
-    BootstrapProgress,
-    BootstrapStarting,
-    CostFinal,
-    CostUpdate,
-    Error,
-    FunctionCall,
-    FunctionResult,
-    InstanceLaunching,
-    InstancePreempted,
-    InstanceProvisioned,
-    InstanceReady,
-    InstanceReplaced,
-    InstanceStopping,
-    LogLine,
-    MetricValue,
-    NetworkReady,
-    PoolReady,
-    PoolStarted,
-    PoolStopping,
-    ProvisionedInstance,
-    ProvisioningCompleted,
-    ProvisioningStarted,
-    RegionAutoSelected,
-    SkywardEvent,
-)
-
-# Executor
-from skyward.pool.executor import Executor
-
-# Image
-from skyward.spec.image import Image, SkywardSource
-
-# Logging configuration
-from skyward.observability.logging import LogConfig
-
-# Output control for distributed execution
-from skyward.observability.output import (
-    OutputPredicate,
-    OutputSpec,
-    is_head,
-    silent,
-    stderr,
-    stdout,
-)
-
-# MultiPool
-from skyward.pool.multi import MultiPool
-
-# Lazy computation API
-from skyward.compute.pending import (
-    ComputeFunction,
-    PendingBatch,
-    PendingCompute,
+from .facade import (
+    # The sky singleton for >> sky / @ sky
+    sky,
+    # Core functions
+    pool,
     compute,
     gather,
+    # Types
+    SyncComputePool,
+    PendingCompute,
+    PendingComputeGroup,
+    # Utilities
+    PoolInfo,
+    instance_info,
+    shard,
 )
 
-# Pool
-from skyward.pool.compute import ComputePool
+# =============================================================================
+# Providers (config classes only - no SDK dependencies)
+# =============================================================================
 
-# Exceptions
-from skyward.core.exceptions import BudgetExceededError
+from .providers import AWS, VastAI, Verda
 
-# Provider selection
-from skyward.pool.selection import (
-    AllProvidersFailedError,
-    NoAvailableProviderError,
-    select_available,
-    select_cheapest,
-    select_first,
+# NOTE: Handlers and modules are NOT imported here to avoid SDK deps.
+# Import them explicitly when needed:
+#   from skyward.providers.aws import AWSHandler, AWSModule
+
+# =============================================================================
+# Image configuration
+# =============================================================================
+
+from .image import Image, DEFAULT_IMAGE, RPYC_PORT
+
+# =============================================================================
+# Metrics (lazy-loaded submodule)
+# =============================================================================
+
+# Use: sky.metrics.CPU(), sky.metrics.GPU(), sky.metrics.Default()
+# Lazy to avoid importing metric specs until needed
+from skyward import metrics as metrics
+
+# =============================================================================
+# Events - the language of the system
+# =============================================================================
+
+from .events import (
+    # Type aliases
+    ClusterId,
+    InstanceId,
+    NodeId,
+    ProviderName,
+    RequestId,
+    # Value objects
+    InstanceInfo,
+    # Requests
+    ClusterRequested,
+    InstanceRequested,
+    ShutdownRequested,
+    # Facts
+    ClusterDestroyed,
+    ClusterProvisioned,
+    ClusterReady,
+    Error,
+    InstanceBootstrapped,
+    InstanceDestroyed,
+    InstancePreempted,
+    InstanceProvisioned,
+    InstanceReplaced,
+    Log,
+    Metric,
+    NodeReady,
+    TaskCompleted,
+    TaskStarted,
+    # Unions
+    Event,
+    Fact,
+    Request,
 )
 
-# Allocation strategies
-from skyward.spec.allocation import Allocation, AllocationLike
+# =============================================================================
+# Bus - async event routing
+# =============================================================================
 
-# Preemption handling
-from skyward.spec.preemption import Preemption
+from .bus import AsyncEventBus
 
-# Types
-from skyward.types import (
-    GPU,
-    NVIDIA,
-    AcceleratorSpec,
-    Architecture,
-    Auto,
-    ComputeSpec,
-    ExitedInstance,
-    Instance,
-    InstanceSpec,
-    Provider,
-    ProviderConfig,
-    ProviderLike,
-    ProviderSelector,
-    SelectionLike,
-    SelectionStrategy,
-    Trainium,
-    current_accelerator,
-    select_instance,
+# =============================================================================
+# App - decorators and bootstrap
+# =============================================================================
+
+from .app import (
+    app_context,
+    clear_registries,
+    component,
+    create_app,
+    monitor,
+    MonitorManager,
+    on,
 )
 
-# Volumes
-from skyward.spec.volume import S3Volume, Volume
+# =============================================================================
+# Audit - observability decorator
+# =============================================================================
 
-__version__ = "0.2.0"
+from .audit import audit
+
+# =============================================================================
+# Specs - configuration
+# =============================================================================
+
+from .spec import (
+    AllocationStrategy,
+    PoolSpec,
+)
+
+# =============================================================================
+# Accelerators - GPU/TPU specifications
+# =============================================================================
+
+from .accelerators import Accelerator
+
+# Lazy-loaded submodule: sky.accelerators.H100(), sky.accelerators.T4(), etc.
+from skyward import accelerators as accelerators
+
+# =============================================================================
+# Protocols - interfaces
+# =============================================================================
+
+from .protocols import (
+    Executor,
+    HealthChecker,
+    PreemptionChecker,
+    Serializable,
+    Transport,
+    TransportFactory,
+)
+
+# =============================================================================
+# Components
+# =============================================================================
+
+from .node import Node, NodeState
+from .pool import ComputePool, PoolState
+
+# =============================================================================
+# Monitors
+# =============================================================================
+
+from .monitors import InstanceRegistry, MonitorModule
+
+# =============================================================================
+# Transport
+# =============================================================================
+
+from .transport import SSHTransport, make_ssh_transport
+
+# =============================================================================
+# Executor
+# =============================================================================
+
+from .executor import AsyncRPyCExecutor
+
+# =============================================================================
+# Retry
+# =============================================================================
+
+from .retry import (
+    all_of,
+    any_of,
+    on_exception_message,
+    on_status_code,
+    retry,
+)
+
+# =============================================================================
+# Throttle
+# =============================================================================
+
+from .throttle import (
+    Limiter,
+    ThrottleError,
+    throttle,
+)
+
+# =============================================================================
+# Output Control
+# =============================================================================
+
+from .stdout import (
+    stdout,
+    stderr,
+    silent,
+    is_head,
+    CallbackWriter,
+    redirect_output,
+)
+
+# =============================================================================
+# Integrations (lazy-loaded submodule)
+# =============================================================================
+
+# Use: from skyward import integrations
+#      from skyward.integrations import keras
+# Lazy to avoid requiring torch/jax/tensorflow at import time
+from skyward import integrations as integrations
+
+# =============================================================================
+# Exports
+# =============================================================================
 
 __all__ = [
-    # === Lazy API ===
-    # Lazy computation
-    "compute",
-    "gather",
+    # =================================================================
+    # Primary User API (import skyward as sky)
+    # =================================================================
+    "sky",           # singleton for >> sky / @ sky
+    "pool",          # decorator or context manager
+    "compute",       # @compute decorator
+    "gather",        # gather() for parallel execution
+    "PoolInfo",      # runtime info type
+    "instance_info", # get instance info inside @compute
+    "shard",         # shard data across nodes
+    # Types
+    "SyncComputePool",
     "PendingCompute",
-    "PendingBatch",
-    "ComputeFunction",
-    # Pool
-    "ComputePool",
-    "MultiPool",
-    "Executor",
-    "pool",  # Decorator for implicit context
+    "PendingComputeGroup",
+    # =================================================================
+    # Providers (config classes only - import handlers explicitly)
+    # =================================================================
+    "AWS",
+    "VastAI",
+    "Verda",
+    # =================================================================
     # Image
+    # =================================================================
     "Image",
-    "SkywardSource",
-    # Callback system
-    "emit",
-    "use_callback",
-    "compose",
-    "Callback",
-    # Logging
-    "LogConfig",
-    # Output control
+    "DEFAULT_IMAGE",
+    "RPYC_PORT",
+    # =================================================================
+    # Metrics (submodule)
+    # =================================================================
+    "metrics",  # submodule: sky.metrics.CPU(), sky.metrics.GPU(), etc.
+    # =================================================================
+    # Events - Type aliases
+    # =================================================================
+    "RequestId",
+    "ClusterId",
+    "InstanceId",
+    "NodeId",
+    "ProviderName",
+    # Events - Value objects
+    "InstanceInfo",
+    # Events - Requests
+    "ClusterRequested",
+    "InstanceRequested",
+    "ShutdownRequested",
+    # Events - Facts
+    "ClusterProvisioned",
+    "InstanceProvisioned",
+    "InstanceBootstrapped",
+    "InstancePreempted",
+    "InstanceReplaced",
+    "InstanceDestroyed",
+    "NodeReady",
+    "ClusterReady",
+    "ClusterDestroyed",
+    "TaskStarted",
+    "TaskCompleted",
+    "Metric",
+    "Log",
+    "Error",
+    # Events - Unions
+    "Request",
+    "Fact",
+    "Event",
+    # =================================================================
+    # Bus
+    # =================================================================
+    "AsyncEventBus",
+    # =================================================================
+    # App
+    # =================================================================
+    "component",
+    "on",
+    "monitor",
+    "create_app",
+    "app_context",
+    "MonitorManager",
+    "clear_registries",
+    # =================================================================
+    # Audit
+    # =================================================================
+    "audit",
+    # =================================================================
+    # Specs
+    # =================================================================
+    "PoolSpec",
+    "AllocationStrategy",
+    # =================================================================
+    # Accelerators
+    # =================================================================
+    "Accelerator",
+    "accelerators",  # submodule: sky.accelerators.H100(), etc.
+    # =================================================================
+    # Protocols
+    # =================================================================
+    "Transport",
+    "Executor",
+    "TransportFactory",
+    "HealthChecker",
+    "PreemptionChecker",
+    "Serializable",
+    # =================================================================
+    # Components
+    # =================================================================
+    "Node",
+    "NodeState",
+    "ComputePool",
+    "PoolState",
+    # =================================================================
+    # Monitors
+    # =================================================================
+    "InstanceRegistry",
+    "MonitorModule",
+    # =================================================================
+    # Transport
+    # =================================================================
+    "SSHTransport",
+    "make_ssh_transport",
+    # =================================================================
+    # Executor
+    # =================================================================
+    "AsyncRPyCExecutor",
+    # =================================================================
+    # Retry
+    # =================================================================
+    "retry",
+    "on_status_code",
+    "on_exception_message",
+    "any_of",
+    "all_of",
+    # =================================================================
+    # Throttle
+    # =================================================================
+    "throttle",
+    "Limiter",
+    "ThrottleError",
+    # =================================================================
+    # Output Control
+    # =================================================================
     "stdout",
     "stderr",
     "silent",
     "is_head",
-    "OutputPredicate",
-    "OutputSpec",
-    # === Types ===
-    "Instance",
-    "InstanceSpec",
-    "ExitedInstance",
-    "Provider",
-    "ProviderConfig",
-    "ComputeSpec",
-    "Architecture",
-    "Auto",
-    "select_instance",
-    # Allocation strategies
-    "Allocation",
-    "AllocationLike",
-    # Preemption handling
-    "Preemption",
-    # Events (ADT)
-    "SkywardEvent",
-    "ProvisionedInstance",
-    "ProvisioningStarted",
-    "ProvisioningCompleted",
-    "NetworkReady",
-    "RegionAutoSelected",
-    "InstanceLaunching",
-    "InstanceProvisioned",
-    "BootstrapStarting",
-    "BootstrapProgress",
-    "BootstrapCompleted",
-    "InstanceReady",
-    "InstancePreempted",
-    "InstanceReplaced",
-    "MetricValue",
-    "LogLine",
-    "FunctionCall",
-    "FunctionResult",
-    "InstanceStopping",
-    "CostUpdate",
-    "CostFinal",
-    "PoolReady",
-    "PoolStarted",
-    "PoolStopping",
-    "Error",
-    # Accelerators
-    "Accelerator",
-    "AcceleratorSpec",
-    "GPU",
-    "NVIDIA",
-    "Trainium",
-    "current_accelerator",
-    # Providers
-    "AWS",
-    "DigitalOcean",
-    "VastAI",
-    "Verda",
-    # Provider selection
-    "SelectionStrategy",
-    "ProviderSelector",
-    "SelectionLike",
-    "ProviderLike",
-    "select_first",
-    "select_cheapest",
-    "select_available",
-    "NoAvailableProviderError",
-    "AllProvidersFailedError",
-    "BudgetExceededError",
-    # Volumes
-    "Volume",
-    "S3Volume",
-    # Cluster utilities
-    "InstanceInfo",
-    "instance_info",
-    # Data sharding utilities
-    "shard",
-    "shard_iterator",
-    "DistributedSampler",
+    "CallbackWriter",
+    "redirect_output",
+    # =================================================================
+    # Integrations (submodule)
+    # =================================================================
     "integrations",
-    "conc",
-    # Metrics configuration
-    "metrics",
-    # Version
-    "__version__",
 ]
-
-
-# =============================================================================
-# Module class hack for `>> sky` syntax
-# =============================================================================
-#
-# This enables the implicit pool execution syntax:
-#
-#     @sky.pool(provider=AWS(), ...)
-#     def main():
-#         result = train(data) >> sky  # Uses pool from context
-#
-# The magic: we replace the module's __class__ with a custom class that
-# implements __rrshift__, so `pending >> sky` calls `sky.__rrshift__(pending)`.
-#
-
-import sys as _sys
-from types import ModuleType as _ModuleType
-from typing import Any as _Any
-
-
-def _unpickle_skyward_module() -> _ModuleType:
-    """Unpickle helper that returns the skyward module."""
-    import skyward
-
-    return skyward
-
-
-class _SkywardModule(_ModuleType):
-    """Custom module class that supports the >> and @ operators."""
-
-    def __reduce__(self) -> tuple[object, tuple[()]]:
-        """Make the module picklable by returning a function that imports it."""
-        return (_unpickle_skyward_module, ())
-
-    def __getattr__(self, name: str) -> _Any:
-        """Lazy import providers when accessed as sky.AWS(), sky.VastAI(), etc."""
-        if name == "AWS":
-            from skyward.providers.aws import AWS
-
-            return AWS
-        if name == "DigitalOcean":
-            from skyward.providers.digitalocean import DigitalOcean
-
-            return DigitalOcean
-        if name == "VastAI":
-            from skyward.providers.vastai import VastAI
-
-            return VastAI
-        if name == "Verda":
-            from skyward.providers.verda import Verda
-
-            return Verda
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-    def __rrshift__(self, pending: _Any) -> _Any:
-        """Execute pending computation on the current pool from context.
-
-        This is called when using: `train(data) >> sky`
-
-        The pool is retrieved from the context set by @sky.pool decorator.
-        """
-        from skyward.pool._context import get_current_pool
-        from skyward.compute.pending import PendingBatch
-
-        pool = get_current_pool()
-
-        match pending:
-            case PendingBatch():
-                return pool.run_batch(pending)
-            case _:
-                return pool.run(pending)
-
-
-# Replace this module's class with our custom class
-_sys.modules[__name__].__class__ = _SkywardModule

@@ -23,26 +23,24 @@ def tensorflow[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
             # TF_CONFIG already set
             ...
     """
-    from skyward.compute.pending import ComputeFunction
 
-    def wrapper(fn: Callable[P, R]) -> Callable[P, R]:
+    def decorator(fn: Callable[P, R]) -> Callable[P, R]:
         @functools.wraps(fn)
-        def inner(*args: P.args, **kwargs: P.kwargs) -> R:
-            from skyward.cluster.info import instance_info
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            from skyward.runtime import instance_info
 
             pool = instance_info()
 
             if not pool:
                 return fn(*args, **kwargs)
 
-            worker_addrs: list[str] = []
-            for peer in sorted(pool.peers, key=lambda p: p.get("node", 0)):
-                ip = peer.get("private_ip", peer.get("addr", ""))
-                for worker_idx in range(pool.workers_per_node):
-                    port = pool.head_port + worker_idx
-                    worker_addrs.append(f"{ip}:{port}")
+            # Build worker list - each node is one worker
+            worker_addrs = [
+                f"{pool.head_addr}:{pool.head_port + i}"
+                for i in range(pool.total_nodes)
+            ]
 
-            task_index = pool.node * pool.workers_per_node + pool.worker
+            task_index = pool.node
 
             tf_config = {
                 "cluster": {"worker": worker_addrs},
@@ -53,11 +51,6 @@ def tensorflow[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
 
             return fn(*args, **kwargs)
 
-        return inner
-
-    def decorator(fn: Callable[P, R]) -> Callable[P, R]:
-        if isinstance(fn, ComputeFunction):
-            return ComputeFunction(fn=wrapper(fn.fn), name=fn.name)
-        return wrapper(fn)
+        return wrapper
 
     return decorator

@@ -106,7 +106,6 @@ def main():
             accelerator="T4",
             image=sky.Image(pip=["numpy"]),
             allocation="spot-if-available",
-            collect_metrics=True,  # Enable metrics collection
         ) as pool:
             # Run some training steps
             for i in range(5):

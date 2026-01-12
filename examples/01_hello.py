@@ -83,8 +83,13 @@ def format_results(r: dict) -> None:
 
 @sky.pool(
     provider=sky.VastAI(),
-    accelerator=sky.Accelerator("RTX 3090"),
-    image=sky.Image(pip=["jax[cuda12]"], skyward_source="local"),
+    accelerator=sky.Accelerator("A100"),
+    image=sky.Image(
+        pip=["jax[cuda12]"],
+        skyward_source="local",
+        metrics=sky.metrics.Default()
+    ),
+    max_hourly_cost=0.5
 )
 def main():
     return benchmark(matrix_size=4096, iterations=50) >> sky

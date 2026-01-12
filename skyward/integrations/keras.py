@@ -36,6 +36,7 @@ def keras[**P, R](
         # First wrap with Keras distribution setup
         @functools.wraps(fn)
         def inner(*args: P.args, **kwargs: P.kwargs) -> R:
+            # Use v1's instance_info which reads from COMPUTE_POOL env var
             from skyward.cluster.info import instance_info
 
             pool = instance_info()

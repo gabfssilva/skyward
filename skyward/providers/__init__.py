@@ -1,42 +1,31 @@
-"""Cloud providers for Skyward.
+"""Cloud providers for Skyward v2.
 
-Providers are lazy-loaded to avoid importing heavy SDKs until needed.
-This allows the core skyward package to be used on workers without
-provider dependencies installed.
+Each provider is an event-driven component that handles:
+- ClusterRequested → provisions infrastructure
+- InstanceRequested → launches instances
+- ShutdownRequested → terminates resources
+
+Available providers:
+- AWS: Amazon Web Services (EC2 Fleet, spot instances)
+- VastAI: GPU marketplace (Docker containers, spot/bid pricing)
+- Verda: GPU cloud (dedicated instances, spot pricing)
+
+NOTE: Only config classes are imported at module level to avoid pulling in
+SDK dependencies (aioboto3, httpx, etc.). Handlers and modules should be
+imported explicitly when needed:
+
+    from skyward.providers.aws import AWSHandler, AWSModule
 """
 
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from skyward.providers.aws import AWS
-    from skyward.providers.digitalocean import DigitalOcean
-    from skyward.providers.vastai import VastAI
-    from skyward.providers.verda import Verda
+# Only import config classes - these have NO SDK dependencies
+# This allows `import skyward as sky` without requiring provider SDKs
+from .aws.config import AWS
+from .vastai.config import VastAI
+from .verda.config import Verda
 
 __all__ = [
+    # Config classes only - handlers must be imported explicitly
     "AWS",
-    "DigitalOcean",
     "VastAI",
     "Verda",
 ]
-
-
-def __getattr__(name: str) -> Any:
-    """Lazy import providers only when accessed."""
-    if name == "AWS":
-        from skyward.providers.aws import AWS
-
-        return AWS
-    if name == "DigitalOcean":
-        from skyward.providers.digitalocean import DigitalOcean
-
-        return DigitalOcean
-    if name == "VastAI":
-        from skyward.providers.vastai import VastAI
-
-        return VastAI
-    if name == "Verda":
-        from skyward.providers.verda import Verda
-
-        return Verda
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

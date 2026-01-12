@@ -6,7 +6,7 @@ Customization happens via passing operations, not configuration flags.
 
 from __future__ import annotations
 
-from skyward.core.constants import DEFAULT_PYTHON, RPYC_PORT, SKYWARD_DIR
+from ..constants import DEFAULT_PYTHON, RPYC_PORT, SKYWARD_DIR
 
 from .compose import Op, bootstrap
 from .ops import (

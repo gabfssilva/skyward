@@ -28,34 +28,31 @@ def torch[**P, R](
             assert dist.is_initialized()
             ...
     """
-    from skyward.compute.pending import ComputeFunction
 
-    def wrapper(fn: Callable[P, R]) -> Callable[P, R]:
+    def decorator(fn: Callable[P, R]) -> Callable[P, R]:
         @functools.wraps(fn)
-        def inner(*args: P.args, **kwargs: P.kwargs) -> R:
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             import torch
             import torch.distributed as dist
 
-            from skyward.cluster.info import instance_info
+            from skyward.runtime import instance_info
 
             pool = instance_info()
 
             if not pool or dist.is_initialized():
                 return fn(*args, **kwargs)
 
-            world_size = pool.total_nodes * pool.workers_per_node
-            global_rank = pool.node * pool.workers_per_node + pool.worker
+            world_size = pool.total_nodes
+            global_rank = pool.node
 
-            nccl_iface = pool.network.get("interface") if pool.total_nodes > 1 else None
             env = {
                 "MASTER_ADDR": pool.head_addr,
                 "MASTER_PORT": str(pool.head_port),
                 "WORLD_SIZE": str(world_size),
                 "RANK": str(global_rank),
-                "LOCAL_RANK": str(pool.worker),
-                "LOCAL_WORLD_SIZE": str(pool.workers_per_node),
+                "LOCAL_RANK": "0",
+                "LOCAL_WORLD_SIZE": "1",
                 "NODE_RANK": str(pool.node),
-                "NCCL_SOCKET_IFNAME": nccl_iface,
             }
 
             for key, value in env.items():
@@ -67,11 +64,6 @@ def torch[**P, R](
 
             return fn(*args, **kwargs)
 
-        return inner
-
-    def decorator(fn: Callable[P, R]) -> Callable[P, R]:
-        if isinstance(fn, ComputeFunction):
-            return ComputeFunction(fn=wrapper(fn.fn), name=fn.name)
-        return wrapper(fn)
+        return wrapper
 
     return decorator

@@ -1,4 +1,4 @@
-"""Skyward integrations with third-party libraries.
+"""Skyward v2 integrations with third-party libraries.
 
 All imports are lazy to avoid requiring optional dependencies at import time.
 
@@ -11,22 +11,14 @@ Distributed training:
 - tensorflow: TensorFlow distributed training decorator
 - transformers: Hugging Face Transformers distributed training decorator
 
-Joblib/sklearn:
-- JoblibPool: Distributed joblib execution
-- ScikitLearnPool: Distributed sklearn training
-- sklearn_backend: Low-level backend for existing ComputePool
-
 Usage:
-    from skyward import AWS, compute
-    from skyward.integrations import keras, JoblibPool
+    from skyward import compute
+    from skyward.integrations import keras
 
     @keras(backend="jax")
     @compute
     def train():
         ...
-
-    with JoblibPool(provider=AWS(), nodes=4):
-        results = Parallel(n_jobs=-1)(delayed(fn)(x) for x in data)
 """
 
 from typing import Any
@@ -38,7 +30,6 @@ __all__ = [
     "jax",
     "tensorflow",
     "transformers",
-    # Joblib/sklearn
 ]
 
 _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
@@ -48,10 +39,6 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "jax": ("skyward.integrations.jax", "jax"),
     "tensorflow": ("skyward.integrations.tensorflow", "tensorflow"),
     "transformers": ("skyward.integrations.transformers", "transformers"),
-    "JoblibPool": ("skyward.integrations.joblib", "JoblibPool"),
-    "ScikitLearnPool": ("skyward.integrations.joblib", "ScikitLearnPool"),
-    "sklearn_backend": ("skyward.integrations.joblib", "sklearn_backend"),
-    "joblib_backend": ("skyward.integrations.joblib", "joblib_backend"),
 }
 
 

@@ -9,14 +9,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import lru_cache, reduce
-from typing import TYPE_CHECKING, Any, Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 import httpx
 
-from skyward.utils.cache import cached
-
-if TYPE_CHECKING:
-    from skyward.types import Instance
+from .cache import cached
 
 Provider = Literal["aws", "azure", "gcp", "digitalocean"]
 
@@ -314,27 +311,3 @@ def calculate_fleet_cost(
         savings_pct=savings_pct,
         instances=tuple(result["details"]),
     )
-
-
-def calculate_fleet_cost_from_instances(
-    instances: tuple[Instance, ...],
-    region: str = "us-east-1",
-    provider: Provider = "aws",
-) -> FleetCost | None:
-    """Calculate fleet cost from Instance objects."""
-    fleet_input = [
-        (inst.get_meta("instance_type", ""), inst.spot)
-        for inst in instances
-        if inst.get_meta("instance_type")
-    ]
-    return calculate_fleet_cost(fleet_input, region, provider)
-
-
-def format_fleet_log(
-    instances: tuple[Instance, ...],
-    region: str = "us-east-1",
-    provider: Provider = "aws",
-) -> str | None:
-    """Format fleet cost for logging."""
-    cost = calculate_fleet_cost_from_instances(instances, region, provider)
-    return cost.format_summary() if cost else None

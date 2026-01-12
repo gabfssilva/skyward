@@ -18,7 +18,7 @@ from typing import Any
 import rpyc
 from rpyc.utils.server import ThreadedServer
 
-from skyward.core.constants import SKYWARD_DIR
+from skyward.constants import SKYWARD_DIR
 from skyward.utils.serialization import deserialize, serialize
 
 # Default port for RPyC server

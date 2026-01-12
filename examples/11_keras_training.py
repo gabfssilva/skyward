@@ -76,12 +76,15 @@ def train_vit(
     }
 
 @sky.pool(
+    # provider=sky.AWS(),
+    # accelerator=sky.accelerators.T4(),
     provider=sky.VastAI(),
+    accelerator=sky.accelerators.RTX_5090(),
+    # max_hourly_cost=3,
     nodes=2,
-    accelerator=sky.Accelerator('RTX 3060'),
     image=sky.Image(
         pip=[ "keras>=3.2", "jax[cuda12]" ],
-        env={ "KERAS_BACKEND": "jax"  },
+        env={ "KERAS_BACKEND": "jax" },
         skyward_source='local'
     ),
 )
