@@ -24,6 +24,8 @@ from loguru import logger
 from skyward.app import component, on
 from skyward.bus import AsyncEventBus
 from skyward.events import (
+    BootstrapFailed,
+    BootstrapPhase,
     BootstrapRequested,
     ClusterDestroyed,
     ClusterProvisioned,
@@ -70,6 +72,7 @@ class VastAIHandler:
 
     _clusters: dict[str, VastAIClusterState] = field(default_factory=dict)
     _reserved_offers: set[int] = field(default_factory=set)  # offer_ids in use
+    _bootstrap_waiters: dict[str, asyncio.Future[bool]] = field(default_factory=dict)
 
     # -------------------------------------------------------------------------
     # Cluster Lifecycle
@@ -213,7 +216,10 @@ class VastAIHandler:
                 )
                 return
 
-            await self.client.attach_ssh(instance_id, cluster.ssh_public_key)
+            # NOTE: Removed attach_ssh call - keys from account are auto-injected on instance creation.
+            # Calling attach_ssh was returning "already associated" and may have been interfering
+            # with VastAI's automatic key injection process, causing SSH failures on some instances.
+            # await self.client.attach_ssh(instance_id, cluster.ssh_public_key)
 
         # Track pending
         cluster.pending_nodes.add(event.node_id)
@@ -266,12 +272,19 @@ class VastAIHandler:
 
             # Get SSH connection info
             direct_port = get_direct_ssh_port(info)
-            if info["public_ipaddr"] and direct_port:
+            logger.debug(
+                f"VastAI: Instance {instance_id} connection info: "
+                f"public_ipaddr={info.get('public_ipaddr')!r}, direct_port={direct_port}, "
+                f"ssh_host={info.get('ssh_host')!r}, ports={info.get('ports')!r}"
+            )
+            if info.get("public_ipaddr") and direct_port:
                 ssh_host = info["public_ipaddr"]
                 ssh_port = direct_port
+                logger.info(f"VastAI: Using direct IP {ssh_host}:{ssh_port}")
             else:
                 ssh_host = info["ssh_host"]
                 ssh_port = info.get("ssh_port", 22)
+                logger.warning(f"VastAI: Falling back to SSH proxy {ssh_host}:{ssh_port}")
 
             # Join overlay and detect IPs
             private_ip = ""
@@ -346,25 +359,66 @@ class VastAIHandler:
                 vcpus=vcpus,
                 memory_gb=memory_gb,
                 gpu_vram_gb=gpu_vram_gb,
+                # Location info (geolocation from config)
+                region=self.config.geolocation or "Global",
             )
         )
 
     @on(BootstrapRequested, match=lambda self, e: e.instance.provider == "vastai")
     async def handle_bootstrap_requested(self, _: Any, event: BootstrapRequested) -> None:
-        """Execute bootstrap via SSH. BootstrapPhase events are emitted automatically."""
+        """Start bootstrap via SSH. EventStreamer handles streaming and phase events."""
         cluster = self._clusters.get(event.cluster_id)
         if not cluster:
             return
 
-        logger.debug(f"VastAI: Starting bootstrap for instance {event.instance.id}")
+        instance_id = event.instance.id
+        logger.debug(f"VastAI: Starting bootstrap for instance {instance_id}")
 
-        # Run bootstrap via SSH
-        await self._run_bootstrap_via_ssh(
-            event.instance,
-            cluster.spec,
-            event.instance.ip,
-            event.instance.ssh_port,
+        from skyward.providers.bootstrap import run_bootstrap_via_ssh, wait_for_ssh
+
+        key_path = get_ssh_key_path()
+        bootstrap_script = cluster.spec.image.generate_bootstrap(
+            ttl=cluster.spec.ttl, use_systemd=False
         )
+
+        # Create waiter for bootstrap completion (resolved by BootstrapPhase handler)
+        loop = asyncio.get_running_loop()
+        waiter: asyncio.Future[bool] = loop.create_future()
+        self._bootstrap_waiters[instance_id] = waiter
+
+        # Upload and start bootstrap script (fire-and-forget, EventStreamer handles streaming)
+        transport = await wait_for_ssh(
+            host=event.instance.ip,
+            user="root",
+            key_path=key_path,
+            timeout=120.0,
+            port=event.instance.ssh_port,
+            log_prefix="VastAI: ",
+        )
+
+        try:
+            await run_bootstrap_via_ssh(
+                transport=transport,
+                info=event.instance,
+                bootstrap_script=bootstrap_script,
+                log_prefix="VastAI: ",
+            )
+        finally:
+            await transport.close()
+
+        # Wait for bootstrap completion (signaled by BootstrapPhase handler via EventStreamer)
+        try:
+            success = await asyncio.wait_for(waiter, timeout=600.0)
+            if not success:
+                logger.error(f"VastAI: Bootstrap failed for instance {instance_id}")
+                return
+        except asyncio.TimeoutError:
+            logger.error(f"VastAI: Bootstrap timeout for instance {instance_id}")
+            return
+        finally:
+            self._bootstrap_waiters.pop(instance_id, None)
+
+        logger.info(f"VastAI: Bootstrap completed for instance {instance_id}")
 
         # Install local skyward wheel if skyward_source == 'local'
         if cluster.spec.image.skyward_source == "local":
@@ -380,6 +434,25 @@ class VastAIHandler:
 
         # Emit InstanceBootstrapped - Node will signal NodeReady
         self.bus.emit(InstanceBootstrapped(instance=event.instance))
+
+    @on(BootstrapPhase, match=lambda self, e: e.instance.provider == "vastai", audit=False)
+    async def handle_bootstrap_phase(self, _: Any, event: BootstrapPhase) -> None:
+        """Handle bootstrap phase events - resolve waiters when bootstrap completes."""
+        if event.phase != "bootstrap" or event.event not in ("completed", "failed"):
+            return
+
+        instance_id = event.instance.id
+        waiter = self._bootstrap_waiters.get(instance_id)
+        if waiter and not waiter.done():
+            waiter.set_result(event.event == "completed")
+
+    @on(BootstrapFailed, match=lambda self, e: e.instance.provider == "vastai", audit=False)
+    async def handle_bootstrap_failed(self, _: Any, event: BootstrapFailed) -> None:
+        """Handle bootstrap failure - resolve waiter with failure."""
+        instance_id = event.instance.id
+        waiter = self._bootstrap_waiters.get(instance_id)
+        if waiter and not waiter.done():
+            waiter.set_result(False)
 
     # -------------------------------------------------------------------------
     # Helper Methods
@@ -570,55 +643,6 @@ echo "$IFACE $IP"
             raise RuntimeError(
                 f"Could not detect overlay IP after {max_retries} attempts. "
                 f"Last output: {output.strip()!r}"
-            )
-        finally:
-            await transport.close()
-
-    async def _run_bootstrap_via_ssh(
-        self,
-        instance_info: Any,
-        spec: PoolSpec,
-        ssh_host: str,
-        ssh_port: int,
-    ) -> None:
-        """Run bootstrap script via SSH and stream events."""
-        from skyward.providers.bootstrap import (
-            stream_bootstrap_events,
-            wait_for_ssh,
-        )
-
-        key_path = get_ssh_key_path()
-
-        logger.info(f"VastAI: Waiting for SSH on {ssh_host}:{ssh_port}...")
-        transport = await wait_for_ssh(
-            host=ssh_host,
-            user="root",
-            key_path=key_path,
-            timeout=120.0,
-            port=ssh_port,
-            log_prefix="VastAI: ",
-        )
-
-        bootstrap_script = spec.image.generate_bootstrap(ttl=spec.ttl, use_systemd=False)
-        logger.debug(f"VastAI: Bootstrap script ({len(bootstrap_script)} chars)")
-
-        try:
-            await transport.write_file("/opt/skyward/bootstrap.sh", bootstrap_script)
-            await transport.run("chmod +x /opt/skyward/bootstrap.sh")
-
-            logger.info(f"VastAI: Running bootstrap on {instance_info.id}...")
-            await transport.run(
-                "nohup /opt/skyward/bootstrap.sh > /opt/skyward/bootstrap.log 2>&1 &"
-            )
-
-            await asyncio.sleep(2)
-
-            logger.info(f"VastAI: Streaming bootstrap events for {instance_info.id}...")
-            await stream_bootstrap_events(
-                transport=transport,
-                info=instance_info,
-                bus=self.bus,
-                log_prefix="VastAI: ",
             )
         finally:
             await transport.close()

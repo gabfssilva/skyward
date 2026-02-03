@@ -11,6 +11,7 @@ from dataclasses import field
 
 from skyward.app import component, on
 from skyward.bus import AsyncEventBus
+from skyward.accelerators.catalog import get_gpu_vram_gb
 from skyward.events import (
     BootstrapCommand,
     BootstrapConsole,
@@ -71,6 +72,21 @@ class PanelComponent:
         # Initialize placeholders
         for i in range(event.spec.nodes):
             self._state.instances[f"node-{i}"] = InstanceState(f"node-{i}")
+
+        # Populate partial infra from PoolSpec for early feedback
+        spec = event.spec
+        gpu_model = spec.accelerator_name
+        gpu_count = spec.accelerator_count
+        gpu_vram = get_gpu_vram_gb(gpu_model)
+
+        self._state.infra = InfraState(
+            provider=event.provider,
+            region=spec.region,
+            gpu_count=gpu_count,
+            gpu_model=gpu_model,
+            gpu_vram_gb=gpu_vram,
+            allocation=spec.allocation,
+        )
 
         self._renderer.start(self._state)
         self._active = True
@@ -148,17 +164,19 @@ class PanelComponent:
         else:
             self._state.ondemand_count += 1
 
-        # Capture infra from first instance (using InstanceInfo data)
-        if not self._state.infra.provider:
+        # Update infra with complete data from first instance
+        # (we may have partial data from ClusterRequested, now we get full details)
+        if not self._state.infra.instance_type:
             self._state.infra = InfraState(
                 provider=inst.provider,
-                region=self.spec.region,
+                region=inst.region or self.spec.region,
                 instance_type=inst.instance_type,
                 vcpus=inst.vcpus,
                 memory_gb=int(inst.memory_gb),
                 gpu_count=inst.gpu_count,
                 gpu_model=inst.gpu_model,
                 gpu_vram_gb=inst.gpu_vram_gb,
+                allocation=self._state.infra.allocation,  # Preserve allocation strategy
             )
 
     @on(InstanceBootstrapped)

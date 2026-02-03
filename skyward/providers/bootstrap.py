@@ -318,9 +318,40 @@ async def install_local_skyward(
         await listener.wait_closed()
 
 
+async def run_bootstrap_via_ssh(
+    transport: SSHTransport,
+    info: InstanceInfo,
+    bootstrap_script: str,
+    log_prefix: str = "",
+) -> None:
+    """Upload and execute bootstrap script via SSH (fire-and-forget).
+
+    For providers that can't use cloud-init (e.g., VastAI with onstart_cmd limit),
+    this function uploads and starts the bootstrap script in the background.
+
+    Event streaming is handled separately by the EventStreamer component,
+    which provides unified streaming for all providers.
+
+    Args:
+        transport: Connected SSH transport.
+        info: Instance info (for logging).
+        bootstrap_script: The complete bootstrap script content.
+        log_prefix: Prefix for log messages.
+    """
+    logger.info(f"{log_prefix}Uploading bootstrap script to {info.id}...")
+    await transport.write_file("/opt/skyward/bootstrap.sh", bootstrap_script)
+    await transport.run("chmod +x /opt/skyward/bootstrap.sh")
+
+    logger.info(f"{log_prefix}Running bootstrap on {info.id}...")
+    await transport.run(
+        "nohup /opt/skyward/bootstrap.sh > /opt/skyward/bootstrap.log 2>&1 &"
+    )
+
+    logger.info(f"{log_prefix}Bootstrap started on {info.id} (streaming via EventStreamer)")
+
+
 __all__ = [
     "wait_for_ssh",
-    "stream_bootstrap_events",
-    "wait_bootstrap_with_streaming",
+    "run_bootstrap_via_ssh",
     "install_local_skyward",
 ]

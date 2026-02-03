@@ -58,6 +58,8 @@ class InstanceInfo:
     vcpus: int = 0  # vCPUs
     memory_gb: float = 0.0  # System RAM in GB
     gpu_vram_gb: int = 0  # VRAM per GPU in GB
+    # Location info (for Panel display)
+    region: str = ""  # e.g., "us-east-1" for AWS, geolocation for VastAI
 
 
 # =============================================================================
@@ -169,6 +171,8 @@ class InstanceRunning:
     vcpus: int = 0  # vCPUs
     memory_gb: float = 0.0  # System RAM in GB
     gpu_vram_gb: int = 0  # VRAM per GPU in GB
+    # Location info (for Panel display)
+    region: str = ""  # e.g., "us-east-1" for AWS, geolocation for VastAI
 
 
 # -----------------------------------------------------------------------------

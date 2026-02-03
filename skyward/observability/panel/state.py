@@ -112,6 +112,7 @@ class InfraState:
     gpu_count: int = 0
     gpu_model: str = ""
     gpu_vram_gb: int = 0
+    allocation: str = ""  # "spot", "on-demand", "spot-if-available", "cheapest"
 
 
 # =============================================================================
@@ -266,8 +267,20 @@ class PanelState:
             allocation = f"{total_nodes} nodes ({self.spot_count} spot + {self.ondemand_count} od)"
         elif self.spot_count > 0:
             allocation = f"{total_nodes} spot"
-        else:
+        elif self.ondemand_count > 0:
             allocation = f"{total_nodes} on-demand"
+        elif self.infra.allocation:
+            # Use allocation strategy from spec before we have real data
+            strategy = self.infra.allocation
+            if strategy == "on-demand":
+                allocation = f"{total_nodes} on-demand"
+            elif strategy == "spot":
+                allocation = f"{total_nodes} spot"
+            else:
+                # spot-if-available, cheapest
+                allocation = f"{total_nodes} nodes"
+        else:
+            allocation = f"{total_nodes} nodes"
 
         # Calculate hourly rate
         total_hourly = sum(

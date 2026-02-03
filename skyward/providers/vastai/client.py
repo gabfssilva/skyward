@@ -76,6 +76,7 @@ def build_search_query(
     verified_only: bool = False,
     use_interruptible: bool = False,
     with_cluster_id: bool = False,
+    require_direct_port: bool = False,
 ) -> dict[str, Any]:
     """Build VastAI search query dict."""
     query: dict[str, Any] = {
@@ -111,6 +112,8 @@ def build_search_query(
         query["geolocation"] = {"eq": geolocation}
     if verified_only:
         query["verified"] = {"eq": True}
+    if require_direct_port:
+        query["direct_port_count"] = {"gte": 1}
 
     return query
 
@@ -232,7 +235,19 @@ class VastAIClient:
 
     async def attach_ssh(self, instance_id: int, public_key: str) -> None:
         """Attach SSH key to an instance."""
-        await self._request("POST", f"/api/v0/instances/{instance_id}/ssh/", {"ssh_key": public_key})
+
+        @retry(on=VastAIError, max_attempts=5, base_delay=2.0)
+        async def do_attach() -> None:
+            result = await self._request("POST", f"/api/v0/instances/{instance_id}/ssh/", {"ssh_key": public_key})
+            if result and not result.get("success", True):
+                error = result.get("msg") or result.get("error") or "unknown"
+                # Ignore "already associated" - key was auto-attached on instance creation
+                if "already associated" in error.lower():
+                    logger.debug(f"VastAI: SSH key already associated with instance {instance_id}")
+                    return
+                raise VastAIError(f"Failed to attach SSH key to instance {instance_id}: {error}")
+
+        await do_attach()
 
     async def ensure_ssh_key(self) -> tuple[int, str]:
         """Get or create SSH key on VastAI. Returns (key_id, public_key)."""
@@ -291,12 +306,14 @@ class VastAIClient:
         verified_only: bool = False,
         use_interruptible: bool = False,
         with_cluster_id: bool = False,
+        require_direct_port: bool | None = None,
         limit: int = 5000,
     ) -> list[OfferResponse]:
         """Search available GPU offers."""
         reliability = min_reliability if min_reliability is not None else self.config.min_reliability
         cuda = min_cuda if min_cuda is not None else self.config.min_cuda
         geo = geolocation or self.config.geolocation
+        direct_port = require_direct_port if require_direct_port is not None else self.config.require_direct_port
 
         query = build_search_query(
             gpu_name=gpu_name,
@@ -309,6 +326,7 @@ class VastAIClient:
             verified_only=verified_only,
             use_interruptible=use_interruptible,
             with_cluster_id=with_cluster_id,
+            require_direct_port=direct_port,
         )
         query["limit"] = limit
 
@@ -349,12 +367,15 @@ class VastAIClient:
         onstart_cmd: str | None = None,
         overlay_name: str | None = None,
         price: float | None = None,
+        use_direct_port: bool | None = None,
     ) -> int:
         """Create a new instance. Returns instance ID."""
+        direct = use_direct_port if use_direct_port is not None else self.config.require_direct_port
         body: dict[str, Any] = {
             "client_id": "me",
             "image": image,
             "disk": disk or self.config.disk_gb,
+            "runtype": "ssh_direc" if direct else "ssh_proxy",
         }
 
         if label:

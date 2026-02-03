@@ -40,6 +40,7 @@ class VastAI:
         disk_gb: Disk space in GB.
         use_overlay: Enable overlay networking for multi-node clusters.
         overlay_timeout: Timeout for overlay operations in seconds.
+        require_direct_port: Only select offers with direct port access (no SSH proxy).
     """
 
     api_key: str | None = None
@@ -52,6 +53,7 @@ class VastAI:
     disk_gb: int = 100
     use_overlay: bool = True
     overlay_timeout: int = 120
+    require_direct_port: bool = False
 
     @classmethod
     def ubuntu(

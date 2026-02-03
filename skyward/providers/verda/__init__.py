@@ -33,15 +33,38 @@ def __getattr__(name: str):
         return VerdaClusterState
     if name == "VerdaModule":
         from injector import Module, provider, singleton
+        import httpx
+
+        from .client import VERDA_API_BASE, VerdaAuth, VerdaClient, get_credentials
 
         class VerdaModule(Module):
             """DI module for Verda provider."""
 
             @singleton
             @provider
-            def provide_config(self) -> Verda:
-                """Provide default Verda configuration."""
-                return Verda()
+            def provide_verda_auth(self, config: Verda) -> VerdaAuth:
+                """Provide Verda OAuth2 authentication."""
+                client_id = config.client_id
+                client_secret = config.client_secret
+                if not client_id or not client_secret:
+                    client_id, client_secret = get_credentials()
+                return VerdaAuth(client_id, client_secret)
+
+            @singleton
+            @provider
+            def provide_http_client(self, auth: VerdaAuth) -> httpx.AsyncClient:
+                """Provide singleton httpx.AsyncClient for Verda API."""
+                return httpx.AsyncClient(
+                    base_url=VERDA_API_BASE,
+                    auth=auth,
+                    timeout=60,
+                )
+
+            @singleton
+            @provider
+            def provide_verda_client(self, http_client: httpx.AsyncClient) -> VerdaClient:
+                """Provide Verda API client."""
+                return VerdaClient(http_client)
 
         return VerdaModule
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

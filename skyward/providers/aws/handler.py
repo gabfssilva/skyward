@@ -38,23 +38,14 @@ from .clients import EC2ClientFactory
 from .config import AWS, AllocationStrategy
 from .state import AWSClusterState, AWSResources, InstanceConfig
 
-# GPU model mapping for AWS instance types
-_GPU_MODELS = {
+# AWS instance family to GPU model mapping
+_AWS_INSTANCE_GPU = {
     "g4dn": "T4",
     "g5": "A10G",
     "g6": "L4",
     "p4d": "A100",
     "p4de": "A100",
     "p5": "H100",
-}
-
-# GPU VRAM mapping (GB per GPU)
-_GPU_VRAM = {
-    "T4": 16,
-    "A10G": 24,
-    "L4": 24,
-    "A100": 40,  # 40GB variant (p4de uses 80GB)
-    "H100": 80,
 }
 
 if TYPE_CHECKING:
@@ -218,9 +209,11 @@ class AWSHandler:
             memory_gb = pricing.memory_gb
 
         # Determine GPU model from instance type family
+        from skyward.accelerators.catalog import get_gpu_vram_gb
+
         instance_family = instance_type.split(".")[0] if "." in instance_type else ""
-        gpu_model = _GPU_MODELS.get(instance_family, "")
-        gpu_vram_gb = _GPU_VRAM.get(gpu_model, 0)
+        gpu_model = _AWS_INSTANCE_GPU.get(instance_family, "")
+        gpu_vram_gb = get_gpu_vram_gb(gpu_model)
 
         # Emit InstanceRunning - InstanceOrchestrator handles the rest
         self.bus.emit(
@@ -245,6 +238,8 @@ class AWSHandler:
                 vcpus=vcpus,
                 memory_gb=memory_gb,
                 gpu_vram_gb=gpu_vram_gb,
+                # Location info
+                region=self.config.region,
             )
         )
 
@@ -610,24 +605,32 @@ class AWSHandler:
         if not instance_ids:
             return
 
-        async with self.ec2() as ec2:
-            start = asyncio.get_event_loop().time()
-            while True:
-                response = await ec2.describe_instances(InstanceIds=instance_ids)
+        from skyward.providers.wait import wait_for_ready
 
-                all_running = all(
-                    inst["State"]["Name"] == "running"
+        async def poll_instances() -> list[dict[str, str]] | None:
+            async with self.ec2() as ec2:
+                response = await ec2.describe_instances(InstanceIds=instance_ids)
+                return [
+                    {"id": inst["InstanceId"], "state": inst["State"]["Name"]}
                     for r in response["Reservations"]
                     for inst in r["Instances"]
-                )
+                ]
 
-                if all_running:
-                    return
+        def all_running(instances: list[dict[str, str]]) -> bool:
+            return all(i["state"] == "running" for i in instances)
 
-                if asyncio.get_event_loop().time() - start > timeout:
-                    raise TimeoutError(f"Instances not running after {timeout}s")
+        def any_terminal(instances: list[dict[str, str]]) -> bool:
+            terminal_states = {"terminated", "shutting-down"}
+            return any(i["state"] in terminal_states for i in instances)
 
-                await asyncio.sleep(5)
+        await wait_for_ready(
+            poll_fn=poll_instances,
+            ready_check=all_running,
+            terminal_check=any_terminal,
+            timeout=timeout,
+            interval=5.0,
+            description=f"EC2 instances {instance_ids}",
+        )
 
     async def _get_instance_details(self, instance_ids: list[str]) -> list[dict[str, Any]]:
         """Get instance details."""

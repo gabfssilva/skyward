@@ -78,6 +78,8 @@ class InstanceOrchestrator:
             vcpus=event.vcpus,
             memory_gb=event.memory_gb,
             gpu_vram_gb=event.gpu_vram_gb,
+            # Location info from provider
+            region=event.region,
         )
 
         # Emit InstanceProvisioned - Node receives this

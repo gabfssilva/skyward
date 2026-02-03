@@ -43,6 +43,9 @@ set -e
 
 mkdir -p {SKYWARD_DIR}
 
+# Clear stale data from previous runs (VastAI containers can inherit state)
+rm -f {SKYWARD_DIR}/events.jsonl {SKYWARD_DIR}/events.jsonl.1 {SKYWARD_DIR}/pyproject.toml {SKYWARD_DIR}/uv.lock
+
 export DEBIAN_FRONTEND=noninteractive
 export PATH="/root/.local/bin:$PATH"
 

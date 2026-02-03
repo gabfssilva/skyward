@@ -3,7 +3,50 @@
 Contains memory, CUDA version ranges, and other metadata for each accelerator.
 """
 
+from __future__ import annotations
+
+import re
 from typing import Any, Final
+
+
+def get_gpu_vram_gb(gpu_model: str) -> int:
+    """Get GPU VRAM in GB for a given model.
+
+    Parses the memory field from SPECS and converts to integer GB.
+
+    Args:
+        gpu_model: GPU model name (e.g., "A100", "H100", "T4").
+
+    Returns:
+        VRAM in GB, or 0 if not found.
+
+    Examples:
+        >>> get_gpu_vram_gb("H100")
+        80
+        >>> get_gpu_vram_gb("A100")
+        80
+        >>> get_gpu_vram_gb("T4")
+        16
+    """
+    spec = SPECS.get(gpu_model)
+    if not spec:
+        return 0
+
+    memory = spec.get("memory", "")
+    if not memory:
+        return 0
+
+    # Parse memory string like "80GB", "16GB", "2TB"
+    match = re.match(r"(\d+)(GB|TB)", memory, re.IGNORECASE)
+    if not match:
+        return 0
+
+    value = int(match.group(1))
+    unit = match.group(2).upper()
+
+    if unit == "TB":
+        return value * 1024
+    return value
 
 SPECS: Final[dict[str, dict[str, Any]]] = {
     # =========================================================================

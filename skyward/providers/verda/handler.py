@@ -6,6 +6,7 @@ decoupled instance lifecycle management.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from contextlib import suppress
 from dataclasses import field
@@ -16,6 +17,8 @@ from loguru import logger
 from skyward.app import component, on
 from skyward.bus import AsyncEventBus
 from skyward.events import (
+    BootstrapFailed,
+    BootstrapPhase,
     BootstrapRequested,
     ClusterDestroyed,
     ClusterProvisioned,
@@ -26,6 +29,7 @@ from skyward.events import (
     InstanceRequested,
     ShutdownRequested,
 )
+from skyward.monitors import SSHCredentialsRegistry
 from skyward.providers.ssh_keys import ensure_ssh_key_on_provider, get_ssh_key_path
 from skyward.providers.wait import wait_for_ready
 
@@ -33,7 +37,6 @@ from .client import VerdaClient, VerdaError
 from .config import Verda
 from .state import VerdaClusterState
 from .types import (
-    InstanceResponse,
     InstanceTypeResponse,
     get_accelerator,
     get_price_on_demand,
@@ -63,8 +66,10 @@ class VerdaHandler:
     bus: AsyncEventBus
     config: Verda
     client: VerdaClient
+    ssh_credentials: SSHCredentialsRegistry
 
     _clusters: dict[str, VerdaClusterState] = field(default_factory=dict)
+    _bootstrap_waiters: dict[str, asyncio.Future[bool]] = field(default_factory=dict)
 
     # -------------------------------------------------------------------------
     # Cluster Lifecycle
@@ -84,25 +89,28 @@ class VerdaHandler:
         )
         self._clusters[cluster_id] = state
 
-        async with self.client:
-            # Ensure SSH key exists
-            ssh_key_id = await ensure_ssh_key_on_provider(
-                list_keys_fn=self.client.list_ssh_keys,
-                create_key_fn=lambda name, key: self.client.create_ssh_key(name, key),
-                provider_name="verda",
-            )
-            state.ssh_key_id = ssh_key_id
+        # Ensure SSH key exists
+        ssh_key_id = await ensure_ssh_key_on_provider(
+            list_keys_fn=self.client.list_ssh_keys,
+            create_key_fn=lambda name, key: self.client.create_ssh_key(name, key),
+            provider_name="verda",
+        )
+        state.ssh_key_id = ssh_key_id
 
-            # Resolve instance type and image
-            instance_type, os_image = await self._resolve_instance_type(event.spec)
-            state.instance_type = instance_type
-            state.os_image = os_image
+        # Register SSH credentials for EventStreamer
+        ssh_key_path = get_ssh_key_path()
+        self.ssh_credentials.register(cluster_id, state.username, ssh_key_path)
 
-            # Create startup script
-            user_data = self._generate_user_data(event.spec)
-            script_name = f"skyward-bootstrap-{cluster_id}"
-            script = await self.client.create_startup_script(script_name, user_data)
-            state.startup_script_id = script["id"]
+        # Resolve instance type and image
+        instance_type, os_image = await self._resolve_instance_type(event.spec)
+        state.instance_type = instance_type
+        state.os_image = os_image
+
+        # Create startup script
+        user_data = self._generate_user_data(event.spec)
+        script_name = f"skyward-bootstrap-{cluster_id}"
+        script = await self.client.create_startup_script(script_name, user_data)
+        state.startup_script_id = script["id"]
 
         self.bus.emit(
             ClusterProvisioned(
@@ -121,14 +129,13 @@ class VerdaHandler:
 
         logger.info(f"Verda: Shutting down cluster {event.cluster_id}")
 
-        async with self.client:
-            for instance_id in cluster.instance_ids:
-                with suppress(Exception):
-                    await self.client.delete_instance(instance_id)
+        for instance_id in cluster.instance_ids:
+            with suppress(Exception):
+                await self.client.delete_instance(instance_id)
 
-            if cluster.startup_script_id:
-                with suppress(Exception):
-                    await self.client.delete_startup_script(cluster.startup_script_id)
+        if cluster.startup_script_id:
+            with suppress(Exception):
+                await self.client.delete_startup_script(cluster.startup_script_id)
 
         self.bus.emit(ClusterDestroyed(cluster_id=event.cluster_id))
 
@@ -147,27 +154,26 @@ class VerdaHandler:
 
         use_spot = cluster.spec.allocation in ("spot", "spot-if-available")
 
-        async with self.client:
-            actual_region = await self._find_available_region(
-                cluster.instance_type, use_spot, cluster.region
+        actual_region = await self._find_available_region(
+            cluster.instance_type, use_spot, cluster.region
+        )
+
+        hostname = f"skyward-{cluster.cluster_id}-{event.node_id}"
+
+        try:
+            instance = await self.client.create_instance(
+                instance_type=cluster.instance_type,
+                image=cluster.os_image,
+                ssh_key_ids=[cluster.ssh_key_id] if cluster.ssh_key_id else [],
+                location=actual_region,
+                hostname=hostname,
+                description=f"Skyward managed - cluster {cluster.cluster_id}",
+                startup_script_id=cluster.startup_script_id,
+                is_spot=use_spot,
             )
-
-            hostname = f"skyward-{cluster.cluster_id}-{event.node_id}"
-
-            try:
-                instance = await self.client.create_instance(
-                    instance_type=cluster.instance_type,
-                    image=cluster.os_image,
-                    ssh_key_ids=[cluster.ssh_key_id] if cluster.ssh_key_id else [],
-                    location=actual_region,
-                    hostname=hostname,
-                    description=f"Skyward managed - cluster {cluster.cluster_id}",
-                    startup_script_id=cluster.startup_script_id,
-                    is_spot=use_spot,
-                )
-            except VerdaError as e:
-                logger.error(f"Verda: Failed to create instance: {e}")
-                return
+        except VerdaError as e:
+            logger.error(f"Verda: Failed to create instance: {e}")
+            return
 
         # Track that we're waiting for this instance
         cluster.pending_nodes.add(event.node_id)
@@ -192,19 +198,18 @@ class VerdaHandler:
 
         use_spot = cluster.spec.allocation in ("spot", "spot-if-available")
 
-        async with self.client:
-            try:
-                info = await wait_for_ready(
-                    poll_fn=lambda: self.client.get_instance(event.instance_id),
-                    ready_check=lambda i: i is not None and i["status"] == "running" and bool(i.get("ip")),
-                    terminal_check=lambda i: i is not None and i["status"] in ("error", "discontinued", "deleted"),
-                    timeout=300.0,
-                    interval=5.0,
-                    description=f"Verda instance {event.instance_id}",
-                )
-            except TimeoutError:
-                logger.error(f"Verda: Instance {event.instance_id} did not become ready")
-                return
+        try:
+            info = await wait_for_ready(
+                poll_fn=lambda: self.client.get_instance(event.instance_id),
+                ready_check=lambda i: i is not None and i["status"] == "running" and bool(i.get("ip")),
+                terminal_check=lambda i: i is not None and i["status"] in ("error", "discontinued", "deleted"),
+                timeout=300.0,
+                interval=5.0,
+                description=f"Verda instance {event.instance_id}",
+            )
+        except TimeoutError:
+            logger.error(f"Verda: Instance {event.instance_id} did not become ready")
+            return
 
         if not info:
             logger.error(f"Verda: Instance {event.instance_id} not found")
@@ -227,30 +232,59 @@ class VerdaHandler:
 
     @on(BootstrapRequested, match=lambda self, e: e.instance.provider == "verda")
     async def handle_bootstrap_requested(self, _: Any, event: BootstrapRequested) -> None:
-        """Execute bootstrap on instance. BootstrapPhase events are emitted automatically."""
+        """Wait for bootstrap completion. EventStreamer handles streaming."""
         cluster = self._clusters.get(event.cluster_id)
         if not cluster:
             return
 
-        from skyward.providers.bootstrap import wait_bootstrap_with_streaming
+        instance_id = event.instance.id
+        logger.debug(f"Verda: Waiting for bootstrap completion on {instance_id}")
 
-        logger.debug(f"Verda: Starting bootstrap for instance {event.instance.id}")
+        # Create waiter for bootstrap completion (signaled by BootstrapPhase handler)
+        loop = asyncio.get_running_loop()
+        waiter: asyncio.Future[bool] = loop.create_future()
+        self._bootstrap_waiters[instance_id] = waiter
 
-        await wait_bootstrap_with_streaming(
-            info=event.instance,
-            bus=self.bus,
-            user="root",  # Verda instances use root
-            key_path=get_ssh_key_path(),
-            timeout=600.0,
-            poll_interval=5.0,
-            log_prefix="Verda: ",
-        )
+        try:
+            # Wait for completion - EventStreamer will emit BootstrapPhase events
+            success = await asyncio.wait_for(waiter, timeout=600.0)
 
-        # Track instance in cluster state
-        cluster.add_instance(event.instance)
+            if success:
+                # Install local skyward wheel if skyward_source == 'local'
+                if cluster.spec.image and cluster.spec.image.skyward_source == "local":
+                    await self._install_local_skyward(event.instance, cluster)
 
-        # Emit InstanceBootstrapped - Node will signal NodeReady
-        self.bus.emit(InstanceBootstrapped(instance=event.instance))
+                # Track instance in cluster state
+                cluster.add_instance(event.instance)
+                # Emit InstanceBootstrapped - Node will signal NodeReady
+                self.bus.emit(InstanceBootstrapped(instance=event.instance))
+            else:
+                logger.error(f"Verda: Bootstrap failed on {instance_id}")
+
+        except asyncio.TimeoutError:
+            logger.error(f"Verda: Bootstrap timed out on {instance_id}")
+        finally:
+            self._bootstrap_waiters.pop(instance_id, None)
+
+    @on(BootstrapPhase, match=lambda self, e: e.instance.provider == "verda", audit=False)
+    async def handle_bootstrap_phase(self, _: Any, event: BootstrapPhase) -> None:
+        """Handle bootstrap phase events from EventStreamer."""
+        # Only care about bootstrap phase completion/failure
+        if event.phase != "bootstrap" or event.event not in ("completed", "failed"):
+            return
+
+        instance_id = event.instance.id
+        waiter = self._bootstrap_waiters.get(instance_id)
+        if waiter and not waiter.done():
+            waiter.set_result(event.event == "completed")
+
+    @on(BootstrapFailed, match=lambda self, e: e.instance.provider == "verda", audit=False)
+    async def handle_bootstrap_failed(self, _: Any, event: BootstrapFailed) -> None:
+        """Handle bootstrap failure from EventStreamer."""
+        instance_id = event.instance.id
+        waiter = self._bootstrap_waiters.get(instance_id)
+        if waiter and not waiter.done():
+            waiter.set_result(False)
 
     # -------------------------------------------------------------------------
     # Helper Methods
@@ -364,6 +398,36 @@ class VerdaHandler:
     def _generate_user_data(self, spec: PoolSpec) -> str:
         """Generate bootstrap user data script."""
         return spec.image.generate_bootstrap(ttl=spec.ttl, use_systemd=True)
+
+    async def _install_local_skyward(
+        self,
+        info: Any,
+        cluster: VerdaClusterState,
+    ) -> None:
+        """Install local skyward wheel and start RPyC server."""
+        from skyward.providers.bootstrap import install_local_skyward, wait_for_ssh
+
+        env = cluster.spec.image.env if cluster.spec.image else None
+        ssh_key_path = get_ssh_key_path()
+
+        transport = await wait_for_ssh(
+            host=info.ip,
+            user=cluster.username,
+            key_path=ssh_key_path,
+            timeout=60.0,
+            log_prefix="Verda: ",
+        )
+
+        try:
+            await install_local_skyward(
+                transport=transport,
+                info=info,
+                env=env,
+                use_systemd=True,
+                log_prefix="Verda: ",
+            )
+        finally:
+            await transport.close()
 
 
 __all__ = ["VerdaHandler"]

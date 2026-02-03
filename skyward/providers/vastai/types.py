@@ -29,6 +29,8 @@ class OfferResponse(TypedDict):
     inet_down: float  # Mbps
     dlperf: float | None
     verified: bool
+    direct_port_count: NotRequired[int]  # Number of direct ports available
+    static_ip: NotRequired[bool]  # Has static IP
 
 
 class InstanceResponse(TypedDict):

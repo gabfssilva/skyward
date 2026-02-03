@@ -5,12 +5,23 @@ Components for the infra/cluster section of the panel.
 
 from __future__ import annotations
 
+import time
+
 from rich.console import RenderableType
 from rich.table import Table
 from rich.text import Text
 
 from ..viewmodel import ClusterVM, InfraVM
 from .metrics import MetricBadge
+
+# Spinner frames for pending values (dots style)
+SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
+
+def _spinner_frame() -> str:
+    """Get current spinner frame based on time (animates at ~10fps)."""
+    idx = int(time.monotonic() * 10) % len(SPINNER_FRAMES)
+    return SPINNER_FRAMES[idx]
 
 
 class InitializingPanel:
@@ -37,6 +48,7 @@ class InfraPanel:
 
     def render(self) -> RenderableType:
         vm = self._vm
+        spinner = _spinner_frame()
 
         table = Table.grid()
         table.add_column(justify="center")
@@ -47,24 +59,37 @@ class InfraPanel:
         line1.append(" > ", style="dim")
         line1.append(vm.region)
         line1.append(" > ", style="dim")
-        line1.append(vm.instance_type, style="bold")
+        if vm.instance_type:
+            line1.append(vm.instance_type, style="bold")
+        else:
+            line1.append(spinner, style="dim")
         table.add_row(line1)
 
-        # Line 2: vCPU · memory · GPU
+        # Line 2: GPU · vCPU · memory (show spinner if no instance data yet)
         line2 = Text()
-        line2.append(f"{vm.vcpus} vCPU", style="white")
-        line2.append(" · ", style="dim")
-        line2.append(f"{vm.memory_gb} GB", style="white")
-        if vm.gpu_info:
+        if vm.vcpus > 0:
+            if vm.gpu_info:
+                line2.append(vm.gpu_info, style="magenta")
+                line2.append(" · ", style="dim")
+            line2.append(f"{vm.vcpus} vCPU", style="white")
             line2.append(" · ", style="dim")
+            line2.append(f"{vm.memory_gb} GB", style="white")
+        elif vm.gpu_info:
+            # We have GPU info from spec but not instance details yet
             line2.append(vm.gpu_info, style="magenta")
+            line2.append(f" {spinner}", style="dim")
+        else:
+            line2.append(f"{spinner} loading instance details...", style="dim")
         table.add_row(line2)
 
-        # Line 3: allocation @ rate
+        # Line 3: allocation @ rate (show spinner if rate is zero)
         line3 = Text()
         line3.append(vm.allocation, style="cyan")
         line3.append(" @ ", style="dim")
-        line3.append(vm.hourly_rate, style="green bold")
+        if vm.hourly_rate == "$0.00/hr":
+            line3.append(f"{spinner}", style="dim")
+        else:
+            line3.append(vm.hourly_rate, style="green bold")
         table.add_row(line3)
 
         return table

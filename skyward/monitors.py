@@ -314,8 +314,10 @@ class EventStreamer:
             if result:
                 cluster_id, creds = result
             else:
-                logger.warning(f"EventStreamer: No credentials for {info.id}, skipping streaming")
-                return
+                raise RuntimeError(
+                    f"EventStreamer: No SSH credentials registered for instance {info.id}. "
+                    "Provider must call ssh_credentials.register() before emitting InstanceRunning."
+                )
 
         logger.info(f"EventStreamer: Starting stream for {info.id}")
         self._instance_clusters[info.id] = cluster_id

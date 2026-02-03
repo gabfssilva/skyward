@@ -132,6 +132,45 @@ def MemoryTotal() -> Metric:
 # =============================================================================
 
 
+def _gpu_metric(
+    name: str,
+    query: str,
+    index: int | None,
+    interval: float,
+) -> Metric:
+    """Factory for GPU metrics with optional index.
+
+    Internal helper that creates nvidia-smi based metrics.
+
+    Args:
+        name: Base metric name (e.g., "gpu_util", "gpu_mem_mb").
+        query: nvidia-smi query field (e.g., "utilization.gpu", "memory.used").
+        index: GPU index (0-based). If None, collects from ALL GPUs.
+        interval: Seconds between samples.
+
+    Returns:
+        Metric configured for the specified GPU query.
+    """
+    if index is not None:
+        return Metric(
+            name=f"{name}_{index}",
+            command=(
+                f"nvidia-smi -i {index} --query-gpu={query} "
+                f"--format=csv,noheader,nounits 2>/dev/null | tr -d ' '"
+            ),
+            interval=interval,
+        )
+    return Metric(
+        name=name,
+        command=(
+            f"nvidia-smi --query-gpu={query} "
+            f"--format=csv,noheader,nounits 2>/dev/null | tr -d ' '"
+        ),
+        interval=interval,
+        multi=True,
+    )
+
+
 def GPU(index: int | None = None, interval: float = 3) -> Metric:
     """GPU utilization percentage (0-100).
 
@@ -140,30 +179,12 @@ def GPU(index: int | None = None, interval: float = 3) -> Metric:
     Args:
         index: GPU index (0-based). If None, collects from ALL GPUs,
             emitting gpu_util_0, gpu_util_1, etc.
-        interval: Seconds between samples. Default 1.0 because nvidia-smi
-            has overhead.
+        interval: Seconds between samples.
 
     Returns:
         Metric that emits "gpu_util" or "gpu_util_{index}" values.
     """
-    if index is not None:
-        return Metric(
-            name=f"gpu_util_{index}",
-            command=(
-                f"nvidia-smi -i {index} --query-gpu=utilization.gpu "
-                f"--format=csv,noheader,nounits 2>/dev/null | tr -d ' '"
-            ),
-            interval=interval,
-        )
-    return Metric(
-        name="gpu_util",
-        command=(
-            "nvidia-smi --query-gpu=utilization.gpu "
-            "--format=csv,noheader,nounits 2>/dev/null | tr -d ' '"
-        ),
-        interval=interval,
-        multi=True,
-    )
+    return _gpu_metric("gpu_util", "utilization.gpu", index, interval)
 
 
 def GPUMemory(index: int | None = None, interval: float = 3) -> Metric:
@@ -176,24 +197,7 @@ def GPUMemory(index: int | None = None, interval: float = 3) -> Metric:
     Returns:
         Metric that emits "gpu_mem_mb" or "gpu_mem_mb_{index}" values.
     """
-    if index is not None:
-        return Metric(
-            name=f"gpu_mem_mb_{index}",
-            command=(
-                f"nvidia-smi -i {index} --query-gpu=memory.used "
-                f"--format=csv,noheader,nounits 2>/dev/null | tr -d ' '"
-            ),
-            interval=interval,
-        )
-    return Metric(
-        name="gpu_mem_mb",
-        command=(
-            "nvidia-smi --query-gpu=memory.used "
-            "--format=csv,noheader,nounits 2>/dev/null | tr -d ' '"
-        ),
-        interval=interval,
-        multi=True,
-    )
+    return _gpu_metric("gpu_mem_mb", "memory.used", index, interval)
 
 
 def GPUMemoryTotal(index: int | None = None) -> Metric:
@@ -207,24 +211,7 @@ def GPUMemoryTotal(index: int | None = None) -> Metric:
     Returns:
         Metric that emits "gpu_mem_total_mb" values every 60s.
     """
-    if index is not None:
-        return Metric(
-            name=f"gpu_mem_total_mb_{index}",
-            command=(
-                f"nvidia-smi -i {index} --query-gpu=memory.total "
-                f"--format=csv,noheader,nounits 2>/dev/null | tr -d ' '"
-            ),
-            interval=60.0,
-        )
-    return Metric(
-        name="gpu_mem_total_mb",
-        command=(
-            "nvidia-smi --query-gpu=memory.total "
-            "--format=csv,noheader,nounits 2>/dev/null | tr -d ' '"
-        ),
-        interval=60.0,
-        multi=True,
-    )
+    return _gpu_metric("gpu_mem_total_mb", "memory.total", index, 60.0)
 
 
 def GPUTemp(index: int | None = None, interval: float = 3) -> Metric:
@@ -237,24 +224,7 @@ def GPUTemp(index: int | None = None, interval: float = 3) -> Metric:
     Returns:
         Metric that emits "gpu_temp" or "gpu_temp_{index}" values.
     """
-    if index is not None:
-        return Metric(
-            name=f"gpu_temp_{index}",
-            command=(
-                f"nvidia-smi -i {index} --query-gpu=temperature.gpu "
-                f"--format=csv,noheader,nounits 2>/dev/null | tr -d ' '"
-            ),
-            interval=interval,
-        )
-    return Metric(
-        name="gpu_temp",
-        command=(
-            "nvidia-smi --query-gpu=temperature.gpu "
-            "--format=csv,noheader,nounits 2>/dev/null | tr -d ' '"
-        ),
-        interval=interval,
-        multi=True,
-    )
+    return _gpu_metric("gpu_temp", "temperature.gpu", index, interval)
 
 
 # =============================================================================
