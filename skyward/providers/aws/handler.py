@@ -16,6 +16,7 @@ from loguru import logger
 
 from skyward.app import component, on
 from skyward.bus import AsyncEventBus
+from skyward.retry import on_exception_message, retry
 from skyward.events import (
     BootstrapFailed,
     BootstrapPhase,
@@ -422,18 +423,93 @@ class AWSHandler:
 
     async def _resolve_instance_config(self, spec: PoolSpec) -> InstanceConfig:
         """Resolve instance type and AMI from spec."""
-        accelerator_map = {
-            "T4": "g4dn.xlarge",
-            "A10G": "g5.xlarge",
-            "A100": "p4d.24xlarge",
-            "H100": "p5.48xlarge",
-        }
-        instance_type = accelerator_map.get(spec.accelerator_name, "g4dn.xlarge")
-
-        ami = self.config.ami or await self._get_dlami()
         spot = spec.allocation in ("spot", "spot-if-available")
 
+        if spec.accelerator_name is not None:
+            # GPU instance
+            accelerator_map = {
+                "T4": "g4dn.xlarge",
+                "A10G": "g5.xlarge",
+                "A100": "p4d.24xlarge",
+                "H100": "p5.48xlarge",
+            }
+            instance_type = accelerator_map.get(spec.accelerator_name, "g4dn.xlarge")
+            ami = self.config.ami or await self._get_dlami()
+        else:
+            # CPU instance - select based on vcpus, memory_gb, and arch
+            instance_type = await self._select_cpu_instance(spec.vcpus, spec.memory_gb, spec.architecture)
+            ami = self.config.ami or await self._get_ubuntu_ami(spec.architecture)
+
         return InstanceConfig(instance_type=instance_type, ami=ami, spot=spot)
+
+    async def _select_cpu_instance(
+        self,
+        vcpus: int | None,
+        memory_gb: int | None,
+        arch: str,
+    ) -> str:
+        """Select cheapest CPU instance that meets vcpus and memory requirements."""
+        import aioboto3
+
+        min_vcpus = vcpus or 2
+        min_memory_mib = (memory_gb or 8) * 1024
+
+        session = aioboto3.Session()
+        async with session.client("ec2", region_name=self.config.region) as ec2:
+            response = await ec2.get_instance_types_from_instance_requirements(
+                ArchitectureTypes=[arch],
+                VirtualizationTypes=["hvm"],
+                InstanceRequirements={
+                    "VCpuCount": {"Min": min_vcpus},
+                    "MemoryMiB": {"Min": min_memory_mib},
+                    "InstanceGenerations": ["current"],
+                    "BurstablePerformance": "excluded",
+                    "BareMetal": "excluded",
+                },
+            )
+
+            candidates = [r["InstanceType"] for r in response.get("InstanceTypes", [])]
+
+            if not candidates:
+                fallback = "m7g.large" if arch == "arm64" else "m5.large"
+                logger.warning(f"No instances for vcpus>={min_vcpus}, mem>={memory_gb}GB, arch={arch}. Using {fallback}")
+                return fallback
+
+            # Get spot prices to select cheapest
+            prices = await ec2.describe_spot_price_history(
+                InstanceTypes=candidates[:50],
+                ProductDescriptions=["Linux/UNIX"],
+                MaxResults=len(candidates[:50]),
+            )
+
+            price_map: dict[str, float] = {}
+            for p in prices.get("SpotPriceHistory", []):
+                itype = p["InstanceType"]
+                price = float(p["SpotPrice"])
+                if itype not in price_map or price < price_map[itype]:
+                    price_map[itype] = price
+
+            if price_map:
+                cheapest = min(price_map, key=lambda k: price_map[k])
+                logger.info(f"Selected {cheapest} at ${price_map[cheapest]:.4f}/hr spot")
+                return cheapest
+
+            return candidates[0]
+
+    async def _get_ubuntu_ami(self, arch: str) -> str:
+        """Get Ubuntu 22.04 AMI for region via SSM Parameter Store."""
+        import aioboto3
+
+        arch_path = "arm64" if arch == "arm64" else "amd64"
+        param_name = f"/aws/service/canonical/ubuntu/server/22.04/stable/current/{arch_path}/hvm/ebs-gp2/ami-id"
+
+        session = aioboto3.Session()
+        async with session.client("ssm", region_name=self.config.region) as ssm:
+            try:
+                response = await ssm.get_parameter(Name=param_name)
+                return response["Parameter"]["Value"]
+            except Exception as e:
+                raise RuntimeError(f"Failed to get Ubuntu AMI: {e}") from e
 
     async def _get_dlami(self) -> str:
         """Get Deep Learning AMI for region via SSM Parameter Store."""
@@ -608,8 +684,17 @@ class AWSHandler:
         from skyward.providers.wait import wait_for_ready
 
         async def poll_instances() -> list[dict[str, str]] | None:
+            from botocore.exceptions import ClientError
+
             async with self.ec2() as ec2:
-                response = await ec2.describe_instances(InstanceIds=instance_ids)
+                try:
+                    response = await ec2.describe_instances(InstanceIds=instance_ids)
+                except ClientError as e:
+                    # Handle AWS eventual consistency - instance may not be visible yet
+                    if e.response.get("Error", {}).get("Code") == "InvalidInstanceID.NotFound":
+                        logger.debug(f"Instance not found yet (eventual consistency): {instance_ids}")
+                        return None  # Will retry on next poll interval
+                    raise
                 return [
                     {"id": inst["InstanceId"], "state": inst["State"]["Name"]}
                     for r in response["Reservations"]
@@ -632,6 +717,7 @@ class AWSHandler:
             description=f"EC2 instances {instance_ids}",
         )
 
+    @retry(on=on_exception_message("InvalidInstanceID.NotFound"), max_attempts=5, base_delay=2.0)
     async def _get_instance_details(self, instance_ids: list[str]) -> list[dict[str, Any]]:
         """Get instance details."""
         if not instance_ids:

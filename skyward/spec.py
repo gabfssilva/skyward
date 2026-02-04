@@ -27,6 +27,8 @@ type AllocationStrategy = Literal[
     "cheapest",  # Compare prices and pick cheapest
 ]
 
+type Architecture = Literal["x86_64", "arm64"]
+
 
 # =============================================================================
 # PoolSpec
@@ -45,6 +47,9 @@ class PoolSpec:
         accelerator: GPU/accelerator type - either a string (e.g., "A100", "H100")
             or an Accelerator instance from skyward.accelerators.
         region: Cloud region for instances.
+        vcpus: Minimum vCPUs per node.
+        memory_gb: Minimum memory in GB per node.
+        architecture: CPU architecture ("x86_64" or "arm64").
         allocation: Spot/on-demand strategy.
         image: Environment specification.
         ttl: Auto-shutdown timeout in seconds (0 = disabled).
@@ -68,25 +73,31 @@ class PoolSpec:
     """
 
     nodes: int
-    accelerator: Accelerator | str
+    accelerator: Accelerator | str | None
     region: str
+    vcpus: int | None = None
+    memory_gb: int | None = None
+    architecture: Architecture = "x86_64"
     allocation: AllocationStrategy = "spot-if-available"
     image: Image = field(default_factory=Image)
     ttl: int = 0
     provider: ProviderName | None = None
-    max_hourly_cost: float | None = None  # USD/hr for entire cluster
+    max_hourly_cost: float | None = None
 
     def __post_init__(self) -> None:
         if self.nodes < 1:
             raise ValueError(f"nodes must be >= 1, got {self.nodes}")
 
     @property
-    def accelerator_name(self) -> str:
+    def accelerator_name(self) -> str | None:
         """Get the canonical accelerator name for provider matching.
 
         Returns:
-            Accelerator name string for use in provider instance selection.
+            Accelerator name string for use in provider instance selection,
+            or None if no accelerator specified.
         """
+        if self.accelerator is None:
+            return None
         if isinstance(self.accelerator, str):
             return self.accelerator
         return self.accelerator.name
@@ -96,8 +107,10 @@ class PoolSpec:
         """Get the number of accelerators per node.
 
         Returns:
-            Number of accelerators (1 if using string or not specified).
+            Number of accelerators (1 if using string or not specified, 0 if None).
         """
+        if self.accelerator is None:
+            return 0
         if isinstance(self.accelerator, str):
             return 1
         return self.accelerator.count
@@ -109,5 +122,6 @@ class PoolSpec:
 
 __all__ = [
     "AllocationStrategy",
+    "Architecture",
     "PoolSpec",
 ]

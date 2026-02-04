@@ -51,6 +51,20 @@ from .providers.aws.config import AWS
 from .providers.vastai.config import VastAI
 from .providers.verda.config import Verda
 
+# Distributed collections
+from .distributed import (
+    DistributedRegistry,
+    _set_active_registry,
+    DictProxy,
+    ListProxy,
+    SetProxy,
+    CounterProxy,
+    QueueProxy,
+    BarrierProxy,
+    LockProxy,
+)
+from .distributed.types import Consistency
+
 # Type alias for all supported providers
 type Provider = AWS | VastAI | Verda
 
@@ -265,6 +279,9 @@ class SyncComputePool:
     # Resources
     nodes: int = 1
     accelerator: str | Accelerator | None = None
+    vcpus: int | None = None
+    memory_gb: int | None = None
+    architecture: Literal["x86_64", "arm64"] = "x86_64"
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available"
 
     # Environment
@@ -289,6 +306,7 @@ class SyncComputePool:
     _injector: Injector | None = field(default=None, init=False, repr=False)
     _active: bool = field(default=False, init=False, repr=False)
     _context_token: Any = field(default=None, init=False, repr=False)
+    _registry: DistributedRegistry | None = field(default=None, init=False, repr=False)
 
     def __enter__(self) -> SyncComputePool:
         """Start pool and provision resources."""
@@ -325,6 +343,9 @@ class SyncComputePool:
             self._active = True
             # Set this pool as active in context
             self._context_token = _active_pool.set(self)
+            # Create distributed collections registry
+            self._registry = DistributedRegistry()
+            _set_active_registry(self._registry)
             logger.info("Pool ready")
         except Exception as e:
             logger.exception(f"Error starting pool: {e}")
@@ -354,6 +375,12 @@ class SyncComputePool:
         except Exception as e:
             logger.warning(f"Error stopping pool: {e}")
         finally:
+            # Cleanup distributed collections registry
+            if self._registry is not None:
+                self._registry.cleanup()
+                _set_active_registry(None)
+                self._registry = None
+
             self._active = False
             self._cleanup()
             logger.info("Pool stopped")
@@ -450,6 +477,52 @@ class SyncComputePool:
 
         return self._run_sync(_map_async())
 
+    # -------------------------------------------------------------------------
+    # Distributed Collections
+    # -------------------------------------------------------------------------
+
+    def dict(self, name: str, *, consistency: Consistency | None = None) -> DictProxy:
+        """Get or create a distributed dict."""
+        if self._registry is None:
+            raise RuntimeError("Pool is not active")
+        return self._registry.dict(name, consistency=consistency)
+
+    def list(self, name: str, *, consistency: Consistency | None = None) -> ListProxy:
+        """Get or create a distributed list."""
+        if self._registry is None:
+            raise RuntimeError("Pool is not active")
+        return self._registry.list(name, consistency=consistency)
+
+    def set(self, name: str, *, consistency: Consistency | None = None) -> SetProxy:
+        """Get or create a distributed set."""
+        if self._registry is None:
+            raise RuntimeError("Pool is not active")
+        return self._registry.set(name, consistency=consistency)
+
+    def counter(self, name: str, *, consistency: Consistency | None = None) -> CounterProxy:
+        """Get or create a distributed counter."""
+        if self._registry is None:
+            raise RuntimeError("Pool is not active")
+        return self._registry.counter(name, consistency=consistency)
+
+    def queue(self, name: str) -> QueueProxy:
+        """Get or create a distributed queue."""
+        if self._registry is None:
+            raise RuntimeError("Pool is not active")
+        return self._registry.queue(name)
+
+    def barrier(self, name: str, n: int) -> BarrierProxy:
+        """Get or create a distributed barrier."""
+        if self._registry is None:
+            raise RuntimeError("Pool is not active")
+        return self._registry.barrier(name, n)
+
+    def lock(self, name: str) -> LockProxy:
+        """Get or create a distributed lock."""
+        if self._registry is None:
+            raise RuntimeError("Pool is not active")
+        return self._registry.lock(name)
+
     async def _start_async(self) -> None:
         """Start pool asynchronously."""
         from .module import PoolConfigModule, SkywardModule
@@ -469,6 +542,9 @@ class SyncComputePool:
             nodes=self.nodes,
             accelerator=self.accelerator,
             region=region,
+            vcpus=self.vcpus,
+            memory_gb=self.memory_gb,
+            architecture=self.architecture,
             allocation=self.allocation,
             image=self.image,
             provider=provider_name,  # type: ignore[arg-type]
@@ -560,6 +636,9 @@ class _PoolFactory:
         provider: Provider | None = None,
         nodes: int = 1,
         accelerator: str | Accelerator | None = None,
+        vcpus: int | None = None,
+        memory_gb: int | None = None,
+        architecture: Literal["x86_64", "arm64"] = "x86_64",
         image: Image | None = None,
         allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
         timeout: int = 3600,
@@ -570,6 +649,9 @@ class _PoolFactory:
         self._provider = provider
         self._nodes = nodes
         self._accelerator = accelerator
+        self._vcpus = vcpus
+        self._memory_gb = memory_gb
+        self._architecture = architecture
         self._image = image
         self._allocation = allocation
         self._timeout = timeout
@@ -585,6 +667,9 @@ class _PoolFactory:
             provider=provider,
             nodes=self._nodes,
             accelerator=self._accelerator,
+            vcpus=self._vcpus,
+            memory_gb=self._memory_gb,
+            architecture=self._architecture,
             allocation=self._allocation,  # type: ignore[arg-type]
             image=self._image or DEFAULT_IMAGE,
             timeout=self._timeout,
@@ -633,6 +718,9 @@ def pool(
     provider: Provider | None = None,
     nodes: int = 1,
     accelerator: str | Accelerator | None = None,
+    vcpus: int | None = None,
+    memory_gb: int | None = None,
+    architecture: Literal["x86_64", "arm64"] = "x86_64",
     image: Image | None = None,
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
     timeout: int = 3600,
@@ -647,6 +735,9 @@ def pool(
     provider: Provider | None = None,
     nodes: int = 1,
     accelerator: str | Accelerator | None = None,
+    vcpus: int | None = None,
+    memory_gb: int | None = None,
+    architecture: Literal["x86_64", "arm64"] = "x86_64",
     image: Image | None = None,
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
     timeout: int = 3600,
@@ -660,6 +751,9 @@ def pool(
     provider: Provider | Callable[..., Any] | None = None,
     nodes: int = 1,
     accelerator: str | Accelerator | None = None,
+    vcpus: int | None = None,
+    memory_gb: int | None = None,
+    architecture: Literal["x86_64", "arm64"] = "x86_64",
     image: Image | None = None,
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
     timeout: int = 3600,
@@ -701,6 +795,9 @@ def pool(
             provider=None,
             nodes=nodes,
             accelerator=accelerator,
+            vcpus=vcpus,
+            memory_gb=memory_gb,
+            architecture=architecture,
             image=image,
             allocation=allocation,
             timeout=timeout,
@@ -715,6 +812,9 @@ def pool(
         provider=provider if isinstance(provider, (AWS, VastAI, Verda)) else None,
         nodes=nodes,
         accelerator=accelerator,
+        vcpus=vcpus,
+        memory_gb=memory_gb,
+        architecture=architecture,
         image=image,
         allocation=allocation,
         timeout=timeout,

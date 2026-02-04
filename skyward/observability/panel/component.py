@@ -75,9 +75,9 @@ class PanelComponent:
 
         # Populate partial infra from PoolSpec for early feedback
         spec = event.spec
-        gpu_model = spec.accelerator_name
+        gpu_model = spec.accelerator_name or ""
         gpu_count = spec.accelerator_count
-        gpu_vram = get_gpu_vram_gb(gpu_model)
+        gpu_vram = get_gpu_vram_gb(gpu_model) if gpu_model else 0
 
         self._state.infra = InfraState(
             provider=event.provider,
