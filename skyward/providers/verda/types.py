@@ -66,6 +66,8 @@ class InstanceResponse(TypedDict):
     status: str
     ip: str
     is_spot: bool
+    volume_ids: NotRequired[list[str]]
+    os_volume_id: NotRequired[str]
 
 
 class SSHKeyResponse(TypedDict):

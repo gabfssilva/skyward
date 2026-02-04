@@ -264,8 +264,7 @@ class SyncComputePool:
 
     # Resources
     nodes: int = 1
-    accelerator: str | Accelerator | None = None,
-    region: str = "us-east-1"
+    accelerator: str | Accelerator | None = None
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available"
 
     # Environment
@@ -462,11 +461,14 @@ class SyncComputePool:
         handler_cls, module_cls, provider_name = get_provider_for_config(self.provider)
         provider_module = module_cls()
 
+        # Get region from provider config
+        region = getattr(self.provider, "region", "unknown")
+
         # Create pool spec with provider
         spec = PoolSpec(
             nodes=self.nodes,
             accelerator=self.accelerator,
-            region=self.region,
+            region=region,
             allocation=self.allocation,
             image=self.image,
             provider=provider_name,  # type: ignore[arg-type]
@@ -558,7 +560,6 @@ class _PoolFactory:
         provider: Provider | None = None,
         nodes: int = 1,
         accelerator: str | Accelerator | None = None,
-        region: str = "us-east-1",
         image: Image | None = None,
         allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
         timeout: int = 3600,
@@ -569,7 +570,6 @@ class _PoolFactory:
         self._provider = provider
         self._nodes = nodes
         self._accelerator = accelerator
-        self._region = region
         self._image = image
         self._allocation = allocation
         self._timeout = timeout
@@ -580,11 +580,11 @@ class _PoolFactory:
 
     def _create_pool(self) -> SyncComputePool:
         """Create the underlying pool."""
+        provider = self._provider or AWS()
         return SyncComputePool(
-            provider=self._provider or AWS(region=self._region),
+            provider=provider,
             nodes=self._nodes,
             accelerator=self._accelerator,
-            region=self._region,
             allocation=self._allocation,  # type: ignore[arg-type]
             image=self._image or DEFAULT_IMAGE,
             timeout=self._timeout,
@@ -633,7 +633,6 @@ def pool(
     provider: Provider | None = None,
     nodes: int = 1,
     accelerator: str | Accelerator | None = None,
-    region: str = "us-east-1",
     image: Image | None = None,
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
     timeout: int = 3600,
@@ -648,7 +647,6 @@ def pool(
     provider: Provider | None = None,
     nodes: int = 1,
     accelerator: str | Accelerator | None = None,
-    region: str = "us-east-1",
     image: Image | None = None,
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
     timeout: int = 3600,
@@ -662,7 +660,6 @@ def pool(
     provider: Provider | Callable[..., Any] | None = None,
     nodes: int = 1,
     accelerator: str | Accelerator | None = None,
-    region: str = "us-east-1",
     image: Image | None = None,
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
     timeout: int = 3600,
@@ -687,7 +684,6 @@ def pool(
         provider: Provider configuration (AWS, VastAI, or Verda).
         nodes: Number of nodes.
         accelerator: GPU type.
-        region: Cloud region.
         image: Environment specification.
         allocation: Instance allocation strategy.
         timeout: Provisioning timeout.
@@ -705,7 +701,6 @@ def pool(
             provider=None,
             nodes=nodes,
             accelerator=accelerator,
-            region=region,
             image=image,
             allocation=allocation,
             timeout=timeout,
@@ -720,7 +715,6 @@ def pool(
         provider=provider if isinstance(provider, (AWS, VastAI, Verda)) else None,
         nodes=nodes,
         accelerator=accelerator,
-        region=region,
         image=image,
         allocation=allocation,
         timeout=timeout,

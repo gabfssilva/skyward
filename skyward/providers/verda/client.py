@@ -280,8 +280,30 @@ class VerdaClient:
         return result or []
 
     async def delete_instance(self, instance_id: str) -> None:
-        """Delete an instance."""
-        await self._request("PUT", "/instances", json={"id": instance_id, "action": "delete"})
+        """Delete an instance and permanently delete its volumes.
+
+        Per Verda API docs:
+        - volume_ids: array of volume IDs to delete
+        - delete_permanently: only works when volume_ids is provided
+        """
+        # Get instance to retrieve attached volume IDs
+        instance = await self.get_instance(instance_id)
+        volume_ids = instance.get("volume_ids", []) if instance else []
+
+        body: dict[str, Any] = {"id": instance_id, "action": "delete"}
+        if volume_ids:
+            body["volume_ids"] = volume_ids
+            body["delete_permanently"] = True
+
+        await self._request("PUT", "/instances", json=body)
+
+    # =========================================================================
+    # Volume Management
+    # =========================================================================
+
+    async def delete_volume(self, volume_id: str) -> None:
+        """Permanently delete a volume (cannot be undone)."""
+        await self._request("DELETE", f"/volumes/{volume_id}", json={"is_permanent": True})
 
 
 # =============================================================================

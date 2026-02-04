@@ -39,6 +39,17 @@ class VerdaClusterState(BaseClusterState):
     # Username for SSH
     username: str = "root"
 
+    # Pricing info (from instance type resolution)
+    hourly_rate: float = 0.0  # Actual rate (spot or on-demand)
+    on_demand_rate: float = 0.0  # On-demand rate for savings calc
+
+    # Hardware specs (from instance type resolution)
+    vcpus: int = 0
+    memory_gb: float = 0.0
+    gpu_count: int = 0
+    gpu_model: str = ""
+    gpu_vram_gb: int = 0
+
 
 # =============================================================================
 # Exports

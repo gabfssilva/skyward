@@ -39,8 +39,12 @@ from .state import VerdaClusterState
 from .types import (
     InstanceTypeResponse,
     get_accelerator,
+    get_accelerator_count,
+    get_accelerator_memory_gb,
+    get_memory_gb,
     get_price_on_demand,
     get_price_spot,
+    get_vcpu,
 )
 
 if TYPE_CHECKING:
@@ -102,9 +106,21 @@ class VerdaHandler:
         self.ssh_credentials.register(cluster_id, state.username, ssh_key_path)
 
         # Resolve instance type and image
-        instance_type, os_image = await self._resolve_instance_type(event.spec)
+        instance_type, os_image, itype_data = await self._resolve_instance_type(event.spec)
         state.instance_type = instance_type
         state.os_image = os_image
+
+        # Populate pricing and specs from instance type
+        use_spot = event.spec.allocation in ("spot", "spot-if-available")
+        spot_price = get_price_spot(itype_data)
+        on_demand_price = get_price_on_demand(itype_data)
+        state.hourly_rate = (spot_price if use_spot and spot_price else on_demand_price) or 0.0
+        state.on_demand_rate = on_demand_price or 0.0
+        state.vcpus = get_vcpu(itype_data)
+        state.memory_gb = get_memory_gb(itype_data)
+        state.gpu_count = get_accelerator_count(itype_data)
+        state.gpu_model = get_accelerator(itype_data) or ""
+        state.gpu_vram_gb = int(get_accelerator_memory_gb(itype_data))
 
         # Create startup script
         user_data = self._generate_user_data(event.spec)
@@ -227,6 +243,20 @@ class VerdaHandler:
                 private_ip=info.get("private_ip"),
                 ssh_port=22,
                 spot=use_spot,
+                # Pricing info
+                hourly_rate=cluster.hourly_rate,
+                on_demand_rate=cluster.on_demand_rate,
+                billing_increment=1,  # Verda bills per-minute
+                # Instance details
+                instance_type=cluster.instance_type or "",
+                gpu_count=cluster.gpu_count,
+                gpu_model=cluster.gpu_model,
+                # Hardware specs
+                vcpus=cluster.vcpus,
+                memory_gb=cluster.memory_gb,
+                gpu_vram_gb=cluster.gpu_vram_gb,
+                # Location
+                region=cluster.region,
             )
         )
 
@@ -290,8 +320,14 @@ class VerdaHandler:
     # Helper Methods
     # -------------------------------------------------------------------------
 
-    async def _resolve_instance_type(self, spec: PoolSpec) -> tuple[str, str]:
-        """Resolve instance type and OS image from spec."""
+    async def _resolve_instance_type(
+        self, spec: PoolSpec
+    ) -> tuple[str, str, InstanceTypeResponse]:
+        """Resolve instance type and OS image from spec.
+
+        Returns:
+            Tuple of (instance_type_name, os_image, instance_type_response).
+        """
         use_spot = spec.allocation in ("spot", "spot-if-available")
 
         instance_types = await self.client.list_instance_types()
@@ -334,7 +370,7 @@ class VerdaHandler:
         os_image = self._select_os_image(spec, supported_os)
 
         logger.debug(f"Verda: Selected {selected['instance_type']} with image {os_image}")
-        return selected["instance_type"], os_image
+        return selected["instance_type"], os_image, selected
 
     def _select_os_image(self, spec: PoolSpec, supported_os: list[str]) -> str:
         """Select best OS image from supported list."""
