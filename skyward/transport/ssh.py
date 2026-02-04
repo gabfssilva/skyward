@@ -573,35 +573,12 @@ def _parse_jsonl_line(line: str) -> RawStreamEvent | None:
 
 
 # =============================================================================
-# Factory Function (for DI)
-# =============================================================================
-
-
-def make_ssh_transport(
-    host: str,
-    user: str,
-    key_path: str,
-    port: int = 22,
-) -> SSHTransport:
-    """Create SSH transport with bound configuration.
-
-    Use this for partial application in DI setup:
-
-        >>> from functools import partial
-        >>> make_transport = partial(make_ssh_transport, user="ubuntu", key_path="~/.ssh/id")
-        >>> transport = make_transport(host="10.0.0.1")
-    """
-    return SSHTransport(host=host, user=user, key_path=key_path, port=port)
-
-
-# =============================================================================
 # Exports
 # =============================================================================
 
 __all__ = [
     # Transport
     "SSHTransport",
-    "make_ssh_transport",
     # Raw stream events (without instance info)
     "RawBootstrapConsole",
     "RawBootstrapPhase",

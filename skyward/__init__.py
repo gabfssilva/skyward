@@ -184,7 +184,7 @@ from .monitors import InstanceRegistry, MonitorModule
 # Transport
 # =============================================================================
 
-from .transport import SSHTransport, make_ssh_transport
+from .transport import SSHTransport
 
 # =============================================================================
 # Executor
@@ -356,7 +356,6 @@ __all__ = [
     # Transport
     # =================================================================
     "SSHTransport",
-    "make_ssh_transport",
     # =================================================================
     # Retry
     # =================================================================

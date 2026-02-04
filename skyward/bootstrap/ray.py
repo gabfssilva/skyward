@@ -27,83 +27,6 @@ def ray_install(version: str = "2.53.0") -> Op:
     return pip(f"ray[default]=={version}")
 
 
-def ray_head_start(
-    port: int = 6379,
-    dashboard_port: int = 8265,
-    num_gpus: int | None = None,
-    resources: dict[str, float] | None = None,
-) -> Op:
-    """Start Ray head node.
-
-    Args:
-        port: GCS server port (internal).
-        dashboard_port: Dashboard port (Jobs API access).
-        num_gpus: Number of GPUs to expose.
-        resources: Custom resources for placement (e.g., {"node_0": 1.0}).
-
-    Example:
-        >>> ray_head_start(num_gpus=1, resources={"node_0": 1.0})()
-        'ray start --head --port=6379 ... --num-gpus=1 --resources=\\'{"node_0": 1.0}\\''
-    """
-
-    ray_bin = f"{VENV_DIR}/bin/ray"
-
-    def generate() -> str:
-        # Note: We don't start Ray Client server since we use Jobs API
-        cmd = [
-            ray_bin,
-            "start",
-            "--head",
-            f"--port={port}",
-            f"--dashboard-port={dashboard_port}",
-            "--dashboard-host=0.0.0.0",  # Allow remote access via SSH tunnel
-            "--block",  # Keep running in foreground for nohup
-        ]
-        if num_gpus is not None:
-            cmd.append(f"--num-gpus={num_gpus}")
-        if resources:
-            # Escape for shell
-            cmd.append(f"--resources='{json.dumps(resources)}'")
-        return " ".join(cmd)
-
-    return generate
-
-
-def ray_worker_start(
-    head_address: str,
-    num_gpus: int | None = None,
-    resources: dict[str, float] | None = None,
-) -> Op:
-    """Start Ray worker node.
-
-    Args:
-        head_address: Address of head node (ip:port).
-        num_gpus: Number of GPUs to expose.
-        resources: Custom resources for placement (e.g., {"node_1": 1.0}).
-
-    Example:
-        >>> ray_worker_start("10.0.0.1:6379", num_gpus=1)()
-        'ray start --address=10.0.0.1:6379 --num-gpus=1 --block'
-    """
-
-    ray_bin = f"{VENV_DIR}/bin/ray"
-
-    def generate() -> str:
-        cmd = [
-            ray_bin,
-            "start",
-            f"--address={head_address}",
-            "--block",  # Keep running
-        ]
-        if num_gpus is not None:
-            cmd.append(f"--num-gpus={num_gpus}")
-        if resources:
-            cmd.append(f"--resources='{json.dumps(resources)}'")
-        return " ".join(cmd)
-
-    return generate
-
-
 def ray_service(
     node_id: int,
     head_ip: str | None,
@@ -220,8 +143,6 @@ def server_ops(
 
 __all__ = [
     "ray_install",
-    "ray_head_start",
-    "ray_worker_start",
     "ray_service",
     "server_ops",
 ]

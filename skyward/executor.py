@@ -139,6 +139,7 @@ class Executor:
         Retries for up to 30 seconds since the dashboard may take
         time to become ready after Ray starts.
         """
+        import requests
         from ray.job_submission import JobSubmissionClient
 
         address = f"http://localhost:{self._local_port}"
@@ -158,7 +159,7 @@ class Executor:
                 await asyncio.get_event_loop().run_in_executor(None, check_connection)
                 logger.debug("Jobs API connection verified")
                 return
-            except (ConnectionError, OSError) as e:
+            except (ConnectionError, OSError, requests.exceptions.ConnectionError) as e:
                 if attempt < max_attempts - 1:
                     logger.debug(f"Jobs API not ready (attempt {attempt + 1}/{max_attempts}): {e}")
                     await asyncio.sleep(delay)

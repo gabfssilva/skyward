@@ -5,7 +5,6 @@ Provides async SSH transport for remote command execution and file transfer.
 
 from .ssh import (
     SSHTransport,
-    make_ssh_transport,
     # Raw stream events
     RawBootstrapConsole,
     RawBootstrapPhase,
@@ -20,7 +19,6 @@ from .ssh import (
 __all__ = [
     # Transport
     "SSHTransport",
-    "make_ssh_transport",
     # Raw stream events
     "RawBootstrapConsole",
     "RawBootstrapPhase",

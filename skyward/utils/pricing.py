@@ -8,8 +8,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
-from functools import lru_cache, reduce
-from typing import Any, Literal, TypedDict
+from functools import lru_cache
+from typing import Any, Literal
 
 import httpx
 
@@ -64,34 +64,6 @@ class InstancePricing:
 
     def hourly_cost(self, spot: bool = False) -> float | None:
         return self.spot_avg if spot else self.ondemand
-
-
-@dataclass(frozen=True, slots=True)
-class FleetCost:
-    """Cost breakdown for a fleet of instances."""
-
-    total_hourly: float
-    spot_hourly: float
-    ondemand_hourly: float
-    spot_count: int
-    ondemand_count: int
-    spot_pct: float
-    savings_vs_ondemand: float
-    savings_pct: float
-    instances: tuple[tuple[str, bool, float], ...]
-
-    @property
-    def total_count(self) -> int:
-        return self.spot_count + self.ondemand_count
-
-    def format_summary(self) -> str:
-        return (
-            f"{self.total_count} instances: "
-            f"{self.spot_count} spot ({self.spot_pct:.0f}%), "
-            f"{self.ondemand_count} on-demand | "
-            f"${self.total_hourly:.2f}/hr "
-            f"(saving ${self.savings_vs_ondemand:.2f}/hr, {self.savings_pct:.0f}%)"
-        )
 
 
 # =============================================================================
@@ -233,80 +205,4 @@ def get_instance_pricing(
         spot_max=_safe_float(linux.get("spot_max")),
         interrupt_frequency=linux.get("pct_interrupt"),
         spot_savings_pct=_parse_savings_pct(linux.get("pct_savings_od")),
-    )
-
-
-class _CostAccumulator(TypedDict):
-    """Accumulator for fleet cost calculation."""
-
-    spot_total: float
-    ondemand_total: float
-    spot_count: int
-    ondemand_count: int
-    all_ondemand: float
-    details: list[tuple[str, bool, float]]
-
-
-def calculate_fleet_cost(
-    instances: list[tuple[str, bool]],
-    region: str = "us-east-1",
-    provider: Provider = "aws",
-) -> FleetCost | None:
-    """Calculate total fleet cost from (instance_type, is_spot) pairs."""
-    if not instances:
-        return None
-
-    # Fetch pricing for all instances, filter None
-    priced: list[tuple[str, bool, InstancePricing]] = [
-        (t, s, p)
-        for t, s in instances
-        if (p := get_instance_pricing(t, provider, region)) is not None
-    ]
-
-    if not priced:
-        return None
-
-    # Calculate costs using reduce
-    def accumulate(
-        acc: _CostAccumulator, item: tuple[str, bool, InstancePricing]
-    ) -> _CostAccumulator:
-        inst_type, is_spot, pricing = item
-        price = pricing.spot_avg if is_spot and pricing.spot_avg else pricing.ondemand or 0
-
-        return {
-            "spot_total": acc["spot_total"] + (price if is_spot else 0),
-            "ondemand_total": acc["ondemand_total"] + (price if not is_spot else 0),
-            "spot_count": acc["spot_count"] + (1 if is_spot else 0),
-            "ondemand_count": acc["ondemand_count"] + (1 if not is_spot else 0),
-            "all_ondemand": acc["all_ondemand"] + (pricing.ondemand or 0),
-            "details": acc["details"] + [(inst_type, is_spot, price)],
-        }
-
-    initial: _CostAccumulator = {
-        "spot_total": 0.0,
-        "ondemand_total": 0.0,
-        "spot_count": 0,
-        "ondemand_count": 0,
-        "all_ondemand": 0.0,
-        "details": [],
-    }
-
-    result = reduce(accumulate, priced, initial)
-
-    total = result["spot_total"] + result["ondemand_total"]
-    total_count = result["spot_count"] + result["ondemand_count"]
-    spot_pct = (result["spot_count"] / total_count * 100) if total_count else 0
-    savings = result["all_ondemand"] - total
-    savings_pct = (savings / result["all_ondemand"] * 100) if result["all_ondemand"] else 0
-
-    return FleetCost(
-        total_hourly=total,
-        spot_hourly=result["spot_total"],
-        ondemand_hourly=result["ondemand_total"],
-        spot_count=result["spot_count"],
-        ondemand_count=result["ondemand_count"],
-        spot_pct=spot_pct,
-        savings_vs_ondemand=savings,
-        savings_pct=savings_pct,
-        instances=tuple(result["details"]),
     )

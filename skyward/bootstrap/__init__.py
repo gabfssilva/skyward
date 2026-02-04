@@ -48,7 +48,6 @@ from .ops import (
     env_export,
     file,
     grid_driver,
-    inject_ssh_key,
     install_uv,
     instance_timeout,
     mkdir,
@@ -65,16 +64,10 @@ from .ops import (
     wait_for_port,
 )
 
-# Unified generator
-from .unified import skyward_bootstrap
-
-
 # Ray operations
 from .ray import (
-    ray_head_start,
     ray_install,
     ray_service,
-    ray_worker_start,
     server_ops as ray_server_ops,
 )
 
@@ -101,7 +94,6 @@ __all__ = [
     "wait_for_port",
     "env_export",
     "instance_timeout",
-    "inject_ssh_key",
     "shell_vars",
     "start_metrics",
     "stop_metrics",
@@ -119,10 +111,6 @@ __all__ = [
     "subshell",
     # Ray operations
     "ray_install",
-    "ray_head_start",
-    "ray_worker_start",
     "ray_service",
     "ray_server_ops",
-    # Unified generator
-    "skyward_bootstrap",
 ]

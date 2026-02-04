@@ -3,25 +3,12 @@
 from __future__ import annotations
 
 import subprocess
-import uuid
 from pathlib import Path
 
 from loguru import logger
 
 from skyward.constants import SKYWARD_DIR
 from skyward.events import InstanceRunning, ProviderName
-
-
-def generate_cluster_id(provider: ProviderName) -> str:
-    """Generate a unique cluster ID for a provider.
-
-    Args:
-        provider: Provider name (e.g., "aws", "vastai", "verda").
-
-    Returns:
-        Unique cluster ID in format "{provider}-{uuid8}".
-    """
-    return f"{provider}-{uuid.uuid4().hex[:8]}"
 
 
 def build_instance_running_event(
@@ -160,7 +147,6 @@ $UV_PATH pip install {SKYWARD_DIR}/{wheel_name}
 
 
 __all__ = [
-    "generate_cluster_id",
     "build_instance_running_event",
     "build_wheel",
     "_build_wheel_install_script",

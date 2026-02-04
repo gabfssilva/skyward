@@ -219,39 +219,6 @@ done"""
 
 
 # =============================================================================
-# SSH Operations
-# =============================================================================
-
-
-def inject_ssh_key(public_key: str) -> Op:
-    """Inject SSH public key into authorized_keys for root and ubuntu users.
-
-    Args:
-        public_key: SSH public key content (e.g., "ssh-ed25519 AAAA... user@host").
-
-    Example:
-        >>> inject_ssh_key("ssh-ed25519 AAAA...")()
-        'mkdir -p /root/.ssh && echo "ssh-ed25519 AAAA..." >> /root/.ssh/authorized_keys...'
-    """
-    # Escape any quotes in the key
-    escaped_key = public_key.replace('"', '\\"')
-
-    def generate() -> str:
-        return f"""# Inject SSH public key
-for user_home in /root /home/ubuntu /home/ec2-user; do
-    if [ -d "$user_home" ]; then
-        mkdir -p "$user_home/.ssh"
-        chmod 700 "$user_home/.ssh"
-        echo "{escaped_key}" >> "$user_home/.ssh/authorized_keys"
-        chmod 600 "$user_home/.ssh/authorized_keys"
-        chown -R $(stat -c '%U:%G' "$user_home") "$user_home/.ssh" 2>/dev/null || true
-    fi
-done"""
-
-    return generate
-
-
-# =============================================================================
 # Environment Operations
 # =============================================================================
 
