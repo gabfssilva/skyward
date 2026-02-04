@@ -49,7 +49,7 @@ class PoolSpec:
         region: Cloud region for instances.
         vcpus: Minimum vCPUs per node.
         memory_gb: Minimum memory in GB per node.
-        architecture: CPU architecture ("x86_64" or "arm64").
+        architecture: CPU architecture ("x86_64" or "arm64"), or None for cheapest.
         allocation: Spot/on-demand strategy.
         image: Environment specification.
         ttl: Auto-shutdown timeout in seconds (0 = disabled).
@@ -77,7 +77,7 @@ class PoolSpec:
     region: str
     vcpus: int | None = None
     memory_gb: int | None = None
-    architecture: Architecture = "x86_64"
+    architecture: Architecture | None = None
     allocation: AllocationStrategy = "spot-if-available"
     image: Image = field(default_factory=Image)
     ttl: int = 0

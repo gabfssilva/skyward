@@ -61,6 +61,7 @@ SPECS: Final[dict[str, dict[str, Any]]] = {
     # NVIDIA Datacenter - Turing/Ampere
     # =========================================================================
     "T4": {"memory": "16GB", "cuda": {"min": "10.0", "max": "13.1"}},
+    "T4G": {"memory": "16GB", "cuda": {"min": "10.0", "max": "13.1"}},  # ARM64 variant
     "A2": {"memory": "16GB", "cuda": {"min": "11.0", "max": "13.1"}},
     "A10": {"memory": "24GB", "cuda": {"min": "11.0", "max": "13.1"}},
     "A10G": {"memory": "24GB", "cuda": {"min": "11.0", "max": "13.1"}},

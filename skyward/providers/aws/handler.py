@@ -50,7 +50,7 @@ _AWS_INSTANCE_GPU = {
 }
 
 if TYPE_CHECKING:
-    from skyward.spec import PoolSpec
+    from skyward.spec import Architecture, PoolSpec
 
 
 @component
@@ -138,12 +138,12 @@ class AWSHandler:
         if not cluster:
             return
 
-        instance_config = await self._resolve_instance_config(cluster.spec)
+        instance_configs = await self._resolve_instance_configs(cluster.spec)
         user_data = self._generate_user_data(cluster.spec)
 
         instance_ids = await self._launch_fleet(
             cluster=cluster,
-            instances=(instance_config,),
+            instances=tuple(instance_configs),
             user_data=user_data,
             n=1,
         )
@@ -156,11 +156,6 @@ class AWSHandler:
 
         # Track pending
         cluster.pending_nodes.add(event.node_id)
-
-        # Store instance config for later (needed in handle_instance_launched)
-        if not hasattr(cluster, "_pending_instance_configs"):
-            cluster._pending_instance_configs = {}  # type: ignore
-        cluster._pending_instance_configs[instance_id] = instance_config  # type: ignore
 
         # Emit intermediate event
         self.bus.emit(
@@ -421,82 +416,137 @@ class AWSHandler:
     # Fleet Launch
     # -------------------------------------------------------------------------
 
-    async def _resolve_instance_config(self, spec: PoolSpec) -> InstanceConfig:
-        """Resolve instance type and AMI from spec."""
+    async def _resolve_instance_configs(self, spec: PoolSpec) -> list[InstanceConfig]:
+        """Resolve multiple instance configs from spec for Fleet flexibility."""
         spot = spec.allocation in ("spot", "spot-if-available")
 
-        if spec.accelerator_name is not None:
-            # GPU instance
-            accelerator_map = {
-                "T4": "g4dn.xlarge",
-                "A10G": "g5.xlarge",
-                "A100": "p4d.24xlarge",
-                "H100": "p5.48xlarge",
-            }
-            instance_type = accelerator_map.get(spec.accelerator_name, "g4dn.xlarge")
-            ami = self.config.ami or await self._get_dlami()
-        else:
-            # CPU instance - select based on vcpus, memory_gb, and arch
-            instance_type = await self._select_cpu_instance(spec.vcpus, spec.memory_gb, spec.architecture)
-            ami = self.config.ami or await self._get_ubuntu_ami(spec.architecture)
+        candidates = await self._select_instances(spec)
 
-        return InstanceConfig(instance_type=instance_type, ami=ami, spot=spot)
+        configs = []
+        for instance_type, arch in candidates:
+            if spec.accelerator_name is not None:
+                ami = self.config.ami or await self._get_dlami(arch)
+            else:
+                ami = self.config.ami or await self._get_ubuntu_ami(arch)
+            configs.append(InstanceConfig(instance_type=instance_type, ami=ami, spot=spot))
 
-    async def _select_cpu_instance(
-        self,
-        vcpus: int | None,
-        memory_gb: int | None,
-        arch: str,
-    ) -> str:
-        """Select cheapest CPU instance that meets vcpus and memory requirements."""
+        return configs
+
+    async def _select_instances(self, spec: PoolSpec, max_candidates: int = 5) -> list[tuple[str, Architecture]]:
+        """Select cheapest instances that meet spec requirements.
+
+        Queries AWS for instances matching vcpus, memory, architecture, and
+        accelerator requirements, then returns the cheapest ones by spot price.
+
+        Returns:
+            List of (instance_type, architecture) tuples, sorted by price.
+        """
         import aioboto3
 
-        min_vcpus = vcpus or 2
-        min_memory_mib = (memory_gb or 8) * 1024
+        min_vcpus = spec.vcpus or 2
+        min_memory_mib = (spec.memory_gb or 8) * 1024
+        archs = [spec.architecture] if spec.architecture else ["x86_64", "arm64"]
+
+        # Build instance requirements
+        requirements: dict[str, Any] = {
+            "VCpuCount": {"Min": min_vcpus},
+            "MemoryMiB": {"Min": min_memory_mib},
+            "InstanceGenerations": ["current"],
+            "BurstablePerformance": "excluded",
+            "BareMetal": "excluded",
+        }
 
         session = aioboto3.Session()
         async with session.client("ec2", region_name=self.config.region) as ec2:
-            response = await ec2.get_instance_types_from_instance_requirements(
-                ArchitectureTypes=[arch],
-                VirtualizationTypes=["hvm"],
-                InstanceRequirements={
-                    "VCpuCount": {"Min": min_vcpus},
-                    "MemoryMiB": {"Min": min_memory_mib},
-                    "InstanceGenerations": ["current"],
-                    "BurstablePerformance": "excluded",
-                    "BareMetal": "excluded",
-                },
-            )
+            # Map instance type -> architecture (from query)
+            candidate_arch: dict[str, Architecture] = {}
 
-            candidates = [r["InstanceType"] for r in response.get("InstanceTypes", [])]
+            for a in archs:
+                arch_requirements = requirements.copy()
 
-            if not candidates:
-                fallback = "m7g.large" if arch == "arm64" else "m5.large"
-                logger.warning(f"No instances for vcpus>={min_vcpus}, mem>={memory_gb}GB, arch={arch}. Using {fallback}")
-                return fallback
+                # Add accelerator requirements if specified
+                if spec.accelerator_name:
+                    arch_requirements["AcceleratorTypes"] = ["gpu"]
+                    arch_requirements["AcceleratorNames"] = [spec.accelerator_name.lower()]
+                    arch_requirements["AcceleratorCount"] = {"Min": spec.accelerator_count or 1}
 
-            # Get spot prices to select cheapest
-            prices = await ec2.describe_spot_price_history(
-                InstanceTypes=candidates[:50],
-                ProductDescriptions=["Linux/UNIX"],
-                MaxResults=len(candidates[:50]),
-            )
+                response = await ec2.get_instance_types_from_instance_requirements(
+                    ArchitectureTypes=[a],
+                    VirtualizationTypes=["hvm"],
+                    InstanceRequirements=arch_requirements,
+                )
+                for r in response.get("InstanceTypes", []):
+                    candidate_arch[r["InstanceType"]] = a  # type: ignore[assignment]
 
+            if not candidate_arch:
+                return [self._fallback_instance(spec)]
+
+            # Get spot prices - query in batches
+            all_types = list(candidate_arch.keys())
             price_map: dict[str, float] = {}
-            for p in prices.get("SpotPriceHistory", []):
-                itype = p["InstanceType"]
-                price = float(p["SpotPrice"])
-                if itype not in price_map or price < price_map[itype]:
-                    price_map[itype] = price
+            for i in range(0, len(all_types), 20):
+                batch = all_types[i:i + 20]
+                prices = await ec2.describe_spot_price_history(
+                    InstanceTypes=batch,
+                    ProductDescriptions=["Linux/UNIX"],
+                )
+                for p in prices.get("SpotPriceHistory", []):
+                    itype = p["InstanceType"]
+                    price = float(p["SpotPrice"])
+                    if itype not in price_map or price < price_map[itype]:
+                        price_map[itype] = price
 
             if price_map:
-                cheapest = min(price_map, key=lambda k: price_map[k])
-                logger.info(f"Selected {cheapest} at ${price_map[cheapest]:.4f}/hr spot")
-                return cheapest
+                # Sort by price and take top N
+                sorted_types = sorted(price_map.keys(), key=lambda k: price_map[k])[:max_candidates]
+                result: list[tuple[str, Architecture]] = [
+                    (t, candidate_arch[t]) for t in sorted_types
+                ]
+                prices_str = ", ".join(f"{t}=${price_map[t]:.4f}" for t in sorted_types)
+                logger.info(f"Instance candidates: {prices_str}")
+                return result
 
-            return candidates[0]
+            # No prices - return first few candidates
+            result = [(t, candidate_arch[t]) for t in all_types[:max_candidates]]
+            return result
 
-    async def _get_ubuntu_ami(self, arch: str) -> str:
+    def _fallback_instance(self, spec: PoolSpec) -> tuple[str, Architecture]:
+        """Return fallback instance when API returns no candidates."""
+        if spec.accelerator_name:
+            # GPU fallbacks
+            gpu_fallbacks: dict[str, tuple[str, Architecture]] = {
+                "T4": ("g4dn.xlarge", "x86_64"),
+                "A10G": ("g5.xlarge", "x86_64"),
+                "A100": ("p4d.24xlarge", "x86_64"),
+                "H100": ("p5.48xlarge", "x86_64"),
+            }
+            fallback = gpu_fallbacks.get(spec.accelerator_name, ("g4dn.xlarge", "x86_64"))
+        else:
+            # CPU fallbacks
+            if spec.architecture == "arm64":
+                fallback = ("m7g.large", "arm64")
+            elif spec.architecture == "x86_64":
+                fallback = ("m5.large", "x86_64")
+            else:
+                fallback = ("m7g.large", "arm64")  # arm64 is usually cheaper
+
+        logger.warning(f"No instances found for spec. Using fallback {fallback[0]}")
+        return fallback
+
+    def _arch_from_instance_type(self, instance_type: str) -> Architecture:
+        """Infer architecture from instance type name."""
+        # Graviton instances: m7g, c7g, r7g, t4g, m6g, c6g, etc.
+        # Pattern: letter(s) + number + "g" (optionally followed by d/n/e)
+        # NOT GPU instances like g4dn, g5, p4d which start with g/p
+        family = instance_type.split(".")[0]
+        # Graviton families end with a number followed by 'g' (optionally 'd', 'n', 'e')
+        # Examples: m7g, c7gd, r7gn, t4g, m6gd
+        import re
+        if re.match(r"^[a-z]+\d+g[den]*$", family):
+            return "arm64"
+        return "x86_64"
+
+    async def _get_ubuntu_ami(self, arch: Architecture) -> str:
         """Get Ubuntu 22.04 AMI for region via SSM Parameter Store."""
         import aioboto3
 
@@ -511,11 +561,12 @@ class AWSHandler:
             except Exception as e:
                 raise RuntimeError(f"Failed to get Ubuntu AMI: {e}") from e
 
-    async def _get_dlami(self) -> str:
+    async def _get_dlami(self, arch: Architecture) -> str:
         """Get Deep Learning AMI for region via SSM Parameter Store."""
         import aioboto3
 
-        param_name = "/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-22.04/latest/ami-id"
+        arch_path = "arm64" if arch == "arm64" else "x86_64"
+        param_name = f"/aws/service/deeplearning/ami/{arch_path}/base-oss-nvidia-driver-gpu-ubuntu-22.04/latest/ami-id"
 
         session = aioboto3.Session()
         async with session.client("ssm", region_name=self.config.region) as ssm:

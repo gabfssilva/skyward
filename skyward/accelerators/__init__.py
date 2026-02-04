@@ -76,6 +76,7 @@ from .factories import (
     L40S,
     # NVIDIA Datacenter - Legacy
     T4,
+    T4G,
     V100,
     P100,
     P40,
@@ -220,6 +221,7 @@ __all__ = [
     "L40S",
     # NVIDIA Datacenter - Legacy
     "T4",
+    "T4G",
     "V100",
     "P100",
     "P40",

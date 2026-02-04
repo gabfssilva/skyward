@@ -281,7 +281,7 @@ class SyncComputePool:
     accelerator: str | Accelerator | None = None
     vcpus: int | None = None
     memory_gb: int | None = None
-    architecture: Literal["x86_64", "arm64"] = "x86_64"
+    architecture: Literal["x86_64", "arm64"] | None = None
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available"
 
     # Environment
@@ -638,7 +638,7 @@ class _PoolFactory:
         accelerator: str | Accelerator | None = None,
         vcpus: int | None = None,
         memory_gb: int | None = None,
-        architecture: Literal["x86_64", "arm64"] = "x86_64",
+        architecture: Literal["x86_64", "arm64"] | None = None,
         image: Image | None = None,
         allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
         timeout: int = 3600,
@@ -669,7 +669,7 @@ class _PoolFactory:
             accelerator=self._accelerator,
             vcpus=self._vcpus,
             memory_gb=self._memory_gb,
-            architecture=self._architecture,
+            architecture=self._architecture,  # type: ignore[arg-type]
             allocation=self._allocation,  # type: ignore[arg-type]
             image=self._image or DEFAULT_IMAGE,
             timeout=self._timeout,
@@ -720,7 +720,7 @@ def pool(
     accelerator: str | Accelerator | None = None,
     vcpus: int | None = None,
     memory_gb: int | None = None,
-    architecture: Literal["x86_64", "arm64"] = "x86_64",
+    architecture: Literal["x86_64", "arm64"] | None = None,
     image: Image | None = None,
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
     timeout: int = 3600,
@@ -737,7 +737,7 @@ def pool(
     accelerator: str | Accelerator | None = None,
     vcpus: int | None = None,
     memory_gb: int | None = None,
-    architecture: Literal["x86_64", "arm64"] = "x86_64",
+    architecture: Literal["x86_64", "arm64"] | None = None,
     image: Image | None = None,
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
     timeout: int = 3600,
@@ -753,7 +753,7 @@ def pool(
     accelerator: str | Accelerator | None = None,
     vcpus: int | None = None,
     memory_gb: int | None = None,
-    architecture: Literal["x86_64", "arm64"] = "x86_64",
+    architecture: Literal["x86_64", "arm64"] | None = None,
     image: Image | None = None,
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
     timeout: int = 3600,

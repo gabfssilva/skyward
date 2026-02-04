@@ -225,7 +225,7 @@ def read_dict(name: str) -> dict:
     nodes=4,
     vcpus=2,
     memory_gb=8,
-    architecture="arm64",
+    # architecture=None (default) picks cheapest between x86_64 and arm64
     allocation="spot-if-available",
     image=sky.Image(skyward_source="local"),
 )

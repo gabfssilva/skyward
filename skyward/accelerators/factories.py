@@ -311,7 +311,7 @@ def T4(*, count: int = 1) -> Accelerator:
     """NVIDIA T4 - Turing inference GPU (2018).
 
     16GB GDDR6 memory, excellent cost/performance for inference.
-    Widely available on all major clouds.
+    Widely available on all major clouds (x86_64).
 
     Args:
         count: Number of GPUs per node.
@@ -320,6 +320,21 @@ def T4(*, count: int = 1) -> Accelerator:
         Accelerator specification for T4.
     """
     return Accelerator.from_name("T4", count=count)
+
+
+def T4G(*, count: int = 1) -> Accelerator:
+    """NVIDIA T4G - Turing inference GPU for ARM64 (2021).
+
+    16GB GDDR6 memory, same as T4 but for Graviton instances.
+    Available on AWS g5g instances.
+
+    Args:
+        count: Number of GPUs per node.
+
+    Returns:
+        Accelerator specification for T4G.
+    """
+    return Accelerator.from_name("T4G", count=count)
 
 
 def V100(
