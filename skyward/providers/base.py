@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from skyward.events import ClusterId, InstanceId, InstanceInfo
+from skyward.events import ClusterId, InstanceId, InstanceMetadata
 from skyward.spec import PoolSpec
 
 
@@ -28,19 +28,19 @@ class BaseClusterState:
     spec: PoolSpec
 
     # Instance tracking
-    instances: dict[InstanceId, InstanceInfo] = field(default_factory=dict)
+    instances: dict[InstanceId, InstanceMetadata] = field(default_factory=dict)
     pending_nodes: set[int] = field(default_factory=set)
 
-    def add_instance(self, info: InstanceInfo) -> None:
+    def add_instance(self, info: InstanceMetadata) -> None:
         """Register a new instance."""
         self.instances[info.id] = info
         self.pending_nodes.discard(info.node)
 
-    def remove_instance(self, instance_id: InstanceId) -> InstanceInfo | None:
+    def remove_instance(self, instance_id: InstanceId) -> InstanceMetadata | None:
         """Remove an instance, returns the removed info."""
         return self.instances.pop(instance_id, None)
 
-    def get_instance_for_node(self, node_id: int) -> InstanceInfo | None:
+    def get_instance_for_node(self, node_id: int) -> InstanceMetadata | None:
         """Get instance info for a specific node."""
         for info in self.instances.values():
             if info.node == node_id:

@@ -74,17 +74,6 @@ from .ops import (
 # Unified generator
 from .unified import skyward_bootstrap
 
-# Worker operations (legacy, for MIG support)
-from .worker import (
-    cgroups,
-    mig_setup,
-    start_workers,
-    wait_for_workers,
-    worker_envs,
-    worker_server_ops,
-    worker_service_template,
-    worker_service_unit,
-)
 
 # Ray operations
 from .ray import (
@@ -140,15 +129,6 @@ __all__ = [
     "or_else",
     "group",
     "subshell",
-    # Worker operations (legacy, for MIG support)
-    "cgroups",
-    "worker_envs",
-    "mig_setup",
-    "worker_service_unit",
-    "worker_service_template",
-    "start_workers",
-    "wait_for_workers",
-    "worker_server_ops",
     # Ray operations
     "ray_install",
     "ray_head_start",

@@ -736,7 +736,8 @@ def pool(
 
 # Import from runtime module - this keeps the import chain minimal
 # on remote instances (no provider SDK dependencies)
-from .runtime import PoolInfo, instance_info, shard
+from .runtime import instance_info, shard
+from .cluster.info import InstanceInfo
 
 
 # =============================================================================
@@ -754,7 +755,7 @@ __all__ = [
     "PendingCompute",
     "PendingComputeGroup",
     # Utilities
-    "PoolInfo",
+    "InstanceInfo",
     "instance_info",
     "shard",
     # Re-exports for convenience

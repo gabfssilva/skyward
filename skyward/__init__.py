@@ -43,7 +43,7 @@ from .facade import (
     PendingCompute,
     PendingComputeGroup,
     # Utilities
-    PoolInfo,
+    InstanceInfo,
     instance_info,
     shard,
 )
@@ -84,7 +84,7 @@ from .events import (
     ProviderName,
     RequestId,
     # Value objects
-    InstanceInfo,
+    InstanceMetadata,
     # Requests
     ClusterRequested,
     InstanceRequested,
@@ -248,7 +248,7 @@ __all__ = [
     "pool",          # decorator or context manager
     "compute",       # @compute decorator
     "gather",        # gather() for parallel execution
-    "PoolInfo",      # runtime info type
+    "InstanceInfo",  # runtime info type
     "instance_info", # get instance info inside @compute
     "shard",         # shard data across nodes
     # Types
@@ -280,7 +280,7 @@ __all__ = [
     "NodeId",
     "ProviderName",
     # Events - Value objects
-    "InstanceInfo",
+    "InstanceMetadata",
     # Events - Requests
     "ClusterRequested",
     "InstanceRequested",
@@ -358,10 +358,6 @@ __all__ = [
     # =================================================================
     "SSHTransport",
     "make_ssh_transport",
-    # =================================================================
-    # Executor
-    # =================================================================
-    "Executor",
     # =================================================================
     # Retry
     # =================================================================

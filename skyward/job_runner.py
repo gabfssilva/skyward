@@ -118,21 +118,16 @@ def _execute_single(
             ray.init()
 
         num_gpus = _get_node_gpu_count(node_id)
-        head_addr = os.environ.get("SKYWARD_HEAD_ADDR", "127.0.0.1")
         pool_json = pool_infos[node_id] if pool_infos and node_id < len(pool_infos) else ""
 
         @ray.remote(resources={f"node_{node_id}": 1}, num_gpus=num_gpus, max_retries=0)
-        def run_fn(nid: int, total: int, head: str, pool: str) -> Any:
+        def run_fn(pool: str) -> Any:
             if pool:
                 os.environ["COMPUTE_POOL"] = pool
-            os.environ["SKYWARD_NODE_ID"] = str(nid)
-            os.environ["SKYWARD_TOTAL_NODES"] = str(total)
-            os.environ["SKYWARD_HEAD_ADDR"] = head
-            os.environ["SKYWARD_HEAD_PORT"] = "29500"
             with _capture_output():
                 return fn(*args, **kwargs)
 
-        return ray.get(run_fn.remote(node_id, num_nodes, head_addr, pool_json))
+        return ray.get(run_fn.remote(pool_json))
     else:
         return fn(*args, **kwargs)
 
@@ -150,25 +145,19 @@ def _execute_broadcast(
     if not ray.is_initialized():
         ray.init()
 
-    head_addr = os.environ.get("SKYWARD_HEAD_ADDR", "127.0.0.1")
-
     refs = []
     for nid in range(num_nodes):
         num_gpus = _get_node_gpu_count(nid)
         pool_json = pool_infos[nid] if pool_infos and nid < len(pool_infos) else ""
 
         @ray.remote(resources={f"node_{nid}": 1}, num_gpus=num_gpus, max_retries=0)
-        def run_on_node(node_id: int, total: int, head: str, pool: str) -> Any:
+        def run_on_node(pool: str) -> Any:
             if pool:
                 os.environ["COMPUTE_POOL"] = pool
-            os.environ["SKYWARD_NODE_ID"] = str(node_id)
-            os.environ["SKYWARD_TOTAL_NODES"] = str(total)
-            os.environ["SKYWARD_HEAD_ADDR"] = head
-            os.environ["SKYWARD_HEAD_PORT"] = "29500"
             with _capture_output():
                 return fn(*args, **kwargs)
 
-        refs.append(run_on_node.remote(nid, num_nodes, head_addr, pool_json))
+        refs.append(run_on_node.remote(pool_json))
 
     return ray.get(refs)
 

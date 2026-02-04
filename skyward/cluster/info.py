@@ -105,12 +105,19 @@ class InstanceInfo(BaseModel):
         """True if this is the head worker (global_worker_index == 0)."""
         return self.global_worker_index == 0
 
+    @property
+    def hostname(self) -> str:
+        """Current instance hostname."""
+        import socket
+
+        return socket.gethostname()
+
     @classmethod
     def current(cls) -> Self | None:
         """Get pool info from COMPUTE_POOL environment variable.
 
         Returns:
-            ComputePoolInfo parsed from the environment, or None if not in a pool.
+            InstanceInfo parsed from the environment, or None if not in a pool.
         """
         import os
 

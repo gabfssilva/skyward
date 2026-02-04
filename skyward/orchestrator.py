@@ -3,7 +3,7 @@
 This component handles the Event Pipeline flow, coordinating
 instance lifecycle for ANY provider through events:
 
-1. InstanceRunning → builds InstanceInfo → emits InstanceProvisioned
+1. InstanceRunning → builds InstanceMetadata → emits InstanceProvisioned
 2. InstanceProvisioned → emits BootstrapRequested
 3. BootstrapPhase(complete) → emits InstanceBootstrapped
 
@@ -19,7 +19,7 @@ from .app import component, on
 from .bus import AsyncEventBus
 from .events import (
     BootstrapRequested,
-    InstanceInfo,
+    InstanceMetadata,
     InstanceProvisioned,
     InstanceRunning,
 )
@@ -49,15 +49,15 @@ class InstanceOrchestrator:
         _sender: Any,
         event: InstanceRunning,
     ) -> None:
-        """Handle instance running - build InstanceInfo and emit events.
+        """Handle instance running - build InstanceMetadata and emit events.
 
         When an instance is running:
-        1. Build immutable InstanceInfo
+        1. Build immutable InstanceMetadata
         2. Emit InstanceProvisioned (Node updates its state)
         3. Emit BootstrapRequested (provider runs bootstrap)
         """
-        # Build InstanceInfo from event data
-        info = InstanceInfo(
+        # Build InstanceMetadata from event data
+        info = InstanceMetadata(
             id=event.instance_id,
             node=event.node_id,
             provider=event.provider,

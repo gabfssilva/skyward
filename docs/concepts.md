@@ -540,7 +540,7 @@ def worker_role() -> str:
 | `memory_gb` | `float` | System RAM in GB |
 | `gpu_vram_gb` | `int` | VRAM per GPU in GB |
 
-Use `sky.instance_info()` inside `@compute` functions to get a `PoolInfo` object with cluster topology:
+Use `sky.instance_info()` inside `@compute` functions to get an `InstanceInfo` object with cluster topology:
 
 ```python
 info = sky.instance_info()

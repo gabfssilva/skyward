@@ -26,7 +26,7 @@ type RequestId = str
 type ClusterId = str
 type InstanceId = str
 type NodeId = int
-type ProviderName = Literal["aws", "digitalocean", "vastai", "verda"]
+type ProviderName = Literal["aws", "vastai", "verda"]
 
 
 # =============================================================================
@@ -35,8 +35,8 @@ type ProviderName = Literal["aws", "digitalocean", "vastai", "verda"]
 
 
 @dataclass(frozen=True, slots=True)
-class InstanceInfo:
-    """Immutable snapshot of an instance."""
+class InstanceMetadata:
+    """Immutable snapshot of an instance's infrastructure metadata."""
 
     id: InstanceId
     node: NodeId
@@ -103,7 +103,7 @@ class BootstrapRequested:
     """
 
     request_id: RequestId
-    instance: InstanceInfo
+    instance: InstanceMetadata
     cluster_id: ClusterId
 
 
@@ -183,21 +183,21 @@ class InstanceProvisioned:
     """Instance was created (not yet bootstrapped)."""
 
     request_id: RequestId
-    instance: InstanceInfo
+    instance: InstanceMetadata
 
 
 @dataclass(frozen=True, slots=True)
 class InstanceBootstrapped:
     """Instance finished bootstrap, ready for work."""
 
-    instance: InstanceInfo
+    instance: InstanceMetadata
 
 
 @dataclass(frozen=True, slots=True)
 class InstancePreempted:
     """Instance was preempted (spot interruption)."""
 
-    instance: InstanceInfo
+    instance: InstanceMetadata
     reason: str  # "spot-interruption", "maintenance", "outbid"
 
 
@@ -207,7 +207,7 @@ class InstanceReplaced:
 
     request_id: RequestId
     old_id: InstanceId
-    new: InstanceInfo
+    new: InstanceMetadata
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,7 +222,7 @@ class NodeReady:
     """Node signals its instance is ready."""
 
     node_id: NodeId
-    instance: InstanceInfo
+    instance: InstanceMetadata
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,7 +230,7 @@ class ClusterReady:
     """All nodes are ready - cluster is operational."""
 
     cluster_id: ClusterId
-    nodes: tuple[InstanceInfo, ...]
+    nodes: tuple[InstanceMetadata, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,7 +250,7 @@ class TaskStarted:
     """Task execution started on an instance."""
 
     task_id: str
-    instance: InstanceInfo
+    instance: InstanceMetadata
     function_name: str
 
 
@@ -259,7 +259,7 @@ class TaskCompleted:
     """Task execution completed."""
 
     task_id: str
-    instance: InstanceInfo
+    instance: InstanceMetadata
     duration: float
     success: bool
     error: str | None = None
@@ -269,7 +269,7 @@ class TaskCompleted:
 class Metric:
     """Metric value from an instance."""
 
-    instance: InstanceInfo
+    instance: InstanceMetadata
     name: str
     value: float
     timestamp: float
@@ -279,7 +279,7 @@ class Metric:
 class Log:
     """Log line from an instance."""
 
-    instance: InstanceInfo
+    instance: InstanceMetadata
     line: str
     stream: Literal["stdout", "stderr"] = "stdout"
 
@@ -297,7 +297,7 @@ class BootstrapConsole:
     and represent real-time stdout/stderr output during bootstrap phases.
     """
 
-    instance: InstanceInfo
+    instance: InstanceMetadata
     content: str
     stream: Literal["stdout", "stderr"] = "stdout"
 
@@ -310,7 +310,7 @@ class BootstrapPhase:
     like "apt", "pip", "uv", "skyward", etc.
     """
 
-    instance: InstanceInfo
+    instance: InstanceMetadata
     event: Literal["started", "completed", "failed"]
     phase: str  # "apt", "pip", "uv", "skyward", "bootstrap"
     elapsed: float | None = None
@@ -325,7 +325,7 @@ class BootstrapCommand:
     command being executed in that phase.
     """
 
-    instance: InstanceInfo
+    instance: InstanceMetadata
     command: str
 
 
@@ -336,7 +336,7 @@ class BootstrapFailed:
     Emitted when bootstrap fails, with error details.
     """
 
-    instance: InstanceInfo
+    instance: InstanceMetadata
     phase: str
     error: str
 
@@ -399,7 +399,7 @@ __all__ = [
     "NodeId",
     "ProviderName",
     # Value objects
-    "InstanceInfo",
+    "InstanceMetadata",
     # Requests
     "ClusterRequested",
     "InstanceRequested",

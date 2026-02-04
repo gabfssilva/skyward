@@ -14,7 +14,7 @@ from skyward.events import (
     BootstrapConsole,
     BootstrapFailed,
     BootstrapPhase,
-    InstanceInfo,
+    InstanceMetadata,
 )
 from skyward.transport import (
     BootstrapError,
@@ -68,7 +68,7 @@ async def wait_for_ssh(
 
 async def stream_bootstrap_events(
     transport: SSHTransport,
-    info: InstanceInfo,
+    info: InstanceMetadata,
     bus: AsyncEventBus,
     timeout: float = 600.0,
     log_prefix: str = "",
@@ -145,7 +145,7 @@ async def stream_bootstrap_events(
 
 
 async def wait_bootstrap_with_streaming(
-    info: InstanceInfo,
+    info: InstanceMetadata,
     bus: AsyncEventBus,
     user: str,
     key_path: str,
@@ -202,7 +202,7 @@ async def wait_bootstrap_with_streaming(
 
 async def install_local_skyward(
     transport: SSHTransport,
-    info: InstanceInfo,
+    info: InstanceMetadata,
     env: dict[str, str] | None = None,
     use_systemd: bool = True,
     rpyc_timeout: float = 30.0,  # noqa: ARG001 - kept for backwards compatibility
@@ -260,7 +260,7 @@ async def install_local_skyward(
 
 async def run_bootstrap_via_ssh(
     transport: SSHTransport,
-    info: InstanceInfo,
+    info: InstanceMetadata,
     bootstrap_script: str,
     log_prefix: str = "",
 ) -> None:

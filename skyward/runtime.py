@@ -10,65 +10,20 @@ the actual implementation lives here to keep the import chain minimal.
 
 from __future__ import annotations
 
-import os
-import socket
 from collections.abc import Sequence
-from dataclasses import dataclass
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .cluster.info import InstanceInfo
 
 
-@dataclass
-class PoolInfo:
-    """Information about the current instance in a compute pool.
-
-    Provides cluster topology info needed for distributed training coordination.
-
-    Attributes:
-        node: Node index (0-based).
-        total_nodes: Total number of nodes in pool.
-        hostname: Instance hostname.
-        head_addr: IP address of head node (node 0) for coordination.
-        head_port: Port for distributed coordination (default 29500).
-    """
-
-    node: int
-    total_nodes: int
-    hostname: str
-    head_addr: str = "127.0.0.1"
-    head_port: int = 29500
-
-    @property
-    def is_head(self) -> bool:
-        """True if this is the head node (node 0)."""
-        return self.node == 0
-
-    @classmethod
-    def current(cls) -> Self | None:
-        """Get instance info from environment variables.
-
-        Returns:
-            PoolInfo if running in a compute pool, None otherwise.
-        """
-        node_id = os.environ.get("SKYWARD_NODE_ID")
-        if node_id is None:
-            return None
-
-        return cls(
-            node=int(node_id),
-            total_nodes=int(os.environ.get("SKYWARD_TOTAL_NODES", "1")),
-            hostname=socket.gethostname(),
-            head_addr=os.environ.get("SKYWARD_HEAD_ADDR", "127.0.0.1"),
-            head_port=int(os.environ.get("SKYWARD_HEAD_PORT", "29500")),
-        )
-
-
-def instance_info() -> PoolInfo | None:
+def instance_info() -> InstanceInfo | None:
     """Get information about the current instance.
 
     Must be called from within a @compute function running on a remote node.
 
     Returns:
-        PoolInfo with cluster topology, or None if not in a pool.
+        InstanceInfo with cluster topology, or None if not in a pool.
 
     Example:
         @compute
@@ -78,7 +33,9 @@ def instance_info() -> PoolInfo | None:
                 print(f"Head node of {info.total_nodes} nodes")
             return process(data)
     """
-    return PoolInfo.current()
+    from .cluster.info import InstanceInfo
+
+    return InstanceInfo.current()
 
 
 def shard[T: Sequence[Any]](
@@ -166,7 +123,6 @@ def shard[T: Sequence[Any]](
 
 
 __all__ = [
-    "PoolInfo",
     "instance_info",
     "shard",
 ]

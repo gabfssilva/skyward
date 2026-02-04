@@ -144,7 +144,7 @@ class PanelComponent:
         placeholder = f"node-{self._state.provisioned}"
         self._state.instances.pop(placeholder, None)
 
-        # Get pricing from InstanceInfo (populated by provider)
+        # Get pricing from InstanceMetadata (populated by provider)
         self._state.instances[inst.id] = InstanceState(
             instance_id=inst.id,
             node=inst.node,

@@ -15,7 +15,7 @@ import httpx
 
 from .cache import cached
 
-Provider = Literal["aws", "azure", "gcp", "digitalocean"]
+Provider = Literal["aws", "azure", "gcp"]
 
 VANTAGE_ENDPOINTS: dict[Provider, str] = {
     "aws": "https://instances.vantage.sh/instances.json",
@@ -27,7 +27,6 @@ DEFAULT_REGIONS: dict[Provider, str] = {
     "aws": "us-east-1",
     "azure": "eastus",
     "gcp": "us-central1",
-    "digitalocean": "nyc1",
 }
 
 _CACHE_TTL = timedelta(days=1)

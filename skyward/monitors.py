@@ -16,7 +16,7 @@ from .bus import AsyncEventBus
 from .events import (
     InstanceDestroyed,
     InstanceId,
-    InstanceInfo,
+    InstanceMetadata,
     InstancePreempted,
     InstanceProvisioned,
     ShutdownRequested,
@@ -37,9 +37,9 @@ class InstanceRegistry:
     Registered as singleton via DI.
     """
 
-    _instances: dict[InstanceId, InstanceInfo] = field(default_factory=dict)
+    _instances: dict[InstanceId, InstanceMetadata] = field(default_factory=dict)
 
-    def register(self, info: InstanceInfo) -> None:
+    def register(self, info: InstanceMetadata) -> None:
         """Register an active instance."""
         self._instances[info.id] = info
 
@@ -48,16 +48,16 @@ class InstanceRegistry:
         self._instances.pop(instance_id, None)
 
     @property
-    def instances(self) -> list[InstanceInfo]:
+    def instances(self) -> list[InstanceMetadata]:
         """All tracked instances."""
         return list(self._instances.values())
 
     @property
-    def spot_instances(self) -> list[InstanceInfo]:
+    def spot_instances(self) -> list[InstanceMetadata]:
         """Only spot instances (preemption-eligible)."""
         return [i for i in self._instances.values() if i.spot]
 
-    def get(self, instance_id: InstanceId) -> InstanceInfo | None:
+    def get(self, instance_id: InstanceId) -> InstanceMetadata | None:
         """Get instance by ID."""
         return self._instances.get(instance_id)
 
@@ -115,7 +115,7 @@ async def check_preemption(
             )
 
 
-async def _check_instance_preemption(info: InstanceInfo) -> tuple[bool, str | None]:
+async def _check_instance_preemption(info: InstanceMetadata) -> tuple[bool, str | None]:
     """Check if instance was preempted via provider API.
 
     TODO: Implement actual preemption detection per provider:
@@ -157,7 +157,7 @@ async def check_health(
             )
 
 
-async def _ping_instance(info: InstanceInfo) -> bool:
+async def _ping_instance(info: InstanceMetadata) -> bool:
     """Check if instance is reachable via SSH.
 
     TODO: Implement actual SSH health check.
@@ -386,7 +386,7 @@ class EventStreamer:
     async def _stream_instance(
         self,
         transport: "SSHTransport",
-        info: InstanceInfo,
+        info: InstanceMetadata,
     ) -> None:
         """Stream events from instance with retry on connection loss."""
         from loguru import logger

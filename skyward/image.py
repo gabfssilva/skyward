@@ -28,13 +28,11 @@ from .bootstrap import (
     uv_add,
     uv_init,
 )
+from .constants import RAY_CLIENT_PORT
 
 
 # Skyward installation source
 type SkywardSource = Literal["local", "github", "pypi"]
-
-# Ray client port
-RAY_CLIENT_PORT = 10001
 
 
 @dataclass(frozen=True, slots=True)

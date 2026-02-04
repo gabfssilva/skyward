@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 from loguru import logger
 
 if TYPE_CHECKING:
-    from skyward.cluster.info import InstanceInfo as ClusterInstanceInfo
+    from skyward.cluster.info import InstanceInfo
 
 from .app import component, on
 from .bus import AsyncEventBus
@@ -26,7 +26,7 @@ from .events import (
     ClusterProvisioned,
     ClusterReady,
     ClusterRequested,
-    InstanceInfo,
+    InstanceMetadata,
     NodeId,
     NodeReady,
     ProviderName,
@@ -355,9 +355,9 @@ class ComputePool:
 
     def _build_pool_info(
         self,
-        info: InstanceInfo,
+        info: InstanceMetadata,
         head_addr: str,
-    ) -> "ClusterInstanceInfo":
+    ) -> "InstanceInfo":
         """Build COMPUTE_POOL info for an instance.
 
         Uses v1's build_pool_info to create compatible cluster info.

@@ -18,7 +18,7 @@ from .events import (
     ClusterId,
     InstanceBootstrapped,
     InstanceId,
-    InstanceInfo,
+    InstanceMetadata,
     InstancePreempted,
     InstanceProvisioned,
     InstanceReplaced,
@@ -82,7 +82,7 @@ class Node:
     # Internal state
     _state: str = NodeState.INIT
     _instance_id: InstanceId = ""
-    _info: InstanceInfo | None = None
+    _info: InstanceMetadata | None = None
     _pending_request_id: str = ""
 
     # -------------------------------------------------------------------------
@@ -138,7 +138,7 @@ class Node:
         )
 
     @property
-    def info(self) -> InstanceInfo | None:
+    def info(self) -> InstanceMetadata | None:
         """Current instance info, or None if not provisioned."""
         return self._info
 

@@ -30,13 +30,13 @@ from io import StringIO
 from typing import TYPE_CHECKING, Literal, TextIO
 
 if TYPE_CHECKING:
-    from skyward.runtime import PoolInfo
+    from skyward.cluster.info import InstanceInfo
 
 # =============================================================================
 # Type Aliases
 # =============================================================================
 
-type OutputPredicate = Callable[["PoolInfo"], bool]
+type OutputPredicate = Callable[["InstanceInfo"], bool]
 """Predicate that determines if a worker should emit output."""
 
 type OutputSpec = OutputPredicate | Literal["head"]
@@ -46,7 +46,7 @@ type OutputSpec = OutputPredicate | Literal["head"]
 # Predicate Helpers
 # =============================================================================
 
-def is_head(info: PoolInfo) -> bool:
+def is_head(info: InstanceInfo) -> bool:
     """True if this is the head worker (node == 0)."""
     return info.is_head
 
@@ -77,7 +77,7 @@ def stdout[**P, R](
     Args:
         only: Predicate or "head" shortcut. Workers matching this emit stdout.
             - "head": Only head worker (node == 0)
-            - Callable[[PoolInfo], bool]: Custom predicate
+            - Callable[[InstanceInfo], bool]: Custom predicate
 
     Returns:
         Decorator that wraps the function with stdout control.
@@ -137,7 +137,7 @@ def stderr[**P, R](
     Args:
         only: Predicate or "head" shortcut. Workers matching this emit stderr.
             - "head": Only head worker (node == 0)
-            - Callable[[PoolInfo], bool]: Custom predicate
+            - Callable[[InstanceInfo], bool]: Custom predicate
 
     Returns:
         Decorator that wraps the function with stderr control.
