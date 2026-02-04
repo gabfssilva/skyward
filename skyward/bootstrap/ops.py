@@ -18,6 +18,8 @@ from .compose import Op
 def apt(*packages: str, quiet: bool = True, update: bool = True) -> Op:
     """Install APT packages.
 
+    Waits for dpkg lock to be released (handles unattended-upgrades).
+
     Args:
         *packages: Package names to install.
         quiet: Use quiet mode (-qq).
@@ -25,7 +27,7 @@ def apt(*packages: str, quiet: bool = True, update: bool = True) -> Op:
 
     Example:
         >>> apt("python3", "curl")()
-        'apt-get update -qq\\napt-get install -y -qq python3 curl'
+        'while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done\\napt-get update -qq\\napt-get install -y -qq python3 curl'
     """
     if not packages:
         return lambda: "# No APT packages to install"
@@ -35,7 +37,10 @@ def apt(*packages: str, quiet: bool = True, update: bool = True) -> Op:
     pkg_list = " ".join(packages)
 
     def generate() -> str:
-        lines = []
+        lines = [
+            # Wait for any existing apt/dpkg processes to finish
+            "while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done",
+        ]
         if update:
             lines.append(f"apt-get update {flags}".strip())
         lines.append(f"apt-get install {install_flags} {pkg_list}")
