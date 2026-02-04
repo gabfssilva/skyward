@@ -307,11 +307,14 @@ class ComputePool:
         if head_node is None or head_node.info is None:
             raise RuntimeError("Head node not available")
 
+        # Use sudo for non-root users (venv was created by cloud-init as root)
+        sudo = "sudo " if ssh_user != "root" else ""
+
+        # ray start already daemonizes - no need for nohup or &
         head_cmd = (
-            f"nohup {ray_bin} start --head --port=6379 "
+            f"{sudo}{ray_bin} start --head --port=6379 "
             f"--dashboard-port=8265 --dashboard-host=0.0.0.0 "
-            f"--num-gpus=1 --resources='{{\"node_0\": 1.0}}' "
-            f"> /var/log/ray.log 2>&1 &"
+            f"--resources='{{\"node_0\": 1.0}}'"
         )
 
         async with SSHTransport(
@@ -321,9 +324,8 @@ class ComputePool:
             port=head_node.info.ssh_port,
         ) as transport:
             logger.debug("Starting Ray head on node 0...")
-            await transport.run(head_cmd, timeout=30.0)
+            await transport.run(head_cmd, timeout=60.0)
 
-        await asyncio.sleep(5)
         logger.debug("Ray head started, starting workers...")
 
         for node_id, node in self._nodes.items():
@@ -331,9 +333,8 @@ class ComputePool:
                 continue
 
             worker_cmd = (
-                f"nohup {ray_bin} start --address={head_addr}:6379 "
-                f"--num-gpus=1 --resources='{{\"node_{node_id}\": 1.0}}' "
-                f"> /var/log/ray.log 2>&1 &"
+                f"{sudo}{ray_bin} start --address={head_addr}:6379 "
+                f"--resources='{{\"node_{node_id}\": 1.0}}'"
             )
 
             async with SSHTransport(
@@ -343,9 +344,8 @@ class ComputePool:
                 port=node.info.ssh_port,
             ) as transport:
                 logger.debug(f"Starting Ray worker on node {node_id}...")
-                await transport.run(worker_cmd, timeout=30.0)
+                await transport.run(worker_cmd, timeout=60.0)
 
-        await asyncio.sleep(3)
         logger.debug("Ray cluster started")
 
     def _build_pool_info(
