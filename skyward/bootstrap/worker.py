@@ -1,15 +1,15 @@
-"""Bootstrap operations for RPyC server and worker isolation.
+"""Bootstrap operations for worker isolation.
 
-Operations for systemd services, cgroups, MIG setup.
-NOTE: Worker-specific operations (cgroups, worker_envs, etc.) are kept
-for future MIG implementation in skyward/nvidia/.
+Operations for cgroups and MIG setup.
+NOTE: This module is for future MIG implementation in skyward/nvidia/.
+The multi-worker RPyC approach is deprecated - Ray handles workers differently.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ..constants import RPYC_PORT, SKYWARD_DIR
+from ..constants import SKYWARD_DIR
 
 from .compose import Op
 from .ops import systemd_template
@@ -130,6 +130,9 @@ def mig_setup(script: str) -> Op:
 def worker_service_unit() -> str:
     """Generate systemd unit template for workers.
 
+    DEPRECATED: Multi-worker RPyC is replaced by Ray.
+    This is kept for potential future MIG support.
+
     Returns the content for skyward-worker@.service.
     Uses %i for worker ID substitution.
     """
@@ -142,7 +145,8 @@ Type=simple
 User=root
 WorkingDirectory={SKYWARD_DIR}
 EnvironmentFile={SKYWARD_DIR}/worker-%i.env
-ExecStart={SKYWARD_DIR}/.venv/bin/python -m skyward.rpc
+# NOTE: Command should be updated for Ray-based workers
+ExecStart=/bin/echo "Worker service deprecated - use Ray"
 Restart=on-failure
 RestartSec=5
 Slice=skyward-worker-%i.slice
@@ -193,7 +197,7 @@ done"""
     return generate
 
 
-def wait_for_workers(count: int, base_port: int = RPYC_PORT, timeout: int = 60) -> Op:
+def wait_for_workers(count: int, base_port: int = 18861, timeout: int = 60) -> Op:
     """Wait for all worker ports to be listening.
 
     Args:
@@ -222,47 +226,7 @@ done"""
 
 
 # =============================================================================
-# Single RPyC Server (non-worker mode)
-# =============================================================================
-
-
-def rpyc_service_unit(env: dict[str, str] | None = None) -> str:
-    """Generate systemd unit for single RPyC server.
-
-    Args:
-        env: Environment variables to set in the service unit.
-
-    Returns the content for skyward-rpyc.service.
-    """
-    # Build environment lines
-    env_lines = [f'Environment="PATH={SKYWARD_DIR}/.venv/bin:/usr/local/bin:/usr/bin:/bin"']
-    if env:
-        for key, value in env.items():
-            # Escape quotes in values for systemd
-            escaped_value = value.replace('"', '\\"')
-            env_lines.append(f'Environment="{key}={escaped_value}"')
-
-    env_section = "\n".join(env_lines)
-
-    return f"""[Unit]
-Description=Skyward RPyC Server
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory={SKYWARD_DIR}
-{env_section}
-ExecStart={SKYWARD_DIR}/.venv/bin/python -m skyward.rpc
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target"""
-
-
-# =============================================================================
-# Composite Operations
+# Composite Operations (DEPRECATED - use Ray)
 # =============================================================================
 
 

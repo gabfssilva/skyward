@@ -8,7 +8,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from skyward.constants import RPYC_PORT, SKYWARD_DIR
+from skyward.constants import SKYWARD_DIR
 from skyward.events import InstanceRunning, ProviderName
 
 
@@ -124,35 +124,25 @@ def build_wheel() -> Path:
 
 def _build_wheel_install_script(
     wheel_name: str,
-    env: dict[str, str] | None = None,
-    use_systemd: bool = True,
+    env: dict[str, str] | None = None,  # noqa: ARG001
+    use_systemd: bool = True,  # noqa: ARG001
 ) -> str:
-    """Build complete wheel installation + service setup script.
+    """Build wheel installation script.
 
-    Single script that does everything:
-    1. Find uv
-    2. Install wheel
-    3. Verify installation
-    4. Setup single RPyC service (systemd or nohup)
+    Installs the skyward wheel into the venv. Service startup (Ray)
+    is handled by bootstrap, not this script.
 
     Args:
         wheel_name: Name of the wheel file to install.
-        env: Environment variables to pass to the service.
-        use_systemd: If True, use systemd. If False, use nohup (for Docker).
+        env: Unused (kept for backwards compatibility).
+        use_systemd: Unused (kept for backwards compatibility).
 
     Returns:
         Shell script string.
     """
-    from skyward.bootstrap import (
-        resolve,
-        nohup_service,
-        systemd,
-        wait_for_port,
-        rpyc_service_unit,
-    )
+    script = f"""#!/bin/bash
+set -e
 
-    # Common preamble: move wheel from /tmp (where user can upload) and install
-    preamble = f"""
 # Move wheel from /tmp to SKYWARD_DIR (uploaded to /tmp for permission reasons)
 mv /tmp/{wheel_name} {SKYWARD_DIR}/{wheel_name} 2>/dev/null || true
 
@@ -169,36 +159,10 @@ $UV_PATH pip install {SKYWARD_DIR}/{wheel_name}
 # Verify installation
 {SKYWARD_DIR}/.venv/bin/python -c 'import skyward; print(skyward.__file__)'
 
-# Verify RPyC can be imported (catches missing dependencies)
-{SKYWARD_DIR}/.venv/bin/python -c 'import rpyc; from skyward.rpc.server import SkywardService; print("RPyC imports OK")'
+# Verify Ray can be imported
+{SKYWARD_DIR}/.venv/bin/python -c 'import ray; print("Ray OK:", ray.__version__)'
 """
-
-    if use_systemd:
-        # Use systemd for VMs (EC2, etc.)
-        # Use resolve() instead of bootstrap() to avoid duplicate headers
-        unit_content = rpyc_service_unit(env=env)
-        service_script = "\n".join([
-            resolve(systemd("skyward-rpyc", unit_content)),
-            resolve(wait_for_port(RPYC_PORT, timeout=30)),
-        ])
-    else:
-        # Use nohup for Docker containers (Vast.ai, etc.)
-        env_with_path = {"PATH": f"{SKYWARD_DIR}/.venv/bin:/usr/local/bin:/usr/bin:/bin"}
-        if env:
-            env_with_path.update(env)
-
-        # Use resolve() instead of bootstrap() to avoid duplicate headers
-        service_script = "\n".join([
-            resolve(nohup_service(
-                name="skyward-rpyc",
-                command=f"{SKYWARD_DIR}/.venv/bin/python -m skyward.rpc",
-                working_dir=SKYWARD_DIR,
-                env=env_with_path,
-            )),
-            resolve(wait_for_port(RPYC_PORT, timeout=30)),
-        ])
-
-    return f"#!/bin/bash\nset -e\n{preamble}\n{service_script}"
+    return script
 
 
 __all__ = [

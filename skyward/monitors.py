@@ -388,7 +388,7 @@ class EventStreamer:
         transport: "SSHTransport",
         info: InstanceInfo,
     ) -> None:
-        """Stream events from instance indefinitely."""
+        """Stream events from instance with retry on connection loss."""
         from loguru import logger
 
         from skyward.events import (
@@ -399,6 +399,7 @@ class EventStreamer:
             Log,
             Metric,
         )
+        from skyward.retry import retry
         from skyward.transport import (
             RawBootstrapCommand,
             RawBootstrapConsole,
@@ -409,11 +410,20 @@ class EventStreamer:
 
         log_prefix = f"[{info.provider}:{info.node}] "
 
-        try:
-            # Wait for SSH
-            await self._wait_for_ssh(transport, log_prefix)
+        @retry(
+            on=Exception,
+            max_attempts=5,
+            base_delay=2.0,
+            exponential_base=2.0,
+            max_delay=30.0,
+            jitter=True,
+        )
+        async def stream_with_retry() -> None:
+            # Reconnect if needed
+            if not transport.is_connected:
+                await transport.connect()
 
-            # Stream events indefinitely
+            # Stream events
             async for raw_event in transport.stream_events(timeout=600.0):
                 match raw_event:
                     case RawBootstrapConsole(content=content, stream=stream):
@@ -473,12 +483,17 @@ class EventStreamer:
                         ))
                         logger.debug(f"{log_prefix}metric {name}={value}")
 
+        try:
+            await stream_with_retry()
         except asyncio.CancelledError:
             logger.debug(f"{log_prefix}Streaming cancelled")
-        except TimeoutError:
-            logger.warning(f"{log_prefix}Streaming timeout")
         except Exception as e:
-            logger.error(f"{log_prefix}Streaming error: {e}")
+            logger.error(f"{log_prefix}Streaming failed after retries: {e}")
+            self.bus.emit(BootstrapFailed(
+                instance=info,
+                phase="streaming",
+                error=f"Connection lost: {e}",
+            ))
         finally:
             logger.debug(f"{log_prefix}Streaming ended")
 

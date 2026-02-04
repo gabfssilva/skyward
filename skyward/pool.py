@@ -14,6 +14,8 @@ import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from loguru import logger
+
 if TYPE_CHECKING:
     from skyward.cluster.info import InstanceInfo as ClusterInstanceInfo
 
@@ -30,7 +32,7 @@ from .events import (
     ProviderName,
     ShutdownRequested,
 )
-from .executor import AsyncRPyCExecutor
+from .executor import Executor
 from .monitors import EventStreamer
 from .node import Node
 from .spec import PoolSpec
@@ -106,7 +108,7 @@ class ComputePool:
     _nodes: dict[NodeId, Node] = {}  # type: ignore[assignment]
     _ready_nodes: set[NodeId] = set()  # type: ignore[assignment]
     _ready_event: asyncio.Event | None = None
-    _executors: dict[str, AsyncRPyCExecutor] = {}  # type: ignore[assignment]
+    _executor: Executor | None = None  # Single Ray executor for all nodes
 
     # -------------------------------------------------------------------------
     # Public API
@@ -161,13 +163,14 @@ class ComputePool:
 
         self._state = PoolState.SHUTTING_DOWN
 
-        # Close all executors
         from loguru import logger
-        logger.debug(f"Pool: Closing {len(self._executors)} executors...")
-        for executor in self._executors.values():
-            await executor.close()
-        self._executors = {}
-        logger.debug("Pool: All executors closed")
+
+        # Disconnect Ray executor
+        if self._executor is not None:
+            logger.debug("Pool: Disconnecting Ray executor...")
+            await self._executor.disconnect()
+            self._executor = None
+            logger.debug("Pool: Ray executor disconnected")
 
         # Emit shutdown and wait for provider to terminate instances
         logger.debug(f"Pool: Emitting ShutdownRequested for cluster_id={self._cluster_id}")
@@ -205,11 +208,12 @@ class ComputePool:
         if self._state != PoolState.READY:
             raise RuntimeError(f"Pool not ready, state: {self._state}")
 
-        # Select node
+        # Validate node if specified
         if node is not None:
             target_node = self._nodes.get(node)
             if not target_node or not target_node.is_ready:
                 raise ValueError(f"Node {node} not available")
+            node_id = node
         else:
             # Pick first ready node
             target_node = next(
@@ -218,14 +222,11 @@ class ComputePool:
             )
             if not target_node:
                 raise RuntimeError("No ready nodes available")
+            node_id = target_node.id
 
-        # Execute via RPyC
-        info = target_node.info
-        if info is None:
-            raise RuntimeError("Node has no instance info")
-
-        executor = await self._get_or_create_executor(info)
-        return await executor.execute(fn, *args, **kwargs)
+        # Ensure executor is connected
+        executor = await self._get_or_create_executor()
+        return await executor.execute(fn, *args, node_id=node_id, **kwargs)
 
     async def broadcast[T](
         self,
@@ -243,67 +244,114 @@ class ComputePool:
             **kwargs: Keyword arguments.
 
         Returns:
-            List of results from each node.
+            List of results from each node, ordered by node_id.
         """
         if self._state != PoolState.READY:
             raise RuntimeError(f"Pool not ready, state: {self._state}")
 
-        # Execute on all ready nodes in parallel
-        ready_nodes = [n for n in self._nodes.values() if n.is_ready and n.info]
+        # Ensure executor is connected
+        executor = await self._get_or_create_executor()
+        return await executor.broadcast(fn, *args, **kwargs)
 
-        async def execute_on_node(node: Node) -> T:
-            executor = await self._get_or_create_executor(node.info)  # type: ignore
-            return await executor.execute(fn, *args, **kwargs)
+    async def _get_or_create_executor(self) -> Executor:
+        """Get or create the Ray executor."""
+        if self._executor is not None:
+            return self._executor
 
-        results = await asyncio.gather(
-            *[execute_on_node(n) for n in ready_nodes]
+        from skyward.providers.ssh_keys import get_ssh_key_path
+
+        head_node = self._nodes.get(0)
+        if head_node is None or head_node.info is None:
+            raise RuntimeError("Head node (node 0) not available")
+
+        head_info = head_node.info
+        head_addr = head_info.private_ip or head_info.ip
+        ssh_user = self._get_ssh_user()
+        ssh_key = get_ssh_key_path()
+
+        await self._start_ray_cluster(head_addr, ssh_user, ssh_key)
+
+        # Build pool_infos for each node (ordered by node_id)
+        pool_infos: list[str] = []
+        for node_id in range(self.spec.nodes):
+            node = self._nodes.get(node_id)
+            if node is None or node.info is None:
+                pool_infos.append("")
+                continue
+            pool_info = self._build_pool_info(node.info, head_addr)
+            pool_infos.append(pool_info.model_dump_json())
+
+        image_env = dict(self.spec.image.env) if self.spec.image and self.spec.image.env else {}
+        self._executor = Executor(
+            head_ip=head_info.ip,
+            ssh_port=head_info.ssh_port,
+            user=ssh_user,
+            key_path=ssh_key,
+            num_nodes=self.spec.nodes,
+            env_vars=image_env,
+            pool_infos=pool_infos,
         )
-        return list(results)
+        await self._executor.connect()
+        logger.debug("Executor connected and ready")
+        return self._executor
 
-    async def _get_or_create_executor(self, info: InstanceInfo) -> AsyncRPyCExecutor:
-        """Get or create executor for an instance."""
-        from .executor import AsyncRPyCExecutor
+    async def _start_ray_cluster(
+        self,
+        head_addr: str,
+        ssh_user: str,
+        ssh_key: str,
+    ) -> None:
+        """Start Ray on all nodes via SSH."""
+        from skyward.transport.ssh import SSHTransport
+        from skyward.constants import VENV_DIR
 
-        if info.id not in self._executors:
-            from skyward.providers.ssh_keys import get_ssh_key_path
+        ray_bin = f"{VENV_DIR}/bin/ray"
+        logger.debug("Starting Ray cluster via SSH...")
 
-            executor = AsyncRPyCExecutor(
-                host=info.ip,
-                ssh_port=info.ssh_port,
-                user=self._get_ssh_user(),
-                key_path=get_ssh_key_path(),
+        head_node = self._nodes.get(0)
+        if head_node is None or head_node.info is None:
+            raise RuntimeError("Head node not available")
+
+        head_cmd = (
+            f"nohup {ray_bin} start --head --port=6379 "
+            f"--dashboard-port=8265 --dashboard-host=0.0.0.0 "
+            f"--num-gpus=1 --resources='{{\"node_0\": 1.0}}' "
+            f"> /var/log/ray.log 2>&1 &"
+        )
+
+        async with SSHTransport(
+            host=head_node.info.ip,
+            user=ssh_user,
+            key_path=ssh_key,
+            port=head_node.info.ssh_port,
+        ) as transport:
+            logger.debug("Starting Ray head on node 0...")
+            await transport.run(head_cmd, timeout=30.0)
+
+        await asyncio.sleep(5)
+        logger.debug("Ray head started, starting workers...")
+
+        for node_id, node in self._nodes.items():
+            if node_id == 0 or node.info is None:
+                continue
+
+            worker_cmd = (
+                f"nohup {ray_bin} start --address={head_addr}:6379 "
+                f"--num-gpus=1 --resources='{{\"node_{node_id}\": 1.0}}' "
+                f"> /var/log/ray.log 2>&1 &"
             )
-            await executor.connect()
 
-            # Get head node PRIVATE IP for distributed coordination (inter-node comm)
-            head_node = self._nodes.get(0)
-            # Use private_ip for inter-node communication within the VPC
-            head_addr = (
-                head_node.info.private_ip or head_node.info.ip
-                if head_node and head_node.info
-                else "127.0.0.1"
-            )
+            async with SSHTransport(
+                host=node.info.ip,
+                user=ssh_user,
+                key_path=ssh_key,
+                port=node.info.ssh_port,
+            ) as transport:
+                logger.debug(f"Starting Ray worker on node {node_id}...")
+                await transport.run(worker_cmd, timeout=30.0)
 
-            # Build COMPUTE_POOL JSON like v1 does
-            pool_info = self._build_pool_info(info, head_addr)
-
-            # Setup cluster environment (COMPUTE_POOL + extra env vars)
-            await executor.setup_cluster(
-                pool_info_json=pool_info.model_dump_json(),
-                env_vars={
-                    "SKYWARD_NODE_ID": str(info.node),
-                    "SKYWARD_TOTAL_NODES": str(self.spec.nodes),
-                    "SKYWARD_HEAD_ADDR": head_addr,
-                    "SKYWARD_HEAD_PORT": "29500",
-                },
-            )
-
-            # Note: Log streaming is handled by EventStreamer component,
-            # which streams events from instances throughout their lifecycle.
-
-            self._executors[info.id] = executor
-
-        return self._executors[info.id]
+        await asyncio.sleep(3)
+        logger.debug("Ray cluster started")
 
     def _build_pool_info(
         self,

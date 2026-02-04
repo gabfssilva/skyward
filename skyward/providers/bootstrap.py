@@ -6,8 +6,6 @@ via JSONL event streaming.
 
 from __future__ import annotations
 
-import asyncio
-
 from loguru import logger
 
 from skyward.bus import AsyncEventBus
@@ -207,28 +205,26 @@ async def install_local_skyward(
     info: InstanceInfo,
     env: dict[str, str] | None = None,
     use_systemd: bool = True,
-    rpyc_timeout: float = 30.0,
+    rpyc_timeout: float = 30.0,  # noqa: ARG001 - kept for backwards compatibility
     log_prefix: str = "",
 ) -> None:
-    """Install local skyward wheel and start RPyC server.
+    """Install local skyward wheel.
 
     When skyward_source='local', the bootstrap script doesn't install skyward.
-    This function builds the wheel locally, uploads it, installs it, and starts
-    the RPyC server.
+    This function builds the wheel locally, uploads it, and installs it.
+    The Ray server is started by bootstrap, not here.
 
     Args:
         transport: Connected SSH transport.
         info: Instance info (for logging).
-        env: Environment variables to pass to the RPyC service.
-        use_systemd: If True, use systemd (VMs). If False, use nohup (Docker).
-        rpyc_timeout: Timeout for RPyC server to become ready.
+        env: Environment variables (unused, kept for compatibility).
+        use_systemd: Unused, kept for backwards compatibility.
+        rpyc_timeout: Unused, kept for backwards compatibility.
         log_prefix: Prefix for log messages.
 
     Raises:
         RuntimeError: If wheel build or installation fails.
-        TimeoutError: If RPyC server doesn't start in time.
     """
-    from skyward.constants import RPYC_PORT
     from skyward.providers.common import build_wheel, _build_wheel_install_script
 
     # Build wheel locally
@@ -259,63 +255,7 @@ async def install_local_skyward(
     if stderr:
         logger.debug(f"{log_prefix}Install script stderr:\n{stderr}")
 
-    # Wait for RPyC to be ready by connecting directly via SSH tunnel
-    logger.info(f"{log_prefix}Waiting for RPyC server on {info.id}...")
-
-    import socket
-
-    import rpyc
-
-    from skyward.retry import retry
-
-    # Find a free local port for the tunnel
-    def find_free_port() -> int:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("127.0.0.1", 0))
-            return s.getsockname()[1]
-
-    local_port = find_free_port()
-    ssh_conn = transport._require_connection()
-
-    # Create local port forwarding: local_port -> remote localhost:RPYC_PORT
-    listener = await ssh_conn.forward_local_port("", local_port, "127.0.0.1", RPYC_PORT)
-    logger.debug(f"{log_prefix}SSH tunnel: localhost:{local_port} -> remote:localhost:{RPYC_PORT}")
-
-    try:
-        @retry(max_attempts=int(rpyc_timeout * 2), base_delay=0.5)
-        async def connect_rpyc() -> None:
-            def try_connect() -> None:
-                c = rpyc.connect(
-                    "127.0.0.1",
-                    port=local_port,
-                    config={"allow_pickle": True, "sync_request_timeout": 5},
-                )
-                result = c.root.ping()
-                c.close()
-                if result != "pong":
-                    raise ConnectionError("RPyC ping failed")
-
-            await asyncio.get_event_loop().run_in_executor(None, try_connect)
-
-        await connect_rpyc()
-        logger.info(f"{log_prefix}RPyC server ready on {info.id}")
-
-    except Exception as e:
-        # Timeout - gather debug info
-        _, ps_out, _ = await transport.run("ps aux | grep 'skyward.rpc' | grep -v grep || true")
-        _, log_out, _ = await transport.run("tail -30 /var/log/skyward-rpyc.log 2>/dev/null || echo 'No log file'")
-
-        if ps_out.strip():
-            logger.error(f"{log_prefix}RPyC process found but not listening:\n{ps_out}")
-            logger.error(f"{log_prefix}RPyC server log:\n{log_out}")
-        else:
-            logger.error(f"{log_prefix}RPyC process not running. Log output:\n{log_out}")
-
-        raise TimeoutError(f"RPyC server not ready on {info.id} after {rpyc_timeout}s") from e
-
-    finally:
-        listener.close()
-        await listener.wait_closed()
+    logger.info(f"{log_prefix}Local skyward wheel installed on {info.id}")
 
 
 async def run_bootstrap_via_ssh(

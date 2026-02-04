@@ -53,7 +53,7 @@ VENV_DIR: Final = f"{SKYWARD_DIR}/.venv"
 
 UV_INSTALL_URL: Final = "https://astral.sh/uv/install.sh"
 DEFAULT_PYTHON: Final = "3.13"
-RPYC_PORT: Final = 18861
+RAY_CLIENT_PORT: Final = 10001
 
 # Timeouts (in seconds)
 SSM_AGENT_TIMEOUT: Final = 600

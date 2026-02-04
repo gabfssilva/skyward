@@ -1,33 +1,35 @@
-"""RPyC-based remote function executor for v2.
+"""Ray Jobs API executor for remote function execution.
 
-Provides async execution of functions on remote instances via RPyC.
-Uses SSH tunnel (local port forwarding) to access RPyC on localhost.
+Provides async execution of functions on remote Ray cluster via Ray Jobs API.
+Uses SSH tunnel (local port forwarding) to access Dashboard/Jobs API on head node.
+
+This replaces Ray Client which had stability issues over SSH tunnels (gRPC timeouts).
+Ray Jobs API uses HTTP which is more robust for tunneled connections.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
+import base64
 import socket
+import tempfile
+import uuid
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
 import asyncssh
-import rpyc
 from loguru import logger
 
+from .transport.ssh import SSHTransport
+from .utils.serialization import deserialize, serialize
 
-# RPyC server port (same as v1)
-RPYC_PORT = 18861
+# Ray Dashboard/Jobs API port (head node)
+RAY_DASHBOARD_PORT = 8265
 
-# Events log path on remote (same as v1)
-EVENTS_LOG = "/opt/skyward/events.jsonl"
-
-
-class _RPyCNotReady(Exception):
-    """RPyC not connected yet - retry."""
+# Threshold for using file vs env var for payload
+PAYLOAD_SIZE_THRESHOLD = 50 * 1024  # 50KB
 
 
 def _find_free_port() -> int:
@@ -38,335 +40,418 @@ def _find_free_port() -> int:
 
 
 @dataclass
-class AsyncRPyCExecutor:
-    """Async RPyC executor for remote function execution.
+class Executor:
+    """Ray Jobs API executor for remote function execution.
 
-    Uses SSH tunnel (local port forwarding) to access RPyC server.
-    The RPyC server runs on localhost:18861 on the remote machine,
-    and we forward a local port to it via SSH.
+    Uses SSH tunnel (local port forwarding) to access Ray Dashboard/Jobs API.
+    The Ray head node runs Dashboard on port 8265, and we forward
+    a local port to it via SSH.
+
+    Jobs are submitted with a runner script (job_runner.py) that:
+    1. Deserializes the function + args from env var or file
+    2. Executes with optional node placement via Ray resources
+    3. Writes result to file for retrieval
 
     Example:
-        executor = AsyncRPyCExecutor(
-            host="10.0.0.1",
+        executor = Executor(
+            head_ip="10.0.0.1",
             user="ubuntu",
             key_path="~/.ssh/id_rsa",
+            num_nodes=4,
         )
 
-        async with executor:
-            result = await executor.execute(fn, *args, **kwargs)
+        await executor.connect()
+        result = await executor.execute(fn, *args, node_id=0)
+        results = await executor.broadcast(fn, *args)
+        await executor.disconnect()
     """
 
-    host: str
+    head_ip: str
     user: str
     key_path: str
+    num_nodes: int = 1
     ssh_port: int = 22
-    remote_port: int = RPYC_PORT
-    connect_timeout: float = 60.0
+    remote_port: int = RAY_DASHBOARD_PORT
+    connect_timeout: float = 120.0
+    job_timeout: float = 600.0  # Max time to wait for a job
+    env_vars: dict[str, str] = field(default_factory=dict)  # Env vars for all jobs
+    pool_infos: list[str] = field(default_factory=list)  # COMPUTE_POOL JSON per node
 
     _ssh_conn: asyncssh.SSHClientConnection | None = field(default=None, repr=False)
     _local_port: int = field(default=0, repr=False)
     _listener: asyncssh.SSHListener | None = field(default=None, repr=False)
-    _conn: rpyc.Connection | None = field(default=None, repr=False)
-    _bg_thread: rpyc.BgServingThread | None = field(default=None, repr=False)
-    _log_task: asyncio.Task[None] | None = field(default=None, repr=False)
-    _log_callback: Callable[[str, str], None] | None = field(default=None, repr=False)
+    _connected: bool = field(default=False, repr=False)
+    _transport: SSHTransport | None = field(default=None, repr=False)
 
     async def connect(self) -> None:
-        """Establish SSH tunnel and RPyC connection."""
-        if self._conn is not None:
+        """Establish SSH tunnel to Ray Dashboard/Jobs API."""
+        if self._connected:
             return
 
-        # Connect SSH
+        # Connect SSH with keepalive to prevent tunnel drops
+        logger.debug(f"Connecting SSH to {self.head_ip}:{self.ssh_port}")
         self._ssh_conn = await asyncssh.connect(
-            self.host,
+            self.head_ip,
             port=self.ssh_port,
             username=self.user,
             client_keys=[self.key_path],
             known_hosts=None,
             connect_timeout=self.connect_timeout,
+            keepalive_interval=15,
+            keepalive_count_max=4,
         )
 
-        # Create local port forwarding
+        # Create local port forwarding to Dashboard
         self._local_port = _find_free_port()
         self._listener = await self._ssh_conn.forward_local_port(
-            "",  # Listen on all interfaces
+            "127.0.0.1",  # Explicit IPv4 localhost binding
             self._local_port,
             "127.0.0.1",  # Forward to localhost on remote
             self.remote_port,
         )
 
-        logger.debug(f"SSH tunnel: localhost:{self._local_port} -> {self.host}:localhost:{self.remote_port}")
+        # Brief delay for tunnel stabilization
+        await asyncio.sleep(0.5)
 
-        # Wait for RPyC to be ready
-        self._conn = await self._connect_rpyc()
+        logger.debug(
+            f"SSH tunnel: localhost:{self._local_port} -> "
+            f"{self.head_ip}:localhost:{self.remote_port}"
+        )
 
-        # Start background thread for callbacks
-        self._bg_thread = rpyc.BgServingThread(self._conn)
+        # Create transport for file transfers
+        self._transport = SSHTransport(
+            host=self.head_ip,
+            user=self.user,
+            key_path=self.key_path,
+            port=self.ssh_port,
+        )
+        await self._transport.connect()
 
-        logger.debug(f"Connected to {self.host}")
+        # Verify Jobs API is accessible
+        await self._verify_connection()
 
-    async def _connect_rpyc(self) -> rpyc.Connection:
-        """Connect to RPyC server via local tunnel with retry."""
-        start = asyncio.get_event_loop().time()
-        attempt = 0
+        self._connected = True
+        logger.info(f"Connected to Ray cluster at {self.head_ip} (Jobs API)")
 
-        while asyncio.get_event_loop().time() - start < self.connect_timeout:
-            attempt += 1
+    async def _verify_connection(self) -> None:
+        """Verify Jobs API is accessible via the tunnel.
+
+        Retries for up to 30 seconds since the dashboard may take
+        time to become ready after Ray starts.
+        """
+        from ray.job_submission import JobSubmissionClient
+
+        address = f"http://localhost:{self._local_port}"
+        logger.debug(f"Verifying Jobs API at {address}...")
+
+        max_attempts = 15
+        delay = 2.0
+
+        for attempt in range(max_attempts):
             try:
-                conn = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    self._connect_rpyc_sync,
-                )
-                return conn
-            except _RPyCNotReady:
-                if attempt % 10 == 0:
-                    logger.debug(f"RPyC connection attempt {attempt} for {self.host}")
-                await asyncio.sleep(0.5)
+                # JobSubmissionClient operations are sync, run in executor
+                def check_connection() -> None:
+                    client = JobSubmissionClient(address)
+                    # List jobs to verify connection (empty list is fine)
+                    client.list_jobs()
 
-        raise TimeoutError(f"Could not connect to RPyC on {self.host}")
+                await asyncio.get_event_loop().run_in_executor(None, check_connection)
+                logger.debug("Jobs API connection verified")
+                return
+            except (ConnectionError, OSError) as e:
+                if attempt < max_attempts - 1:
+                    logger.debug(f"Jobs API not ready (attempt {attempt + 1}/{max_attempts}): {e}")
+                    await asyncio.sleep(delay)
+                else:
+                    raise
 
-    def _connect_rpyc_sync(self) -> rpyc.Connection:
-        """Sync RPyC connection via local tunnel (runs in executor)."""
-        try:
-            # Connect to local forwarded port
-            conn = rpyc.connect(
-                "127.0.0.1",
-                port=self._local_port,
-                config={
-                    "allow_pickle": True,
-                    "allow_public_attrs": True,
-                    "sync_request_timeout": 3600,
-                },
-            )
-            if conn.root.ping() == "pong":
-                return conn
-        except Exception:
-            pass
-        raise _RPyCNotReady()
+    async def disconnect(self) -> None:
+        """Disconnect from Ray cluster and close SSH tunnel."""
+        logger.debug(f"Disconnecting from {self.head_ip}")
 
-    async def close(self) -> None:
-        """Close RPyC connection and SSH tunnel."""
-        logger.debug(f"Executor close starting for {self.host}")
+        self._connected = False
 
-        # Stop log streaming first
-        self.stop_log_streaming()
-
-        if self._bg_thread is not None:
-            logger.debug("Stopping BgServingThread...")
+        if self._transport is not None:
             with suppress(Exception):
-                self._bg_thread.stop()
-            self._bg_thread = None
-            logger.debug("BgServingThread stopped")
-
-        if self._conn is not None:
-            logger.debug("Closing RPyC connection...")
-            conn = self._conn
-            self._conn = None
-            # RPyC close can hang waiting for remote ack, run with timeout
-            try:
-                await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(None, conn.close),
-                    timeout=5.0,
-                )
-            except (TimeoutError, asyncio.TimeoutError):
-                logger.debug("RPyC close timed out, continuing anyway")
-            except Exception:
-                pass
-            logger.debug("RPyC connection closed")
+                await self._transport.close()
+            self._transport = None
 
         if self._listener is not None:
-            logger.debug("Closing SSH listener...")
             with suppress(Exception):
                 self._listener.close()
             self._listener = None
-            logger.debug("SSH listener closed")
 
         if self._ssh_conn is not None:
-            logger.debug("Closing SSH connection...")
             with suppress(Exception):
                 self._ssh_conn.close()
-            # Wait for close with timeout to avoid hanging
-            logger.debug("Waiting for SSH connection to close (5s timeout)...")
             with suppress(Exception):
                 await asyncio.wait_for(self._ssh_conn.wait_closed(), timeout=5.0)
             self._ssh_conn = None
-            logger.debug("SSH connection closed")
 
-        logger.debug(f"Executor close completed for {self.host}")
+        logger.debug(f"Disconnected from {self.head_ip}")
 
-    async def __aenter__(self) -> AsyncRPyCExecutor:
+    async def __aenter__(self) -> Executor:
         await self.connect()
         return self
 
     async def __aexit__(self, *_: object) -> None:
-        await self.close()
+        await self.disconnect()
 
     @property
     def is_connected(self) -> bool:
         """Whether connection is established."""
-        return self._conn is not None
-
-    def ping(self) -> bool:
-        """Check if RPyC connection is alive."""
-        if self._conn is None:
-            return False
-        try:
-            return self._conn.root.ping() == "pong"
-        except Exception:
-            return False
+        return self._connected
 
     async def execute[T](
         self,
         fn: Callable[..., T],
         *args: Any,
+        node_id: int | None = None,
         **kwargs: Any,
     ) -> T:
-        """Execute function remotely and return result.
+        """Execute function on cluster via Ray Jobs API.
 
         Args:
-            fn: Function to execute.
+            fn: Function to execute remotely.
             *args: Positional arguments.
+            node_id: Specific node to run on (0 to num_nodes-1), or None for any.
             **kwargs: Keyword arguments.
 
         Returns:
             Result of function execution.
 
         Raises:
-            RuntimeError: If not connected.
-            ExecutionError: If remote execution fails.
+            RuntimeError: If not connected or job fails.
         """
-        if self._conn is None:
+        if not self._connected:
             raise RuntimeError("Not connected. Call connect() first.")
 
-        from skyward.utils.serialization import deserialize, serialize
+        fn_name = getattr(fn, "__name__", str(fn))
+        job_id = f"skyward-{uuid.uuid4().hex[:8]}"
+        logger.debug(f"execute({fn_name}) submitting job {job_id}, node_id={node_id}")
 
-        # Serialize function and arguments (with compression)
-        fn_bytes = serialize(fn)
-        args_bytes = serialize(args)
-        kwargs_bytes = serialize(kwargs)
+        # Build payload
+        payload = {
+            "fn": fn,
+            "args": args,
+            "kwargs": kwargs,
+            "mode": "single",
+            "node_id": node_id,
+            "num_nodes": self.num_nodes,
+            "pool_infos": self.pool_infos,
+        }
 
-        # Execute remotely (in executor since rpyc is sync)
-        result_bytes = await asyncio.get_event_loop().run_in_executor(
-            None,
-            self._execute_sync,
-            fn_bytes,
-            args_bytes,
-            kwargs_bytes,
-        )
+        # Submit and wait for result
+        result = await self._submit_and_wait(job_id, payload)
+        logger.debug(f"execute({fn_name}) completed")
+        return result
 
-        # Deserialize result (handles compression automatically)
-        response = deserialize(result_bytes)
-        if response.get("error"):
-            raise RuntimeError(f"Remote execution failed: {response['error']}")
-
-        return response["result"]
-
-    def _execute_sync(
+    async def broadcast[T](
         self,
-        fn_bytes: bytes,
-        args_bytes: bytes,
-        kwargs_bytes: bytes,
-    ) -> bytes:
-        """Sync execution (runs in executor)."""
-        return self._conn.root.execute(fn_bytes, args_bytes, kwargs_bytes)
+        fn: Callable[..., T],
+        *args: Any,
+        **kwargs: Any,
+    ) -> list[T]:
+        """Execute function on all nodes via Ray Jobs API.
+
+        Args:
+            fn: Function to execute on each node.
+            *args: Positional arguments.
+            **kwargs: Keyword arguments.
+
+        Returns:
+            List of results from each node, ordered by node_id.
+        """
+        if not self._connected:
+            raise RuntimeError("Not connected. Call connect() first.")
+
+        fn_name = getattr(fn, "__name__", str(fn))
+        job_id = f"skyward-{uuid.uuid4().hex[:8]}"
+        logger.debug(f"broadcast({fn_name}) submitting job {job_id}")
+
+        # Build payload
+        payload = {
+            "fn": fn,
+            "args": args,
+            "kwargs": kwargs,
+            "mode": "broadcast",
+            "num_nodes": self.num_nodes,
+            "pool_infos": self.pool_infos,
+        }
+
+        # Submit and wait for result
+        result = await self._submit_and_wait(job_id, payload)
+        logger.debug(f"broadcast({fn_name}) completed")
+        return result
+
+    async def _submit_and_wait[T](self, job_id: str, payload: dict[str, Any]) -> T:
+        """Submit job and wait for result.
+
+        Handles payload transfer (env var or file), job submission,
+        status polling, and result retrieval.
+        """
+        from ray.job_submission import JobStatus, JobSubmissionClient
+
+        assert self._transport is not None
+
+        # Serialize payload
+        payload_bytes = serialize(payload)
+        payload_size = len(payload_bytes)
+
+        # Determine transfer method
+        remote_payload_file = f"/tmp/skyward_payload_{job_id}.pkl"
+        remote_result_file = f"/tmp/skyward_result_{job_id}.pkl"
+        use_file = payload_size >= PAYLOAD_SIZE_THRESHOLD
+
+        # Set up environment (include user env vars like KERAS_BACKEND)
+        env_vars = {**self.env_vars, "SKYWARD_RESULT_FILE": remote_result_file}
+
+        # Use the Python from the skyward venv
+        python_bin = "/opt/skyward/.venv/bin/python"
+
+        if use_file:
+            # Upload payload file
+            logger.debug(f"Uploading payload ({payload_size} bytes) to {remote_payload_file}")
+            await self._transport.write_bytes(remote_payload_file, payload_bytes)
+            entrypoint = f"{python_bin} -m skyward.job_runner {remote_payload_file}"
+        else:
+            # Use env var for small payloads
+            payload_b64 = base64.b64encode(payload_bytes).decode("ascii")
+            env_vars["SKYWARD_PAYLOAD"] = payload_b64
+            entrypoint = f"{python_bin} -m skyward.job_runner"
+
+        # Submit job
+        address = f"http://localhost:{self._local_port}"
+
+        def submit_job() -> str:
+            client = JobSubmissionClient(address)
+            return client.submit_job(
+                entrypoint=entrypoint,
+                submission_id=job_id,
+                entrypoint_num_cpus=0,  # Don't reserve CPUs for entrypoint
+                runtime_env={"env_vars": env_vars},
+            )
+
+        logger.debug(f"Submitting job {job_id}...")
+        submitted_id = await asyncio.get_event_loop().run_in_executor(None, submit_job)
+        logger.debug(f"Job submitted: {submitted_id}")
+
+        # Poll for completion
+        terminal_states = {
+            JobStatus.SUCCEEDED,
+            JobStatus.FAILED,
+            JobStatus.STOPPED,
+        }
+
+        def get_status() -> JobStatus:
+            client = JobSubmissionClient(address)
+            return client.get_job_status(job_id)
+
+        def get_logs() -> str:
+            client = JobSubmissionClient(address)
+            return client.get_job_logs(job_id)
+
+        start_time = asyncio.get_event_loop().time()
+        last_status = None
+        last_log_len = 0
+
+        while True:
+            status = await asyncio.get_event_loop().run_in_executor(None, get_status)
+
+            if status != last_status:
+                logger.debug(f"Job {job_id} status: {status}")
+                last_status = status
+
+            # Stream logs incrementally
+            logs = await asyncio.get_event_loop().run_in_executor(None, get_logs)
+            if logs and len(logs) > last_log_len:
+                new_logs = logs[last_log_len:]
+                for line in new_logs.rstrip("\n").split("\n"):
+                    if line:
+                        logger.info(f"[job] {line}")
+                last_log_len = len(logs)
+
+            if status in terminal_states:
+                break
+
+            # Check timeout
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed > self.job_timeout:
+                # Try to stop the job
+                with suppress(Exception):
+                    def stop_job() -> None:
+                        client = JobSubmissionClient(address)
+                        client.stop_job(job_id)
+                    await asyncio.get_event_loop().run_in_executor(None, stop_job)
+                raise TimeoutError(f"Job {job_id} timed out after {self.job_timeout}s")
+
+            await asyncio.sleep(0.5)
+
+        # Check final status
+        if status == JobStatus.FAILED:
+            logs = await asyncio.get_event_loop().run_in_executor(None, get_logs)
+            raise RuntimeError(f"Job {job_id} failed:\n{logs}")
+
+        if status == JobStatus.STOPPED:
+            raise RuntimeError(f"Job {job_id} was stopped")
+
+        # Download result
+        logger.debug(f"Downloading result from {remote_result_file}")
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pkl") as tmp:
+            local_result_file = tmp.name
+
+        try:
+            await self._transport.download(remote_result_file, local_result_file)
+
+            with open(local_result_file, "rb") as f:
+                result_bytes = f.read()
+
+            result = deserialize(result_bytes)
+
+            # Check for error in result
+            if isinstance(result, dict) and "error" in result and "traceback" in result:
+                raise RuntimeError(f"Job execution error: {result['error']}\n{result['traceback']}")
+
+            return result
+        finally:
+            # Cleanup local temp file
+            import os
+            with suppress(Exception):
+                os.unlink(local_result_file)
+
+            # Cleanup remote files
+            with suppress(Exception):
+                await self._transport.run("rm", "-f", remote_result_file, remote_payload_file)
 
     async def setup_cluster(
         self,
         pool_info_json: str,
         env_vars: dict[str, str],
     ) -> None:
-        """Setup cluster environment on remote instance.
+        """Setup cluster environment on all nodes.
+
+        Sets COMPUTE_POOL and additional environment variables
+        on each node for distributed training coordination.
 
         Args:
             pool_info_json: JSON string for COMPUTE_POOL env var.
             env_vars: Additional environment variables.
         """
-        if self._conn is None:
+        if not self._connected:
             raise RuntimeError("Not connected. Call connect() first.")
 
-        from skyward.utils.serialization import serialize
+        def setup_env(pool_json: str, extra_vars: dict[str, str]) -> str:
+            import os
+            os.environ["COMPUTE_POOL"] = pool_json
+            for key, value in extra_vars.items():
+                os.environ[key] = value
+            return "ok"
 
-        env_bytes = serialize(env_vars)
-
-        await asyncio.get_event_loop().run_in_executor(
-            None,
-            self._setup_cluster_sync,
-            pool_info_json,
-            env_bytes,
-        )
-
-    def _setup_cluster_sync(
-        self,
-        pool_info_json: str,
-        env_bytes: bytes,
-    ) -> str:
-        """Sync setup_cluster (runs in executor)."""
-        return self._conn.root.setup_cluster(pool_info_json, env_bytes)
-
-    def start_log_streaming(
-        self,
-        callback: Callable[[str, str], None],
-    ) -> None:
-        """Start streaming logs from remote events.jsonl.
-
-        Args:
-            callback: Function called with (content, stream) for each log line.
-                      stream is "stdout" or "stderr".
-        """
-        if self._ssh_conn is None:
-            raise RuntimeError("Not connected. Call connect() first.")
-
-        if self._log_task is not None:
-            return  # Already streaming
-
-        self._log_callback = callback
-        self._log_task = asyncio.create_task(self._stream_logs())
-
-    async def _stream_logs(self) -> None:
-        """Background task that streams logs from remote."""
-        if self._ssh_conn is None:
-            return
-
-        try:
-            # Run tail -F on events.jsonl
-            process = await self._ssh_conn.create_process(
-                f"tail -F {EVENTS_LOG} 2>/dev/null",
-                encoding="utf-8",
-            )
-
-            assert process.stdout is not None
-
-            async for line in process.stdout:
-                line = line.strip()
-                if not line:
-                    continue
-
-                try:
-                    event = json.loads(line)
-                    # Only emit log events (type="log")
-                    if event.get("type") == "log":
-                        content = event.get("content", "")
-                        stream = event.get("stream", "stdout")
-                        if self._log_callback:
-                            self._log_callback(content, stream)
-                except json.JSONDecodeError:
-                    # Skip malformed lines
-                    pass
-
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.debug(f"Log streaming error for {self.host}: {e}")
-
-    def stop_log_streaming(self) -> None:
-        """Stop log streaming."""
-        if self._log_task is not None:
-            self._log_task.cancel()
-            self._log_task = None
-            self._log_callback = None
+        # Setup on all nodes
+        await self.broadcast(setup_env, pool_info_json, env_vars)
 
 
 __all__ = [
-    "AsyncRPyCExecutor",
-    "RPYC_PORT",
+    "Executor",
+    "RAY_DASHBOARD_PORT",
 ]

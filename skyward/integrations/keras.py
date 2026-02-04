@@ -41,19 +41,25 @@ def keras[**P, R](
 
             pool = instance_info()
 
+            print(f"[keras] pool={pool}")
+
             if pool and pool.total_nodes > 1:
                 import keras
 
                 keras.utils.set_random_seed(42)
                 devices = keras.distribution.list_devices()
 
+                print(f"[keras] devices={devices}")
+
                 if devices:
+                    print("[keras] Setting up DataParallel distribution")
                     keras.distribution.set_distribution(
                         keras.distribution.DataParallel(
                             devices=devices,
                             auto_shard_dataset=False,
                         )
                     )
+                    print("[keras] DataParallel distribution set")
 
             return fn(*args, **kwargs)
 

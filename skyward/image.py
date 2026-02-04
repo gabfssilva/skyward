@@ -21,24 +21,20 @@ from .bootstrap import (
     env_export,
     install_uv,
     instance_timeout,
-    nohup_service,
     phase,
     phase_simple,
     shell_vars,
     start_metrics,
-    systemd,
     uv_add,
     uv_init,
-    wait_for_port,
 )
-from .bootstrap import rpyc_service_unit
 
 
 # Skyward installation source
 type SkywardSource = Literal["local", "github", "pypi"]
 
-# RPyC server port
-RPYC_PORT = 18861
+# Ray client port
+RAY_CLIENT_PORT = 10001
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +137,7 @@ class Image:
         ttl: int = 0,
         preamble: Op | None = None,
         postamble: Op | None = None,
-        use_systemd: bool = True,
+        use_systemd: bool = True,  # noqa: ARG002 - kept for compatibility
     ) -> str:
         """Generate bootstrap script for cloud-init/user_data.
 
@@ -152,7 +148,7 @@ class Image:
             ttl: Auto-shutdown timeout in seconds (0 = disabled).
             preamble: Op to execute first.
             postamble: Op to execute last.
-            use_systemd: If True, use systemd for RPyC service.
+            use_systemd: Unused (kept for compatibility).
 
         Returns:
             Complete shell script for cloud-init.
@@ -178,41 +174,17 @@ class Image:
                 "deps",
                 uv_add(
                     "cloudpickle",
-                    "rpyc",
                     *self.pip,
                     extra_index=self.pip_extra_index_url,
                 ),
             ),
         ])
 
-        # Install skyward
+        # Install skyward (skip for local - wheel uploaded separately)
         if self.skyward_source == "github":
             ops.append(phase("skyward", uv_add("git+https://github.com/gabfssilva/skyward.git")))
         elif self.skyward_source == "pypi":
             ops.append(phase("skyward", uv_add("skyward")))
-
-        # Start RPyC service
-        if self.skyward_source != "local":
-            if use_systemd:
-                ops.append(
-                    phase_simple(
-                        "server",
-                        systemd("skyward-rpyc", rpyc_service_unit(env=self.env)),
-                        wait_for_port(RPYC_PORT),
-                    )
-                )
-            else:
-                ops.append(
-                    phase_simple(
-                        "server",
-                        nohup_service(
-                            "skyward-rpyc",
-                            ".venv/bin/python -m skyward.rpc",
-                            env=self.env,
-                        ),
-                        wait_for_port(RPYC_PORT),
-                    )
-                )
 
         ops.append(postamble)
         ops.append(emit_bootstrap_complete())
@@ -229,5 +201,5 @@ __all__ = [
     "Image",
     "SkywardSource",
     "DEFAULT_IMAGE",
-    "RPYC_PORT",
+    "RAY_CLIENT_PORT",
 ]

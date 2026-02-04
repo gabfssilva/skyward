@@ -6,7 +6,7 @@ Customization happens via passing operations, not configuration flags.
 
 from __future__ import annotations
 
-from ..constants import DEFAULT_PYTHON, RPYC_PORT, SKYWARD_DIR
+from ..constants import DEFAULT_PYTHON, SKYWARD_DIR
 
 from .compose import Op, bootstrap
 from .ops import (
@@ -16,11 +16,8 @@ from .ops import (
     install_uv,
     instance_timeout,
     pip,
-    systemd,
     uv,
-    wait_for_port,
 )
-from .worker import rpyc_service_unit
 
 
 def skyward_bootstrap(
@@ -50,7 +47,7 @@ def skyward_bootstrap(
         preamble: Operations to run before everything (e.g., grid_driver, inject_ssh_key).
         pip_ops: Custom pip operations. Default: pip install packages.
         wheel_ops: Custom wheel operations. Default: SCP placeholder.
-        server_ops: Custom server operations. Default: single RPyC.
+        server_ops: Custom server operations. Default: Ray head (node 0).
         postamble: Operations to run at the end.
 
     Returns:
@@ -72,17 +69,19 @@ def skyward_bootstrap(
             wheel_ops=(s3_wheel(bucket, key), checkpoint(".step_wheel")),
         )
 
-        # With workers
+        # With Ray (requires passing server_ops from provider)
+        from skyward.bootstrap.ray import server_ops as ray_server_ops
         script = skyward_bootstrap(
             python="3.12",
             pip_packages=("torch",),
-            server_ops=worker_server_ops(configs, limits, partition_script),
+            server_ops=ray_server_ops(node_id=0, head_ip=None, num_gpus=1),
         )
     """
     # Default pip operations: install base + user packages
+    # Note: Ray is installed via server_ops, not here
     if pip_ops is None:
         pip_ops = (
-            pip("cloudpickle", "rpyc", *pip_packages),
+            pip("cloudpickle", *pip_packages),
             checkpoint(".step_pip"),
         )
 
@@ -93,12 +92,15 @@ def skyward_bootstrap(
             checkpoint(".step_wheel"),
         )
 
-    # Default server operations: single RPyC server
+    # Default server operations: Ray head/worker
+    # NOTE: Provider must pass server_ops with correct node_id and head_ip
+    # This default only works for single-node clusters (head only)
     if server_ops is None:
-        server_ops = (
-            systemd("skyward-rpyc", rpyc_service_unit()),
-            wait_for_port(RPYC_PORT),
-            checkpoint(".step_server"),
+        from .ray import server_ops as ray_server_ops
+        server_ops = ray_server_ops(
+            node_id=0,
+            head_ip=None,
+            num_gpus=1,
         )
 
     # Build operations list

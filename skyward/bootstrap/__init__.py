@@ -74,17 +74,25 @@ from .ops import (
 # Unified generator
 from .unified import skyward_bootstrap
 
-# Worker operations
+# Worker operations (legacy, for MIG support)
 from .worker import (
     cgroups,
     mig_setup,
-    rpyc_service_unit,
     start_workers,
     wait_for_workers,
     worker_envs,
     worker_server_ops,
     worker_service_template,
     worker_service_unit,
+)
+
+# Ray operations
+from .ray import (
+    ray_head_start,
+    ray_install,
+    ray_service,
+    ray_worker_start,
+    server_ops as ray_server_ops,
 )
 
 __all__ = [
@@ -132,7 +140,7 @@ __all__ = [
     "or_else",
     "group",
     "subshell",
-    # Worker operations
+    # Worker operations (legacy, for MIG support)
     "cgroups",
     "worker_envs",
     "mig_setup",
@@ -141,7 +149,12 @@ __all__ = [
     "start_workers",
     "wait_for_workers",
     "worker_server_ops",
-    "rpyc_service_unit",
+    # Ray operations
+    "ray_install",
+    "ray_head_start",
+    "ray_worker_start",
+    "ray_service",
+    "ray_server_ops",
     # Unified generator
     "skyward_bootstrap",
 ]
