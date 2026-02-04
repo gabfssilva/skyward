@@ -1,6 +1,6 @@
-"""Background monitors for preemption detection and health checks.
+"""Background monitors and event streaming.
 
-Uses the @monitor decorator for periodic background tasks with DI.
+Provides instance registry and event streaming for bootstrap monitoring.
 """
 
 from __future__ import annotations
@@ -11,13 +11,12 @@ from typing import Any
 
 from injector import Module, provider, singleton
 
-from .app import component, monitor
+from .app import component
 from .bus import AsyncEventBus
 from .events import (
     InstanceDestroyed,
     InstanceId,
     InstanceMetadata,
-    InstancePreempted,
     InstanceProvisioned,
     ShutdownRequested,
 )
@@ -92,129 +91,6 @@ class MonitorModule(Module):
 # =============================================================================
 # Preemption Monitor
 # =============================================================================
-
-
-@monitor(interval=5.0, name="preemption_monitor")
-async def check_preemption(
-    registry: InstanceRegistry,
-    bus: AsyncEventBus,
-) -> None:
-    """Check for spot instance preemptions.
-
-    AWS spot instances get a 2-minute warning before termination.
-    This monitor polls instance metadata to detect preemption early.
-    """
-    for info in registry.spot_instances:
-        is_preempted, reason = await _check_instance_preemption(info)
-        if is_preempted:
-            bus.emit(
-                InstancePreempted(
-                    instance=info,
-                    reason=reason or "spot-interruption",
-                )
-            )
-
-
-async def _check_instance_preemption(info: InstanceMetadata) -> tuple[bool, str | None]:
-    """Check if instance was preempted via provider API.
-
-    TODO: Implement actual preemption detection per provider:
-    - AWS: Check instance-action metadata endpoint
-    - GCP: Check preemption metadata
-    - Vast.ai: Check instance status
-
-    For now, returns False (not preempted).
-    """
-    # This would normally:
-    # 1. SSH into instance and curl metadata endpoint
-    # 2. Or use provider API to check status
-    _ = info
-    return False, None
-
-
-# =============================================================================
-# Health Monitor
-# =============================================================================
-
-
-@monitor(interval=30.0, name="health_monitor")
-async def check_health(
-    registry: InstanceRegistry,
-    bus: AsyncEventBus,
-) -> None:
-    """Health check via SSH ping.
-
-    Detects instances that have become unreachable (network issues,
-    crashes, etc.) and emits preemption events to trigger replacement.
-    """
-    for info in registry.instances:
-        if not await _ping_instance(info):
-            bus.emit(
-                InstancePreempted(
-                    instance=info,
-                    reason="unreachable",
-                )
-            )
-
-
-async def _ping_instance(info: InstanceMetadata) -> bool:
-    """Check if instance is reachable via SSH.
-
-    TODO: Implement actual SSH health check.
-    """
-    # This would normally try SSH connection
-    _ = info
-    return True
-
-
-# =============================================================================
-# AWS-Specific Preemption Detection
-# =============================================================================
-
-
-async def check_aws_spot_interruption(
-    instance_id: str,
-    region: str,
-) -> tuple[bool, str | None]:
-    """Check AWS instance for spot interruption via EC2 API.
-
-    AWS marks instances as 'terminated' with a StateTransitionReason
-    containing 'Spot' or 'capacity' when interrupted.
-    """
-    import aioboto3
-
-    session = aioboto3.Session()
-    async with session.client("ec2", region_name=region) as ec2:
-        try:
-            response = await ec2.describe_instances(InstanceIds=[instance_id])
-
-            for reservation in response.get("Reservations", []):
-                for instance in reservation.get("Instances", []):
-                    state = instance["State"]["Name"]
-
-                    if state in ("terminated", "shutting-down"):
-                        reason = instance.get("StateTransitionReason", "")
-                        if "spot" in reason.lower() or "capacity" in reason.lower():
-                            return True, "spot-interruption"
-                        return True, "terminated"
-
-                    # Check instance status for degraded hardware
-                    statuses = await ec2.describe_instance_status(
-                        InstanceIds=[instance_id],
-                        IncludeAllInstances=True,
-                    )
-                    for status in statuses.get("InstanceStatuses", []):
-                        instance_status = status.get("InstanceStatus", {}).get("Status")
-                        system_status = status.get("SystemStatus", {}).get("Status")
-
-                        if instance_status == "impaired" or system_status == "impaired":
-                            return True, "hardware-impaired"
-
-            return False, None
-
-        except Exception:
-            # Instance might not exist anymore
-            return True, "not-found"
 
 
 # =============================================================================
@@ -497,12 +373,7 @@ class EventStreamer:
         finally:
             logger.debug(f"{log_prefix}Streaming ended")
 
-    async def _wait_for_ssh(
-        self,
-        transport: "SSHTransport",
-        log_prefix: str,  # noqa: ARG002 - kept for API compatibility
-        timeout: float = 300.0,  # noqa: ARG002 - transport handles retry
-    ) -> None:
+    async def _wait_for_ssh(self, transport: "SSHTransport") -> None:
         """Wait for SSH to be available.
 
         Retry logic is built into SSHTransport.connect().
@@ -517,9 +388,6 @@ class EventStreamer:
 __all__ = [
     "InstanceRegistry",
     "MonitorModule",
-    "check_preemption",
-    "check_health",
-    "check_aws_spot_interruption",
     "EventStreamer",
     "SSHCredentials",
     "SSHCredentialsRegistry",

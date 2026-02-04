@@ -122,11 +122,7 @@ def build_wheel() -> Path:
     return wheel_path
 
 
-def _build_wheel_install_script(
-    wheel_name: str,
-    env: dict[str, str] | None = None,  # noqa: ARG001
-    use_systemd: bool = True,  # noqa: ARG001
-) -> str:
+def _build_wheel_install_script(wheel_name: str) -> str:
     """Build wheel installation script.
 
     Installs the skyward wheel into the venv. Service startup (Ray)
@@ -134,8 +130,6 @@ def _build_wheel_install_script(
 
     Args:
         wheel_name: Name of the wheel file to install.
-        env: Unused (kept for backwards compatibility).
-        use_systemd: Unused (kept for backwards compatibility).
 
     Returns:
         Shell script string.

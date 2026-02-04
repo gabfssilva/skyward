@@ -377,9 +377,7 @@ class VastAIHandler:
         from skyward.providers.bootstrap import run_bootstrap_via_ssh, wait_for_ssh
 
         key_path = get_ssh_key_path()
-        bootstrap_script = cluster.spec.image.generate_bootstrap(
-            ttl=cluster.spec.ttl, use_systemd=False
-        )
+        bootstrap_script = cluster.spec.image.generate_bootstrap(ttl=cluster.spec.ttl)
 
         # Create waiter for bootstrap completion (resolved by BootstrapPhase handler)
         loop = asyncio.get_running_loop()
@@ -424,7 +422,6 @@ class VastAIHandler:
         if cluster.spec.image.skyward_source == "local":
             await self._install_local_skyward(
                 event.instance,
-                cluster.spec,
                 event.instance.ip,
                 event.instance.ssh_port,
             )
@@ -650,15 +647,13 @@ echo "$IFACE $IP"
     async def _install_local_skyward(
         self,
         instance_info: Any,
-        spec: PoolSpec,
         ssh_host: str,
         ssh_port: int,
     ) -> None:
-        """Install local skyward wheel and start RPyC server."""
+        """Install local skyward wheel."""
         from skyward.providers.bootstrap import install_local_skyward, wait_for_ssh
 
         key_path = get_ssh_key_path()
-        env = spec.image.env if spec.image else None
 
         transport = await wait_for_ssh(
             host=ssh_host,
@@ -673,9 +668,6 @@ echo "$IFACE $IP"
             await install_local_skyward(
                 transport=transport,
                 info=instance_info,
-                env=env,
-                use_systemd=False,
-                rpyc_timeout=60.0,
                 log_prefix="VastAI: ",
             )
         finally:

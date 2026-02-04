@@ -79,20 +79,6 @@ def uv(python: str = "3.12", venv_path: str | None = None) -> Op:
     return lambda: f"uv venv --python {python} {path}"
 
 
-def activate(venv_path: str | None = None) -> Op:
-    """Activate virtual environment.
-
-    Args:
-        venv_path: Path to venv. Defaults to {SKYWARD_DIR}/venv.
-
-    Example:
-        >>> activate()()
-        'source /opt/skyward/venv/bin/activate'
-    """
-    path = venv_path or f"{SKYWARD_DIR}/venv"
-    return lambda: f"source {path}/bin/activate"
-
-
 def install_uv() -> Op:
     """Install uv package manager if not present.
 
@@ -205,94 +191,6 @@ def checkpoint(name: str) -> Op:
         'touch /opt/skyward/.step_apt'
     """
     return lambda: f"touch {SKYWARD_DIR}/{name}"
-
-
-# =============================================================================
-# Service Operations
-# =============================================================================
-
-
-def systemd(
-    name: str,
-    unit: str,
-    enable: bool = True,
-    start: bool = True,
-    daemon_reload: bool = True,
-) -> Op:
-    """Create and manage a systemd service.
-
-    Args:
-        name: Service name (without .service).
-        unit: Unit file content.
-        enable: Enable the service.
-        start: Start the service.
-        daemon_reload: Reload systemd daemon.
-
-    Example:
-        >>> systemd("myservice", "[Unit]\\nDescription=My Service")()
-        "cat > /etc/systemd/system/myservice.service << 'EOF'..."
-    """
-
-    def generate() -> str:
-        lines = [file(f"/etc/systemd/system/{name}.service", unit)()]
-        if daemon_reload:
-            lines.append("systemctl daemon-reload")
-        if enable:
-            lines.append(f"systemctl enable {name}")
-        if start:
-            lines.append(f"systemctl start {name}")
-        return "\n".join(lines)
-
-    return generate
-
-
-def systemd_template(name: str, unit: str) -> Op:
-    """Create a systemd template unit (name@.service).
-
-    Args:
-        name: Service name (e.g., "myservice" -> "myservice@.service").
-        unit: Unit file content with %i placeholders.
-
-    Example:
-        >>> systemd_template("worker", "[Service]\\nEnvironmentFile=worker-%i.env")()
-        "cat > /etc/systemd/system/worker@.service << 'EOF'..."
-    """
-    return file(f"/etc/systemd/system/{name}@.service", unit)
-
-
-def nohup_service(
-    name: str,
-    command: str,
-    working_dir: str = SKYWARD_DIR,
-    env: dict[str, str] | None = None,
-    log_file: str | None = None,
-) -> Op:
-    """Start a service in background using nohup (for Docker containers without systemd).
-
-    Args:
-        name: Service name (for identification).
-        command: Command to run.
-        working_dir: Working directory.
-        env: Environment variables.
-        log_file: Path to log file (default: /var/log/{name}.log).
-
-    Example:
-        >>> nohup_service("myservice", "python -m myapp", env={"FOO": "bar"})()
-        '# Start myservice in background\\ncd /opt/skyward\\nFOO="bar" nohup python...'
-    """
-
-    def generate() -> str:
-        log = log_file or f"/var/log/{name}.log"
-        env_exports = ""
-        if env:
-            env_exports = " ".join(f'{k}="{v}"' for k, v in env.items()) + " "
-
-        return f"""# Start {name} in background
-cd {working_dir}
-{env_exports}nohup {command} > {log} 2>&1 &
-echo $! > /var/run/{name}.pid"""
-
-    return generate
 
 
 def wait_for_port(port: int, timeout: int = 60, interval: float = 0.5) -> Op:
@@ -490,48 +388,6 @@ aws s3 cp s3://ec2-linux-nvidia-drivers/latest/NVIDIA-Linux-x86_64-580.105.08-gr
 chmod +x /tmp/nvidia-grid.run
 /tmp/nvidia-grid.run --silent --dkms
 rm -f /tmp/nvidia-grid.run"""
-
-
-def s3_pip_install(
-    bucket: str,
-    requirements_hash: str,
-    extra_index: str | None = None,
-) -> Op:
-    """Download and install pip requirements from S3.
-
-    Args:
-        bucket: S3 bucket name.
-        requirements_hash: Hash identifying the requirements file.
-        extra_index: Extra PyPI index URL.
-
-    Example:
-        >>> s3_pip_install("mybucket", "abc123")()
-        'aws s3 cp "s3://mybucket/skyward/requirements/abc123.txt"...'
-    """
-    extra = (
-        f' --extra-index-url "{extra_index}" --index-strategy unsafe-best-match'
-        if extra_index
-        else ""
-    )
-
-    return lambda: f"""aws s3 cp "s3://{bucket}/skyward/requirements/{requirements_hash}.txt" {SKYWARD_DIR}/requirements.txt
-uv pip install -r {SKYWARD_DIR}/requirements.txt{extra}"""
-
-
-def s3_wheel(bucket: str, wheel_key: str) -> Op:
-    """Download and install skyward wheel from S3.
-
-    Args:
-        bucket: S3 bucket name.
-        wheel_key: S3 key for the wheel file.
-
-    Example:
-        >>> s3_wheel("mybucket", "wheel/abc123/skyward-0.1.0.whl")()
-        'aws s3 cp "s3://mybucket/skyward/wheel/..."...'
-    """
-    return lambda: f"""WHEEL_FILE="/tmp/$(basename "{wheel_key}")"
-aws s3 cp "s3://{bucket}/skyward/{wheel_key}" "$WHEEL_FILE"
-cd {SKYWARD_DIR} && uv add "$WHEEL_FILE\""""
 
 
 # =============================================================================

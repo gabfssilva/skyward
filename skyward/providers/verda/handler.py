@@ -397,17 +397,16 @@ class VerdaHandler:
 
     def _generate_user_data(self, spec: PoolSpec) -> str:
         """Generate bootstrap user data script."""
-        return spec.image.generate_bootstrap(ttl=spec.ttl, use_systemd=True)
+        return spec.image.generate_bootstrap(ttl=spec.ttl)
 
     async def _install_local_skyward(
         self,
         info: Any,
         cluster: VerdaClusterState,
     ) -> None:
-        """Install local skyward wheel and start RPyC server."""
+        """Install local skyward wheel."""
         from skyward.providers.bootstrap import install_local_skyward, wait_for_ssh
 
-        env = cluster.spec.image.env if cluster.spec.image else None
         ssh_key_path = get_ssh_key_path()
 
         transport = await wait_for_ssh(
@@ -422,8 +421,6 @@ class VerdaHandler:
             await install_local_skyward(
                 transport=transport,
                 info=info,
-                env=env,
-                use_systemd=True,
                 log_prefix="Verda: ",
             )
         finally:

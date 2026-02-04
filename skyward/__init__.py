@@ -62,7 +62,7 @@ from .providers import AWS, VastAI, Verda
 # Image configuration
 # =============================================================================
 
-from .image import Image, DEFAULT_IMAGE, RAY_CLIENT_PORT
+from .image import Image, DEFAULT_IMAGE
 
 # =============================================================================
 # Metrics (lazy-loaded submodule)
@@ -266,7 +266,6 @@ __all__ = [
     # =================================================================
     "Image",
     "DEFAULT_IMAGE",
-    "RAY_CLIENT_PORT",
     # =================================================================
     # Metrics (submodule)
     # =================================================================

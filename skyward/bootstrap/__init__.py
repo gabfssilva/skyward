@@ -41,7 +41,6 @@ from .control import (
 
 # Core operations
 from .ops import (
-    activate,
     apt,
     cd,
     checkpoint,
@@ -53,18 +52,13 @@ from .ops import (
     install_uv,
     instance_timeout,
     mkdir,
-    nohup_service,
     phase,
     phase_simple,
     pip,
-    s3_pip_install,
-    s3_wheel,
     shell,
     shell_vars,
     start_metrics,
     stop_metrics,
-    systemd,
-    systemd_template,
     uv,
     uv_add,
     uv_init,
@@ -90,7 +84,6 @@ __all__ = [
     "bootstrap",
     "resolve",
     # Core operations
-    "activate",
     "apt",
     "pip",
     "uv",
@@ -103,9 +96,6 @@ __all__ = [
     "file",
     "phase",
     "phase_simple",
-    "systemd",
-    "systemd_template",
-    "nohup_service",
     "shell",
     "cd",
     "wait_for_port",
@@ -117,8 +107,6 @@ __all__ = [
     "stop_metrics",
     # AWS operations
     "grid_driver",
-    "s3_pip_install",
-    "s3_wheel",
     # Control flow
     "capture",
     "var",

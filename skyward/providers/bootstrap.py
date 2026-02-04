@@ -203,9 +203,6 @@ async def wait_bootstrap_with_streaming(
 async def install_local_skyward(
     transport: SSHTransport,
     info: InstanceMetadata,
-    env: dict[str, str] | None = None,
-    use_systemd: bool = True,
-    rpyc_timeout: float = 30.0,  # noqa: ARG001 - kept for backwards compatibility
     log_prefix: str = "",
 ) -> None:
     """Install local skyward wheel.
@@ -217,9 +214,6 @@ async def install_local_skyward(
     Args:
         transport: Connected SSH transport.
         info: Instance info (for logging).
-        env: Environment variables (unused, kept for compatibility).
-        use_systemd: Unused, kept for backwards compatibility.
-        rpyc_timeout: Unused, kept for backwards compatibility.
         log_prefix: Prefix for log messages.
 
     Raises:
@@ -232,11 +226,7 @@ async def install_local_skyward(
     wheel_path = build_wheel()
 
     # Build install script
-    install_script = _build_wheel_install_script(
-        wheel_name=wheel_path.name,
-        env=env,
-        use_systemd=use_systemd,
-    )
+    install_script = _build_wheel_install_script(wheel_name=wheel_path.name)
 
     # Upload wheel to /tmp (script will move it to SKYWARD_DIR)
     logger.info(f"{log_prefix}Uploading wheel {wheel_path.name}...")

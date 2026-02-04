@@ -186,7 +186,6 @@ class ComputePool:
         fn: Callable[..., T],
         *args: Any,
         node: int | None = None,
-        timeout: float | None = None,  # noqa: ARG002
         **kwargs: Any,
     ) -> T:
         """Execute function on a node.
@@ -195,7 +194,6 @@ class ComputePool:
             fn: Function to execute remotely.
             *args: Positional arguments.
             node: Specific node index, or None for any available.
-            timeout: Execution timeout.
             **kwargs: Keyword arguments.
 
         Returns:
@@ -203,7 +201,6 @@ class ComputePool:
 
         Raises:
             RuntimeError: If pool is not ready.
-            TimeoutError: If execution times out.
         """
         if self._state != PoolState.READY:
             raise RuntimeError(f"Pool not ready, state: {self._state}")
@@ -232,7 +229,6 @@ class ComputePool:
         self,
         fn: Callable[..., T],
         *args: Any,
-        timeout: float | None = None,  # noqa: ARG002
         **kwargs: Any,
     ) -> list[T]:
         """Execute function on all nodes.
@@ -240,7 +236,6 @@ class ComputePool:
         Args:
             fn: Function to execute on each node.
             *args: Positional arguments.
-            timeout: Execution timeout per node.
             **kwargs: Keyword arguments.
 
         Returns:

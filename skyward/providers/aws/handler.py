@@ -454,7 +454,7 @@ class AWSHandler:
 
     def _generate_user_data(self, spec: PoolSpec) -> str:
         """Generate bootstrap user data script."""
-        return spec.image.generate_bootstrap(ttl=spec.ttl, use_systemd=True)
+        return spec.image.generate_bootstrap(ttl=spec.ttl)
 
     async def _launch_fleet(
         self,
@@ -683,10 +683,8 @@ class AWSHandler:
         info: Any,
         cluster: AWSClusterState,
     ) -> None:
-        """Install local skyward wheel and start RPyC server."""
+        """Install local skyward wheel."""
         from skyward.providers.bootstrap import install_local_skyward, wait_for_ssh
-
-        env = cluster.spec.image.env if cluster.spec.image else None
 
         transport = await wait_for_ssh(
             host=info.ip,
@@ -700,8 +698,6 @@ class AWSHandler:
             await install_local_skyward(
                 transport=transport,
                 info=info,
-                env=env,
-                use_systemd=True,
                 log_prefix="AWS: ",
             )
         finally:

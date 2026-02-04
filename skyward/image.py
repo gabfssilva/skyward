@@ -28,7 +28,6 @@ from .bootstrap import (
     uv_add,
     uv_init,
 )
-from .constants import RAY_CLIENT_PORT
 
 
 # Skyward installation source
@@ -135,7 +134,6 @@ class Image:
         ttl: int = 0,
         preamble: Op | None = None,
         postamble: Op | None = None,
-        use_systemd: bool = True,  # noqa: ARG002 - kept for compatibility
     ) -> str:
         """Generate bootstrap script for cloud-init/user_data.
 
@@ -146,7 +144,6 @@ class Image:
             ttl: Auto-shutdown timeout in seconds (0 = disabled).
             preamble: Op to execute first.
             postamble: Op to execute last.
-            use_systemd: Unused (kept for compatibility).
 
         Returns:
             Complete shell script for cloud-init.
@@ -199,5 +196,4 @@ __all__ = [
     "Image",
     "SkywardSource",
     "DEFAULT_IMAGE",
-    "RAY_CLIENT_PORT",
 ]

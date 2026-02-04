@@ -111,11 +111,8 @@ class Node:
             )
         )
 
-    async def replace(self, reason: str) -> None:  # noqa: ARG002
+    async def replace(self) -> None:
         """Request replacement instance after preemption.
-
-        Args:
-            reason: Why the instance was preempted (for logging).
 
         Emits InstanceRequested with replacing= set to old instance ID.
         """
@@ -180,7 +177,7 @@ class Node:
     @on(InstancePreempted, match=lambda self, e: e.instance.node == self.id)
     async def _on_preempted(self, _sender: Any, event: InstancePreempted) -> None:
         """Handle instance preemption - request replacement."""
-        await self.replace(event.reason)
+        await self.replace()
 
     @on(InstanceReplaced, match=lambda self, e: e.new.node == self.id)
     async def _on_replaced(self, _sender: Any, event: InstanceReplaced) -> None:

@@ -109,7 +109,6 @@ def ray_service(
     head_ip: str | None,
     num_gpus: int = 1,
     ray_port: int = 6379,
-    client_port: int = 10001,
 ) -> Op:
     """Generate nohup command to run Ray as a background service.
 
@@ -121,7 +120,6 @@ def ray_service(
         head_ip: IP of head node (required for workers).
         num_gpus: Number of GPUs.
         ray_port: Ray GCS port (default 6379).
-        client_port: Ray Client port (default 10001).
 
     Example:
         >>> ray_service(0, None, num_gpus=1)()
@@ -175,7 +173,6 @@ def server_ops(
     head_ip: str | None,
     num_gpus: int = 1,
     ray_version: str = "2.53.0",
-    client_port: int = 10001,
 ) -> tuple[Op, ...]:
     """Generate all operations for Ray server setup.
 
@@ -187,7 +184,6 @@ def server_ops(
         head_ip: IP of head node (required for workers).
         num_gpus: Number of GPUs on this node.
         ray_version: Ray version to install.
-        client_port: Ray Client port (only used by head).
 
     Returns:
         Tuple of operations for Ray setup.
@@ -207,7 +203,6 @@ def server_ops(
             node_id=node_id,
             head_ip=head_ip,
             num_gpus=num_gpus,
-            client_port=client_port,
         ),
     ]
 
