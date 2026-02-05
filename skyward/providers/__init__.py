@@ -7,6 +7,7 @@ Each provider is an event-driven component that handles:
 
 Available providers:
 - AWS: Amazon Web Services (EC2 Fleet, spot instances)
+- RunPod: GPU cloud (pods, serverless endpoints)
 - VastAI: GPU marketplace (Docker containers, spot/bid pricing)
 - Verda: GPU cloud (dedicated instances, spot pricing)
 
@@ -20,12 +21,14 @@ imported explicitly when needed:
 # Only import config classes - these have NO SDK dependencies
 # This allows `import skyward as sky` without requiring provider SDKs
 from .aws.config import AWS
+from .runpod.config import RunPod
 from .vastai.config import VastAI
 from .verda.config import Verda
 
 __all__ = [
     # Config classes only - handlers must be imported explicitly
     "AWS",
+    "RunPod",
     "VastAI",
     "Verda",
 ]

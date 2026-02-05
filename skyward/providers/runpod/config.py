@@ -1,0 +1,78 @@
+"""RunPod provider configuration.
+
+Immutable configuration dataclass for RunPod provider.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+from typing import Literal
+
+
+# =============================================================================
+# Cloud Type Enum
+# =============================================================================
+
+
+class CloudType(Enum):
+    """RunPod cloud type options."""
+
+    SECURE = "secure"
+    COMMUNITY = "community"
+
+
+# =============================================================================
+# Configuration
+# =============================================================================
+
+
+@dataclass(frozen=True, slots=True)
+class RunPod:
+    """RunPod GPU Pods provider configuration.
+
+    SSH keys are automatically detected from ~/.ssh/id_ed25519.pub or
+    ~/.ssh/id_rsa.pub.
+
+    Features:
+        - Auto data center: If not specified, RunPod selects best location.
+
+    Example:
+        >>> from skyward.providers.runpod import RunPod
+        >>> config = RunPod(data_center_ids=("EU-RO-1",))
+
+    Args:
+        api_key: RunPod API key. Falls back to RUNPOD_API_KEY env var.
+        cloud_type: Cloud type (SECURE or COMMUNITY). Default: SECURE.
+        container_disk_gb: Container disk size in GB. Default: 50.
+        volume_gb: Persistent volume size in GB. Default: 20.
+        volume_mount_path: Volume mount path. Default: /workspace.
+        data_center_ids: Preferred data center IDs or "global" for auto-selection.
+        ports: Port mappings (e.g., ["22/tcp", "8888/http"]). Default: ["22/tcp"].
+        provision_timeout: Instance provision timeout in seconds. Default: 300.
+        bootstrap_timeout: Bootstrap timeout in seconds. Default: 600.
+    """
+
+    api_key: str | None = None
+    cloud_type: CloudType = CloudType.SECURE
+    container_disk_gb: int = 50
+    volume_gb: int = 20
+    volume_mount_path: str = "/workspace"
+    data_center_ids: tuple[str, ...] | Literal["global"] = "global"
+    ports: tuple[str, ...] = ("22/tcp",)
+    provision_timeout: float = 300.0
+    bootstrap_timeout: float = 600.0
+    cpu_clock: Literal["3c", "5c"] | str = "3c"
+
+    @property
+    def region(self) -> str:
+        if self.data_center_ids == "global":
+            return "global"
+        return self.data_center_ids[0]
+
+
+# =============================================================================
+# Exports
+# =============================================================================
+
+__all__ = ["CloudType", "RunPod"]

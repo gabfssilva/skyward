@@ -325,17 +325,22 @@ class Executor:
         address = f"http://localhost:{self._local_port}"
 
         def submit_job() -> str:
-            client = JobSubmissionClient(address)
-            return client.submit_job(
-                entrypoint=entrypoint,
-                submission_id=job_id,
-                entrypoint_num_cpus=0,  # Don't reserve CPUs for entrypoint
-                runtime_env={"env_vars": env_vars},
-            )
+            try:
+                logger.debug(f"Submitting job {job_id}...")
 
-        logger.debug(f"Submitting job {job_id}...")
+                client = JobSubmissionClient(address)
+                return client.submit_job(
+                    entrypoint=entrypoint,
+                    submission_id=job_id,
+                    entrypoint_num_cpus=0,  # Don't reserve CPUs for entrypoint
+                    runtime_env={"env_vars": env_vars},
+                )
+
+                logger.debug(f"Job submitted: {submitted_id}")
+            except Exception as e:
+                logger.error(f"submit_job({job_id}) failed: {e}")
+
         submitted_id = await asyncio.get_event_loop().run_in_executor(None, submit_job)
-        logger.debug(f"Job submitted: {submitted_id}")
 
         # Poll for completion
         terminal_states = {

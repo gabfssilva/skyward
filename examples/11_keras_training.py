@@ -77,10 +77,7 @@ def train_vit(
 
 @sky.pool(
     provider=sky.AWS(),
-    accelerator=sky.accelerators.T4(),
-    # provider=sky.VastAI(),
-    # accelerator=sky.accelerators.RTX_5090(),
-    # max_hourly_cost=3,
+    accelerator=sky.accelerators.T4G(),
     nodes=2,
     image=sky.Image(
         pip=[ "keras>=3.2", "jax[cuda12]" ],

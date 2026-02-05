@@ -30,6 +30,7 @@ def get_provider_for_config(config: Any) -> tuple[type, type["Module"], str]:
     """
     # Import config classes for type checking (lightweight)
     from .aws.config import AWS
+    from .runpod.config import RunPod
     from .vastai.config import VastAI
     from .verda.config import Verda
 
@@ -52,9 +53,15 @@ def get_provider_for_config(config: Any) -> tuple[type, type["Module"], str]:
 
         return VerdaHandler, VerdaModule, "verda"
 
+    if isinstance(config, RunPod):
+        from .runpod.handler import RunPodHandler
+        from .runpod import RunPodModule
+
+        return RunPodHandler, RunPodModule, "runpod"
+
     raise ValueError(
         f"No provider registered for {type(config).__name__}. "
-        f"Available providers: AWS, VastAI, Verda"
+        f"Available providers: AWS, VastAI, Verda, RunPod"
     )
 
 

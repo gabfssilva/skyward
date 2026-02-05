@@ -52,7 +52,7 @@ from .facade import (
 # Providers (config classes only - no SDK dependencies)
 # =============================================================================
 
-from .providers import AWS, VastAI, Verda
+from .providers import AWS, RunPod, VastAI, Verda
 
 # NOTE: Handlers and modules are NOT imported here to avoid SDK deps.
 # Import them explicitly when needed:
@@ -273,6 +273,7 @@ __all__ = [
     # Providers (config classes only - import handlers explicitly)
     # =================================================================
     "AWS",
+    "RunPod",
     "VastAI",
     "Verda",
     # =================================================================

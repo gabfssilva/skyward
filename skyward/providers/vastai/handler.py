@@ -669,6 +669,7 @@ echo "$IFACE $IP"
                 transport=transport,
                 info=instance_info,
                 log_prefix="VastAI: ",
+                use_sudo=False,
             )
         finally:
             await transport.close()

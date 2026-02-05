@@ -204,6 +204,7 @@ async def install_local_skyward(
     transport: SSHTransport,
     info: InstanceMetadata,
     log_prefix: str = "",
+    use_sudo: bool = True,
 ) -> None:
     """Install local skyward wheel.
 
@@ -215,6 +216,7 @@ async def install_local_skyward(
         transport: Connected SSH transport.
         info: Instance info (for logging).
         log_prefix: Prefix for log messages.
+        use_sudo: Whether to use sudo (False for root containers like RunPod/VastAI).
 
     Raises:
         RuntimeError: If wheel build or installation fails.
@@ -235,15 +237,19 @@ async def install_local_skyward(
     # Upload install script
     await transport.write_file("/tmp/.install-wheel.sh", install_script)
 
-    # Execute install script (as root since uv was installed by cloud-init as root)
+    # Execute install script
+    sudo = "sudo " if use_sudo else ""
     logger.info(f"{log_prefix}Running wheel install script on {info.id}...")
-    _, stdout, stderr = await transport.run(
-        "sudo bash /tmp/.install-wheel.sh",
+    exit_code, stdout, stderr = await transport.run(
+        f"{sudo}bash /tmp/.install-wheel.sh",
         timeout=180.0,
     )
     logger.debug(f"{log_prefix}Install script output:\n{stdout}")
     if stderr:
         logger.debug(f"{log_prefix}Install script stderr:\n{stderr}")
+
+    if exit_code != 0:
+        raise RuntimeError(f"Wheel install failed (exit {exit_code}): {stderr or stdout}")
 
     logger.info(f"{log_prefix}Local skyward wheel installed on {info.id}")
 

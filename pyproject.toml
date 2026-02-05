@@ -118,6 +118,7 @@ markers = [
 dev = [
     "jax>=0.8.2",
     "keras>=3.13.0",
+    "pytest-sugar>=1.1.1",
     "pytest-xdist>=3.8.0",
     "ruff>=0.14.10",
     "scikit-learn>=1.8.0",

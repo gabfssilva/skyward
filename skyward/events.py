@@ -26,7 +26,7 @@ type RequestId = str
 type ClusterId = str
 type InstanceId = str
 type NodeId = int
-type ProviderName = Literal["aws", "vastai", "verda"]
+type ProviderName = Literal["aws", "vastai", "verda", "runpod"]
 
 
 # =============================================================================

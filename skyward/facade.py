@@ -48,6 +48,7 @@ from .observability.logging import LogConfig, _setup_logging, _teardown_logging
 # Import only config classes - these have NO SDK dependencies
 # Handlers and modules are imported lazily in _start_async()
 from .providers.aws.config import AWS
+from .providers.runpod.config import RunPod
 from .providers.vastai.config import VastAI
 from .providers.verda.config import Verda
 
@@ -66,7 +67,7 @@ from .distributed import (
 from .distributed.types import Consistency
 
 # Type alias for all supported providers
-type Provider = AWS | VastAI | Verda
+type Provider = AWS | RunPod | VastAI | Verda
 
 
 # =============================================================================
@@ -789,7 +790,7 @@ def pool(
         A _PoolFactory that works as context manager or decorator.
     """
     # If first arg is callable, it's being used as @pool without parens
-    if callable(provider) and not isinstance(provider, (AWS, VastAI, Verda)):
+    if callable(provider):
         fn = provider
         factory = _PoolFactory(
             provider=None,
@@ -809,7 +810,7 @@ def pool(
 
     # Otherwise return factory for context manager or decorator use
     return _PoolFactory(
-        provider=provider if isinstance(provider, (AWS, VastAI, Verda)) else None,
+        provider=provider,  # type: ignore[arg-type]
         nodes=nodes,
         accelerator=accelerator,
         vcpus=vcpus,

@@ -82,8 +82,8 @@ def format_results(r: dict) -> None:
 
 
 @sky.pool(
-    provider=sky.VastAI(),
-    accelerator=sky.Accelerator("A100"),
+    provider=sky.RunPod(),
+    accelerator=sky.accelerators.RTX_4090(),
     image=sky.Image(
         pip=["jax[cuda12]"],
         skyward_source="local",

@@ -337,10 +337,7 @@ class PanelState:
                 spark_width=temp_raw.spark_width,
             )
 
-            # Determine market type
-            market: Literal["spot", "on-demand"] = (
-                "on-demand" if inst.hourly_rate == inst.on_demand_rate else "spot"
-            )
+            market: Literal["spot", "on-demand"] = "spot" if inst.is_spot else "on-demand"
 
             # Determine instance status
             status: Literal["bootstrapping", "ready", "done"]

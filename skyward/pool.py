@@ -324,7 +324,29 @@ class ComputePool:
             port=head_node.info.ssh_port,
         ) as transport:
             logger.debug("Starting Ray head on node 0...")
-            await transport.run(head_cmd, timeout=60.0)
+            exit_code, stdout, stderr = await transport.run(head_cmd, timeout=60.0)
+            if exit_code != 0:
+                logger.error(f"Ray head start failed: {stderr}")
+                raise RuntimeError(f"Failed to start Ray head: {stderr}")
+            if stdout:
+                logger.debug(f"Ray head output: {stdout}")
+
+            # Wait for dashboard to be ready
+            logger.debug("Waiting for Ray dashboard to be ready...")
+            for attempt in range(30):
+                check_code, _, _ = await transport.run(
+                    "curl -sf http://127.0.0.1:8265/ > /dev/null",
+                    timeout=5.0,
+                )
+                if check_code == 0:
+                    logger.debug("Ray dashboard is ready")
+                    break
+                await asyncio.sleep(1)
+            else:
+                # Check ray status for debugging
+                _, status_out, _ = await transport.run(f"{sudo}{ray_bin} status", timeout=10.0)
+                logger.error(f"Ray status: {status_out}")
+                raise RuntimeError("Ray dashboard not available after 30s")
 
         logger.debug("Ray head started, starting workers...")
 
@@ -344,7 +366,10 @@ class ComputePool:
                 port=node.info.ssh_port,
             ) as transport:
                 logger.debug(f"Starting Ray worker on node {node_id}...")
-                await transport.run(worker_cmd, timeout=60.0)
+                exit_code, stdout, stderr = await transport.run(worker_cmd, timeout=60.0)
+                if exit_code != 0:
+                    logger.error(f"Ray worker {node_id} start failed: {stderr}")
+                    raise RuntimeError(f"Failed to start Ray worker {node_id}: {stderr}")
 
         logger.debug("Ray cluster started")
 
@@ -390,14 +415,12 @@ class ComputePool:
 
     def _get_ssh_user(self) -> str:
         """Get SSH username based on provider."""
-        # Different providers use different default SSH users
         provider = self.spec.provider or self.provider
-        if provider == "verda":
-            return "root"
-        elif provider == "vastai":
-            return "root"
-        # AWS EC2 typically uses ubuntu for Ubuntu AMIs
-        return "ubuntu"
+        match provider:
+            case "verda" | "vastai" | "runpod":
+                return "root"
+            case _:
+                return "ubuntu"
 
 
     @property
