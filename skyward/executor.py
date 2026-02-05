@@ -203,6 +203,13 @@ class Executor:
         """Whether connection is established."""
         return self._connected
 
+    @property
+    def dashboard_url(self) -> str | None:
+        """Local URL to Ray Dashboard via SSH tunnel."""
+        if not self._connected or self._local_port == 0:
+            return None
+        return f"http://localhost:{self._local_port}"
+
     async def execute[T](
         self,
         fn: Callable[..., T],

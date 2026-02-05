@@ -26,6 +26,7 @@ from .events import (
     ClusterProvisioned,
     ClusterReady,
     ClusterRequested,
+    ExecutorConnected,
     InstanceMetadata,
     NodeId,
     NodeReady,
@@ -288,6 +289,13 @@ class ComputePool:
         )
         await self._executor.connect()
         logger.debug("Executor connected and ready")
+
+        if self._executor.dashboard_url:
+            self.bus.emit(ExecutorConnected(
+                cluster_id=self._cluster_id,
+                dashboard_url=self._executor.dashboard_url,
+            ))
+
         return self._executor
 
     async def _start_ray_cluster(

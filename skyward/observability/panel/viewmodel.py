@@ -49,6 +49,7 @@ class InfraVM:
     gpu_info: str | None  # "8× A100-40GB (320 GB)" or None
     allocation: str  # "12 nodes (10 spot + 2 od)"
     hourly_rate: str  # "$393/hr"
+    dashboard_url: str | None = None  # "http://localhost:54321"
 
 
 @dataclass(frozen=True, slots=True)
