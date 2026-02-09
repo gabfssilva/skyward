@@ -1,5 +1,10 @@
 # Skyward
 
+[![CI](https://github.com/gabfssilva/skyward/actions/workflows/python-package.yml/badge.svg)](https://github.com/gabfssilva/skyward/actions/workflows/python-package.yml)
+[![PyPI](https://img.shields.io/pypi/v/skyward)](https://pypi.org/project/skyward/)
+[![Python](https://img.shields.io/pypi/pyversions/skyward)](https://pypi.org/project/skyward/)
+[![License](https://img.shields.io/github/license/gabfssilva/skyward)](https://github.com/gabfssilva/skyward/blob/main/LICENSE)
+
 Ephemeral cloud GPUs for Python. Spin up, run code, tear down. No infrastructure to manage, no idle costs.
 
 ```python
