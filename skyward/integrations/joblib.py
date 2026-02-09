@@ -22,6 +22,7 @@ Uses joblib's pluggable backend system for seamless integration.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Iterator
 from concurrent.futures import Future
 from contextlib import contextmanager
@@ -44,6 +45,26 @@ if TYPE_CHECKING:
     from skyward.providers import AWS, RunPod, VastAI, Verda
 
     type Provider = AWS | VastAI | Verda | RunPod
+
+
+_PROVIDER_MODULES = {"urllib3", "botocore", "boto3", "aioboto3"}
+
+
+def _strip_provider_warning_filters() -> None:
+    """Remove warning filters injected by cloud provider SDKs.
+
+    sklearn.utils.parallel.Parallel captures warnings.filters and pickles
+    them into every task via cloudpickle. Provider SDKs (e.g. aioboto3 →
+    urllib3) register warning filters whose category classes live in modules
+    not installed on workers, causing ModuleNotFoundError on deserialization.
+    """
+    warnings.filters[:] = [
+        f for f in warnings.filters
+        if not any(
+            isinstance(x, type) and x.__module__.split(".")[0] in _PROVIDER_MODULES
+            for x in f
+        )
+    ]
 
 
 def _make_remote_executor() -> Callable[[bytes], Any]:
@@ -283,5 +304,6 @@ def ScikitLearnPool(
 
     with pool:
         _setup_backend(pool)
+        _strip_provider_warning_filters()
         with parallel_backend("skyward"):
             yield pool

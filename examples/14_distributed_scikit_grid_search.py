@@ -73,9 +73,8 @@ def main():
         provider=sky.AWS(),
         nodes=3,
         concurrency=4,
-        machine='t4g.xlarge',
         image=sky.Image(pip=["scikit-learn"]),
-        allocation="spot-if-available",
+        allocation="spot",
     ):
         grid_search = GridSearchCV(
             estimator=pipe,
