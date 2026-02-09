@@ -32,15 +32,6 @@ def jax[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
             # We need BOTH flags:
             # - xla_gpu_autotune_level=0: disables GPU autotuning
             # - xla_gpu_enable_triton_gemm=false: disables triton gemm (which has separate sharding autotuning)
-            xla_flags = os.environ.get("XLA_FLAGS", "")
-            flags_to_add = []
-            if "--xla_gpu_autotune_level" not in xla_flags:
-                flags_to_add.append("--xla_gpu_autotune_level=0")
-            if "--xla_gpu_enable_triton_gemm" not in xla_flags:
-                flags_to_add.append("--xla_gpu_enable_triton_gemm=false")
-            if flags_to_add:
-                os.environ["XLA_FLAGS"] = f"{xla_flags} {' '.join(flags_to_add)}".strip()
-
             import jax
 
             # Use v1's instance_info which reads from COMPUTE_POOL env var
@@ -78,11 +69,14 @@ def jax[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
                     continue
                 os.environ[key] = value
 
-            print("[jax] Calling jax.distributed.initialize()...")
+            local_device_ids = list(range(pool.accelerators)) if pool.accelerators > 0 else None
+
+            print(f"[jax] Calling jax.distributed.initialize(local_device_ids={local_device_ids})...")
             jax.distributed.initialize(
                 coordinator_address=coordinator_address,
                 num_processes=total_processes,
                 process_id=process_id,
+                local_device_ids=local_device_ids,
             )
             print("[jax] jax.distributed.initialize() done")
 

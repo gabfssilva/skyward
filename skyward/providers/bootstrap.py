@@ -210,7 +210,7 @@ async def install_local_skyward(
 
     When skyward_source='local', the bootstrap script doesn't install skyward.
     This function builds the wheel locally, uploads it, and installs it.
-    The Ray server is started by bootstrap, not here.
+    The Casty server is started by bootstrap, not here.
 
     Args:
         transport: Connected SSH transport.

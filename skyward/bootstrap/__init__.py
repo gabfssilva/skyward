@@ -21,6 +21,7 @@ from __future__ import annotations
 
 # Core types and composition
 from .compose import (
+    EMIT_SH_PATH,
     Op,
     bootstrap,
     resolve,
@@ -64,15 +65,16 @@ from .ops import (
     wait_for_port,
 )
 
-# Ray operations
-from .ray import (
-    ray_install,
-    ray_service,
-    server_ops as ray_server_ops,
+# Casty operations
+from .casty import (
+    casty_install,
+    casty_service,
+    server_ops as casty_server_ops,
 )
 
 __all__ = [
     # Core types
+    "EMIT_SH_PATH",
     "Op",
     "bootstrap",
     "resolve",
@@ -109,8 +111,8 @@ __all__ = [
     "or_else",
     "group",
     "subshell",
-    # Ray operations
-    "ray_install",
-    "ray_service",
-    "ray_server_ops",
+    # Casty operations
+    "casty_install",
+    "casty_service",
+    "casty_server_ops",
 ]

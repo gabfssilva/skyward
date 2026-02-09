@@ -377,7 +377,11 @@ class VastAIHandler:
         from skyward.providers.bootstrap import run_bootstrap_via_ssh, wait_for_ssh
 
         key_path = get_ssh_key_path()
-        bootstrap_script = cluster.spec.image.generate_bootstrap(ttl=cluster.spec.ttl)
+        ttl = cluster.spec.ttl or self.config.instance_timeout
+        bootstrap_script = cluster.spec.image.generate_bootstrap(
+            ttl=ttl,
+            shutdown_command="eval $(cat /proc/1/environ | tr '\\0' '\\n' | grep -E 'CONTAINER_ID|CONTAINER_API_KEY' | sed 's/^/export /'); curl -s -X DELETE https://console.vast.ai/api/v0/instances/$CONTAINER_ID/ -H \"Authorization: Bearer $CONTAINER_API_KEY\"",
+        )
 
         # Create waiter for bootstrap completion (resolved by BootstrapPhase handler)
         loop = asyncio.get_running_loop()

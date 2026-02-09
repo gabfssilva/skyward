@@ -99,6 +99,9 @@ class AWSClusterState(BaseClusterState):
     ssh_key_path: str = ""
     username: str = "ubuntu"
 
+    # Pre-launched instance IDs mapped by node_id (all-or-nothing fleet)
+    fleet_instance_ids: dict[int, str] = field(default_factory=dict)
+
 
 # =============================================================================
 # Exports

@@ -33,6 +33,7 @@ class RunPodClusterState(BaseClusterState):
     # SSH - RunPod pods use root by default
     username: str = "root"
     ssh_key_path: str = ""
+    ssh_public_key: str = ""
 
     # Resolved GPU type
     gpu_type_id: str | None = None

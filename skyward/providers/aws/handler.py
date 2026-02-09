@@ -87,7 +87,7 @@ class AWSHandler:
 
     @on(ClusterRequested, match=lambda self, e: e.provider == "aws")
     async def handle_cluster_requested(self, _: Any, event: ClusterRequested) -> None:
-        """Provision AWS infrastructure for a new cluster."""
+        """Provision AWS infrastructure and launch all instances atomically."""
         resources = await self._ensure_infrastructure()
         ssh_key_name, ssh_key_path = await self._ensure_key_pair()
 
@@ -106,6 +106,20 @@ class AWSHandler:
 
         # Register SSH credentials for EventStreamer
         self.ssh_credentials.register(cluster_id, state.username, state.ssh_key_path)
+
+        # Launch all instances in a single fleet (all-or-nothing)
+        instance_configs = await self._resolve_instance_configs(state.spec)
+        user_data = self._generate_user_data(state.spec)
+
+        instance_ids = await self._launch_fleet(
+            cluster=state,
+            instances=tuple(instance_configs),
+            user_data=user_data,
+            n=event.spec.nodes,
+        )
+
+        for node_id, instance_id in enumerate(instance_ids):
+            state.fleet_instance_ids[node_id] = instance_id
 
         self.bus.emit(
             ClusterProvisioned(
@@ -133,31 +147,35 @@ class AWSHandler:
 
     @on(InstanceRequested, match=lambda self, e: e.provider == "aws")
     async def handle_instance_requested(self, _: Any, event: InstanceRequested) -> None:
-        """Launch EC2 instance via Fleet and emit InstanceLaunched."""
+        """Emit InstanceLaunched for pre-assigned or replacement instances."""
         cluster = self._clusters.get(event.cluster_id)
         if not cluster:
             return
 
-        instance_configs = await self._resolve_instance_configs(cluster.spec)
-        user_data = self._generate_user_data(cluster.spec)
+        # Initial provision: use pre-launched instance from atomic fleet
+        pre_assigned = cluster.fleet_instance_ids.pop(event.node_id, None)
+        if event.replacing is None and pre_assigned:
+            instance_id = pre_assigned
+        else:
+            # Replacement: launch a single instance
+            instance_configs = await self._resolve_instance_configs(cluster.spec)
+            user_data = self._generate_user_data(cluster.spec)
 
-        instance_ids = await self._launch_fleet(
-            cluster=cluster,
-            instances=tuple(instance_configs),
-            user_data=user_data,
-            n=1,
-        )
+            instance_ids = await self._launch_fleet(
+                cluster=cluster,
+                instances=tuple(instance_configs),
+                user_data=user_data,
+                n=1,
+            )
 
-        if not instance_ids:
-            logger.error(f"AWS: Failed to launch instance for node {event.node_id}")
-            return
+            if not instance_ids:
+                logger.error(f"AWS: Failed to launch instance for node {event.node_id}")
+                return
 
-        instance_id = instance_ids[0]
+            instance_id = instance_ids[0]
 
-        # Track pending
         cluster.pending_nodes.add(event.node_id)
 
-        # Emit intermediate event
         self.bus.emit(
             InstanceLaunched(
                 request_id=event.request_id,
@@ -547,11 +565,12 @@ class AWSHandler:
         return "x86_64"
 
     async def _get_ubuntu_ami(self, arch: Architecture) -> str:
-        """Get Ubuntu 22.04 AMI for region via SSM Parameter Store."""
         import aioboto3
 
         arch_path = "arm64" if arch == "arm64" else "amd64"
-        param_name = f"/aws/service/canonical/ubuntu/server/22.04/stable/current/{arch_path}/hvm/ebs-gp2/ami-id"
+        version = self.config.ubuntu_version
+        ebs_type = "ebs-gp3" if version >= "24.04" else "ebs-gp2"
+        param_name = f"/aws/service/canonical/ubuntu/server/{version}/stable/current/{arch_path}/hvm/{ebs_type}/ami-id"
 
         session = aioboto3.Session()
         async with session.client("ssm", region_name=self.config.region) as ssm:
@@ -566,7 +585,8 @@ class AWSHandler:
         import aioboto3
 
         arch_path = "arm64" if arch == "arm64" else "x86_64"
-        param_name = f"/aws/service/deeplearning/ami/{arch_path}/base-oss-nvidia-driver-gpu-ubuntu-22.04/latest/ami-id"
+        version = self.config.ubuntu_version
+        param_name = f"/aws/service/deeplearning/ami/{arch_path}/base-oss-nvidia-driver-gpu-ubuntu-{version}/latest/ami-id"
 
         session = aioboto3.Session()
         async with session.client("ssm", region_name=self.config.region) as ssm:
@@ -581,7 +601,8 @@ class AWSHandler:
 
     def _generate_user_data(self, spec: PoolSpec) -> str:
         """Generate bootstrap user data script."""
-        return spec.image.generate_bootstrap(ttl=spec.ttl)
+        ttl = spec.ttl or self.config.instance_timeout
+        return spec.image.generate_bootstrap(ttl=ttl)
 
     async def _launch_fleet(
         self,

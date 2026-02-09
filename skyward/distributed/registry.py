@@ -1,71 +1,52 @@
-"""Registry for distributed collections."""
+"""Registry for distributed collections backed by Casty's native Distributed API."""
 
 from __future__ import annotations
 
-import ray
+import asyncio
+import concurrent.futures
+from collections.abc import Callable
+from typing import Any
 
-from .actors import (
-    CounterActor,
-    DictActor,
-    ListActor,
-    SetActor,
-    QueueActor,
-    BarrierActor,
-    LockActor,
-)
 from .proxies import (
+    BarrierProxy,
     CounterProxy,
     DictProxy,
-    ListProxy,
-    SetProxy,
-    QueueProxy,
-    BarrierProxy,
     LockProxy,
+    QueueProxy,
+    SetProxy,
 )
 from .types import Consistency
 
 
-NAMESPACE = "skyward"
+def _call_on_loop[T](loop: asyncio.AbstractEventLoop, fn: Callable[[], T]) -> T:
+    try:
+        running = asyncio.get_running_loop()
+        if running is loop:
+            return fn()
+    except RuntimeError:
+        pass
+
+    result_future: concurrent.futures.Future[T] = concurrent.futures.Future()
+
+    def _run() -> None:
+        try:
+            result_future.set_result(fn())
+        except Exception as e:
+            result_future.set_exception(e)
+
+    loop.call_soon_threadsafe(_run)
+    return result_future.result(timeout=10)
 
 
 class DistributedRegistry:
-    """Registry for distributed collections.
+    __slots__ = ("_distributed", "_loop")
 
-    Manages get-or-create semantics and cleanup of Ray Actors.
-    All actors are created in a fixed "skyward" namespace so they're
-    accessible from any Ray Job in the cluster.
-    """
+    def __init__(self, system: Any, loop: asyncio.AbstractEventLoop | None = None) -> None:
+        self._loop = loop or asyncio.get_running_loop()
+        self._distributed = system.distributed()
 
-    __slots__ = ("_actors",)
-
-    def __init__(self) -> None:
-        self._actors: dict[str, ray.ActorHandle] = {}
-
-    def _get_or_create(
-        self,
-        actor_cls,
-        name: str,
-        *args,
-        **kwargs,
-    ) -> ray.ActorHandle:
-        """Get existing actor or create new one."""
-        cls_name = actor_cls.__ray_metadata__.class_name.lower()
-        full_name = f"skyward:{cls_name}:{name}"
-
-        if full_name in self._actors:
-            return self._actors[full_name]
-
-        # Use get_if_exists=True to handle race conditions where multiple
-        # workers try to create the same actor simultaneously
-        actor = actor_cls.options(
-            name=full_name,
-            namespace=NAMESPACE,
-            lifetime="detached",
-            get_if_exists=True,
-        ).remote(*args, **kwargs)
-
-        self._actors[full_name] = actor
-        return actor
+    def _get_distributed(self) -> Any:
+        return self._distributed
 
     def dict(
         self,
@@ -73,19 +54,9 @@ class DistributedRegistry:
         *,
         consistency: Consistency | None = None,
     ) -> DictProxy:
-        """Get or create a distributed dict."""
-        actor = self._get_or_create(DictActor, name)
-        return DictProxy(actor, consistency=consistency or "eventual")
-
-    def list(
-        self,
-        name: str,
-        *,
-        consistency: Consistency | None = None,
-    ) -> ListProxy:
-        """Get or create a distributed list."""
-        actor = self._get_or_create(ListActor, name)
-        return ListProxy(actor, consistency=consistency or "eventual")
+        d = self._get_distributed()
+        map_ = _call_on_loop(self._loop, lambda: d.map[str, Any](name))
+        return DictProxy(map_, consistency=consistency or "eventual")
 
     def set(
         self,
@@ -93,9 +64,9 @@ class DistributedRegistry:
         *,
         consistency: Consistency | None = None,
     ) -> SetProxy:
-        """Get or create a distributed set."""
-        actor = self._get_or_create(SetActor, name)
-        return SetProxy(actor, consistency=consistency or "eventual")
+        d = self._get_distributed()
+        set_ = _call_on_loop(self._loop, lambda: d.set[Any](name))
+        return SetProxy(set_, consistency=consistency or "eventual")
 
     def counter(
         self,
@@ -103,33 +74,27 @@ class DistributedRegistry:
         *,
         consistency: Consistency | None = None,
     ) -> CounterProxy:
-        """Get or create a distributed counter."""
-        actor = self._get_or_create(CounterActor, name)
-        return CounterProxy(actor, consistency=consistency or "eventual")
+        d = self._get_distributed()
+        counter = _call_on_loop(self._loop, lambda: d.counter(name))
+        return CounterProxy(counter, consistency=consistency or "eventual")
 
     def queue(self, name: str) -> QueueProxy:
-        """Get or create a distributed queue."""
-        actor = self._get_or_create(QueueActor, name)
-        return QueueProxy(actor)
+        d = self._get_distributed()
+        queue = _call_on_loop(self._loop, lambda: d.queue[Any](name))
+        return QueueProxy(queue)
 
     def barrier(self, name: str, n: int) -> BarrierProxy:
-        """Get or create a distributed barrier."""
-        actor = self._get_or_create(BarrierActor, name, n)
-        return BarrierProxy(actor)
+        d = self._get_distributed()
+        barrier = _call_on_loop(self._loop, lambda: d.barrier(name))
+        return BarrierProxy(barrier, n)
 
     def lock(self, name: str) -> LockProxy:
-        """Get or create a distributed lock."""
-        actor = self._get_or_create(LockActor, name)
-        return LockProxy(actor)
+        d = self._get_distributed()
+        lock = _call_on_loop(self._loop, lambda: d.lock(name))
+        return LockProxy(lock)
 
     def cleanup(self) -> None:
-        """Destroy all managed actors."""
-        for actor in self._actors.values():
-            try:
-                ray.kill(actor)
-            except Exception:
-                pass  # Actor may already be dead
-        self._actors.clear()
+        self._distributed = None
 
 
 __all__ = ["DistributedRegistry"]

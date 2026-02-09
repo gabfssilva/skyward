@@ -113,7 +113,6 @@ class InfraState:
     gpu_model: str = ""
     gpu_vram_gb: int = 0
     allocation: str = ""  # "spot", "on-demand", "spot-if-available", "cheapest"
-    dashboard_url: str | None = None
 
 
 # =============================================================================
@@ -303,7 +302,6 @@ class PanelState:
             gpu_info=gpu_info,
             allocation=allocation,
             hourly_rate=hourly_rate,
-            dashboard_url=self.infra.dashboard_url,
         )
 
     def _build_instance_vms(

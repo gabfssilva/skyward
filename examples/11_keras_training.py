@@ -19,8 +19,8 @@ from keras import layers
 import skyward as sky
 
 @sky.compute
-@sky.integrations.keras(backend="jax")
-@sky.stdout(only=lambda i: i.node == 0)
+@sky.integrations.keras(backend="jax", seed=42)
+# @sky.stdout(only=lambda i: i.node == 0)
 def train_vit(
     vit_config: ViTConfig | None = None,
     training_config: TrainingConfig | None = None,
@@ -31,12 +31,10 @@ def train_vit(
     pool = sky.instance_info()
 
     keras.config.disable_interactive_logging()
-    # Load and shard data
     (x_train_full, y_train_full), (x_test, y_test) = load_mnist()
     x_train, y_train = sky.shard(x_train_full, y_train_full, shuffle=True, seed=42)
     keras.config.enable_interactive_logging()
 
-    # Build model
     model = ViT(vit_config)
 
     model.compile(
@@ -80,7 +78,7 @@ def train_vit(
     accelerator=sky.accelerators.T4G(),
     nodes=2,
     image=sky.Image(
-        pip=[ "keras>=3.2", "jax[cuda12]" ],
+        pip=[ "keras==3.13.2", "jax[cuda12]==0.9.0.1" ],
         env={ "KERAS_BACKEND": "jax" },
         skyward_source='local'
     ),

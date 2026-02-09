@@ -240,14 +240,6 @@ class ClusterDestroyed:
     cluster_id: ClusterId
 
 
-@dataclass(frozen=True, slots=True)
-class ExecutorConnected:
-    """Ray executor connected - dashboard available."""
-
-    cluster_id: ClusterId
-    dashboard_url: str
-
-
 # =============================================================================
 # Execution Events
 # =============================================================================
@@ -381,7 +373,6 @@ type Fact = (
     | NodeReady
     | ClusterReady
     | ClusterDestroyed
-    | ExecutorConnected
     | TaskStarted
     | TaskCompleted
     | Metric

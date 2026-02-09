@@ -51,6 +51,7 @@ class RunPod:
         ports: Port mappings (e.g., ["22/tcp", "8888/http"]). Default: ["22/tcp"].
         provision_timeout: Instance provision timeout in seconds. Default: 300.
         bootstrap_timeout: Bootstrap timeout in seconds. Default: 600.
+        instance_timeout: Auto-shutdown in seconds (safety timeout). Default: 300.
     """
 
     api_key: str | None = None
@@ -62,6 +63,7 @@ class RunPod:
     ports: tuple[str, ...] = ("22/tcp",)
     provision_timeout: float = 300.0
     bootstrap_timeout: float = 600.0
+    instance_timeout: int = 300
     cpu_clock: Literal["3c", "5c"] | str = "3c"
 
     @property

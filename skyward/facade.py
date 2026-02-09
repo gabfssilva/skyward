@@ -57,7 +57,6 @@ from .distributed import (
     DistributedRegistry,
     _set_active_registry,
     DictProxy,
-    ListProxy,
     SetProxy,
     CounterProxy,
     QueueProxy,
@@ -287,7 +286,8 @@ class SyncComputePool:
 
     # Environment
     image: Image = field(default_factory=lambda: DEFAULT_IMAGE)
-    timeout: int = 3600
+    timeout: int = 180
+    ttl: int = 600
 
     # Panel UI
     panel: bool = True  # Enable Rich terminal dashboard
@@ -344,9 +344,6 @@ class SyncComputePool:
             self._active = True
             # Set this pool as active in context
             self._context_token = _active_pool.set(self)
-            # Create distributed collections registry
-            self._registry = DistributedRegistry()
-            _set_active_registry(self._registry)
             logger.info("Pool ready")
         except Exception as e:
             logger.exception(f"Error starting pool: {e}")
@@ -488,12 +485,6 @@ class SyncComputePool:
             raise RuntimeError("Pool is not active")
         return self._registry.dict(name, consistency=consistency)
 
-    def list(self, name: str, *, consistency: Consistency | None = None) -> ListProxy:
-        """Get or create a distributed list."""
-        if self._registry is None:
-            raise RuntimeError("Pool is not active")
-        return self._registry.list(name, consistency=consistency)
-
     def set(self, name: str, *, consistency: Consistency | None = None) -> SetProxy:
         """Get or create a distributed set."""
         if self._registry is None:
@@ -548,6 +539,7 @@ class SyncComputePool:
             architecture=self.architecture,
             allocation=self.allocation,
             image=self.image,
+            ttl=self.ttl,
             provider=provider_name,  # type: ignore[arg-type]
             max_hourly_cost=self.max_hourly_cost,
         )
@@ -642,7 +634,8 @@ class _PoolFactory:
         architecture: Literal["x86_64", "arm64"] | None = None,
         image: Image | None = None,
         allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
-        timeout: int = 3600,
+        timeout: int = 180,
+        ttl: int = 600,
         panel: bool = True,
         logging: LogConfig | bool = True,
         max_hourly_cost: float | None = None,
@@ -656,6 +649,7 @@ class _PoolFactory:
         self._image = image
         self._allocation = allocation
         self._timeout = timeout
+        self._ttl = ttl
         self._panel = panel
         self._logging = logging
         self._max_hourly_cost = max_hourly_cost
@@ -674,6 +668,7 @@ class _PoolFactory:
             allocation=self._allocation,  # type: ignore[arg-type]
             image=self._image or DEFAULT_IMAGE,
             timeout=self._timeout,
+            ttl=self._ttl,
             panel=self._panel,
             logging=self._logging,
             max_hourly_cost=self._max_hourly_cost,
@@ -724,7 +719,8 @@ def pool(
     architecture: Literal["x86_64", "arm64"] | None = None,
     image: Image | None = None,
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
-    timeout: int = 3600,
+    timeout: int = 180,
+    ttl: int = 600,
     panel: bool = True,
     logging: LogConfig | bool = True,
     max_hourly_cost: float | None = None,
@@ -741,7 +737,8 @@ def pool(
     architecture: Literal["x86_64", "arm64"] | None = None,
     image: Image | None = None,
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
-    timeout: int = 3600,
+    timeout: int = 180,
+    ttl: int = 600,
     panel: bool = True,
     logging: LogConfig | bool = True,
     max_hourly_cost: float | None = None,
@@ -757,7 +754,8 @@ def pool(
     architecture: Literal["x86_64", "arm64"] | None = None,
     image: Image | None = None,
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
-    timeout: int = 3600,
+    timeout: int = 180,
+    ttl: int = 600,
     panel: bool = True,
     logging: LogConfig | bool = True,
     max_hourly_cost: float | None = None,
@@ -782,6 +780,7 @@ def pool(
         image: Environment specification.
         allocation: Instance allocation strategy.
         timeout: Provisioning timeout.
+        ttl: Auto-shutdown timeout in seconds (0 = use provider default).
         panel: Enable Rich terminal dashboard (default: True).
         logging: Log configuration. If True, logs to .skyward/skyward.log.
         max_hourly_cost: Maximum hourly cost in USD for the entire cluster.
@@ -802,6 +801,7 @@ def pool(
             image=image,
             allocation=allocation,
             timeout=timeout,
+            ttl=ttl,
             panel=panel,
             logging=logging,
             max_hourly_cost=max_hourly_cost,
@@ -819,6 +819,7 @@ def pool(
         image=image,
         allocation=allocation,
         timeout=timeout,
+        ttl=ttl,
         panel=panel,
         logging=logging,
         max_hourly_cost=max_hourly_cost,

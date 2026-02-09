@@ -2,19 +2,22 @@
 
 Demonstrates Skyward's distributed data structures:
 
-    sky.dict()     - Shared cache across workers
+    sky.dict()     - Shared key-value cache across workers
     sky.counter()  - Distributed progress tracking
-    sky.list()     - Accumulate results from all nodes
     sky.set()      - Deduplicate processed items
     sky.barrier()  - Synchronize workers at checkpoints
     sky.lock()     - Mutual exclusion for critical sections
     sky.queue()    - Work queue for dynamic task distribution
 
-These structures are backed by Ray Actors and provide:
+These structures are backed by Casty's distributed collections and provide:
 - Automatic get-or-create by name
 - Sync interface (magic methods block)
 - Async interface (*_async methods)
 - Configurable consistency (eventual/strong)
+
+Note: sky.dict() is entity-per-key (each key is a separate actor), so
+enumeration methods like keys()/values()/items()/len() are not available.
+Use it as a distributed cache with get/put/delete/contains semantics.
 """
 
 import skyward as sky
@@ -38,11 +41,9 @@ def process_with_cache(items: list[str]) -> dict:
 
     for item in sky.shard(items):
         if item in cache:
-            # Cache hit - reuse result
             result = cache[item]
             cache_hits += 1
         else:
-            # Cache miss - compute and store
             result = f"computed:{item}:{info.node}"
             cache[item] = result
             cache_misses += 1
@@ -65,22 +66,19 @@ def process_with_cache(items: list[str]) -> dict:
 
 @sky.compute
 def accumulate_results(batch_id: int) -> dict:
-    """Accumulate unique results across workers."""
-    results = sky.list("all_results")
+    """Accumulate unique results across workers using dict + set."""
+    results = sky.dict("all_results")
     seen = sky.set("seen_batches")
     info = sky.instance_info()
 
-    # Check if already processed (idempotent)
     batch_key = f"batch:{batch_id}:node:{info.node}"
     if batch_key in seen:
         return {"node": info.node, "status": "skipped", "batch_id": batch_id}
 
-    # Mark as processed
     seen.add(batch_key)
 
-    # Simulate work
     result = {"batch_id": batch_id, "node": info.node, "value": batch_id * 10 + info.node}
-    results.append(result)
+    results[batch_key] = result
 
     return {"node": info.node, "status": "processed", "batch_id": batch_id}
 
@@ -97,16 +95,13 @@ def synchronized_epoch(epoch: int) -> dict:
     progress = sky.counter("training_steps")
     info = sky.instance_info()
 
-    # Phase 1: Local training
     local_loss = 1.0 / (epoch + 1) + info.node * 0.01
     progress.increment()
 
-    # Synchronize before aggregation
     sync.wait()
 
-    # Phase 2: Only head aggregates (after all workers done)
     if info.is_head:
-        sync.reset()  # Reset for next epoch
+        sync.reset()
 
     return {
         "node": info.node,
@@ -128,12 +123,9 @@ def safe_update_checkpoint(step: int) -> dict:
     state = sky.dict("checkpoint")
     info = sky.instance_info()
 
-    # Critical section - only one worker at a time
     with lock:
-        current = state.get("best_step", 0)
         current_loss = state.get("best_loss", float("inf"))
 
-        # Simulate checking if we have better results
         my_loss = 1.0 / (step + 1)
         if my_loss < current_loss:
             state["best_step"] = step
@@ -151,6 +143,17 @@ def safe_update_checkpoint(step: int) -> dict:
     }
 
 
+@sky.compute
+def read_checkpoint() -> dict:
+    """Read checkpoint state from within the cluster."""
+    state = sky.dict("checkpoint")
+    return {
+        "best_step": state.get("best_step"),
+        "best_loss": state.get("best_loss"),
+        "saved_by": state.get("saved_by"),
+    }
+
+
 # =============================================================================
 # Example 5: Dynamic Work Queue
 # =============================================================================
@@ -160,20 +163,18 @@ def safe_update_checkpoint(step: int) -> dict:
 def worker_from_queue() -> dict:
     """Workers pull tasks from shared queue."""
     queue = sky.queue("tasks")
-    results = sky.list("queue_results")
+    results = sky.dict("queue_results")
     info = sky.instance_info()
 
     processed = []
 
-    # Process tasks until queue is empty
     while True:
         task = queue.get(timeout=0.5)
         if task is None:
             break
 
-        # Process task
         result = {"task": task, "worker": info.node, "result": task * 2}
-        results.append(result)
+        results[f"task:{task}:node:{info.node}"] = result
         processed.append(task)
 
     return {
@@ -198,24 +199,6 @@ def producer_fill_queue(tasks: list[int]) -> dict:
 
 
 # =============================================================================
-# Helper functions to read distributed state from within the cluster
-# =============================================================================
-
-
-@sky.compute
-def read_list(name: str) -> list:
-    """Read a distributed list."""
-    return list(sky.list(name))
-
-
-@sky.compute
-def read_dict(name: str) -> dict:
-    """Read a distributed dict."""
-    d = sky.dict(name)
-    return dict(d.items())
-
-
-# =============================================================================
 # Main
 # =============================================================================
 
@@ -224,9 +207,7 @@ def read_dict(name: str) -> dict:
     provider=sky.AWS(),
     nodes=4,
     vcpus=2,
-    memory_gb=8,
-    # architecture=None (default) picks cheapest between x86_64 and arm64
-    allocation="spot-if-available",
+    memory_gb=4,
     image=sky.Image(skyward_source="local"),
 )
 def main():
@@ -237,7 +218,6 @@ def main():
     print("Example 1: Shared Cache with Progress")
     print("=" * 60)
 
-    # Some items will be processed by multiple nodes (cache hits)
     items = [f"item_{i}" for i in range(100)]
     cache_results = process_with_cache(items) @ sky
 
@@ -255,15 +235,10 @@ def main():
     print("Example 2: Result Accumulation with Deduplication")
     print("=" * 60)
 
-    # Each node processes a batch
     for batch in range(3):
-        accumulate_results(batch) @ sky
-
-    # Read accumulated results (from within the cluster)
-    all_results = read_list("all_results") >> sky
-    print(f"  Total accumulated results: {len(all_results)}")
-    for r in all_results[:5]:  # Show first 5
-        print(f"    Batch {r['batch_id']} from node {r['node']}: value={r['value']}")
+        batch_results = accumulate_results(batch) @ sky
+        for r in batch_results:
+            print(f"    Batch {r['batch_id']} node {r['node']}: {r['status']}")
 
     # -----------------------------------------------------------------
     # Example 3: Synchronized Training
@@ -291,7 +266,7 @@ def main():
         if updated:
             print(f"  Step {step}: checkpoint updated by node {updated[0]['node']}")
 
-    checkpoint = read_dict("checkpoint") >> sky
+    checkpoint = read_checkpoint() >> sky
     best_loss = checkpoint.get("best_loss")
     loss_str = f"{best_loss:.4f}" if best_loss is not None else "N/A"
     print(f"  Final checkpoint: step={checkpoint.get('best_step')}, "
@@ -305,18 +280,15 @@ def main():
     print("Example 5: Dynamic Work Queue")
     print("=" * 60)
 
-    # Producer fills queue
     tasks = list(range(20))
     producer_fill_queue(tasks) @ sky
 
-    # Workers consume from queue
     worker_results = worker_from_queue() @ sky
 
+    total_processed = sum(r["tasks_processed"] for r in worker_results)
     for r in worker_results:
-        print(f"  Node {r['node']}: processed {r['tasks_processed']} tasks")
-
-    queue_results = read_list("queue_results") >> sky
-    print(f"  Total results in list: {len(queue_results)}")
+        print(f"  Node {r['node']}: processed {r['tasks_processed']} tasks {r['tasks']}")
+    print(f"  Total tasks processed: {total_processed}/{len(tasks)}")
 
 
 if __name__ == "__main__":

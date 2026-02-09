@@ -1,297 +1,204 @@
-"""Proxy wrappers for distributed collections."""
+"""Proxy wrappers for Casty's native distributed collections.
+
+Casty collections are async-only. These proxies provide synchronous
+access by submitting coroutines to the system's event loop from any thread.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import time
-import uuid
-from typing import TYPE_CHECKING
-
-import ray
+from typing import Any
 
 from .types import Consistency
 
-if TYPE_CHECKING:
-    from ray.actor import ActorHandle
+_system_loop: asyncio.AbstractEventLoop | None = None
+
+
+def set_system_loop(loop: asyncio.AbstractEventLoop) -> None:
+    global _system_loop
+    _system_loop = loop
+
+
+def _get_loop() -> asyncio.AbstractEventLoop:
+    if _system_loop is None:
+        raise RuntimeError("No system event loop set for distributed collections")
+    return _system_loop
+
+
+def _run_sync[T](coro: Any) -> T:
+    loop = _get_loop()
+
+    try:
+        running = asyncio.get_running_loop()
+        if running is loop:
+            raise RuntimeError(
+                "Cannot call sync proxy from the system event loop; use async methods"
+            )
+    except RuntimeError as e:
+        if "Cannot call sync" in str(e):
+            raise
+
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    return future.result(timeout=30)
 
 
 class CounterProxy:
-    """Sync/async proxy for CounterActor."""
+    __slots__ = ("_counter", "_consistency")
 
-    __slots__ = ("_actor", "_consistency")
-
-    def __init__(self, actor: ActorHandle, consistency: Consistency = "eventual") -> None:
-        self._actor = actor
+    def __init__(self, counter: Any, consistency: Consistency = "eventual") -> None:
+        self._counter = counter
         self._consistency = consistency
 
     @property
     def value(self) -> int:
-        return ray.get(self._actor.get.remote())
+        return _run_sync(self._counter.get())
 
     def increment(self, n: int = 1) -> None:
-        ref = self._actor.increment.remote(n)
-        if self._consistency == "strong":
-            ray.get(ref)
+        _run_sync(self._counter.increment(n))
 
     def decrement(self, n: int = 1) -> None:
-        ref = self._actor.decrement.remote(n)
-        if self._consistency == "strong":
-            ray.get(ref)
+        _run_sync(self._counter.decrement(n))
 
     def reset(self, value: int = 0) -> None:
-        ref = self._actor.reset.remote(value)
-        if self._consistency == "strong":
-            ray.get(ref)
+        _run_sync(self._counter.increment(value - _run_sync(self._counter.get())))
 
     def __int__(self) -> int:
         return self.value
 
-    # Async methods
     async def value_async(self) -> int:
-        return await self._actor.get.remote()
+        return await self._counter.get()
 
     async def increment_async(self, n: int = 1) -> None:
-        ref = self._actor.increment.remote(n)
-        if self._consistency == "strong":
-            await ref
+        await self._counter.increment(n)
 
     async def decrement_async(self, n: int = 1) -> None:
-        ref = self._actor.decrement.remote(n)
-        if self._consistency == "strong":
-            await ref
+        await self._counter.decrement(n)
 
     async def reset_async(self, value: int = 0) -> None:
-        ref = self._actor.reset.remote(value)
-        if self._consistency == "strong":
-            await ref
+        current = await self._counter.get()
+        await self._counter.increment(value - current)
 
 
 class DictProxy:
-    """Sync/async proxy for DictActor."""
+    __slots__ = ("_map", "_consistency")
 
-    __slots__ = ("_actor", "_consistency")
-
-    def __init__(self, actor: ActorHandle, consistency: Consistency = "eventual") -> None:
-        self._actor = actor
+    def __init__(self, map_: Any, consistency: Consistency = "eventual") -> None:
+        self._map = map_
         self._consistency = consistency
 
-    def __getitem__(self, key: str):
-        return ray.get(self._actor.get.remote(key))
+    def __getitem__(self, key: str) -> Any:
+        result = _run_sync(self._map.get(key))
+        if result is None:
+            raise KeyError(key)
+        return result
 
-    def __setitem__(self, key: str, value) -> None:
-        ref = self._actor.set.remote(key, value)
-        if self._consistency == "strong":
-            ray.get(ref)
+    def __setitem__(self, key: str, value: Any) -> None:
+        _run_sync(self._map.put(key, value))
 
     def __delitem__(self, key: str) -> None:
-        ref = self._actor.delete.remote(key)
-        if self._consistency == "strong":
-            ray.get(ref)
+        _run_sync(self._map.delete(key))
 
     def __contains__(self, key: str) -> bool:
-        return ray.get(self._actor.contains.remote(key))
+        return _run_sync(self._map.contains(key))
 
-    def __len__(self) -> int:
-        return ray.get(self._actor.length.remote())
+    def get(self, key: str, default: Any = None) -> Any:
+        result = _run_sync(self._map.get(key))
+        return result if result is not None else default
 
-    def get(self, key: str, default=None):
-        return ray.get(self._actor.get.remote(key, default))
+    def update(self, items: dict[str, Any]) -> None:
+        for k, v in items.items():
+            _run_sync(self._map.put(k, v))
 
-    def update(self, items: dict) -> None:
-        ref = self._actor.update.remote(items)
-        if self._consistency == "strong":
-            ray.get(ref)
+    def pop(self, key: str, default: Any = None) -> Any:
+        result = _run_sync(self._map.get(key))
+        if result is not None:
+            _run_sync(self._map.delete(key))
+            return result
+        return default
 
-    def keys(self) -> list:
-        return ray.get(self._actor.keys.remote())
+    async def get_async(self, key: str, default: Any = None) -> Any:
+        result = await self._map.get(key)
+        return result if result is not None else default
 
-    def values(self) -> list:
-        return ray.get(self._actor.values.remote())
+    async def set_async(self, key: str, value: Any) -> None:
+        await self._map.put(key, value)
 
-    def items(self) -> list[tuple]:
-        return ray.get(self._actor.items.remote())
+    async def update_async(self, items: dict[str, Any]) -> None:
+        for k, v in items.items():
+            await self._map.put(k, v)
 
-    def clear(self) -> None:
-        ref = self._actor.clear.remote()
-        if self._consistency == "strong":
-            ray.get(ref)
-
-    def pop(self, key: str, default=None):
-        return ray.get(self._actor.pop.remote(key, default))
-
-    # Async methods
-    async def get_async(self, key: str, default=None):
-        return await self._actor.get.remote(key, default)
-
-    async def set_async(self, key: str, value) -> None:
-        ref = self._actor.set.remote(key, value)
-        if self._consistency == "strong":
-            await ref
-
-    async def update_async(self, items: dict) -> None:
-        ref = self._actor.update.remote(items)
-        if self._consistency == "strong":
-            await ref
-
-    async def pop_async(self, key: str, default=None):
-        return await self._actor.pop.remote(key, default)
-
-    async def clear_async(self) -> None:
-        ref = self._actor.clear.remote()
-        if self._consistency == "strong":
-            await ref
-
-    async def keys_async(self) -> list:
-        return await self._actor.keys.remote()
-
-    async def values_async(self) -> list:
-        return await self._actor.values.remote()
-
-    async def items_async(self) -> list[tuple]:
-        return await self._actor.items.remote()
-
-
-class ListProxy:
-    """Sync/async proxy for ListActor."""
-
-    __slots__ = ("_actor", "_consistency")
-
-    def __init__(self, actor: ActorHandle, consistency: Consistency = "eventual") -> None:
-        self._actor = actor
-        self._consistency = consistency
-
-    def __getitem__(self, index: int):
-        return ray.get(self._actor.get.remote(index))
-
-    def __len__(self) -> int:
-        return ray.get(self._actor.length.remote())
-
-    def append(self, value) -> None:
-        ref = self._actor.append.remote(value)
-        if self._consistency == "strong":
-            ray.get(ref)
-
-    def extend(self, values: list) -> None:
-        ref = self._actor.extend.remote(values)
-        if self._consistency == "strong":
-            ray.get(ref)
-
-    def pop(self, index: int = -1):
-        return ray.get(self._actor.pop.remote(index))
-
-    def slice(self, start: int, end: int) -> list:
-        return ray.get(self._actor.slice.remote(start, end))
-
-    def clear(self) -> None:
-        ref = self._actor.clear.remote()
-        if self._consistency == "strong":
-            ray.get(ref)
-
-    # Async methods
-    async def append_async(self, value) -> None:
-        ref = self._actor.append.remote(value)
-        if self._consistency == "strong":
-            await ref
-
-    async def extend_async(self, values: list) -> None:
-        ref = self._actor.extend.remote(values)
-        if self._consistency == "strong":
-            await ref
-
-    async def pop_async(self, index: int = -1):
-        return await self._actor.pop.remote(index)
-
-    async def slice_async(self, start: int, end: int) -> list:
-        return await self._actor.slice.remote(start, end)
+    async def pop_async(self, key: str, default: Any = None) -> Any:
+        result = await self._map.get(key)
+        if result is not None:
+            await self._map.delete(key)
+            return result
+        return default
 
 
 class SetProxy:
-    """Sync/async proxy for SetActor."""
+    __slots__ = ("_set", "_consistency")
 
-    __slots__ = ("_actor", "_consistency")
-
-    def __init__(self, actor: ActorHandle, consistency: Consistency = "eventual") -> None:
-        self._actor = actor
+    def __init__(self, set_: Any, consistency: Consistency = "eventual") -> None:
+        self._set = set_
         self._consistency = consistency
 
-    def __contains__(self, value) -> bool:
-        return ray.get(self._actor.contains.remote(value))
+    def __contains__(self, value: Any) -> bool:
+        return _run_sync(self._set.contains(value))
 
     def __len__(self) -> int:
-        return ray.get(self._actor.length.remote())
+        return _run_sync(self._set.size())
 
-    def add(self, value) -> None:
-        ref = self._actor.add.remote(value)
-        if self._consistency == "strong":
-            ray.get(ref)
+    def add(self, value: Any) -> None:
+        _run_sync(self._set.add(value))
 
-    def discard(self, value) -> None:
-        ref = self._actor.discard.remote(value)
-        if self._consistency == "strong":
-            ray.get(ref)
+    def discard(self, value: Any) -> None:
+        _run_sync(self._set.remove(value))
 
-    def clear(self) -> None:
-        ref = self._actor.clear.remote()
-        if self._consistency == "strong":
-            ray.get(ref)
+    async def add_async(self, value: Any) -> None:
+        await self._set.add(value)
 
-    # Async methods
-    async def add_async(self, value) -> None:
-        ref = self._actor.add.remote(value)
-        if self._consistency == "strong":
-            await ref
+    async def discard_async(self, value: Any) -> None:
+        await self._set.remove(value)
 
-    async def discard_async(self, value) -> None:
-        ref = self._actor.discard.remote(value)
-        if self._consistency == "strong":
-            await ref
-
-    async def contains_async(self, value) -> bool:
-        return await self._actor.contains.remote(value)
+    async def contains_async(self, value: Any) -> bool:
+        return await self._set.contains(value)
 
 
 class QueueProxy:
-    """Sync/async proxy for QueueActor.
+    __slots__ = ("_queue",)
 
-    Note: Queue always uses strong consistency for FIFO semantics.
-    """
-
-    __slots__ = ("_actor",)
-
-    def __init__(self, actor: ActorHandle) -> None:
-        self._actor = actor
+    def __init__(self, queue: Any) -> None:
+        self._queue = queue
 
     def __len__(self) -> int:
-        return ray.get(self._actor.length.remote())
+        return _run_sync(self._queue.size())
 
-    def put(self, value) -> None:
-        ray.get(self._actor.put.remote(value))
+    def put(self, value: Any) -> None:
+        _run_sync(self._queue.enqueue(value))
 
-    def get(self, timeout: float | None = None):
-        """Get item from queue, blocking until available or timeout."""
+    def get(self, timeout: float | None = None) -> Any:
         start = time.monotonic()
         while True:
-            result = ray.get(self._actor.get_nowait.remote())
+            result = _run_sync(self._queue.dequeue())
             if result is not None:
                 return result
             if timeout is not None:
                 elapsed = time.monotonic() - start
                 if elapsed >= timeout:
                     return None
-            time.sleep(0.01)  # Small sleep to avoid busy-waiting
+            time.sleep(0.01)
 
     def empty(self) -> bool:
-        return ray.get(self._actor.empty.remote())
+        return _run_sync(self._queue.size()) == 0
 
-    # Async methods
-    async def put_async(self, value) -> None:
-        await self._actor.put.remote(value)
+    async def put_async(self, value: Any) -> None:
+        await self._queue.enqueue(value)
 
-    async def get_async(self, timeout: float | None = None):
-        """Get item from queue asynchronously."""
+    async def get_async(self, timeout: float | None = None) -> Any:
         start = time.monotonic()
         while True:
-            result = await self._actor.get_nowait.remote()
+            result = await self._queue.dequeue()
             if result is not None:
                 return result
             if timeout is not None:
@@ -302,103 +209,63 @@ class QueueProxy:
 
 
 class BarrierProxy:
-    """Sync/async proxy for BarrierActor.
+    __slots__ = ("_barrier", "_n")
 
-    Note: Barrier always uses strong consistency.
-    """
-
-    __slots__ = ("_actor",)
-
-    def __init__(self, actor: ActorHandle) -> None:
-        self._actor = actor
+    def __init__(self, barrier: Any, n: int) -> None:
+        self._barrier = barrier
+        self._n = n
 
     def wait(self) -> None:
-        """Wait for all parties to arrive at barrier."""
-        _, generation = ray.get(self._actor.arrive.remote())
-
-        while True:
-            current_n, current_count, current_gen = ray.get(self._actor.get_state.remote())
-            if current_gen > generation:
-                # Barrier was reset, we're released
-                return
-            if current_count >= current_n:
-                return
-            time.sleep(0.01)
+        _run_sync(self._barrier.arrive(self._n))
 
     def reset(self) -> None:
-        """Reset barrier for reuse."""
-        ray.get(self._actor.reset.remote())
+        pass
 
-    # Async methods
     async def wait_async(self) -> None:
-        """Wait for all parties asynchronously."""
-        _, generation = await self._actor.arrive.remote()
-
-        while True:
-            current_n, current_count, current_gen = await self._actor.get_state.remote()
-            if current_gen > generation:
-                return
-            if current_count >= current_n:
-                return
-            await asyncio.sleep(0.01)
+        await self._barrier.arrive(self._n)
 
 
 class LockProxy:
-    """Sync/async proxy for LockActor.
+    __slots__ = ("_lock",)
 
-    Note: Lock always uses strong consistency.
-    """
-
-    __slots__ = ("_actor", "_holder_id")
-
-    def __init__(self, actor: ActorHandle) -> None:
-        self._actor = actor
-        self._holder_id = str(uuid.uuid4())
+    def __init__(self, lock: Any) -> None:
+        self._lock = lock
 
     def acquire(self) -> bool:
-        """Acquire lock, blocking until available."""
-        while True:
-            if ray.get(self._actor.acquire.remote(self._holder_id)):
-                return True
-            time.sleep(0.01)
+        _run_sync(self._lock.acquire())
+        return True
 
     def release(self) -> None:
-        """Release lock."""
-        ray.get(self._actor.release.remote(self._holder_id))
+        _run_sync(self._lock.release())
 
     def __enter__(self) -> LockProxy:
         self.acquire()
         return self
 
-    def __exit__(self, *args) -> None:
+    def __exit__(self, *args: object) -> None:
         self.release()
 
-    # Async methods
     async def acquire_async(self) -> bool:
-        """Acquire lock asynchronously."""
-        while True:
-            if await self._actor.acquire.remote(self._holder_id):
-                return True
-            await asyncio.sleep(0.01)
+        await self._lock.acquire()
+        return True
 
     async def release_async(self) -> None:
-        """Release lock asynchronously."""
-        await self._actor.release.remote(self._holder_id)
+        await self._lock.release()
 
     async def __aenter__(self) -> LockProxy:
         await self.acquire_async()
         return self
 
-    async def __aexit__(self, *args) -> None:
+    async def __aexit__(self, *args: object) -> None:
         await self.release_async()
 
 
 __all__ = [
     "CounterProxy",
     "DictProxy",
-    "ListProxy",
     "SetProxy",
     "QueueProxy",
     "BarrierProxy",
     "LockProxy",
+    "set_system_loop",
 ]

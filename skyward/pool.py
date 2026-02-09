@@ -26,14 +26,13 @@ from .events import (
     ClusterProvisioned,
     ClusterReady,
     ClusterRequested,
-    ExecutorConnected,
     InstanceMetadata,
     NodeId,
     NodeReady,
     ProviderName,
     ShutdownRequested,
 )
-from .executor import Executor
+from .executor import HTTP_PORT, Executor
 from .monitors import EventStreamer
 from .node import Node
 from .spec import PoolSpec
@@ -109,7 +108,8 @@ class ComputePool:
     _nodes: dict[NodeId, Node] = {}  # type: ignore[assignment]
     _ready_nodes: set[NodeId] = set()  # type: ignore[assignment]
     _ready_event: asyncio.Event | None = None
-    _executor: Executor | None = None  # Single Ray executor for all nodes
+    _executor: Executor | None = None
+    _network_interfaces: dict[NodeId, str] = {}  # type: ignore[assignment]
 
     # -------------------------------------------------------------------------
     # Public API
@@ -132,6 +132,7 @@ class ComputePool:
         self._nodes = {}
         self._ready_nodes = set()
         self._ready_event = asyncio.Event()
+        self._network_interfaces = {}
 
         # Determine provider from spec or use default
         if self.spec.provider:
@@ -166,12 +167,11 @@ class ComputePool:
 
         from loguru import logger
 
-        # Disconnect Ray executor
         if self._executor is not None:
-            logger.debug("Pool: Disconnecting Ray executor...")
+            logger.debug("Pool: Disconnecting executor...")
             await self._executor.disconnect()
             self._executor = None
-            logger.debug("Pool: Ray executor disconnected")
+            logger.debug("Pool: Executor disconnected")
 
         # Emit shutdown and wait for provider to terminate instances
         logger.debug(f"Pool: Emitting ShutdownRequested for cluster_id={self._cluster_id}")
@@ -250,7 +250,6 @@ class ComputePool:
         return await executor.broadcast(fn, *args, **kwargs)
 
     async def _get_or_create_executor(self) -> Executor:
-        """Get or create the Ray executor."""
         if self._executor is not None:
             return self._executor
 
@@ -265,9 +264,8 @@ class ComputePool:
         ssh_user = self._get_ssh_user()
         ssh_key = get_ssh_key_path()
 
-        await self._start_ray_cluster(head_addr, ssh_user, ssh_key)
+        await self._start_casty_cluster(head_addr, ssh_user, ssh_key)
 
-        # Build pool_infos for each node (ordered by node_id)
         pool_infos: list[str] = []
         for node_id in range(self.spec.nodes):
             node = self._nodes.get(node_id)
@@ -284,46 +282,69 @@ class ComputePool:
             user=ssh_user,
             key_path=ssh_key,
             num_nodes=self.spec.nodes,
+            http_port=HTTP_PORT,
             env_vars=image_env,
             pool_infos=pool_infos,
         )
         await self._executor.connect()
-        logger.debug("Executor connected and ready")
 
-        if self._executor.dashboard_url:
-            self.bus.emit(ExecutorConnected(
-                cluster_id=self._cluster_id,
-                dashboard_url=self._executor.dashboard_url,
-            ))
+        await self._executor.setup_cluster(env_vars=image_env)
+        logger.debug("Executor connected and ready")
 
         return self._executor
 
-    async def _start_ray_cluster(
+    async def _start_casty_cluster(
         self,
         head_addr: str,
         ssh_user: str,
         ssh_key: str,
     ) -> None:
-        """Start Ray on all nodes via SSH."""
         from skyward.transport.ssh import SSHTransport
         from skyward.constants import VENV_DIR
+        from skyward.bootstrap import EMIT_SH_PATH
+        from skyward.providers.common import detect_network_interface
 
-        ray_bin = f"{VENV_DIR}/bin/ray"
-        logger.debug("Starting Ray cluster via SSH...")
+        python_bin = f"{VENV_DIR}/bin/python"
+        casty_port = 25520
+        http_port = HTTP_PORT
+        logger.debug("Starting Casty cluster via SSH...")
 
         head_node = self._nodes.get(0)
         if head_node is None or head_node.info is None:
             raise RuntimeError("Head node not available")
 
-        # Use sudo for non-root users (venv was created by cloud-init as root)
-        sudo = "sudo " if ssh_user != "root" else ""
+        use_sudo = ssh_user != "root"
 
-        # ray start already daemonizes - no need for nohup or &
-        head_cmd = (
-            f"{sudo}{ray_bin} start --head --port=6379 "
-            f"--dashboard-port=8265 --dashboard-host=0.0.0.0 "
-            f"--resources='{{\"node_0\": 1.0}}'"
-        )
+        async def _start_node(
+            transport: SSHTransport,
+            node_id: int,
+            host: str,
+            seeds: str = "",
+        ) -> str:
+            seeds_arg = f"--seeds {seeds} " if seeds else ""
+            casty_cmd = (
+                f"nohup {python_bin} -m skyward.casty_worker "
+                f"--node-id {node_id} --port {casty_port} --http-port {http_port} "
+                f"--num-nodes {self.spec.nodes} --host {host} "
+                f"{seeds_arg}"
+                f"> /var/log/casty.log 2>&1 & echo $!"
+            )
+            tail_inner = (
+                f"source {EMIT_SH_PATH} && "
+                f"tail -f /var/log/casty.log 2>/dev/null | while IFS= read -r line; do "
+                f'emit_console "[casty] $line"; done'
+            )
+            tail_cmd = f"nohup bash -c '{tail_inner}' </dev/null >/dev/null 2>&1 &"
+
+            if use_sudo:
+                casty_cmd = f"sudo bash -c '{casty_cmd}'"
+                tail_cmd = f"sudo {tail_cmd}"
+
+            exit_code, stdout, stderr = await transport.run(casty_cmd, timeout=60.0)
+            if exit_code != 0:
+                raise RuntimeError(f"Failed to start Casty node {node_id}: {stderr}")
+            await transport.run(tail_cmd, timeout=10.0)
+            return stdout.strip()
 
         async with SSHTransport(
             host=head_node.info.ip,
@@ -331,55 +352,31 @@ class ComputePool:
             key_path=ssh_key,
             port=head_node.info.ssh_port,
         ) as transport:
-            logger.debug("Starting Ray head on node 0...")
-            exit_code, stdout, stderr = await transport.run(head_cmd, timeout=60.0)
-            if exit_code != 0:
-                logger.error(f"Ray head start failed: {stderr}")
-                raise RuntimeError(f"Failed to start Ray head: {stderr}")
-            if stdout:
-                logger.debug(f"Ray head output: {stdout}")
+            logger.debug("Starting Casty head on node 0...")
+            pid = await _start_node(transport, 0, host=head_addr)
+            logger.debug(f"Casty head PID: {pid}")
+            self._network_interfaces[0] = await detect_network_interface(transport)
 
-            # Wait for dashboard to be ready
-            logger.debug("Waiting for Ray dashboard to be ready...")
-            for attempt in range(30):
-                check_code, _, _ = await transport.run(
-                    "curl -sf http://127.0.0.1:8265/ > /dev/null",
-                    timeout=5.0,
-                )
-                if check_code == 0:
-                    logger.debug("Ray dashboard is ready")
-                    break
-                await asyncio.sleep(1)
-            else:
-                # Check ray status for debugging
-                _, status_out, _ = await transport.run(f"{sudo}{ray_bin} status", timeout=10.0)
-                logger.error(f"Ray status: {status_out}")
-                raise RuntimeError("Ray dashboard not available after 30s")
-
-        logger.debug("Ray head started, starting workers...")
-
-        for node_id, node in self._nodes.items():
-            if node_id == 0 or node.info is None:
-                continue
-
-            worker_cmd = (
-                f"{sudo}{ray_bin} start --address={head_addr}:6379 "
-                f"--resources='{{\"node_{node_id}\": 1.0}}'"
-            )
-
+        async def _start_worker(node_id: int, node: Node) -> None:
+            assert node.info is not None
             async with SSHTransport(
                 host=node.info.ip,
                 user=ssh_user,
                 key_path=ssh_key,
                 port=node.info.ssh_port,
             ) as transport:
-                logger.debug(f"Starting Ray worker on node {node_id}...")
-                exit_code, stdout, stderr = await transport.run(worker_cmd, timeout=60.0)
-                if exit_code != 0:
-                    logger.error(f"Ray worker {node_id} start failed: {stderr}")
-                    raise RuntimeError(f"Failed to start Ray worker {node_id}: {stderr}")
+                worker_addr = node.info.private_ip or node.info.ip
+                logger.debug(f"Starting Casty worker on node {node_id}...")
+                await _start_node(transport, node_id, host=worker_addr, seeds=f"{head_addr}:{casty_port}")
+                self._network_interfaces[node_id] = await detect_network_interface(transport)
 
-        logger.debug("Ray cluster started")
+        await asyncio.gather(*(
+            _start_worker(node_id, node)
+            for node_id, node in self._nodes.items()
+            if node_id != 0 and node.info is not None
+        ))
+
+        logger.debug("Casty cluster started")
 
     def _build_pool_info(
         self,
@@ -402,9 +399,10 @@ class ComputePool:
             if n.info is not None
         ]
 
-        # Default to 1 GPU per node (v2 doesn't track accelerator count yet)
-        accelerator_count = 1
-        total_accelerators = accelerator_count * self.spec.nodes
+        accelerator_count = info.gpu_count or 1
+        total_accelerators = sum(
+            (n.info.gpu_count or 1) for n in self._nodes.values() if n.info is not None
+        )
 
         return build_pool_info(
             node=info.node,
@@ -416,7 +414,7 @@ class ComputePool:
             job_id=self._cluster_id,
             peers=peers,
             accelerator_type=self.spec.accelerator_name,
-            placement_group=info.network_interface or None,  # NCCL interface (e.g., eth1)
+            placement_group=self._network_interfaces.get(info.node) or info.network_interface or None,
             worker=0,
             workers_per_node=1,
         )

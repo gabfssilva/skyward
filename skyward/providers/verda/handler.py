@@ -433,7 +433,8 @@ class VerdaHandler:
 
     def _generate_user_data(self, spec: PoolSpec) -> str:
         """Generate bootstrap user data script."""
-        return spec.image.generate_bootstrap(ttl=spec.ttl)
+        ttl = spec.ttl or self.config.instance_timeout
+        return spec.image.generate_bootstrap(ttl=ttl)
 
     async def _install_local_skyward(
         self,

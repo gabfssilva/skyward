@@ -20,28 +20,9 @@ INFRA_LINES = 3
 SECONDARY_LOG_LINES = 2  # Each secondary node gets 2 log lines
 
 
-def _build_separator(dashboard_url: str | None, width: int) -> Text:
-    """Build separator line, optionally with dashboard URL centered."""
+def _build_separator(width: int) -> Text:
     sep_width = min(80, width)
-
-    if not dashboard_url:
-        return Text("─" * sep_width, style="dim")
-
-    label = f" {dashboard_url} "
-    label_len = len(label)
-    remaining = sep_width - label_len
-
-    if remaining < 10:
-        return Text("─" * sep_width, style="dim")
-
-    left_dashes = remaining // 2
-    right_dashes = remaining - left_dashes
-
-    separator = Text()
-    separator.append("─" * left_dashes, style="dim")
-    separator.append(label, style="blue")
-    separator.append("─" * right_dashes, style="dim")
-    return separator
+    return Text("─" * sep_width, style="dim")
 
 
 class PanelLayout:
@@ -89,8 +70,8 @@ class PanelLayout:
         cluster_section = create_cluster_section(vm.infra, vm.cluster)
         table.add_row(Align.center(cluster_section))
 
-        # 3. Separator line (with dashboard URL if available)
-        separator = _build_separator(vm.infra.dashboard_url if vm.infra else None, width)
+        # 3. Separator line
+        separator = _build_separator(width)
         table.add_row(Align.center(separator))
 
         # 4. Secondary instances (header + 2 log lines each)

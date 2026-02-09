@@ -75,6 +75,19 @@ mutation DeployCpuPod($input: deployCpuPodInput!) {
 """
 
 
+MYSELF_QUERY = """
+query { myself { id pubKey } }
+"""
+
+UPDATE_USER_SETTINGS_MUTATION = """
+mutation Mutation($input: UpdateUserSettingsInput) {
+  updateUserSettings(input: $input) {
+    id
+  }
+}
+"""
+
+
 class RunPodError(Exception):
     """Error from RunPod API."""
 
@@ -205,6 +218,24 @@ class RunPodClient:
             ) from e
         except httpx.RequestError as e:
             raise RunPodError(f"Request failed ({type(e).__name__}): {e}") from e
+
+    # =========================================================================
+    # SSH Key Management (via GraphQL)
+    # =========================================================================
+
+    async def get_ssh_keys(self) -> str:
+        data = await self._graphql(MYSELF_QUERY)
+        return data.get("myself", {}).get("pubKey", "")
+
+    async def ensure_ssh_key(self, public_key: str) -> None:
+        existing = await self.get_ssh_keys()
+        key_content = public_key.strip()
+
+        if key_content in existing:
+            return
+
+        updated = f"{existing}\n{key_content}" if existing else key_content
+        await self._graphql(UPDATE_USER_SETTINGS_MUTATION, {"input": {"pubKey": updated}})
 
     # =========================================================================
     # GPU Types (via GraphQL - no REST endpoint available)

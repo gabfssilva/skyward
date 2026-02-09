@@ -19,6 +19,8 @@ type AllocationStrategy = Literal[
     "lowest-price",  # Cheapest (more interruptions)
 ]
 
+type UbuntuVersion = Literal["20.04", "22.04", "24.04"] | str
+
 
 # =============================================================================
 # Configuration
@@ -38,7 +40,8 @@ class AWS:
 
     Args:
         region: AWS region for resources. Default: us-east-1
-        ami: Custom AMI ID. If None, uses DLAMI GPU AMI.
+        ami: Custom AMI ID. If None, resolves via SSM Parameter Store.
+        ubuntu_version: Ubuntu LTS version for auto-resolved AMIs.
         subnet_id: Specific subnet. If None, uses default VPC subnets.
         security_group_id: Specific SG. If None, creates one.
         instance_profile_arn: IAM instance profile. If None, creates one.
@@ -49,6 +52,7 @@ class AWS:
 
     region: str = "us-east-1"
     ami: str | None = None
+    ubuntu_version: UbuntuVersion = "24.04"
     subnet_id: str | None = None
     security_group_id: str | None = None
     instance_profile_arn: str | None = None

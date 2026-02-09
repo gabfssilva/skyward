@@ -13,17 +13,20 @@ Backend = Literal["jax", "torch", "tensorflow"] | None
 
 def keras[**P, R](
     backend: Backend = None,
+    seed: int | None = None,
 ) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Configure Keras 3 distributed training.
 
     Args:
         backend: Backend to use (jax, torch, tensorflow). Defaults to jax.
+        seed: Random seed for reproducibility. Set before distribution init
+            to ensure consistent RNG state across all processes.
 
     Example:
         >>> import skyward as sky
 
         >>> @sky.compute
-        ... @sky.integrations.keras(backend="jax")
+        ... @sky.integrations.keras(backend="jax", seed=42)
         ... def train():
         ...     import keras
         ...     model = keras.Sequential([...])
@@ -37,7 +40,7 @@ def keras[**P, R](
         @functools.wraps(fn)
         def inner(*args: P.args, **kwargs: P.kwargs) -> R:
             # Use v1's instance_info which reads from COMPUTE_POOL env var
-            from skyward.cluster.info import instance_info
+            from skyward import instance_info
 
             pool = instance_info()
 
@@ -46,7 +49,6 @@ def keras[**P, R](
             if pool and pool.total_nodes > 1:
                 import keras
 
-                keras.utils.set_random_seed(42)
                 devices = keras.distribution.list_devices()
 
                 print(f"[keras] devices={devices}")
@@ -60,6 +62,15 @@ def keras[**P, R](
                         )
                     )
                     print("[keras] DataParallel distribution set")
+
+                    if effective == "jax":
+                        from keras.src.backend.jax.distribution_lib import initialize_rng
+                        initialize_rng()
+                        print("[keras] RNG synchronized across processes")
+
+                if seed is not None:
+                    keras.utils.set_random_seed(seed)
+                    print(f"[keras] Random seed set to {seed} (post-distribution)")
 
             return fn(*args, **kwargs)
 

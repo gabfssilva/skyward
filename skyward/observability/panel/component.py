@@ -20,7 +20,6 @@ from skyward.events import (
     ClusterReady,
     ClusterRequested,
     Error,
-    ExecutorConnected,
     InstanceBootstrapped,
     InstanceDestroyed,
     InstancePreempted,
@@ -106,11 +105,6 @@ class PanelComponent:
         self._state.ready = len(event.nodes)
         elapsed = time.monotonic() - self._state.start_time if self._state.start_time else 0.0
         self._state.phase_times["bootstrap"] = elapsed
-
-    @on(ExecutorConnected)
-    async def _on_executor_connected(self, _sender: object, event: ExecutorConnected) -> None:
-        """Update dashboard URL when executor connects."""
-        self._state.infra.dashboard_url = event.dashboard_url
 
     @on(ShutdownRequested)
     async def _on_shutdown(self, _sender: object, event: ShutdownRequested) -> None:

@@ -132,6 +132,7 @@ class Image:
     def generate_bootstrap(
         self,
         ttl: int = 0,
+        shutdown_command: str = "shutdown -h now",
         preamble: Op | None = None,
         postamble: Op | None = None,
     ) -> str:
@@ -142,6 +143,7 @@ class Image:
 
         Args:
             ttl: Auto-shutdown timeout in seconds (0 = disabled).
+            shutdown_command: Shell command to execute on timeout.
             preamble: Op to execute first.
             postamble: Op to execute last.
 
@@ -149,7 +151,7 @@ class Image:
             Complete shell script for cloud-init.
         """
         ops: list[Op | None] = [
-            instance_timeout(ttl) if ttl else None,
+            instance_timeout(ttl, shutdown_command=shutdown_command) if ttl else None,
             preamble,
         ]
 

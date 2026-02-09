@@ -30,7 +30,7 @@ from skyward.events import (
     ShutdownRequested,
 )
 from skyward.monitors import SSHCredentialsRegistry
-from skyward.providers.ssh_keys import get_ssh_key_path
+from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
 from skyward.providers.wait import wait_for_ready
 
 from .client import RunPodClient, RunPodError, get_api_key
@@ -103,8 +103,16 @@ class RunPodHandler:
 
         # Register SSH credentials for EventStreamer
         ssh_key_path = get_ssh_key_path()
+        _, ssh_public_key = get_local_ssh_key()
         state.ssh_key_path = ssh_key_path
+        state.ssh_public_key = ssh_public_key
         self.ssh_credentials.register(cluster_id, state.username, ssh_key_path)
+
+        # Ensure SSH key is registered on RunPod account
+        api_key = get_api_key(self.config.api_key)
+        async with RunPodClient(api_key) as client:
+            await client.ensure_ssh_key(ssh_public_key)
+            logger.debug("RunPod: SSH key registered on account")
 
         # Resolve GPU type
         gpu_type_id = await self._resolve_gpu_type(event.spec)
@@ -305,7 +313,11 @@ class RunPodHandler:
             return
 
         info = event.instance
-        bootstrap_script = cluster.spec.image.generate_bootstrap(ttl=cluster.spec.ttl)
+        ttl = cluster.spec.ttl or self.config.instance_timeout
+        bootstrap_script = cluster.spec.image.generate_bootstrap(
+            ttl=ttl,
+            shutdown_command="eval $(cat /proc/1/environ | tr '\\0' '\\n' | grep RUNPOD_ | sed 's/^/export /'); runpodctl remove pod $RUNPOD_POD_ID",
+        )
 
         logger.info(f"RunPod: Connecting to {info.ip}:{info.ssh_port} to run bootstrap...")
         from skyward.providers.bootstrap import run_bootstrap_via_ssh, wait_for_ssh

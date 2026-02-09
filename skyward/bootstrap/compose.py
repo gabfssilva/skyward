@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Final
 
 from ..constants import SKYWARD_DIR
 
+EMIT_SH_PATH: Final = f"{SKYWARD_DIR}/emit.sh"
+
 if TYPE_CHECKING:
     from ..metrics import Metric
 
@@ -91,6 +93,11 @@ emit_command() {{{{
     cmd="${{{{cmd//$'\\r'/\\\\r}}}}"
     emit "{{{{\\\"type\\\":\\\"command\\\",\\\"command\\\":\\\"$cmd\\\"}}}}"
 }}}}
+
+# Save emit helpers for post-bootstrap reuse (e.g., Casty log streaming)
+(echo 'EVENTS_LOG="{SKYWARD_DIR}/events.jsonl"'
+ echo 'MAX_SIZE=10485760'
+ declare -f emit emit_phase emit_console emit_command) > {SKYWARD_DIR}/emit.sh
 
 run_phase() {{{{
     local phase="$1"; shift

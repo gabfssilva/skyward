@@ -357,7 +357,7 @@ class EventStreamer:
                             value=value,
                             timestamp=ts,
                         ))
-                        logger.debug(f"{log_prefix}metric {name}={value}")
+                        logger.trace(f"{log_prefix}metric {name}={value}")
 
         try:
             await stream_with_retry()

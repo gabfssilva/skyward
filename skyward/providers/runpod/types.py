@@ -173,6 +173,7 @@ class CpuPodCreateParams(TypedDict, total=False):
     ports: str  # e.g. "22/tcp"
     dockerArgs: str  # Custom docker args
     volumeKey: str | None
+    env: list[dict[str, str]]  # [{"key": "...", "value": "..."}]
 
 
 # =============================================================================

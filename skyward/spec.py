@@ -80,7 +80,7 @@ class PoolSpec:
     architecture: Architecture | None = None
     allocation: AllocationStrategy = "spot-if-available"
     image: Image = field(default_factory=Image)
-    ttl: int = 0
+    ttl: int = 600
     provider: ProviderName | None = None
     max_hourly_cost: float | None = None
 

@@ -242,7 +242,6 @@ from skyward import integrations as integrations
 
 from .distributed import (
     dict,
-    list,
     set,
     counter,
     queue,
@@ -402,7 +401,6 @@ __all__ = [
     # Distributed Collections
     # =================================================================
     "dict",
-    "list",
     "set",
     "counter",
     "queue",

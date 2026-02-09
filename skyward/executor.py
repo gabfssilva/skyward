@@ -1,94 +1,49 @@
-"""Ray Jobs API executor for remote function execution.
+"""HTTP-based executor for remote function execution via Casty.
 
-Provides async execution of functions on remote Ray cluster via Ray Jobs API.
-Uses SSH tunnel (local port forwarding) to access Dashboard/Jobs API on head node.
-
-This replaces Ray Client which had stability issues over SSH tunnels (gRPC timeouts).
-Ray Jobs API uses HTTP which is more robust for tunneled connections.
+Submits jobs to the Casty worker's HTTP API on the head node.
+Uses an SSH tunnel to forward requests to the remote HTTP server.
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
-import socket
-import tempfile
-import uuid
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
 import asyncssh
+import httpx
 from loguru import logger
 
-from .transport.ssh import SSHTransport
 from .utils.serialization import deserialize, serialize
 
-# Ray Dashboard/Jobs API port (head node)
-RAY_DASHBOARD_PORT = 8265
-
-# Threshold for using file vs env var for payload
-PAYLOAD_SIZE_THRESHOLD = 50 * 1024  # 50KB
-
-
-def _find_free_port() -> int:
-    """Find an available local port."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+CASTY_PORT = 25520
+HTTP_PORT = 8265
 
 
 @dataclass
 class Executor:
-    """Ray Jobs API executor for remote function execution.
-
-    Uses SSH tunnel (local port forwarding) to access Ray Dashboard/Jobs API.
-    The Ray head node runs Dashboard on port 8265, and we forward
-    a local port to it via SSH.
-
-    Jobs are submitted with a runner script (job_runner.py) that:
-    1. Deserializes the function + args from env var or file
-    2. Executes with optional node placement via Ray resources
-    3. Writes result to file for retrieval
-
-    Example:
-        executor = Executor(
-            head_ip="10.0.0.1",
-            user="ubuntu",
-            key_path="~/.ssh/id_rsa",
-            num_nodes=4,
-        )
-
-        await executor.connect()
-        result = await executor.execute(fn, *args, node_id=0)
-        results = await executor.broadcast(fn, *args)
-        await executor.disconnect()
-    """
-
     head_ip: str
     user: str
     key_path: str
     num_nodes: int = 1
     ssh_port: int = 22
-    remote_port: int = RAY_DASHBOARD_PORT
+    http_port: int = HTTP_PORT
     connect_timeout: float = 120.0
-    job_timeout: float = 600.0  # Max time to wait for a job
-    env_vars: dict[str, str] = field(default_factory=dict)  # Env vars for all jobs
-    pool_infos: list[str] = field(default_factory=list)  # COMPUTE_POOL JSON per node
+    job_timeout: float = 600.0
+    env_vars: dict[str, str] = field(default_factory=dict)
+    pool_infos: list[str] = field(default_factory=list)
 
     _ssh_conn: asyncssh.SSHClientConnection | None = field(default=None, repr=False)
-    _local_port: int = field(default=0, repr=False)
-    _listener: asyncssh.SSHListener | None = field(default=None, repr=False)
+    _tunnel_listener: Any = field(default=None, repr=False)
+    _http_client: httpx.AsyncClient | None = field(default=None, repr=False)
     _connected: bool = field(default=False, repr=False)
-    _transport: SSHTransport | None = field(default=None, repr=False)
 
     async def connect(self) -> None:
-        """Establish SSH tunnel to Ray Dashboard/Jobs API."""
         if self._connected:
             return
 
-        # Connect SSH with keepalive to prevent tunnel drops
         logger.debug(f"Connecting SSH to {self.head_ip}:{self.ssh_port}")
         self._ssh_conn = await asyncssh.connect(
             self.head_ip,
@@ -101,86 +56,53 @@ class Executor:
             keepalive_count_max=4,
         )
 
-        # Create local port forwarding to Dashboard
-        self._local_port = _find_free_port()
-        self._listener = await self._ssh_conn.forward_local_port(
-            "127.0.0.1",  # Explicit IPv4 localhost binding
-            self._local_port,
-            "127.0.0.1",  # Forward to localhost on remote
-            self.remote_port,
+        logger.debug(f"Opening SSH tunnel to {self.head_ip}:{self.http_port}")
+        self._tunnel_listener = await self._ssh_conn.forward_local_port(
+            "", 0, "127.0.0.1", self.http_port,
+        )
+        local_port = self._tunnel_listener.get_port()
+
+        self._http_client = httpx.AsyncClient(
+            base_url=f"http://127.0.0.1:{local_port}",
+            timeout=httpx.Timeout(self.job_timeout, connect=30.0),
         )
 
-        # Brief delay for tunnel stabilization
-        await asyncio.sleep(0.5)
-
-        logger.debug(
-            f"SSH tunnel: localhost:{self._local_port} -> "
-            f"{self.head_ip}:localhost:{self.remote_port}"
-        )
-
-        # Create transport for file transfers
-        self._transport = SSHTransport(
-            host=self.head_ip,
-            user=self.user,
-            key_path=self.key_path,
-            port=self.ssh_port,
-        )
-        await self._transport.connect()
-
-        # Verify Jobs API is accessible
-        await self._verify_connection()
+        await self._wait_for_ready()
 
         self._connected = True
-        logger.info(f"Connected to Ray cluster at {self.head_ip} (Jobs API)")
+        logger.info(f"Connected to Casty HTTP API at {self.head_ip}:{self.http_port}")
 
-    async def _verify_connection(self) -> None:
-        """Verify Jobs API is accessible via the tunnel.
+    async def _wait_for_ready(self) -> None:
+        assert self._http_client is not None
 
-        Retries for up to 30 seconds since the dashboard may take
-        time to become ready after Ray starts.
-        """
-        import requests
-        from ray.job_submission import JobSubmissionClient
-
-        address = f"http://localhost:{self._local_port}"
-        logger.debug(f"Verifying Jobs API at {address}...")
-
-        max_attempts = 15
-        delay = 2.0
-
-        for attempt in range(max_attempts):
+        for attempt in range(30):
             try:
-                # JobSubmissionClient operations are sync, run in executor
-                def check_connection() -> None:
-                    client = JobSubmissionClient(address)
-                    # List jobs to verify connection (empty list is fine)
-                    client.list_jobs()
+                resp = await self._http_client.get("/health")
+                if resp.status_code == 200:
+                    logger.debug("Casty HTTP API is ready")
+                    return
+            except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError):
+                pass
 
-                await asyncio.get_event_loop().run_in_executor(None, check_connection)
-                logger.debug("Jobs API connection verified")
-                return
-            except (ConnectionError, OSError, requests.exceptions.ConnectionError) as e:
-                if attempt < max_attempts - 1:
-                    logger.debug(f"Jobs API not ready (attempt {attempt + 1}/{max_attempts}): {e}")
-                    await asyncio.sleep(delay)
-                else:
-                    raise
+            if attempt < 29:
+                logger.debug(f"Casty HTTP not ready (attempt {attempt + 1}/30)")
+                await asyncio.sleep(2.0)
+
+        raise RuntimeError(f"Casty HTTP API not ready after 60s at {self.head_ip}:{self.http_port}")
 
     async def disconnect(self) -> None:
-        """Disconnect from Ray cluster and close SSH tunnel."""
         logger.debug(f"Disconnecting from {self.head_ip}")
-
         self._connected = False
 
-        if self._transport is not None:
+        if self._http_client is not None:
             with suppress(Exception):
-                await self._transport.close()
-            self._transport = None
+                await self._http_client.aclose()
+            self._http_client = None
 
-        if self._listener is not None:
+        if self._tunnel_listener is not None:
             with suppress(Exception):
-                self._listener.close()
-            self._listener = None
+                self._tunnel_listener.close()
+            self._tunnel_listener = None
 
         if self._ssh_conn is not None:
             with suppress(Exception):
@@ -200,15 +122,7 @@ class Executor:
 
     @property
     def is_connected(self) -> bool:
-        """Whether connection is established."""
         return self._connected
-
-    @property
-    def dashboard_url(self) -> str | None:
-        """Local URL to Ray Dashboard via SSH tunnel."""
-        if not self._connected or self._local_port == 0:
-            return None
-        return f"http://localhost:{self._local_port}"
 
     async def execute[T](
         self,
@@ -217,40 +131,33 @@ class Executor:
         node_id: int | None = None,
         **kwargs: Any,
     ) -> T:
-        """Execute function on cluster via Ray Jobs API.
-
-        Args:
-            fn: Function to execute remotely.
-            *args: Positional arguments.
-            node_id: Specific node to run on (0 to num_nodes-1), or None for any.
-            **kwargs: Keyword arguments.
-
-        Returns:
-            Result of function execution.
-
-        Raises:
-            RuntimeError: If not connected or job fails.
-        """
         if not self._connected:
             raise RuntimeError("Not connected. Call connect() first.")
 
+        assert self._http_client is not None
         fn_name = getattr(fn, "__name__", str(fn))
-        job_id = f"skyward-{uuid.uuid4().hex[:8]}"
-        logger.debug(f"execute({fn_name}) submitting job {job_id}, node_id={node_id}")
+        logger.debug(f"execute({fn_name}) node_id={node_id}")
 
-        # Build payload
-        payload = {
+        payload = serialize({
             "fn": fn,
             "args": args,
             "kwargs": kwargs,
-            "mode": "single",
             "node_id": node_id,
-            "num_nodes": self.num_nodes,
-            "pool_infos": self.pool_infos,
-        }
+        })
 
-        # Submit and wait for result
-        result = await self._submit_and_wait(job_id, payload)
+        resp = await self._http_client.post(
+            "/jobs",
+            content=payload,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+
+        result = deserialize(resp.content)
+
+        if resp.status_code != 200:
+            error = result.get("error", "Unknown error") if isinstance(result, dict) else str(result)
+            tb = result.get("traceback", "") if isinstance(result, dict) else ""
+            raise RuntimeError(f"Execution error: {error}\n{tb}")
+
         logger.debug(f"execute({fn_name}) completed")
         return result
 
@@ -260,211 +167,57 @@ class Executor:
         *args: Any,
         **kwargs: Any,
     ) -> list[T]:
-        """Execute function on all nodes via Ray Jobs API.
-
-        Args:
-            fn: Function to execute on each node.
-            *args: Positional arguments.
-            **kwargs: Keyword arguments.
-
-        Returns:
-            List of results from each node, ordered by node_id.
-        """
         if not self._connected:
             raise RuntimeError("Not connected. Call connect() first.")
 
+        assert self._http_client is not None
         fn_name = getattr(fn, "__name__", str(fn))
-        job_id = f"skyward-{uuid.uuid4().hex[:8]}"
-        logger.debug(f"broadcast({fn_name}) submitting job {job_id}")
+        logger.debug(f"broadcast({fn_name})")
 
-        # Build payload
-        payload = {
+        payload = serialize({
             "fn": fn,
             "args": args,
             "kwargs": kwargs,
-            "mode": "broadcast",
             "num_nodes": self.num_nodes,
-            "pool_infos": self.pool_infos,
-        }
+        })
 
-        # Submit and wait for result
-        result = await self._submit_and_wait(job_id, payload)
+        resp = await self._http_client.post(
+            "/jobs/broadcast",
+            content=payload,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+
+        result = deserialize(resp.content)
+
+        if resp.status_code != 200:
+            error = result.get("error", "Unknown error") if isinstance(result, dict) else str(result)
+            tb = result.get("traceback", "") if isinstance(result, dict) else ""
+            raise RuntimeError(f"Broadcast error: {error}\n{tb}")
+
         logger.debug(f"broadcast({fn_name}) completed")
         return result
 
-    async def _submit_and_wait[T](self, job_id: str, payload: dict[str, Any]) -> T:
-        """Submit job and wait for result.
-
-        Handles payload transfer (env var or file), job submission,
-        status polling, and result retrieval.
-        """
-        from ray.job_submission import JobStatus, JobSubmissionClient
-
-        assert self._transport is not None
-
-        # Serialize payload
-        payload_bytes = serialize(payload)
-        payload_size = len(payload_bytes)
-
-        # Determine transfer method
-        remote_payload_file = f"/tmp/skyward_payload_{job_id}.pkl"
-        remote_result_file = f"/tmp/skyward_result_{job_id}.pkl"
-        use_file = payload_size >= PAYLOAD_SIZE_THRESHOLD
-
-        # Set up environment (include user env vars like KERAS_BACKEND)
-        env_vars = {**self.env_vars, "SKYWARD_RESULT_FILE": remote_result_file}
-
-        # Use the Python from the skyward venv
-        python_bin = "/opt/skyward/.venv/bin/python"
-
-        if use_file:
-            # Upload payload file
-            logger.debug(f"Uploading payload ({payload_size} bytes) to {remote_payload_file}")
-            await self._transport.write_bytes(remote_payload_file, payload_bytes)
-            entrypoint = f"{python_bin} -m skyward.job_runner {remote_payload_file}"
-        else:
-            # Use env var for small payloads
-            payload_b64 = base64.b64encode(payload_bytes).decode("ascii")
-            env_vars["SKYWARD_PAYLOAD"] = payload_b64
-            entrypoint = f"{python_bin} -m skyward.job_runner"
-
-        # Submit job
-        address = f"http://localhost:{self._local_port}"
-
-        def submit_job() -> str:
-            try:
-                logger.debug(f"Submitting job {job_id}...")
-
-                client = JobSubmissionClient(address)
-                return client.submit_job(
-                    entrypoint=entrypoint,
-                    submission_id=job_id,
-                    entrypoint_num_cpus=0,  # Don't reserve CPUs for entrypoint
-                    runtime_env={"env_vars": env_vars},
-                )
-
-                logger.debug(f"Job submitted: {submitted_id}")
-            except Exception as e:
-                logger.error(f"submit_job({job_id}) failed: {e}")
-
-        submitted_id = await asyncio.get_event_loop().run_in_executor(None, submit_job)
-
-        # Poll for completion
-        terminal_states = {
-            JobStatus.SUCCEEDED,
-            JobStatus.FAILED,
-            JobStatus.STOPPED,
-        }
-
-        def get_status() -> JobStatus:
-            client = JobSubmissionClient(address)
-            return client.get_job_status(job_id)
-
-        def get_logs() -> str:
-            client = JobSubmissionClient(address)
-            return client.get_job_logs(job_id)
-
-        start_time = asyncio.get_event_loop().time()
-        last_status = None
-        last_log_len = 0
-
-        while True:
-            status = await asyncio.get_event_loop().run_in_executor(None, get_status)
-
-            if status != last_status:
-                logger.debug(f"Job {job_id} status: {status}")
-                last_status = status
-
-            # Stream logs incrementally
-            logs = await asyncio.get_event_loop().run_in_executor(None, get_logs)
-            if logs and len(logs) > last_log_len:
-                new_logs = logs[last_log_len:]
-                for line in new_logs.rstrip("\n").split("\n"):
-                    if line:
-                        logger.info(f"[job] {line}")
-                last_log_len = len(logs)
-
-            if status in terminal_states:
-                break
-
-            # Check timeout
-            elapsed = asyncio.get_event_loop().time() - start_time
-            if elapsed > self.job_timeout:
-                # Try to stop the job
-                with suppress(Exception):
-                    def stop_job() -> None:
-                        client = JobSubmissionClient(address)
-                        client.stop_job(job_id)
-                    await asyncio.get_event_loop().run_in_executor(None, stop_job)
-                raise TimeoutError(f"Job {job_id} timed out after {self.job_timeout}s")
-
-            await asyncio.sleep(0.5)
-
-        # Check final status
-        if status == JobStatus.FAILED:
-            logs = await asyncio.get_event_loop().run_in_executor(None, get_logs)
-            raise RuntimeError(f"Job {job_id} failed:\n{logs}")
-
-        if status == JobStatus.STOPPED:
-            raise RuntimeError(f"Job {job_id} was stopped")
-
-        # Download result
-        logger.debug(f"Downloading result from {remote_result_file}")
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pkl") as tmp:
-            local_result_file = tmp.name
-
-        try:
-            await self._transport.download(remote_result_file, local_result_file)
-
-            with open(local_result_file, "rb") as f:
-                result_bytes = f.read()
-
-            result = deserialize(result_bytes)
-
-            # Check for error in result
-            if isinstance(result, dict) and "error" in result and "traceback" in result:
-                raise RuntimeError(f"Job execution error: {result['error']}\n{result['traceback']}")
-
-            return result
-        finally:
-            # Cleanup local temp file
-            import os
-            with suppress(Exception):
-                os.unlink(local_result_file)
-
-            # Cleanup remote files
-            with suppress(Exception):
-                await self._transport.run("rm", "-f", remote_result_file, remote_payload_file)
-
     async def setup_cluster(
         self,
-        pool_info_json: str,
         env_vars: dict[str, str],
     ) -> None:
-        """Setup cluster environment on all nodes.
-
-        Sets COMPUTE_POOL and additional environment variables
-        on each node for distributed training coordination.
-
-        Args:
-            pool_info_json: JSON string for COMPUTE_POOL env var.
-            env_vars: Additional environment variables.
-        """
         if not self._connected:
             raise RuntimeError("Not connected. Call connect() first.")
 
-        def setup_env(pool_json: str, extra_vars: dict[str, str]) -> str:
+        def setup_env(all_pool_infos: list[str], extra_vars: dict[str, str]) -> str:
             import os
-            os.environ["COMPUTE_POOL"] = pool_json
+            nid = int(os.environ.get("SKYWARD_NODE_ID", "0"))
+            if all_pool_infos and nid < len(all_pool_infos):
+                os.environ["COMPUTE_POOL"] = all_pool_infos[nid]
             for key, value in extra_vars.items():
                 os.environ[key] = value
             return "ok"
 
-        # Setup on all nodes
-        await self.broadcast(setup_env, pool_info_json, env_vars)
+        await self.broadcast(setup_env, self.pool_infos, env_vars)
 
 
 __all__ = [
     "Executor",
-    "RAY_DASHBOARD_PORT",
+    "CASTY_PORT",
+    "HTTP_PORT",
 ]

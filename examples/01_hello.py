@@ -12,6 +12,7 @@ A simple introduction to Skyward that demonstrates:
     │  Speedup: ~50x                       │
     └──────────────────────────────────────┘
 """
+from time import sleep
 
 import skyward as sky
 
@@ -83,13 +84,14 @@ def format_results(r: dict) -> None:
 
 @sky.pool(
     provider=sky.RunPod(),
-    accelerator=sky.accelerators.RTX_4090(),
+    accelerator=sky.accelerators.RTX_5090(),
     image=sky.Image(
         pip=["jax[cuda12]"],
         skyward_source="local",
         metrics=sky.metrics.Default()
     ),
-    max_hourly_cost=0.5
+    max_hourly_cost=0.5,
+    ttl=120
 )
 def main():
     return benchmark(matrix_size=4096, iterations=50) >> sky

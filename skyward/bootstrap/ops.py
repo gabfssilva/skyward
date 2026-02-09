@@ -281,11 +281,12 @@ def shell_vars(**variables: str) -> Op:
     return generate
 
 
-def instance_timeout(seconds: int) -> Op:
+def instance_timeout(seconds: int, shutdown_command: str = "shutdown -h now") -> Op:
     """Set up automatic instance shutdown after timeout.
 
     Args:
         seconds: Timeout in seconds (0 to disable).
+        shutdown_command: Shell command to execute on timeout.
 
     Example:
         >>> instance_timeout(3600)()
@@ -295,7 +296,11 @@ def instance_timeout(seconds: int) -> Op:
     def generate() -> str:
         return f"""SKYWARD_INSTANCE_TIMEOUT="{seconds}"
 if [ -n "$SKYWARD_INSTANCE_TIMEOUT" ] && [ "$SKYWARD_INSTANCE_TIMEOUT" -gt 0 ]; then
-    (sleep $SKYWARD_INSTANCE_TIMEOUT && shutdown -h now) &
+    cat > {SKYWARD_DIR}/auto-shutdown.sh << 'SHUTDOWN'
+{shutdown_command}
+SHUTDOWN
+    chmod +x {SKYWARD_DIR}/auto-shutdown.sh
+    nohup bash -c "sleep $SKYWARD_INSTANCE_TIMEOUT && {SKYWARD_DIR}/auto-shutdown.sh" &
 fi"""
 
     return generate
