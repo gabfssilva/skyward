@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Callable
+from dataclasses import field
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -109,7 +110,9 @@ class ComputePool:
     _ready_nodes: set[NodeId] = set()  # type: ignore[assignment]
     _ready_event: asyncio.Event | None = None
     _executor: Executor | None = None
+    _executor_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _network_interfaces: dict[NodeId, str] = {}  # type: ignore[assignment]
+    _next_node: int = 0
 
     # -------------------------------------------------------------------------
     # Public API
@@ -213,13 +216,13 @@ class ComputePool:
                 raise ValueError(f"Node {node} not available")
             node_id = node
         else:
-            # Pick first ready node
-            target_node = next(
-                (n for n in self._nodes.values() if n.is_ready),
-                None,
-            )
-            if not target_node:
+            # Round-robin across ready nodes
+            ready = [n for n in self._nodes.values() if n.is_ready]
+            if not ready:
                 raise RuntimeError("No ready nodes available")
+            idx = self._next_node % len(ready)
+            self._next_node = idx + 1
+            target_node = ready[idx]
             node_id = target_node.id
 
         # Ensure executor is connected
@@ -253,6 +256,13 @@ class ComputePool:
         if self._executor is not None:
             return self._executor
 
+        async with self._executor_lock:
+            if self._executor is not None:
+                return self._executor
+
+            return await self._create_executor()
+
+    async def _create_executor(self) -> Executor:
         from skyward.providers.ssh_keys import get_ssh_key_path
 
         head_node = self._nodes.get(0)
@@ -326,6 +336,7 @@ class ComputePool:
                 f"nohup {python_bin} -m skyward.casty_worker "
                 f"--node-id {node_id} --port {casty_port} --http-port {http_port} "
                 f"--num-nodes {self.spec.nodes} --host {host} "
+                f"--workers-per-node {self.spec.concurrency} "
                 f"{seeds_arg}"
                 f"> /var/log/casty.log 2>&1 & echo $!"
             )

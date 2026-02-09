@@ -67,7 +67,7 @@ print(f"Best score: {grid.best_score_}")
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `provider` | `ProviderLike` | required | Cloud provider (AWS, DigitalOcean, Verda, VastAI) |
+| `provider` | `ProviderLike` | required | Cloud provider (AWS, Verda, VastAI) |
 | `nodes` | `int` | `1` | Number of compute nodes |
 | `concurrency` | `int` | `1` | Concurrent tasks per node |
 | `machine` | `str \| None` | `None` | Direct instance type override |

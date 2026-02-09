@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
 from typing import TYPE_CHECKING, Any, TypeVar, overload
 
 if TYPE_CHECKING:
     import numpy.typing as npt
     import torch
 
-__all__ = ["shard", "shard_iterator", "DistributedSampler"]
+__all__ = ["shard"]
 
 T = TypeVar("T")
 T1 = TypeVar("T1")
@@ -258,112 +257,3 @@ def shard(
         return _shard_single(d, indices)
 
     return tuple(shard_one(d) for d in data)
-
-
-# ============= shard_iterator =============
-
-
-def shard_iterator(
-    iterator: Iterator[T],
-    *,
-    node: int | None = None,
-    total_nodes: int | None = None,
-) -> Iterator[T]:
-    """Shard an iterator across distributed nodes (round-robin).
-
-    Yields ONLY items belonging to this node.
-
-    Args:
-        iterator: Any iterator or generator.
-        node: Override node index (for testing).
-        total_nodes: Override total_nodes (for testing).
-
-    Yields:
-        Items for this node (every total_nodes-th item starting at node).
-    """
-    if node is None or total_nodes is None:
-        auto_node, auto_total_nodes = _get_pool_info()
-        node = node if node is not None else auto_node
-        total_nodes = total_nodes if total_nodes is not None else auto_total_nodes
-
-    for i, item in enumerate(iterator):
-        if i % total_nodes == node:
-            yield item
-
-
-# ============= DistributedSampler =============
-
-
-class DistributedSampler(Sequence[int]):
-    """PyTorch DataLoader compatible sampler for distributed training.
-
-    Returns ONLY indices for this node.
-    Call set_epoch() before each epoch to update shuffle.
-
-    Example:
-        sampler = DistributedSampler(dataset, shuffle=True)
-        loader = DataLoader(dataset, sampler=sampler)
-
-        for epoch in range(epochs):
-            sampler.set_epoch(epoch)
-            for batch in loader:
-                ...
-    """
-
-    def __init__(
-        self,
-        dataset: Sequence[Any],
-        *,
-        shuffle: bool = True,
-        seed: int = 0,
-        drop_last: bool = False,
-        node: int | None = None,
-        total_nodes: int | None = None,
-    ) -> None:
-        if node is None or total_nodes is None:
-            auto_node, auto_total_nodes = _get_pool_info()
-            node = node if node is not None else auto_node
-            total_nodes = total_nodes if total_nodes is not None else auto_total_nodes
-
-        self.dataset = dataset
-        self.node = node
-        self.total_nodes = total_nodes
-        self.shuffle = shuffle
-        self.seed = seed
-        self.drop_last = drop_last
-        self.epoch = 0
-        self._indices: list[int] | None = None
-
-    def set_epoch(self, epoch: int) -> None:
-        """Set epoch for deterministic shuffling."""
-        self.epoch = epoch
-        self._indices = None
-
-    @property
-    def indices(self) -> list[int]:
-        """Get indices for this node (cached)."""
-        if self._indices is None:
-            self._indices = _compute_indices(
-                len(self.dataset),
-                self.node,
-                self.total_nodes,
-                self.shuffle,
-                self.seed + self.epoch,
-                self.drop_last,
-            )
-        return self._indices
-
-    def __len__(self) -> int:
-        return len(self.indices)
-
-    @overload
-    def __getitem__(self, idx: int) -> int: ...
-
-    @overload
-    def __getitem__(self, idx: slice) -> Sequence[int]: ...
-
-    def __getitem__(self, idx: int | slice) -> int | Sequence[int]:
-        return self.indices[idx]
-
-    def __iter__(self) -> Iterator[int]:
-        return iter(self.indices)

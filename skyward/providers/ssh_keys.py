@@ -14,7 +14,7 @@ from pathlib import Path
 def compute_fingerprint(public_key: str) -> str:
     """Compute SSH key fingerprint (MD5 colon-separated format).
 
-    This format is used by DigitalOcean, Verda, and other cloud providers.
+    MD5 colon-separated format used by cloud providers.
 
     Args:
         public_key: SSH public key content (e.g., "ssh-ed25519 AAAA... user@host")

@@ -5,7 +5,7 @@ This guide will help you install Skyward and run your first cloud computation.
 ## Prerequisites
 
 - Python 3.13 or higher
-- Cloud provider credentials (AWS, DigitalOcean, Verda, or VastAI)
+- Cloud provider credentials (AWS, Verda, or VastAI)
 
 ## Installation
 
@@ -69,14 +69,6 @@ Required IAM permissions:
 - `ec2:*` - Instance management
 - `iam:PassRole` - For instance profiles
 - `ssm:*` - For Session Manager connectivity (optional but recommended)
-
-### DigitalOcean
-
-```bash
-export DIGITALOCEAN_TOKEN=your_api_token
-```
-
-Create a token at: https://cloud.digitalocean.com/account/api/tokens
 
 ### Verda
 

@@ -83,15 +83,15 @@ def format_results(r: dict) -> None:
 
 
 @sky.pool(
-    provider=sky.RunPod(),
-    accelerator=sky.accelerators.RTX_5090(),
+    provider=sky.AWS(),
+    accelerator=sky.accelerators.T4G(),
     image=sky.Image(
         pip=["jax[cuda12]"],
         skyward_source="local",
         metrics=sky.metrics.Default()
     ),
     max_hourly_cost=0.5,
-    ttl=120
+    ttl=240
 )
 def main():
     return benchmark(matrix_size=4096, iterations=50) >> sky

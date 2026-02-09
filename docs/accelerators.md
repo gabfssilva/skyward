@@ -300,7 +300,7 @@ def my_function():
 
 ## Related Topics
 
-- [Providers](providers.md) — AWS, DigitalOcean, and Verda configuration
+- [Providers](providers.md) — AWS, Verda, and VastAI configuration
 - [Distributed Training](distributed-training.md) — Multi-GPU training guides
 - [Troubleshooting](troubleshooting.md) — Common issues and solutions
 - [API Reference](api-reference.md) — Complete API documentation

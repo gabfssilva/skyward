@@ -81,6 +81,7 @@ class PoolSpec:
     allocation: AllocationStrategy = "spot-if-available"
     image: Image = field(default_factory=Image)
     ttl: int = 600
+    concurrency: int = 1
     provider: ProviderName | None = None
     max_hourly_cost: float | None = None
 

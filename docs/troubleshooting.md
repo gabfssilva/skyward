@@ -33,8 +33,6 @@ Your cloud credentials lack required permissions.
 - `iam:PassRole` (for instance profiles)
 - `ssm:*` (for Session Manager connectivity)
 
-**DigitalOcean:** Verify your token at https://cloud.digitalocean.com/account/api (read/write access needed)
-
 **Verda:** Check your API key and account permissions
 
 ### "Bootstrap timeout"
@@ -197,13 +195,6 @@ AWS service quotas limit instance launches.
 1. Request quota increase in AWS console
 2. Try a different region (quotas are per-region)
 3. Use different instance types
-
-### DigitalOcean: Authentication Failed
-
-**Solutions:**
-1. Verify token at https://cloud.digitalocean.com/account/api
-2. Check token permissions (read/write access needed)
-3. Regenerate token if expired
 
 ### Verda: Region Not Available
 

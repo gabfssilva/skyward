@@ -61,10 +61,10 @@ If a provider fails to provision, Skyward tries the next one:
 
 ```python
 pool = ComputePool(
-    provider=[AWS(), DigitalOcean(), Verda()],
+    provider=[AWS(), Verda()],
     accelerator="H100",
 )
-# If AWS fails → tries DigitalOcean → tries Verda
+# If AWS fails → tries Verda
 ```
 
 No retry logic needed — it's handled for you.
@@ -163,7 +163,7 @@ Skyward documentation:
 
 - [Core Concepts](concepts.md) — Programming model and ephemeral compute
 - [Getting Started](getting-started.md) — Installation and first steps
-- [Providers](providers.md) — AWS, DigitalOcean, Verda configuration
+- [Providers](providers.md) — AWS, Verda configuration
 
 [paper]: https://arxiv.org/abs/2205.07147
 [skypilot]: https://github.com/skypilot-org/skypilot

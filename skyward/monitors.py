@@ -288,10 +288,10 @@ class EventStreamer:
 
         @retry(
             on=Exception,
-            max_attempts=5,
-            base_delay=2.0,
+            max_attempts=30,
+            base_delay=1.0,
             exponential_base=2.0,
-            max_delay=30.0,
+            max_delay=15.0,
             jitter=True,
         )
         async def stream_with_retry() -> None:

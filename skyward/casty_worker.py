@@ -16,6 +16,7 @@ import argparse
 import asyncio
 import os
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import uvicorn
@@ -37,32 +38,39 @@ class ExecuteTask:
 type WorkerMsg = ExecuteTask
 
 
-def worker_behavior(node_id: int) -> Behavior[WorkerMsg]:
+def worker_behavior(node_id: int, concurrency: int = 1) -> Behavior[WorkerMsg]:
+    sem = asyncio.Semaphore(concurrency)
+
     async def receive(ctx: ActorContext[WorkerMsg], msg: WorkerMsg) -> Behavior[WorkerMsg]:
         match msg:
             case ExecuteTask(fn_bytes=fn_bytes, reply_to=reply_to):
-                def _run() -> dict:
+
+                async def fire() -> None:
                     fn_name = "unknown"
                     try:
-                        from skyward.utils.serialization import deserialize
+                        async with sem:
+                            def _run() -> dict:
+                                nonlocal fn_name
+                                from skyward.utils.serialization import deserialize
 
-                        payload = deserialize(fn_bytes)
-                        fn = payload["fn"]
-                        args = payload.get("args", ())
-                        kwargs = payload.get("kwargs", {})
-                        fn_name = getattr(fn, "__name__", str(fn))
+                                payload = deserialize(fn_bytes)
+                                fn = payload["fn"]
+                                args = payload.get("args", ())
+                                kwargs = payload.get("kwargs", {})
+                                fn_name = getattr(fn, "__name__", str(fn))
 
-                        print(f"[worker-{node_id}] Executing {fn_name}...", flush=True)
-                        result = fn(*args, **kwargs)
-                        print(f"[worker-{node_id}] {fn_name} completed", flush=True)
-                        return {"result": result, "node_id": node_id}
+                                print(f"[worker-{node_id}] Executing {fn_name}...", flush=True)
+                                result = fn(*args, **kwargs)
+                                print(f"[worker-{node_id}] {fn_name} completed", flush=True)
+                                return {"result": result, "node_id": node_id}
+
+                            response = await asyncio.to_thread(_run)
+                            reply_to.tell(response)
                     except Exception as e:
                         print(f"[worker-{node_id}] {fn_name} failed: {e}", flush=True)
-                        return {"error": str(e), "traceback": traceback.format_exc(), "node_id": node_id}
+                        reply_to.tell({"error": str(e), "traceback": traceback.format_exc(), "node_id": node_id})
 
-                response = await asyncio.to_thread(_run)
-                reply_to.tell(response)
-
+                asyncio.create_task(fire())
                 return Behaviors.same()
 
     return Behaviors.receive(receive)
@@ -72,14 +80,16 @@ def create_app(
     system: ClusteredActorSystem,
     local_ref: ActorRef[WorkerMsg],
     broadcast_ref: ActorRef[WorkerMsg],
+    num_nodes: int,
 ) -> Starlette:
     from skyward.utils.serialization import deserialize, serialize
 
     async def submit_job(request: Request) -> Response:
-
         payload_bytes = await request.body()
         payload = deserialize(payload_bytes)
-        print(f"[submit] {getattr(payload.get('fn'), '__name__', '?')} node_id={payload.get('node_id')}", flush=True)
+        target_node = payload.get("node_id")
+        fn_name = getattr(payload.get("fn"), "__name__", "?")
+        print(f"[submit] {fn_name} node_id={target_node}", flush=True)
 
         fn_payload = {
             "fn": payload["fn"],
@@ -88,8 +98,16 @@ def create_app(
         }
         fn_bytes = serialize(fn_payload)
 
+        match target_node:
+            case int(nid):
+                ref = system.lookup("/worker", node=f"node-{nid}")
+                if ref is None:
+                    ref = local_ref
+            case _:
+                ref = local_ref
+
         response = await system.ask(
-            local_ref,
+            ref,
             lambda reply_to: ExecuteTask(
                 fn_bytes=fn_bytes,
                 reply_to=reply_to,
@@ -170,6 +188,7 @@ async def main(
     http_port: int = 8265,
     num_nodes: int = 1,
     host: str = "0.0.0.0",
+    workers_per_node: int = 1,
 ) -> None:
     config = CastyConfig(
         heartbeat=HeartbeatConfig(interval=2.0, availability_check_interval=5.0),
@@ -188,6 +207,7 @@ async def main(
         name="skyward",
         host=host,
         port=port,
+        node_id=f"node-{node_id}",
         seed_nodes=seeds or [],
         bind_host="0.0.0.0",
         config=config,
@@ -198,15 +218,17 @@ async def main(
         from skyward.distributed.registry import DistributedRegistry
 
         loop = asyncio.get_running_loop()
+        pool_size = max((os.cpu_count() or 1) + 4, workers_per_node)
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=pool_size))
         set_system_loop(loop)
         _set_active_registry(DistributedRegistry(system, loop=loop))
 
-        local_ref = system.spawn(worker_behavior(node_id), f"worker-{node_id}")
-        broadcast_ref = system.spawn(Behaviors.broadcasted(worker_behavior(node_id)), "worker")
-        print(f"Casty worker {node_id} ready (cluster={num_nodes} nodes)", flush=True)
+        local_ref = system.spawn(worker_behavior(node_id, concurrency=workers_per_node), "worker")
+        broadcast_ref = system.spawn(Behaviors.broadcasted(worker_behavior(node_id, concurrency=workers_per_node)), "broadcast-worker")
+        print(f"Casty worker {node_id} ready (cluster={num_nodes} nodes, concurrency={workers_per_node})", flush=True)
 
         if node_id == 0:
-            app = create_app(system, local_ref, broadcast_ref)
+            app = create_app(system, local_ref, broadcast_ref, num_nodes)
             uvi_config = uvicorn.Config(
                 app,
                 host="0.0.0.0",
@@ -237,10 +259,14 @@ def cli() -> None:
     parser.add_argument("--num-nodes", type=int, default=1)
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument("--seeds", type=str, default=None, help="Comma-separated seed addresses (host:port)")
+    parser.add_argument("--workers-per-node", type=int, default=1)
     args = parser.parse_args()
 
     seeds = _parse_seeds(args.seeds)
-    asyncio.run(main(args.node_id, args.port, seeds, args.http_port, args.num_nodes, args.host))
+    asyncio.run(main(
+        args.node_id, args.port, seeds, args.http_port, args.num_nodes, args.host,
+        workers_per_node=args.workers_per_node,
+    ))
 
 
 if __name__ == "__main__":

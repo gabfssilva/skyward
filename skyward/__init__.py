@@ -121,7 +121,6 @@ from .bus import AsyncEventBus
 # =============================================================================
 
 from .app import (
-    app_context,
     clear_registries,
     component,
     create_app,
@@ -328,7 +327,6 @@ __all__ = [
     "on",
     "monitor",
     "create_app",
-    "app_context",
     "MonitorManager",
     "clear_registries",
     # =================================================================

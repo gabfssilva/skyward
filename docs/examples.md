@@ -10,7 +10,7 @@ Complete guide to all Skyward examples with explanations.
 | 1 | [Hello World](#1-hello-world) | @compute, >> | Beginner |
 | 2 | [Parallel Execution](#2-parallel-execution) | gather(), & | Beginner |
 | 3 | [GPU Accelerators](#3-gpu-accelerators) | accelerator, Image | Beginner |
-| 4 | [DigitalOcean](#4-digitalocean) | Alternative provider | Beginner |
+| 4 | [Verda](#4-verda) | Alternative provider | Beginner |
 | 5 | [Broadcast](#5-broadcast) | @ operator, shard() | Intermediate |
 | 6 | [Data Sharding](#6-data-sharding) | shard(), DistributedSampler | Intermediate |
 | 7 | [Cluster Coordination](#7-cluster-coordination) | instance_info(), roles | Intermediate |
@@ -157,33 +157,35 @@ def main():
 
 ---
 
-## 4. DigitalOcean
+## 4. Verda
 
-**File:** `examples/4_digitalocean_provider.py`
+**File:** `examples/4_verda_provider.py`
 
-CPU workloads on DigitalOcean.
+Alternative provider example using Verda.
 
 ```python
 import skyward as sky
 
 @sky.compute
-def cpu_intensive() -> dict:
-    import multiprocessing
-    return {"cpus": multiprocessing.cpu_count()}
+def gpu_info() -> dict:
+    import torch
+    return {
+        "cuda_available": torch.cuda.is_available(),
+        "device_count": torch.cuda.device_count(),
+    }
 
 @sky.pool(
-    provider=sky.DigitalOcean(region="nyc1"),
-    cpu=4,
-    memory="8GB",
+    provider=sky.Verda(),
+    accelerator="L40S",
 )
 def main():
-    result = cpu_intensive() >> sky
+    result = gpu_info() >> sky
 ```
 
 **Key Concepts:**
-- `DigitalOcean(region="nyc1")` - Alternative provider
-- `cpu=4, memory="8GB"` - Resource specification
-- GPU support available in select regions (nyc3, sfo3, tor1)
+- `Verda()` - Alternative provider
+- `accelerator="L40S"` - GPU specification
+- Verda specializes in GPU cloud infrastructure
 
 ---
 

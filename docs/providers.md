@@ -4,14 +4,14 @@ Skyward supports multiple cloud providers with a unified API.
 
 ## Provider Comparison
 
-| Feature | AWS | DigitalOcean | Verda | VastAI |
-|---------|-----|--------------|-------|--------|
-| **GPUs** | H100, A100, T4, L4, etc. | H100, H200, L40S, MI300X | H100, A100, H200, GB200 | Marketplace (varies) |
-| **Spot Instances** | Yes (60-90% savings) | No | Yes | Yes (bid-based) |
-| **Regions** | 20+ | 9 | 3 | Global marketplace |
-| **MIG Support** | Yes | Yes | Yes | No |
-| **SSH Connectivity** | Yes | Yes | Yes | Yes |
-| **Trainium/Inferentia** | Yes | No | No | No |
+| Feature | AWS | Verda | VastAI |
+|---------|-----|-------|--------|
+| **GPUs** | H100, A100, T4, L4, etc. | H100, A100, H200, GB200 | Marketplace (varies) |
+| **Spot Instances** | Yes (60-90% savings) | Yes | Yes (bid-based) |
+| **Regions** | 20+ | 3 | Global marketplace |
+| **MIG Support** | Yes | Yes | No |
+| **SSH Connectivity** | Yes | Yes | Yes |
+| **Trainium/Inferentia** | Yes | No | No |
 
 ## AWS
 
@@ -112,64 +112,6 @@ SSM requires:
     ]
 }
 ```
-
-## DigitalOcean
-
-### Setup
-
-```bash
-export DIGITALOCEAN_TOKEN=your_api_token
-```
-
-Create a token at: https://cloud.digitalocean.com/account/api/tokens
-
-### Usage
-
-```python
-import skyward as sky
-
-pool = sky.ComputePool(
-    provider=sky.DigitalOcean(region="nyc1"),
-    cpu=4,
-    memory="8GB",
-)
-```
-
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `region` | `str` | `"nyc1"` | DO region |
-
-### Available Regions
-
-| Region | Location |
-|--------|----------|
-| `nyc1` | New York 1 |
-| `nyc3` | New York 3 |
-| `sfo2` | San Francisco 2 |
-| `sfo3` | San Francisco 3 |
-| `ams3` | Amsterdam 3 |
-| `sgp1` | Singapore 1 |
-| `lon1` | London 1 |
-| `fra1` | Frankfurt 1 |
-| `tor1` | Toronto 1 |
-
-### Droplet Sizes
-
-| Size | vCPUs | Memory | Use Case |
-|------|-------|--------|----------|
-| `s-1vcpu-1gb` | 1 | 1GB | Testing |
-| `s-2vcpu-4gb` | 2 | 4GB | Light workloads |
-| `s-4vcpu-8gb` | 4 | 8GB | Development |
-| `c-8` | 8 | 16GB | CPU compute |
-| `c-32` | 32 | 64GB | Heavy compute |
-
-### Notes
-
-- **GPU support**: H100, H200, L40S, and MI300X available in select regions (nyc3, sfo3, tor1)
-- **No spot instances**: All instances are on-demand with per-second billing
-- **Good for**: GPU inference, development, CPU workloads
 
 ## Verda
 
@@ -289,12 +231,6 @@ See [VastAI Provider](providers/vastai.md) for detailed overlay network configur
 - Enterprise-grade reliability and support
 - You're already in the AWS ecosystem
 
-### Use DigitalOcean When:
-- Simple setup without complex IAM
-- Per-second billing for short jobs
-- H100/H200/L40S for inference workloads
-- Development and testing environments
-
 ### Use Verda When:
 - European data residency (Finland, Iceland, Israel)
 - H100/A100/GB200 availability
@@ -360,7 +296,7 @@ def prefer_us_east(providers, spec):
     return providers[0]
 
 pool = sky.ComputePool(
-    provider=[sky.AWS(), sky.Verda(), sky.DigitalOcean()],
+    provider=[sky.AWS(), sky.Verda()],
     selection=prefer_us_east,
     accelerator="A100",
 )
@@ -386,10 +322,6 @@ You can also use different providers for different stages:
 ```python
 import skyward as sky
 
-# Development on DigitalOcean (cheap CPU)
-with sky.ComputePool(provider=sky.DigitalOcean(), cpu=4) as dev_pool:
-    preprocess_data() >> dev_pool
-
 # Training on AWS (H100 GPUs)
 with sky.ComputePool(provider=sky.AWS(), accelerator="H100") as train_pool:
     train_model() @ train_pool
@@ -406,11 +338,6 @@ with sky.ComputePool(provider=sky.Verda(), accelerator="A100") as infer_pool:
 1. Try a different region
 2. Use `allocation="spot-if-available"` to fallback to on-demand
 3. Request a service quota increase
-
-### DigitalOcean: "Authentication failed"
-
-1. Verify your token at https://cloud.digitalocean.com/account/api
-2. Check token permissions (read/write access needed)
 
 ### Verda: "Region not available"
 
@@ -436,6 +363,5 @@ with sky.ComputePool(provider=sky.Verda(), accelerator="A100") as infer_pool:
 ### Provider-Specific Documentation
 
 - [AWS Provider](providers/aws.md) — Detailed AWS configuration
-- [DigitalOcean Provider](providers/digital_ocean.md) — DigitalOcean setup
 - [Verda Provider](providers/verda.md) — Verda configuration
 - [VastAI Provider](providers/vastai.md) — VastAI and overlay networks

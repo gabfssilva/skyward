@@ -88,8 +88,11 @@ class AWSHandler:
     @on(ClusterRequested, match=lambda self, e: e.provider == "aws")
     async def handle_cluster_requested(self, _: Any, event: ClusterRequested) -> None:
         """Provision AWS infrastructure and launch all instances atomically."""
-        resources = await self._ensure_infrastructure()
-        ssh_key_name, ssh_key_path = await self._ensure_key_pair()
+        resources, (ssh_key_name, ssh_key_path), instance_configs = await asyncio.gather(
+            self._ensure_infrastructure(),
+            self._ensure_key_pair(),
+            self._resolve_instance_configs(event.spec),
+        )
 
         cluster_id = f"aws-{uuid.uuid4().hex[:8]}"
 
@@ -104,11 +107,8 @@ class AWSHandler:
         )
         self._clusters[cluster_id] = state
 
-        # Register SSH credentials for EventStreamer
         self.ssh_credentials.register(cluster_id, state.username, state.ssh_key_path)
 
-        # Launch all instances in a single fleet (all-or-nothing)
-        instance_configs = await self._resolve_instance_configs(state.spec)
         user_data = self._generate_user_data(state.spec)
 
         instance_ids = await self._launch_fleet(

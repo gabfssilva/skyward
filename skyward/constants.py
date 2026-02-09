@@ -10,20 +10,6 @@ from enum import StrEnum
 from typing import Final
 
 # =============================================================================
-# AWS Resource Tags
-# =============================================================================
-
-
-class SkywardTag(StrEnum):
-    """AWS resource tag keys used by Skyward."""
-
-    MANAGED = "skyward:managed"
-    REQUIREMENTS_HASH = "skyward:requirements-hash"
-    CLUSTER_ID = "skyward:cluster-id"
-    NODE_INDEX = "skyward:node-index"
-
-
-# =============================================================================
 # EC2 Instance States
 # =============================================================================
 
@@ -53,19 +39,6 @@ VENV_DIR: Final = f"{SKYWARD_DIR}/.venv"
 
 UV_INSTALL_URL: Final = "https://astral.sh/uv/install.sh"
 DEFAULT_PYTHON: Final = "3.13"
-
-# Timeouts (in seconds)
-SSM_AGENT_TIMEOUT: Final = 600
-INSTANCE_RUNNING_WAIT_DELAY: Final = 2
-INSTANCE_RUNNING_MAX_ATTEMPTS: Final = 300
-
-
-# =============================================================================
-# Default Resource Names
-# =============================================================================
-
-DEFAULT_INSTANCE_NAME: Final = "skyward-worker"
-
 
 # =============================================================================
 # Serialization

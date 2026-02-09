@@ -149,13 +149,18 @@ class PendingCompute[T]:
     kwargs: dict[str, Any]
 
     def __rshift__(self, target: SyncComputePool | _Sky | types.ModuleType) -> T:
-        """Execute on pool using >> operator."""
-        # Handle case where target is module (import skyward as sky)
         if isinstance(target, types.ModuleType) and hasattr(target, "sky"):
             return target.sky.__rrshift__(self)  # type: ignore
         if isinstance(target, _Sky):
             return target.__rrshift__(self)  # type: ignore
         return target.run(self)  # type: ignore[union-attr]
+
+    def __gt__(self, target: SyncComputePool | _Sky | types.ModuleType) -> Future[T]:
+        if isinstance(target, types.ModuleType) and hasattr(target, "sky"):
+            return target.sky._run_async(self)  # type: ignore
+        if isinstance(target, _Sky):
+            return target._run_async(self)  # type: ignore
+        return target.run_async(self)  # type: ignore[union-attr]
 
     def __matmul__(self, target: SyncComputePool | _Sky | types.ModuleType) -> list[T] | tuple[T, ...]:
         """Broadcast to all nodes using @ operator."""
@@ -289,6 +294,9 @@ class SyncComputePool:
     timeout: int = 180
     ttl: int = 600
 
+    # Concurrency
+    concurrency: int = 1  # Workers per node
+
     # Panel UI
     panel: bool = True  # Enable Rich terminal dashboard
 
@@ -308,6 +316,7 @@ class SyncComputePool:
     _active: bool = field(default=False, init=False, repr=False)
     _context_token: Any = field(default=None, init=False, repr=False)
     _registry: DistributedRegistry | None = field(default=None, init=False, repr=False)
+    _semaphore: asyncio.Semaphore | None = field(default=None, init=False, repr=False)
 
     def __enter__(self) -> SyncComputePool:
         """Start pool and provision resources."""
@@ -342,6 +351,7 @@ class SyncComputePool:
         try:
             self._run_sync(self._start_async())
             self._active = True
+            self._semaphore = asyncio.Semaphore(self.nodes * (self.concurrency + 1)) # +1 to overcome some latency/serialization delays
             # Set this pool as active in context
             self._context_token = _active_pool.set(self)
             logger.info("Pool ready")
@@ -388,14 +398,6 @@ class SyncComputePool:
                 _teardown_logging(self._log_handler_ids)
 
     def run[T](self, pending: PendingCompute[T]) -> T:
-        """Execute a pending computation on the pool.
-
-        Args:
-            pending: The lazy computation to execute.
-
-        Returns:
-            Result of the computation.
-        """
         if not self._active or self._async_pool is None:
             raise RuntimeError("Pool is not active")
 
@@ -406,6 +408,16 @@ class SyncComputePool:
                 **pending.kwargs,
             )
         )
+
+    def run_async[T](self, pending: PendingCompute[T]) -> Future[T]:
+        if not self._active or self._async_pool is None or self._loop is None or self._semaphore is None:
+            raise RuntimeError("Pool is not active")
+
+        async def _with_backpressure() -> T:
+            async with self._semaphore:  # type: ignore[union-attr]
+                return await self._async_pool.run(pending.fn, *pending.args, **pending.kwargs)  # type: ignore[union-attr]
+
+        return asyncio.run_coroutine_threadsafe(_with_backpressure(), self._loop)
 
     def broadcast[T](self, pending: PendingCompute[T]) -> list[T]:
         """Execute computation on all nodes.
@@ -540,6 +552,7 @@ class SyncComputePool:
             allocation=self.allocation,
             image=self.image,
             ttl=self.ttl,
+            concurrency=self.concurrency,
             provider=provider_name,  # type: ignore[arg-type]
             max_hourly_cost=self.max_hourly_cost,
         )

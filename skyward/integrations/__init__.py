@@ -11,6 +11,10 @@ Distributed training:
 - tensorflow: TensorFlow distributed training decorator
 - transformers: Hugging Face Transformers distributed training decorator
 
+Parallel execution:
+- JoblibPool: Distributed joblib execution
+- ScikitLearnPool: Distributed scikit-learn training
+
 Usage:
     from skyward import compute
     from skyward.integrations import keras
@@ -30,6 +34,9 @@ __all__ = [
     "jax",
     "tensorflow",
     "transformers",
+    # Parallel execution
+    "JoblibPool",
+    "ScikitLearnPool",
 ]
 
 _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
@@ -39,6 +46,8 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "jax": ("skyward.integrations.jax", "jax"),
     "tensorflow": ("skyward.integrations.tensorflow", "tensorflow"),
     "transformers": ("skyward.integrations.transformers", "transformers"),
+    "JoblibPool": ("skyward.integrations.joblib", "JoblibPool"),
+    "ScikitLearnPool": ("skyward.integrations.joblib", "ScikitLearnPool"),
 }
 
 

@@ -10,9 +10,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Coroutine
-from contextlib import asynccontextmanager
 from dataclasses import field
-from typing import Any, AsyncIterator, dataclass_transform, get_type_hints
+from typing import Any, dataclass_transform, get_type_hints
 
 from injector import Injector, Module, inject, singleton
 
@@ -481,32 +480,6 @@ def create_app(*modules: Module) -> tuple[Injector, MonitorManager]:
     return injector, monitor_manager
 
 
-@asynccontextmanager
-async def app_context(*modules: Module) -> AsyncIterator[Injector]:
-    """
-    Full lifecycle context manager.
-
-    Creates app, starts monitors, yields injector, then shuts down.
-
-    Usage:
-        async with app_context(AppModule(), MonitorModule()) as app:
-            pool = app.get(ComputePool)
-            await pool.start()
-            ...
-    """
-    injector, monitor_manager = create_app(*modules)
-    event_bus = injector.get(AsyncEventBus)
-
-    try:
-        yield injector
-    finally:
-        # Stop monitors
-        await monitor_manager.stop_all()
-
-        # Shutdown event bus
-        await event_bus.shutdown()
-
-
 # =============================================================================
 # Utilities
 # =============================================================================
@@ -529,7 +502,6 @@ __all__ = [
     "monitor",
     # Bootstrap
     "create_app",
-    "app_context",
     # Manager
     "MonitorManager",
     # Testing

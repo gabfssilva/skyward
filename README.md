@@ -57,9 +57,6 @@ export AWS_ACCESS_KEY_ID=...
 export AWS_SECRET_ACCESS_KEY=...
 export AWS_DEFAULT_REGION=us-east-1
 
-# DigitalOcean
-export DIGITALOCEAN_TOKEN=...
-
 # Verda
 export VERDA_API_KEY=...
 ```
@@ -91,7 +88,6 @@ def main():
 | Provider | GPUs | Spot | Regions |
 |----------|------|------|---------|
 | `AWS()` | T4, L4, A10G, A100, H100, H200 | Yes | 20+ |
-| `DigitalOcean()` | CPU only | No | 9 |
 | `Verda()` | A100, H100 | Yes | 3 |
 
 ### Multi-Provider Fallback
@@ -218,7 +214,7 @@ with sky.integrations.ScikitLearnPool(
 | [Core Concepts](docs/concepts.md) | Programming model and ephemeral compute |
 | [API Reference](docs/api-reference.md) | Complete API documentation |
 | [Distributed Training](docs/distributed-training.md) | PyTorch, Keras, JAX, HuggingFace guides |
-| [Providers](docs/providers.md) | AWS, DigitalOcean, Verda setup |
+| [Providers](docs/providers.md) | AWS, Verda, VastAI setup |
 | [Accelerators](docs/accelerators.md) | GPU types and MIG partitioning |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues and solutions |
 

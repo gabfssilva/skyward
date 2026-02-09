@@ -3,7 +3,7 @@
 Contains cluster info and data sharding utilities.
 """
 
-from skyward.cluster.data import DistributedSampler, shard, shard_iterator
+from skyward.cluster.data import shard
 from skyward.cluster.info import (
     AcceleratorInfo,
     InstanceInfo,
@@ -21,6 +21,4 @@ __all__ = [
     "NetworkInfo",
     # Data
     "shard",
-    "shard_iterator",
-    "DistributedSampler",
 ]

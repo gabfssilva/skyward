@@ -269,8 +269,6 @@ skyward/providers/
 │   ├── discovery.py       # Instance type discovery
 │   ├── fleet.py           # EC2 Fleet management
 │   └── ssm.py             # Session Manager support
-├── digitalocean/
-│   └── provider.py
 └── verda/
     └── provider.py
 ```
@@ -561,7 +559,6 @@ skyward/
 ├── providers/             # Cloud providers
 │   ├── base/              # Shared abstractions
 │   ├── aws/
-│   ├── digitalocean/
 │   └── verda/
 └── rpc/                   # RPC server
 ```

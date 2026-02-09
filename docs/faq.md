@@ -42,7 +42,7 @@ It's **not designed for**:
 
 ### How does billing work?
 
-Skyward uses your cloud provider directly — there's no Skyward fee. You pay only for the cloud resources you consume (EC2 instances, DigitalOcean droplets, etc.) at standard cloud rates.
+Skyward uses your cloud provider directly — there's no Skyward fee. You pay only for the cloud resources you consume (EC2 instances, etc.) at standard cloud rates.
 
 Cost tracking is built-in:
 ```
@@ -144,7 +144,6 @@ The serialized payload is sent to the remote instance, deserialized, and execute
 |----------|---------------------|
 | GPU training | AWS (widest GPU selection) |
 | H100/A100 availability | Verda (specialized GPU cloud) |
-| CPU workloads, simple tasks | DigitalOcean |
 | Multi-cloud redundancy | Mix providers as needed |
 
 ### Can I use multiple providers in the same workflow?

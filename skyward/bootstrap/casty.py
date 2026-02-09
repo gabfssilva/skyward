@@ -14,8 +14,14 @@ CASTY_PORT = 25520
 HTTP_PORT = 8265
 
 
-def casty_install(version: str = "0.3.1") -> Op:
-    return pip(f"casty=={version}", "starlette", "uvicorn")
+def _installed_casty_version() -> str:
+    from importlib.metadata import version
+    return version("casty")
+
+
+def casty_install(version: str | None = None) -> Op:
+    ver = version or _installed_casty_version()
+    return pip(f"casty=={ver}", "starlette", "uvicorn")
 
 
 def casty_service(
@@ -55,7 +61,7 @@ done) &"""
 def server_ops(
     node_id: int,
     head_ip: str | None,
-    casty_version: str = "0.3.1",
+    casty_version: str | None = None,
 ) -> tuple[Op, ...]:
     ops: list[Op] = [
         casty_install(casty_version),

@@ -342,7 +342,7 @@ with pool:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `provider` | `Provider` | AWS, DigitalOcean, or Verda |
+| `provider` | `Provider` | AWS, Verda, or VastAI |
 | `nodes` | `int` | Number of instances (default: 1) |
 | `accelerator` | `str` or `Accelerator` | GPU specification |
 | `image` | `Image` | Environment (pip, apt, env vars) |
