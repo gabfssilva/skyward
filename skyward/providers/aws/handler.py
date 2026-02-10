@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 from loguru import logger
 
-from skyward.actors.provider import BootstrapDone, ProviderMsg
+from skyward.actors.provider import BootstrapDone, ProviderMsg, _InstanceNowRunning, _InstanceWaitFailed
 from skyward.actors.streaming import StopMonitor, instance_monitor
 from skyward.messages import (
     BootstrapRequested,
@@ -151,17 +151,22 @@ def aws_provider_actor(
 
                     new_state = replace(state, pending_nodes=state.pending_nodes | {node_id}, fleet_instance_ids=new_fleet)
 
-                    asyncio.create_task(
-                        _wait_and_emit_running(
+                    ctx.pipe_to_self(
+                        coro=_wait_and_build_running(
                             config=config,
                             ec2=ec2,
-                            pool_ref=pool_ref,
                             state=new_state,
                             request_id=request_id,
                             cluster_id=cluster_id,
                             node_id=node_id,
                             instance_id=instance_id,
-                        )
+                        ),
+                        mapper=lambda event: _InstanceNowRunning(event=event),
+                        on_failure=lambda e: _InstanceWaitFailed(
+                            instance_id=instance_id,
+                            node_id=node_id,
+                            error=str(e),
+                        ),
                     )
 
                     return active(state=new_state)
@@ -197,6 +202,14 @@ def aws_provider_actor(
                     logger.error(f"AWS: Bootstrap failed on {info.id}: {error}")
                     return Behaviors.same()
 
+                case _InstanceNowRunning(event=event):
+                    pool_ref.tell(event)
+                    return Behaviors.same()
+
+                case _InstanceWaitFailed(instance_id=iid, node_id=nid, error=error):
+                    logger.error(f"AWS: Instance {iid} (node {nid}) failed to reach running state: {error}")
+                    return Behaviors.same()
+
                 case ShutdownRequested(cluster_id=cluster_id) if cluster_id == state.cluster_id:
                     instance_ids = list(state.instances.keys())
                     if instance_ids:
@@ -217,31 +230,20 @@ def aws_provider_actor(
 # =============================================================================
 
 
-async def _wait_and_emit_running(
+async def _wait_and_build_running(
     config: AWS,
     ec2: EC2ClientFactory,
-    pool_ref: ActorRef,
     state: AWSClusterState,
     request_id: str,
     cluster_id: str,
     node_id: int,
     instance_id: str,
-) -> None:
-    """Wait for EC2 instance to reach running state, then emit InstanceRunning.
-
-    Bootstrap monitoring is handled by the instance_monitor actor,
-    which is spawned when pool sends BootstrapRequested back.
-    """
-    try:
-        await _wait_running(ec2, [instance_id])
-    except Exception as e:
-        logger.error(f"AWS: Instance {instance_id} failed to reach running state: {e}")
-        return
+) -> InstanceRunning:
+    await _wait_running(ec2, [instance_id])
 
     details = await _get_instance_details(ec2, [instance_id])
     if not details:
-        logger.error(f"AWS: Could not get details for {instance_id}")
-        return
+        raise RuntimeError(f"Could not get details for {instance_id}")
 
     detail = details[0]
     instance_type = detail.get("instance_type", "")
@@ -268,7 +270,7 @@ async def _wait_and_emit_running(
     gpu_model = _AWS_INSTANCE_GPU.get(instance_family, "")
     gpu_vram_gb = get_gpu_vram_gb(gpu_model)
 
-    pool_ref.tell(InstanceRunning(
+    return InstanceRunning(
         request_id=request_id,
         cluster_id=cluster_id,
         node_id=node_id,
@@ -288,7 +290,7 @@ async def _wait_and_emit_running(
         memory_gb=memory_gb,
         gpu_vram_gb=gpu_vram_gb,
         region=config.region,
-    ))
+    )
 
 
 # =============================================================================

@@ -316,11 +316,11 @@ wheels = [
 
 [[package]]
 name = "casty"
-version = "0.7.3"
+version = "0.9.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ac/93/e8a61bd47435c331ca4b1d09ab894ec03aba1009100132daf4a0311acce0/casty-0.7.3.tar.gz", hash = "sha256:0e0924d2ef5292a64dd0679d1a55043a7a2e6c76f33fa14634e1fe82de715f84", size = 532645 }
+sdist = { url = "https://files.pythonhosted.org/packages/40/3c/34afe21360fbf357aee1adaabb4a2b204e33a5fd129cfd663da14c5ced44/casty-0.9.0.tar.gz", hash = "sha256:7f0db6a4f080ca064aa4c53405a1d3dbf4e2cbb95c370a45ce1c486693e3d84b", size = 549786 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f6/32/481ac8575bb91f7dc4f1339d8ecd7d9867866e9106ece7f571054410ac43/casty-0.7.3-py3-none-any.whl", hash = "sha256:5ccc55a7fe1577a6ee1a8943111fca339287f44232eb37cd56101ca397bc9c87", size = 88968 },
+    { url = "https://files.pythonhosted.org/packages/a6/94/0b0b5122a59df7ded603d0fed512b74513e86498032145647b68abc34277/casty-0.9.0-py3-none-any.whl", hash = "sha256:d5447cf2175a8ad8686828d49ce1cee7312ca3c6b09fe2849f27fb2a54f25b34", size = 90743 },
 ]
 
 [[package]]
@@ -2806,7 +2806,7 @@ wheels = [
 
 [[package]]
 name = "skyward"
-version = "0.0.2.dev4+g4aa060b4a.d20260210"
+version = "0.0.2.dev8+g0094787ad.d20260210"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -2905,7 +2905,7 @@ requires-dist = [
     { name = "boto3-stubs", extras = ["ec2", "ecr", "iam", "s3", "sts"], marker = "extra == 'all'", specifier = ">=1.35.0" },
     { name = "boto3-stubs", extras = ["ec2", "ecr", "iam", "s3", "sts"], marker = "extra == 'aws'", specifier = ">=1.35.0" },
     { name = "boto3-stubs", extras = ["ec2", "ecr", "iam", "s3", "sts"], marker = "extra == 'providers'", specifier = ">=1.35.0" },
-    { name = "casty", specifier = ">=0.7.3" },
+    { name = "casty", specifier = ">=0.9.0" },
     { name = "cloudpickle", specifier = ">=3.1.2" },
     { name = "datasets", marker = "extra == 'all'", specifier = ">=4.4.1" },
     { name = "datasets", marker = "extra == 'huggingface'", specifier = ">=4.4.1" },

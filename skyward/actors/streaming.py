@@ -15,8 +15,7 @@ logs, and other runtime events.
 
 from __future__ import annotations
 
-import asyncio
-from contextlib import suppress
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -64,6 +63,22 @@ type MonitorMsg = StopMonitor | _StreamedEvent | _StreamEnded
 # =============================================================================
 
 
+async def _read_next(stream: AsyncIterator, info: InstanceMetadata) -> MonitorMsg:
+    try:
+        raw_event = await stream.__anext__()
+        event = _convert(raw_event, info)
+        match event:
+            case None:
+                return await _read_next(stream, info)
+            case _:
+                return _StreamedEvent(event=event)
+    except StopAsyncIteration:
+        return _StreamEnded()
+    except Exception as e:
+        logger.warning(f"Instance monitor stream error on {info.id}: {e}")
+        return _StreamEnded(error=str(e))
+
+
 def instance_monitor(
     info: InstanceMetadata,
     ssh_user: str,
@@ -90,32 +105,18 @@ def instance_monitor(
 
         logger.info(f"Instance monitor connected to {info.id}")
 
-        async def _read_loop() -> None:
-            try:
-                async for raw_event in transport.stream_events(timeout=600.0):
-                    event = _convert(raw_event, info)
-                    if event is not None:
-                        ctx.self.tell(_StreamedEvent(event=event))
-            except asyncio.CancelledError:
-                return
-            except Exception as e:
-                logger.warning(f"Instance monitor stream error on {info.id}: {e}")
-            ctx.self.tell(_StreamEnded())
+        stream = transport.stream_events(timeout=600.0).__aiter__()
 
-        read_task = asyncio.create_task(_read_loop())
+        ctx.pipe_to_self(_read_next(stream, info), mapper=lambda msg: msg)
 
         async def _cleanup(ctx: ActorContext[MonitorMsg]) -> None:
-            if not read_task.done():
-                read_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await read_task
             await transport.close()
 
-        return Behaviors.with_lifecycle(streaming(transport, read_task, bootstrap_signaled=False), post_stop=_cleanup)
+        return Behaviors.with_lifecycle(streaming(transport, stream, bootstrap_signaled=False), post_stop=_cleanup)
 
     def streaming(
         transport: Any,
-        read_task: asyncio.Task[None],
+        stream: AsyncIterator,
         bootstrap_signaled: bool,
     ) -> Behavior[MonitorMsg]:
         async def receive(ctx: ActorContext[MonitorMsg], msg: MonitorMsg) -> Behavior[MonitorMsg]:
@@ -123,14 +124,16 @@ def instance_monitor(
                 case _StreamedEvent(event=event):
                     pool_ref.tell(event)
 
+                    ctx.pipe_to_self(_read_next(stream, info), mapper=lambda msg: msg)
+
                     if not bootstrap_signaled:
                         match event:
                             case BootstrapPhase(phase="bootstrap", event="completed"):
                                 reply_to.tell(BootstrapDone(instance=info, success=True))
-                                return streaming(transport, read_task, bootstrap_signaled=True)
+                                return streaming(transport, stream, bootstrap_signaled=True)
                             case BootstrapFailed(error=error):
                                 reply_to.tell(BootstrapDone(instance=info, success=False, error=error))
-                                return streaming(transport, read_task, bootstrap_signaled=True)
+                                return streaming(transport, stream, bootstrap_signaled=True)
 
                     return Behaviors.same()
 

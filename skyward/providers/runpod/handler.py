@@ -11,9 +11,9 @@ stopped: all pods terminated.
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
@@ -48,6 +48,28 @@ from .types import (
 
 if TYPE_CHECKING:
     from skyward.spec import PoolSpec
+
+
+@dataclass(frozen=True, slots=True)
+class _PodRunning:
+    event: InstanceRunning
+
+
+@dataclass(frozen=True, slots=True)
+class _PodRunningFailed:
+    instance_id: str
+    error: str
+
+
+@dataclass(frozen=True, slots=True)
+class _BootstrapScriptDone:
+    instance_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _BootstrapScriptFailed:
+    instance_id: str
+    error: str
 
 
 # =============================================================================
@@ -226,35 +248,29 @@ async def _wait_for_running(
     config: RunPod,
     cluster: RunPodClusterState,
     event: InstanceLaunched,
-    pool_ref: ActorRef,
-) -> None:
+) -> InstanceRunning:
     logger.info(f"RunPod: Waiting for pod {event.instance_id} to be running...")
 
     api_key = get_api_key(config.api_key)
 
-    try:
-        async with RunPodClient(api_key) as client:
-            pod = await wait_for_ready(
-                poll_fn=lambda: client.get_pod(event.instance_id),
-                ready_check=lambda p: (
-                    p is not None
-                    and p.get("desiredStatus") == "RUNNING"
-                    and bool(p.get("publicIp"))
-                ),
-                terminal_check=lambda p: (
-                    p is not None and p.get("desiredStatus") == "TERMINATED"
-                ),
-                timeout=config.provision_timeout,
-                interval=5.0,
-                description=f"RunPod pod {event.instance_id}",
-            )
-    except TimeoutError:
-        logger.error(f"RunPod: Pod {event.instance_id} did not become ready")
-        return
+    async with RunPodClient(api_key) as client:
+        pod = await wait_for_ready(
+            poll_fn=lambda: client.get_pod(event.instance_id),
+            ready_check=lambda p: (
+                p is not None
+                and p.get("desiredStatus") == "RUNNING"
+                and bool(p.get("publicIp"))
+            ),
+            terminal_check=lambda p: (
+                p is not None and p.get("desiredStatus") == "TERMINATED"
+            ),
+            timeout=config.provision_timeout,
+            interval=5.0,
+            description=f"RunPod pod {event.instance_id}",
+        )
 
     if not pod:
-        logger.error(f"RunPod: Pod {event.instance_id} not found")
-        return
+        raise RuntimeError(f"Pod {event.instance_id} not found after polling")
 
     ip = pod.get("publicIp") or ""
     ssh_port = get_ssh_port(pod)
@@ -274,7 +290,7 @@ async def _wait_for_running(
     cluster.vcpus = pod.get("vcpuCount", 0)
     cluster.memory_gb = pod.get("memoryInGb", 0.0)
 
-    pool_ref.tell(InstanceRunning(
+    return InstanceRunning(
         request_id=event.request_id,
         cluster_id=event.cluster_id,
         node_id=event.node_id,
@@ -294,14 +310,14 @@ async def _wait_for_running(
         memory_gb=cluster.memory_gb,
         gpu_vram_gb=cluster.gpu_vram_gb,
         region=cluster.region,
-    ))
+    )
 
 
 async def _run_bootstrap(
     config: RunPod,
     cluster: RunPodClusterState,
     event: BootstrapRequested,
-) -> None:
+) -> str:
     info = event.instance
     ttl = cluster.spec.ttl or config.instance_timeout
     bootstrap_script = cluster.spec.image.generate_bootstrap(
@@ -332,6 +348,7 @@ async def _run_bootstrap(
         await transport.close()
 
     logger.debug(f"RunPod: Bootstrap script launched on {info.id}")
+    return info.id
 
 
 # =============================================================================
@@ -412,8 +429,13 @@ def runpod_provider_actor(
                                 provider="runpod",
                                 instance_id=pod_id,
                             )
-                            asyncio.create_task(
-                                _wait_for_running(config, state, launched, pool_ref)
+                            ctx.pipe_to_self(
+                                coro=_wait_for_running(config, state, launched),
+                                mapper=lambda result: _PodRunning(event=result),
+                                on_failure=lambda e: _PodRunningFailed(
+                                    instance_id=pod_id,
+                                    error=str(e),
+                                ),
                             )
                         return Behaviors.same()
 
@@ -444,16 +466,26 @@ def runpod_provider_actor(
                         provider="runpod",
                         instance_id=pod_id,
                     )
-                    asyncio.create_task(
-                        _wait_for_running(config, state, launched, pool_ref)
+                    ctx.pipe_to_self(
+                        coro=_wait_for_running(config, state, launched),
+                        mapper=lambda result: _PodRunning(event=result),
+                        on_failure=lambda e: _PodRunningFailed(
+                            instance_id=pod_id,
+                            error=str(e),
+                        ),
                     )
                     return Behaviors.same()
 
                 case BootstrapRequested(instance=info, cluster_id=cid) if info.provider == "runpod":
                     if cid != state.cluster_id:
                         return Behaviors.same()
-                    asyncio.create_task(
-                        _run_bootstrap(config, state, msg)
+                    ctx.pipe_to_self(
+                        coro=_run_bootstrap(config, state, msg),
+                        mapper=lambda instance_id: _BootstrapScriptDone(instance_id=instance_id),
+                        on_failure=lambda e: _BootstrapScriptFailed(
+                            instance_id=info.id,
+                            error=str(e),
+                        ),
                     )
                     ctx.spawn(
                         instance_monitor(
@@ -465,6 +497,22 @@ def runpod_provider_actor(
                         ),
                         f"monitor-{info.id}",
                     )
+                    return Behaviors.same()
+
+                case _PodRunning(event=running_event):
+                    pool_ref.tell(running_event)
+                    return Behaviors.same()
+
+                case _PodRunningFailed(instance_id=iid, error=err):
+                    logger.error(f"RunPod: Pod {iid} did not become ready: {err}")
+                    return Behaviors.same()
+
+                case _BootstrapScriptDone(instance_id=iid):
+                    logger.debug(f"RunPod: Bootstrap script dispatched on {iid}")
+                    return Behaviors.same()
+
+                case _BootstrapScriptFailed(instance_id=iid, error=err):
+                    logger.error(f"RunPod: Bootstrap script failed on {iid}: {err}")
                     return Behaviors.same()
 
                 case BootstrapDone(instance=info, success=True) if info.provider == "runpod":

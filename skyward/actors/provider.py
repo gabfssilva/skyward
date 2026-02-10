@@ -8,6 +8,7 @@ from skyward.messages import (
     ClusterRequested,
     InstanceMetadata,
     InstanceRequested,
+    InstanceRunning,
     ShutdownRequested,
 )
 
@@ -36,9 +37,30 @@ class BootstrapDone:
 
 @dataclass(frozen=True, slots=True)
 class _ProvisioningDone:
-    """Internal: cluster provisioning background task completed."""
-
     state: Any
+
+
+@dataclass(frozen=True, slots=True)
+class _InstanceNowRunning:
+    event: InstanceRunning
+
+
+@dataclass(frozen=True, slots=True)
+class _InstanceWaitFailed:
+    instance_id: str
+    node_id: int
+    error: str
+
+
+@dataclass(frozen=True, slots=True)
+class _BootstrapScriptDone:
+    instance_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _BootstrapScriptFailed:
+    instance_id: str
+    error: str
 
 
 type ProviderMsg = (
@@ -49,4 +71,8 @@ type ProviderMsg = (
     | InstanceReady
     | BootstrapDone
     | _ProvisioningDone
+    | _InstanceNowRunning
+    | _InstanceWaitFailed
+    | _BootstrapScriptDone
+    | _BootstrapScriptFailed
 )

@@ -114,7 +114,33 @@ class _Disconnect:
     reply_to: ActorRef[Disconnected]
 
 
-type ExecutorMsg = _Connect | _Execute | _Broadcast | _SetupCluster | _Disconnect
+@dataclass(frozen=True, slots=True)
+class _ExecuteDone:
+    result: Executed | ExecutionFailed
+    reply_to: ActorRef[Executed | ExecutionFailed]
+
+
+@dataclass(frozen=True, slots=True)
+class _BroadcastDone:
+    result: Broadcasted | ExecutionFailed
+    reply_to: ActorRef[Broadcasted | ExecutionFailed]
+
+
+@dataclass(frozen=True, slots=True)
+class _SetupDone:
+    reply_to: ActorRef[ClusterReady]
+
+
+@dataclass(frozen=True, slots=True)
+class _SetupFailed:
+    error: str
+    reply_to: ActorRef[ClusterReady]
+
+
+type ExecutorMsg = (
+    _Connect | _Execute | _Broadcast | _SetupCluster | _Disconnect
+    | _ExecuteDone | _BroadcastDone | _SetupDone | _SetupFailed
+)
 
 
 # ─── Behavior ────────────────────────────────────────────────────────
@@ -168,6 +194,99 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
                     return Behaviors.same()
         return Behaviors.receive(receive)
 
+    async def _do_execute(
+        session: aiohttp.ClientSession,
+        sem: asyncio.Semaphore,
+        fn: Callable[..., Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        target: int,
+    ) -> Executed | ExecutionFailed:
+        fn_name = getattr(fn, "__name__", str(fn))
+        async with sem:
+            try:
+                payload = serialize({"fn": fn, "args": args, "kwargs": kwargs, "node_id": target})
+                async with session.post(
+                    "/jobs", data=payload,
+                    headers={"Content-Type": "application/octet-stream"},
+                ) as resp:
+                    result = deserialize(await resp.read())
+                    match resp.status:
+                        case 200:
+                            return Executed(value=result)
+                        case _:
+                            match result:
+                                case dict():
+                                    error = result.get("error", "Unknown")
+                                    tb = result.get("traceback", "")
+                                case _:
+                                    error = str(result)
+                                    tb = ""
+                            return ExecutionFailed(error=error, traceback=tb)
+            except Exception as e:
+                logger.error(f"execute({fn_name}) failed: {e}")
+                return ExecutionFailed(error=str(e))
+
+    async def _do_broadcast(
+        session: aiohttp.ClientSession,
+        sem: asyncio.Semaphore,
+        fn: Callable[..., Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        num_nodes: int,
+    ) -> Broadcasted | ExecutionFailed:
+        fn_name = getattr(fn, "__name__", str(fn))
+        async with sem:
+            try:
+                payload = serialize({"fn": fn, "args": args, "kwargs": kwargs, "num_nodes": num_nodes})
+                async with session.post(
+                    "/jobs/broadcast", data=payload,
+                    headers={"Content-Type": "application/octet-stream"},
+                ) as resp:
+                    result = deserialize(await resp.read())
+                    match resp.status:
+                        case 200:
+                            return Broadcasted(values=tuple(result))
+                        case _:
+                            match result:
+                                case dict():
+                                    error = result.get("error", "Unknown")
+                                    tb = result.get("traceback", "")
+                                case _:
+                                    error = str(result)
+                                    tb = ""
+                            return ExecutionFailed(error=error, traceback=tb)
+            except Exception as e:
+                logger.error(f"broadcast({fn_name}) failed: {e}")
+                return ExecutionFailed(error=str(e))
+
+    async def _do_setup(
+        session: aiohttp.ClientSession,
+        env_vars: dict[str, str],
+        pool_infos: tuple[str, ...],
+        num_nodes: int,
+    ) -> None:
+        def setup_env(all_infos: list[str], extra: dict[str, str]) -> str:
+            import os
+            nid = int(os.environ.get("SKYWARD_NODE_ID", "0"))
+            if all_infos and nid < len(all_infos):
+                os.environ["COMPUTE_POOL"] = all_infos[nid]
+            for k, v in extra.items():
+                os.environ[k] = v
+            return "ok"
+
+        payload = serialize({
+            "fn": setup_env,
+            "args": (list(pool_infos), env_vars),
+            "kwargs": {},
+            "num_nodes": num_nodes,
+        })
+        async with session.post(
+            "/jobs/broadcast", data=payload,
+            headers={"Content-Type": "application/octet-stream"},
+        ) as resp:
+            deserialize(await resp.read())
+
     def ready(
         ssh_conn: asyncssh.SSHClientConnection,
         tunnel: Any,
@@ -180,93 +299,48 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
             match msg:
                 case _Execute(fn=fn, args=args, kwargs=kwargs, node_id=nid, reply_to=reply_to):
                     target = nid if nid is not None else next_node % num_nodes
-
-                    async def fire() -> None:
-                        fn_name = getattr(fn, "__name__", str(fn))
-                        async with sem:
-                            try:
-                                payload = serialize({"fn": fn, "args": args, "kwargs": kwargs, "node_id": target})
-                                async with session.post(
-                                    "/jobs", data=payload,
-                                    headers={"Content-Type": "application/octet-stream"},
-                                ) as resp:
-                                    result = deserialize(await resp.read())
-                                    match resp.status:
-                                        case 200:
-                                            reply_to.tell(Executed(value=result))
-                                        case _:
-                                            match result:
-                                                case dict():
-                                                    error = result.get("error", "Unknown")
-                                                    tb = result.get("traceback", "")
-                                                case _:
-                                                    error = str(result)
-                                                    tb = ""
-                                            reply_to.tell(ExecutionFailed(error=error, traceback=tb))
-                            except Exception as e:
-                                logger.error(f"execute({fn_name}) failed: {e}")
-                                reply_to.tell(ExecutionFailed(error=str(e)))
-
-                    asyncio.create_task(fire())
+                    ctx.pipe_to_self(
+                        coro=_do_execute(session, sem, fn, args, kwargs, target),
+                        mapper=lambda result: _ExecuteDone(result=result, reply_to=reply_to),
+                        on_failure=lambda e: _ExecuteDone(
+                            result=ExecutionFailed(error=str(e)), reply_to=reply_to,
+                        ),
+                    )
                     return ready(ssh_conn, tunnel, session, num_nodes, sem, next_node=target + 1)
 
+                case _ExecuteDone(result=result, reply_to=reply_to):
+                    reply_to.tell(result)
+                    return Behaviors.same()
+
                 case _Broadcast(fn=fn, args=args, kwargs=kwargs, reply_to=reply_to):
+                    ctx.pipe_to_self(
+                        coro=_do_broadcast(session, sem, fn, args, kwargs, num_nodes),
+                        mapper=lambda result: _BroadcastDone(result=result, reply_to=reply_to),
+                        on_failure=lambda e: _BroadcastDone(
+                            result=ExecutionFailed(error=str(e)), reply_to=reply_to,
+                        ),
+                    )
+                    return Behaviors.same()
 
-                    async def fire_broadcast() -> None:
-                        fn_name = getattr(fn, "__name__", str(fn))
-                        async with sem:
-                            try:
-                                payload = serialize({"fn": fn, "args": args, "kwargs": kwargs, "num_nodes": num_nodes})
-                                async with session.post(
-                                    "/jobs/broadcast", data=payload,
-                                    headers={"Content-Type": "application/octet-stream"},
-                                ) as resp:
-                                    result = deserialize(await resp.read())
-                                    match resp.status:
-                                        case 200:
-                                            reply_to.tell(Broadcasted(values=tuple(result)))
-                                        case _:
-                                            match result:
-                                                case dict():
-                                                    error = result.get("error", "Unknown")
-                                                    tb = result.get("traceback", "")
-                                                case _:
-                                                    error = str(result)
-                                                    tb = ""
-                                            reply_to.tell(ExecutionFailed(error=error, traceback=tb))
-                            except Exception as e:
-                                logger.error(f"broadcast({fn_name}) failed: {e}")
-                                reply_to.tell(ExecutionFailed(error=str(e)))
-
-                    asyncio.create_task(fire_broadcast())
+                case _BroadcastDone(result=result, reply_to=reply_to):
+                    reply_to.tell(result)
                     return Behaviors.same()
 
                 case _SetupCluster(env_vars=env_vars, pool_infos=pool_infos, reply_to=reply_to):
+                    ctx.pipe_to_self(
+                        coro=_do_setup(session, env_vars, pool_infos, num_nodes),
+                        mapper=lambda _: _SetupDone(reply_to=reply_to),
+                        on_failure=lambda e: _SetupFailed(error=str(e), reply_to=reply_to),
+                    )
+                    return Behaviors.same()
 
-                    async def fire_setup() -> None:
-                        def setup_env(all_infos: list[str], extra: dict[str, str]) -> str:
-                            import os
-                            nid = int(os.environ.get("SKYWARD_NODE_ID", "0"))
-                            if all_infos and nid < len(all_infos):
-                                os.environ["COMPUTE_POOL"] = all_infos[nid]
-                            for k, v in extra.items():
-                                os.environ[k] = v
-                            return "ok"
+                case _SetupDone(reply_to=reply_to):
+                    reply_to.tell(ClusterReady())
+                    return Behaviors.same()
 
-                        payload = serialize({
-                            "fn": setup_env,
-                            "args": (list(pool_infos), env_vars),
-                            "kwargs": {},
-                            "num_nodes": num_nodes,
-                        })
-                        async with session.post(
-                            "/jobs/broadcast", data=payload,
-                            headers={"Content-Type": "application/octet-stream"},
-                        ) as resp:
-                            deserialize(await resp.read())
-                        reply_to.tell(ClusterReady())
-
-                    asyncio.create_task(fire_setup())
+                case _SetupFailed(error=error, reply_to=reply_to):
+                    logger.error(f"Cluster setup failed: {error}")
+                    reply_to.tell(ClusterReady())
                     return Behaviors.same()
 
                 case _Disconnect(reply_to=reply_to):

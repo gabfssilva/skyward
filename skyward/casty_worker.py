@@ -48,41 +48,65 @@ class ExecuteTask:
     reply_to: ActorRef[TaskResult]
 
 
-type WorkerMsg = ExecuteTask
+@dataclass(frozen=True, slots=True)
+class _TaskDone:
+    result: TaskResult
+    reply_to: ActorRef[TaskResult]
+
+
+@dataclass(frozen=True, slots=True)
+class _TaskErrored:
+    error: Exception
+    reply_to: ActorRef[TaskResult]
+
+
+type WorkerMsg = ExecuteTask | _TaskDone | _TaskErrored
 
 
 def worker_behavior(node_id: int, concurrency: int = 1) -> Behavior[WorkerMsg]:
     sem = asyncio.Semaphore(concurrency)
 
+    async def _execute(fn_bytes: bytes) -> TaskResult:
+        async with sem:
+            def _run() -> TaskResult:
+                from skyward.utils.serialization import deserialize
+
+                try:
+                    payload = deserialize(fn_bytes)
+                    fn = payload["fn"]
+                    args = payload.get("args", ())
+                    kwargs = payload.get("kwargs", {})
+                    fn_name = getattr(fn, "__name__", str(fn))
+
+                    print(f"[worker-{node_id}] Executing {fn_name}...", flush=True)
+                    result = fn(*args, **kwargs)
+                    print(f"[worker-{node_id}] {fn_name} completed", flush=True)
+                    return TaskSucceeded(result=result, node_id=node_id)
+                except Exception as e:
+                    fn_name = "unknown"
+                    print(f"[worker-{node_id}] {fn_name} failed: {e}", flush=True)
+                    return TaskFailed(error=str(e), traceback=traceback.format_exc(), node_id=node_id)
+
+            return await asyncio.to_thread(_run)
+
     async def receive(ctx: ActorContext[WorkerMsg], msg: WorkerMsg) -> Behavior[WorkerMsg]:
         match msg:
             case ExecuteTask(fn_bytes=fn_bytes, reply_to=reply_to):
-
-                async def fire() -> None:
-                    async with sem:
-                        def _run() -> TaskResult:
-                            from skyward.utils.serialization import deserialize
-
-                            try:
-                                payload = deserialize(fn_bytes)
-                                fn = payload["fn"]
-                                args = payload.get("args", ())
-                                kwargs = payload.get("kwargs", {})
-                                fn_name = getattr(fn, "__name__", str(fn))
-
-                                print(f"[worker-{node_id}] Executing {fn_name}...", flush=True)
-                                result = fn(*args, **kwargs)
-                                print(f"[worker-{node_id}] {fn_name} completed", flush=True)
-                                return TaskSucceeded(result=result, node_id=node_id)
-                            except Exception as e:
-                                fn_name = "unknown"
-                                print(f"[worker-{node_id}] {fn_name} failed: {e}", flush=True)
-                                return TaskFailed(error=str(e), traceback=traceback.format_exc(), node_id=node_id)
-
-                        response = await asyncio.to_thread(_run)
-                        reply_to.tell(response)
-
-                asyncio.create_task(fire())
+                ctx.pipe_to_self(
+                    coro=_execute(fn_bytes),
+                    mapper=lambda result: _TaskDone(result=result, reply_to=reply_to),
+                    on_failure=lambda e: _TaskErrored(error=e, reply_to=reply_to),
+                )
+                return Behaviors.same()
+            case _TaskDone(result=result, reply_to=reply_to):
+                reply_to.tell(result)
+                return Behaviors.same()
+            case _TaskErrored(error=error, reply_to=reply_to):
+                reply_to.tell(TaskFailed(
+                    error=str(error),
+                    traceback=traceback.format_exc(),
+                    node_id=node_id,
+                ))
                 return Behaviors.same()
 
     return Behaviors.receive(receive)
