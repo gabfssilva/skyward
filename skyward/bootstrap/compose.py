@@ -289,15 +289,15 @@ def bootstrap(
         ...     metrics=Default(),
         ... )
     """
-    if header is not None:
-        base = header
-    elif metrics is not None:
-        base = make_header(metrics)
-    else:
-        # Default: use Default() metrics
-        from ..metrics import Default
+    match (header, metrics):
+        case (str(), _):
+            base = header
+        case (None, list() | tuple() as m):
+            base = make_header(m)
+        case _:
+            from ..metrics import Default
 
-        base = make_header(Default())
+            base = make_header(Default())
 
     commands = [resolve(op) for op in ops]
     return base + "\n\n".join(commands)

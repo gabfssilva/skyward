@@ -47,10 +47,11 @@ class AWSResources:
     def from_dict(cls, data: dict[str, str | list[str]]) -> AWSResources:
         """Deserialize from dictionary."""
         subnet_ids_raw = data.get("subnet_ids", [])
-        if isinstance(subnet_ids_raw, list):
-            subnet_ids = tuple(str(s) for s in subnet_ids_raw)
-        else:
-            subnet_ids = (str(subnet_ids_raw),)
+        match subnet_ids_raw:
+            case list():
+                subnet_ids = tuple(str(s) for s in subnet_ids_raw)
+            case _:
+                subnet_ids = (str(subnet_ids_raw),)
 
         return cls(
             bucket=str(data["bucket"]),

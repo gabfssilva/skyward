@@ -95,11 +95,13 @@ def _extract_linux_pricing(inst: dict[str, Any], region: str) -> dict[str, Any]:
 
 def _parse_savings_pct(value: str | int | None) -> int | None:
     """Parse savings percentage from various formats."""
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return _safe_int(value.replace("%", ""))
-    return _safe_int(value)
+    match value:
+        case None:
+            return None
+        case str() as s:
+            return _safe_int(s.replace("%", ""))
+        case _:
+            return _safe_int(value)
 
 
 # =============================================================================

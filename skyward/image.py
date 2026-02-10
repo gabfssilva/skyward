@@ -88,9 +88,12 @@ class Image:
         # Use object.__setattr__ since the dataclass is frozen
         object.__setattr__(self, "pip", tuple(self.pip) if self.pip else ())
         object.__setattr__(self, "apt", tuple(self.apt) if self.apt else ())
-        # Convert metrics list to tuple if needed
-        if isinstance(self.metrics, list):
-            object.__setattr__(self, "metrics", tuple(self.metrics))
+
+        match self.metrics:
+            case list():
+                object.__setattr__(self, "metrics", tuple(self.metrics))
+            case _:
+                pass
 
     def content_hash(self) -> str:
         """Generate hash for AMI/snapshot caching.
@@ -101,7 +104,6 @@ class Image:
         Returns:
             12-character hex hash of the image specification.
         """
-        # Serialize metrics for hashing
         metrics_data = None
         if self.metrics:
             metrics_data = [
@@ -155,7 +157,6 @@ class Image:
             preamble,
         ]
 
-        # Environment setup (only if we have vars or env)
         if self.shell_vars or self.env:
             env_ops: list[Op] = []
             if self.shell_vars:
@@ -177,11 +178,11 @@ class Image:
             ),
         ])
 
-        # Install skyward (skip for local - wheel uploaded separately)
-        if self.skyward_source == "github":
-            ops.append(phase("skyward", uv_add("git+https://github.com/gabfssilva/skyward.git")))
-        elif self.skyward_source == "pypi":
-            ops.append(phase("skyward", uv_add("skyward")))
+        match self.skyward_source:
+            case "github":
+                ops.append(phase("skyward", uv_add("git+https://github.com/gabfssilva/skyward.git")))
+            case "pypi":
+                ops.append(phase("skyward", uv_add("skyward")))
 
         ops.append(postamble)
         ops.append(emit_bootstrap_complete())

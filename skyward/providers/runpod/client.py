@@ -181,10 +181,13 @@ class RunPodClient:
                     "POST", "", json={"query": query, "variables": variables or {}}
                 )
 
-            if isinstance(data, dict) and "errors" in data:
-                raise RunPodError(f"GraphQL error: {data['errors']}")
-
-            return data.get("data", {}) if isinstance(data, dict) else {}
+            match data:
+                case dict() as d if "errors" in d:
+                    raise RunPodError(f"GraphQL error: {d['errors']}")
+                case dict() as d:
+                    return d.get("data", {})
+                case _:
+                    return {}
         except HttpError as e:
             raise RunPodError(f"API error {e.status}: {e.body}") from e
 

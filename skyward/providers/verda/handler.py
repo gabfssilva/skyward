@@ -59,25 +59,21 @@ async def _resolve_instance_type(
     instance_types = await client.list_instance_types()
     availability = await client.get_availability(is_spot=use_spot)
 
-    available_types: set[str] = set()
-    for region_types in availability.values():
-        available_types.update(region_types)
+    available_types = {t for region_types in availability.values() for t in region_types}
 
-    candidates: list[InstanceTypeResponse] = []
-    for itype in instance_types:
+    def _matches(itype: InstanceTypeResponse) -> bool:
         if itype["instance_type"] not in available_types:
-            continue
+            return False
+        if not spec.accelerator_name:
+            return True
+        accel = get_accelerator(itype)
+        if not accel:
+            return False
+        accel_upper = accel.upper()
+        requested_upper = spec.accelerator_name.upper()
+        return accel_upper in requested_upper or requested_upper in accel_upper
 
-        if spec.accelerator_name:
-            accel = get_accelerator(itype)
-            if not accel:
-                continue
-            accel_upper = accel.upper()
-            requested_upper = spec.accelerator_name.upper()
-            if accel_upper not in requested_upper and requested_upper not in accel_upper:
-                continue
-
-        candidates.append(itype)
+    candidates = [itype for itype in instance_types if _matches(itype)]
 
     if not candidates:
         raise RuntimeError(f"No instance types match accelerator={spec.accelerator_name}")

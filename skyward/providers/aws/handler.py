@@ -533,12 +533,13 @@ def _fallback_instance(spec: PoolSpec) -> tuple[str, Architecture]:
         }
         fallback = gpu_fallbacks.get(spec.accelerator_name, ("g4dn.xlarge", "x86_64"))
     else:
-        if spec.architecture == "arm64":
-            fallback = ("m7g.large", "arm64")
-        elif spec.architecture == "x86_64":
-            fallback = ("m5.large", "x86_64")
-        else:
-            fallback = ("m7g.large", "arm64")
+        match spec.architecture:
+            case "arm64":
+                fallback = ("m7g.large", "arm64")
+            case "x86_64":
+                fallback = ("m5.large", "x86_64")
+            case _:
+                fallback = ("m7g.large", "arm64")
 
     logger.warning(f"No instances found for spec. Using fallback {fallback[0]}")
     return fallback
@@ -695,9 +696,11 @@ async def _launch_fleet(
                 },
             )
 
-            instance_ids: list[str] = []
-            for instance_set in fleet_response.get("Instances", []):
-                instance_ids.extend(instance_set.get("InstanceIds", []))
+            instance_ids = [
+                iid
+                for instance_set in fleet_response.get("Instances", [])
+                for iid in instance_set.get("InstanceIds", [])
+            ]
 
             errors = fleet_response.get("Errors", [])
             if errors and not instance_ids:
@@ -794,16 +797,17 @@ async def _get_instance_details(
     async with ec2() as client:
         response = await client.describe_instances(InstanceIds=instance_ids)
 
-        instances = []
-        for r in response["Reservations"]:
-            for i in r["Instances"]:
-                instances.append({
-                    "id": i["InstanceId"],
-                    "private_ip": i.get("PrivateIpAddress", ""),
-                    "public_ip": i.get("PublicIpAddress"),
-                    "spot": i.get("InstanceLifecycle") == "spot",
-                    "instance_type": i.get("InstanceType", ""),
-                })
+        instances = [
+            {
+                "id": i["InstanceId"],
+                "private_ip": i.get("PrivateIpAddress", ""),
+                "public_ip": i.get("PublicIpAddress"),
+                "spot": i.get("InstanceLifecycle") == "spot",
+                "instance_type": i.get("InstanceType", ""),
+            }
+            for r in response["Reservations"]
+            for i in r["Instances"]
+        ]
 
         return sorted(instances, key=lambda x: x["id"])
 

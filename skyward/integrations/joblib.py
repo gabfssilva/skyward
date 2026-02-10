@@ -86,7 +86,7 @@ class SkywardBackend(ParallelBackendBase):
     uses_threads = False  # type: ignore[assignment]
     supports_timeout = True  # type: ignore[assignment]
 
-    def __init__(self, pool: SyncComputePool, nesting_level: int = 0, **kwargs: Any):
+    def __init__(self, pool: SyncComputePool, nesting_level: int = 0, **kwargs: Any) -> None:
         super().__init__(nesting_level=nesting_level, **kwargs)
         self.pool = pool
         self.parallel: Parallel | None = None

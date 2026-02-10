@@ -208,26 +208,29 @@ class PanelState:
         self,
     ) -> dict[str, Literal["pending", "in_progress", "completed"]]:
         """Build 3-phase pipeline: Provision - Prepare - Execute."""
-        if "provision" in self.phase_times:
-            provision_status: Literal["pending", "in_progress", "completed"] = "completed"
-        elif self.phase in ("Provisioning", "Initializing"):
-            provision_status = "in_progress"
-        else:
-            provision_status = "pending"
+        match ("provision" in self.phase_times, self.phase):
+            case (True, _):
+                provision_status: Literal["pending", "in_progress", "completed"] = "completed"
+            case (False, "Provisioning" | "Initializing"):
+                provision_status = "in_progress"
+            case _:
+                provision_status = "pending"
 
-        if "bootstrap" in self.phase_times:
-            prepare_status: Literal["pending", "in_progress", "completed"] = "completed"
-        elif self.phase == "Bootstrapping":
-            prepare_status = "in_progress"
-        else:
-            prepare_status = "pending"
+        match ("bootstrap" in self.phase_times, self.phase):
+            case (True, _):
+                prepare_status: Literal["pending", "in_progress", "completed"] = "completed"
+            case (False, "Bootstrapping"):
+                prepare_status = "in_progress"
+            case _:
+                prepare_status = "pending"
 
-        if self.is_done:
-            execute_status: Literal["pending", "in_progress", "completed"] = "completed"
-        elif self.phase == "Executing":
-            execute_status = "in_progress"
-        else:
-            execute_status = "pending"
+        match (self.is_done, self.phase):
+            case (True, _):
+                execute_status: Literal["pending", "in_progress", "completed"] = "completed"
+            case (False, "Executing"):
+                execute_status = "in_progress"
+            case _:
+                execute_status = "pending"
 
         return {
             "Provision": provision_status,
@@ -249,22 +252,19 @@ class PanelState:
                 gpu_info = f"{self.infra.gpu_count}x {self.infra.gpu_model}"
 
         total_nodes = self.total_nodes or self.provisioned
-        if self.spot_count > 0 and self.ondemand_count > 0:
-            allocation = f"{total_nodes} nodes ({self.spot_count} spot + {self.ondemand_count} od)"
-        elif self.spot_count > 0:
-            allocation = f"{total_nodes} spot"
-        elif self.ondemand_count > 0:
-            allocation = f"{total_nodes} on-demand"
-        elif self.infra.allocation:
-            strategy = self.infra.allocation
-            if strategy == "on-demand":
-                allocation = f"{total_nodes} on-demand"
-            elif strategy == "spot":
+        match (self.spot_count, self.ondemand_count, self.infra.allocation):
+            case (spot, od, _) if spot > 0 and od > 0:
+                allocation = f"{total_nodes} nodes ({spot} spot + {od} od)"
+            case (spot, 0, _) if spot > 0:
                 allocation = f"{total_nodes} spot"
-            else:
+            case (0, od, _) if od > 0:
+                allocation = f"{total_nodes} on-demand"
+            case (0, 0, "on-demand"):
+                allocation = f"{total_nodes} on-demand"
+            case (0, 0, "spot"):
+                allocation = f"{total_nodes} spot"
+            case _:
                 allocation = f"{total_nodes} nodes"
-        else:
-            allocation = f"{total_nodes} nodes"
 
         total_hourly = sum(
             inst.hourly_rate for inst in self.instances.values() if not inst.is_placeholder
@@ -390,10 +390,10 @@ class PanelState:
         histories = [metrics.history.get(n, ()) for n in matching_names]
         max_len = max((len(h) for h in histories), default=0)
 
-        avg_history: list[float] = []
-        for idx in range(max_len):
-            vals = [h[idx] for h in histories if idx < len(h)]
-            avg_history.append(sum(vals) / len(vals) if vals else 0.0)
+        avg_history = [
+            sum(vals) / len(vals) if (vals := [h[idx] for h in histories if idx < len(h)]) else 0.0
+            for idx in range(max_len)
+        ]
 
         current = avg_history[-1] if avg_history else 0.0
         return MetricVM(
@@ -439,12 +439,10 @@ class PanelState:
         used_histories = [metrics.history.get(n, ()) for n in used_names]
         max_len = max((len(h) for h in used_histories), default=0)
 
-        pct_history: list[float] = []
-        for idx in range(max_len):
-            vals = [h[idx] for h in used_histories if idx < len(h)]
-            avg_used = sum(vals) / len(vals) if vals else 0.0
-            pct = (avg_used / total_mb) * 100
-            pct_history.append(min(pct, 100.0))
+        pct_history = [
+            min(((sum(vals) / len(vals)) / total_mb * 100 if (vals := [h[idx] for h in used_histories if idx < len(h)]) else 0.0), 100.0)
+            for idx in range(max_len)
+        ]
 
         current = pct_history[-1] if pct_history else 0.0
 
@@ -549,9 +547,7 @@ class PanelState:
         if max_len == 0:
             return ()
 
-        result: list[float] = []
-        for idx in range(max_len):
-            vals = [h[idx] for h in histories if idx < len(h)]
-            result.append(sum(vals) / len(vals) if vals else 0.0)
-
-        return tuple(result)
+        return tuple(
+            sum(vals) / len(vals) if (vals := [h[idx] for h in histories if idx < len(h)]) else 0.0
+            for idx in range(max_len)
+        )

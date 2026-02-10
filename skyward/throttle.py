@@ -32,18 +32,13 @@ Example:
     async def method_b(): ...
 """
 
-from __future__ import annotations
-
 import asyncio
 import functools
 import time
 from collections.abc import Awaitable, Callable
-from typing import Literal, ParamSpec, TypeVar
+from typing import Literal
 
 from loguru import logger
-
-P = ParamSpec("P")
-T = TypeVar("T")
 
 
 class ThrottleError(Exception):
@@ -76,7 +71,7 @@ class Limiter:
         self,
         max_concurrent: int | None = None,
         interval: float | None = None,
-    ):
+    ) -> None:
         self._max_concurrent = max_concurrent
         self._interval = interval
         self._semaphore = asyncio.Semaphore(max_concurrent) if max_concurrent else None
@@ -127,7 +122,7 @@ class Limiter:
         return f"Limiter(max_concurrent={self._max_concurrent}, interval={self._interval})"
 
 
-def throttle(
+def throttle[**P, T](
     max_concurrent: int | None = None,
     interval: float | None = None,
     limiter: Limiter | None = None,

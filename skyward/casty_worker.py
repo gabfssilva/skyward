@@ -253,11 +253,11 @@ async def main(
 def _parse_seeds(seeds_str: str | None) -> list[tuple[str, int]] | None:
     if not seeds_str:
         return None
-    result = []
-    for addr in seeds_str.split(","):
-        host, port_str = addr.rsplit(":", 1)
-        result.append((host, int(port_str)))
-    return result
+    return [
+        (host, int(port_str))
+        for addr in seeds_str.split(",")
+        for host, port_str in [addr.rsplit(":", 1)]
+    ]
 
 
 def cli() -> None:

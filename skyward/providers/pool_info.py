@@ -43,7 +43,6 @@ def build_pool_info(
     Returns:
         ComputePoolInfo instance ready to be serialized with .model_dump_json().
     """
-    # Build accelerator info only if accelerator_type is provided
     accelerator_info: AcceleratorInfo | None = None
     if accelerator_type is not None:
         is_trainium = accelerator_type in ("Trainium1", "Trainium2", "Trainium3")
@@ -53,7 +52,6 @@ def build_pool_info(
             is_trainium=is_trainium,
         )
 
-    # Convert peers to PeerInfo
     peer_infos: list[PeerInfo] = [
         PeerInfo(
             node=p.get("node", 0),
@@ -62,7 +60,6 @@ def build_pool_info(
         for p in peers
     ]
 
-    # Build network info
     network_info = NetworkInfo()
     if placement_group:
         network_info["interface"] = placement_group  # Using interface field for placement_group

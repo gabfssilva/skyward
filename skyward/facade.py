@@ -26,7 +26,7 @@ import asyncio
 import functools
 import threading
 import types
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import Future
 from contextlib import suppress
 from contextvars import ContextVar
@@ -101,9 +101,11 @@ class _Sky:
     def __rrshift__(self, pending: PendingCompute[Any] | PendingComputeGroup) -> Any:
         """pending >> sky - execute computation(s)."""
         pool = _get_active_pool()
-        if isinstance(pending, PendingComputeGroup):
-            return pool.run_parallel(pending)
-        return pool.run(pending)
+        match pending:
+            case PendingComputeGroup():
+                return pool.run_parallel(pending)
+            case _:
+                return pool.run(pending)
 
     def __rmatmul__(self, pending: PendingCompute[Any]) -> list[Any]:
         """pending @ sky - broadcast to all nodes."""
@@ -148,33 +150,40 @@ class PendingCompute[T]:
     kwargs: dict[str, Any]
 
     def __rshift__(self, target: SyncComputePool | _Sky | types.ModuleType) -> T:
-        if isinstance(target, types.ModuleType) and hasattr(target, "sky"):
-            return target.sky.__rrshift__(self)  # type: ignore
-        if isinstance(target, _Sky):
-            return target.__rrshift__(self)  # type: ignore
-        return target.run(self)  # type: ignore[union-attr]
+        match target:
+            case types.ModuleType() if hasattr(target, "sky"):
+                return target.sky.__rrshift__(self)  # type: ignore
+            case _Sky():
+                return target.__rrshift__(self)  # type: ignore
+            case _:
+                return target.run(self)  # type: ignore[union-attr]
 
     def __gt__(self, target: SyncComputePool | _Sky | types.ModuleType) -> Future[T]:
-        if isinstance(target, types.ModuleType) and hasattr(target, "sky"):
-            return target.sky._run_async(self)  # type: ignore
-        if isinstance(target, _Sky):
-            return target._run_async(self)  # type: ignore
-        return target.run_async(self)  # type: ignore[union-attr]
+        match target:
+            case types.ModuleType() if hasattr(target, "sky"):
+                return target.sky._run_async(self)  # type: ignore
+            case _Sky():
+                return target._run_async(self)  # type: ignore
+            case _:
+                return target.run_async(self)  # type: ignore[union-attr]
 
     def __matmul__(self, target: SyncComputePool | _Sky | types.ModuleType) -> list[T] | tuple[T, ...]:
         """Broadcast to all nodes using @ operator."""
-        # Handle case where target is module (import skyward as sky)
-        if isinstance(target, types.ModuleType) and hasattr(target, "sky"):
-            return target.sky.__rmatmul__(self)
-        if isinstance(target, _Sky):
-            return target.__rmatmul__(self)
-        return target.broadcast(self)  # type: ignore[union-attr]
+        match target:
+            case types.ModuleType() if hasattr(target, "sky"):
+                return target.sky.__rmatmul__(self)
+            case _Sky():
+                return target.__rmatmul__(self)
+            case _:
+                return target.broadcast(self)  # type: ignore[union-attr]
 
     def __and__(self, other: PendingCompute[Any] | PendingComputeGroup) -> PendingComputeGroup:
         """Combine with another computation for parallel execution."""
-        if isinstance(other, PendingComputeGroup):
-            return PendingComputeGroup(items=(self, *other.items))
-        return PendingComputeGroup(items=(self, other))
+        match other:
+            case PendingComputeGroup():
+                return PendingComputeGroup(items=(self, *other.items))
+            case _:
+                return PendingComputeGroup(items=(self, other))
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,23 +203,26 @@ class PendingComputeGroup:
 
     def __and__(self, other: PendingCompute[Any] | PendingComputeGroup) -> PendingComputeGroup:
         """Add another computation to the group."""
-        if isinstance(other, PendingComputeGroup):
-            return PendingComputeGroup(items=(*self.items, *other.items))
-        return PendingComputeGroup(items=(*self.items, other))
+        match other:
+            case PendingComputeGroup():
+                return PendingComputeGroup(items=(*self.items, *other.items))
+            case _:
+                return PendingComputeGroup(items=(*self.items, other))
 
     def __rshift__(self, target: SyncComputePool | _Sky | types.ModuleType) -> tuple[Any, ...]:
         """Execute all computations in parallel using >> operator."""
-        # Handle case where target is module (import skyward as sky)
-        if isinstance(target, types.ModuleType) and hasattr(target, "sky"):
-            return target.sky.__rrshift__(self)  # type: ignore
-        if isinstance(target, _Sky):
-            return target.__rrshift__(self)  # type: ignore
-        return target.run_parallel(self)  # type: ignore[union-attr]
+        match target:
+            case types.ModuleType() if hasattr(target, "sky"):
+                return target.sky.__rrshift__(self)  # type: ignore
+            case _Sky():
+                return target.__rrshift__(self)  # type: ignore
+            case _:
+                return target.run_parallel(self)  # type: ignore[union-attr]
 
     def __len__(self) -> int:
         return len(self.items)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[PendingCompute[Any]]:
         return iter(self.items)
 
 
@@ -327,18 +339,17 @@ class SyncComputePool:
     def __enter__(self) -> SyncComputePool:
         """Start pool and provision resources."""
         if self.logging:
-            if self.logging is True:
-                # Default config - disable console when panel is active
-                log_config = LogConfig(console=not self.panel)
-            else:
-                # User provided config - override console if panel is active
-                log_config = LogConfig(
-                    level=self.logging.level,
-                    file=self.logging.file,
-                    console=self.logging.console and not self.panel,
-                    rotation=self.logging.rotation,
-                    retention=self.logging.retention,
-                )
+            match self.logging:
+                case True:
+                    log_config = LogConfig(console=not self.panel)
+                case _:
+                    log_config = LogConfig(
+                        level=self.logging.level,
+                        file=self.logging.file,
+                        console=self.logging.console and not self.panel,
+                        rotation=self.logging.rotation,
+                        retention=self.logging.retention,
+                    )
             self._log_handler_ids = _setup_logging(log_config)
 
         logger.info(f"Starting pool with {self.nodes} nodes ({self.accelerator})")
@@ -604,14 +615,12 @@ class SyncComputePool:
 
         await self._start_casty_cluster(head_addr, ssh_user, ssh_key)
 
-        pool_infos: list[str] = []
-        for node_id in range(self.nodes):
-            info = self._instances.get(node_id)
-            if info is None:
-                pool_infos.append("")
-                continue
-            pool_info = self._build_pool_info(info, head_addr)
-            pool_infos.append(pool_info.model_dump_json())
+        pool_infos = [
+            self._build_pool_info(info, head_addr).model_dump_json()
+            if (info := self._instances.get(node_id)) is not None
+            else ""
+            for node_id in range(self.nodes)
+        ]
 
         image_env = dict(self.image.env) if self.image and self.image.env else {}
         config = ExecutorConfig(

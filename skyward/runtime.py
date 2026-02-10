@@ -90,24 +90,20 @@ def shard[T: Sequence[Any]](
 
     def shard_single(data: T, indices: list[int]) -> T:
         """Shard a single array/sequence using precomputed indices."""
-        # Check type by module + name to avoid importing numpy/torch
         type_name = type(data).__module__ + "." + type(data).__name__
 
-        # numpy.ndarray - use fancy indexing
-        if type_name == "numpy.ndarray":
-            return data[indices]  # type: ignore
-
-        # torch.Tensor - use index_select
-        if type_name == "torch.Tensor":
-            import torch
-            return data[torch.tensor(indices)]  # type: ignore
-
-        # tuple - return tuple
-        if isinstance(data, tuple):
-            return tuple(data[i] for i in indices)  # type: ignore
-
-        # list or other Sequence - return list
-        return [data[i] for i in indices]  # type: ignore
+        match type_name:
+            case "numpy.ndarray":
+                return data[indices]  # type: ignore
+            case "torch.Tensor":
+                import torch
+                return data[torch.tensor(indices)]  # type: ignore
+            case _:
+                match data:
+                    case tuple():
+                        return tuple(data[i] for i in indices)  # type: ignore
+                    case _:
+                        return [data[i] for i in indices]  # type: ignore
 
     # Single argument: return directly (preserves type)
     if len(arrays) == 1:

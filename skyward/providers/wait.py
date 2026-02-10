@@ -7,12 +7,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import TypeVar
-
-T = TypeVar("T")
 
 
-async def wait_for_ready(
+async def wait_for_ready[T](
     poll_fn: Callable[[], Awaitable[T | None]],
     ready_check: Callable[[T], bool],
     *,

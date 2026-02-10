@@ -27,24 +27,18 @@ Example:
         ...
 """
 
-from __future__ import annotations
-
 import asyncio
 import functools
 import random
 from collections.abc import Awaitable, Callable
-from typing import ParamSpec, TypeVar
 
 from loguru import logger
-
-P = ParamSpec("P")
-T = TypeVar("T")
 
 # Type for the retry predicate
 RetryPredicate = Callable[[Exception], bool]
 
 
-def retry(
+def retry[**P, T](
     on: type[Exception] | tuple[type[Exception], ...] | RetryPredicate = Exception,
     max_attempts: int = 5,
     base_delay: float = 1.0,
@@ -79,13 +73,13 @@ def retry(
         async def api_call():
             return await client.get("/data")
     """
-    # Normalize the predicate
-    if isinstance(on, type) and issubclass(on, Exception):
-        should_retry: RetryPredicate = lambda e: isinstance(e, on)
-    elif isinstance(on, tuple):
-        should_retry = lambda e: isinstance(e, on)
-    else:
-        should_retry = on
+    match on:
+        case type() as exc_type if issubclass(exc_type, Exception):
+            should_retry: RetryPredicate = lambda e: isinstance(e, exc_type)
+        case tuple() as exc_types:
+            should_retry = lambda e: isinstance(e, exc_types)
+        case _ if callable(on):
+            should_retry = on
 
     def decorator(func: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]:
         @functools.wraps(func)

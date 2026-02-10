@@ -97,11 +97,13 @@ class PoolSpec:
             Accelerator name string for use in provider instance selection,
             or None if no accelerator specified.
         """
-        if self.accelerator is None:
-            return None
-        if isinstance(self.accelerator, str):
-            return self.accelerator
-        return self.accelerator.name
+        match self.accelerator:
+            case None:
+                return None
+            case str(name):
+                return name
+            case accel:
+                return accel.name
 
     @property
     def accelerator_count(self) -> int:
@@ -110,11 +112,13 @@ class PoolSpec:
         Returns:
             Number of accelerators (1 if using string or not specified, 0 if None).
         """
-        if self.accelerator is None:
-            return 0
-        if isinstance(self.accelerator, str):
-            return 1
-        return self.accelerator.count
+        match self.accelerator:
+            case None:
+                return 0
+            case str():
+                return 1
+            case accel:
+                return accel.count
 
 
 # =============================================================================

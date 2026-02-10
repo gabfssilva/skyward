@@ -80,7 +80,7 @@ type RawStreamEvent = (
 class BootstrapError(Exception):
     """Bootstrap failed."""
 
-    def __init__(self, phase: str, error: str):
+    def __init__(self, phase: str, error: str) -> None:
         self.phase = phase
         self.error = error
         super().__init__(f"Bootstrap phase '{phase}' failed: {error}")
@@ -458,8 +458,9 @@ class SSHTransport:
                         deadline = asyncio.get_event_loop().time() + timeout
 
                         # Check for failure
-                        if isinstance(event, RawBootstrapPhase) and event.event == "failed":
-                            raise BootstrapError(event.phase, event.error or "unknown")
+                        match event:
+                            case RawBootstrapPhase(event="failed", phase=phase, error=error):
+                                raise BootstrapError(phase, error or "unknown")
 
                 except asyncio.TimeoutError:
                     # Check if deadline exceeded
@@ -492,12 +493,9 @@ class SSHTransport:
             yield event
 
             # Stop on bootstrap completion
-            if (
-                isinstance(event, RawBootstrapPhase)
-                and event.phase == "bootstrap"
-                and event.event == "completed"
-            ):
-                return
+            match event:
+                case RawBootstrapPhase(phase="bootstrap", event="completed"):
+                    return
 
     async def _wait_for_log_file(self, log_path: str, timeout: float) -> None:
         """Wait for log file to exist on remote."""

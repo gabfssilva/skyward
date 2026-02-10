@@ -195,8 +195,13 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
                                         case 200:
                                             reply_to.tell(Executed(value=result))
                                         case _:
-                                            error = result.get("error", "Unknown") if isinstance(result, dict) else str(result)
-                                            tb = result.get("traceback", "") if isinstance(result, dict) else ""
+                                            match result:
+                                                case dict():
+                                                    error = result.get("error", "Unknown")
+                                                    tb = result.get("traceback", "")
+                                                case _:
+                                                    error = str(result)
+                                                    tb = ""
                                             reply_to.tell(ExecutionFailed(error=error, traceback=tb))
                             except Exception as e:
                                 logger.error(f"execute({fn_name}) failed: {e}")
@@ -221,8 +226,13 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
                                         case 200:
                                             reply_to.tell(Broadcasted(values=tuple(result)))
                                         case _:
-                                            error = result.get("error", "Unknown") if isinstance(result, dict) else str(result)
-                                            tb = result.get("traceback", "") if isinstance(result, dict) else ""
+                                            match result:
+                                                case dict():
+                                                    error = result.get("error", "Unknown")
+                                                    tb = result.get("traceback", "")
+                                                case _:
+                                                    error = str(result)
+                                                    tb = ""
                                             reply_to.tell(ExecutionFailed(error=error, traceback=tb))
                             except Exception as e:
                                 logger.error(f"broadcast({fn_name}) failed: {e}")

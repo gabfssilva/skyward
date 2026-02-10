@@ -355,7 +355,11 @@ class VastAIClient:
         if not result:
             return None
         data = result.get("instances")
-        return data if isinstance(data, dict) else None
+        match data:
+            case dict():
+                return data
+            case _:
+                return None
 
     async def list_instances(self) -> list[InstanceResponse]:
         """List all instances owned by this account."""
@@ -365,7 +369,11 @@ class VastAIClient:
         if not result:
             return []
         raw = result.get("instances", [])
-        return raw if isinstance(raw, list) else []
+        match raw:
+            case list():
+                return raw
+            case _:
+                return []
 
     async def destroy_instance(self, instance_id: int) -> None:
         """Destroy an instance."""

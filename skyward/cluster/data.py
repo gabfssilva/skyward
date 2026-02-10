@@ -2,20 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, TypeVar, overload
+from typing import TYPE_CHECKING, Any, overload
 
 if TYPE_CHECKING:
     import numpy.typing as npt
     import torch
 
 __all__ = ["shard"]
-
-T = TypeVar("T")
-T1 = TypeVar("T1")
-T2 = TypeVar("T2")
-T3 = TypeVar("T3")
-T4 = TypeVar("T4")
-T5 = TypeVar("T5")
 
 
 def _get_pool_info() -> tuple[int, int]:
@@ -62,22 +55,19 @@ def _shard_single(data: Any, indices: list[int]) -> Any:
     # Preserve type based on input
     type_name = type(data).__module__ + "." + type(data).__name__
 
-    # numpy.ndarray - use fancy indexing
-    if type_name == "numpy.ndarray":
-        return data[indices]
+    match type_name:
+        case "numpy.ndarray":
+            return data[indices]
+        case "torch.Tensor":
+            import torch
 
-    # torch.Tensor - use index_select
-    if type_name == "torch.Tensor":
-        import torch
-
-        return data[torch.tensor(indices)]
-
-    # tuple - return tuple
-    if isinstance(data, tuple):
-        return tuple(data[i] for i in indices)
-
-    # list or other Sequence - return list
-    return [data[i] for i in indices]
+            return data[torch.tensor(indices)]
+        case _:
+            match data:
+                case tuple():
+                    return tuple(data[i] for i in indices)
+                case _:
+                    return [data[i] for i in indices]
 
 
 # ============= Overloads para shard() com múltiplos argumentos =============
@@ -86,7 +76,7 @@ def _shard_single(data: Any, indices: list[int]) -> Any:
 # Single argument overloads - ordem: mais específico primeiro
 # list e tuple antes de tipos opcionais como ndarray/Tensor
 @overload
-def shard(
+def shard[T](
     data: list[T],
     /,
     *,
@@ -99,7 +89,7 @@ def shard(
 
 
 @overload
-def shard(
+def shard[T](
     data: tuple[T, ...],
     /,
     *,
@@ -139,7 +129,7 @@ def shard(
 
 # Multiple argument overloads (retornam tupla)
 @overload
-def shard(
+def shard[T1, T2](
     data1: T1,
     data2: T2,
     /,
@@ -153,7 +143,7 @@ def shard(
 
 
 @overload
-def shard(
+def shard[T1, T2, T3](
     data1: T1,
     data2: T2,
     data3: T3,
@@ -168,7 +158,7 @@ def shard(
 
 
 @overload
-def shard(
+def shard[T1, T2, T3, T4](
     data1: T1,
     data2: T2,
     data3: T3,
@@ -184,7 +174,7 @@ def shard(
 
 
 @overload
-def shard(
+def shard[T1, T2, T3, T4, T5](
     data1: T1,
     data2: T2,
     data3: T3,

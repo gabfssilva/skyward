@@ -36,15 +36,10 @@ class Sparkline:
         while len(values) < self._width:
             values.insert(0, 0.0)
 
-        # Convert each value to a sparkline character
-        chars: list[str] = []
-        for v in values:
-            # Clamp to 0-100
-            v = max(0.0, min(100.0, v))
-            # Map to 0-7 index
-            idx = int((v / 100.0) * 7)
-            idx = min(idx, 7)  # Ensure we don't exceed index
-            chars.append(_SPARKLINE_CHARS[idx])
+        chars = [
+            _SPARKLINE_CHARS[min(int(max(0.0, min(100.0, v)) / 100.0 * 7), 7)]
+            for v in values
+        ]
 
         return Text("".join(chars), style=self._style)
 
