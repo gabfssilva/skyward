@@ -1,20 +1,16 @@
-"""Async HTTP client for Vast.ai API.
-
-Uses httpx for async HTTP requests. Returns TypedDicts directly.
-"""
+"""Async HTTP client for Vast.ai API."""
 
 from __future__ import annotations
 
-import asyncio
 import os
 import re
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-import httpx
 from loguru import logger
 
+from skyward.http import BearerAuth, HttpClient, HttpError
 from skyward.retry import on_status_code, retry
 from skyward.throttle import throttle
 
@@ -128,38 +124,16 @@ class VastAIClient:
     def __init__(self, api_key: str, config: VastAI | None = None) -> None:
         self._api_key = api_key
         self.config = config
-        self._client: httpx.AsyncClient | None = None
-        self._lock: asyncio.Lock = asyncio.Lock()
+        self._http = HttpClient(VAST_API_BASE, BearerAuth(api_key), timeout=60)
 
     async def __aenter__(self) -> VastAIClient:
-        async with self._lock:
-            if self._client is None:
-                self._client = httpx.AsyncClient(
-                    base_url=VAST_API_BASE,
-                    timeout=60,
-                    headers={
-                        "Authorization": f"Bearer {self._api_key}",
-                        "Accept": "application/json",
-                    },
-                )
         return self
 
     async def __aexit__(self, *_: Any) -> None:
-        # Keep client open - will be closed on shutdown or GC
         pass
 
     async def close(self) -> None:
-        """Explicitly close the client. Call on application shutdown."""
-        async with self._lock:
-            if self._client:
-                await self._client.aclose()
-                self._client = None
-
-    @property
-    def client(self) -> httpx.AsyncClient:
-        if not self._client:
-            raise RuntimeError("Client not initialized. Use 'async with' context.")
-        return self._client
+        await self._http.close()
 
     @retry(on=on_status_code(429, 503), max_attempts=10, base_delay=0.5)
     @throttle(max_concurrent=2, interval=1.5)
@@ -170,10 +144,7 @@ class VastAIClient:
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        """Execute HTTP request with automatic retry on rate limit."""
-        resp = await self.client.request(method, path, json=json, params=params)
-        resp.raise_for_status()
-        return resp.json() if resp.content else None
+        return await self._http.request(method, path, json=json, params=params)
 
     async def _request(
         self,
@@ -182,13 +153,10 @@ class VastAIClient:
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        """Execute HTTP request and return JSON response."""
         try:
             return await self._do_request(method, path, json, params)
-        except httpx.HTTPStatusError as e:
-            raise VastAIError(f"API error {e.response.status_code}: {e.response.text}") from e
-        except httpx.RequestError as e:
-            raise VastAIError(f"Request failed: {e}") from e
+        except HttpError as e:
+            raise VastAIError(f"API error {e.status}: {e.body}") from e
 
     # =========================================================================
     # SSH Key Management

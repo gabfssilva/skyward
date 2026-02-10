@@ -2806,14 +2806,13 @@ wheels = [
 
 [[package]]
 name = "skyward"
-version = "0.0.2.dev3+gd1843227a.d20260210"
+version = "0.0.2.dev4+g4aa060b4a.d20260210"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
     { name = "asyncssh" },
     { name = "casty" },
     { name = "cloudpickle" },
-    { name = "httpx" },
     { name = "loguru" },
     { name = "pydantic" },
     { name = "rich" },
@@ -2916,7 +2915,6 @@ requires-dist = [
     { name = "google-cloud-run", marker = "extra == 'all'", specifier = ">=0.10" },
     { name = "google-cloud-run", marker = "extra == 'gcp'", specifier = ">=0.10" },
     { name = "google-cloud-run", marker = "extra == 'providers'", specifier = ">=0.10" },
-    { name = "httpx", specifier = ">=0.28.1" },
     { name = "jax", marker = "extra == 'dev'", specifier = ">=0.8.1" },
     { name = "keras", marker = "extra == 'dev'", specifier = ">=3.12.0" },
     { name = "loguru", specifier = ">=0.7.3" },

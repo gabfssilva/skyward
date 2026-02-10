@@ -131,8 +131,8 @@ def retry(
 def on_status_code(*codes: int) -> RetryPredicate:
     """Create a predicate that retries on specific HTTP status codes.
 
-    Works with httpx.HTTPStatusError and similar exceptions that have
-    a response.status_code attribute.
+    Works with HttpError, aiohttp.ClientResponseError, and similar
+    exceptions that expose a `status` attribute.
 
     Example:
         @retry(on=on_status_code(429, 503))
@@ -141,21 +141,7 @@ def on_status_code(*codes: int) -> RetryPredicate:
     """
 
     def predicate(e: Exception) -> bool:
-        # Try to get status code from various exception types
-        status = None
-
-        # httpx.HTTPStatusError
-        if hasattr(e, "response") and hasattr(e.response, "status_code"):
-            status = e.response.status_code
-
-        # aiohttp.ClientResponseError
-        elif hasattr(e, "status"):
-            status = e.status
-
-        # requests.HTTPError
-        elif hasattr(e, "response") and hasattr(e.response, "status_code"):
-            status = e.response.status_code
-
+        status = getattr(e, "status", None)
         return status in codes
 
     return predicate

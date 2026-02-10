@@ -62,15 +62,17 @@ def get_provider_for_config(config: Any) -> tuple[ProviderActorFactory, str]:
 
     if isinstance(config, Verda):
         def verda_factory(cfg: Any, pool_ref: ActorRef) -> Behavior[ProviderMsg]:
+            from skyward.http import HttpClient, OAuth2Auth
+
+            from .verda.client import VERDA_API_BASE, VerdaClient, get_credentials
             from .verda.handler import verda_provider_actor
-            from .verda.client import VERDA_API_BASE, VerdaAuth, VerdaClient, get_credentials
-            import httpx
+
             client_id = cfg.client_id
             client_secret = cfg.client_secret
             if not client_id or not client_secret:
                 client_id, client_secret = get_credentials()
-            auth = VerdaAuth(client_id, client_secret)
-            http_client = httpx.AsyncClient(base_url=VERDA_API_BASE, auth=auth, timeout=60)
+            auth = OAuth2Auth(client_id, client_secret, f"{VERDA_API_BASE}/oauth2/token")
+            http_client = HttpClient(VERDA_API_BASE, auth, timeout=60)
             client = VerdaClient(http_client)
             return verda_provider_actor(cfg, client, pool_ref)
 

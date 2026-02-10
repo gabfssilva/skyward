@@ -1,17 +1,11 @@
-"""Async HTTP client for Verda API.
-
-Uses httpx for async HTTP requests with OAuth2 authentication.
-Returns TypedDicts directly.
-"""
+"""Async HTTP client for Verda API."""
 
 from __future__ import annotations
 
-import asyncio
 import os
-from collections.abc import AsyncGenerator
 from typing import Any
 
-import httpx
+from skyward.http import HttpClient, HttpError
 
 from .types import (
     AvailabilityRegion,
@@ -28,74 +22,9 @@ class VerdaError(Exception):
     """Error from Verda API."""
 
 
-class VerdaAuth(httpx.Auth):
-    """OAuth2 client credentials authentication for Verda API.
-
-    Thread-safe and handles token refresh automatically.
-    Designed to be used with a singleton httpx.AsyncClient.
-    """
-
-    def __init__(self, client_id: str, client_secret: str) -> None:
-        self._client_id = client_id
-        self._client_secret = client_secret
-        self._token: str | None = None
-        self._lock = asyncio.Lock()
-
-    async def _fetch_token(self, client: httpx.AsyncClient) -> str:
-        """Fetch a new access token."""
-        resp = await client.post(
-            f"{VERDA_API_BASE}/oauth2/token",
-            data={
-                "grant_type": "client_credentials",
-                "client_id": self._client_id,
-                "client_secret": self._client_secret,
-            },
-        )
-        resp.raise_for_status()
-        return resp.json()["access_token"]
-
-    async def async_auth_flow(
-        self, request: httpx.Request
-    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
-        """Add authorization header to request, fetching token if needed."""
-        async with self._lock:
-            if not self._token:
-                # Create a temporary client for token fetch (no auth to avoid recursion)
-                async with httpx.AsyncClient(timeout=30) as token_client:
-                    self._token = await self._fetch_token(token_client)
-
-        request.headers["Authorization"] = f"Bearer {self._token}"
-        request.headers["Accept"] = "application/json"
-
-        response = yield request
-
-        # Handle token expiration (401 Unauthorized)
-        if response.status_code == 401:
-            async with self._lock:
-                async with httpx.AsyncClient(timeout=30) as token_client:
-                    self._token = await self._fetch_token(token_client)
-
-            request.headers["Authorization"] = f"Bearer {self._token}"
-            yield request
-
-
 class VerdaClient:
-    """Async HTTP client for Verda API.
-
-    Returns TypedDicts directly from API responses.
-    httpx.AsyncClient is injected via DI as a singleton.
-
-    Example:
-        # Via DI injection in a handler:
-        class MyHandler:
-            client: VerdaClient
-
-            async def do_something(self):
-                types = await self.client.list_instance_types()
-    """
-
-    def __init__(self, http_client: httpx.AsyncClient) -> None:
-        self._client = http_client
+    def __init__(self, http_client: HttpClient) -> None:
+        self._http = http_client
 
     async def _request(
         self,
@@ -104,15 +33,10 @@ class VerdaClient:
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        """Execute HTTP request and return JSON response."""
         try:
-            resp = await self._client.request(method, path, json=json, params=params)
-            resp.raise_for_status()
-            return resp.json() if resp.content else None
-        except httpx.HTTPStatusError as e:
-            raise VerdaError(f"API error {e.response.status_code}: {e.response.text}") from e
-        except httpx.RequestError as e:
-            raise VerdaError(f"Request failed ({type(e).__name__}): {e}") from e
+            return await self._http.request(method, path, json=json, params=params)
+        except HttpError as e:
+            raise VerdaError(f"API error {e.status}: {e.body}") from e
 
     # =========================================================================
     # Instance Types
@@ -171,33 +95,24 @@ class VerdaClient:
         return result or []
 
     async def create_startup_script(self, name: str, script: str) -> StartupScriptResponse:
-        """Create a new startup script."""
+        import json as json_mod
+
         from loguru import logger
 
         try:
-            resp = await self._client.request(
-                "POST", "/scripts", json={"name": name, "script": script}
+            text = await self._http.request(
+                "POST", "/scripts", json={"name": name, "script": script}, format="text"
             )
-            resp.raise_for_status()
-
-            if not resp.content:
-                raise VerdaError("Failed to create startup script: empty response")
-
-            text = resp.text.strip()
+            text = text.strip()
             logger.debug(f"Verda create_startup_script response: {text[:200]!r}")
 
-            # API returns just the ID (UUID, number, or quoted string)
             if not text.startswith("{") and not text.startswith("["):
                 script_id = text.strip('"')
                 return {"id": script_id, "name": name, "script": script}
 
-            import json
-
-            return json.loads(text)
-        except httpx.HTTPStatusError as e:
-            raise VerdaError(f"API error {e.response.status_code}: {e.response.text}") from e
-        except httpx.RequestError as e:
-            raise VerdaError(f"Request failed ({type(e).__name__}): {e}") from e
+            return json_mod.loads(text)
+        except HttpError as e:
+            raise VerdaError(f"API error {e.status}: {e.body}") from e
 
     async def delete_startup_script(self, script_id: str) -> None:
         """Delete a startup script."""
@@ -234,19 +149,15 @@ class VerdaClient:
         if startup_script_id:
             body["startup_script_id"] = startup_script_id
 
+        import json as json_mod
+
         from loguru import logger
 
         try:
-            resp = await self._client.request("POST", "/instances", json=body)
-            resp.raise_for_status()
-
-            if not resp.content:
-                raise VerdaError("Failed to create instance: empty response")
-
-            text = resp.text.strip()
+            text = await self._http.request("POST", "/instances", json=body, format="text")
+            text = text.strip()
             logger.debug(f"Verda create_instance response: {text[:200]!r}")
 
-            # API returns just the ID (UUID), not a JSON object
             if not text.startswith("{") and not text.startswith("["):
                 instance_id = text.strip('"')
                 return {
@@ -257,13 +168,9 @@ class VerdaClient:
                     "is_spot": is_spot,
                 }
 
-            import json
-
-            return json.loads(text)
-        except httpx.HTTPStatusError as e:
-            raise VerdaError(f"API error {e.response.status_code}: {e.response.text}") from e
-        except httpx.RequestError as e:
-            raise VerdaError(f"Request failed ({type(e).__name__}): {e}") from e
+            return json_mod.loads(text)
+        except HttpError as e:
+            raise VerdaError(f"API error {e.status}: {e.body}") from e
 
     async def get_instance(self, instance_id: str) -> InstanceResponse | None:
         """Get instance details. Returns None if not found."""
@@ -330,7 +237,6 @@ def get_credentials() -> tuple[str, str]:
 
 __all__ = [
     "VERDA_API_BASE",
-    "VerdaAuth",
     "VerdaClient",
     "VerdaError",
     "get_credentials",

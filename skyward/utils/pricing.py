@@ -5,13 +5,13 @@ Fetches pricing from Vantage (AWS, Azure, GCP) and caches daily.
 
 from __future__ import annotations
 
+import json as json_mod
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import lru_cache
 from typing import Any, Literal
-
-import httpx
+from urllib.request import urlopen
 
 from .cache import cached
 
@@ -107,25 +107,24 @@ def _parse_savings_pct(value: str | int | None) -> int | None:
 # =============================================================================
 
 
+def _fetch_json(url: str) -> list[dict[str, Any]]:
+    with urlopen(url, timeout=30) as resp:  # noqa: S310
+        return json_mod.loads(resp.read())
+
+
 @cached(namespace="pricing.aws", ttl=_CACHE_TTL)
 def _fetch_aws_data() -> list[dict[str, Any]]:
-    """Fetch AWS pricing data from Vantage."""
-    data: list[dict[str, Any]] = httpx.get(VANTAGE_ENDPOINTS["aws"], timeout=30).json()
-    return data
+    return _fetch_json(VANTAGE_ENDPOINTS["aws"])
 
 
 @cached(namespace="pricing.azure", ttl=_CACHE_TTL)
 def _fetch_azure_data() -> list[dict[str, Any]]:
-    """Fetch Azure pricing data from Vantage."""
-    data: list[dict[str, Any]] = httpx.get(VANTAGE_ENDPOINTS["azure"], timeout=30).json()
-    return data
+    return _fetch_json(VANTAGE_ENDPOINTS["azure"])
 
 
 @cached(namespace="pricing.gcp", ttl=_CACHE_TTL)
 def _fetch_gcp_data() -> list[dict[str, Any]]:
-    """Fetch GCP pricing data from Vantage."""
-    data: list[dict[str, Any]] = httpx.get(VANTAGE_ENDPOINTS["gcp"], timeout=30).json()
-    return data
+    return _fetch_json(VANTAGE_ENDPOINTS["gcp"])
 
 
 _FETCHERS: dict[Provider, Callable[[], list[dict[str, Any]]]] = {

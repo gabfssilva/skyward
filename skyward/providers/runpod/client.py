@@ -1,16 +1,11 @@
-"""Async HTTP client for RunPod API.
-
-Uses httpx for async HTTP requests with Bearer token authentication.
-Returns TypedDicts directly.
-"""
+"""Async HTTP client for RunPod API."""
 
 from __future__ import annotations
 
 import os
 from typing import Any
 
-import httpx
-
+from skyward.http import BearerAuth, HttpClient, HttpError
 from skyward.retry import on_status_code, retry
 
 from .types import (
@@ -104,30 +99,18 @@ class RunPodClient:
 
     def __init__(self, api_key: str) -> None:
         self._api_key = api_key
-        self._client: httpx.AsyncClient | None = None
-
-    async def __aenter__(self) -> "RunPodClient":
-        self._client = httpx.AsyncClient(
-            base_url=RUNPOD_API_BASE,
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            },
-            timeout=30.0,
+        self._http = HttpClient(
+            RUNPOD_API_BASE,
+            BearerAuth(api_key),
+            timeout=30,
+            default_headers={"Content-Type": "application/json"},
         )
+
+    async def __aenter__(self) -> RunPodClient:
         return self
 
     async def __aexit__(self, *_args: object) -> None:
-        if self._client:
-            await self._client.aclose()
-            self._client = None
-
-    @property
-    def client(self) -> httpx.AsyncClient:
-        """Get the HTTP client, raising if not in context."""
-        if not self._client:
-            raise RuntimeError("RunPodClient must be used as async context manager")
-        return self._client
+        await self._http.close()
 
     async def _request(
         self,
@@ -136,17 +119,10 @@ class RunPodClient:
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        """Execute HTTP request and return JSON response."""
         try:
-            resp = await self.client.request(method, path, json=json, params=params)
-            resp.raise_for_status()
-            return resp.json() if resp.content else None
-        except httpx.HTTPStatusError as e:
-            raise RunPodError(
-                f"API error {e.response.status_code}: {e.response.text}"
-            ) from e
-        except httpx.RequestError as e:
-            raise RunPodError(f"Request failed ({type(e).__name__}): {e}") from e
+            return await self._http.request(method, path, json=json, params=params)
+        except HttpError as e:
+            raise RunPodError(f"API error {e.status}: {e.body}") from e
 
     # =========================================================================
     # Pod Management
@@ -194,30 +170,23 @@ class RunPodClient:
         query: str,
         variables: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Execute a GraphQL query/mutation and return the data."""
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                resp = await client.post(
-                    RUNPOD_GRAPHQL_URL,
-                    headers={
-                        "Authorization": f"Bearer {self._api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={"query": query, "variables": variables or {}},
+            async with HttpClient(
+                RUNPOD_GRAPHQL_URL,
+                BearerAuth(self._api_key),
+                timeout=60,
+                default_headers={"Content-Type": "application/json"},
+            ) as http:
+                data = await http.request(
+                    "POST", "", json={"query": query, "variables": variables or {}}
                 )
-                resp.raise_for_status()
-                data = resp.json()
 
-            if "errors" in data:
+            if isinstance(data, dict) and "errors" in data:
                 raise RunPodError(f"GraphQL error: {data['errors']}")
 
-            return data.get("data", {})
-        except httpx.HTTPStatusError as e:
-            raise RunPodError(
-                f"API error {e.response.status_code}: {e.response.text}"
-            ) from e
-        except httpx.RequestError as e:
-            raise RunPodError(f"Request failed ({type(e).__name__}): {e}") from e
+            return data.get("data", {}) if isinstance(data, dict) else {}
+        except HttpError as e:
+            raise RunPodError(f"API error {e.status}: {e.body}") from e
 
     # =========================================================================
     # SSH Key Management (via GraphQL)
