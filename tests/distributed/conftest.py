@@ -16,11 +16,14 @@ def _cluster_system():
     loop = asyncio.new_event_loop()
     system: ClusteredActorSystem | None = None
 
+    startup_error: BaseException | None = None
+
     async def _start() -> ClusteredActorSystem:
         s = ClusteredActorSystem(
             name="test",
             host="127.0.0.1",
             port=get_free_port(),
+            node_id="test-node-1",
         )
         await s.__aenter__()
         return s
@@ -28,15 +31,25 @@ def _cluster_system():
     ready = threading.Event()
 
     def _run_loop():
-        nonlocal system
+        nonlocal system, startup_error
         asyncio.set_event_loop(loop)
-        system = loop.run_until_complete(_start())
-        ready.set()
+        try:
+            system = loop.run_until_complete(_start())
+        except BaseException as e:
+            startup_error = e
+            return
+        finally:
+            ready.set()
         loop.run_forever()
 
     t = threading.Thread(target=_run_loop, daemon=True)
     t.start()
-    ready.wait()
+    ready.wait(timeout=15)
+
+    if startup_error is not None:
+        raise startup_error
+    if system is None:
+        raise RuntimeError("ClusteredActorSystem failed to start within 15s")
 
     set_system_loop(loop)
 

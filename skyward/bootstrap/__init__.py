@@ -4,14 +4,11 @@ This module provides a functional DSL for generating shell scripts
 used in cloud-init user_data and startup scripts.
 
 Example:
-    >>> from skyward.bootstrap import bootstrap, apt, pip, checkpoint, when
+    >>> from skyward.bootstrap import bootstrap, apt, pip, checkpoint
     >>>
     >>> script = bootstrap(
     ...     apt("python3", "curl"),
     ...     checkpoint(".step_apt"),
-    ...     when("command -v nvidia-smi",
-    ...         "nvidia-smi --query-gpu=name",
-    ...     ),
     ...     pip("torch", "transformers"),
     ...     checkpoint(".ready"),
     ... )
@@ -25,19 +22,6 @@ from .compose import (
     Op,
     bootstrap,
     resolve,
-)
-
-# Control flow
-from .control import (
-    and_then,
-    capture,
-    for_each,
-    group,
-    or_else,
-    subshell,
-    unless,
-    var,
-    when,
 )
 
 # Core operations
@@ -101,16 +85,6 @@ __all__ = [
     "stop_metrics",
     # AWS operations
     "grid_driver",
-    # Control flow
-    "capture",
-    "var",
-    "when",
-    "unless",
-    "for_each",
-    "and_then",
-    "or_else",
-    "group",
-    "subshell",
     # Casty operations
     "casty_install",
     "casty_service",

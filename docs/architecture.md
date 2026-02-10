@@ -415,21 +415,6 @@ class Node:
         ...
 ```
 
-**MonitorManager:**
-
-```python
-from skyward import MonitorManager, monitor
-
-@monitor(interval=5.0, name="preemption")
-async def check_preemption(registry: InstanceRegistry, bus: AsyncEventBus):
-    for instance in registry.spot_instances:
-        if await is_preempted(instance):
-            bus.emit(InstancePreempted(...))
-
-manager = MonitorManager()
-manager.start("preemption", check_preemption, interval=5.0, injector=inj)
-manager.stop_all()
-```
 
 ## Data Flow
 
