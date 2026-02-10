@@ -15,7 +15,6 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from skyward.app import component
 from skyward.retry import on_status_code, retry
 from skyward.throttle import throttle
 
@@ -123,38 +122,23 @@ def build_search_query(
 # =============================================================================
 
 
-@component
 class VastAIClient:
-    """Async HTTP client for Vast.ai API.
+    """Async HTTP client for Vast.ai API."""
 
-    Returns TypedDicts directly from API responses.
-    Config is injected via DI.
-
-    Example:
-        # Via DI injection in a handler:
-        class MyHandler:
-            client: VastAIClient
-
-            async def do_something(self):
-                async with self.client:
-                    offers = await self.client.search_offers(gpu_name="RTX 4090")
-    """
-
-    config: VastAI
-
-    def __post_init__(self) -> None:
+    def __init__(self, api_key: str, config: VastAI | None = None) -> None:
+        self._api_key = api_key
+        self.config = config
         self._client: httpx.AsyncClient | None = None
         self._lock: asyncio.Lock = asyncio.Lock()
 
     async def __aenter__(self) -> VastAIClient:
         async with self._lock:
             if self._client is None:
-                api_key = self.config.api_key or get_api_key()
                 self._client = httpx.AsyncClient(
                     base_url=VAST_API_BASE,
                     timeout=60,
                     headers={
-                        "Authorization": f"Bearer {api_key}",
+                        "Authorization": f"Bearer {self._api_key}",
                         "Accept": "application/json",
                     },
                 )

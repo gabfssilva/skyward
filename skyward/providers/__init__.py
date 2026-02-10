@@ -15,7 +15,7 @@ NOTE: Only config classes are imported at module level to avoid pulling in
 SDK dependencies (aioboto3, httpx, etc.). Handlers and modules should be
 imported explicitly when needed:
 
-    from skyward.providers.aws import AWSHandler, AWSModule
+    from skyward.providers.aws import AWSHandler
 """
 
 # Only import config classes - these have NO SDK dependencies

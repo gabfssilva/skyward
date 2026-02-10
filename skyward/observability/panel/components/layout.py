@@ -10,19 +10,17 @@ from rich.table import Table
 from rich.text import Text
 
 from ..viewmodel import PanelViewModel
-from .header import Header
-from .infra import create_cluster_section
+from .infra import create_footer, create_header
 from .instance import InstanceRow
 
-# Fixed layout constants
 HEADER_LINES = 1
-INFRA_LINES = 3
-SECONDARY_LOG_LINES = 2  # Each secondary node gets 2 log lines
+SEPARATOR_LINES = 2
+FOOTER_LINES = 1
+SECONDARY_LOG_LINES = 2
 
 
 def _build_separator(width: int) -> Text:
-    sep_width = min(80, width)
-    return Text("─" * sep_width, style="dim")
+    return Text("─" * width, style="dim")
 
 
 class PanelLayout:
@@ -30,58 +28,66 @@ class PanelLayout:
 
     Layout structure:
     1. Header (centered) - 1 line
-    2. Infra + Cluster avg (centered) - 3 lines
+    2. Separator - 1 line
     3. Secondary instances (header + 2 log lines each)
-    4. Head instance (header + remaining lines fill screen)
+    4. Head instance (fills remaining screen)
+    5. Padding (pushes footer to bottom)
+    6. Separator - 1 line
+    7. Footer (centered) - 1 line
     """
 
     def __init__(self, vm: PanelViewModel) -> None:
         self._vm = vm
 
     def render(self) -> Table:
-        """Render complete panel as a Rich Table."""
         vm = self._vm
         width = vm.terminal_width
         height = vm.terminal_height
 
-        # Count secondary nodes
         secondary_nodes = [inst for inst in vm.instances if not inst.is_active]
         head_node = next((inst for inst in vm.instances if inst.is_active), None)
 
-        # Calculate available lines for head
-        # Layout: header (1) + infra (3) + separator (1) + secondary (3 each) + head header (1) + head logs
-        separator_line = 1
-        head_header = 1 if head_node else 0
-        fixed_overhead = HEADER_LINES + INFRA_LINES + separator_line + head_header
+        lines_used = HEADER_LINES + SEPARATOR_LINES + FOOTER_LINES
+
         secondary_total = len(secondary_nodes) * (1 + SECONDARY_LOG_LINES)
+        lines_used += secondary_total
 
-        # Head gets remaining space (minimum 5 log lines)
-        head_log_lines = max(5, height - fixed_overhead - secondary_total)
+        head_log_lines = max(5, height - lines_used - (1 if head_node else 0))
 
-        # Main container table
         table = Table(box=None, show_header=False, padding=0, expand=False)
         table.add_column(width=width)
 
-        # 1. Header (centered)
-        header = Header(vm.header).render(width)
-        table.add_row(Align.center(header))
+        # 1. Header
+        header = create_header(vm.header, vm.infra, width)
+        table.add_row(header)
 
-        # 2. Infra + Cluster section (centered)
-        cluster_section = create_cluster_section(vm.infra, vm.cluster)
-        table.add_row(Align.center(cluster_section))
+        # 2. Separator
+        table.add_row(Align.center(_build_separator(width)))
 
-        # 3. Separator line
-        separator = _build_separator(width)
-        table.add_row(Align.center(separator))
-
-        # 4. Secondary instances (header + 2 log lines each)
+        # 3. Secondary instances
+        content_lines = 0
         for inst in secondary_nodes:
             for line in InstanceRow(inst, log_lines=SECONDARY_LOG_LINES).render(width):
                 table.add_row(line)
+                content_lines += 1
 
-        # 5. Head instance (fills remaining screen)
+        # 4. Head instance
         if head_node:
             for line in InstanceRow(head_node, log_lines=head_log_lines).render(width):
                 table.add_row(line)
+                content_lines += 1
+
+        # 5. Pad to push footer to bottom
+        expected_content = secondary_total + (1 + head_log_lines if head_node else head_log_lines)
+        padding = max(0, expected_content - content_lines)
+        for _ in range(padding):
+            table.add_row(Text(""))
+
+        # 6. Separator
+        table.add_row(Align.center(_build_separator(width)))
+
+        # 7. Footer
+        footer = create_footer(vm.cluster, vm.header)
+        table.add_row(Align.center(footer))
 
         return table

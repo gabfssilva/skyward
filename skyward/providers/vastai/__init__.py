@@ -39,19 +39,6 @@ def __getattr__(name: str):
         if name == "InstanceResponse":
             return InstanceResponse
         return SSHKeyResponse
-    if name == "VastAIModule":
-        from injector import Module, provider, singleton
-
-        class VastAIModule(Module):
-            """DI module for Vast.ai provider."""
-
-            @singleton
-            @provider
-            def provide_config(self) -> VastAI:
-                """Provide default Vast.ai configuration."""
-                return VastAI()
-
-        return VastAIModule
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -67,5 +54,4 @@ __all__ = [
     "OfferResponse",
     "InstanceResponse",
     "SSHKeyResponse",
-    "VastAIModule",
 ]

@@ -1,6 +1,14 @@
+import socket
+
 import pytest
 import skyward as sky
 from skyward.accelerators import T4, A100, RTX_4090
+
+
+def get_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 PROVIDERS = {

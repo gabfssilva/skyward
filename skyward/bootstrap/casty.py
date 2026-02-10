@@ -1,7 +1,7 @@
 """Bootstrap operations for Casty actor system setup.
 
 Operations for installing Casty and starting head/worker nodes.
-Each node runs a ClusteredActorSystem with a Starlette HTTP API for job submission.
+Each node runs a ClusteredActorSystem with an aiohttp HTTP API for job submission.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ def _installed_casty_version() -> str:
 
 def casty_install(version: str | None = None) -> Op:
     ver = version or _installed_casty_version()
-    return pip(f"casty=={ver}", "starlette", "uvicorn")
+    return pip(f"casty=={ver}", "aiohttp")
 
 
 def casty_service(

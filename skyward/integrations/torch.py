@@ -11,22 +11,18 @@ __all__ = ["torch"]
 
 
 def torch[**P, R](
+    _fn: Callable[P, R] | None = None,
+    *,
     backend: Literal["nccl", "gloo"] | None = None,
-) -> Callable[[Callable[P, R]], Callable[P, R]]:
+) -> Callable[[Callable[P, R]], Callable[P, R]] | Callable[P, R]:
     """Configure PyTorch distributed training.
+
+    Can be used with or without arguments:
+        @sky.integrations.torch
+        @sky.integrations.torch(backend="nccl")
 
     Args:
         backend: Process group backend. Auto-detected if None (nccl for GPU, gloo for CPU).
-
-    Example:
-        import skyward as sky
-
-        @sky.compute
-        @sky.integrations.torch(backend="nccl")
-        def train():
-            import torch.distributed as dist
-            assert dist.is_initialized()
-            ...
     """
 
     def decorator(fn: Callable[P, R]) -> Callable[P, R]:
@@ -65,5 +61,8 @@ def torch[**P, R](
             return fn(*args, **kwargs)
 
         return wrapper
+
+    if _fn is not None:
+        return decorator(_fn)
 
     return decorator

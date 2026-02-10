@@ -28,6 +28,7 @@ class VerdaClusterState(BaseClusterState):
 
     # SSH key info
     ssh_key_id: str | None = None
+    ssh_key_path: str = ""
 
     # Startup script ID (for cleanup)
     startup_script_id: str | None = None

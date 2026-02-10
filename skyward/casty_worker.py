@@ -2,7 +2,7 @@
 
 Runs as a long-lived process on each node in the cluster.
 Starts a ClusteredActorSystem, spawns worker actors for task execution,
-and exposes an HTTP API for job submission via Starlette/Uvicorn.
+and exposes an HTTP API for job submission via aiohttp.
 
 Architecture:
 - Each node spawns a local worker actor for single-node execution.
@@ -19,14 +19,10 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
-import uvicorn
+from aiohttp import web
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 from casty.config import CastyConfig, FailureDetectorConfig, HeartbeatConfig
 from casty.sharding import ClusteredActorSystem
-from starlette.applications import Starlette
-from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
-from starlette.routing import Route
 
 
 @dataclass(frozen=True)
@@ -81,11 +77,11 @@ def create_app(
     local_ref: ActorRef[WorkerMsg],
     broadcast_ref: ActorRef[WorkerMsg],
     num_nodes: int,
-) -> Starlette:
+) -> web.Application:
     from skyward.utils.serialization import deserialize, serialize
 
-    async def submit_job(request: Request) -> Response:
-        payload_bytes = await request.body()
+    async def submit_job(request: web.Request) -> web.Response:
+        payload_bytes = await request.read()
         payload = deserialize(payload_bytes)
         target_node = payload.get("node_id")
         fn_name = getattr(payload.get("fn"), "__name__", "?")
@@ -117,17 +113,17 @@ def create_app(
 
         if "error" in response:
             error_data = {"error": response["error"], "traceback": response.get("traceback", "")}
-            return Response(
-                content=serialize(error_data),
-                media_type="application/octet-stream",
-                status_code=500,
+            return web.Response(
+                body=serialize(error_data),
+                content_type="application/octet-stream",
+                status=500,
             )
 
-        return Response(content=serialize(response["result"]), media_type="application/octet-stream")
+        return web.Response(body=serialize(response["result"]), content_type="application/octet-stream")
 
-    async def broadcast_job(request: Request) -> Response:
+    async def broadcast_job(request: web.Request) -> web.Response:
 
-        payload_bytes = await request.body()
+        payload_bytes = await request.read()
         payload = deserialize(payload_bytes)
 
         fn_name = getattr(payload.get("fn"), "__name__", "unknown")
@@ -159,26 +155,24 @@ def create_app(
                     "error": f"Node {nid}: {resp['error']}",
                     "traceback": resp.get("traceback", ""),
                 }
-                return Response(
-                    content=serialize(error_data),
-                    media_type="application/octet-stream",
-                    status_code=500,
+                return web.Response(
+                    body=serialize(error_data),
+                    content_type="application/octet-stream",
+                    status=500,
                 )
             if nid < len(results):
                 results[nid] = resp["result"]
 
-        return Response(content=serialize(results), media_type="application/octet-stream")
+        return web.Response(body=serialize(results), content_type="application/octet-stream")
 
-    async def health(_request: Request) -> JSONResponse:
-        return JSONResponse({"status": "ready"})
+    async def health(_request: web.Request) -> web.Response:
+        return web.json_response({"status": "ready"})
 
-    return Starlette(
-        routes=[
-            Route("/jobs", submit_job, methods=["POST"]),
-            Route("/jobs/broadcast", broadcast_job, methods=["POST"]),
-            Route("/health", health, methods=["GET"]),
-        ],
-    )
+    app = web.Application()
+    app.router.add_post("/jobs", submit_job)
+    app.router.add_post("/jobs/broadcast", broadcast_job)
+    app.router.add_get("/health", health)
+    return app
 
 
 async def main(
@@ -229,14 +223,11 @@ async def main(
 
         if node_id == 0:
             app = create_app(system, local_ref, broadcast_ref, num_nodes)
-            uvi_config = uvicorn.Config(
-                app,
-                host="0.0.0.0",
-                port=http_port,
-                log_level="warning",
-            )
-            server = uvicorn.Server(uvi_config)
-            await server.serve()
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(runner, "0.0.0.0", http_port)
+            await site.start()
+            await asyncio.Event().wait()
         else:
             await asyncio.Event().wait()
 

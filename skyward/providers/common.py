@@ -8,7 +8,7 @@ from pathlib import Path
 from loguru import logger
 
 from skyward.constants import SKYWARD_DIR
-from skyward.events import InstanceRunning, ProviderName
+from skyward.messages import InstanceRunning, ProviderName
 from skyward.transport.ssh import SSHTransport
 
 

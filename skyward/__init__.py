@@ -56,7 +56,7 @@ from .providers import AWS, RunPod, VastAI, Verda
 
 # NOTE: Handlers and modules are NOT imported here to avoid SDK deps.
 # Import them explicitly when needed:
-#   from skyward.providers.aws import AWSHandler, AWSModule
+#   from skyward.providers.aws import AWSHandler
 
 # =============================================================================
 # Image configuration
@@ -76,7 +76,7 @@ from skyward import metrics as metrics
 # Events - the language of the system
 # =============================================================================
 
-from .events import (
+from .messages import (
     # Type aliases
     ClusterId,
     InstanceId,
@@ -101,7 +101,6 @@ from .events import (
     InstanceReplaced,
     Log,
     Metric,
-    NodeReady,
     TaskCompleted,
     TaskStarted,
     # Unions
@@ -111,23 +110,10 @@ from .events import (
 )
 
 # =============================================================================
-# Bus - async event routing
+# App - monitor manager
 # =============================================================================
 
-from .bus import AsyncEventBus
-
-# =============================================================================
-# App - decorators and bootstrap
-# =============================================================================
-
-from .app import (
-    clear_registries,
-    component,
-    create_app,
-    monitor,
-    MonitorManager,
-    on,
-)
+from .app import MonitorManager
 
 # =============================================================================
 # Audit - observability decorator
@@ -170,14 +156,17 @@ from .protocols import (
 # Components
 # =============================================================================
 
-from .node import Node, NodeState
-from .pool import ComputePool, PoolState
+# PoolState kept for backwards compatibility
+from .pool import PoolState  # noqa: E402
+
+# Re-bind pool function after .pool module import shadows it
+from .facade import pool as pool  # noqa: E811, F811
 
 # =============================================================================
 # Monitors
 # =============================================================================
 
-from .monitors import InstanceRegistry, MonitorModule
+from .monitors import InstanceRegistry
 
 # =============================================================================
 # Transport
@@ -304,7 +293,6 @@ __all__ = [
     "InstancePreempted",
     "InstanceReplaced",
     "InstanceDestroyed",
-    "NodeReady",
     "ClusterReady",
     "ClusterDestroyed",
     "TaskStarted",
@@ -317,18 +305,9 @@ __all__ = [
     "Fact",
     "Event",
     # =================================================================
-    # Bus
-    # =================================================================
-    "AsyncEventBus",
-    # =================================================================
     # App
     # =================================================================
-    "component",
-    "on",
-    "monitor",
-    "create_app",
     "MonitorManager",
-    "clear_registries",
     # =================================================================
     # Audit
     # =================================================================
@@ -355,15 +334,11 @@ __all__ = [
     # =================================================================
     # Components
     # =================================================================
-    "Node",
-    "NodeState",
-    "ComputePool",
     "PoolState",
     # =================================================================
     # Monitors
     # =================================================================
     "InstanceRegistry",
-    "MonitorModule",
     # =================================================================
     # Transport
     # =================================================================

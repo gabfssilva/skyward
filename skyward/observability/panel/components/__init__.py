@@ -4,29 +4,25 @@ Reusable Rich components for panel rendering.
 """
 
 from .base import Component
-from .header import Header
 from .infra import (
-    ClusterPanel,
-    InfraPanel,
-    InitializingPanel,
-    MetricsPanel,
-    create_cluster_section,
+    FooterBar,
+    HeaderBar,
+    create_footer,
+    create_header,
 )
 from .instance import InstanceRow
 from .layout import PanelLayout
 from .metrics import MetricBadge, Sparkline, temp_color
 
 __all__ = [
-    "ClusterPanel",
     "Component",
-    "Header",
-    "InfraPanel",
-    "InitializingPanel",
+    "FooterBar",
+    "HeaderBar",
     "InstanceRow",
     "MetricBadge",
-    "MetricsPanel",
     "PanelLayout",
     "Sparkline",
-    "create_cluster_section",
+    "create_footer",
+    "create_header",
     "temp_color",
 ]

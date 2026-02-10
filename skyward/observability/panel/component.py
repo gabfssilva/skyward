@@ -1,18 +1,16 @@
 """Panel component - Rich terminal dashboard using v2 event system.
 
-Subscribes to v2 events via @on decorators and updates PanelState
+Subscribes to v2 events and updates PanelState
 which is rendered by Rich Live at 4fps.
 """
 
 from __future__ import annotations
 
 import time
-from dataclasses import field
+from dataclasses import dataclass, field
 
-from skyward.app import component, on
-from skyward.bus import AsyncEventBus
 from skyward.accelerators.catalog import get_gpu_vram_gb
-from skyward.events import (
+from skyward.messages import (
     BootstrapCommand,
     BootstrapConsole,
     BootstrapPhase,
@@ -34,12 +32,12 @@ from .renderer import PanelRenderer
 from .state import InfraState, InstanceState, MetricsState, PanelState
 
 
-@component
+@dataclass
 class PanelComponent:
     """Rich terminal dashboard for cluster monitoring.
 
-    Subscribes to v2 events and updates PanelState. The PanelRenderer
-    uses Rich Live to refresh the display at 4fps.
+    Driven by the panel_actor which forwards lifecycle events.
+    PanelRenderer uses Rich Live to refresh the display at 4fps.
 
     Features:
     - Real-time metrics with EMA smoothing and sparklines
@@ -48,7 +46,6 @@ class PanelComponent:
     - Preemption detection and warning
     """
 
-    bus: AsyncEventBus
     spec: PoolSpec
 
     _state: PanelState = field(default_factory=PanelState)
@@ -59,7 +56,6 @@ class PanelComponent:
     # Cluster Lifecycle Events
     # =========================================================================
 
-    @on(ClusterRequested)
     async def _on_cluster_requested(self, _sender: object, event: ClusterRequested) -> None:
         """Initialize panel when cluster is requested."""
         self._state.start_time = time.monotonic()
@@ -91,14 +87,12 @@ class PanelComponent:
         self._renderer.start(self._state)
         self._active = True
 
-    @on(ClusterProvisioned)
     async def _on_cluster_provisioned(self, _sender: object, event: ClusterProvisioned) -> None:
         """Mark provisioning complete."""
         self._state.phase = "Bootstrapping"
         elapsed = time.monotonic() - self._state.start_time if self._state.start_time else 0.0
         self._state.phase_times["provision"] = elapsed
 
-    @on(ClusterReady)
     async def _on_cluster_ready(self, _sender: object, event: ClusterReady) -> None:
         """Mark cluster ready for execution."""
         self._state.phase = "Executing"
@@ -106,7 +100,6 @@ class PanelComponent:
         elapsed = time.monotonic() - self._state.start_time if self._state.start_time else 0.0
         self._state.phase_times["bootstrap"] = elapsed
 
-    @on(ShutdownRequested)
     async def _on_shutdown(self, _sender: object, event: ShutdownRequested) -> None:
         """Stop renderer and show final status."""
         self._state.is_done = True
@@ -135,7 +128,6 @@ class PanelComponent:
     # Instance Lifecycle Events
     # =========================================================================
 
-    @on(InstanceProvisioned)
     async def _on_instance_provisioned(self, _sender: object, event: InstanceProvisioned) -> None:
         """Track provisioned instance."""
         inst = event.instance
@@ -167,19 +159,19 @@ class PanelComponent:
         # Update infra with complete data from first instance
         # (we may have partial data from ClusterRequested, now we get full details)
         if not self._state.infra.instance_type:
+            prev = self._state.infra
             self._state.infra = InfraState(
                 provider=inst.provider,
                 region=inst.region or self.spec.region,
                 instance_type=inst.instance_type,
                 vcpus=inst.vcpus,
                 memory_gb=int(inst.memory_gb),
-                gpu_count=inst.gpu_count,
-                gpu_model=inst.gpu_model,
-                gpu_vram_gb=inst.gpu_vram_gb,
-                allocation=self._state.infra.allocation,  # Preserve allocation strategy
+                gpu_count=inst.gpu_count or prev.gpu_count,
+                gpu_model=inst.gpu_model or prev.gpu_model,
+                gpu_vram_gb=inst.gpu_vram_gb or prev.gpu_vram_gb,
+                allocation=prev.allocation,
             )
 
-    @on(InstanceBootstrapped)
     async def _on_instance_bootstrapped(self, _sender: object, event: InstanceBootstrapped) -> None:
         """Mark instance as ready."""
         inst = self._state.instances.get(event.instance.id)
@@ -191,15 +183,15 @@ class PanelComponent:
 
         if self._state.ready >= total > 0:
             self._state.phase = "Executing"
+            elapsed = time.monotonic() - self._state.start_time if self._state.start_time else 0.0
+            self._state.phase_times["bootstrap"] = elapsed
 
-    @on(InstanceDestroyed)
     async def _on_instance_destroyed(self, _sender: object, event: InstanceDestroyed) -> None:
         """Mark instance end time for billing."""
         inst = self._state.instances.get(event.instance_id)
         if inst:
             inst.end_time = time.monotonic()
 
-    @on(InstancePreempted)
     async def _on_preempted(self, _sender: object, event: InstancePreempted) -> None:
         """Handle spot instance preemption."""
         inst = self._state.instances.get(event.instance.id)
@@ -211,7 +203,6 @@ class PanelComponent:
     # Bootstrap Events
     # =========================================================================
 
-    @on(BootstrapConsole, audit=False)
     async def _on_bootstrap_console(self, _sender: object, event: BootstrapConsole) -> None:
         """Add bootstrap console output to logs."""
         inst = self._state.instances.get(event.instance.id)
@@ -220,7 +211,6 @@ class PanelComponent:
             if not msg.startswith("#"):
                 self._add_log(inst, msg[:80])
 
-    @on(BootstrapPhase)
     async def _on_bootstrap_phase(self, _sender: object, event: BootstrapPhase) -> None:
         """Track bootstrap phase transitions."""
         self._state.phase = "Bootstrapping"
@@ -237,7 +227,6 @@ class PanelComponent:
             case "failed":
                 self._add_log(inst, f"  {event.phase} FAILED: {event.error}")
 
-    @on(BootstrapCommand, audit=False)
     async def _on_bootstrap_command(self, _sender: object, event: BootstrapCommand) -> None:
         """Show bootstrap command being executed."""
         inst = self._state.instances.get(event.instance.id)
@@ -251,7 +240,6 @@ class PanelComponent:
     # Metrics and Logs
     # =========================================================================
 
-    @on(Metric, audit=False)  # High frequency, disable audit
     async def _on_metric(self, _sender: object, event: Metric) -> None:
         """Update metrics with EMA smoothing."""
         inst = self._state.instances.get(event.instance.id)
@@ -273,7 +261,6 @@ class PanelComponent:
         metrics.history[event.name].append(smoothed)
         metrics.history[event.name] = metrics.history[event.name][-25:]
 
-    @on(Log, audit=False)  # High frequency, disable audit
     async def _on_log(self, _sender: object, event: Log) -> None:
         """Append log line to instance."""
         inst = self._state.instances.get(event.instance.id)
@@ -286,7 +273,6 @@ class PanelComponent:
     # Error Events
     # =========================================================================
 
-    @on(Error)
     async def _on_error(self, _sender: object, event: Error) -> None:
         """Track error state."""
         self._state.has_error = True

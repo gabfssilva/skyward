@@ -23,14 +23,11 @@ dependencies = [
     "cloudpickle>=3.1.2",
     "pydantic>=2.12.5",
     "httpx>=0.28.1",
-    "casty>=0.7.0",
-    "starlette>=0.46.0",
-    "uvicorn>=0.34.0",
+    "casty>=0.7.3",
     "loguru>=0.7.3",
     "rich>=14.2.0",
-    "blinker>=1.9.0",
-    "injector>=0.23.0",
     "asyncssh>=2.14.0",
+    "aiohttp>=3.10.1",
 ]
 
 [project.optional-dependencies]
@@ -122,4 +119,5 @@ dev = [
     "jax>=0.8.2",
     "keras>=3.13.0",
     "scikit-learn>=1.8.0",
+    "pytest-timeout>=2.4.0",
 ]

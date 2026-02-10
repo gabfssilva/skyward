@@ -66,6 +66,7 @@ class LogConfig:
     retention: int = 10
 
 
+
 def _setup_logging(config: LogConfig) -> list[int]:
     """Configure logging and return handler IDs for cleanup.
 
@@ -79,6 +80,8 @@ def _setup_logging(config: LogConfig) -> list[int]:
 
     # Remove default handler (ID=0) that logs to stderr without filter
     logger.remove()
+
+
 
     logger.enable("skyward")
     handler_ids: list[int] = []
@@ -107,7 +110,6 @@ def _setup_logging(config: LogConfig) -> list[int]:
             compression="zip",
             diagnose=False,  # Don't expose credentials in tracebacks
             enqueue=False,  # Thread-safe via loguru's internal locks
-            filter="skyward",
         )
         handler_ids.append(hid)
 

@@ -1,6 +1,6 @@
 """Infrastructure and cluster panels.
 
-Components for the infra/cluster section of the panel.
+Components for the header/footer of the panel.
 """
 
 from __future__ import annotations
@@ -11,167 +11,129 @@ from rich.console import RenderableType
 from rich.table import Table
 from rich.text import Text
 
-from ..viewmodel import ClusterVM, InfraVM
-from .metrics import MetricBadge
+from ..viewmodel import ClusterVM, HeaderVM, InfraVM
 
-# Spinner frames for pending values (dots style)
 SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
 
 def _spinner_frame() -> str:
-    """Get current spinner frame based on time (animates at ~10fps)."""
     idx = int(time.monotonic() * 10) % len(SPINNER_FRAMES)
     return SPINNER_FRAMES[idx]
 
 
-class InitializingPanel:
-    """Shown while waiting for cluster data.
+def _format_duration(seconds: float) -> str:
+    mins, secs = divmod(int(seconds), 60)
+    return f"{mins}:{secs:02d}"
 
-    Just displays "Initializing..." centered.
+
+class HeaderBar:
+    """Single-line header: branding + infra info.
+
+    ● s k y w a r d   aws > us-east-1 > g5g.xlarge · 4 vCPU · 8 GB · 2 spot @ $0.27/hr
     """
 
-    def render(self) -> RenderableType:
-        return Text("Initializing...", style="dim")
-
-
-class InfraPanel:
-    """Left side: infrastructure info.
-
-    Layout:
-        aws > us-east-1 > p4d.24xlarge
-        96 vCPU  1152 GB  8x A100-40GB (320 GB)
-        12 nodes (10 spot + 2 od) @ $393/hr
-    """
-
-    def __init__(self, vm: InfraVM) -> None:
-        self._vm = vm
-
-    def render(self) -> RenderableType:
-        vm = self._vm
-        spinner = _spinner_frame()
-
-        table = Table.grid()
-        table.add_column(justify="center")
-
-        # Line 1: provider > region > instance_type
-        line1 = Text()
-        line1.append(vm.provider, style="yellow")
-        line1.append(" > ", style="dim")
-        line1.append(vm.region)
-        line1.append(" > ", style="dim")
-        if vm.instance_type:
-            line1.append(vm.instance_type, style="bold")
-        else:
-            line1.append(spinner, style="dim")
-        table.add_row(line1)
-
-        # Line 2: GPU · vCPU · memory (show spinner if no instance data yet)
-        line2 = Text()
-        if vm.vcpus > 0:
-            if vm.gpu_info:
-                line2.append(vm.gpu_info, style="magenta")
-                line2.append(" · ", style="dim")
-            line2.append(f"{vm.vcpus} vCPU", style="white")
-            line2.append(" · ", style="dim")
-            line2.append(f"{vm.memory_gb} GB", style="white")
-        elif vm.gpu_info:
-            # We have GPU info from spec but not instance details yet
-            line2.append(vm.gpu_info, style="magenta")
-            line2.append(f" {spinner}", style="dim")
-        else:
-            line2.append(f"{spinner} loading instance details...", style="dim")
-        table.add_row(line2)
-
-        # Line 3: allocation @ rate (show spinner if rate is zero)
-        line3 = Text()
-        line3.append(vm.allocation, style="cyan")
-        line3.append(" @ ", style="dim")
-        if vm.hourly_rate == "$0.00/hr":
-            line3.append(f"{spinner}", style="dim")
-        else:
-            line3.append(vm.hourly_rate, style="green bold")
-        table.add_row(line3)
-
-        return table
-
-
-class MetricsPanel:
-    """Right side: cluster-wide average metrics.
-
-    Layout:
-        cluster avg
-        cpu ▁▂▃▄▅▆▇█ 76%   gpu ▅▆▇█ 91%
-        mem ▁▁▂▃▃▃▃▃ 43%   temp ▂▂▃▃ 67
-    """
-
-    def __init__(self, vm: ClusterVM) -> None:
-        self._vm = vm
-
-    def render(self) -> RenderableType:
-        vm = self._vm
-
-        metrics_panel = Table.grid(padding=(0, 2))
-        metrics_panel.add_column(justify="center")
-
-        metrics = Table.grid(padding=(0, 2))
-
-        metrics.add_column(justify="center")
-        metrics.add_column(justify="center")
-        #
-        # # Header row
-        # table.add_row(Text("cluster avg", style="dim bold"))
-
-        # Metrics rows
-        metrics.add_row(
-            MetricBadge(vm.cpu).render(),
-            MetricBadge(vm.gpu).render(),
-        )
-        metrics.add_row(
-            MetricBadge(vm.mem).render(),
-            MetricBadge(vm.gpu_mem).render(),
-        )
-
-        metrics_panel.add_row(
-            Text("cluster avg", style="dim bold")
-        )
-
-        metrics_panel.add_row(
-            metrics
-        )
-
-        return metrics_panel
-
-
-class ClusterPanel:
-    """Full cluster section with infra (left) and metrics (right).
-
-    Only rendered when we have actual cluster data.
-    Uses Rich Table.grid for side-by-side layout.
-    """
-
-    def __init__(self, infra: InfraVM, cluster: ClusterVM) -> None:
+    def __init__(self, header: HeaderVM, infra: InfraVM | None) -> None:
+        self._header = header
         self._infra = infra
-        self._cluster = cluster
 
-    def render(self) -> RenderableType:
-        table = Table.grid(padding=(0, 3))
-        table.add_column(justify="center")
-        table.add_column(justify="center")
+    def render(self, width: int) -> RenderableType:
+        vm = self._header
+        has_active = any(s == "in_progress" for s in vm.phases.values())
+        all_done = all(s == "completed" for s in vm.phases.values())
 
-        left = InfraPanel(self._infra).render()
-        right = MetricsPanel(self._cluster).render()
+        match (all_done, has_active):
+            case (True, _):
+                marker, marker_style = "", "green bold"
+            case (_, True):
+                marker = "" if vm.blink_on else ""
+                marker_style = "cyan bold"
+            case _:
+                marker, marker_style = "", "dim"
 
-        table.add_row(left, right)
+        # Left: branding
+        left = Text()
+        left.append(f"{marker} ", style=marker_style)
+        left.append("s k y w a r d", style="bold")
+
+        infra = self._infra
+
+        # Center: provider > region > instance · specs
+        center = Text()
+        if infra is not None:
+            spinner = _spinner_frame()
+            center.append(infra.provider, style="yellow")
+            center.append(" > ", style="dim")
+            center.append(infra.region)
+            center.append(" > ", style="dim")
+            center.append(infra.instance_type or spinner, style="bold" if infra.instance_type else "dim")
+
+            if infra.vcpus > 0:
+                center.append(" · ", style="dim")
+                if infra.gpu_info:
+                    center.append(infra.gpu_info, style="magenta")
+                    center.append(" · ", style="dim")
+                center.append(f"{infra.vcpus} vCPU", style="white")
+                center.append(" · ", style="dim")
+                center.append(f"{infra.memory_gb} GB", style="white")
+            elif infra.gpu_info:
+                center.append(" · ", style="dim")
+                center.append(infra.gpu_info, style="magenta")
+
+        # Right: allocation @ rate
+        right = Text()
+        if infra is not None:
+            spinner = _spinner_frame()
+            right.append(infra.allocation, style="cyan")
+            right.append(" @ ", style="dim")
+            if infra.hourly_rate == "$0.00/hr":
+                right.append(spinner, style="dim")
+            else:
+                right.append(infra.hourly_rate, style="green bold")
+
+        table = Table(box=None, show_header=False, padding=0, expand=True)
+        table.add_column(justify="left")
+        table.add_column(justify="center", ratio=1)
+        table.add_column(justify="right")
+        table.add_row(left, center, right)
 
         return table
 
 
-def create_cluster_section(infra: InfraVM | None, cluster: ClusterVM) -> RenderableType:
-    """Factory that returns the appropriate panel based on state.
+class FooterBar:
+    """Single-line footer: cluster metrics (left) + cost/elapsed (right).
 
-    Returns:
-        InitializingPanel if no infra data, ClusterPanel otherwise.
+    cpu ▂▂ 21%  gpu ▁▁ 0%  mem ▁▁ 10%  vram ▁▁ 0%      estimated total: ~$0.42  elapsed: 5:23
     """
-    if infra is None:
-        return InitializingPanel().render()
-    return ClusterPanel(infra, cluster).render()
+
+    def __init__(self, cluster: ClusterVM, header: HeaderVM) -> None:
+        self._cluster = cluster
+        self._header = header
+
+    def render(self) -> Text:
+        vm = self._header
+        cluster = self._cluster
+        text = Text()
+
+        text.append("estimated total: ", style="dim")
+        text.append(f"~${vm.cost:.2f}", style="green bold")
+        text.append(" · ", style="dim")
+        text.append("elapsed: ", style="dim")
+        text.append(_format_duration(vm.elapsed_seconds), style="white")
+        text.append(" · ", style="dim")
+        text.append("averages: ", style="dim")
+
+        for i, metric in enumerate((cluster.cpu, cluster.gpu, cluster.mem, cluster.gpu_mem)):
+            if i > 0:
+                text.append(", ", style="dim")
+            text.append(f"{metric.label} ", style="dim")
+            text.append(f"{metric.value:.0f}{metric.unit}", style=f"{metric.style} bold")
+
+        return text
+
+
+def create_header(header: HeaderVM, infra: InfraVM | None, width: int) -> RenderableType:
+    return HeaderBar(header, infra).render(width)
+
+
+def create_footer(cluster: ClusterVM, header: HeaderVM) -> Text:
+    return FooterBar(cluster, header).render()

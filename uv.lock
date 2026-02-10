@@ -233,15 +233,6 @@ wheels = [
 ]
 
 [[package]]
-name = "blinker"
-version = "1.9.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/21/28/9b3f50ce0e048515135495f198351908d99540d69bfdc8c1d15b73dc55ce/blinker-1.9.0.tar.gz", hash = "sha256:b4ce2265a7abece45e7cc896e98dbebe6cead56bcf805a3d23136d145f5445bf", size = 22460 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/10/cb/f2ad4230dc2eb1a74edf38f1a38b9b52277f75bef262d8908e60d957e13c/blinker-1.9.0-py3-none-any.whl", hash = "sha256:ba0efaa9080b619ff2f3459d1d500c57bddea4a6b424b60a91141db6fd2f08bc", size = 8458 },
-]
-
-[[package]]
 name = "boto3"
 version = "1.40.61"
 source = { registry = "https://pypi.org/simple" }
@@ -325,11 +316,11 @@ wheels = [
 
 [[package]]
 name = "casty"
-version = "0.7.0"
+version = "0.7.3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/31/61/cbb5f90e72fc9a78b313b33caf6cf34f900169d5b5fa11072a0418f05de1/casty-0.7.0.tar.gz", hash = "sha256:651c448facb7e439f485924458057d4932b2f34d893860d4a9490a487eecd92a", size = 525842 }
+sdist = { url = "https://files.pythonhosted.org/packages/ac/93/e8a61bd47435c331ca4b1d09ab894ec03aba1009100132daf4a0311acce0/casty-0.7.3.tar.gz", hash = "sha256:0e0924d2ef5292a64dd0679d1a55043a7a2e6c76f33fa14634e1fe82de715f84", size = 532645 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5e/d7/b7433129169e54cfa8686838fb70a21e6f0c57671b54d7399b07e85d4cb8/casty-0.7.0-py3-none-any.whl", hash = "sha256:9f48b23a4cff4b8603f63366f1e84d03550e8bfc4a6a778560121d637857d06c", size = 88089 },
+    { url = "https://files.pythonhosted.org/packages/f6/32/481ac8575bb91f7dc4f1339d8ecd7d9867866e9106ece7f571054410ac43/casty-0.7.3-py3-none-any.whl", hash = "sha256:5ccc55a7fe1577a6ee1a8943111fca339287f44232eb37cd56101ca397bc9c87", size = 88968 },
 ]
 
 [[package]]
@@ -453,18 +444,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/4b/51/8ade005e5ca5b0d80fb4aff72a3775b325bdc3d27408c8113811a7cbe640/charset_normalizer-3.4.4-cp314-cp314-win_amd64.whl", hash = "sha256:8a6562c3700cce886c5be75ade4a5db4214fda19fede41d9792d100288d8f94c", size = 107104 },
     { url = "https://files.pythonhosted.org/packages/da/5f/6b8f83a55bb8278772c5ae54a577f3099025f9ade59d0136ac24a0df4bde/charset_normalizer-3.4.4-cp314-cp314-win_arm64.whl", hash = "sha256:de00632ca48df9daf77a2c65a484531649261ec9f25489917f09e455cb09ddb2", size = 100743 },
     { url = "https://files.pythonhosted.org/packages/0a/4c/925909008ed5a988ccbb72dcc897407e5d6d3bd72410d69e051fc0c14647/charset_normalizer-3.4.4-py3-none-any.whl", hash = "sha256:7a32c560861a02ff789ad905a2fe94e3f840803362c84fecf1851cb4cf3dc37f", size = 53402 },
-]
-
-[[package]]
-name = "click"
-version = "8.3.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "colorama", marker = "platform_system == 'Windows'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/3d/fa/656b739db8587d7b5dfa22e22ed02566950fbfbcdc20311993483657a5c0/click-8.3.1.tar.gz", hash = "sha256:12ff4785d337a1bb490bb7e9c2b1ee5da3112e94a8622f26a6c77f5d2fc6842a", size = 295065 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/98/78/01c019cdb5d6498122777c1a43056ebb3ebfeef2076d9d026bfe15583b2b/click-8.3.1-py3-none-any.whl", hash = "sha256:981153a64e25f12d547d3426c367a4857371575ee7ad18df2a6183ab0545b2a6", size = 108274 },
 ]
 
 [[package]]
@@ -1074,15 +1053,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc35312d08ba8bf51fdd999c576889fc2c24cb97f4f10/iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730", size = 20503 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484 },
-]
-
-[[package]]
-name = "injector"
-version = "0.23.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/1f/f5/060088d45fd57db2e2164ae289a96066d3e48320c0c99bba5e50eb245d22/injector-0.23.0.tar.gz", hash = "sha256:7e59db84faa5358474c8ee05abca6ab6bd02519fbefcf175e0b230ee7d2d4bac", size = 55720 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/54/52/2e771b1acc010f0351e703d524702db72b80ad8b375dccac8488ccc02a61/injector-0.23.0-py2.py3-none-any.whl", hash = "sha256:86ab389805b4aaabfe235b2b2b85ff515af4d0209faccf1d60de2872c92c1fa0", size = 21483 },
 ]
 
 [[package]]
@@ -2442,6 +2412,18 @@ wheels = [
 ]
 
 [[package]]
+name = "pytest-timeout"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ac/82/4c9ecabab13363e72d880f2fb504c5f750433b2b6f16e99f4ec21ada284c/pytest_timeout-2.4.0.tar.gz", hash = "sha256:7e68e90b01f9eff71332b25001f85c75495fc4e3a836701876183c4bcfd0540a", size = 17973 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fa/b6/3127540ecdf1464a00e5a01ee60a1b09175f6913f0644ac748494d9c4b21/pytest_timeout-2.4.0-py3-none-any.whl", hash = "sha256:c42667e5cdadb151aeb5b26d114aff6bdf5a907f176a007a30b940d3d865b5c2", size = 14382 },
+]
+
+[[package]]
 name = "pytest-xdist"
 version = "3.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2824,20 +2806,17 @@ wheels = [
 
 [[package]]
 name = "skyward"
-version = "0.0.2.dev0+g300c306f8.d20260209"
+version = "0.0.2.dev3+gd1843227a.d20260210"
 source = { editable = "." }
 dependencies = [
+    { name = "aiohttp" },
     { name = "asyncssh" },
-    { name = "blinker" },
     { name = "casty" },
     { name = "cloudpickle" },
     { name = "httpx" },
-    { name = "injector" },
     { name = "loguru" },
     { name = "pydantic" },
     { name = "rich" },
-    { name = "starlette" },
-    { name = "uvicorn" },
 ]
 
 [package.optional-dependencies]
@@ -2905,6 +2884,7 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "pytest-sugar" },
+    { name = "pytest-timeout" },
     { name = "pytest-xdist" },
     { name = "ruff" },
     { name = "scikit-learn" },
@@ -2917,16 +2897,16 @@ requires-dist = [
     { name = "aioboto3", marker = "extra == 'all'", specifier = ">=13.0.0" },
     { name = "aioboto3", marker = "extra == 'aws'", specifier = ">=13.0.0" },
     { name = "aioboto3", marker = "extra == 'providers'", specifier = ">=13.0.0" },
+    { name = "aiohttp", specifier = ">=3.10.1" },
     { name = "asyncssh", specifier = ">=2.14.0" },
     { name = "azure-mgmt-containerinstance", marker = "extra == 'all'", specifier = ">=10.0" },
     { name = "azure-mgmt-containerinstance", marker = "extra == 'azure'", specifier = ">=10.0" },
     { name = "azure-mgmt-containerinstance", marker = "extra == 'providers'", specifier = ">=10.0" },
-    { name = "blinker", specifier = ">=1.9.0" },
     { name = "boto3-stubs", extras = ["ec2", "ecr", "iam", "s3", "ssm", "sts"], marker = "extra == 'dev'", specifier = ">=1.42.3" },
     { name = "boto3-stubs", extras = ["ec2", "ecr", "iam", "s3", "sts"], marker = "extra == 'all'", specifier = ">=1.35.0" },
     { name = "boto3-stubs", extras = ["ec2", "ecr", "iam", "s3", "sts"], marker = "extra == 'aws'", specifier = ">=1.35.0" },
     { name = "boto3-stubs", extras = ["ec2", "ecr", "iam", "s3", "sts"], marker = "extra == 'providers'", specifier = ">=1.35.0" },
-    { name = "casty", specifier = ">=0.7.0" },
+    { name = "casty", specifier = ">=0.7.3" },
     { name = "cloudpickle", specifier = ">=3.1.2" },
     { name = "datasets", marker = "extra == 'all'", specifier = ">=4.4.1" },
     { name = "datasets", marker = "extra == 'huggingface'", specifier = ">=4.4.1" },
@@ -2937,7 +2917,6 @@ requires-dist = [
     { name = "google-cloud-run", marker = "extra == 'gcp'", specifier = ">=0.10" },
     { name = "google-cloud-run", marker = "extra == 'providers'", specifier = ">=0.10" },
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "injector", specifier = ">=0.23.0" },
     { name = "jax", marker = "extra == 'dev'", specifier = ">=0.8.1" },
     { name = "keras", marker = "extra == 'dev'", specifier = ">=3.12.0" },
     { name = "loguru", specifier = ">=0.7.3" },
@@ -2947,7 +2926,6 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0" },
     { name = "rich", specifier = ">=14.2.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
-    { name = "starlette", specifier = ">=0.46.0" },
     { name = "torch", marker = "extra == 'all'", specifier = "==2.8.0" },
     { name = "torch", marker = "extra == 'dev'", specifier = ">=2.8.0" },
     { name = "torch", marker = "extra == 'pytorch'", specifier = "==2.8.0" },
@@ -2955,7 +2933,6 @@ requires-dist = [
     { name = "torchvision", marker = "extra == 'pytorch'", specifier = "==0.23.0" },
     { name = "transformers", marker = "extra == 'all'", specifier = ">=4.57.3" },
     { name = "transformers", marker = "extra == 'huggingface'", specifier = ">=4.57.3" },
-    { name = "uvicorn", specifier = ">=0.34.0" },
     { name = "verda", marker = "extra == 'all'", specifier = ">=1.0.0" },
     { name = "verda", marker = "extra == 'providers'", specifier = ">=1.0.0" },
     { name = "verda", marker = "extra == 'verda'", specifier = ">=1.0.0" },
@@ -2970,22 +2947,10 @@ dev = [
     { name = "pytest-asyncio", specifier = ">=0.25" },
     { name = "pytest-cov", specifier = ">=7.0.0" },
     { name = "pytest-sugar", specifier = ">=1.1.1" },
+    { name = "pytest-timeout", specifier = ">=2.4.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "ruff", specifier = ">=0.9" },
     { name = "scikit-learn", specifier = ">=1.8.0" },
-]
-
-[[package]]
-name = "starlette"
-version = "0.52.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "anyio" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/c4/68/79977123bb7be889ad680d79a40f339082c1978b5cfcf62c2d8d196873ac/starlette-0.52.1.tar.gz", hash = "sha256:834edd1b0a23167694292e94f597773bc3f89f362be6effee198165a35d62933", size = 2653702 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/81/0d/13d1d239a25cbfb19e740db83143e95c772a1fe10202dda4b76792b114dd/starlette-0.52.1-py3-none-any.whl", hash = "sha256:0029d43eb3d273bc4f83a08720b4912ea4b071087a3b48db01b7c839f7954d74", size = 74272 },
 ]
 
 [[package]]
@@ -3224,19 +3189,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/1e/24/a2a2ed9addd907787d7aa0355ba36a6cadf1768b934c652ea78acbd59dcd/urllib3-2.6.2.tar.gz", hash = "sha256:016f9c98bb7e98085cb2b4b17b87d2c702975664e4f060c6532e64d1c1a5e797", size = 432930 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/6d/b9/4095b668ea3678bf6a0af005527f39de12fb026516fb3df17495a733b7f8/urllib3-2.6.2-py3-none-any.whl", hash = "sha256:ec21cddfe7724fc7cb4ba4bea7aa8e2ef36f607a4bab81aa6ce42a13dc3f03dd", size = 131182 },
-]
-
-[[package]]
-name = "uvicorn"
-version = "0.40.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "click" },
-    { name = "h11" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/c3/d1/8f3c683c9561a4e6689dd3b1d345c815f10f86acd044ee1fb9a4dcd0b8c5/uvicorn-0.40.0.tar.gz", hash = "sha256:839676675e87e73694518b5574fd0f24c9d97b46bea16df7b8c05ea1a51071ea", size = 81761 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/3d/d8/2083a1daa7439a66f3a48589a57d576aa117726762618f6bb09fe3798796/uvicorn-0.40.0-py3-none-any.whl", hash = "sha256:c6c8f55bc8bf13eb6fa9ff87ad62308bbbc33d0b67f84293151efe87e0d5f2ee", size = 68502 },
 ]
 
 [[package]]

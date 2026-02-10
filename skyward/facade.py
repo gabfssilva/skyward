@@ -34,14 +34,13 @@ from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any, Literal, overload
 
-from injector import Injector
 from loguru import logger
 
+from casty import ActorRef, ActorSystem, Behaviors
+
 from .accelerators import Accelerator
-from .bus import AsyncEventBus
+from .executor import HTTP_PORT, Executor, ExecutorConfig
 from .image import DEFAULT_IMAGE, Image
-from .monitors import MonitorModule
-from .pool import ComputePool as AsyncPool
 from .spec import PoolSpec
 from .observability.logging import LogConfig, _setup_logging, _teardown_logging
 
@@ -310,17 +309,23 @@ class SyncComputePool:
     _log_handler_ids: list[int] = field(default_factory=list, init=False, repr=False)
     _loop: asyncio.AbstractEventLoop | None = field(default=None, init=False, repr=False)
     _loop_thread: threading.Thread | None = field(default=None, init=False, repr=False)
-    _async_pool: AsyncPool | None = field(default=None, init=False, repr=False)
-    _bus: AsyncEventBus | None = field(default=None, init=False, repr=False)
-    _injector: Injector | None = field(default=None, init=False, repr=False)
+
     _active: bool = field(default=False, init=False, repr=False)
     _context_token: Any = field(default=None, init=False, repr=False)
     _registry: DistributedRegistry | None = field(default=None, init=False, repr=False)
-    _semaphore: asyncio.Semaphore | None = field(default=None, init=False, repr=False)
+    # Actor system
+    _system: ActorSystem | None = field(default=None, init=False, repr=False)
+    _pool_ref: Any = field(default=None, init=False, repr=False)  # ActorRef[PoolMsg]
+    # Cluster state (from PoolStarted reply)
+    _cluster_id: str = field(default="", init=False, repr=False)
+    _instances: dict[int, Any] = field(default_factory=dict, init=False, repr=False)
+    _spec: PoolSpec | None = field(default=None, init=False, repr=False)
+    # Executor
+    _executor: Executor | None = field(default=None, init=False, repr=False)
+    _network_interfaces: dict[int, str] = field(default_factory=dict, init=False, repr=False)
 
     def __enter__(self) -> SyncComputePool:
         """Start pool and provision resources."""
-        # Setup logging BEFORE any logs are emitted
         if self.logging:
             if self.logging is True:
                 # Default config - disable console when panel is active
@@ -351,7 +356,6 @@ class SyncComputePool:
         try:
             self._run_sync(self._start_async())
             self._active = True
-            self._semaphore = asyncio.Semaphore(self.nodes * (self.concurrency + 1)) # +1 to overcome some latency/serialization delays
             # Set this pool as active in context
             self._context_token = _active_pool.set(self)
             logger.info("Pool ready")
@@ -371,19 +375,17 @@ class SyncComputePool:
         """Stop pool and release resources."""
         logger.info("Stopping pool...")
         try:
-            # Reset context
             if self._context_token is not None:
                 _active_pool.reset(self._context_token)
                 self._context_token = None
 
-            if self._active and self._async_pool:
-                self._run_sync_with_timeout(self._async_pool.stop(), timeout=30.0)
+            if self._active:
+                self._run_sync_with_timeout(self._stop_async(), timeout=30.0)
         except TimeoutError:
             logger.warning("Pool stop timed out after 30s, forcing cleanup")
         except Exception as e:
             logger.warning(f"Error stopping pool: {e}")
         finally:
-            # Cleanup distributed collections registry
             if self._registry is not None:
                 self._registry.cleanup()
                 _set_active_registry(None)
@@ -393,16 +395,15 @@ class SyncComputePool:
             self._cleanup()
             logger.info("Pool stopped")
 
-            # Teardown logging at the very end
             if self._log_handler_ids:
                 _teardown_logging(self._log_handler_ids)
 
     def run[T](self, pending: PendingCompute[T]) -> T:
-        if not self._active or self._async_pool is None:
+        if not self._active or self._executor is None:
             raise RuntimeError("Pool is not active")
 
         return self._run_sync(
-            self._async_pool.run(
+            self._executor.execute(
                 pending.fn,
                 *pending.args,
                 **pending.kwargs,
@@ -410,29 +411,21 @@ class SyncComputePool:
         )
 
     def run_async[T](self, pending: PendingCompute[T]) -> Future[T]:
-        if not self._active or self._async_pool is None or self._loop is None or self._semaphore is None:
+        if not self._active or self._executor is None or self._loop is None:
             raise RuntimeError("Pool is not active")
 
-        async def _with_backpressure() -> T:
-            async with self._semaphore:  # type: ignore[union-attr]
-                return await self._async_pool.run(pending.fn, *pending.args, **pending.kwargs)  # type: ignore[union-attr]
-
-        return asyncio.run_coroutine_threadsafe(_with_backpressure(), self._loop)
+        return asyncio.run_coroutine_threadsafe(
+            self._executor.execute(pending.fn, *pending.args, **pending.kwargs),
+            self._loop,
+        )
 
     def broadcast[T](self, pending: PendingCompute[T]) -> list[T]:
-        """Execute computation on all nodes.
-
-        Args:
-            pending: The lazy computation to execute.
-
-        Returns:
-            List of results from each node.
-        """
-        if not self._active or self._async_pool is None:
+        """Execute computation on all nodes."""
+        if not self._active or self._executor is None:
             raise RuntimeError("Pool is not active")
 
         return self._run_sync(
-            self._async_pool.broadcast(
+            self._executor.broadcast(
                 pending.fn,
                 *pending.args,
                 **pending.kwargs,
@@ -440,20 +433,13 @@ class SyncComputePool:
         )
 
     def run_parallel(self, group: PendingComputeGroup) -> tuple[Any, ...]:
-        """Execute multiple computations in parallel.
-
-        Args:
-            group: Group of pending computations.
-
-        Returns:
-            Tuple of results in same order as inputs.
-        """
-        if not self._active or self._async_pool is None:
+        """Execute multiple computations in parallel."""
+        if not self._active or self._executor is None:
             raise RuntimeError("Pool is not active")
 
         async def _run_parallel() -> tuple[Any, ...]:
             tasks = [
-                self._async_pool.run(p.fn, *p.args, **p.kwargs)  # type: ignore
+                self._executor.execute(p.fn, *p.args, **p.kwargs)  # type: ignore
                 for p in group.items
             ]
             results = await asyncio.gather(*tasks)
@@ -466,21 +452,13 @@ class SyncComputePool:
         fn: Callable[[T], R],
         items: Sequence[T],
     ) -> list[R]:
-        """Map function over items in parallel across nodes.
-
-        Args:
-            fn: Function to apply to each item.
-            items: Items to process.
-
-        Returns:
-            List of results.
-        """
-        if not self._active or self._async_pool is None:
+        """Map function over items in parallel across nodes."""
+        if not self._active or self._executor is None:
             raise RuntimeError("Pool is not active")
 
         async def _map_async() -> list[R]:
             tasks = [
-                self._async_pool.run(fn, item)  # type: ignore
+                self._executor.execute(fn, item)  # type: ignore
                 for item in items
             ]
             return list(await asyncio.gather(*tasks))
@@ -528,20 +506,15 @@ class SyncComputePool:
         return self._registry.lock(name)
 
     async def _start_async(self) -> None:
-        """Start pool asynchronously."""
-        from .module import PoolConfigModule, SkywardModule
-        from .orchestrator import InstanceOrchestrator
+        """Start pool asynchronously using actors (zero bus)."""
+        from .actors.panel import panel_actor
+        from .actors.pool import PoolMsg, PoolStarted, StartPool, pool_actor
         from .providers.registry import get_provider_for_config
 
-        # Get provider classes from registry
-        # Lazy imports - SDKs are only loaded when actually starting a pool
-        handler_cls, module_cls, provider_name = get_provider_for_config(self.provider)
-        provider_module = module_cls()
+        actor_factory, provider_name = get_provider_for_config(self.provider)
 
-        # Get region from provider config
         region = getattr(self.provider, "region", "unknown")
 
-        # Create pool spec with provider
         spec = PoolSpec(
             nodes=self.nodes,
             accelerator=self.accelerator,
@@ -556,36 +529,229 @@ class SyncComputePool:
             provider=provider_name,  # type: ignore[arg-type]
             max_hourly_cost=self.max_hourly_cost,
         )
+        self._spec = spec
 
-        # Build list of modules
-        modules = [
-            SkywardModule(),
-            MonitorModule(),
-            provider_module,
-            PoolConfigModule(spec=spec, provider_config=self.provider),
+        self._system = ActorSystem("skyward")
+        await self._system.__aenter__()
+
+        panel_ref = (
+            self._system.spawn(panel_actor(spec), "panel")
+            if self.panel
+            else None
+        )
+
+        pool_behavior = pool_actor()
+        pool_ref: ActorRef[PoolMsg] = self._system.spawn(
+            Behaviors.spy(pool_behavior, panel_ref, spy_children=True) if panel_ref else pool_behavior,
+            "pool",
+        )
+        self._pool_ref = pool_ref
+
+        provider_behavior = actor_factory(self.provider, pool_ref)
+        provider_ref = self._system.spawn(
+            Behaviors.spy(provider_behavior, panel_ref, spy_children=True) if panel_ref else provider_behavior,
+            "provider",
+        )
+
+        started: PoolStarted = await self._system.ask(
+            pool_ref,
+            lambda reply_to: StartPool(
+                spec=spec,
+                provider_config=self.provider,
+                provider_ref=provider_ref,
+                reply_to=reply_to,
+            ),
+            timeout=float(self.timeout),
+        )
+        self._cluster_id = started.cluster_id
+        self._instances = {inst.node: inst for inst in started.instances}
+
+        await self._create_executor()
+
+    async def _stop_async(self) -> None:
+        """Stop pool asynchronously."""
+        if self._executor is not None:
+            logger.debug("Disconnecting executor...")
+            await self._executor.disconnect()
+            self._executor = None
+
+        if self._pool_ref is not None and self._system is not None:
+            from .actors.pool import StopPool, PoolStopped
+            await self._system.ask(
+                self._pool_ref,
+                lambda reply_to: StopPool(reply_to=reply_to),
+                timeout=30.0,
+            )
+
+        if self._system is not None:
+            await self._system.__aexit__(None, None, None)
+            self._system = None
+
+    # -------------------------------------------------------------------------
+    # Executor setup (moved from pool.py)
+    # -------------------------------------------------------------------------
+
+    async def _create_executor(self) -> None:
+        from skyward.providers.ssh_keys import get_ssh_key_path
+
+        head_info = self._instances.get(0)
+        if head_info is None:
+            raise RuntimeError("Head node (node 0) not available")
+
+        head_addr = head_info.private_ip or head_info.ip
+        ssh_user = self._get_ssh_user()
+        ssh_key = get_ssh_key_path()
+
+        await self._start_casty_cluster(head_addr, ssh_user, ssh_key)
+
+        pool_infos: list[str] = []
+        for node_id in range(self.nodes):
+            info = self._instances.get(node_id)
+            if info is None:
+                pool_infos.append("")
+                continue
+            pool_info = self._build_pool_info(info, head_addr)
+            pool_infos.append(pool_info.model_dump_json())
+
+        image_env = dict(self.image.env) if self.image and self.image.env else {}
+        config = ExecutorConfig(
+            head_ip=head_info.ip,
+            ssh_port=head_info.ssh_port,
+            user=ssh_user,
+            key_path=ssh_key,
+            num_nodes=self.nodes,
+            workers_per_node=self.concurrency,
+            http_port=HTTP_PORT,
+        )
+        self._executor = Executor(self._system, config)  # type: ignore[arg-type]
+        await self._executor.connect()
+        await self._executor.setup_cluster(env_vars=image_env, pool_infos=pool_infos)
+        logger.debug("Executor connected and ready")
+
+    async def _start_casty_cluster(
+        self,
+        head_addr: str,
+        ssh_user: str,
+        ssh_key: str,
+    ) -> None:
+        from skyward.bootstrap import EMIT_SH_PATH
+        from skyward.constants import VENV_DIR
+        from skyward.providers.common import detect_network_interface
+        from skyward.transport.ssh import SSHTransport
+
+        python_bin = f"{VENV_DIR}/bin/python"
+        casty_port = 25520
+        http_port = HTTP_PORT
+        logger.debug("Starting Casty cluster via SSH...")
+
+        head_info = self._instances.get(0)
+        if head_info is None:
+            raise RuntimeError("Head node not available")
+
+        use_sudo = ssh_user != "root"
+
+        async def _start_node(
+            transport: SSHTransport,
+            node_id: int,
+            host: str,
+            seeds: str = "",
+        ) -> str:
+            seeds_arg = f"--seeds {seeds} " if seeds else ""
+            casty_cmd = (
+                f"nohup {python_bin} -m skyward.casty_worker "
+                f"--node-id {node_id} --port {casty_port} --http-port {http_port} "
+                f"--num-nodes {self.nodes} --host {host} "
+                f"--workers-per-node {self.concurrency} "
+                f"{seeds_arg}"
+                f"> /var/log/casty.log 2>&1 & echo $!"
+            )
+            tail_inner = (
+                f"source {EMIT_SH_PATH} && "
+                f"tail -f /var/log/casty.log 2>/dev/null | while IFS= read -r line; do "
+                f'emit_console "[casty] $line"; done'
+            )
+            tail_cmd = f"nohup bash -c '{tail_inner}' </dev/null >/dev/null 2>&1 &"
+
+            if use_sudo:
+                casty_cmd = f"sudo bash -c '{casty_cmd}'"
+                tail_cmd = f"sudo {tail_cmd}"
+
+            exit_code, stdout, stderr = await transport.run(casty_cmd, timeout=60.0)
+            if exit_code != 0:
+                raise RuntimeError(f"Failed to start Casty node {node_id}: {stderr}")
+            await transport.run(tail_cmd, timeout=10.0)
+            return stdout.strip()
+
+        async with SSHTransport(
+            host=head_info.ip,
+            user=ssh_user,
+            key_path=ssh_key,
+            port=head_info.ssh_port,
+        ) as transport:
+            logger.debug("Starting Casty head on node 0...")
+            pid = await _start_node(transport, 0, host=head_addr)
+            logger.debug(f"Casty head PID: {pid}")
+            self._network_interfaces[0] = await detect_network_interface(transport)
+
+        async def _start_worker(node_id: int, info: Any) -> None:
+            async with SSHTransport(
+                host=info.ip,
+                user=ssh_user,
+                key_path=ssh_key,
+                port=info.ssh_port,
+            ) as transport:
+                worker_addr = info.private_ip or info.ip
+                logger.debug(f"Starting Casty worker on node {node_id}...")
+                await _start_node(transport, node_id, host=worker_addr, seeds=f"{head_addr}:{casty_port}")
+                self._network_interfaces[node_id] = await detect_network_interface(transport)
+
+        await asyncio.gather(*(
+            _start_worker(node_id, info)
+            for node_id, info in self._instances.items()
+            if node_id != 0
+        ))
+
+        logger.debug("Casty cluster started")
+
+    def _build_pool_info(self, info: Any, head_addr: str) -> Any:
+        from skyward.providers.pool_info import build_pool_info
+
+        peers = [
+            {"node": nid, "private_ip": ni.private_ip or ni.ip}
+            for nid, ni in self._instances.items()
         ]
 
-        # Add panel module if enabled
-        if self.panel:
-            from .observability import PanelModule
-            modules.append(PanelModule())
+        accelerator_count = info.gpu_count or 1
+        total_accelerators = sum(
+            (ni.gpu_count or 1) for ni in self._instances.values()
+        )
 
-        # Create injector with all modules
-        self._injector = Injector(modules)
+        accelerator_name = None
+        if self._spec:
+            accelerator_name = self._spec.accelerator_name
 
-        # Get instances from injector (auto-wired via @component)
-        self._injector.get(InstanceOrchestrator)  # Generic event pipeline
-        self._injector.get(handler_cls)            # Provider-specific handler
-        self._async_pool = self._injector.get(AsyncPool)
-        self._bus = self._injector.get(AsyncEventBus)
+        return build_pool_info(
+            node=info.node,
+            total_nodes=self.nodes,
+            accelerator_count=accelerator_count,
+            total_accelerators=total_accelerators,
+            head_addr=head_addr,
+            head_port=29500,
+            job_id=self._cluster_id,
+            peers=peers,
+            accelerator_type=accelerator_name,
+            placement_group=self._network_interfaces.get(info.node) or info.network_interface or None,
+            worker=0,
+            workers_per_node=1,
+        )
 
-        # Initialize panel if enabled (must be after bus is ready)
-        if self.panel:
-            from .observability import PanelComponent
-            self._injector.get(PanelComponent)
-
-        # Start pool
-        await self._async_pool.start(timeout=self.timeout)
+    def _get_ssh_user(self) -> str:
+        provider_name = getattr(self._spec, "provider", None) if self._spec else None
+        match provider_name:
+            case "verda" | "vastai" | "runpod":
+                return "root"
+            case _:
+                return "ubuntu"
 
     def _run_loop(self) -> None:
         """Run event loop in background thread."""

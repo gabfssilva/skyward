@@ -13,7 +13,7 @@ from .image import Image
 
 if TYPE_CHECKING:
     from .accelerators import Accelerator
-    from .events import ProviderName
+    from .messages import ProviderName
 
 
 # =============================================================================

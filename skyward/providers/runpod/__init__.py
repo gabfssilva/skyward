@@ -33,22 +33,6 @@ def __getattr__(name: str):
         from .state import RunPodClusterState
 
         return RunPodClusterState
-    if name == "RunPodModule":
-        from injector import Module, provider, singleton
-
-        from .client import RunPodClient, get_api_key
-
-        class RunPodModule(Module):
-            """DI module for RunPod provider."""
-
-            @singleton
-            @provider
-            def provide_runpod_client(self, config: RunPod) -> RunPodClient:
-                """Provide RunPod API client."""
-                api_key = get_api_key(config.api_key)
-                return RunPodClient(api_key)
-
-        return RunPodModule
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -61,5 +45,4 @@ __all__ = [
     "RunPodError",
     "RunPodHandler",
     "RunPodClusterState",
-    "RunPodModule",
 ]

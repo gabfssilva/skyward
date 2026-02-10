@@ -8,21 +8,8 @@ from __future__ import annotations
 
 from loguru import logger
 
-from skyward.bus import AsyncEventBus
-from skyward.events import (
-    BootstrapCommand,
-    BootstrapConsole,
-    BootstrapFailed,
-    BootstrapPhase,
-    InstanceMetadata,
-)
-from skyward.transport import (
-    BootstrapError,
-    RawBootstrapCommand,
-    RawBootstrapConsole,
-    RawBootstrapPhase,
-    SSHTransport,
-)
+from skyward.messages import InstanceMetadata
+from skyward.transport import SSHTransport
 
 
 async def wait_for_ssh(
@@ -64,140 +51,6 @@ async def wait_for_ssh(
 
     await transport.connect()
     return transport
-
-
-async def stream_bootstrap_events(
-    transport: SSHTransport,
-    info: InstanceMetadata,
-    bus: AsyncEventBus,
-    timeout: float = 600.0,
-    log_prefix: str = "",
-) -> None:
-    """Stream bootstrap events from instance and emit to bus.
-
-    Streams the events.jsonl file via SSH, converting raw events to
-    typed bus events with instance info.
-
-    Args:
-        transport: Connected SSH transport.
-        info: Instance info (for event enrichment).
-        bus: Event bus to emit events to.
-        timeout: Maximum time between events (adaptive).
-        log_prefix: Prefix for log messages (e.g., "AWS: ").
-
-    Raises:
-        BootstrapError: If bootstrap fails.
-        TimeoutError: If timeout exceeded.
-    """
-    logger.info(f"{log_prefix}Starting bootstrap event streaming for {info.id}")
-
-    try:
-        async for raw_event in transport.stream_bootstrap(timeout=timeout):
-            # Convert raw events to bus events with instance info
-            match raw_event:
-                case RawBootstrapConsole(content=content, stream=stream):
-                    bus.emit(BootstrapConsole(
-                        instance=info,
-                        content=content,
-                        stream=stream,
-                    ))
-                    # Log console output (truncate if too long)
-                    display = content[:100] + "..." if len(content) > 100 else content
-                    if stream == "stderr":
-                        logger.warning(f"{log_prefix}[stderr] {display}")
-                    else:
-                        logger.debug(f"{log_prefix}[stdout] {display}")
-                case RawBootstrapPhase(event=event, phase=phase, elapsed=elapsed, error=error):
-                    bus.emit(BootstrapPhase(
-                        instance=info,
-                        event=event,
-                        phase=phase,
-                        elapsed=elapsed,
-                        error=error,
-                    ))
-                    # Log phase transitions
-                    if event == "started":
-                        logger.info(f"{log_prefix}Phase '{phase}' started")
-                    elif event == "completed":
-                        elapsed_str = f" ({elapsed:.1f}s)" if elapsed else ""
-                        logger.info(f"{log_prefix}Phase '{phase}' completed{elapsed_str}")
-                    elif event == "failed":
-                        logger.error(f"{log_prefix}Phase '{phase}' FAILED: {error}")
-                case RawBootstrapCommand(command=command):
-                    bus.emit(BootstrapCommand(
-                        instance=info,
-                        command=command,
-                    ))
-                    # Log command (truncate if too long)
-                    display = command[:80] + "..." if len(command) > 80 else command
-                    logger.debug(f"{log_prefix}Running: {display}")
-
-        logger.info(f"{log_prefix}Bootstrap complete on {info.id}")
-
-    except BootstrapError as e:
-        # Emit failure event
-        bus.emit(BootstrapFailed(
-            instance=info,
-            phase=e.phase,
-            error=e.error,
-        ))
-        raise
-
-
-async def wait_bootstrap_with_streaming(
-    info: InstanceMetadata,
-    bus: AsyncEventBus,
-    user: str,
-    key_path: str,
-    timeout: float = 600.0,
-    ssh_timeout: float = 300.0,
-    poll_interval: float = 5.0,
-    log_prefix: str = "",
-    port: int = 22,
-) -> None:
-    """Complete bootstrap wait with SSH connection and event streaming.
-
-    Convenience function that combines wait_for_ssh() and stream_bootstrap_events().
-
-    Args:
-        info: Instance info with IP address.
-        bus: Event bus to emit events to.
-        user: SSH username.
-        key_path: Path to SSH private key.
-        timeout: Maximum time between bootstrap events.
-        ssh_timeout: Maximum time to wait for SSH.
-        poll_interval: Time between SSH connection attempts.
-        log_prefix: Prefix for log messages.
-        port: SSH port.
-
-    Raises:
-        TimeoutError: If SSH or bootstrap times out.
-        BootstrapError: If bootstrap fails.
-    """
-    logger.info(f"{log_prefix}Waiting for bootstrap on {info.id} at {info.ip}...")
-
-    # Wait for SSH
-    transport = await wait_for_ssh(
-        host=info.ip,
-        user=user,
-        key_path=key_path,
-        timeout=ssh_timeout,
-        poll_interval=poll_interval,
-        port=port,
-        log_prefix=log_prefix,
-    )
-
-    try:
-        # Stream bootstrap events
-        await stream_bootstrap_events(
-            transport=transport,
-            info=info,
-            bus=bus,
-            timeout=timeout,
-            log_prefix=log_prefix,
-        )
-    finally:
-        await transport.close()
 
 
 async def install_local_skyward(
@@ -265,8 +118,7 @@ async def run_bootstrap_via_ssh(
     For providers that can't use cloud-init (e.g., VastAI with onstart_cmd limit),
     this function uploads and starts the bootstrap script in the background.
 
-    Event streaming is handled separately by the EventStreamer component,
-    which provides unified streaming for all providers.
+    Event streaming is handled separately by the streaming actor.
 
     Args:
         transport: Connected SSH transport.
@@ -283,7 +135,7 @@ async def run_bootstrap_via_ssh(
         "nohup /opt/skyward/bootstrap.sh > /opt/skyward/bootstrap.log 2>&1 &"
     )
 
-    logger.info(f"{log_prefix}Bootstrap started on {info.id} (streaming via EventStreamer)")
+    logger.info(f"{log_prefix}Bootstrap started on {info.id}")
 
 
 __all__ = [

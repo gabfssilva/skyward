@@ -76,6 +76,16 @@ class MetricBadge:
 
         return result
 
+    def render_inline(self) -> Text:
+        vm = self._vm
+        result = Text()
+        result.append(vm.label, style="dim")
+        result.append(" ")
+        sparkline = Sparkline(vm.history, width=vm.spark_width, style=vm.style)
+        result.append_text(sparkline.render())
+        result.append(f" {vm.value:>2.0f}{vm.unit}", style=f"{vm.style} bold")
+        return result
+
 
 def temp_color(temp: float) -> str:
     """Return color based on temperature: green < 60, yellow 60-75, red > 75."""

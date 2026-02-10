@@ -66,7 +66,8 @@ def train_model(epochs: int, batch_size: int, learning_rate: float) -> dict:
     dataset = TensorDataset(x, y)
 
     # DistributedSampler shards data across nodes
-    sampler = sky.DistributedSampler(dataset, shuffle=True)
+    from torch.utils.data.distributed import DistributedSampler
+    sampler = DistributedSampler(dataset, shuffle=True)
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -112,8 +113,11 @@ def train_model(epochs: int, batch_size: int, learning_rate: float) -> dict:
 
         scheduler.step()
 
-        avg_loss = epoch_loss / len(loader)
-        accuracy = 100.0 * correct / total
+        # Aggregate metrics across all nodes so every rank reports identical values
+        stats = torch.tensor([epoch_loss, correct, total], dtype=torch.float64, device=device)
+        dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+        avg_loss = stats[0].item() / (len(loader) * sky.instance_info().total_nodes)
+        accuracy = 100.0 * stats[1].item() / stats[2].item()
 
         history["loss"].append(avg_loss)
         history["accuracy"].append(accuracy)
@@ -181,10 +185,10 @@ if __name__ == "__main__":
     # =================================================================
     # Multi-Node Training
     # =================================================================
-    with sky.ComputePool(
+    with sky.SyncComputePool(
         provider=sky.AWS(),
         nodes=2,
-        accelerator='T4',
+        accelerator='T4G',
         image=sky.Image(
             pip=["torch"],
         )

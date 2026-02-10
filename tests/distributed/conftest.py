@@ -8,6 +8,7 @@ from casty.sharding import ClusteredActorSystem
 
 from skyward.distributed.proxies import set_system_loop
 from skyward.distributed.registry import DistributedRegistry
+from tests.conftest import get_free_port
 
 
 @pytest.fixture(scope="session")
@@ -19,7 +20,7 @@ def _cluster_system():
         s = ClusteredActorSystem(
             name="test",
             host="127.0.0.1",
-            port=25520,
+            port=get_free_port(),
         )
         await s.__aenter__()
         return s

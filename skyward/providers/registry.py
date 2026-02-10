@@ -8,66 +8,86 @@ Uses lazy loading to avoid importing heavy SDK dependencies until needed.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable
+from typing import Any
 
-if TYPE_CHECKING:
-    from injector import Module
+from casty import ActorRef, Behavior
+
+from skyward.actors.provider import ProviderMsg
 
 
-def get_provider_for_config(config: Any) -> tuple[type, type["Module"], str]:
-    """Get provider classes for a configuration object.
+type ProviderActorFactory = Callable[[Any, ActorRef], Behavior[ProviderMsg]]
+
+
+def get_provider_for_config(config: Any) -> tuple[ProviderActorFactory, str]:
+    """Get provider actor factory for a configuration object.
 
     Uses lazy imports to only load SDK dependencies when needed.
 
-    Args:
-        config: A provider configuration instance.
-
     Returns:
-        Tuple of (HandlerClass, ModuleClass, provider_name).
-
-    Raises:
-        ValueError: If no provider is registered for the config type.
+        Tuple of (actor_factory, provider_name).
+        actor_factory(config, pool_ref) -> Behavior[ProviderMsg]
     """
-    # Import config classes for type checking (lightweight)
     from .aws.config import AWS
     from .runpod.config import RunPod
     from .vastai.config import VastAI
     from .verda.config import Verda
 
-    # Lazy load handlers and modules based on config type
     if isinstance(config, AWS):
-        from .aws.handler import AWSHandler
-        from .aws.clients import AWSModule
+        from .aws.clients import EC2ClientFactory
 
-        return AWSHandler, AWSModule, "aws"
+        def aws_factory(cfg: Any, pool_ref: ActorRef) -> Behavior[ProviderMsg]:
+            from .aws.handler import aws_provider_actor
+            import aioboto3
+            from contextlib import asynccontextmanager
+
+            @asynccontextmanager
+            async def ec2_factory():
+                session = aioboto3.Session(region_name=cfg.region)
+                async with session.client("ec2", region_name=cfg.region) as ec2:
+                    yield ec2
+
+            return aws_provider_actor(cfg, EC2ClientFactory(ec2_factory), pool_ref)
+
+        return aws_factory, "aws"
 
     if isinstance(config, VastAI):
-        from .vastai.handler import VastAIHandler
-        from .vastai import VastAIModule
+        def vastai_factory(cfg: Any, pool_ref: ActorRef) -> Behavior[ProviderMsg]:
+            from .vastai.handler import vastai_provider_actor
+            from .vastai.client import VastAIClient, get_api_key
+            client = VastAIClient(get_api_key(cfg.api_key), config=cfg)
+            return vastai_provider_actor(cfg, client, pool_ref)
 
-        return VastAIHandler, VastAIModule, "vastai"
+        return vastai_factory, "vastai"
 
     if isinstance(config, Verda):
-        from .verda.handler import VerdaHandler
-        from .verda import VerdaModule
+        def verda_factory(cfg: Any, pool_ref: ActorRef) -> Behavior[ProviderMsg]:
+            from .verda.handler import verda_provider_actor
+            from .verda.client import VERDA_API_BASE, VerdaAuth, VerdaClient, get_credentials
+            import httpx
+            client_id = cfg.client_id
+            client_secret = cfg.client_secret
+            if not client_id or not client_secret:
+                client_id, client_secret = get_credentials()
+            auth = VerdaAuth(client_id, client_secret)
+            http_client = httpx.AsyncClient(base_url=VERDA_API_BASE, auth=auth, timeout=60)
+            client = VerdaClient(http_client)
+            return verda_provider_actor(cfg, client, pool_ref)
 
-        return VerdaHandler, VerdaModule, "verda"
+        return verda_factory, "verda"
 
     if isinstance(config, RunPod):
-        from .runpod.handler import RunPodHandler
-        from .runpod import RunPodModule
+        def runpod_factory(cfg: Any, pool_ref: ActorRef) -> Behavior[ProviderMsg]:
+            from .runpod.handler import runpod_provider_actor
+            return runpod_provider_actor(cfg, pool_ref)
 
-        return RunPodHandler, RunPodModule, "runpod"
+        return runpod_factory, "runpod"
 
     raise ValueError(
         f"No provider registered for {type(config).__name__}. "
         f"Available providers: AWS, VastAI, Verda, RunPod"
     )
 
-
-# =============================================================================
-# Exports
-# =============================================================================
 
 __all__ = [
     "get_provider_for_config",
