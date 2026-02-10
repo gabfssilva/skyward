@@ -7,8 +7,10 @@ resources and instance information.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import MappingProxyType
 
-from skyward.providers.base import BaseClusterState
+from skyward.messages import InstanceMetadata
+from skyward.spec import PoolSpec
 
 
 # =============================================================================
@@ -16,7 +18,7 @@ from skyward.providers.base import BaseClusterState
 # =============================================================================
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class AWSResources:
     """Container for AWS infrastructure resource identifiers.
 
@@ -82,25 +84,24 @@ class InstanceConfig:
 # =============================================================================
 
 
-@dataclass
-class AWSClusterState(BaseClusterState):
+@dataclass(frozen=True, slots=True)
+class AWSClusterState:
     """Runtime state for an AWS cluster.
 
-    Tracks all information needed to manage a cluster's lifecycle
+    Tracks all information needed to manage a cluster\'s lifecycle
     including infrastructure resources, launched instances, and spec.
     """
 
-    # AWS-specific fields
-    resources: AWSResources = field(default=None)  # type: ignore[assignment]
-    region: str = ""
-
-    # SSH configuration
-    ssh_key_name: str = ""
-    ssh_key_path: str = ""
-    username: str = "ubuntu"
-
-    # Pre-launched instance IDs mapped by node_id (all-or-nothing fleet)
-    fleet_instance_ids: dict[int, str] = field(default_factory=dict)
+    cluster_id: str
+    spec: PoolSpec
+    resources: AWSResources
+    region: str
+    ssh_key_name: str
+    ssh_key_path: str
+    username: str
+    instances: MappingProxyType[str, InstanceMetadata] = field(default_factory=lambda: MappingProxyType({}))
+    pending_nodes: frozenset[int] = frozenset()
+    fleet_instance_ids: MappingProxyType[int, str] = field(default_factory=lambda: MappingProxyType({}))
 
 
 # =============================================================================

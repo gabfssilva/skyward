@@ -40,10 +40,15 @@ class PanelRenderable:
     We build a fresh ViewModel from state each time.
     """
 
-    def __init__(self, state: PanelState) -> None:
+    def __init__(self) -> None:
+        self._state: PanelState | None = None
+
+    def update(self, state: PanelState) -> None:
         self._state = state
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        if self._state is None:
+            return
         width = options.max_width
         height = console.size.height
         blink_on = int(time.monotonic() * 2) % 2 == 0
@@ -52,15 +57,15 @@ class PanelRenderable:
 
 
 class PanelRenderer:
-    """Manages Rich Live display - simplified, no background thread.
+    """Manages Rich Live display.
 
-    Rich Live handles auto-refresh at 4fps. We just pass a PanelRenderable
-    that reads from state on each render.
+    Rich Live handles auto-refresh at 4fps. The actor pushes new frozen
+    state via update_state(), and PanelRenderable reads it on each render.
     """
 
     def __init__(self) -> None:
         self._live: Live | None = None
-        self._state: PanelState | None = None
+        self._renderable: PanelRenderable | None = None
 
     @property
     def console(self) -> Console:
@@ -73,16 +78,22 @@ class PanelRenderer:
         """Initialize and start Live display.
 
         Args:
-            state: Mutable state that PanelRenderable will read on each refresh.
+            state: Initial frozen state for rendering.
         """
-        self._state = state
+        self._renderable = PanelRenderable()
+        self._renderable.update(state)
         self._live = Live(
-            PanelRenderable(state),
+            self._renderable,
             refresh_per_second=4,
             transient=False,
         )
         self._live.console.clear()
         self._live.start()
+
+    def update_state(self, state: PanelState) -> None:
+        """Push new frozen state for rendering."""
+        if self._renderable:
+            self._renderable.update(state)
 
     def stop(self, grace_period: float = 2.5) -> None:
         """Stop Live display with grace period for final logs.

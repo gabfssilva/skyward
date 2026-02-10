@@ -127,6 +127,29 @@ type PoolMsg = (
 )
 
 
+def _to_metadata(ev: InstanceRunning) -> InstanceMetadata:
+    return InstanceMetadata(
+        id=ev.instance_id,
+        node=ev.node_id,
+        provider=ev.provider,
+        ip=ev.ip,
+        private_ip=ev.private_ip or "",
+        network_interface=ev.network_interface,
+        spot=ev.spot,
+        ssh_port=ev.ssh_port,
+        hourly_rate=ev.hourly_rate,
+        on_demand_rate=ev.on_demand_rate,
+        billing_increment=ev.billing_increment,
+        instance_type=ev.instance_type,
+        gpu_count=ev.gpu_count,
+        gpu_model=ev.gpu_model,
+        vcpus=ev.vcpus,
+        memory_gb=ev.memory_gb,
+        gpu_vram_gb=ev.gpu_vram_gb,
+        region=ev.region,
+    )
+
+
 # =============================================================================
 # Behavior
 # =============================================================================
@@ -222,26 +245,7 @@ def pool_actor() -> Behavior[PoolMsg]:
         async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
             match msg:
                 case InstanceRunning() as ev:
-                    info = InstanceMetadata(
-                        id=ev.instance_id,
-                        node=ev.node_id,
-                        provider=ev.provider,
-                        ip=ev.ip,
-                        private_ip=ev.private_ip or "",
-                        network_interface=ev.network_interface,
-                        spot=ev.spot,
-                        ssh_port=ev.ssh_port,
-                        hourly_rate=ev.hourly_rate,
-                        on_demand_rate=ev.on_demand_rate,
-                        billing_increment=ev.billing_increment,
-                        instance_type=ev.instance_type,
-                        gpu_count=ev.gpu_count,
-                        gpu_model=ev.gpu_model,
-                        vcpus=ev.vcpus,
-                        memory_gb=ev.memory_gb,
-                        gpu_vram_gb=ev.gpu_vram_gb,
-                        region=ev.region,
-                    )
+                    info = _to_metadata(ev)
                     provisioned_event = InstanceProvisioned(request_id=ev.request_id, instance=info)
                     ref = node_refs.get(info.node)
                     if ref:
@@ -416,26 +420,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                     )
 
                 case InstanceRunning() as ev:
-                    info = InstanceMetadata(
-                        id=ev.instance_id,
-                        node=ev.node_id,
-                        provider=ev.provider,
-                        ip=ev.ip,
-                        private_ip=ev.private_ip or "",
-                        network_interface=ev.network_interface,
-                        spot=ev.spot,
-                        ssh_port=ev.ssh_port,
-                        hourly_rate=ev.hourly_rate,
-                        on_demand_rate=ev.on_demand_rate,
-                        billing_increment=ev.billing_increment,
-                        instance_type=ev.instance_type,
-                        gpu_count=ev.gpu_count,
-                        gpu_model=ev.gpu_model,
-                        vcpus=ev.vcpus,
-                        memory_gb=ev.memory_gb,
-                        gpu_vram_gb=ev.gpu_vram_gb,
-                        region=ev.region,
-                    )
+                    info = _to_metadata(ev)
                     provisioned_event = InstanceProvisioned(request_id=ev.request_id, instance=info)
                     ref = node_refs.get(info.node)
                     if ref:

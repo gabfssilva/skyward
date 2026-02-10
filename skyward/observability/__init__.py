@@ -1,7 +1,5 @@
 """Observability modules for Skyward."""
 
-from .panel import PanelComponent
-
 from .logging import (
     CONSOLE_FORMAT,
     FILE_FORMAT,
@@ -12,7 +10,6 @@ from .logging import (
 )
 
 __all__ = [
-    "PanelComponent",
     "LogConfig",
     "LogLevel",
     "CONSOLE_FORMAT",

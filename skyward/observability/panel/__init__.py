@@ -15,12 +15,10 @@ Usage:
     ]
 """
 
-from .component import PanelComponent
 from .renderer import PanelRenderer
 from .state import InfraState, InstanceState, MetricsState, PanelState
 
 __all__ = [
-    "PanelComponent",
     "PanelRenderer",
     "PanelState",
     "InstanceState",

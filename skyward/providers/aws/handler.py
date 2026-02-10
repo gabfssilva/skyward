@@ -12,6 +12,8 @@ import asyncio
 import base64
 import uuid
 from contextlib import suppress
+from dataclasses import replace
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
@@ -96,8 +98,8 @@ def aws_provider_actor(
                         n=spec.nodes,
                     )
 
-                    for node_id, instance_id in enumerate(instance_ids):
-                        state.fleet_instance_ids[node_id] = instance_id
+                    fleet_ids = MappingProxyType({nid: iid for nid, iid in enumerate(instance_ids)})
+                    state = replace(state, fleet_instance_ids=fleet_ids)
 
                     provisioned = ClusterProvisioned(
                         request_id=request_id,
@@ -123,7 +125,9 @@ def aws_provider_actor(
                     node_id=node_id,
                     replacing=replacing,
                 ) if cluster_id == state.cluster_id:
-                    pre_assigned = state.fleet_instance_ids.pop(node_id, None)
+                    pre_assigned = state.fleet_instance_ids.get(node_id)
+                    new_fleet = MappingProxyType({k: v for k, v in state.fleet_instance_ids.items() if k != node_id})
+
                     if replacing is None and pre_assigned:
                         instance_id = pre_assigned
                     else:
@@ -145,14 +149,14 @@ def aws_provider_actor(
 
                         instance_id = instance_ids[0]
 
-                    state.pending_nodes.add(node_id)
+                    new_state = replace(state, pending_nodes=state.pending_nodes | {node_id}, fleet_instance_ids=new_fleet)
 
                     asyncio.create_task(
                         _wait_and_emit_running(
                             config=config,
                             ec2=ec2,
                             pool_ref=pool_ref,
-                            state=state,
+                            state=new_state,
                             request_id=request_id,
                             cluster_id=cluster_id,
                             node_id=node_id,
@@ -160,7 +164,7 @@ def aws_provider_actor(
                         )
                     )
 
-                    return Behaviors.same()
+                    return active(state=new_state)
 
                 case BootstrapRequested(
                     instance=info,
@@ -182,17 +186,21 @@ def aws_provider_actor(
                     if state.spec.image and state.spec.image.skyward_source == "local":
                         await _install_local_skyward(info, state)
 
-                    state.add_instance(info)
+                    new_state = replace(state,
+                        instances=MappingProxyType({**state.instances, info.id: info}),
+                        pending_nodes=state.pending_nodes - {info.node},
+                    )
                     pool_ref.tell(InstanceBootstrapped(instance=info))
-                    return Behaviors.same()
+                    return active(state=new_state)
 
                 case BootstrapDone(instance=info, success=False, error=error):
                     logger.error(f"AWS: Bootstrap failed on {info.id}: {error}")
                     return Behaviors.same()
 
                 case ShutdownRequested(cluster_id=cluster_id) if cluster_id == state.cluster_id:
-                    if state.instance_ids:
-                        await _terminate_instances(ec2, state.instance_ids)
+                    instance_ids = list(state.instances.keys())
+                    if instance_ids:
+                        await _terminate_instances(ec2, instance_ids)
 
                     return Behaviors.stopped()
 

@@ -7,8 +7,10 @@ and instance information.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import MappingProxyType
 
-from skyward.providers.base import BaseClusterState
+from skyward.messages import InstanceMetadata
+from skyward.spec import PoolSpec
 
 
 # =============================================================================
@@ -16,26 +18,26 @@ from skyward.providers.base import BaseClusterState
 # =============================================================================
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class InstancePricing:
     """Pricing info for a launched instance."""
 
-    hourly_rate: float  # Actual rate (spot or on-demand)
-    on_demand_rate: float  # On-demand rate for savings calculation
+    hourly_rate: float
+    on_demand_rate: float
     gpu_name: str
     gpu_count: int
 
 
-@dataclass
-class VastAIClusterState(BaseClusterState):
+@dataclass(frozen=True, slots=True)
+class VastAIClusterState:
     """Runtime state for a Vast.ai cluster.
 
     Tracks all information needed to manage a cluster's lifecycle
     including overlay networks, launched instances, and spec.
     """
 
-    # VastAI-specific fields
-    geolocation: str | None = None
+    cluster_id: str
+    spec: PoolSpec
 
     # SSH key info
     ssh_key_id: int | None = None
@@ -44,14 +46,17 @@ class VastAIClusterState(BaseClusterState):
     # Overlay network state
     overlay_name: str | None = None
     overlay_cluster_id: int | None = None
-    overlay_ips: dict[int, str] = field(default_factory=dict)  # instance_id -> overlay IP
-    overlay_ifaces: dict[int, str] = field(default_factory=dict)  # instance_id -> interface
 
     # Docker image
     docker_image: str | None = None
 
-    # Pricing info per instance (instance_id -> pricing)
-    instance_pricing: dict[str, InstancePricing] = field(default_factory=dict)
+    # Geolocation
+    geolocation: str | None = None
+
+    # Instances and pricing
+    instances: MappingProxyType[str, InstanceMetadata] = field(default_factory=lambda: MappingProxyType({}))
+    pending_nodes: frozenset[int] = frozenset()
+    instance_pricing: MappingProxyType[str, InstancePricing] = field(default_factory=lambda: MappingProxyType({}))
 
 
 # =============================================================================

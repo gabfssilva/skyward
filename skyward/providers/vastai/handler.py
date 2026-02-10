@@ -19,12 +19,14 @@ import random
 import string
 import uuid
 from contextlib import suppress
+from dataclasses import replace
+from types import MappingProxyType
 from typing import Any
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 from loguru import logger
 
-from skyward.actors.provider import BootstrapDone, ProviderMsg
+from skyward.actors.provider import BootstrapDone, ProviderMsg, _ProvisioningDone
 from skyward.actors.streaming import instance_monitor
 from skyward.messages import (
     BootstrapRequested,
@@ -53,7 +55,6 @@ async def _search_offers(
     client: VastAIClient,
     config: VastAI,
     state: VastAIClusterState,
-    reserved_offers: set[int],
 ) -> list[OfferResponse]:
     """Search for GPU offers matching cluster spec."""
     spec = state.spec
@@ -127,8 +128,11 @@ async def _setup_overlay_network(
     client: VastAIClient,
     config: VastAI,
     state: VastAIClusterState,
-) -> None:
-    """Set up overlay network for multi-node cluster."""
+) -> tuple[str | None, int | None]:
+    """Set up overlay network for multi-node cluster.
+
+    Returns (overlay_name, overlay_cluster_id) or (None, None) on failure.
+    """
     spec = state.spec
     use_interruptible = spec.allocation in ("spot", "spot-if-available")
     gpu_name = spec.accelerator_name.replace(" ", "_").replace("-", "_") if spec.accelerator_name else None
@@ -144,7 +148,7 @@ async def _setup_overlay_network(
     valid_clusters = select_all_valid_clusters(offers, spec.nodes, use_interruptible)
     if not valid_clusters:
         logger.warning(f"VastAI: No clusters found with {spec.nodes} nodes")
-        return
+        return None, None
 
     for idx, (physical_cluster_id, _) in enumerate(valid_clusters):
         suffix = "".join(random.choices(string.ascii_lowercase, k=8))
@@ -154,14 +158,13 @@ async def _setup_overlay_network(
 
         try:
             await client.create_overlay(physical_cluster_id, overlay_name)
-            state.overlay_name = overlay_name
-            state.overlay_cluster_id = physical_cluster_id
             logger.info(f"VastAI: Overlay '{overlay_name}' created")
-            return
+            return overlay_name, physical_cluster_id
         except VastAIError as e:
             logger.warning(f"VastAI: Overlay failed on cluster {physical_cluster_id}: {e}")
 
     logger.warning("VastAI: Failed to create overlay on any cluster")
+    return None, None
 
 
 async def _detect_container_ip(
@@ -285,240 +288,257 @@ def vastai_provider_actor(
     client: VastAIClient,
     pool_ref: ActorRef,
 ) -> Behavior[ProviderMsg]:
-    """Vast.ai provider actor.
+    """Vast.ai provider tells this story: idle -> active -> stopped."""
 
-    Starts idle, waiting for a ClusterRequested message.
-    Transitions to active after provisioning cluster infrastructure.
-    Stops after handling ShutdownRequested.
-    """
+    def idle() -> Behavior[ProviderMsg]:
+        async def receive(ctx: ActorContext[ProviderMsg], msg: ProviderMsg) -> Behavior[ProviderMsg]:
+            match msg:
+                case ClusterRequested(request_id=request_id, provider="vastai", spec=spec):
+                    logger.info(f"VastAI: Provisioning cluster for {spec.nodes} nodes")
 
-    def idle(ctx: ActorContext[ProviderMsg], msg: ProviderMsg) -> Behavior[ProviderMsg]:
-        match msg:
-            case ClusterRequested(request_id=request_id, provider="vastai", spec=spec):
-                logger.info(f"VastAI: Provisioning cluster for {spec.nodes} nodes")
-
-                cluster_id = f"vastai-{uuid.uuid4().hex[:8]}"
-                state = VastAIClusterState(
-                    cluster_id=cluster_id,
-                    spec=spec,
-                    geolocation=config.geolocation,
-                )
-
-                async def provision() -> None:
-                    async with client:
-                        ssh_key_id, ssh_public_key = await client.ensure_ssh_key()
-                        state.ssh_key_id = ssh_key_id
-                        state.ssh_public_key = ssh_public_key
-
-                        if spec.nodes > 1 and config.use_overlay:
-                            await _setup_overlay_network(client, config, state)
-
-                    event = ClusterProvisioned(
-                        request_id=request_id,
+                    cluster_id = f"vastai-{uuid.uuid4().hex[:8]}"
+                    state = VastAIClusterState(
                         cluster_id=cluster_id,
-                        provider="vastai",
+                        spec=spec,
+                        geolocation=config.geolocation,
                     )
-                    pool_ref.tell(event)
 
-                ctx.pipe_to_self(provision())
+                    async def provision() -> _ProvisioningDone:
+                        async with client:
+                            ssh_key_id, ssh_public_key = await client.ensure_ssh_key()
 
-                reserved_offers: set[int] = set()
+                            overlay_name = None
+                            overlay_cluster_id = None
+                            if spec.nodes > 1 and config.use_overlay:
+                                overlay_name, overlay_cluster_id = await _setup_overlay_network(client, config, state)
 
-                return Behaviors.receive(lambda ctx, msg: active(
-                    ctx, msg, state, reserved_offers,
-                ))
+                        new_state = replace(state,
+                            ssh_key_id=ssh_key_id,
+                            ssh_public_key=ssh_public_key,
+                            overlay_name=overlay_name,
+                            overlay_cluster_id=overlay_cluster_id,
+                        )
 
-            case _:
-                logger.debug(f"VastAI idle: ignoring {type(msg).__name__}")
-                return Behaviors.same()
+                        pool_ref.tell(ClusterProvisioned(
+                            request_id=request_id,
+                            cluster_id=cluster_id,
+                            provider="vastai",
+                        ))
+
+                        return _ProvisioningDone(state=new_state)
+
+                    ctx.pipe_to_self(provision())
+                    return active(state)
+
+                case _:
+                    return Behaviors.same()
+        return Behaviors.receive(receive)
 
     def active(
-        ctx: ActorContext[ProviderMsg],
-        msg: ProviderMsg,
         state: VastAIClusterState,
-        reserved_offers: set[int],
+        reserved_offers: frozenset[int] = frozenset(),
     ) -> Behavior[ProviderMsg]:
-        match msg:
-            case InstanceRequested(
-                request_id=request_id,
-                provider="vastai",
-                cluster_id=cluster_id,
-                node_id=node_id,
-            ):
-                logger.info(f"VastAI: Launching instance for node {node_id}")
+        async def receive(ctx: ActorContext[ProviderMsg], msg: ProviderMsg) -> Behavior[ProviderMsg]:
+            match msg:
+                case _ProvisioningDone(state=new_state):
+                    return active(new_state, reserved_offers)
 
-                async def launch_instance() -> None:
-                    use_interruptible = state.spec.allocation in ("spot", "spot-if-available")
-                    docker_image = state.docker_image or config.docker_image or VastAI.ubuntu()
-                    label = f"skyward-{state.cluster_id}-{node_id}"
-                    minimal_onstart = "#!/bin/bash\nset -e\nmkdir -p /opt/skyward\ntail -f /dev/null\n"
+                case InstanceRequested(
+                    request_id=request_id,
+                    provider="vastai",
+                    cluster_id=cluster_id,
+                    node_id=node_id,
+                ):
+                    logger.info(f"VastAI: Launching instance for node {node_id}")
 
-                    instance_id: int | None = None
-                    last_error: str | None = None
+                    async def launch_instance() -> _ProvisioningDone:
+                        use_interruptible = state.spec.allocation in ("spot", "spot-if-available")
+                        docker_image = state.docker_image or config.docker_image or VastAI.ubuntu()
+                        label = f"skyward-{state.cluster_id}-{node_id}"
+                        minimal_onstart = "#!/bin/bash\nset -e\nmkdir -p /opt/skyward\ntail -f /dev/null\n"
 
-                    async with client:
-                        offers = await _search_offers(client, config, state, reserved_offers)
+                        instance_id: int | None = None
+                        last_error: str | None = None
+                        new_reserved = reserved_offers
+                        new_pricing = dict(state.instance_pricing)
 
-                        if not offers:
-                            logger.error(f"VastAI: No offers found for node {node_id}")
-                            return
+                        async with client:
+                            offers = await _search_offers(client, config, state)
 
-                        for idx, offer in enumerate(offers):
-                            offer_id = offer["id"]
+                            if not offers:
+                                logger.error(f"VastAI: No offers found for node {node_id}")
+                                return _ProvisioningDone(state=state)
 
-                            if offer_id in reserved_offers:
-                                logger.debug(f"VastAI: Offer {offer_id} already reserved, skipping...")
-                                continue
+                            for idx, offer in enumerate(offers):
+                                offer_id = offer["id"]
 
-                            reserved_offers.add(offer_id)
+                                if offer_id in new_reserved:
+                                    logger.debug(f"VastAI: Offer {offer_id} already reserved, skipping...")
+                                    continue
 
-                            price = offer["min_bid"] * config.bid_multiplier if use_interruptible else None
-                            price_display = price if price else offer.get("dph_total", 0)
+                                new_reserved = new_reserved | frozenset({offer_id})
 
-                            logger.info(
-                                f"VastAI: Trying offer {idx + 1}/{len(offers)}: "
-                                f"machine_id={offer.get('machine_id')}, price=${price_display:.3f}/hr"
+                                price = offer["min_bid"] * config.bid_multiplier if use_interruptible else None
+                                price_display = price if price else offer.get("dph_total", 0)
+
+                                logger.info(
+                                    f"VastAI: Trying offer {idx + 1}/{len(offers)}: "
+                                    f"machine_id={offer.get('machine_id')}, price=${price_display:.3f}/hr"
+                                )
+
+                                try:
+                                    instance_id = await client.create_instance(
+                                        offer_id=offer_id,
+                                        image=docker_image,
+                                        disk=config.disk_gb,
+                                        label=label,
+                                        onstart_cmd=minimal_onstart,
+                                        price=price,
+                                    )
+                                    on_demand_rate = offer.get("dph_total", 0.0)
+                                    hourly_rate = price if price else on_demand_rate
+                                    new_pricing[str(instance_id)] = InstancePricing(
+                                        hourly_rate=hourly_rate,
+                                        on_demand_rate=on_demand_rate,
+                                        gpu_name=offer.get("gpu_name", ""),
+                                        gpu_count=offer.get("num_gpus", 0),
+                                    )
+                                    break
+                                except VastAIError as e:
+                                    new_reserved = new_reserved - frozenset({offer_id})
+                                    last_error = str(e)
+                                    logger.warning(f"VastAI: Offer {idx + 1}/{len(offers)} failed: {e}")
+                                    continue
+
+                        if instance_id is None:
+                            logger.error(
+                                f"VastAI: All offers failed for node {node_id}. "
+                                f"Last error: {last_error}"
                             )
+                            return _ProvisioningDone(state=state)
 
-                            try:
-                                instance_id = await client.create_instance(
-                                    offer_id=offer_id,
-                                    image=docker_image,
-                                    disk=config.disk_gb,
-                                    label=label,
-                                    onstart_cmd=minimal_onstart,
-                                    price=price,
-                                )
-                                on_demand_rate = offer.get("dph_total", 0.0)
-                                hourly_rate = price if price else on_demand_rate
-                                state.instance_pricing[str(instance_id)] = InstancePricing(
-                                    hourly_rate=hourly_rate,
-                                    on_demand_rate=on_demand_rate,
-                                    gpu_name=offer.get("gpu_name", ""),
-                                    gpu_count=offer.get("num_gpus", 0),
-                                )
-                                break
-                            except VastAIError as e:
-                                reserved_offers.discard(offer_id)
-                                last_error = str(e)
-                                logger.warning(f"VastAI: Offer {idx + 1}/{len(offers)} failed: {e}")
-                                continue
-
-                    if instance_id is None:
-                        logger.error(
-                            f"VastAI: All offers failed for node {node_id}. "
-                            f"Last error: {last_error}"
+                        new_state = replace(state,
+                            pending_nodes=state.pending_nodes | {node_id},
+                            instance_pricing=MappingProxyType(new_pricing),
                         )
-                        return
 
-                    state.pending_nodes.add(node_id)
+                        await _wait_and_emit_running(
+                            client, config, new_state, pool_ref,
+                            request_id, cluster_id, node_id, instance_id,
+                        )
 
-                    await _wait_and_emit_running(
-                        client, config, state, pool_ref,
-                        request_id, cluster_id, node_id, instance_id,
-                    )
+                        return _ProvisioningDone(state=new_state)
 
-                ctx.pipe_to_self(launch_instance())
-                return Behaviors.same()
+                    ctx.pipe_to_self(launch_instance())
+                    return active(state, reserved_offers)
 
-            case BootstrapRequested(
-                request_id=_,
-                instance=instance,
-                cluster_id=_,
-            ):
-                logger.debug(f"VastAI: Starting bootstrap for instance {instance.id}")
+                case BootstrapRequested(
+                    request_id=_,
+                    instance=instance,
+                    cluster_id=_,
+                ):
+                    logger.debug(f"VastAI: Starting bootstrap for instance {instance.id}")
 
-                async def run_bootstrap() -> None:
-                    from skyward.providers.bootstrap import run_bootstrap_via_ssh, wait_for_ssh
+                    async def run_bootstrap() -> None:
+                        from skyward.providers.bootstrap import run_bootstrap_via_ssh, wait_for_ssh
 
-                    key_path = get_ssh_key_path()
-                    ttl = state.spec.ttl or config.instance_timeout
-                    bootstrap_script = state.spec.image.generate_bootstrap(
-                        ttl=ttl,
-                        shutdown_command=(
-                            "eval $(cat /proc/1/environ | tr '\\0' '\\n' | "
-                            "grep -E 'CONTAINER_ID|CONTAINER_API_KEY' | sed 's/^/export /'); "
-                            "curl -s -X DELETE https://console.vast.ai/api/v0/instances/$CONTAINER_ID/ "
-                            "-H \"Authorization: Bearer $CONTAINER_API_KEY\""
-                        ),
-                    )
+                        key_path = get_ssh_key_path()
+                        ttl = state.spec.ttl or config.instance_timeout
+                        bootstrap_script = state.spec.image.generate_bootstrap(
+                            ttl=ttl,
+                            shutdown_command=(
+                                "eval $(cat /proc/1/environ | tr '\\0' '\\n' | "
+                                "grep -E 'CONTAINER_ID|CONTAINER_API_KEY' | sed 's/^/export /'); "
+                                "curl -s -X DELETE https://console.vast.ai/api/v0/instances/$CONTAINER_ID/ "
+                                "-H \"Authorization: Bearer $CONTAINER_API_KEY\""
+                            ),
+                        )
 
-                    transport = await wait_for_ssh(
-                        host=instance.ip,
-                        user="root",
-                        key_path=key_path,
-                        timeout=120.0,
-                        port=instance.ssh_port,
-                        log_prefix="VastAI: ",
-                    )
-
-                    try:
-                        await run_bootstrap_via_ssh(
-                            transport=transport,
-                            info=instance,
-                            bootstrap_script=bootstrap_script,
+                        transport = await wait_for_ssh(
+                            host=instance.ip,
+                            user="root",
+                            key_path=key_path,
+                            timeout=120.0,
+                            port=instance.ssh_port,
                             log_prefix="VastAI: ",
                         )
-                    finally:
-                        await transport.close()
 
-                ctx.pipe_to_self(run_bootstrap())
+                        try:
+                            await run_bootstrap_via_ssh(
+                                transport=transport,
+                                info=instance,
+                                bootstrap_script=bootstrap_script,
+                                log_prefix="VastAI: ",
+                            )
+                        finally:
+                            await transport.close()
 
-                ctx.spawn(
-                    instance_monitor(
-                        info=instance,
-                        ssh_user="root",
-                        ssh_key_path=get_ssh_key_path(),
-                        pool_ref=pool_ref,
-                        reply_to=ctx.self,
-                    ),
-                    f"monitor-{instance.id}",
-                )
-                return Behaviors.same()
+                    ctx.pipe_to_self(run_bootstrap())
 
-            case BootstrapDone(instance=info, success=True):
-                logger.info(f"VastAI: Bootstrap completed for instance {info.id}")
+                    ctx.spawn(
+                        instance_monitor(
+                            info=instance,
+                            ssh_user="root",
+                            ssh_key_path=get_ssh_key_path(),
+                            pool_ref=pool_ref,
+                            reply_to=ctx.self,
+                        ),
+                        f"monitor-{instance.id}",
+                    )
+                    return Behaviors.same()
 
-                if state.spec.image.skyward_source == "local":
-                    async def install_local() -> None:
-                        await _install_local_skyward(info, info.ip, info.ssh_port)
-                        state.add_instance(info)
+                case BootstrapDone(instance=info, success=True):
+                    logger.info(f"VastAI: Bootstrap completed for instance {info.id}")
+
+                    if state.spec.image.skyward_source == "local":
+                        async def install_and_register() -> _ProvisioningDone:
+                            await _install_local_skyward(info, info.ip, info.ssh_port)
+                            new_state = replace(state,
+                                instances=MappingProxyType({**state.instances, info.id: info}),
+                                pending_nodes=state.pending_nodes - {info.node},
+                            )
+                            pool_ref.tell(InstanceBootstrapped(instance=info))
+                            return _ProvisioningDone(state=new_state)
+
+                        ctx.pipe_to_self(install_and_register())
+                    else:
+                        new_state = replace(state,
+                            instances=MappingProxyType({**state.instances, info.id: info}),
+                            pending_nodes=state.pending_nodes - {info.node},
+                        )
                         pool_ref.tell(InstanceBootstrapped(instance=info))
+                        return active(new_state, reserved_offers)
 
-                    ctx.pipe_to_self(install_local())
-                else:
-                    state.add_instance(info)
-                    pool_ref.tell(InstanceBootstrapped(instance=info))
+                    return Behaviors.same()
 
-                return Behaviors.same()
+                case BootstrapDone(instance=info, success=False, error=error):
+                    logger.error(f"VastAI: Bootstrap failed for instance {info.id}: {error}")
+                    return Behaviors.same()
 
-            case BootstrapDone(instance=info, success=False, error=error):
-                logger.error(f"VastAI: Bootstrap failed for instance {info.id}: {error}")
-                return Behaviors.same()
+                case ShutdownRequested(cluster_id=cluster_id):
+                    logger.info(f"VastAI: Shutting down cluster {cluster_id}")
 
-            case ShutdownRequested(cluster_id=cluster_id):
-                logger.info(f"VastAI: Shutting down cluster {cluster_id}")
+                    async def shutdown() -> None:
+                        async with client:
+                            for iid in state.instances.keys():
+                                with suppress(Exception):
+                                    await client.destroy_instance(int(iid))
 
-                async def shutdown() -> None:
-                    async with client:
-                        for iid in state.instance_ids:
-                            with suppress(Exception):
-                                await client.destroy_instance(int(iid))
+                            if state.overlay_name:
+                                with suppress(Exception):
+                                    await client.delete_overlay(state.overlay_name)
 
-                        if state.overlay_name:
-                            with suppress(Exception):
-                                await client.delete_overlay(state.overlay_name)
+                        await client.close()
 
-                    await client.close()
+                    ctx.pipe_to_self(shutdown())
+                    return Behaviors.stopped()
 
-                ctx.pipe_to_self(shutdown())
-                return Behaviors.stopped()
+                case _:
+                    return Behaviors.same()
 
-            case _:
-                logger.debug(f"VastAI active: ignoring {type(msg).__name__}")
-                return Behaviors.same()
+        return Behaviors.receive(receive)
 
-    return Behaviors.receive(idle)
+    return idle()
 
 
 # =============================================================================

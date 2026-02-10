@@ -1,6 +1,6 @@
 """Panel state management.
 
-Mutable state updated by events, with to_view_model() for rendering.
+Frozen state with to_view_model() for rendering.
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from math import ceil
+from types import MappingProxyType
 from typing import Literal
 
 from .components.metrics import temp_color
@@ -26,21 +27,21 @@ from .viewmodel import (
 # =============================================================================
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class MetricsState:
     """Per-instance metrics with history."""
 
-    values: dict[str, float] = field(default_factory=dict)
-    history: dict[str, list[float]] = field(default_factory=dict)
-    smoothed: dict[str, float] = field(default_factory=dict)
+    values: MappingProxyType[str, float] = field(default_factory=lambda: MappingProxyType({}))
+    history: MappingProxyType[str, tuple[float, ...]] = field(default_factory=lambda: MappingProxyType({}))
+    smoothed: MappingProxyType[str, float] = field(default_factory=lambda: MappingProxyType({}))
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class InstanceState:
     """State for a single instance."""
 
     instance_id: str
-    node: int = 0  # Node index from event (0 = head)
+    node: int = 0
     provider: str = ""
     spec_name: str = ""
     is_spot: bool = True
@@ -49,11 +50,11 @@ class InstanceState:
     billing_increment_minutes: int | None = None
     start_time: float | None = None
     end_time: float | None = None
-    logs: list[str] = field(default_factory=list)
+    logs: tuple[str, ...] = ()
     last_log_time: float = 0.0
     metrics: MetricsState = field(default_factory=MetricsState)
-    preempted: bool = False  # Track preemption status
-    bootstrapped: bool = False  # Track bootstrap completion
+    preempted: bool = False
+    bootstrapped: bool = False
 
     @property
     def is_placeholder(self) -> bool:
@@ -100,7 +101,7 @@ class InstanceState:
 # =============================================================================
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class InfraState:
     """Captured infrastructure info."""
 
@@ -112,7 +113,7 @@ class InfraState:
     gpu_count: int = 0
     gpu_model: str = ""
     gpu_vram_gb: int = 0
-    allocation: str = ""  # "spot", "on-demand", "spot-if-available", "cheapest"
+    allocation: str = ""
 
 
 # =============================================================================
@@ -120,34 +121,30 @@ class InfraState:
 # =============================================================================
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class PanelState:
-    """Mutable state updated by events.
+    """Frozen state produced by the panel actor.
 
-    This is the central state store that gets updated by the controller
-    based on incoming events. It provides to_view_model() to produce
+    This is the central state store that gets replaced by the actor
+    on each event. It provides to_view_model() to produce
     immutable snapshots for rendering.
     """
 
-    # Phase tracking
     phase: str = "Initializing"
-    phase_times: dict[str, float] = field(default_factory=dict)
+    phase_times: MappingProxyType[str, float] = field(default_factory=lambda: MappingProxyType({}))
     start_time: float = 0.0
     is_done: bool = False
     has_error: bool = False
 
-    # Node tracking
     total_nodes: int = 0
     provisioned: int = 0
     ready: int = 0
     spot_count: int = 0
     ondemand_count: int = 0
 
-    # Infrastructure
     infra: InfraState = field(default_factory=InfraState)
 
-    # Instances (instance_id -> InstanceState)
-    instances: dict[str, InstanceState] = field(default_factory=dict)
+    instances: MappingProxyType[str, InstanceState] = field(default_factory=lambda: MappingProxyType({}))
 
     def to_view_model(
         self, terminal_width: int, terminal_height: int, blink_on: bool = True
@@ -166,27 +163,21 @@ class PanelState:
 
     def _build_view_model(self, width: int, height: int, blink_on: bool) -> PanelViewModel:
         """Build the complete ViewModel."""
-        # Build header
         header = self._build_header_vm(blink_on)
 
-        # Build infra
         infra = self._build_infra_vm()
 
-        # Calculate log lines per instance type based on terminal height
-        # Layout: header (1) + infra (3) + separator (1) + secondary nodes (1 header + 2 logs each) + head (1 header + N logs)
         active_id = self._get_active_instance_id()
         secondary_count = sum(
             1 for inst in self.instances.values()
             if not inst.is_placeholder and inst.instance_id != active_id
         )
-        fixed_overhead = 1 + 3 + 1 + 1  # header + infra + separator + head header
-        secondary_total = secondary_count * 3  # 1 header + 2 log lines each
+        fixed_overhead = 1 + 3 + 1 + 1
+        secondary_total = secondary_count * 3
         head_log_lines = max(5, height - fixed_overhead - secondary_total)
 
-        # Build instance VMs with appropriate log slicing
         instance_vms = self._build_instance_vms(active_id, head_log_lines, blink_on)
 
-        # Build cluster VM from instances
         cluster = self._build_cluster_vm(instance_vms)
 
         return PanelViewModel(
@@ -217,7 +208,6 @@ class PanelState:
         self,
     ) -> dict[str, Literal["pending", "in_progress", "completed"]]:
         """Build 3-phase pipeline: Provision - Prepare - Execute."""
-        # Provision: covers network + instance provisioning
         if "provision" in self.phase_times:
             provision_status: Literal["pending", "in_progress", "completed"] = "completed"
         elif self.phase in ("Provisioning", "Initializing"):
@@ -225,7 +215,6 @@ class PanelState:
         else:
             provision_status = "pending"
 
-        # Prepare: covers bootstrap
         if "bootstrap" in self.phase_times:
             prepare_status: Literal["pending", "in_progress", "completed"] = "completed"
         elif self.phase == "Bootstrapping":
@@ -233,7 +222,6 @@ class PanelState:
         else:
             prepare_status = "pending"
 
-        # Execute: running user code
         if self.is_done:
             execute_status: Literal["pending", "in_progress", "completed"] = "completed"
         elif self.phase == "Executing":
@@ -252,7 +240,6 @@ class PanelState:
         if not self.infra.provider:
             return None
 
-        # Build GPU info string: "1x T4 (16 GB)"
         gpu_info: str | None = None
         if self.infra.gpu_count and self.infra.gpu_model:
             vram_total = self.infra.gpu_count * self.infra.gpu_vram_gb
@@ -261,7 +248,6 @@ class PanelState:
             else:
                 gpu_info = f"{self.infra.gpu_count}x {self.infra.gpu_model}"
 
-        # Build allocation string: "12 nodes (10 spot + 2 od)"
         total_nodes = self.total_nodes or self.provisioned
         if self.spot_count > 0 and self.ondemand_count > 0:
             allocation = f"{total_nodes} nodes ({self.spot_count} spot + {self.ondemand_count} od)"
@@ -270,24 +256,20 @@ class PanelState:
         elif self.ondemand_count > 0:
             allocation = f"{total_nodes} on-demand"
         elif self.infra.allocation:
-            # Use allocation strategy from spec before we have real data
             strategy = self.infra.allocation
             if strategy == "on-demand":
                 allocation = f"{total_nodes} on-demand"
             elif strategy == "spot":
                 allocation = f"{total_nodes} spot"
             else:
-                # spot-if-available, cheapest
                 allocation = f"{total_nodes} nodes"
         else:
             allocation = f"{total_nodes} nodes"
 
-        # Calculate hourly rate
         total_hourly = sum(
             inst.hourly_rate for inst in self.instances.values() if not inst.is_placeholder
         )
 
-        # Format hourly rate
         if total_hourly < 10:
             hourly_rate = f"${total_hourly:.2f}/hr"
         else:
@@ -321,13 +303,11 @@ class PanelState:
             if inst.is_placeholder:
                 continue
 
-            # Extract metrics (labels padded to 4 chars for alignment)
             cpu = self._extract_metric(inst.metrics, "cpu", "cpu ", "%", "green")
             mem = self._extract_metric(inst.metrics, "mem", "mem ", "%", "cyan")
             gpu = self._extract_metric(inst.metrics, "gpu_util", "gpu ", "%", "magenta")
             gpu_mem = self._extract_gpu_mem_percent(inst.metrics)
             temp_raw = self._extract_metric(inst.metrics, "gpu_temp", "temp", "", "yellow")
-            # Apply dynamic color based on temperature value
             temp = MetricVM(
                 label=temp_raw.label,
                 value=temp_raw.value,
@@ -339,7 +319,6 @@ class PanelState:
 
             market: Literal["spot", "on-demand"] = "spot" if inst.is_spot else "on-demand"
 
-            # Determine instance status
             status: Literal["bootstrapping", "ready", "done"]
             if self.is_done:
                 status = "done"
@@ -348,10 +327,9 @@ class PanelState:
             else:
                 status = "bootstrapping"
 
-            # Slice logs based on instance type
             is_active = inst_id == active_id
             log_count = head_log_lines if is_active else secondary_log_lines
-            logs = tuple(inst.logs[-log_count:]) if inst.logs else ()
+            logs = inst.logs[-log_count:] if inst.logs else ()
 
             result.append(
                 InstanceVM(
@@ -381,7 +359,6 @@ class PanelState:
         style: str,
     ) -> MetricVM:
         """Extract metric history and current value, aggregating multi-GPU if needed."""
-        # Find all raw metric names that match this base (e.g., gpu_util_0, gpu_util_1)
         matching_names = [
             name
             for name in metrics.history
@@ -399,8 +376,7 @@ class PanelState:
             )
 
         if len(matching_names) == 1:
-            # Single metric
-            history = metrics.history.get(matching_names[0], [])
+            history = metrics.history.get(matching_names[0], ())
             current = history[-1] if history else 0.0
             return MetricVM(
                 label=label,
@@ -411,8 +387,7 @@ class PanelState:
                 spark_width=8,
             )
 
-        # Multiple metrics - average them
-        histories = [metrics.history.get(n, []) for n in matching_names]
+        histories = [metrics.history.get(n, ()) for n in matching_names]
         max_len = max((len(h) for h in histories), default=0)
 
         avg_history: list[float] = []
@@ -435,7 +410,6 @@ class PanelState:
 
         Calculates percentage from gpu_mem_mb and gpu_mem_total_mb metrics.
         """
-        # Find used and total metrics (may have per-GPU suffixes)
         used_names = [
             n for n in metrics.history
             if n == "gpu_mem_mb" or re.match(r"^gpu_mem_mb_\d+$", n)
@@ -450,22 +424,19 @@ class PanelState:
                 label="vram", value=0.0, history=(), unit="%", style="blue", spark_width=8
             )
 
-        # Get the total (usually constant, take first value)
         total_mb = 0.0
         for name in total_names:
-            hist = metrics.history.get(name, [])
+            hist = metrics.history.get(name, ())
             if hist:
                 total_mb = hist[0]
                 break
 
         if total_mb == 0:
-            # Fallback: no total available
             return MetricVM(
                 label="vram", value=0.0, history=(), unit="%", style="blue", spark_width=8
             )
 
-        # Calculate percentage for each history point
-        used_histories = [metrics.history.get(n, []) for n in used_names]
+        used_histories = [metrics.history.get(n, ()) for n in used_names]
         max_len = max((len(h) for h in used_histories), default=0)
 
         pct_history: list[float] = []
@@ -514,14 +485,12 @@ class PanelState:
                 ),
             )
 
-        # Average current values
         avg_cpu = sum(i.cpu.value for i in instances) / len(instances)
         avg_mem = sum(i.mem.value for i in instances) / len(instances)
         avg_gpu = sum(i.gpu.value for i in instances) / len(instances)
         avg_gpu_mem = sum(i.gpu_mem.value for i in instances) / len(instances)
         avg_temp = sum(i.temp.value for i in instances) / len(instances)
 
-        # Average histories
         cpu_history = self._avg_histories([i.cpu.history for i in instances])
         mem_history = self._avg_histories([i.mem.history for i in instances])
         gpu_history = self._avg_histories([i.gpu.history for i in instances])

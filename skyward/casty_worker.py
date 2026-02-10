@@ -18,6 +18,7 @@ import os
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from typing import Any
 
 from aiohttp import web
 from casty import ActorContext, ActorRef, Behavior, Behaviors
@@ -25,10 +26,26 @@ from casty.config import CastyConfig, FailureDetectorConfig, HeartbeatConfig
 from casty.sharding import ClusteredActorSystem
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
+class TaskSucceeded:
+    result: Any
+    node_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class TaskFailed:
+    error: str
+    traceback: str
+    node_id: int
+
+
+type TaskResult = TaskSucceeded | TaskFailed
+
+
+@dataclass(frozen=True, slots=True)
 class ExecuteTask:
     fn_bytes: bytes
-    reply_to: ActorRef[dict]
+    reply_to: ActorRef[TaskResult]
 
 
 type WorkerMsg = ExecuteTask
@@ -42,13 +59,11 @@ def worker_behavior(node_id: int, concurrency: int = 1) -> Behavior[WorkerMsg]:
             case ExecuteTask(fn_bytes=fn_bytes, reply_to=reply_to):
 
                 async def fire() -> None:
-                    fn_name = "unknown"
-                    try:
-                        async with sem:
-                            def _run() -> dict:
-                                nonlocal fn_name
-                                from skyward.utils.serialization import deserialize
+                    async with sem:
+                        def _run() -> TaskResult:
+                            from skyward.utils.serialization import deserialize
 
+                            try:
                                 payload = deserialize(fn_bytes)
                                 fn = payload["fn"]
                                 args = payload.get("args", ())
@@ -58,13 +73,14 @@ def worker_behavior(node_id: int, concurrency: int = 1) -> Behavior[WorkerMsg]:
                                 print(f"[worker-{node_id}] Executing {fn_name}...", flush=True)
                                 result = fn(*args, **kwargs)
                                 print(f"[worker-{node_id}] {fn_name} completed", flush=True)
-                                return {"result": result, "node_id": node_id}
+                                return TaskSucceeded(result=result, node_id=node_id)
+                            except Exception as e:
+                                fn_name = "unknown"
+                                print(f"[worker-{node_id}] {fn_name} failed: {e}", flush=True)
+                                return TaskFailed(error=str(e), traceback=traceback.format_exc(), node_id=node_id)
 
-                            response = await asyncio.to_thread(_run)
-                            reply_to.tell(response)
-                    except Exception as e:
-                        print(f"[worker-{node_id}] {fn_name} failed: {e}", flush=True)
-                        reply_to.tell({"error": str(e), "traceback": traceback.format_exc(), "node_id": node_id})
+                        response = await asyncio.to_thread(_run)
+                        reply_to.tell(response)
 
                 asyncio.create_task(fire())
                 return Behaviors.same()
@@ -111,15 +127,16 @@ def create_app(
             timeout=600.0,
         )
 
-        if "error" in response:
-            error_data = {"error": response["error"], "traceback": response.get("traceback", "")}
-            return web.Response(
-                body=serialize(error_data),
-                content_type="application/octet-stream",
-                status=500,
-            )
-
-        return web.Response(body=serialize(response["result"]), content_type="application/octet-stream")
+        match response:
+            case TaskFailed(error=error, traceback=tb):
+                error_data = {"error": error, "traceback": tb}
+                return web.Response(
+                    body=serialize(error_data),
+                    content_type="application/octet-stream",
+                    status=500,
+                )
+            case TaskSucceeded(result=result):
+                return web.Response(body=serialize(result), content_type="application/octet-stream")
 
     async def broadcast_job(request: web.Request) -> web.Response:
 
@@ -136,7 +153,7 @@ def create_app(
 
         print(f"[broadcast] {fn_name} payload={len(fn_bytes)} bytes, asking...", flush=True)
 
-        responses: tuple[dict, ...] = await system.ask(
+        responses: tuple[TaskResult, ...] = await system.ask(
             broadcast_ref,
             lambda reply_to: ExecuteTask(
                 fn_bytes=fn_bytes,
@@ -145,23 +162,24 @@ def create_app(
             timeout=600.0,
         )
 
-        print(f"[broadcast] {fn_name} got {len(responses)} responses: {[r.get('node_id') for r in responses]}", flush=True)
+        print(f"[broadcast] {fn_name} got {len(responses)} responses: {[r.node_id for r in responses]}", flush=True)
 
         results = [None] * len(responses)
         for resp in responses:
-            nid = resp.get("node_id", 0)
-            if "error" in resp:
-                error_data = {
-                    "error": f"Node {nid}: {resp['error']}",
-                    "traceback": resp.get("traceback", ""),
-                }
-                return web.Response(
-                    body=serialize(error_data),
-                    content_type="application/octet-stream",
-                    status=500,
-                )
-            if nid < len(results):
-                results[nid] = resp["result"]
+            match resp:
+                case TaskFailed(error=error, traceback=tb, node_id=nid):
+                    error_data = {
+                        "error": f"Node {nid}: {error}",
+                        "traceback": tb,
+                    }
+                    return web.Response(
+                        body=serialize(error_data),
+                        content_type="application/octet-stream",
+                        status=500,
+                    )
+                case TaskSucceeded(result=result, node_id=nid):
+                    if nid < len(results):
+                        results[nid] = result
 
         return web.Response(body=serialize(results), content_type="application/octet-stream")
 

@@ -73,18 +73,6 @@ def instance_monitor(
 ) -> Behavior[MonitorMsg]:
     """An instance monitor tells this story: connecting → streaming → stopped."""
 
-    resources: dict[str, Any] = {}
-
-    async def _cleanup(ctx: ActorContext[MonitorMsg]) -> None:
-        task = resources.get("task")
-        if task and not task.done():
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-        transport = resources.get("transport")
-        if transport:
-            await transport.close()
-
     async def _setup(ctx: ActorContext[MonitorMsg]) -> Behavior[MonitorMsg]:
         from skyward.transport.ssh import SSHTransport
 
@@ -99,7 +87,6 @@ def instance_monitor(
             retry_delay=5.0,
         )
         await transport.connect()
-        resources["transport"] = transport
 
         logger.info(f"Instance monitor connected to {info.id}")
 
@@ -115,10 +102,16 @@ def instance_monitor(
                 logger.warning(f"Instance monitor stream error on {info.id}: {e}")
             ctx.self.tell(_StreamEnded())
 
-        task = asyncio.create_task(_read_loop())
-        resources["task"] = task
+        read_task = asyncio.create_task(_read_loop())
 
-        return streaming(transport, task, bootstrap_signaled=False)
+        async def _cleanup(ctx: ActorContext[MonitorMsg]) -> None:
+            if not read_task.done():
+                read_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await read_task
+            await transport.close()
+
+        return Behaviors.with_lifecycle(streaming(transport, read_task, bootstrap_signaled=False), post_stop=_cleanup)
 
     def streaming(
         transport: Any,
@@ -155,7 +148,7 @@ def instance_monitor(
 
         return Behaviors.receive(receive)
 
-    return Behaviors.with_lifecycle(Behaviors.setup(_setup), post_stop=_cleanup)
+    return Behaviors.setup(_setup)
 
 
 # =============================================================================
