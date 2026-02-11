@@ -6,7 +6,11 @@ Each operation is a function returning an Op (string or callable).
 
 from __future__ import annotations
 
-from ..constants import SKYWARD_DIR, UV_INSTALL_URL
+from skyward.providers.bootstrap.compose import SKYWARD_DIR
+
+from typing import Final
+
+UV_INSTALL_URL: Final = "https://astral.sh/uv/install.sh"
 
 from .compose import Op
 

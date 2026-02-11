@@ -12,7 +12,7 @@ from types import MappingProxyType
 from casty import ActorContext, Behavior, Behaviors, SpyEvent, Terminated
 
 from skyward.accelerators.catalog import get_gpu_vram_gb
-from skyward.messages import (
+from .messages import (
     BootstrapCommand,
     BootstrapConsole,
     BootstrapPhase,
@@ -30,7 +30,7 @@ from skyward.messages import (
 )
 from skyward.observability.panel.renderer import PanelRenderer
 from skyward.observability.panel.state import InfraState, InstanceState, MetricsState, PanelState
-from skyward.spec import PoolSpec
+from skyward.api.spec import PoolSpec
 
 type PanelInput = SpyEvent
 
@@ -335,6 +335,3 @@ def _calculate_cost(state: PanelState) -> tuple[float, float, float]:
 
     savings = total_ondemand - total_cost
     return total_cost, max_elapsed, savings
-
-
-__all__ = ["PanelInput", "panel_actor"]

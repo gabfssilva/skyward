@@ -19,9 +19,8 @@ from typing import TYPE_CHECKING, Any
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 from loguru import logger
 
-from skyward.actors.provider import BootstrapDone, ProviderMsg, _InstanceNowRunning, _InstanceWaitFailed
-from skyward.actors.streaming import StopMonitor, instance_monitor
-from skyward.messages import (
+from skyward.actors.messages import (
+    BootstrapDone,
     BootstrapRequested,
     ClusterProvisioned,
     ClusterRequested,
@@ -30,17 +29,22 @@ from skyward.messages import (
     InstanceMetadata,
     InstanceRequested,
     InstanceRunning,
+    ProviderMsg,
     ShutdownRequested,
+    StopMonitor,
+    _InstanceNowRunning,
+    _InstanceWaitFailed,
 )
-from skyward.retry import on_exception_message, retry
-from skyward.utils.pricing import get_instance_pricing
+from skyward.actors.streaming import instance_monitor
+from skyward.infra.retry import on_exception_message, retry
+from skyward.infra.pricing import get_instance_pricing
 
 from .clients import EC2ClientFactory
 from .config import AWS, AllocationStrategy
 from .state import AWSClusterState, AWSResources, InstanceConfig
 
 if TYPE_CHECKING:
-    from skyward.spec import Architecture, PoolSpec
+    from skyward.api.spec import Architecture, PoolSpec
 
 _AWS_INSTANCE_GPU = {
     "g4dn": "T4",
@@ -885,6 +889,3 @@ async def _ensure_key_pair(config: AWS, ec2: EC2ClientFactory) -> tuple[str, str
         )
 
     return key_name, private_key_path
-
-
-__all__ = ["aws_provider_actor"]

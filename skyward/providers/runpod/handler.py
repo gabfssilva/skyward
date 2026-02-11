@@ -19,9 +19,8 @@ from typing import TYPE_CHECKING, Any
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 from loguru import logger
 
-from skyward.actors.provider import BootstrapDone, ProviderMsg
-from skyward.actors.streaming import instance_monitor
-from skyward.messages import (
+from skyward.actors.messages import (
+    BootstrapDone,
     BootstrapRequested,
     ClusterProvisioned,
     ClusterRequested,
@@ -29,8 +28,10 @@ from skyward.messages import (
     InstanceLaunched,
     InstanceRequested,
     InstanceRunning,
+    ProviderMsg,
     ShutdownRequested,
 )
+from skyward.actors.streaming import instance_monitor
 from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
 from skyward.providers.wait import wait_for_ready
 
@@ -47,7 +48,7 @@ from .types import (
 )
 
 if TYPE_CHECKING:
-    from skyward.spec import PoolSpec
+    from skyward.api.spec import PoolSpec
 
 
 @dataclass(frozen=True, slots=True)
@@ -554,6 +555,3 @@ def runpod_provider_actor(
         return Behaviors.receive(receive)
 
     return idle()
-
-
-__all__ = ["runpod_provider_actor"]

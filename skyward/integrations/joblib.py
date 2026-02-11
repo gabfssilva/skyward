@@ -34,8 +34,8 @@ from joblib.parallel import ParallelBackendBase, register_parallel_backend
 from loguru import logger
 
 from skyward.accelerators import Accelerator
-from skyward.facade import SyncComputePool
-from skyward.image import DEFAULT_IMAGE, Image
+from skyward.api.pool import SyncComputePool
+from skyward.api.spec import DEFAULT_IMAGE, Image
 
 if TYPE_CHECKING:
     from collections.abc import Callable

@@ -258,14 +258,3 @@ class LockProxy:
 
     async def __aexit__(self, *args: object) -> None:
         await self.release_async()
-
-
-__all__ = [
-    "CounterProxy",
-    "DictProxy",
-    "SetProxy",
-    "QueueProxy",
-    "BarrierProxy",
-    "LockProxy",
-    "set_system_loop",
-]

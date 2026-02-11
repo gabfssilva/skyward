@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from loguru import logger
 
-from skyward.messages import InstanceMetadata
-from skyward.transport import SSHTransport
+from skyward.actors.messages import InstanceMetadata
+from skyward.infra import SSHTransport
 
 
 async def wait_for_ssh(
@@ -136,10 +136,3 @@ async def run_bootstrap_via_ssh(
     )
 
     logger.info(f"{log_prefix}Bootstrap started on {info.id}")
-
-
-__all__ = [
-    "wait_for_ssh",
-    "run_bootstrap_via_ssh",
-    "install_local_skyward",
-]

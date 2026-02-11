@@ -6,8 +6,6 @@ import functools
 import os
 from collections.abc import Callable
 
-__all__ = ["jax"]
-
 
 def jax[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Configure JAX distributed training.
@@ -35,7 +33,7 @@ def jax[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
             import jax
 
             # Use v1's instance_info which reads from COMPUTE_POOL env var
-            from skyward.cluster.info import instance_info
+            from skyward.api.runtime import instance_info
 
             pool = instance_info()
 

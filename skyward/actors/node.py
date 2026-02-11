@@ -4,24 +4,19 @@ import uuid
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 
-from skyward.actors.messages import Provision
-from skyward.actors.provider import ProviderMsg
-from skyward.messages import (
+from .messages import (
     ClusterId,
     InstanceBootstrapped,
     InstanceMetadata,
     InstancePreempted,
     InstanceProvisioned,
     InstanceRequested,
+    NodeBecameReady,
     NodeId,
+    NodeMsg,
+    Provision,
+    ProviderMsg,
     ProviderName,
-)
-
-type NodeMsg = (
-    Provision
-    | InstanceProvisioned
-    | InstanceBootstrapped
-    | InstancePreempted
 )
 
 
@@ -71,7 +66,6 @@ def node_actor(
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
             match msg:
                 case InstanceBootstrapped(instance=i) if i.node == node_id:
-                    from skyward.actors.pool import NodeBecameReady
                     pool_ref.tell(NodeBecameReady(node_id=node_id, instance=i))
                     return ready(i)
                 case _:

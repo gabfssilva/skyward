@@ -6,10 +6,16 @@ import pytest
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 from casty.sharding import ClusteredActorSystem
 
-from skyward.actors.provider import BootstrapDone, InstanceReady, ProviderMsg, _ProvisioningDone
-from skyward.image import Image
-from skyward.messages import ClusterProvisioned, ClusterRequested, ShutdownRequested
-from skyward.spec import PoolSpec
+from skyward.actors.messages import (
+    BootstrapDone,
+    ClusterProvisioned,
+    ClusterRequested,
+    InstanceReady,
+    ProviderMsg,
+    ShutdownRequested,
+    _ProvisioningDone,
+)
+from skyward.api.spec import Image, PoolSpec
 from tests.conftest import get_free_port
 
 
@@ -100,7 +106,7 @@ def test_provider_message_types_importable():
     )
     assert ready.instance_id == "i-123"
 
-    from skyward.messages import InstanceMetadata
+    from skyward.actors.messages import InstanceMetadata
 
     fake_instance = InstanceMetadata(id="i-123", node=0, provider="aws", ip="1.2.3.4")
     done = BootstrapDone(instance=fake_instance, success=True)

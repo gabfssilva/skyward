@@ -13,7 +13,7 @@ from typing import Any
 
 from casty import ActorRef, Behavior
 
-from skyward.actors.provider import ProviderMsg
+from skyward.actors.messages import ProviderMsg
 
 
 type ProviderActorFactory = Callable[[Any, ActorRef], Behavior[ProviderMsg]]
@@ -63,7 +63,7 @@ def get_provider_for_config(config: Any) -> tuple[ProviderActorFactory, str]:
 
         case Verda():
             def verda_factory(cfg: Any, pool_ref: ActorRef) -> Behavior[ProviderMsg]:
-                from skyward.http import HttpClient, OAuth2Auth
+                from skyward.infra.http import HttpClient, OAuth2Auth
 
                 from .verda.client import VERDA_API_BASE, VerdaClient, get_credentials
                 from .verda.handler import verda_provider_actor
@@ -91,8 +91,3 @@ def get_provider_for_config(config: Any) -> tuple[ProviderActorFactory, str]:
                 f"No provider registered for {type(config).__name__}. "
                 f"Available providers: AWS, VastAI, Verda, RunPod"
             )
-
-
-__all__ = [
-    "get_provider_for_config",
-]

@@ -6,16 +6,17 @@ import pytest
 from casty import ActorContext, Behavior, Behaviors
 from casty.sharding import ClusteredActorSystem
 
-from skyward.actors.messages import Provision
-from skyward.actors.node import NodeMsg, node_actor
-from skyward.actors.pool import NodeBecameReady
-from skyward.messages import (
+from skyward.actors.messages import (
     InstanceBootstrapped,
     InstanceMetadata,
     InstancePreempted,
     InstanceProvisioned,
     InstanceRequested,
+    NodeBecameReady,
+    NodeMsg,
+    Provision,
 )
+from skyward.actors.node import node_actor
 from tests.conftest import get_free_port
 
 

@@ -5,30 +5,27 @@ import asyncio
 import pytest
 from casty import ActorContext, ActorRef, ActorSystem, Behavior, Behaviors
 
-from skyward.actors.pool import (
+from skyward.actors.messages import (
     BroadcastResult,
     BroadcastTask,
-    ExecuteResult,
-    ExecuteTask,
-    NodeBecameReady,
-    PoolMsg,
-    PoolStarted,
-    PoolStopped,
-    StartPool,
-    StopPool,
-    pool_actor,
-)
-from skyward.messages import (
     ClusterProvisioned,
     ClusterRequested,
+    ExecuteResult,
+    ExecuteTask,
     InstanceBootstrapped,
     InstanceMetadata,
     InstancePreempted,
     InstanceProvisioned,
+    NodeBecameReady,
+    PoolMsg,
+    PoolStarted,
+    PoolStopped,
     ShutdownRequested,
+    StartPool,
+    StopPool,
 )
-from skyward.spec import PoolSpec
-from skyward.image import Image
+from skyward.actors.pool import pool_actor
+from skyward.api.spec import PoolSpec, Image
 
 pytestmark = pytest.mark.xdist_group("pool-actor")
 

@@ -20,7 +20,7 @@ import aiohttp
 from casty import ActorContext, ActorRef, ActorSystem, Behavior, Behaviors
 from loguru import logger
 
-from .utils.serialization import deserialize, serialize
+from .serialization import deserialize, serialize
 
 CASTY_PORT = 25520
 HTTP_PORT = 8265
@@ -453,11 +453,3 @@ class Executor:
     @property
     def is_connected(self) -> bool:
         return self._ref is not None
-
-
-__all__ = [
-    "Executor",
-    "ExecutorConfig",
-    "CASTY_PORT",
-    "HTTP_PORT",
-]

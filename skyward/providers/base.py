@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from skyward.messages import ClusterId, InstanceId, InstanceMetadata
-from skyward.spec import PoolSpec
+from skyward.actors.messages import ClusterId, InstanceId, InstanceMetadata
+from skyward.api.spec import PoolSpec
 
 
 # =============================================================================
@@ -28,10 +28,3 @@ class BaseClusterState:
 
     instances: dict[InstanceId, InstanceMetadata] = field(default_factory=dict)
     pending_nodes: set[int] = field(default_factory=set)
-
-
-# =============================================================================
-# Exports
-# =============================================================================
-
-__all__ = ["BaseClusterState"]

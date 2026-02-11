@@ -26,17 +26,19 @@ from typing import Any
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 from loguru import logger
 
-from skyward.actors.provider import BootstrapDone, ProviderMsg, _ProvisioningDone
-from skyward.actors.streaming import instance_monitor
-from skyward.messages import (
+from skyward.actors.messages import (
+    BootstrapDone,
     BootstrapRequested,
     ClusterProvisioned,
     ClusterRequested,
     InstanceBootstrapped,
-    InstanceRunning,
     InstanceRequested,
+    InstanceRunning,
+    ProviderMsg,
     ShutdownRequested,
+    _ProvisioningDone,
 )
+from skyward.actors.streaming import instance_monitor
 from skyward.providers.ssh_keys import get_ssh_key_path
 from skyward.providers.wait import wait_for_ready
 
@@ -665,6 +667,3 @@ async def _wait_and_emit_running(
         gpu_vram_gb=gpu_vram_gb,
         region=config.geolocation or "Global",
     ))
-
-
-__all__ = ["vastai_provider_actor"]

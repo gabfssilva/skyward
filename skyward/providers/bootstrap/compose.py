@@ -8,12 +8,14 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Final
 
-from ..constants import SKYWARD_DIR
+from typing import Final
+
+SKYWARD_DIR: Final = "/opt/skyward"
 
 EMIT_SH_PATH: Final = f"{SKYWARD_DIR}/emit.sh"
 
 if TYPE_CHECKING:
-    from ..metrics import Metric
+    from skyward.observability.metrics import Metric
 
 # =============================================================================
 # Core Types
@@ -281,7 +283,7 @@ def bootstrap(
         Complete shell script string.
 
     Example:
-        >>> from skyward.metrics import CPU, GPU, Default
+        >>> from skyward.observability.metrics import CPU, GPU, Default
         >>> script = bootstrap(
         ...     apt("python3", "curl"),
         ...     checkpoint(".step_apt"),
@@ -295,7 +297,7 @@ def bootstrap(
         case (None, list() | tuple() as m):
             base = make_header(m)
         case _:
-            from ..metrics import Default
+            from skyward.observability.metrics import Default
 
             base = make_header(Default())
 

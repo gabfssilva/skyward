@@ -1,6 +1,4 @@
-"""Skyward v2 - Event-driven compute orchestration.
-
-Usage as module (recommended):
+"""Skyward — distributed compute orchestration for ML/AI.
 
     import skyward as sky
 
@@ -8,273 +6,116 @@ Usage as module (recommended):
     def train(data):
         return model.fit(data)
 
-    @sky.pool(provider=sky.AWS(), accelerator="A100", nodes=4)
-    def main():
-        result = train(data) >> sky          # execute on one node
-        results = train(data) @ sky          # broadcast to all nodes
-        a, b = (task1() & task2()) >> sky    # parallel execution
-
-Or as context manager:
-
-    import skyward as sky
-
-    @sky.compute
-    def train(data): ...
-
     with sky.pool(provider=sky.AWS(), accelerator="A100") as p:
-        result = train(data) >> sky  # or >> p
+        result = train(data) >> sky
 """
 
-from __future__ import annotations
-
-# =============================================================================
-# User-facing API (sync facade) - PRIMARY EXPORTS
-# =============================================================================
-
-from .facade import (
-    # The sky singleton for >> sky / @ sky
-    sky,
-    # Core functions
-    pool,
-    compute,
-    gather,
-    # Types
-    SyncComputePool,
+from .api import (
+    AllocationStrategy,
+    CallbackWriter,
+    DEFAULT_IMAGE,
+    Image,
+    InstanceInfo,
     PendingCompute,
     PendingComputeGroup,
-    # Utilities
-    InstanceInfo,
+    PoolSpec,
+    SyncComputePool,
+    compute,
+    gather,
     instance_info,
+    is_head,
+    pool,
+    redirect_output,
     shard,
+    silent,
+    sky,
+    stderr,
+    stdout,
 )
-
-# =============================================================================
-# Providers (config classes only - no SDK dependencies)
-# =============================================================================
 
 from .providers import AWS, RunPod, VastAI, Verda
 
-# NOTE: Handlers and modules are NOT imported here to avoid SDK deps.
-# Import them explicitly when needed:
-#   from skyward.providers.aws import AWSHandler
+from .distributed import (
+    barrier,
+    counter,
+    dict,
+    lock,
+    queue,
+    set,
+)
 
-# =============================================================================
-# Image configuration
-# =============================================================================
-
-from .image import Image, DEFAULT_IMAGE
-
-# =============================================================================
-# Metrics (lazy-loaded submodule)
-# =============================================================================
-
-# Use: sky.metrics.CPU(), sky.metrics.GPU(), sky.metrics.Default()
-# Lazy to avoid importing metric specs until needed
-from skyward import metrics as metrics
-
-# =============================================================================
-# Events - the language of the system
-# =============================================================================
-
-from .messages import (
-    # Type aliases
-    ClusterId,
-    InstanceId,
-    NodeId,
-    ProviderName,
-    RequestId,
-    # Value objects
-    InstanceMetadata,
-    # Requests
-    ClusterRequested,
-    InstanceRequested,
-    ShutdownRequested,
-    # Facts
+from .actors.messages import (
     ClusterDestroyed,
     ClusterProvisioned,
     ClusterReady,
+    ClusterRequested,
+    ClusterId,
     Error,
+    Event,
+    Fact,
     InstanceBootstrapped,
     InstanceDestroyed,
+    InstanceId,
+    InstanceMetadata,
     InstancePreempted,
     InstanceProvisioned,
     InstanceReplaced,
+    InstanceRequested,
     Log,
     Metric,
+    NodeId,
+    ProviderName,
+    Request,
+    RequestId,
+    ShutdownRequested,
     TaskCompleted,
     TaskStarted,
-    # Unions
-    Event,
-    Fact,
-    Request,
 )
 
-# =============================================================================
-# Specs - configuration
-# =============================================================================
-
-from .spec import (
-    AllocationStrategy,
-    PoolSpec,
-)
-
-# =============================================================================
-# Accelerators - GPU/TPU specifications
-# =============================================================================
-
-from .accelerators import Accelerator
-
-# Lazy-loaded submodule: sky.accelerators.H100(), sky.accelerators.T4(), etc.
+from skyward.observability import metrics as metrics
 from skyward import accelerators as accelerators
-
-# =============================================================================
-# Protocols - interfaces
-# =============================================================================
-
-from .protocols import (
-    Executor,
-    HealthChecker,
-    PreemptionChecker,
-    Serializable,
-    Transport,
-    TransportFactory,
-)
-
-# =============================================================================
-# Components
-# =============================================================================
-
-# PoolState kept for backwards compatibility
-from .pool import PoolState  # noqa: E402
-
-# Re-bind pool function after .pool module import shadows it
-from .facade import pool as pool  # noqa: E811, F811
-
-# =============================================================================
-# Monitors
-# =============================================================================
-
-from .monitors import InstanceRegistry
-
-# =============================================================================
-# Transport
-# =============================================================================
-
-from .transport import SSHTransport
-
-# =============================================================================
-# Executor
-# =============================================================================
-
-from .executor import Executor
-
-# =============================================================================
-# Retry
-# =============================================================================
-
-from .retry import (
-    all_of,
-    any_of,
-    on_exception_message,
-    on_status_code,
-    retry,
-)
-
-# =============================================================================
-# Throttle
-# =============================================================================
-
-from .throttle import (
-    Limiter,
-    ThrottleError,
-    throttle,
-)
-
-# =============================================================================
-# Output Control
-# =============================================================================
-
-from .stdout import (
-    stdout,
-    stderr,
-    silent,
-    is_head,
-    CallbackWriter,
-    redirect_output,
-)
-
-# =============================================================================
-# Integrations (lazy-loaded submodule)
-# =============================================================================
-
-# Use: from skyward import integrations
-#      from skyward.integrations import keras
-# Lazy to avoid requiring torch/jax/tensorflow at import time
 from skyward import integrations as integrations
 
-# =============================================================================
-# Distributed Collections
-# =============================================================================
-
-from .distributed import (
-    dict,
-    set,
-    counter,
-    queue,
-    barrier,
-    lock,
-)
-
-# =============================================================================
-# Exports
-# =============================================================================
-
 __all__ = [
-    # =================================================================
-    # Primary User API (import skyward as sky)
-    # =================================================================
-    "sky",           # singleton for >> sky / @ sky
-    "pool",          # decorator or context manager
-    "compute",       # @compute decorator
-    "gather",        # gather() for parallel execution
-    "InstanceInfo",  # runtime info type
-    "instance_info", # get instance info inside @compute
-    "shard",         # shard data across nodes
-    # Types
+    "sky",
+    "pool",
+    "compute",
+    "gather",
     "SyncComputePool",
     "PendingCompute",
     "PendingComputeGroup",
-    # =================================================================
-    # Providers (config classes only - import handlers explicitly)
-    # =================================================================
+    "InstanceInfo",
+    "instance_info",
+    "shard",
+    "stdout",
+    "stderr",
+    "silent",
+    "is_head",
+    "CallbackWriter",
+    "redirect_output",
     "AWS",
     "RunPod",
     "VastAI",
     "Verda",
-    # =================================================================
-    # Image
-    # =================================================================
     "Image",
     "DEFAULT_IMAGE",
-    # =================================================================
-    # Metrics (submodule)
-    # =================================================================
-    "metrics",  # submodule: sky.metrics.CPU(), sky.metrics.GPU(), etc.
-    # =================================================================
-    # Events - Type aliases
-    # =================================================================
+    "PoolSpec",
+    "AllocationStrategy",
+    "dict",
+    "set",
+    "counter",
+    "queue",
+    "barrier",
+    "lock",
     "RequestId",
     "ClusterId",
     "InstanceId",
     "NodeId",
     "ProviderName",
-    # Events - Value objects
     "InstanceMetadata",
-    # Events - Requests
     "ClusterRequested",
     "InstanceRequested",
     "ShutdownRequested",
-    # Events - Facts
     "ClusterProvisioned",
     "InstanceProvisioned",
     "InstanceBootstrapped",
@@ -288,75 +129,10 @@ __all__ = [
     "Metric",
     "Log",
     "Error",
-    # Events - Unions
     "Request",
     "Fact",
     "Event",
-    # =================================================================
-    # Specs
-    # =================================================================
-    "PoolSpec",
-    "AllocationStrategy",
-    # =================================================================
-    # Accelerators
-    # =================================================================
-    "Accelerator",
-    "accelerators",  # submodule: sky.accelerators.H100(), etc.
-    # =================================================================
-    # Protocols
-    # =================================================================
-    "Transport",
-    "Executor",
-    "TransportFactory",
-    "HealthChecker",
-    "PreemptionChecker",
-    "Serializable",
-    # =================================================================
-    # Components
-    # =================================================================
-    "PoolState",
-    # =================================================================
-    # Monitors
-    # =================================================================
-    "InstanceRegistry",
-    # =================================================================
-    # Transport
-    # =================================================================
-    "SSHTransport",
-    # =================================================================
-    # Retry
-    # =================================================================
-    "retry",
-    "on_status_code",
-    "on_exception_message",
-    "any_of",
-    "all_of",
-    # =================================================================
-    # Throttle
-    # =================================================================
-    "throttle",
-    "Limiter",
-    "ThrottleError",
-    # =================================================================
-    # Output Control
-    # =================================================================
-    "stdout",
-    "stderr",
-    "silent",
-    "is_head",
-    "CallbackWriter",
-    "redirect_output",
-    # =================================================================
-    # Integrations (submodule)
-    # =================================================================
+    "metrics",
+    "accelerators",
     "integrations",
-    # =================================================================
-    # Distributed Collections
-    # =================================================================
-    "dict",
-    "set",
-    "counter",
-    "queue",
-    "barrier",
-    "lock",
 ]

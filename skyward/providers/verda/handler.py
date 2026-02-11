@@ -16,20 +16,21 @@ from typing import Any
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 from loguru import logger
 
-from skyward.actors.provider import BootstrapDone, ProviderMsg
-from skyward.actors.streaming import instance_monitor
-from skyward.messages import (
+from skyward.actors.messages import (
+    BootstrapDone,
     BootstrapRequested,
     ClusterProvisioned,
     ClusterRequested,
     InstanceBootstrapped,
     InstanceRequested,
     InstanceRunning,
+    ProviderMsg,
     ShutdownRequested,
 )
+from skyward.actors.streaming import instance_monitor
 from skyward.providers.ssh_keys import ensure_ssh_key_on_provider, get_ssh_key_path
 from skyward.providers.wait import wait_for_ready
-from skyward.spec import PoolSpec
+from skyward.api.spec import PoolSpec
 
 from .client import VerdaClient, VerdaError
 from .config import Verda
@@ -378,6 +379,3 @@ def verda_provider_actor(
         return Behaviors.receive(receive)
 
     return idle()
-
-
-__all__ = ["verda_provider_actor"]

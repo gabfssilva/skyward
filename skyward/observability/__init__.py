@@ -1,4 +1,4 @@
-"""Observability modules for Skyward."""
+"""Observability — logging, metrics, panel dashboard."""
 
 from .logging import (
     CONSOLE_FORMAT,
@@ -8,12 +8,44 @@ from .logging import (
     _setup_logging,
     _teardown_logging,
 )
+from .metrics import (
+    CPU,
+    Custom,
+    Default,
+    Disk,
+    GPU,
+    GPUMemory,
+    GPUMemoryTotal,
+    GPUTemp,
+    Memory,
+    MemoryTotal,
+    MemoryUsed,
+    Metric,
+    MetricsConfig,
+    NetworkRx,
+    NetworkTx,
+)
 
 __all__ = [
-    "LogConfig",
-    "LogLevel",
     "CONSOLE_FORMAT",
     "FILE_FORMAT",
+    "LogConfig",
+    "LogLevel",
     "_setup_logging",
     "_teardown_logging",
+    "CPU",
+    "Custom",
+    "Default",
+    "Disk",
+    "GPU",
+    "GPUMemory",
+    "GPUMemoryTotal",
+    "GPUTemp",
+    "Memory",
+    "MemoryTotal",
+    "MemoryUsed",
+    "Metric",
+    "MetricsConfig",
+    "NetworkRx",
+    "NetworkTx",
 ]

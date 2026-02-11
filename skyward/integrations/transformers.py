@@ -5,8 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Literal
 
-__all__ = ["transformers"]
-
 
 def transformers[**P, R](
     backend: Literal["nccl", "gloo"] | None = None,

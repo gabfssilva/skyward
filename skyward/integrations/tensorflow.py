@@ -7,8 +7,6 @@ import json
 import os
 from collections.abc import Callable
 
-__all__ = ["tensorflow"]
-
 
 def tensorflow[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Configure TensorFlow distributed training.
@@ -27,7 +25,7 @@ def tensorflow[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
     def decorator(fn: Callable[P, R]) -> Callable[P, R]:
         @functools.wraps(fn)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-            from skyward.runtime import instance_info
+            from skyward.api.runtime import instance_info
 
             pool = instance_info()
 

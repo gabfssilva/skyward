@@ -69,7 +69,7 @@ def worker_behavior(node_id: int, concurrency: int = 1) -> Behavior[WorkerMsg]:
     async def _execute(fn_bytes: bytes) -> TaskResult:
         async with sem:
             def _run() -> TaskResult:
-                from skyward.utils.serialization import deserialize
+                from skyward.infra.serialization import deserialize
 
                 try:
                     payload = deserialize(fn_bytes)
@@ -118,7 +118,7 @@ def create_app(
     broadcast_ref: ActorRef[WorkerMsg],
     num_nodes: int,
 ) -> web.Application:
-    from skyward.utils.serialization import deserialize, serialize
+    from skyward.infra.serialization import deserialize, serialize
 
     async def submit_job(request: web.Request) -> web.Response:
         payload_bytes = await request.read()
@@ -232,6 +232,7 @@ async def main(
             threshold=16.0,
             acceptable_heartbeat_pause_ms=10_000.0,
         ),
+        suppress_dead_letters_on_shutdown=True
     )
 
     quorum = num_nodes if num_nodes > 1 else None

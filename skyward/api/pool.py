@@ -38,21 +38,17 @@ from loguru import logger
 
 from casty import ActorRef, ActorSystem, Behaviors
 
-from .accelerators import Accelerator
-from .executor import HTTP_PORT, Executor, ExecutorConfig
-from .image import DEFAULT_IMAGE, Image
-from .spec import PoolSpec
-from .observability.logging import LogConfig, _setup_logging, _teardown_logging
+from skyward.accelerators import Accelerator
+from skyward.infra.executor import HTTP_PORT, Executor, ExecutorConfig
+from .spec import DEFAULT_IMAGE, Image, PoolSpec
+from skyward.observability.logging import LogConfig, _setup_logging, _teardown_logging
 
-# Import only config classes - these have NO SDK dependencies
-# Handlers and modules are imported lazily in _start_async()
-from .providers.aws.config import AWS
-from .providers.runpod.config import RunPod
-from .providers.vastai.config import VastAI
-from .providers.verda.config import Verda
+from skyward.providers.aws.config import AWS
+from skyward.providers.runpod.config import RunPod
+from skyward.providers.vastai.config import VastAI
+from skyward.providers.verda.config import Verda
 
-# Distributed collections
-from .distributed import (
+from skyward.distributed import (
     DistributedRegistry,
     _set_active_registry,
     DictProxy,
@@ -62,15 +58,10 @@ from .distributed import (
     BarrierProxy,
     LockProxy,
 )
-from .distributed.types import Consistency
+from skyward.distributed.types import Consistency
 
-# Type alias for all supported providers
 type Provider = AWS | RunPod | VastAI | Verda
 
-
-# =============================================================================
-# Context Variable for active pool
-# =============================================================================
 
 _active_pool: ContextVar[SyncComputePool | None] = ContextVar("active_pool", default=None)
 
@@ -83,11 +74,6 @@ def _get_active_pool() -> SyncComputePool:
             "No active pool. Use within a @pool decorated function or 'with pool(...):' block."
         )
     return pool
-
-
-# =============================================================================
-# Sky Singleton (captures >> and @ operators)
-# =============================================================================
 
 
 class _Sky:
@@ -119,13 +105,7 @@ class _Sky:
         return "<sky: no active pool>"
 
 
-# The singleton instance
 sky = _Sky()
-
-
-# =============================================================================
-# Pending Compute (lazy evaluation)
-# =============================================================================
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,11 +238,6 @@ def compute[F: Callable[..., Any]](fn: F) -> Callable[..., PendingCompute[Any]]:
     return wrapper
 
 
-# =============================================================================
-# Sync Pool Facade
-# =============================================================================
-
-
 @dataclass
 class SyncComputePool:
     """Synchronous ComputePool facade.
@@ -289,10 +264,8 @@ class SyncComputePool:
             return train(data) >> sky
     """
 
-    # Required
     provider: Provider
 
-    # Resources
     nodes: int = 1
     accelerator: str | Accelerator | None = None
     vcpus: int | None = None
@@ -300,24 +273,18 @@ class SyncComputePool:
     architecture: Literal["x86_64", "arm64"] | None = None
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available"
 
-    # Environment
     image: Image = field(default_factory=lambda: DEFAULT_IMAGE)
     timeout: int = 180
     ttl: int = 600
 
-    # Concurrency
-    concurrency: int = 1  # Workers per node
+    concurrency: int = 1
 
-    # Panel UI
-    panel: bool = True  # Enable Rich terminal dashboard
+    panel: bool = True
 
-    # Logging
-    logging: LogConfig | bool = True  # Logs to .skyward/skyward.log
+    logging: LogConfig | bool = True
 
-    # Budget
-    max_hourly_cost: float | None = None  # USD/hr for entire cluster
+    max_hourly_cost: float | None = None
 
-    # Internal
     _log_handler_ids: list[int] = field(default_factory=list, init=False, repr=False)
     _loop: asyncio.AbstractEventLoop | None = field(default=None, init=False, repr=False)
     _loop_thread: threading.Thread | None = field(default=None, init=False, repr=False)
@@ -325,14 +292,11 @@ class SyncComputePool:
     _active: bool = field(default=False, init=False, repr=False)
     _context_token: Any = field(default=None, init=False, repr=False)
     _registry: DistributedRegistry | None = field(default=None, init=False, repr=False)
-    # Actor system
     _system: ActorSystem | None = field(default=None, init=False, repr=False)
-    _pool_ref: Any = field(default=None, init=False, repr=False)  # ActorRef[PoolMsg]
-    # Cluster state (from PoolStarted reply)
+    _pool_ref: Any = field(default=None, init=False, repr=False)
     _cluster_id: str = field(default="", init=False, repr=False)
     _instances: dict[int, Any] = field(default_factory=dict, init=False, repr=False)
     _spec: PoolSpec | None = field(default=None, init=False, repr=False)
-    # Executor
     _executor: Executor | None = field(default=None, init=False, repr=False)
     _network_interfaces: dict[int, str] = field(default_factory=dict, init=False, repr=False)
 
@@ -354,7 +318,6 @@ class SyncComputePool:
 
         logger.info(f"Starting pool with {self.nodes} nodes ({self.accelerator})")
 
-        # Create event loop in background thread
         self._loop = asyncio.new_event_loop()
         self._loop_thread = threading.Thread(
             target=self._run_loop,
@@ -363,11 +326,9 @@ class SyncComputePool:
         )
         self._loop_thread.start()
 
-        # Start pool asynchronously
         try:
             self._run_sync(self._start_async())
             self._active = True
-            # Set this pool as active in context
             self._context_token = _active_pool.set(self)
             logger.info("Pool ready")
         except Exception as e:
@@ -476,10 +437,6 @@ class SyncComputePool:
 
         return self._run_sync(_map_async())
 
-    # -------------------------------------------------------------------------
-    # Distributed Collections
-    # -------------------------------------------------------------------------
-
     def dict(self, name: str, *, consistency: Consistency | None = None) -> DictProxy:
         """Get or create a distributed dict."""
         if self._registry is None:
@@ -518,9 +475,9 @@ class SyncComputePool:
 
     async def _start_async(self) -> None:
         """Start pool asynchronously using actors (zero bus)."""
-        from .actors.panel import panel_actor
-        from .actors.pool import PoolMsg, PoolStarted, StartPool, pool_actor
-        from .providers.registry import get_provider_for_config
+        from skyward.actors.panel import panel_actor
+        from skyward.actors.pool import PoolMsg, PoolStarted, StartPool, pool_actor
+        from skyward.providers.registry import get_provider_for_config
 
         actor_factory, provider_name = get_provider_for_config(self.provider)
 
@@ -587,7 +544,7 @@ class SyncComputePool:
             self._executor = None
 
         if self._pool_ref is not None and self._system is not None:
-            from .actors.pool import StopPool, PoolStopped
+            from skyward.actors.pool import StopPool, PoolStopped
             await self._system.ask(
                 self._pool_ref,
                 lambda reply_to: StopPool(reply_to=reply_to),
@@ -597,10 +554,6 @@ class SyncComputePool:
         if self._system is not None:
             await self._system.__aexit__(None, None, None)
             self._system = None
-
-    # -------------------------------------------------------------------------
-    # Executor setup (moved from pool.py)
-    # -------------------------------------------------------------------------
 
     async def _create_executor(self) -> None:
         from skyward.providers.ssh_keys import get_ssh_key_path
@@ -643,12 +596,13 @@ class SyncComputePool:
         ssh_user: str,
         ssh_key: str,
     ) -> None:
-        from skyward.bootstrap import EMIT_SH_PATH
-        from skyward.constants import VENV_DIR
+        from skyward.providers.bootstrap import EMIT_SH_PATH
+        from skyward.providers.bootstrap.compose import SKYWARD_DIR
         from skyward.providers.common import detect_network_interface
-        from skyward.transport.ssh import SSHTransport
+        from skyward.infra.ssh import SSHTransport
 
-        python_bin = f"{VENV_DIR}/bin/python"
+        venv_dir = f"{SKYWARD_DIR}/.venv"
+        python_bin = f"{venv_dir}/bin/python"
         casty_port = 25520
         http_port = HTTP_PORT
         logger.debug("Starting Casty cluster via SSH...")
@@ -667,7 +621,7 @@ class SyncComputePool:
         ) -> str:
             seeds_arg = f"--seeds {seeds} " if seeds else ""
             casty_cmd = (
-                f"nohup {python_bin} -m skyward.casty_worker "
+                f"nohup {python_bin} -m skyward.infra.worker "
                 f"--node-id {node_id} --port {casty_port} --http-port {http_port} "
                 f"--num-nodes {self.nodes} --host {host} "
                 f"--workers-per-node {self.concurrency} "
@@ -802,11 +756,6 @@ class SyncComputePool:
     def __repr__(self) -> str:
         status = "active" if self._active else "inactive"
         return f"SyncComputePool(nodes={self.nodes}, accelerator={self.accelerator}, {status})"
-
-
-# =============================================================================
-# Pool Factory / Decorator
-# =============================================================================
 
 
 class _PoolFactory:
@@ -976,7 +925,6 @@ def pool(
     Returns:
         A _PoolFactory that works as context manager or decorator.
     """
-    # If first arg is callable, it's being used as @pool without parens
     if callable(provider):
         fn = provider
         factory = _PoolFactory(
@@ -996,7 +944,6 @@ def pool(
         )
         return factory(fn)
 
-    # Otherwise return factory for context manager or decorator use
     return _PoolFactory(
         provider=provider,  # type: ignore[arg-type]
         nodes=nodes,
@@ -1012,37 +959,3 @@ def pool(
         logging=logging,
         max_hourly_cost=max_hourly_cost,
     )
-
-
-# =============================================================================
-# Utilities (for use inside @compute functions)
-# =============================================================================
-
-# Import from runtime module - this keeps the import chain minimal
-# on remote instances (no provider SDK dependencies)
-from .runtime import instance_info, shard
-from .cluster.info import InstanceInfo
-
-
-# =============================================================================
-# Exports
-# =============================================================================
-
-__all__ = [
-    # Core API
-    "sky",
-    "pool",
-    "compute",
-    "gather",
-    # Types
-    "SyncComputePool",
-    "PendingCompute",
-    "PendingComputeGroup",
-    # Utilities
-    "InstanceInfo",
-    "instance_info",
-    "shard",
-    # Re-exports for convenience
-    "AWS",
-    "Image",
-]

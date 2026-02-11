@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from skyward.http import HttpClient, HttpError
+from skyward.infra.http import HttpClient, HttpError
 
 from .types import (
     AvailabilityRegion,
@@ -233,11 +233,3 @@ def get_credentials() -> tuple[str, str]:
         raise ValueError("Verda client secret not found. Set VERDA_CLIENT_SECRET environment variable.")
 
     return client_id, client_secret
-
-
-__all__ = [
-    "VERDA_API_BASE",
-    "VerdaClient",
-    "VerdaError",
-    "get_credentials",
-]

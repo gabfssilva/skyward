@@ -7,8 +7,6 @@ import os
 from collections.abc import Callable
 from typing import Literal
 
-__all__ = ["torch"]
-
 
 def torch[**P, R](
     _fn: Callable[P, R] | None = None,
@@ -31,7 +29,7 @@ def torch[**P, R](
             import torch
             import torch.distributed as dist
 
-            from skyward.runtime import instance_info
+            from skyward.api.runtime import instance_info
 
             pool = instance_info()
 

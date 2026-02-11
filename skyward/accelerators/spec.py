@@ -120,6 +120,3 @@ class Accelerator:
         if self.metadata:
             parts.append(f"metadata={self.metadata!r}")
         return f"Accelerator({', '.join(parts)})"
-
-
-__all__ = ["Accelerator"]

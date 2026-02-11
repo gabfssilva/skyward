@@ -1,11 +1,4 @@
-from skyward.actors.streaming import (
-    StopMonitor,
-    _StreamedEvent,
-    _StreamEnded,
-    _convert,
-    instance_monitor,
-)
-from skyward.messages import (
+from skyward.actors.messages import (
     BootstrapCommand,
     BootstrapConsole,
     BootstrapFailed,
@@ -13,7 +6,11 @@ from skyward.messages import (
     InstanceMetadata,
     Log,
     Metric,
+    StopMonitor,
+    _StreamedEvent,
+    _StreamEnded,
 )
+from skyward.actors.streaming import _convert, instance_monitor
 
 
 def _test_instance() -> InstanceMetadata:
@@ -28,7 +25,7 @@ def _test_instance() -> InstanceMetadata:
 
 class TestConvertConsole:
     def test_stdout(self):
-        from skyward.transport.ssh import RawBootstrapConsole
+        from skyward.infra.ssh import RawBootstrapConsole
 
         info = _test_instance()
         event = _convert(RawBootstrapConsole(content="installing deps...", stream="stdout"), info)
@@ -38,7 +35,7 @@ class TestConvertConsole:
         assert event.instance is info
 
     def test_stderr(self):
-        from skyward.transport.ssh import RawBootstrapConsole
+        from skyward.infra.ssh import RawBootstrapConsole
 
         info = _test_instance()
         event = _convert(RawBootstrapConsole(content="warning: deprecated", stream="stderr"), info)
@@ -48,7 +45,7 @@ class TestConvertConsole:
 
 class TestConvertPhase:
     def test_started(self):
-        from skyward.transport.ssh import RawBootstrapPhase
+        from skyward.infra.ssh import RawBootstrapPhase
 
         info = _test_instance()
         event = _convert(RawBootstrapPhase(event="started", phase="apt"), info)
@@ -57,7 +54,7 @@ class TestConvertPhase:
         assert event.phase == "apt"
 
     def test_completed_with_elapsed(self):
-        from skyward.transport.ssh import RawBootstrapPhase
+        from skyward.infra.ssh import RawBootstrapPhase
 
         info = _test_instance()
         event = _convert(RawBootstrapPhase(event="completed", phase="pip", elapsed=12.5), info)
@@ -66,7 +63,7 @@ class TestConvertPhase:
         assert event.elapsed == 12.5
 
     def test_failed_returns_bootstrap_failed(self):
-        from skyward.transport.ssh import RawBootstrapPhase
+        from skyward.infra.ssh import RawBootstrapPhase
 
         info = _test_instance()
         event = _convert(RawBootstrapPhase(event="failed", phase="uv", error="timeout"), info)
@@ -75,7 +72,7 @@ class TestConvertPhase:
         assert event.error == "timeout"
 
     def test_failed_defaults_error(self):
-        from skyward.transport.ssh import RawBootstrapPhase
+        from skyward.infra.ssh import RawBootstrapPhase
 
         info = _test_instance()
         event = _convert(RawBootstrapPhase(event="failed", phase="setup"), info)
@@ -85,7 +82,7 @@ class TestConvertPhase:
 
 class TestConvertCommand:
     def test_command(self):
-        from skyward.transport.ssh import RawBootstrapCommand
+        from skyward.infra.ssh import RawBootstrapCommand
 
         info = _test_instance()
         event = _convert(RawBootstrapCommand(command="pip install torch"), info)
@@ -93,7 +90,7 @@ class TestConvertCommand:
         assert event.command == "pip install torch"
 
     def test_empty_command(self):
-        from skyward.transport.ssh import RawBootstrapCommand
+        from skyward.infra.ssh import RawBootstrapCommand
 
         info = _test_instance()
         event = _convert(RawBootstrapCommand(command=""), info)
@@ -103,7 +100,7 @@ class TestConvertCommand:
 
 class TestConvertMetric:
     def test_metric(self):
-        from skyward.transport.ssh import RawMetricEvent
+        from skyward.infra.ssh import RawMetricEvent
 
         info = _test_instance()
         event = _convert(RawMetricEvent(name="gpu_util", value=95.5, ts=1700000000.0), info)
@@ -113,7 +110,7 @@ class TestConvertMetric:
         assert event.timestamp == 1700000000.0
 
     def test_metric_invalid_value_returns_none(self):
-        from skyward.transport.ssh import RawMetricEvent
+        from skyward.infra.ssh import RawMetricEvent
 
         info = _test_instance()
         assert _convert(RawMetricEvent(name="gpu_util", value="not-a-number", ts=0.0), info) is None
@@ -121,7 +118,7 @@ class TestConvertMetric:
 
 class TestConvertLog:
     def test_log_stdout(self):
-        from skyward.transport.ssh import RawLogEvent
+        from skyward.infra.ssh import RawLogEvent
 
         info = _test_instance()
         event = _convert(RawLogEvent(content="training epoch 1", stream="stdout"), info)
@@ -130,7 +127,7 @@ class TestConvertLog:
         assert event.stream == "stdout"
 
     def test_log_stderr(self):
-        from skyward.transport.ssh import RawLogEvent
+        from skyward.infra.ssh import RawLogEvent
 
         info = _test_instance()
         event = _convert(RawLogEvent(content="error occurred", stream="stderr"), info)

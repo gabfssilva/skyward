@@ -1,5 +1,5 @@
 def test_pool_creates_registry():
-    from skyward.facade import SyncComputePool
+    from skyward.api.pool import SyncComputePool
 
     pool = SyncComputePool.__new__(SyncComputePool)
     pool._registry = None
@@ -8,7 +8,7 @@ def test_pool_creates_registry():
 
 
 def test_pool_has_collection_methods():
-    from skyward.facade import SyncComputePool
+    from skyward.api.pool import SyncComputePool
 
     assert hasattr(SyncComputePool, "dict")
     assert hasattr(SyncComputePool, "set")

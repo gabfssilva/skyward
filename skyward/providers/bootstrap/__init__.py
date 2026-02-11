@@ -56,6 +56,12 @@ from .casty import (
     server_ops as casty_server_ops,
 )
 
+from skyward.providers._bootstrap_ssh import (
+    install_local_skyward,
+    run_bootstrap_via_ssh,
+    wait_for_ssh,
+)
+
 __all__ = [
     # Core types
     "EMIT_SH_PATH",
@@ -89,4 +95,8 @@ __all__ = [
     "casty_install",
     "casty_service",
     "casty_server_ops",
+    # SSH bootstrap utilities
+    "install_local_skyward",
+    "run_bootstrap_via_ssh",
+    "wait_for_ssh",
 ]

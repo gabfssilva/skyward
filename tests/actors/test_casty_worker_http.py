@@ -6,7 +6,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from casty.sharding import ClusteredActorSystem
 
-from skyward.casty_worker import create_app, worker_behavior
+from skyward.infra.worker import create_app, worker_behavior
 from tests.conftest import get_free_port
 
 

@@ -95,6 +95,3 @@ class DistributedRegistry:
 
     def cleanup(self) -> None:
         self._distributed = None
-
-
-__all__ = ["DistributedRegistry"]

@@ -6,8 +6,6 @@ import functools
 from collections.abc import Callable
 from typing import Literal
 
-__all__ = ["keras"]
-
 Backend = Literal["jax", "torch", "tensorflow"] | None
 
 

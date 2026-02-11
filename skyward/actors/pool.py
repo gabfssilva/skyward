@@ -10,144 +10,40 @@ transparently via Behaviors.spy() — the pool has no knowledge of observers.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 
-from skyward.actors.messages import Provision
-from skyward.actors.node import NodeMsg, node_actor
-from skyward.actors.provider import ProviderMsg
-from skyward.messages import (
+from .messages import (
     BootstrapRequested,
+    BroadcastResult,
+    BroadcastTask,
     ClusterId,
     ClusterProvisioned,
     ClusterRequested,
+    ExecuteResult,
+    ExecuteTask,
     InstanceBootstrapped,
     InstanceMetadata,
     InstancePreempted,
     InstanceProvisioned,
     InstanceRunning,
+    NodeBecameReady,
     NodeId,
+    NodeMsg,
+    PoolMsg,
+    PoolStarted,
+    PoolStopped,
+    Provision,
+    ProviderMsg,
     ProviderName,
     ShutdownRequested,
+    StartPool,
+    StopPool,
+    _to_metadata,
 )
-from skyward.spec import PoolSpec
-
-
-# =============================================================================
-# Reply Types
-# =============================================================================
-
-
-@dataclass(frozen=True, slots=True)
-class PoolStarted:
-    cluster_id: ClusterId
-    instances: tuple[InstanceMetadata, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class PoolStopped:
-    pass
-
-
-@dataclass(frozen=True, slots=True)
-class ExecuteResult:
-    value: Any
-    node_id: int
-
-
-@dataclass(frozen=True, slots=True)
-class BroadcastResult:
-    values: tuple[Any, ...]
-
-
-# =============================================================================
-# Commands (external messages)
-# =============================================================================
-
-
-@dataclass(frozen=True, slots=True)
-class StartPool:
-    spec: PoolSpec
-    provider_config: Any
-    provider_ref: ActorRef[ProviderMsg]
-    reply_to: ActorRef[PoolStarted]
-
-
-@dataclass(frozen=True, slots=True)
-class StopPool:
-    reply_to: ActorRef[PoolStopped]
-
-
-@dataclass(frozen=True, slots=True)
-class ExecuteTask:
-    fn: Callable[..., Any]
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
-    node: int | None
-    reply_to: ActorRef[ExecuteResult]
-
-
-@dataclass(frozen=True, slots=True)
-class BroadcastTask:
-    fn: Callable[..., Any]
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
-    reply_to: ActorRef[BroadcastResult]
-
-
-# =============================================================================
-# Internal Messages (from node actors)
-# =============================================================================
-
-
-@dataclass(frozen=True, slots=True)
-class NodeBecameReady:
-    node_id: NodeId
-    instance: InstanceMetadata
-
-
-# =============================================================================
-# Message Union
-# =============================================================================
-
-type PoolMsg = (
-    StartPool
-    | StopPool
-    | ExecuteTask
-    | BroadcastTask
-    | ClusterProvisioned
-    | InstanceRunning
-    | InstanceProvisioned
-    | InstanceBootstrapped
-    | InstancePreempted
-    | NodeBecameReady
-)
-
-
-def _to_metadata(ev: InstanceRunning) -> InstanceMetadata:
-    return InstanceMetadata(
-        id=ev.instance_id,
-        node=ev.node_id,
-        provider=ev.provider,
-        ip=ev.ip,
-        private_ip=ev.private_ip or "",
-        network_interface=ev.network_interface,
-        spot=ev.spot,
-        ssh_port=ev.ssh_port,
-        hourly_rate=ev.hourly_rate,
-        on_demand_rate=ev.on_demand_rate,
-        billing_increment=ev.billing_increment,
-        instance_type=ev.instance_type,
-        gpu_count=ev.gpu_count,
-        gpu_model=ev.gpu_model,
-        vcpus=ev.vcpus,
-        memory_gb=ev.memory_gb,
-        gpu_vram_gb=ev.gpu_vram_gb,
-        region=ev.region,
-    )
+from .node import node_actor
+from skyward.api.spec import PoolSpec
 
 
 # =============================================================================
@@ -447,20 +343,3 @@ def pool_actor() -> Behavior[PoolMsg]:
     return idle()
 
 
-# =============================================================================
-# Exports
-# =============================================================================
-
-__all__ = [
-    "PoolStarted",
-    "PoolStopped",
-    "ExecuteResult",
-    "BroadcastResult",
-    "StartPool",
-    "StopPool",
-    "ExecuteTask",
-    "BroadcastTask",
-    "NodeBecameReady",
-    "PoolMsg",
-    "pool_actor",
-]

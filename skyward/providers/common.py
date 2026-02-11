@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from pathlib import Path
 
 from loguru import logger
 
-from skyward.constants import SKYWARD_DIR
-from skyward.messages import InstanceRunning, ProviderName
-from skyward.transport.ssh import SSHTransport
+from skyward.providers.bootstrap.compose import SKYWARD_DIR
+from skyward.actors.messages import InstanceRunning, ProviderName
+from skyward.infra.ssh import SSHTransport
 
 
 def build_instance_running_event(
@@ -100,16 +101,15 @@ async def detect_network_interface(transport: SSHTransport) -> str:
 
 
 def build_wheel() -> Path:
-    """Build skyward wheel locally."""
+    """Build skyward wheel locally into a fresh temp directory."""
     logger.debug("Building skyward wheel locally...")
     skyward_dir = Path(__file__).parent.parent
     project_dir = skyward_dir.parent
 
-    build_dir = Path("/tmp/skyward-wheel")
-    build_dir.mkdir(exist_ok=True)
+    build_dir = tempfile.mkdtemp(prefix="skyward-wheel-")
 
     result = subprocess.run(
-        ["uv", "build", "--wheel", "-o", str(build_dir)],
+        ["uv", "build", "--wheel", "-o", build_dir],
         cwd=project_dir,
         capture_output=True,
         text=True,
@@ -118,7 +118,7 @@ def build_wheel() -> Path:
         logger.error(f"Failed to build wheel: {result.stderr}")
         raise RuntimeError(f"Failed to build wheel: {result.stderr}")
 
-    wheel_path = next(build_dir.glob("*.whl"))
+    wheel_path = next(Path(build_dir).glob("*.whl"))
     logger.info(f"Built wheel: {wheel_path.name}")
     return wheel_path
 
@@ -158,10 +158,3 @@ $UV_PATH pip install {SKYWARD_DIR}/{wheel_name}
 {SKYWARD_DIR}/.venv/bin/python -c 'import casty; print("Casty OK")'
 """
     return script
-
-
-__all__ = [
-    "build_instance_running_event",
-    "build_wheel",
-    "_build_wheel_install_script",
-]

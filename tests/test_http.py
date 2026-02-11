@@ -4,7 +4,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
-from skyward.http import BearerAuth, HttpClient, HttpError, OAuth2Auth, Response
+from skyward.infra.http import BearerAuth, HttpClient, HttpError, OAuth2Auth, Response
 
 
 def make_app(

@@ -16,46 +16,26 @@ logs, and other runtime events.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
 from typing import Any
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 from loguru import logger
 
-from skyward.actors.provider import BootstrapDone
-from skyward.messages import (
+from .messages import (
     BootstrapCommand,
     BootstrapConsole,
+    BootstrapDone,
     BootstrapFailed,
     BootstrapPhase,
     Event,
     InstanceMetadata,
     Log,
     Metric,
+    MonitorMsg,
+    StopMonitor,
+    _StreamedEvent,
+    _StreamEnded,
 )
-
-
-# =============================================================================
-# Messages
-# =============================================================================
-
-
-@dataclass(frozen=True, slots=True)
-class StopMonitor:
-    pass
-
-
-@dataclass(frozen=True, slots=True)
-class _StreamedEvent:
-    event: Event
-
-
-@dataclass(frozen=True, slots=True)
-class _StreamEnded:
-    error: str | None = None
-
-
-type MonitorMsg = StopMonitor | _StreamedEvent | _StreamEnded
 
 
 # =============================================================================
@@ -89,7 +69,7 @@ def instance_monitor(
     """An instance monitor tells this story: connecting → streaming → stopped."""
 
     async def _setup(ctx: ActorContext[MonitorMsg]) -> Behavior[MonitorMsg]:
-        from skyward.transport.ssh import SSHTransport
+        from skyward.infra.ssh import SSHTransport
 
         logger.info(f"Instance monitor connecting to {info.id} at {info.ip}:{info.ssh_port}...")
 
@@ -160,7 +140,7 @@ def instance_monitor(
 
 
 def _convert(raw_event: object, info: InstanceMetadata) -> Event | None:
-    from skyward.transport.ssh import (
+    from skyward.infra.ssh import (
         RawBootstrapCommand,
         RawBootstrapConsole,
         RawBootstrapPhase,
@@ -186,13 +166,3 @@ def _convert(raw_event: object, info: InstanceMetadata) -> Event | None:
             return Log(instance=info, line=content, stream=stream)
         case _:
             return None
-
-
-# =============================================================================
-# Exports
-# =============================================================================
-
-__all__ = [
-    "StopMonitor",
-    "instance_monitor",
-]

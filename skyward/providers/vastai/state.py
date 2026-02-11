@@ -9,8 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
-from skyward.messages import InstanceMetadata
-from skyward.spec import PoolSpec
+from skyward.actors.messages import InstanceMetadata
+from skyward.api.spec import PoolSpec
 
 
 # =============================================================================
@@ -57,10 +57,3 @@ class VastAIClusterState:
     instances: MappingProxyType[str, InstanceMetadata] = field(default_factory=lambda: MappingProxyType({}))
     pending_nodes: frozenset[int] = frozenset()
     instance_pricing: MappingProxyType[str, InstancePricing] = field(default_factory=lambda: MappingProxyType({}))
-
-
-# =============================================================================
-# Exports
-# =============================================================================
-
-__all__ = ["VastAIClusterState", "InstancePricing"]

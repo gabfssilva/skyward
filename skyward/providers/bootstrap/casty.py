@@ -6,7 +6,9 @@ Each node runs a ClusteredActorSystem with an aiohttp HTTP API for job submissio
 
 from __future__ import annotations
 
-from ..constants import VENV_DIR
+from skyward.providers.bootstrap.compose import SKYWARD_DIR
+
+VENV_DIR = f"{SKYWARD_DIR}/.venv"
 from .compose import Op
 from .ops import pip, shell, wait_for_port
 
@@ -40,7 +42,7 @@ def casty_service(
             seeds_arg = f"--seeds {head_ip}:{port}"
 
         cmd = (
-            f"{python_bin} -m skyward.casty_worker "
+            f"{python_bin} -m skyward.infra.worker "
             f"--node-id {node_id} "
             f"--port {port} "
             f"--http-port {http_port} "
@@ -77,10 +79,3 @@ def server_ops(
         ops.append(shell("sleep 5"))
 
     return tuple(ops)
-
-
-__all__ = [
-    "casty_install",
-    "casty_service",
-    "server_ops",
-]

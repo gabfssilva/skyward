@@ -1,7 +1,7 @@
-"""Declarative Image API for v2.
+"""Specification dataclasses for pool and image configuration.
 
-Image is the specification for instance environments. It generates
-bootstrap scripts and provides content-addressable hashing.
+These are the immutable configuration objects that define what
+the user wants. Components use these specs to provision resources.
 """
 
 from __future__ import annotations
@@ -9,11 +9,11 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from .metrics import MetricsConfig, Default as DefaultMetrics
+from skyward.observability.metrics import MetricsConfig, Default as DefaultMetrics
 
-from .bootstrap import (
+from skyward.providers.bootstrap import (
     Op,
     apt,
     bootstrap,
@@ -29,9 +29,98 @@ from .bootstrap import (
     uv_init,
 )
 
+if TYPE_CHECKING:
+    from skyward.accelerators import Accelerator
+    from skyward.actors.messages import ProviderName
 
-# Skyward installation source
+
+type AllocationStrategy = Literal[
+    "spot",
+    "on-demand",
+    "spot-if-available",
+    "cheapest",
+]
+
+type Architecture = Literal["x86_64", "arm64"]
+
 type SkywardSource = Literal["local", "github", "pypi"]
+
+
+@dataclass(frozen=True, slots=True)
+class PoolSpec:
+    """Pool specification - what the user wants.
+
+    Defines the cluster configuration including number of nodes,
+    hardware requirements, and instance allocation strategy.
+
+    Args:
+        nodes: Number of nodes in the cluster.
+        accelerator: GPU/accelerator type - either a string (e.g., "A100", "H100")
+            or an Accelerator instance from skyward.accelerators.
+        region: Cloud region for instances.
+        vcpus: Minimum vCPUs per node.
+        memory_gb: Minimum memory in GB per node.
+        architecture: CPU architecture ("x86_64" or "arm64"), or None for cheapest.
+        allocation: Spot/on-demand strategy.
+        image: Environment specification.
+        ttl: Auto-shutdown timeout in seconds (0 = disabled).
+        provider: Override provider (usually inferred from context).
+
+    Example:
+        >>> spec = PoolSpec(
+        ...     nodes=4,
+        ...     accelerator="H100",
+        ...     region="us-east-1",
+        ...     allocation="spot-if-available",
+        ...     image=Image(pip=["torch"]),
+        ... )
+
+        >>> from skyward.accelerators import H100
+        >>> spec = PoolSpec(
+        ...     nodes=4,
+        ...     accelerator=H100(count=8),
+        ...     region="us-east-1",
+        ... )
+    """
+
+    nodes: int
+    accelerator: Accelerator | str | None
+    region: str
+    vcpus: int | None = None
+    memory_gb: int | None = None
+    architecture: Architecture | None = None
+    allocation: AllocationStrategy = "spot-if-available"
+    image: Image = field(default_factory=lambda: Image())
+    ttl: int = 600
+    concurrency: int = 1
+    provider: ProviderName | None = None
+    max_hourly_cost: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.nodes < 1:
+            raise ValueError(f"nodes must be >= 1, got {self.nodes}")
+
+    @property
+    def accelerator_name(self) -> str | None:
+        """Get the canonical accelerator name for provider matching."""
+        match self.accelerator:
+            case None:
+                return None
+            case str(name):
+                return name
+            case accel:
+                return accel.name
+
+    @property
+    def accelerator_count(self) -> int:
+        """Get the number of accelerators per node."""
+        match self.accelerator:
+            case None:
+                return 0
+            case str():
+                return 1
+            case accel:
+                return accel.count
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,7 +174,6 @@ class Image:
 
     def __post_init__(self) -> None:
         """Convert lists to tuples for immutability."""
-        # Use object.__setattr__ since the dataclass is frozen
         object.__setattr__(self, "pip", tuple(self.pip) if self.pip else ())
         object.__setattr__(self, "apt", tuple(self.apt) if self.apt else ())
 
@@ -96,14 +184,7 @@ class Image:
                 pass
 
     def content_hash(self) -> str:
-        """Generate hash for AMI/snapshot caching.
-
-        Two Images with the same content_hash produce identical
-        environments and can share the same cached AMI/snapshot.
-
-        Returns:
-            12-character hex hash of the image specification.
-        """
+        """Generate hash for AMI/snapshot caching."""
         metrics_data = None
         if self.metrics:
             metrics_data = [
@@ -138,20 +219,7 @@ class Image:
         preamble: Op | None = None,
         postamble: Op | None = None,
     ) -> str:
-        """Generate bootstrap script for cloud-init/user_data.
-
-        The script is idempotent: if AMI already has deps installed,
-        uv add verifies and skips quickly.
-
-        Args:
-            ttl: Auto-shutdown timeout in seconds (0 = disabled).
-            shutdown_command: Shell command to execute on timeout.
-            preamble: Op to execute first.
-            postamble: Op to execute last.
-
-        Returns:
-            Complete shell script for cloud-init.
-        """
+        """Generate bootstrap script for cloud-init/user_data."""
         ops: list[Op | None] = [
             instance_timeout(ttl, shutdown_command=shutdown_command) if ttl else None,
             preamble,
@@ -191,12 +259,15 @@ class Image:
         return bootstrap(*ops, metrics=self.metrics)
 
 
-# Default image
 DEFAULT_IMAGE = Image()
 
 
-__all__ = [
-    "Image",
-    "SkywardSource",
-    "DEFAULT_IMAGE",
-]
+class PoolState:
+    """Pool lifecycle states."""
+
+    INIT = "init"
+    REQUESTING = "requesting"
+    PROVISIONING = "provisioning"
+    READY = "ready"
+    SHUTTING_DOWN = "shutting_down"
+    DESTROYED = "destroyed"

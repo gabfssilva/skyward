@@ -7,7 +7,10 @@ from typing import Any
 
 import cloudpickle
 
-from skyward.constants import COMPRESSED_MAGIC, COMPRESSION_LEVEL
+from typing import Final
+
+COMPRESSED_MAGIC: Final = b"\x00CZ"
+COMPRESSION_LEVEL: Final = 6
 
 
 def serialize(obj: Any, compress: bool = True) -> bytes:
