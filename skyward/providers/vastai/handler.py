@@ -47,7 +47,6 @@ from .config import VastAI
 from .state import InstancePricing, VastAIClusterState
 from .types import OfferResponse, get_direct_ssh_port
 
-
 # =============================================================================
 # Module-Level Helpers
 # =============================================================================
@@ -61,7 +60,11 @@ async def _search_offers(
     """Search for GPU offers matching cluster spec."""
     spec = state.spec
     use_interruptible = spec.allocation in ("spot", "spot-if-available")
-    gpu_name = spec.accelerator_name.replace(" ", "_").replace("-", "_") if spec.accelerator_name else None
+    gpu_name = (
+        spec.accelerator_name.replace(" ", "_").replace("-", "_")
+        if spec.accelerator_name
+        else None
+    )
 
     offers = await client.search_offers(
         gpu_name=gpu_name,
@@ -71,9 +74,12 @@ async def _search_offers(
         with_cluster_id=spec.nodes > 1,
     )
 
-    logger.debug(f"VastAI: Got {len(offers)} offers from API for gpu_name={gpu_name}")
+    logger.debug(
+        f"VastAI: Got {len(offers)} offers "
+        f"from API for gpu_name={gpu_name}"
+    )
     if offers:
-        unique_gpus = set(o["gpu_name"] for o in offers)
+        unique_gpus = {o["gpu_name"] for o in offers}
         logger.debug(f"VastAI: Available GPU types: {unique_gpus}")
 
     if gpu_name:
@@ -137,7 +143,11 @@ async def _setup_overlay_network(
     """
     spec = state.spec
     use_interruptible = spec.allocation in ("spot", "spot-if-available")
-    gpu_name = spec.accelerator_name.replace(" ", "_").replace("-", "_") if spec.accelerator_name else None
+    gpu_name = (
+        spec.accelerator_name.replace(" ", "_").replace("-", "_")
+        if spec.accelerator_name
+        else None
+    )
 
     offers = await client.search_offers(
         gpu_name=gpu_name,
@@ -156,7 +166,10 @@ async def _setup_overlay_network(
         suffix = "".join(random.choices(string.ascii_lowercase, k=8))
         overlay_name = f"skyward-{suffix}"
 
-        logger.info(f"VastAI: Trying cluster {physical_cluster_id} ({idx + 1}/{len(valid_clusters)})")
+        logger.info(
+            f"VastAI: Trying cluster {physical_cluster_id} "
+            f"({idx + 1}/{len(valid_clusters)})"
+        )
 
         try:
             await client.create_overlay(physical_cluster_id, overlay_name)
@@ -293,9 +306,15 @@ def vastai_provider_actor(
     """Vast.ai provider tells this story: idle -> active -> stopped."""
 
     def idle() -> Behavior[ProviderMsg]:
-        async def receive(ctx: ActorContext[ProviderMsg], msg: ProviderMsg) -> Behavior[ProviderMsg]:
+        async def receive(
+            ctx: ActorContext[ProviderMsg], msg: ProviderMsg,
+        ) -> Behavior[ProviderMsg]:
             match msg:
-                case ClusterRequested(request_id=request_id, provider="vastai", spec=spec):
+                case ClusterRequested(
+                    request_id=request_id,
+                    provider="vastai",
+                    spec=spec,
+                ):
                     logger.info(f"VastAI: Provisioning cluster for {spec.nodes} nodes")
 
                     cluster_id = f"vastai-{uuid.uuid4().hex[:8]}"
@@ -312,7 +331,12 @@ def vastai_provider_actor(
                             overlay_name = None
                             overlay_cluster_id = None
                             if spec.nodes > 1 and config.use_overlay:
-                                overlay_name, overlay_cluster_id = await _setup_overlay_network(client, config, state)
+                                (
+                                overlay_name,
+                                overlay_cluster_id,
+                            ) = await _setup_overlay_network(
+                                client, config, state,
+                            )
 
                         new_state = replace(state,
                             ssh_key_id=ssh_key_id,
@@ -329,7 +353,7 @@ def vastai_provider_actor(
 
                         return _ProvisioningDone(state=new_state)
 
-                    ctx.pipe_to_self(provision())
+                    ctx.pipe_to_self(provision(), mapper=lambda x: x)  # type: ignore[reportArgumentType]
                     return active(state)
 
                 case _:
@@ -340,7 +364,9 @@ def vastai_provider_actor(
         state: VastAIClusterState,
         reserved_offers: frozenset[int] = frozenset(),
     ) -> Behavior[ProviderMsg]:
-        async def receive(ctx: ActorContext[ProviderMsg], msg: ProviderMsg) -> Behavior[ProviderMsg]:
+        async def receive(
+            ctx: ActorContext[ProviderMsg], msg: ProviderMsg,
+        ) -> Behavior[ProviderMsg]:
             match msg:
                 case _ProvisioningDone(state=new_state):
                     return active(new_state, reserved_offers)
@@ -355,9 +381,17 @@ def vastai_provider_actor(
 
                     async def launch_instance() -> _ProvisioningDone:
                         use_interruptible = state.spec.allocation in ("spot", "spot-if-available")
-                        docker_image = state.docker_image or config.docker_image or VastAI.ubuntu()
+                        docker_image = (
+                            state.docker_image
+                            or config.docker_image
+                            or VastAI.ubuntu()
+                        )
                         label = f"skyward-{state.cluster_id}-{node_id}"
-                        minimal_onstart = "#!/bin/bash\nset -e\nmkdir -p /opt/skyward\ntail -f /dev/null\n"
+                        minimal_onstart = (
+                            "#!/bin/bash\nset -e\n"
+                            "mkdir -p /opt/skyward\n"
+                            "tail -f /dev/null\n"
+                        )
 
                         instance_id: int | None = None
                         last_error: str | None = None
@@ -375,17 +409,30 @@ def vastai_provider_actor(
                                 offer_id = offer["id"]
 
                                 if offer_id in new_reserved:
-                                    logger.debug(f"VastAI: Offer {offer_id} already reserved, skipping...")
+                                    logger.debug(
+                                        f"VastAI: Offer {offer_id} "
+                                        f"already reserved, skipping..."
+                                    )
                                     continue
 
                                 new_reserved = new_reserved | frozenset({offer_id})
 
-                                price = offer["min_bid"] * config.bid_multiplier if use_interruptible else None
-                                price_display = price if price else offer.get("dph_total", 0)
+                                price = (
+                                    offer["min_bid"]
+                                    * config.bid_multiplier
+                                    if use_interruptible
+                                    else None
+                                )
+                                price_display = (
+                                    price
+                                    if price
+                                    else offer.get("dph_total", 0)
+                                )
 
                                 logger.info(
                                     f"VastAI: Trying offer {idx + 1}/{len(offers)}: "
-                                    f"machine_id={offer.get('machine_id')}, price=${price_display:.3f}/hr"
+                                    f"machine_id={offer.get('machine_id')}, "
+                                    f"price=${price_display:.3f}/hr"
                                 )
 
                                 try:
@@ -409,7 +456,11 @@ def vastai_provider_actor(
                                 except VastAIError as e:
                                     new_reserved = new_reserved - frozenset({offer_id})
                                     last_error = str(e)
-                                    logger.warning(f"VastAI: Offer {idx + 1}/{len(offers)} failed: {e}")
+                                    logger.warning(
+                                        f"VastAI: Offer "
+                                        f"{idx + 1}/{len(offers)}"
+                                        f" failed: {e}"
+                                    )
                                     continue
 
                         if instance_id is None:
@@ -431,7 +482,7 @@ def vastai_provider_actor(
 
                         return _ProvisioningDone(state=new_state)
 
-                    ctx.pipe_to_self(launch_instance())
+                    ctx.pipe_to_self(launch_instance(), mapper=lambda x: x)  # type: ignore[reportArgumentType]
                     return active(state, reserved_offers)
 
                 case BootstrapRequested(
@@ -442,17 +493,27 @@ def vastai_provider_actor(
                     logger.debug(f"VastAI: Starting bootstrap for instance {instance.id}")
 
                     async def run_bootstrap() -> None:
-                        from skyward.providers.bootstrap import run_bootstrap_via_ssh, wait_for_ssh
+                        from skyward.providers.bootstrap import (
+                            run_bootstrap_via_ssh,
+                            wait_for_ssh,
+                        )
 
                         key_path = get_ssh_key_path()
                         ttl = state.spec.ttl or config.instance_timeout
                         bootstrap_script = state.spec.image.generate_bootstrap(
                             ttl=ttl,
                             shutdown_command=(
-                                "eval $(cat /proc/1/environ | tr '\\0' '\\n' | "
-                                "grep -E 'CONTAINER_ID|CONTAINER_API_KEY' | sed 's/^/export /'); "
-                                "curl -s -X DELETE https://console.vast.ai/api/v0/instances/$CONTAINER_ID/ "
-                                "-H \"Authorization: Bearer $CONTAINER_API_KEY\""
+                                "eval $(cat /proc/1/environ "
+                                "| tr '\\0' '\\n' "
+                                "| grep -E 'CONTAINER_ID"
+                                "|CONTAINER_API_KEY' "
+                                "| sed 's/^/export /'); "
+                                "curl -s -X DELETE "
+                                "https://console.vast.ai"
+                                "/api/v0/instances/"
+                                "$CONTAINER_ID/ "
+                                "-H \"Authorization: "
+                                "Bearer $CONTAINER_API_KEY\""
                             ),
                         )
 
@@ -475,7 +536,7 @@ def vastai_provider_actor(
                         finally:
                             await transport.close()
 
-                    ctx.pipe_to_self(run_bootstrap())
+                    ctx.pipe_to_self(run_bootstrap(), mapper=lambda x: x)  # type: ignore[reportArgumentType]
 
                     ctx.spawn(
                         instance_monitor(
@@ -502,7 +563,7 @@ def vastai_provider_actor(
                             pool_ref.tell(InstanceBootstrapped(instance=info))
                             return _ProvisioningDone(state=new_state)
 
-                        ctx.pipe_to_self(install_and_register())
+                        ctx.pipe_to_self(install_and_register(), mapper=lambda x: x)  # type: ignore[reportArgumentType]
                     else:
                         new_state = replace(state,
                             instances=MappingProxyType({**state.instances, info.id: info}),
@@ -522,7 +583,7 @@ def vastai_provider_actor(
 
                     async def shutdown() -> None:
                         async with client:
-                            for iid in state.instances.keys():
+                            for iid in state.instances:
                                 with suppress(Exception):
                                     await client.destroy_instance(int(iid))
 
@@ -532,7 +593,7 @@ def vastai_provider_actor(
 
                         await client.close()
 
-                    ctx.pipe_to_self(shutdown())
+                    ctx.pipe_to_self(shutdown(), mapper=lambda x: x)  # type: ignore[reportArgumentType]
                     return Behaviors.stopped()
 
                 case _:

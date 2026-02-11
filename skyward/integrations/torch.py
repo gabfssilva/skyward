@@ -26,8 +26,8 @@ def torch[**P, R](
     def decorator(fn: Callable[P, R]) -> Callable[P, R]:
         @functools.wraps(fn)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-            import torch
-            import torch.distributed as dist
+            import torch  # type: ignore[reportMissingImports]
+            import torch.distributed as dist  # type: ignore[reportMissingImports]
 
             from skyward.api.runtime import instance_info
 
@@ -53,7 +53,7 @@ def torch[**P, R](
                 if value:
                     os.environ[key] = value
 
-            be = backend or ("nccl" if torch.cuda.is_available() else "gloo")
+            be = backend or ("nccl" if torch.cuda.is_available() else "gloo")  # type: ignore[reportAttributeAccessIssue]
             dist.init_process_group(backend=be, init_method="env://")
 
             return fn(*args, **kwargs)

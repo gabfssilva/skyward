@@ -8,8 +8,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Final
 
-from typing import Final
-
 SKYWARD_DIR: Final = "/opt/skyward"
 
 EMIT_SH_PATH: Final = f"{SKYWARD_DIR}/emit.sh"
@@ -31,7 +29,7 @@ def resolve(op: Op) -> str:
         case str(op):
             return op
         case list(op):
-            return "\n".join(map(lambda o: resolve(o), op))
+            return "\n".join(resolve(o) for o in op)
         case None:
             return ""
         case _:
@@ -48,7 +46,8 @@ set -e
 mkdir -p {SKYWARD_DIR}
 
 # Clear stale data from previous runs (VastAI containers can inherit state)
-rm -f {SKYWARD_DIR}/events.jsonl {SKYWARD_DIR}/events.jsonl.1 {SKYWARD_DIR}/pyproject.toml {SKYWARD_DIR}/uv.lock
+rm -f {SKYWARD_DIR}/events.jsonl {SKYWARD_DIR}/events.jsonl.1
+rm -f {SKYWARD_DIR}/pyproject.toml {SKYWARD_DIR}/uv.lock
 
 export DEBIAN_FRONTEND=noninteractive
 export PATH="/root/.local/bin:$PATH"
@@ -63,7 +62,8 @@ MAX_SIZE=10485760  # 10MB rotation threshold
 # Base emit with automatic rotation
 emit() {{{{
     echo "$1" >> "$EVENTS_LOG"
-    local size=$(stat -c%s "$EVENTS_LOG" 2>/dev/null || stat -f%z "$EVENTS_LOG" 2>/dev/null || echo 0)
+    local size
+    size=$(stat -c%s "$EVENTS_LOG" 2>/dev/null || stat -f%z "$EVENTS_LOG" 2>/dev/null || echo 0)
     if [ "$size" -gt "$MAX_SIZE" ]; then
         mv "$EVENTS_LOG" "${{{{EVENTS_LOG}}}}.1"
     fi
@@ -71,7 +71,11 @@ emit() {{{{
 
 emit_phase() {{{{
     local event="$1" phase="$2" elapsed="${{{{3:-null}}}}" error="${{{{4:-null}}}}"
-    emit "{{{{\\\"type\\\":\\\"phase\\\",\\\"event\\\":\\\"$event\\\",\\\"phase\\\":\\\"$phase\\\",\\\"elapsed\\\":$elapsed,\\\"error\\\":$error}}}}"
+    local json
+    json="{{{{\\\"type\\\":\\\"phase\\\",\\\"event\\\":\\\"$event\\\""
+    json="$json,\\\"phase\\\":\\\"$phase\\\""
+    json="$json,\\\"elapsed\\\":$elapsed,\\\"error\\\":$error}}}}"
+    emit "$json"
 }}}}
 
 emit_console() {{{{
@@ -82,7 +86,11 @@ emit_console() {{{{
     content="${{{{content//$'\\n'/\\\\n}}}}"
     content="${{{{content//$'\\t'/\\\\t}}}}"
     content="${{{{content//$'\\r'/\\\\r}}}}"
-    emit "{{{{\\\"type\\\":\\\"console\\\",\\\"content\\\":\\\"$content\\\",\\\"stream\\\":\\\"$stream\\\"}}}}"
+    local json
+    json="{{{{\\\"type\\\":\\\"console\\\""
+    json="$json,\\\"content\\\":\\\"$content\\\""
+    json="$json,\\\"stream\\\":\\\"$stream\\\"}}}}"
+    emit "$json"
 }}}}
 
 emit_command() {{{{
@@ -225,7 +233,10 @@ def _generate_collector(m: Metric) -> str:
         local idx=0
         {m.command} | while read val; do
             if [ -n "$val" ]; then
-                emit "{{\\"type\\":\\"metric\\",\\"name\\":\\"{m.name}_$idx\\",\\"value\\":$val,\\"ts\\":$ts}}"
+                local j='{{\\"type\\":\\"metric\\"'
+                j="$j,\\"name\\":\\"{m.name}_$idx\\""
+                j="$j,\\"value\\":$val,\\"ts\\":$ts}}"
+                emit "$j"
             fi
             idx=$((idx + 1))
         done
@@ -240,7 +251,10 @@ def _generate_collector(m: Metric) -> str:
         local ts=$(date +%s.%N)
         local val=$({m.command})
         if [ -n "$val" ]; then
-            emit "{{\\"type\\":\\"metric\\",\\"name\\":\\"{m.name}\\",\\"value\\":$val,\\"ts\\":$ts}}"
+            local j='{{\\"type\\":\\"metric\\"'
+            j="$j,\\"name\\":\\"{m.name}\\""
+            j="$j,\\"value\\":$val,\\"ts\\":$ts}}"
+            emit "$j"
         fi
         sleep {m.interval}
     done
@@ -301,5 +315,5 @@ def bootstrap(
 
             base = make_header(Default())
 
-    commands = [resolve(op) for op in ops]
+    commands = [resolve(op) for op in ops if op is not None]
     return base + "\n\n".join(commands)

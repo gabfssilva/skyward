@@ -9,7 +9,6 @@ from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from typing import Any
 
-
 # =============================================================================
 # Client Type
 # =============================================================================

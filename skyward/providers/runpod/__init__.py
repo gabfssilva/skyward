@@ -13,36 +13,39 @@ Environment Variables:
     RUNPOD_API_KEY: API key (required if not passed directly)
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .client import RunPodClient, RunPodError
+    from .handler import runpod_provider_actor
+    from .state import RunPodClusterState
+
 # Only config - no heavy dependencies
 from .config import CloudType, RunPod
 
 
-# Lazy imports for backward compatibility
-def __getattr__(name: str):
-    if name == "RunPodHandler":
-        from .handler import RunPodHandler
-
-        return RunPodHandler
+def __getattr__(name: str) -> Any:
+    if name == "runpod_provider_actor":
+        from .handler import runpod_provider_actor
+        return runpod_provider_actor
     if name in ("RunPodClient", "RunPodError"):
         from .client import RunPodClient, RunPodError
-
         if name == "RunPodClient":
             return RunPodClient
         return RunPodError
     if name == "RunPodClusterState":
         from .state import RunPodClusterState
-
         return RunPodClusterState
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
-    # Config (always available)
     "CloudType",
     "RunPod",
-    # Lazy (loaded on demand)
     "RunPodClient",
     "RunPodError",
-    "RunPodHandler",
+    "runpod_provider_actor",
     "RunPodClusterState",
 ]

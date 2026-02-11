@@ -15,8 +15,8 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
-import asyncssh
 import aiohttp
+import asyncssh
 from casty import ActorContext, ActorRef, ActorSystem, Behavior, Behaviors
 from loguru import logger
 
@@ -165,7 +165,9 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
     """An executor tells this story: connecting → ready → stopped."""
 
     def connecting() -> Behavior[ExecutorMsg]:
-        async def receive(ctx: ActorContext[ExecutorMsg], msg: ExecutorMsg) -> Behavior[ExecutorMsg]:
+        async def receive(
+            ctx: ActorContext[ExecutorMsg], msg: ExecutorMsg,
+        ) -> Behavior[ExecutorMsg]:
             match msg:
                 case _Connect(config=cfg, reply_to=reply_to):
                     ssh_conn = await asyncssh.connect(
@@ -189,7 +191,10 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
                     logger.info(f"Connected to Casty at {cfg.head_ip}:{cfg.http_port}")
                     reply_to.tell(Connected())
                     max_concurrent = cfg.num_nodes * (cfg.workers_per_node + 1)
-                    return ready(ssh_conn, tunnel, session, cfg.num_nodes, asyncio.Semaphore(max_concurrent))
+                    return ready(
+                        ssh_conn, tunnel, session,
+                        cfg.num_nodes, asyncio.Semaphore(max_concurrent),
+                    )
                 case _:
                     return Behaviors.same()
         return Behaviors.receive(receive)
@@ -238,7 +243,10 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
         fn_name = getattr(fn, "__name__", str(fn))
         async with sem:
             try:
-                payload = serialize({"fn": fn, "args": args, "kwargs": kwargs, "num_nodes": num_nodes})
+                payload = serialize({
+                    "fn": fn, "args": args,
+                    "kwargs": kwargs, "num_nodes": num_nodes,
+                })
                 async with session.post(
                     "/jobs/broadcast", data=payload,
                     headers={"Content-Type": "application/octet-stream"},
@@ -295,7 +303,9 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
         sem: asyncio.Semaphore,
         next_node: int = 0,
     ) -> Behavior[ExecutorMsg]:
-        async def receive(ctx: ActorContext[ExecutorMsg], msg: ExecutorMsg) -> Behavior[ExecutorMsg]:
+        async def receive(
+            ctx: ActorContext[ExecutorMsg], msg: ExecutorMsg,
+        ) -> Behavior[ExecutorMsg]:
             match msg:
                 case _Execute(fn=fn, args=args, kwargs=kwargs, node_id=nid, reply_to=reply_to):
                     target = nid if nid is not None else next_node % num_nodes

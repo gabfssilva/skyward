@@ -1,4 +1,5 @@
 from dataclasses import FrozenInstanceError
+
 import pytest
 
 from skyward.actors.messages import Provision, Replace

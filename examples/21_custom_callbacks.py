@@ -6,8 +6,7 @@ to these events with custom callbacks for logging, monitoring, cost
 tracking, and more.
 """
 
-import skyward as sky
-from skyward.callback import compose, emit, use_callback
+from skyward.callback import compose, use_callback
 from skyward.events import (
     BootstrapCompleted,
     BootstrapProgress,
@@ -21,10 +20,11 @@ from skyward.events import (
     InstanceStopping,
     Metrics,
     PoolReady,
-    ProvisioningCompleted,
     ProvisioningStarted,
     SkywardEvent,
 )
+
+import skyward as sky
 
 
 def logging_callback(event: SkywardEvent) -> None:
@@ -100,17 +100,16 @@ def main():
     )
 
     # Use callback as context manager
-    with use_callback(combined):
-        with sky.ComputePool(
-            provider=sky.AWS(),
-            accelerator="T4",
-            image=sky.Image(pip=["numpy"]),
-            allocation="spot-if-available",
-        ) as pool:
-            # Run some training steps
-            for i in range(5):
-                result = train_step(i) >> pool
-                print(f"Batch {i}: loss={result['loss']:.4f}")
+    with use_callback(combined), sky.ComputePool(
+        provider=sky.AWS(),
+        accelerator="T4",
+        image=sky.Image(pip=["numpy"]),
+        allocation="spot-if-available",
+    ) as pool:
+        # Run some training steps
+        for i in range(5):
+            result = train_step(i) >> pool
+            print(f"Batch {i}: loss={result['loss']:.4f}")
 
 
 def main_with_pool_callback():

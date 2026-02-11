@@ -13,17 +13,16 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 
-from .types import Consistency
 from .proxies import (
+    BarrierProxy,
     CounterProxy,
     DictProxy,
-    SetProxy,
-    QueueProxy,
-    BarrierProxy,
     LockProxy,
+    QueueProxy,
+    SetProxy,
 )
 from .registry import DistributedRegistry
-
+from .types import Consistency
 
 _active_registry: ContextVar[DistributedRegistry | None] = ContextVar(
     "active_registry", default=None

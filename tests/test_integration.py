@@ -1,6 +1,6 @@
 import pytest
-import skyward as sky
 
+import skyward as sky
 
 # =============================================================================
 # Compute functions
@@ -14,7 +14,7 @@ def hello() -> str:
 
 @sky.compute
 def check_cuda() -> dict:
-    import torch
+    import torch  # type: ignore[reportMissingImports]
 
     return {
         "cuda_available": torch.cuda.is_available(),

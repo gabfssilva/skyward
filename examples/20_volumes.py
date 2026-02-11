@@ -67,7 +67,7 @@ def main():
     )
 
     # You can also use dict syntax
-    volumes_dict = {
+    _volumes_dict = {
         "/data": "s3://my-ml-datasets/training/",
         "/checkpoints": "s3://my-ml-outputs/checkpoints/",
     }

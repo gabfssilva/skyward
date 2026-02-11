@@ -69,7 +69,7 @@ def heavy_matrix_ops(size: int, iterations: int) -> dict:
 
     start = time.time()
     result = a_cpu
-    for i in range(iterations):
+    for _i in range(iterations):
         result = torch.matmul(result, b_cpu)
         result = torch.relu(result)
         result = result / result.norm()  # Normalize to prevent overflow
@@ -89,7 +89,7 @@ def heavy_matrix_ops(size: int, iterations: int) -> dict:
 
         start = time.time()
         result = a_gpu
-        for i in range(iterations):
+        for _i in range(iterations):
             result = torch.matmul(result, b_gpu)
             result = torch.relu(result)
             result = result / result.norm()
@@ -128,7 +128,7 @@ def train_simple_model(epochs: int) -> dict:
     criterion = nn.CrossEntropyLoss()
 
     losses = []
-    for epoch in range(epochs):
+    for _epoch in range(epochs):
         optimizer.zero_grad()
         output = model(x)
         loss = criterion(output, y)
@@ -160,7 +160,7 @@ if __name__ == "__main__":
         print("Heavy Matrix Operations Benchmark")
         print("=" * 60)
         heavy = heavy_matrix_ops(size=4096, iterations=50) >> pool
-        print(f"\nResults:")
+        print("\nResults:")
         print(f"  CPU time:  {heavy['cpu_time']:.2f}s")
         if "gpu_time" in heavy:
             print(f"  GPU time:  {heavy['gpu_time']:.2f}s")

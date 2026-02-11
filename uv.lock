@@ -3119,7 +3119,7 @@ wheels = [
 
 [[package]]
 name = "skyward"
-version = "0.0.2.dev10+g7a7e39a74.d20260211"
+version = "0.0.2.dev13+g839f5a571.d20260211"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },

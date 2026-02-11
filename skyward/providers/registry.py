@@ -15,7 +15,6 @@ from casty import ActorRef, Behavior
 
 from skyward.actors.messages import ProviderMsg
 
-
 type ProviderActorFactory = Callable[[Any, ActorRef], Behavior[ProviderMsg]]
 
 
@@ -38,14 +37,17 @@ def get_provider_for_config(config: Any) -> tuple[ProviderActorFactory, str]:
             from .aws.clients import EC2ClientFactory
 
             def aws_factory(cfg: Any, pool_ref: ActorRef) -> Behavior[ProviderMsg]:
-                from .aws.handler import aws_provider_actor
-                import aioboto3
+                from collections.abc import AsyncIterator
                 from contextlib import asynccontextmanager
 
+                import aioboto3  # type: ignore[reportMissingImports]
+
+                from .aws.handler import aws_provider_actor
+
                 @asynccontextmanager
-                async def ec2_factory():
+                async def ec2_factory() -> AsyncIterator[Any]:
                     session = aioboto3.Session(region_name=cfg.region)
-                    async with session.client("ec2", region_name=cfg.region) as ec2:
+                    async with session.client("ec2", region_name=cfg.region) as ec2:  # type: ignore[reportGeneralTypeIssues]
                         yield ec2
 
                 return aws_provider_actor(cfg, EC2ClientFactory(ec2_factory), pool_ref)
@@ -54,9 +56,10 @@ def get_provider_for_config(config: Any) -> tuple[ProviderActorFactory, str]:
 
         case VastAI():
             def vastai_factory(cfg: Any, pool_ref: ActorRef) -> Behavior[ProviderMsg]:
-                from .vastai.handler import vastai_provider_actor
                 from .vastai.client import VastAIClient, get_api_key
-                client = VastAIClient(get_api_key(cfg.api_key), config=cfg)
+                from .vastai.handler import vastai_provider_actor
+                api_key = cfg.api_key or get_api_key()
+                client = VastAIClient(api_key, config=cfg)
                 return vastai_provider_actor(cfg, client, pool_ref)
 
             return vastai_factory, "vastai"

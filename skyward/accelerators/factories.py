@@ -16,9 +16,7 @@ from __future__ import annotations
 from typing import Literal
 
 from .catalog import SPECS
-
 from .spec import Accelerator
-
 
 # =============================================================================
 # NVIDIA Datacenter - Hopper

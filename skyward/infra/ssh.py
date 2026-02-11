@@ -7,6 +7,7 @@ not passed on every call.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -14,7 +15,6 @@ from typing import Literal
 
 import asyncssh
 from loguru import logger
-
 
 # =============================================================================
 # Stream Event Types (parsed from JSONL)
@@ -160,11 +160,8 @@ class SSHTransport:
         """Close SSH connection."""
         if self._conn is not None:
             self._conn.close()
-            # Wait for close with timeout to avoid hanging
-            try:
+            with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._conn.wait_closed(), timeout=5.0)
-            except (TimeoutError, asyncio.TimeoutError):
-                pass
             self._conn = None
 
     async def __aenter__(self) -> SSHTransport:
@@ -220,7 +217,7 @@ class SSHTransport:
         if check and code != 0:
             raise RuntimeError(f"Command failed ({code}): {stderr}")
 
-        return code, stdout, stderr
+        return code, str(stdout), str(stderr)
 
     async def run_stream(
         self,
@@ -260,7 +257,9 @@ class SSHTransport:
         pending: set[asyncio.Task[tuple[str, str] | None]] = set()
         iters = {id(it): it.__aiter__() for it in iterators}
 
-        async def get_next(it_id: int, it: AsyncIterator[tuple[str, str]]) -> tuple[str, str] | None:
+        async def get_next(
+            it_id: int, it: AsyncIterator[tuple[str, str]],
+        ) -> tuple[str, str] | None:
             try:
                 return await it.__anext__()
             except StopAsyncIteration:
@@ -321,17 +320,15 @@ class SSHTransport:
         """Write content to remote file using SFTP."""
         conn = self._require_connection()
 
-        async with conn.start_sftp_client() as sftp:
-            async with sftp.open(remote, "w") as f:
-                await f.write(content)
+        async with conn.start_sftp_client() as sftp, sftp.open(remote, "w") as f:
+            await f.write(content)
 
     async def write_bytes(self, remote: str, content: bytes) -> None:
         """Write binary content to remote file using SFTP."""
         conn = self._require_connection()
 
-        async with conn.start_sftp_client() as sftp:
-            async with sftp.open(remote, "wb") as f:
-                await f.write(content)
+        async with conn.start_sftp_client() as sftp, sftp.open(remote, "wb") as f:
+            await f.write(content)
 
     async def file_exists(self, remote: str) -> bool:
         """Check if remote file exists."""
@@ -462,10 +459,12 @@ class SSHTransport:
                             case RawBootstrapPhase(event="failed", phase=phase, error=error):
                                 raise BootstrapError(phase, error or "unknown")
 
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # Check if deadline exceeded
                     if asyncio.get_event_loop().time() >= deadline:
-                        raise TimeoutError(f"Events stream timeout after {timeout}s of inactivity")
+                        raise TimeoutError(
+                            f"Events stream timeout after {timeout}s of inactivity"
+                        ) from None
                     # Otherwise, just a read timeout - continue loop
 
     async def stream_bootstrap(

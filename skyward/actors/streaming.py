@@ -37,7 +37,6 @@ from .messages import (
     _StreamEnded,
 )
 
-
 # =============================================================================
 # Behavior
 # =============================================================================
@@ -92,7 +91,10 @@ def instance_monitor(
         async def _cleanup(ctx: ActorContext[MonitorMsg]) -> None:
             await transport.close()
 
-        return Behaviors.with_lifecycle(streaming(transport, stream, bootstrap_signaled=False), post_stop=_cleanup)
+        return Behaviors.with_lifecycle(
+            streaming(transport, stream, bootstrap_signaled=False),
+            post_stop=_cleanup,
+        )
 
     def streaming(
         transport: Any,
@@ -112,7 +114,11 @@ def instance_monitor(
                                 reply_to.tell(BootstrapDone(instance=info, success=True))
                                 return streaming(transport, stream, bootstrap_signaled=True)
                             case BootstrapFailed(error=error):
-                                reply_to.tell(BootstrapDone(instance=info, success=False, error=error))
+                                reply_to.tell(BootstrapDone(
+                                    instance=info,
+                                    success=False,
+                                    error=error,
+                                ))
                                 return streaming(transport, stream, bootstrap_signaled=True)
 
                     return Behaviors.same()
@@ -154,7 +160,10 @@ def _convert(raw_event: object, info: InstanceMetadata) -> Event | None:
         case RawBootstrapPhase(event=event, phase=phase, elapsed=elapsed, error=error):
             if event == "failed":
                 return BootstrapFailed(instance=info, phase=phase, error=error or "unknown")
-            return BootstrapPhase(instance=info, event=event, phase=phase, elapsed=elapsed, error=error)
+            return BootstrapPhase(
+                instance=info, event=event, phase=phase,
+                elapsed=elapsed, error=error,
+            )
         case RawBootstrapCommand(command=command):
             return BootstrapCommand(instance=info, command=command)
         case RawMetricEvent(name=name, value=value, ts=ts):

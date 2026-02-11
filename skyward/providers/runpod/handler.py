@@ -80,7 +80,7 @@ class _BootstrapScriptFailed:
 
 def _get_image_name(spec: PoolSpec) -> str:
     if spec.image and hasattr(spec.image, "container_image"):
-        return getattr(spec.image, "container_image")
+        return spec.image.container_image  # type: ignore[reportAttributeAccessIssue]
     return "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
 
 
@@ -323,7 +323,11 @@ async def _run_bootstrap(
     ttl = cluster.spec.ttl or config.instance_timeout
     bootstrap_script = cluster.spec.image.generate_bootstrap(
         ttl=ttl,
-        shutdown_command="eval $(cat /proc/1/environ | tr '\\0' '\\n' | grep RUNPOD_ | sed 's/^/export /'); runpodctl remove pod $RUNPOD_POD_ID",
+        shutdown_command=(
+            "eval $(cat /proc/1/environ | tr '\\0' '\\n' "
+            "| grep RUNPOD_ | sed 's/^/export /'); "
+            "runpodctl remove pod $RUNPOD_POD_ID"
+        ),
     )
 
     logger.info(f"RunPod: Connecting to {info.ip}:{info.ssh_port} to run bootstrap...")
@@ -363,7 +367,9 @@ def runpod_provider_actor(
 ) -> Behavior[ProviderMsg]:
 
     def idle() -> Behavior[ProviderMsg]:
-        async def receive(ctx: ActorContext[ProviderMsg], msg: ProviderMsg) -> Behavior[ProviderMsg]:
+        async def receive(
+            ctx: ActorContext[ProviderMsg], msg: ProviderMsg,
+        ) -> Behavior[ProviderMsg]:
             match msg:
                 case ClusterRequested(provider="runpod") as event:
                     cluster_id = f"runpod-{uuid.uuid4().hex[:8]}"
@@ -412,7 +418,9 @@ def runpod_provider_actor(
         return Behaviors.receive(receive)
 
     def active(state: RunPodClusterState) -> Behavior[ProviderMsg]:
-        async def receive(ctx: ActorContext[ProviderMsg], msg: ProviderMsg) -> Behavior[ProviderMsg]:
+        async def receive(
+            ctx: ActorContext[ProviderMsg], msg: ProviderMsg,
+        ) -> Behavior[ProviderMsg]:
             match msg:
                 case InstanceRequested(provider="runpod") as event:
                     if event.cluster_id != state.cluster_id:
@@ -421,7 +429,10 @@ def runpod_provider_actor(
                     if state.is_instant_cluster:
                         pod_id = state.pod_ids.get(event.node_id)
                         if pod_id:
-                            logger.info(f"RunPod: Instant Cluster pod {pod_id} for node {event.node_id}")
+                            logger.info(
+                                f"RunPod: Instant Cluster pod "
+                                f"{pod_id} for node {event.node_id}"
+                            )
                             state.pending_nodes.add(event.node_id)
                             launched = InstanceLaunched(
                                 request_id=event.request_id,
@@ -432,8 +443,8 @@ def runpod_provider_actor(
                             )
                             ctx.pipe_to_self(
                                 coro=_wait_for_running(config, state, launched),
-                                mapper=lambda result: _PodRunning(event=result),
-                                on_failure=lambda e: _PodRunningFailed(
+                                mapper=lambda result: _PodRunning(event=result),  # type: ignore[reportArgumentType]
+                                on_failure=lambda e: _PodRunningFailed(  # type: ignore[reportArgumentType]
                                     instance_id=pod_id,
                                     error=str(e),
                                 ),
@@ -469,8 +480,8 @@ def runpod_provider_actor(
                     )
                     ctx.pipe_to_self(
                         coro=_wait_for_running(config, state, launched),
-                        mapper=lambda result: _PodRunning(event=result),
-                        on_failure=lambda e: _PodRunningFailed(
+                        mapper=lambda result: _PodRunning(event=result),  # type: ignore[reportArgumentType]
+                        on_failure=lambda e: _PodRunningFailed(  # type: ignore[reportArgumentType]
                             instance_id=pod_id,
                             error=str(e),
                         ),
@@ -482,8 +493,8 @@ def runpod_provider_actor(
                         return Behaviors.same()
                     ctx.pipe_to_self(
                         coro=_run_bootstrap(config, state, msg),
-                        mapper=lambda instance_id: _BootstrapScriptDone(instance_id=instance_id),
-                        on_failure=lambda e: _BootstrapScriptFailed(
+                        mapper=lambda instance_id: _BootstrapScriptDone(instance_id=instance_id),  # type: ignore[reportArgumentType]
+                        on_failure=lambda e: _BootstrapScriptFailed(  # type: ignore[reportArgumentType]
                             instance_id=info.id,
                             error=str(e),
                         ),
@@ -516,8 +527,14 @@ def runpod_provider_actor(
                     logger.error(f"RunPod: Bootstrap script failed on {iid}: {err}")
                     return Behaviors.same()
 
-                case BootstrapDone(instance=info, success=True) if info.provider == "runpod":
-                    logger.info(f"RunPod: Bootstrap completed on {info.id}, skyward_source={state.spec.image.skyward_source}")
+                case BootstrapDone(
+                    instance=info, success=True,
+                ) if info.provider == "runpod":
+                    logger.info(
+                        f"RunPod: Bootstrap completed on {info.id},"
+                        f" skyward_source="
+                        f"{state.spec.image.skyward_source}"
+                    )
                     if state.spec.image and state.spec.image.skyward_source == "local":
                         logger.info(f"RunPod: Installing local skyward wheel on {info.id}...")
                         await _install_local_skyward(info, state)
@@ -526,7 +543,9 @@ def runpod_provider_actor(
                     pool_ref.tell(InstanceBootstrapped(instance=info))
                     return Behaviors.same()
 
-                case BootstrapDone(instance=info, success=False, error=error) if info.provider == "runpod":
+                case BootstrapDone(
+                    instance=info, success=False, error=error,
+                ) if info.provider == "runpod":
                     logger.error(f"RunPod: Bootstrap failed on {info.id}: {error}")
                     return Behaviors.same()
 

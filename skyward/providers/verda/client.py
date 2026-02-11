@@ -175,7 +175,9 @@ class VerdaClient:
     async def get_instance(self, instance_id: str) -> InstanceResponse | None:
         """Get instance details. Returns None if not found."""
         try:
-            result: InstanceResponse | None = await self._request("GET", f"/instances/{instance_id}")
+            result: InstanceResponse | None = await self._request(
+                "GET", f"/instances/{instance_id}",
+            )
             return result
         except VerdaError:
             return None
@@ -183,7 +185,9 @@ class VerdaClient:
     async def list_instances(self, status: str | None = None) -> list[InstanceResponse]:
         """List all instances, optionally filtered by status."""
         params = {"status": status} if status else None
-        result: list[InstanceResponse] | None = await self._request("GET", "/instances", params=params)
+        result: list[InstanceResponse] | None = await self._request(
+            "GET", "/instances", params=params,
+        )
         return result or []
 
     async def delete_instance(self, instance_id: str) -> None:
@@ -230,6 +234,9 @@ def get_credentials() -> tuple[str, str]:
     if not client_id:
         raise ValueError("Verda client ID not found. Set VERDA_CLIENT_ID environment variable.")
     if not client_secret:
-        raise ValueError("Verda client secret not found. Set VERDA_CLIENT_SECRET environment variable.")
+        raise ValueError(
+            "Verda client secret not found. "
+            "Set VERDA_CLIENT_SECRET environment variable."
+        )
 
     return client_id, client_secret

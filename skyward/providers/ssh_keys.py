@@ -8,7 +8,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
 
 
 def compute_fingerprint(public_key: str) -> str:
@@ -89,8 +91,8 @@ def generate_key_name(key_path: Path) -> str:
 
 
 async def ensure_ssh_key_on_provider(
-    list_keys_fn,
-    create_key_fn,
+    list_keys_fn: Callable[[], Awaitable[list[dict[str, Any]]]],
+    create_key_fn: Callable[[str, str], Awaitable[dict[str, Any]]],
     provider_name: str,
 ) -> str:
     """Ensure SSH key exists on a cloud provider.

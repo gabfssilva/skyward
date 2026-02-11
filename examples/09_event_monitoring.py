@@ -65,17 +65,17 @@ def gpu_computation(size: int) -> dict:
 
 def on_infra_creating(event: sky.InfraCreating):
     """Called when infrastructure creation starts."""
-    print(f"[INFRA] Creating infrastructure...")
+    print("[INFRA] Creating infrastructure...")
 
 
 def on_infra_created(event: sky.InfraCreated):
     """Called when infrastructure is ready."""
-    print(f"[INFRA] Infrastructure created")
+    print("[INFRA] Infrastructure created")
 
 
 def on_instance_launching(event: sky.InstanceLaunching):
     """Called when an instance is being launched."""
-    print(f"[INSTANCE] Launching instance...")
+    print("[INSTANCE] Launching instance...")
 
 
 def on_instance_provisioned(event: sky.InstanceProvisioned):
@@ -85,7 +85,7 @@ def on_instance_provisioned(event: sky.InstanceProvisioned):
 
 def on_bootstrap_starting(event: sky.BootstrapStarting):
     """Called when bootstrap phase begins."""
-    print(f"[BOOTSTRAP] Starting bootstrap...")
+    print("[BOOTSTRAP] Starting bootstrap...")
 
 
 def on_bootstrap_progress(event: sky.BootstrapProgress):
@@ -95,7 +95,7 @@ def on_bootstrap_progress(event: sky.BootstrapProgress):
 
 def on_bootstrap_completed(event: sky.BootstrapCompleted):
     """Called when bootstrap is complete."""
-    print(f"[BOOTSTRAP] Completed!")
+    print("[BOOTSTRAP] Completed!")
 
 
 def on_pool_started(event: sky.PoolStarted):
@@ -122,7 +122,7 @@ def on_instance_stopping(event: sky.InstanceStopping):
 
 def on_pool_stopping(event: sky.PoolStopping):
     """Called when the pool is shutting down."""
-    print(f"[POOL] Stopping pool...")
+    print("[POOL] Stopping pool...")
 
 
 def on_error(event: sky.Error):
@@ -174,12 +174,18 @@ if __name__ == "__main__":
     with pool:
         print("\n--- Running CPU computation ---")
         cpu_result = heavy_computation(5_000_000) >> pool
-        print(f"\nResult: {cpu_result['elapsed_seconds']}s for {cpu_result['iterations']:,} iterations")
+        print(
+            f"\nResult: {cpu_result['elapsed_seconds']}s "
+            f"for {cpu_result['iterations']:,} iterations"
+        )
 
         print("\n--- Running GPU computation ---")
         gpu_result = gpu_computation(4096) >> pool
         if "error" not in gpu_result:
-            print(f"\nResult: {gpu_result['matrix_size']}x{gpu_result['matrix_size']} on {gpu_result['device']}")
+            print(
+                f"\nResult: {gpu_result['matrix_size']}x"
+                f"{gpu_result['matrix_size']} on {gpu_result['device']}"
+            )
 
     print("\n" + "=" * 60)
     print("Pool shutdown complete")

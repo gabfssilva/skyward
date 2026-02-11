@@ -101,7 +101,7 @@ class PanelRenderer:
         Args:
             grace_period: Seconds to wait before stopping, allowing final events to render.
         """
-        def stop_later():
+        def stop_later() -> None:
             if grace_period > 0:
                 time.sleep(grace_period)
 

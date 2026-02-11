@@ -58,7 +58,7 @@ def _strip_provider_warning_filters() -> None:
     urllib3) register warning filters whose category classes live in modules
     not installed on workers, causing ModuleNotFoundError on deserialization.
     """
-    warnings.filters[:] = [
+    warnings.filters[:] = [  # type: ignore[reportIndexIssue]
         f for f in warnings.filters
         if not any(
             isinstance(x, type) and x.__module__.split(".")[0] in _PROVIDER_MODULES

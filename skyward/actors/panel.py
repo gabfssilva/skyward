@@ -12,6 +12,10 @@ from types import MappingProxyType
 from casty import ActorContext, Behavior, Behaviors, SpyEvent, Terminated
 
 from skyward.accelerators.catalog import get_gpu_vram_gb
+from skyward.api.spec import PoolSpec
+from skyward.observability.panel.renderer import PanelRenderer
+from skyward.observability.panel.state import InfraState, InstanceState, MetricsState, PanelState
+
 from .messages import (
     BootstrapCommand,
     BootstrapConsole,
@@ -28,9 +32,6 @@ from .messages import (
     Metric,
     ShutdownRequested,
 )
-from skyward.observability.panel.renderer import PanelRenderer
-from skyward.observability.panel.state import InfraState, InstanceState, MetricsState, PanelState
-from skyward.api.spec import PoolSpec
 
 type PanelInput = SpyEvent
 
@@ -188,8 +189,13 @@ def panel_actor(spec: PoolSpec) -> Behavior[PanelInput]:
                 case SpyEvent(event=InstanceDestroyed() as ev):
                     inst = state.instances.get(ev.instance_id)
                     if inst:
-                        new_instances = {**state.instances, ev.instance_id: replace(inst, end_time=time.monotonic())}
-                        new_state = replace(state, instances=MappingProxyType(new_instances))
+                        new_instances = {
+                            **state.instances,
+                            ev.instance_id: replace(inst, end_time=time.monotonic()),
+                        }
+                        new_state = replace(
+                            state, instances=MappingProxyType(new_instances),
+                        )
                         renderer.update_state(new_state)
                         return observing(new_state, renderer)
                     return Behaviors.same()
@@ -197,7 +203,11 @@ def panel_actor(spec: PoolSpec) -> Behavior[PanelInput]:
                 case SpyEvent(event=InstancePreempted() as ev):
                     inst = state.instances.get(ev.instance.id)
                     if inst:
-                        new_inst = replace(inst, preempted=True, logs=(*inst.logs, f"PREEMPTED: {ev.reason}")[-100:])
+                        new_inst = replace(
+                            inst,
+                            preempted=True,
+                            logs=(*inst.logs, f"PREEMPTED: {ev.reason}")[-100:],
+                        )
                         new_instances = {**state.instances, ev.instance.id: new_inst}
                         new_state = replace(state, instances=MappingProxyType(new_instances))
                         renderer.update_state(new_state)
@@ -208,10 +218,17 @@ def panel_actor(spec: PoolSpec) -> Behavior[PanelInput]:
                 case SpyEvent(event=BootstrapConsole() as ev):
                     inst = state.instances.get(ev.instance.id)
                     if inst and ev.content.strip():
-                        msg = ev.content.strip()
-                        if not msg.startswith("#"):
-                            new_inst = _add_log(inst, msg[:80])
-                            new_state = replace(state, instances=MappingProxyType({**state.instances, ev.instance.id: new_inst}))
+                        line = ev.content.strip()
+                        if not line.startswith("#"):
+                            new_inst = _add_log(inst, line[:80])
+                            new_instances = {
+                                **state.instances,
+                                ev.instance.id: new_inst,
+                            }
+                            new_state = replace(
+                                state,
+                                instances=MappingProxyType(new_instances),
+                            )
                             renderer.update_state(new_state)
                             return observing(new_state, renderer)
                     return Behaviors.same()
@@ -244,7 +261,14 @@ def panel_actor(spec: PoolSpec) -> Behavior[PanelInput]:
                         if cmd:
                             display_cmd = f"$ {cmd[:70]}..." if len(cmd) > 70 else f"$ {cmd}"
                             new_inst = _add_log(inst, display_cmd)
-                            new_state = replace(state, instances=MappingProxyType({**state.instances, ev.instance.id: new_inst}))
+                            new_instances = {
+                                **state.instances,
+                                ev.instance.id: new_inst,
+                            }
+                            new_state = replace(
+                                state,
+                                instances=MappingProxyType(new_instances),
+                            )
                             renderer.update_state(new_state)
                             return observing(new_state, renderer)
                     return Behaviors.same()
@@ -264,7 +288,14 @@ def panel_actor(spec: PoolSpec) -> Behavior[PanelInput]:
                         smoothed=MappingProxyType({**inst.metrics.smoothed, ev.name: smoothed}),
                     )
                     new_inst = replace(inst, metrics=new_metrics)
-                    new_state = replace(state, instances=MappingProxyType({**state.instances, ev.instance.id: new_inst}))
+                    new_instances = {
+                        **state.instances,
+                        ev.instance.id: new_inst,
+                    }
+                    new_state = replace(
+                        state,
+                        instances=MappingProxyType(new_instances),
+                    )
                     renderer.update_state(new_state)
                     return observing(new_state, renderer)
 
@@ -274,7 +305,14 @@ def panel_actor(spec: PoolSpec) -> Behavior[PanelInput]:
                         line = ev.line.strip()
                         if line:
                             new_inst = _add_log(inst, line)
-                            new_state = replace(state, instances=MappingProxyType({**state.instances, ev.instance.id: new_inst}))
+                            new_instances = {
+                                **state.instances,
+                                ev.instance.id: new_inst,
+                            }
+                            new_state = replace(
+                                state,
+                                instances=MappingProxyType(new_instances),
+                            )
                             renderer.update_state(new_state)
                             return observing(new_state, renderer)
                     return Behaviors.same()

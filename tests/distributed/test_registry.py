@@ -1,4 +1,4 @@
-from skyward.distributed.proxies import DictProxy, CounterProxy
+from skyward.distributed.proxies import CounterProxy, DictProxy
 
 
 def test_registry_get_or_create_dict(registry):

@@ -1,21 +1,13 @@
 """User-facing API — pool, compute, runtime."""
 
 from .pool import (
+    ComputePool,
     PendingCompute,
     PendingComputeGroup,
-    ComputePool,
     compute,
     gather,
     pool,
     sky,
-)
-from .spec import (
-    AllocationStrategy,
-    Architecture,
-    DEFAULT_IMAGE,
-    Image,
-    PoolSpec,
-    PoolState,
 )
 from .runtime import (
     CallbackWriter,
@@ -27,6 +19,14 @@ from .runtime import (
     silent,
     stderr,
     stdout,
+)
+from .spec import (
+    DEFAULT_IMAGE,
+    AllocationStrategy,
+    Architecture,
+    Image,
+    PoolSpec,
+    PoolState,
 )
 
 __all__ = [

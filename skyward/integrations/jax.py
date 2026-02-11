@@ -29,7 +29,8 @@ def jax[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
             # isn't shared, causing "no config found for HLO" errors.
             # We need BOTH flags:
             # - xla_gpu_autotune_level=0: disables GPU autotuning
-            # - xla_gpu_enable_triton_gemm=false: disables triton gemm (which has separate sharding autotuning)
+            # - xla_gpu_enable_triton_gemm=false: disables triton gemm
+            #   (which has separate sharding autotuning)
             import jax
 
             # Use v1's instance_info which reads from COMPUTE_POOL env var
@@ -69,7 +70,10 @@ def jax[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
 
             local_device_ids = list(range(pool.accelerators)) if pool.accelerators > 0 else None
 
-            print(f"[jax] Calling jax.distributed.initialize(local_device_ids={local_device_ids})...")
+            print(
+                f"[jax] Calling jax.distributed.initialize("
+                f"local_device_ids={local_device_ids})..."
+            )
             jax.distributed.initialize(
                 coordinator_address=coordinator_address,
                 num_processes=total_processes,

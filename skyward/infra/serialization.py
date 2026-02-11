@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import zlib
-from typing import Any
+from typing import Any, Final
 
 import cloudpickle
-
-from typing import Final
 
 COMPRESSED_MAGIC: Final = b"\x00CZ"
 COMPRESSION_LEVEL: Final = 6

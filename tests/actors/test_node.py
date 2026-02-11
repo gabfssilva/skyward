@@ -13,7 +13,6 @@ from skyward.actors.messages import (
     InstanceProvisioned,
     InstanceRequested,
     NodeBecameReady,
-    NodeMsg,
     Provision,
 )
 from skyward.actors.node import node_actor
@@ -38,7 +37,12 @@ def event_loop():
 @pytest.fixture(scope="module")
 def actor_system(event_loop):
     async def _start():
-        system = ClusteredActorSystem(name="test-node", host="127.0.0.1", port=get_free_port(), node_id="node-test-0")
+        system = ClusteredActorSystem(
+            name="test-node",
+            host="127.0.0.1",
+            port=get_free_port(),
+            node_id="node-test-0",
+        )
         await system.__aenter__()
         return system
 
@@ -147,7 +151,10 @@ def test_node_replaces_on_preemption(actor_system):
         node_ref.tell(InstancePreempted(instance=info, reason="spot-interruption"))
         await asyncio.sleep(0.5)
 
-        replace_requests = [e for e in provider_collected if isinstance(e, InstanceRequested) and e.replacing is not None]
+        replace_requests = [
+            e for e in provider_collected
+            if isinstance(e, InstanceRequested) and e.replacing is not None
+        ]
         assert len(replace_requests) == 1
         assert replace_requests[0].replacing == "i-old"
 

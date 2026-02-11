@@ -11,8 +11,8 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
-from skyward.observability.metrics import MetricsConfig, Default as DefaultMetrics
-
+from skyward.observability.metrics import Default as DefaultMetrics
+from skyward.observability.metrics import MetricsConfig
 from skyward.providers.bootstrap import (
     Op,
     apt,

@@ -9,8 +9,8 @@ from __future__ import annotations
 from skyward.providers.bootstrap.compose import SKYWARD_DIR
 
 VENV_DIR = f"{SKYWARD_DIR}/.venv"
-from .compose import Op
-from .ops import pip, shell, wait_for_port
+from .compose import Op  # noqa: E402
+from .ops import pip, shell, wait_for_port  # noqa: E402
 
 CASTY_PORT = 25520
 HTTP_PORT = 8265

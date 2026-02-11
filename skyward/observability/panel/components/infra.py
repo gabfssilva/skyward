@@ -65,7 +65,10 @@ class HeaderBar:
             center.append(" > ", style="dim")
             center.append(infra.region)
             center.append(" > ", style="dim")
-            center.append(infra.instance_type or spinner, style="bold" if infra.instance_type else "dim")
+            itype_style = "bold" if infra.instance_type else "dim"
+            center.append(
+                infra.instance_type or spinner, style=itype_style,
+            )
 
             if infra.vcpus > 0:
                 center.append(" · ", style="dim")

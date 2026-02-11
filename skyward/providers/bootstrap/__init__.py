@@ -16,6 +16,21 @@ Example:
 
 from __future__ import annotations
 
+from skyward.providers._bootstrap_ssh import (
+    install_local_skyward,
+    run_bootstrap_via_ssh,
+    wait_for_ssh,
+)
+
+# Casty operations
+from .casty import (
+    casty_install,
+    casty_service,
+)
+from .casty import (
+    server_ops as casty_server_ops,
+)
+
 # Core types and composition
 from .compose import (
     EMIT_SH_PATH,
@@ -47,19 +62,6 @@ from .ops import (
     uv_add,
     uv_init,
     wait_for_port,
-)
-
-# Casty operations
-from .casty import (
-    casty_install,
-    casty_service,
-    server_ops as casty_server_ops,
-)
-
-from skyward.providers._bootstrap_ssh import (
-    install_local_skyward,
-    run_bootstrap_via_ssh,
-    wait_for_ssh,
 )
 
 __all__ = [

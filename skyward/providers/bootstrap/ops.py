@@ -6,13 +6,13 @@ Each operation is a function returning an Op (string or callable).
 
 from __future__ import annotations
 
-from skyward.providers.bootstrap.compose import SKYWARD_DIR
-
 from typing import Final
+
+from skyward.providers.bootstrap.compose import SKYWARD_DIR
 
 UV_INSTALL_URL: Final = "https://astral.sh/uv/install.sh"
 
-from .compose import Op
+from .compose import Op  # noqa: E402
 
 # =============================================================================
 # Package Operations
@@ -31,7 +31,7 @@ def apt(*packages: str, quiet: bool = True, update: bool = True) -> Op:
 
     Example:
         >>> apt("python3", "curl")()
-        'while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done\\napt-get update -qq\\napt-get install -y -qq python3 curl'
+        'while fuser ...\\napt-get update -qq\\napt-get install ...'
     """
     if not packages:
         return lambda: "# No APT packages to install"
@@ -218,7 +218,8 @@ def wait_for_port(port: int, timeout: int = 60, interval: float = 0.5) -> Op:
 
     def generate() -> str:
         return f"""for i in $(seq 1 {attempts}); do
-    if ss -tlnp 2>/dev/null | grep -q ':{port} ' || netstat -tlnp 2>/dev/null | grep -q ':{port} '; then
+    if ss -tlnp 2>/dev/null | grep -q ':{port} ' || \
+       netstat -tlnp 2>/dev/null | grep -q ':{port} '; then
         break
     fi
     sleep {interval}
@@ -365,7 +366,9 @@ apt-get install -y -qq gcc-12 make linux-modules-extra-$(uname -r) awscli
 update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100
 ln -sf /usr/bin/gcc /usr/bin/cc
 
-aws s3 cp s3://ec2-linux-nvidia-drivers/latest/NVIDIA-Linux-x86_64-580.105.08-grid-aws.run /tmp/nvidia-grid.run
+NVIDIA_URL=s3://ec2-linux-nvidia-drivers/latest
+NVIDIA_PKG=NVIDIA-Linux-x86_64-580.105.08-grid-aws.run
+aws s3 cp $NVIDIA_URL/$NVIDIA_PKG /tmp/nvidia-grid.run
 chmod +x /tmp/nvidia-grid.run
 /tmp/nvidia-grid.run --silent --dkms
 rm -f /tmp/nvidia-grid.run"""

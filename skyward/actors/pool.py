@@ -14,6 +14,8 @@ from typing import Any
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 
+from skyward.api.spec import PoolSpec
+
 from .messages import (
     BootstrapRequested,
     BroadcastResult,
@@ -34,17 +36,15 @@ from .messages import (
     PoolMsg,
     PoolStarted,
     PoolStopped,
-    Provision,
     ProviderMsg,
     ProviderName,
+    Provision,
     ShutdownRequested,
     StartPool,
     StopPool,
     _to_metadata,
 )
 from .node import node_actor
-from skyward.api.spec import PoolSpec
-
 
 # =============================================================================
 # Behavior
@@ -57,7 +57,12 @@ def pool_actor() -> Behavior[PoolMsg]:
     def idle() -> Behavior[PoolMsg]:
         async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
             match msg:
-                case StartPool(spec=spec, provider_config=provider_config, provider_ref=prov_ref, reply_to=reply_to):
+                case StartPool(
+                    spec=spec,
+                    provider_config=provider_config,
+                    provider_ref=prov_ref,
+                    reply_to=reply_to,
+                ):
                     request_id = f"pool-{uuid.uuid4().hex[:8]}"
                     provider = spec.provider or "aws"
 
@@ -265,7 +270,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                     reply_to=reply_to,
                 ):
                     results: list[Any] = []
-                    for nid in sorted(instances.keys()):
+                    for _nid in sorted(instances.keys()):
                         try:
                             results.append(fn(*args, **kwargs))
                         except Exception as exc:

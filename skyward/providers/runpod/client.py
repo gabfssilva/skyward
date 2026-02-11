@@ -256,7 +256,7 @@ class RunPodClient:
     # =========================================================================
 
     @retry(on=on_status_code(429, 503), max_attempts=3, base_delay=1.0)
-    async def create_cpu_pod(self, params: "CpuPodCreateParams") -> PodResponse:
+    async def create_cpu_pod(self, params: CpuPodCreateParams) -> PodResponse:
         """Create a CPU-only pod via GraphQL.
 
         The REST API doesn't support gpuCount=0, so we use the

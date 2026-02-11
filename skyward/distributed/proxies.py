@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Coroutine
 from typing import Any
 
 from .types import Consistency
@@ -26,7 +27,7 @@ def _get_loop() -> asyncio.AbstractEventLoop:
     return _system_loop
 
 
-def _run_sync[T](coro: Any) -> T:
+def _run_sync[T](coro: Coroutine[Any, Any, T]) -> T:
     loop = _get_loop()
 
     try:

@@ -8,9 +8,9 @@ from pathlib import Path
 
 from loguru import logger
 
-from skyward.providers.bootstrap.compose import SKYWARD_DIR
 from skyward.actors.messages import InstanceRunning, ProviderName
 from skyward.infra.ssh import SSHTransport
+from skyward.providers.bootstrap.compose import SKYWARD_DIR
 
 
 def build_instance_running_event(

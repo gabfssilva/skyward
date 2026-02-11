@@ -123,7 +123,7 @@ class VastAIClient:
 
     def __init__(self, api_key: str, config: VastAI | None = None) -> None:
         self._api_key = api_key
-        self.config = config
+        self.config = config or VastAI()
         self._http = HttpClient(VAST_API_BASE, BearerAuth(api_key), timeout=60)
 
     async def __aenter__(self) -> VastAIClient:
@@ -190,7 +190,11 @@ class VastAIClient:
 
         @retry(on=VastAIError, max_attempts=5, base_delay=2.0)
         async def do_attach() -> None:
-            result = await self._request("POST", f"/api/v0/instances/{instance_id}/ssh/", {"ssh_key": public_key})
+            result = await self._request(
+                "POST",
+                f"/api/v0/instances/{instance_id}/ssh/",
+                {"ssh_key": public_key},
+            )
             if result and not result.get("success", True):
                 error = result.get("msg") or result.get("error") or "unknown"
                 # Ignore "already associated" - key was auto-attached on instance creation
@@ -262,10 +266,20 @@ class VastAIClient:
         limit: int = 5000,
     ) -> list[OfferResponse]:
         """Search available GPU offers."""
-        reliability = min_reliability if min_reliability is not None else self.config.min_reliability
-        cuda = min_cuda if min_cuda is not None else self.config.min_cuda
+        reliability = (
+            min_reliability
+            if min_reliability is not None
+            else self.config.min_reliability
+        )
+        cuda = (
+            min_cuda if min_cuda is not None else self.config.min_cuda
+        )
         geo = geolocation or self.config.geolocation
-        direct_port = require_direct_port if require_direct_port is not None else self.config.require_direct_port
+        direct_port = (
+            require_direct_port
+            if require_direct_port is not None
+            else self.config.require_direct_port
+        )
 
         query = build_search_query(
             gpu_name=gpu_name,
@@ -339,7 +353,9 @@ class VastAIClient:
         if price is not None:
             body["price"] = price
 
-        result: CreateInstanceResponse = await self._request("PUT", f"/api/v0/asks/{offer_id}/", json=body)
+        result: CreateInstanceResponse = await self._request(
+            "PUT", f"/api/v0/asks/{offer_id}/", json=body,
+        )
 
         instance_id = result.get("new_contract") or result.get("id")
         if instance_id:
@@ -395,12 +411,17 @@ class VastAIClient:
 
     async def join_overlay(self, name: str, instance_id: int) -> None:
         """Join an instance to an overlay network."""
-        await self._request("PUT", "/api/v0/overlay/", json={"name": name, "instance_id": instance_id})
+        await self._request(
+            "PUT", "/api/v0/overlay/",
+            json={"name": name, "instance_id": instance_id},
+        )
 
     async def list_overlays(self) -> list[OverlayResponse]:
         """List all overlay networks for this account."""
         try:
-            result: list[OverlayResponse] | None = await self._request("GET", "/api/v0/overlay/")
+            result: list[OverlayResponse] | None = await self._request(
+                "GET", "/api/v0/overlay/",
+            )
             return result or []
         except VastAIError:
             return []
@@ -408,7 +429,10 @@ class VastAIClient:
     async def delete_overlay(self, name: str) -> None:
         """Delete an overlay network by name."""
         with suppress(VastAIError):
-            await self._request("DELETE", "/api/v0/overlay/", json={"overlay_name": name})
+            await self._request(
+                "DELETE", "/api/v0/overlay/",
+                json={"overlay_name": name},
+            )
 
 
 # =============================================================================
@@ -464,7 +488,11 @@ def select_all_valid_clusters(
     """Select all valid clusters with enough capacity, sorted by CUDA version (desc) then price."""
     clusters = group_offers_by_cluster(offers)
 
-    valid = [(cid, cluster_offers) for cid, cluster_offers in clusters.items() if len(cluster_offers) >= nodes_needed]
+    valid = [
+        (cid, cluster_offers)
+        for cid, cluster_offers in clusters.items()
+        if len(cluster_offers) >= nodes_needed
+    ]
 
     if not valid:
         return []
@@ -473,7 +501,10 @@ def select_all_valid_clusters(
 
     # Sort offers within each cluster by CUDA (desc), then price (asc)
     for _, cluster_offers in valid:
-        cluster_offers.sort(key=lambda o: (-o.get("cuda_max_good", 0), o.get(price_key, float("inf"))))
+        cluster_offers.sort(key=lambda o: (
+            -o.get("cuda_max_good", 0),
+            o.get(price_key, float("inf")),
+        ))
 
     def cluster_score(item: tuple[int, list[OfferResponse]]) -> tuple[float, float]:
         """Sort by min CUDA in cluster (desc), then total cost (asc)."""

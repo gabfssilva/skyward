@@ -22,7 +22,6 @@ Use it as a distributed cache with get/put/delete/contains semantics.
 
 import skyward as sky
 
-
 # =============================================================================
 # Example 1: Shared Cache with Counter Progress
 # =============================================================================

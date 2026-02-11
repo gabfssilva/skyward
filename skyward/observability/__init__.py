@@ -10,10 +10,10 @@ from .logging import (
 )
 from .metrics import (
     CPU,
+    GPU,
     Custom,
     Default,
     Disk,
-    GPU,
     GPUMemory,
     GPUMemoryTotal,
     GPUTemp,

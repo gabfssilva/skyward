@@ -21,8 +21,8 @@ import skyward as sky
 
 def main():
     """Run a unified grid search over estimators and their hyperparameters."""
-    X, y = load_digits(return_X_y=True)
-    X_train, X_test, y_train, y_test = train_test_split(
+    X, y = load_digits(return_X_y=True)  # noqa: N806
+    X_train, X_test, y_train, y_test = train_test_split(  # noqa: N806
         X, y, test_size=0.2, random_state=42
     )
 

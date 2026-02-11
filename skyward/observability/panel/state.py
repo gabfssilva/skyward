@@ -32,7 +32,9 @@ class MetricsState:
     """Per-instance metrics with history."""
 
     values: MappingProxyType[str, float] = field(default_factory=lambda: MappingProxyType({}))
-    history: MappingProxyType[str, tuple[float, ...]] = field(default_factory=lambda: MappingProxyType({}))
+    history: MappingProxyType[str, tuple[float, ...]] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )
     smoothed: MappingProxyType[str, float] = field(default_factory=lambda: MappingProxyType({}))
 
 
@@ -144,7 +146,9 @@ class PanelState:
 
     infra: InfraState = field(default_factory=InfraState)
 
-    instances: MappingProxyType[str, InstanceState] = field(default_factory=lambda: MappingProxyType({}))
+    instances: MappingProxyType[str, InstanceState] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )
 
     def to_view_model(
         self, terminal_width: int, terminal_height: int, blink_on: bool = True
@@ -270,10 +274,11 @@ class PanelState:
             inst.hourly_rate for inst in self.instances.values() if not inst.is_placeholder
         )
 
-        if total_hourly < 10:
-            hourly_rate = f"${total_hourly:.2f}/hr"
-        else:
-            hourly_rate = f"${total_hourly:.0f}/hr"
+        hourly_rate = (
+            f"${total_hourly:.2f}/hr"
+            if total_hourly < 10
+            else f"${total_hourly:.0f}/hr"
+        )
 
         return InfraVM(
             provider=self.infra.provider,
@@ -440,7 +445,16 @@ class PanelState:
         max_len = max((len(h) for h in used_histories), default=0)
 
         pct_history = [
-            min(((sum(vals) / len(vals)) / total_mb * 100 if (vals := [h[idx] for h in used_histories if idx < len(h)]) else 0.0), 100.0)
+            min(
+                (
+                    (sum(vals) / len(vals)) / total_mb * 100
+                    if (vals := [
+                        h[idx] for h in used_histories if idx < len(h)
+                    ])
+                    else 0.0
+                ),
+                100.0,
+            )
             for idx in range(max_len)
         ]
 

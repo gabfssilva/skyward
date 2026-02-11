@@ -167,7 +167,7 @@ def inference_demo(model_name: str, texts: list[str]) -> dict:
         "model": model_name,
         "predictions": [
             {"text": t[:50] + "...", "label": r["label"], "score": round(r["score"], 3)}
-            for t, r in zip(texts, results)
+            for t, r in zip(texts, results, strict=False)
         ],
     }
 

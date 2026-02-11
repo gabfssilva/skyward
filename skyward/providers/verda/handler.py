@@ -28,9 +28,9 @@ from skyward.actors.messages import (
     ShutdownRequested,
 )
 from skyward.actors.streaming import instance_monitor
+from skyward.api.spec import PoolSpec
 from skyward.providers.ssh_keys import ensure_ssh_key_on_provider, get_ssh_key_path
 from skyward.providers.wait import wait_for_ready
-from skyward.api.spec import PoolSpec
 
 from .client import VerdaClient, VerdaError
 from .config import Verda
@@ -45,7 +45,6 @@ from .types import (
     get_price_spot,
     get_vcpu,
 )
-
 
 # =============================================================================
 # Module-level helpers
@@ -124,7 +123,11 @@ def _select_os_image(spec: PoolSpec, supported_os: list[str]) -> str:
 
     preferred = [os for os in supported_os if is_preferred_image(os)]
     if not preferred:
-        preferred = [os for os in supported_os if os.lower().startswith("ubuntu-") and "cuda" in os.lower()]
+        preferred = [
+            os for os in supported_os
+            if os.lower().startswith("ubuntu-")
+            and "cuda" in os.lower()
+        ]
     if not preferred:
         preferred = [os for os in supported_os if "cuda" in os.lower()]
 
@@ -194,9 +197,15 @@ def verda_provider_actor(
     """A Verda provider tells this story: idle -> active -> stopped."""
 
     def idle() -> Behavior[ProviderMsg]:
-        async def receive(ctx: ActorContext[ProviderMsg], msg: ProviderMsg) -> Behavior[ProviderMsg]:
+        async def receive(
+            ctx: ActorContext[ProviderMsg], msg: ProviderMsg,
+        ) -> Behavior[ProviderMsg]:
             match msg:
-                case ClusterRequested(request_id=request_id, provider="verda", spec=spec):
+                case ClusterRequested(
+                    request_id=request_id,
+                    provider="verda",
+                    spec=spec,
+                ):
                     logger.info(f"Verda: Provisioning cluster for {spec.nodes} nodes")
 
                     cluster_id = f"verda-{uuid.uuid4().hex[:8]}"
@@ -208,8 +217,8 @@ def verda_provider_actor(
                     )
 
                     ssh_key_id = await ensure_ssh_key_on_provider(
-                        list_keys_fn=client.list_ssh_keys,
-                        create_key_fn=lambda name, key: client.create_ssh_key(name, key),
+                        list_keys_fn=client.list_ssh_keys,  # type: ignore[reportArgumentType]
+                        create_key_fn=lambda name, key: client.create_ssh_key(name, key),  # type: ignore[reportArgumentType]
                         provider_name="verda",
                     )
                     state.ssh_key_id = ssh_key_id
@@ -222,7 +231,11 @@ def verda_provider_actor(
                     use_spot = spec.allocation in ("spot", "spot-if-available")
                     spot_price = get_price_spot(itype_data)
                     on_demand_price = get_price_on_demand(itype_data)
-                    state.hourly_rate = (spot_price if use_spot and spot_price else on_demand_price) or 0.0
+                    state.hourly_rate = (
+                        spot_price
+                        if use_spot and spot_price
+                        else on_demand_price
+                    ) or 0.0
                     state.on_demand_rate = on_demand_price or 0.0
                     state.vcpus = get_vcpu(itype_data)
                     state.memory_gb = get_memory_gb(itype_data)
@@ -252,7 +265,9 @@ def verda_provider_actor(
     def active(
         state: VerdaClusterState,
     ) -> Behavior[ProviderMsg]:
-        async def receive(ctx: ActorContext[ProviderMsg], msg: ProviderMsg) -> Behavior[ProviderMsg]:
+        async def receive(
+            ctx: ActorContext[ProviderMsg], msg: ProviderMsg,
+        ) -> Behavior[ProviderMsg]:
             match msg:
                 case InstanceRequested(
                     request_id=request_id,
@@ -295,8 +310,17 @@ def verda_provider_actor(
                     try:
                         info = await wait_for_ready(
                             poll_fn=lambda: client.get_instance(instance_id),
-                            ready_check=lambda i: i is not None and i["status"] == "running" and bool(i.get("ip")),
-                            terminal_check=lambda i: i is not None and i["status"] in ("error", "discontinued", "deleted"),
+                            ready_check=lambda i: (
+                                i is not None
+                                and i["status"] == "running"
+                                and bool(i.get("ip"))
+                            ),
+                            terminal_check=lambda i: (
+                                i is not None
+                                and i["status"] in (
+                                    "error", "discontinued", "deleted",
+                                )
+                            ),
                             timeout=300.0,
                             interval=5.0,
                             description=f"Verda instance {instance_id}",
@@ -333,7 +357,9 @@ def verda_provider_actor(
 
                     return Behaviors.same()
 
-                case BootstrapRequested(cluster_id=_, instance=instance_info) if instance_info.provider == "verda":
+                case BootstrapRequested(
+                    cluster_id=_, instance=instance_info,
+                ) if instance_info.provider == "verda":
                     ctx.spawn(
                         instance_monitor(
                             info=instance_info,

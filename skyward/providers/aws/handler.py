@@ -31,13 +31,12 @@ from skyward.actors.messages import (
     InstanceRunning,
     ProviderMsg,
     ShutdownRequested,
-    StopMonitor,
     _InstanceNowRunning,
     _InstanceWaitFailed,
 )
 from skyward.actors.streaming import instance_monitor
-from skyward.infra.retry import on_exception_message, retry
 from skyward.infra.pricing import get_instance_pricing
+from skyward.infra.retry import on_exception_message, retry
 
 from .clients import EC2ClientFactory
 from .config import AWS, AllocationStrategy
@@ -69,11 +68,22 @@ def aws_provider_actor(
     """An AWS provider tells this story: idle -> active -> stopped."""
 
     def idle() -> Behavior[ProviderMsg]:
-        async def receive(ctx: ActorContext[ProviderMsg], msg: ProviderMsg) -> Behavior[ProviderMsg]:
+        async def receive(
+            ctx: ActorContext[ProviderMsg], msg: ProviderMsg,
+        ) -> Behavior[ProviderMsg]:
             match msg:
-                case ClusterRequested(request_id=request_id, provider="aws", spec=spec):
-                    logger.debug("AWS: Provisioning infrastructure, keys, and instance configs...")
-                    resources, (ssh_key_name, ssh_key_path), instance_configs = await asyncio.gather(
+                case ClusterRequested(
+                    request_id=request_id, provider="aws", spec=spec,
+                ):
+                    logger.debug(
+                        "AWS: Provisioning infrastructure, keys, "
+                        "and instance configs..."
+                    )
+                    (
+                        resources,
+                        (ssh_key_name, ssh_key_path),
+                        instance_configs,
+                    ) = await asyncio.gather(
                         _ensure_infrastructure(config, ec2),
                         _ensure_key_pair(config, ec2),
                         _resolve_instance_configs(config, ec2, spec),
@@ -102,7 +112,7 @@ def aws_provider_actor(
                         n=spec.nodes,
                     )
 
-                    fleet_ids = MappingProxyType({nid: iid for nid, iid in enumerate(instance_ids)})
+                    fleet_ids = MappingProxyType(dict(enumerate(instance_ids)))
                     state = replace(state, fleet_instance_ids=fleet_ids)
 
                     provisioned = ClusterProvisioned(
@@ -120,7 +130,9 @@ def aws_provider_actor(
         return Behaviors.receive(receive)
 
     def active(state: AWSClusterState) -> Behavior[ProviderMsg]:
-        async def receive(ctx: ActorContext[ProviderMsg], msg: ProviderMsg) -> Behavior[ProviderMsg]:
+        async def receive(
+            ctx: ActorContext[ProviderMsg], msg: ProviderMsg,
+        ) -> Behavior[ProviderMsg]:
             match msg:
                 case InstanceRequested(
                     request_id=request_id,
@@ -130,7 +142,11 @@ def aws_provider_actor(
                     replacing=replacing,
                 ) if cluster_id == state.cluster_id:
                     pre_assigned = state.fleet_instance_ids.get(node_id)
-                    new_fleet = MappingProxyType({k: v for k, v in state.fleet_instance_ids.items() if k != node_id})
+                    new_fleet = MappingProxyType({
+                        k: v
+                        for k, v in state.fleet_instance_ids.items()
+                        if k != node_id
+                    })
 
                     if replacing is None and pre_assigned:
                         instance_id = pre_assigned
@@ -153,7 +169,11 @@ def aws_provider_actor(
 
                         instance_id = instance_ids[0]
 
-                    new_state = replace(state, pending_nodes=state.pending_nodes | {node_id}, fleet_instance_ids=new_fleet)
+                    new_state = replace(
+                        state,
+                        pending_nodes=state.pending_nodes | {node_id},
+                        fleet_instance_ids=new_fleet,
+                    )
 
                     ctx.pipe_to_self(
                         coro=_wait_and_build_running(
@@ -210,8 +230,13 @@ def aws_provider_actor(
                     pool_ref.tell(event)
                     return Behaviors.same()
 
-                case _InstanceWaitFailed(instance_id=iid, node_id=nid, error=error):
-                    logger.error(f"AWS: Instance {iid} (node {nid}) failed to reach running state: {error}")
+                case _InstanceWaitFailed(
+                    instance_id=iid, node_id=nid, error=error,
+                ):
+                    logger.error(
+                        f"AWS: Instance {iid} (node {nid}) "
+                        f"failed to reach running state: {error}"
+                    )
                     return Behaviors.same()
 
                 case ShutdownRequested(cluster_id=cluster_id) if cluster_id == state.cluster_id:
@@ -465,7 +490,7 @@ async def _select_instances(
     spec: PoolSpec,
     max_candidates: int = 5,
 ) -> list[tuple[str, Architecture]]:
-    import aioboto3
+    import aioboto3  # type: ignore[reportMissingImports]
 
     min_vcpus = spec.vcpus or 2
     min_memory_mib = (spec.memory_gb or 8) * 1024
@@ -480,7 +505,7 @@ async def _select_instances(
     }
 
     session = aioboto3.Session()
-    async with session.client("ec2", region_name=config.region) as client:
+    async with session.client("ec2", region_name=config.region) as client:  # type: ignore[reportGeneralTypeIssues]
         candidate_arch: dict[str, Architecture] = {}
 
         for a in archs:
@@ -561,15 +586,19 @@ def _arch_from_instance_type(instance_type: str) -> Architecture:
 
 
 async def _get_ubuntu_ami(config: AWS, arch: Architecture) -> str:
-    import aioboto3
+    import aioboto3  # type: ignore[reportMissingImports]
 
     arch_path = "arm64" if arch == "arm64" else "amd64"
     version = config.ubuntu_version
     ebs_type = "ebs-gp3" if version >= "24.04" else "ebs-gp2"
-    param_name = f"/aws/service/canonical/ubuntu/server/{version}/stable/current/{arch_path}/hvm/{ebs_type}/ami-id"
+    param_name = (
+        f"/aws/service/canonical/ubuntu/server/"
+        f"{version}/stable/current/{arch_path}/hvm/"
+        f"{ebs_type}/ami-id"
+    )
 
     session = aioboto3.Session()
-    async with session.client("ssm", region_name=config.region) as ssm:
+    async with session.client("ssm", region_name=config.region) as ssm:  # type: ignore[reportGeneralTypeIssues]
         try:
             response = await ssm.get_parameter(Name=param_name)
             return response["Parameter"]["Value"]
@@ -578,14 +607,18 @@ async def _get_ubuntu_ami(config: AWS, arch: Architecture) -> str:
 
 
 async def _get_dlami(config: AWS, arch: Architecture) -> str:
-    import aioboto3
+    import aioboto3  # type: ignore[reportMissingImports]
 
     arch_path = "arm64" if arch == "arm64" else "x86_64"
     version = config.ubuntu_version
-    param_name = f"/aws/service/deeplearning/ami/{arch_path}/base-oss-nvidia-driver-gpu-ubuntu-{version}/latest/ami-id"
+    param_name = (
+        f"/aws/service/deeplearning/ami/{arch_path}/"
+        f"base-oss-nvidia-driver-gpu-ubuntu-{version}"
+        f"/latest/ami-id"
+    )
 
     session = aioboto3.Session()
-    async with session.client("ssm", region_name=config.region) as ssm:
+    async with session.client("ssm", region_name=config.region) as ssm:  # type: ignore[reportGeneralTypeIssues]
         try:
             response = await ssm.get_parameter(Name=param_name)
             return response["Parameter"]["Value"]
@@ -759,7 +792,7 @@ async def _wait_running(
     from skyward.providers.wait import wait_for_ready
 
     async def poll_instances() -> list[dict[str, str]] | None:
-        from botocore.exceptions import ClientError
+        from botocore.exceptions import ClientError  # type: ignore[reportMissingImports]
 
         async with ec2() as client:
             try:

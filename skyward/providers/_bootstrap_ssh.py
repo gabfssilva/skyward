@@ -74,7 +74,7 @@ async def install_local_skyward(
     Raises:
         RuntimeError: If wheel build or installation fails.
     """
-    from skyward.providers.common import build_wheel, _build_wheel_install_script
+    from skyward.providers.common import _build_wheel_install_script, build_wheel
 
     # Build wheel locally
     logger.info(f"{log_prefix}Building local skyward wheel...")

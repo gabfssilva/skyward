@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     import numpy.typing as npt
-    import torch
+    import torch  # type: ignore[reportMissingImports]
 
 
 class PeerInfo(TypedDict, total=False):
@@ -59,17 +59,31 @@ class InstanceInfo(BaseModel):
     """
 
     node: int = Field(description="Index of this node (0 to total_nodes - 1)")
-    worker: int = Field(default=0, description="Worker index within this node (0 to workers_per_node - 1)")
+    worker: int = Field(
+        default=0,
+        description="Worker index within this node (0 to workers_per_node - 1)",
+    )
     total_nodes: int = Field(description="Total number of nodes in the pool")
-    workers_per_node: int = Field(default=1, description="Number of workers per node (e.g., 2 for MIG 3g.40gb)")
-    accelerators: int = Field(description="Number of accelerators on this node")
-    total_accelerators: int = Field(description="Total accelerators in the pool")
+    workers_per_node: int = Field(
+        default=1,
+        description="Number of workers per node (e.g., 2 for MIG 3g.40gb)",
+    )
+    accelerators: int = Field(
+        description="Number of accelerators on this node",
+    )
+    total_accelerators: int = Field(
+        description="Total accelerators in the pool",
+    )
     head_addr: str = Field(description="IP address of the head node")
     head_port: int = Field(description="Port for head node coordination")
-    job_id: str = Field(description="Unique identifier for this pool execution")
+    job_id: str = Field(
+        description="Unique identifier for this pool execution",
+    )
 
     peers: list[PeerInfo] = Field(description="Information about all peers")
-    accelerator: AcceleratorInfo | None = Field(default=None, description="Accelerator configuration")
+    accelerator: AcceleratorInfo | None = Field(
+        default=None, description="Accelerator configuration",
+    )
     network: NetworkInfo = Field(description="Network configuration")
 
     @property
@@ -171,7 +185,7 @@ def _shard_single(data: Any, indices: list[int]) -> Any:
         case "numpy.ndarray":
             return data[indices]
         case "torch.Tensor":
-            import torch
+            import torch  # type: ignore[reportMissingImports]
 
             return data[torch.tensor(indices)]
         case _:

@@ -2,6 +2,7 @@
 
 import skyward as sky
 
+
 @sky.compute
 def matmul_bench(size: int) -> float:
     import time

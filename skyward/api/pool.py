@@ -26,7 +26,7 @@ import asyncio
 import functools
 import threading
 import types
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Coroutine, Iterator, Sequence
 from concurrent.futures import Future
 from contextlib import suppress
 from contextvars import ContextVar
@@ -34,31 +34,29 @@ from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any, Literal, overload
 
+from casty import ActorRef, ActorSystem, Behaviors, CastyConfig
 from loguru import logger
 
-from casty import ActorRef, ActorSystem, Behaviors
-
 from skyward.accelerators import Accelerator
+from skyward.distributed import (
+    BarrierProxy,
+    CounterProxy,
+    DictProxy,
+    DistributedRegistry,
+    LockProxy,
+    QueueProxy,
+    SetProxy,
+    _set_active_registry,
+)
+from skyward.distributed.types import Consistency
 from skyward.infra.executor import HTTP_PORT, Executor, ExecutorConfig
-from .spec import DEFAULT_IMAGE, Image, PoolSpec
 from skyward.observability.logging import LogConfig, _setup_logging, _teardown_logging
-
 from skyward.providers.aws.config import AWS
 from skyward.providers.runpod.config import RunPod
 from skyward.providers.vastai.config import VastAI
 from skyward.providers.verda.config import Verda
 
-from skyward.distributed import (
-    DistributedRegistry,
-    _set_active_registry,
-    DictProxy,
-    SetProxy,
-    CounterProxy,
-    QueueProxy,
-    BarrierProxy,
-    LockProxy,
-)
-from skyward.distributed.types import Consistency
+from .spec import DEFAULT_IMAGE, Image, PoolSpec
 
 type Provider = AWS | RunPod | VastAI | Verda
 
@@ -216,7 +214,7 @@ def gather(*pendings: PendingCompute[Any]) -> PendingComputeGroup:
     return PendingComputeGroup(items=pendings)
 
 
-def compute[F: Callable[..., Any]](fn: F) -> Callable[..., PendingCompute[Any]]:
+def compute(fn: Callable[..., Any]) -> Callable[..., PendingCompute[Any]]:
     """Decorator to make a function lazy.
 
     The decorated function returns a PendingCompute instead of
@@ -499,7 +497,10 @@ class ComputePool:
         )
         self._spec = spec
 
-        self._system = ActorSystem("skyward")
+        self._system = ActorSystem("skyward", config=CastyConfig(
+            suppress_dead_letters_on_shutdown=True
+        ))
+
         await self._system.__aenter__()
 
         panel_ref = (
@@ -509,15 +510,20 @@ class ComputePool:
         )
 
         pool_behavior = pool_actor()
+        spy = panel_ref is not None
         pool_ref: ActorRef[PoolMsg] = self._system.spawn(
-            Behaviors.spy(pool_behavior, panel_ref, spy_children=True) if panel_ref else pool_behavior,
+            Behaviors.spy(pool_behavior, panel_ref, spy_children=True)
+            if spy
+            else pool_behavior,
             "pool",
         )
         self._pool_ref = pool_ref
 
         provider_behavior = actor_factory(self.provider, pool_ref)
         provider_ref = self._system.spawn(
-            Behaviors.spy(provider_behavior, panel_ref, spy_children=True) if panel_ref else provider_behavior,
+            Behaviors.spy(provider_behavior, panel_ref, spy_children=True)
+            if spy
+            else provider_behavior,
             "provider",
         )
 
@@ -544,7 +550,7 @@ class ComputePool:
             self._executor = None
 
         if self._pool_ref is not None and self._system is not None:
-            from skyward.actors.pool import StopPool, PoolStopped
+            from skyward.actors.pool import StopPool
             await self._system.ask(
                 self._pool_ref,
                 lambda reply_to: StopPool(reply_to=reply_to),
@@ -596,10 +602,10 @@ class ComputePool:
         ssh_user: str,
         ssh_key: str,
     ) -> None:
+        from skyward.infra.ssh import SSHTransport
         from skyward.providers.bootstrap import EMIT_SH_PATH
         from skyward.providers.bootstrap.compose import SKYWARD_DIR
         from skyward.providers.common import detect_network_interface
-        from skyward.infra.ssh import SSHTransport
 
         venv_dir = f"{SKYWARD_DIR}/.venv"
         python_bin = f"{venv_dir}/bin/python"
@@ -665,7 +671,10 @@ class ComputePool:
             ) as transport:
                 worker_addr = info.private_ip or info.ip
                 logger.debug(f"Starting Casty worker on node {node_id}...")
-                await _start_node(transport, node_id, host=worker_addr, seeds=f"{head_addr}:{casty_port}")
+                seeds = f"{head_addr}:{casty_port}"
+                await _start_node(
+                    transport, node_id, host=worker_addr, seeds=seeds
+                )
                 self._network_interfaces[node_id] = await detect_network_interface(transport)
 
         await asyncio.gather(*(
@@ -703,7 +712,11 @@ class ComputePool:
             job_id=self._cluster_id,
             peers=peers,
             accelerator_type=accelerator_name,
-            placement_group=self._network_interfaces.get(info.node) or info.network_interface or None,
+            placement_group=(
+                self._network_interfaces.get(info.node)
+                or info.network_interface
+                or None
+            ),
             worker=0,
             workers_per_node=1,
         )
@@ -721,7 +734,7 @@ class ComputePool:
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()  # type: ignore
 
-    def _run_sync[T](self, coro: Any) -> T:
+    def _run_sync[T](self, coro: Coroutine[Any, Any, T]) -> T:
         """Run coroutine synchronously."""
         if self._loop is None:
             raise RuntimeError("Event loop not running")
@@ -729,7 +742,7 @@ class ComputePool:
         future: Future[T] = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return future.result()
 
-    def _run_sync_with_timeout[T](self, coro: Any, timeout: float) -> T:
+    def _run_sync_with_timeout[T](self, coro: Coroutine[Any, Any, T], timeout: float) -> T:
         """Run coroutine synchronously with timeout."""
         if self._loop is None:
             raise RuntimeError("Event loop not running")
@@ -841,7 +854,7 @@ class _PoolFactory:
 
 @overload
 def pool(
-    fn: Callable[..., Any],
+    provider: Callable[..., Any],
 ) -> Callable[..., Any]: ...
 
 

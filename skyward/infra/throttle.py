@@ -105,10 +105,8 @@ class Limiter:
 
         # Handle concurrency (controls max parallel executions)
         if self._semaphore is not None:
-            if not block:
-                # Check if semaphore is available without blocking
-                if self._semaphore.locked():
-                    return False
+            if not block and self._semaphore.locked():
+                return False
             await self._semaphore.acquire()
 
         return True

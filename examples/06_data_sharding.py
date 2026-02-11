@@ -32,7 +32,10 @@ def train_on_shard(full_x: list, full_y: list) -> dict:
         "shard_size": len(x),
         "x_mean": float(x_arr.mean()),
         "x_std": float(x_arr.std()),
-        "y_distribution": {int(k): int(v) for k, v in zip(*np.unique(y_arr, return_counts=True))},
+        "y_distribution": {
+            int(k): int(v)
+            for k, v in zip(*np.unique(y_arr, return_counts=True), strict=False)
+        },
     }
 
 

@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from skyward.actors.messages import ClusterId, InstanceId, InstanceMetadata
 from skyward.api.spec import PoolSpec
 
-
 # =============================================================================
 # Base Cluster State
 # =============================================================================
@@ -28,3 +27,11 @@ class BaseClusterState:
 
     instances: dict[InstanceId, InstanceMetadata] = field(default_factory=dict)
     pending_nodes: set[int] = field(default_factory=set)
+
+    def add_instance(self, info: InstanceMetadata) -> None:
+        self.instances[info.id] = info
+        self.pending_nodes.discard(info.node)
+
+    @property
+    def instance_ids(self) -> list[InstanceId]:
+        return list(self.instances.keys())

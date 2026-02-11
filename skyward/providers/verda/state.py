@@ -9,7 +9,6 @@ from dataclasses import dataclass
 
 from skyward.providers.base import BaseClusterState
 
-
 # =============================================================================
 # Cluster State
 # =============================================================================

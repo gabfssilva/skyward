@@ -13,15 +13,24 @@ Environment Variables:
     VAST_API_KEY: API key (required if not passed directly)
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .client import VastAIClient, VastAIError, get_api_key
+    from .handler import vastai_provider_actor
+    from .state import VastAIClusterState
+    from .types import InstanceResponse, OfferResponse, SSHKeyResponse
+
 # Only config - no heavy dependencies
 from .config import VastAI
 
 
-# Lazy imports for backward compatibility
-def __getattr__(name: str):
-    if name == "VastAIHandler":
-        from .handler import VastAIHandler
-        return VastAIHandler
+def __getattr__(name: str) -> Any:
+    if name == "vastai_provider_actor":
+        from .handler import vastai_provider_actor
+        return vastai_provider_actor
     if name in ("VastAIClient", "VastAIError", "get_api_key"):
         from .client import VastAIClient, VastAIError, get_api_key
         if name == "VastAIClient":
@@ -49,7 +58,7 @@ __all__ = [
     "VastAIClient",
     "VastAIError",
     "get_api_key",
-    "VastAIHandler",
+    "vastai_provider_actor",
     "VastAIClusterState",
     "OfferResponse",
     "InstanceResponse",

@@ -20,7 +20,12 @@ def event_loop():
 @pytest.fixture(scope="module")
 def worker_system(event_loop):
     async def _start():
-        system = ClusteredActorSystem(name="test-http", host="127.0.0.1", port=get_free_port(), node_id="test-0")
+        system = ClusteredActorSystem(
+            name="test-http",
+            host="127.0.0.1",
+            port=get_free_port(),
+            node_id="test-0",
+        )
         await system.__aenter__()
         return system
 

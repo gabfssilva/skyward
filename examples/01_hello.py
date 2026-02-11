@@ -12,7 +12,6 @@ A simple introduction to Skyward that demonstrates:
     │  Speedup: ~50x                       │
     └──────────────────────────────────────┘
 """
-from time import sleep
 
 import skyward as sky
 

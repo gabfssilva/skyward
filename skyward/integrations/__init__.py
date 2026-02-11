@@ -25,7 +25,17 @@ Usage:
         ...
 """
 
-from typing import Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .jax import jax
+    from .joblib import JoblibPool, ScikitLearnPool
+    from .keras import keras
+    from .tensorflow import tensorflow
+    from .torch import torch
+    from .transformers import transformers
 
 __all__ = [
     # Distributed training

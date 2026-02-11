@@ -85,7 +85,11 @@ def worker_behavior(node_id: int, concurrency: int = 1) -> Behavior[WorkerMsg]:
                 except Exception as e:
                     fn_name = "unknown"
                     print(f"[worker-{node_id}] {fn_name} failed: {e}", flush=True)
-                    return TaskFailed(error=str(e), traceback=traceback.format_exc(), node_id=node_id)
+                    return TaskFailed(
+                        error=str(e),
+                        traceback=traceback.format_exc(),
+                        node_id=node_id,
+                    )
 
             return await asyncio.to_thread(_run)
 
@@ -161,6 +165,8 @@ def create_app(
                 )
             case TaskSucceeded(result=result):
                 return web.Response(body=serialize(result), content_type="application/octet-stream")
+            case _:
+                return web.Response(status=500, text="Unexpected response")
 
     async def broadcast_job(request: web.Request) -> web.Response:
 
@@ -181,12 +187,16 @@ def create_app(
             broadcast_ref,
             lambda reply_to: ExecuteTask(
                 fn_bytes=fn_bytes,
-                reply_to=reply_to,
+                reply_to=reply_to,  # type: ignore[reportArgumentType]
             ),
             timeout=600.0,
         )
 
-        print(f"[broadcast] {fn_name} got {len(responses)} responses: {[r.node_id for r in responses]}", flush=True)
+        node_ids = [r.node_id for r in responses]
+        print(
+            f"[broadcast] {fn_name} got {len(responses)} responses: {node_ids}",
+            flush=True,
+        )
 
         results = [None] * len(responses)
         for resp in responses:
@@ -260,9 +270,21 @@ async def main(
         set_system_loop(loop)
         _set_active_registry(DistributedRegistry(system, loop=loop))
 
-        local_ref = system.spawn(worker_behavior(node_id, concurrency=workers_per_node), "worker")
-        broadcast_ref = system.spawn(Behaviors.broadcasted(worker_behavior(node_id, concurrency=workers_per_node)), "broadcast-worker")
-        print(f"Casty worker {node_id} ready (cluster={num_nodes} nodes, concurrency={workers_per_node})", flush=True)
+        local_ref = system.spawn(
+            worker_behavior(node_id, concurrency=workers_per_node),
+            "worker",
+        )
+        broadcast_ref = system.spawn(
+            Behaviors.broadcasted(
+                worker_behavior(node_id, concurrency=workers_per_node),
+            ),
+            "broadcast-worker",
+        )
+        print(
+            f"Casty worker {node_id} ready "
+            f"(cluster={num_nodes} nodes, concurrency={workers_per_node})",
+            flush=True,
+        )
 
         if node_id == 0:
             app = create_app(system, local_ref, broadcast_ref, num_nodes)
@@ -292,7 +314,10 @@ def cli() -> None:
     parser.add_argument("--http-port", type=int, default=8265)
     parser.add_argument("--num-nodes", type=int, default=1)
     parser.add_argument("--host", type=str, default="0.0.0.0")
-    parser.add_argument("--seeds", type=str, default=None, help="Comma-separated seed addresses (host:port)")
+    parser.add_argument(
+        "--seeds", type=str, default=None,
+        help="Comma-separated seed addresses (host:port)",
+    )
     parser.add_argument("--workers-per-node", type=int, default=1)
     args = parser.parse_args()
 

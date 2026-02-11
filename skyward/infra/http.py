@@ -6,7 +6,6 @@ from typing import Any, Literal, Protocol, overload, runtime_checkable
 
 import aiohttp
 
-
 # ─── Errors ──────────────────────────────────────────────────────────
 
 
@@ -64,18 +63,17 @@ class OAuth2Auth:
 
     async def _fetch_token(self) -> str:
         timeout = aiohttp.ClientTimeout(total=30)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-                self._token_url,
-                data={
-                    "grant_type": "client_credentials",
-                    "client_id": self._client_id,
-                    "client_secret": self._client_secret,
-                },
-            ) as resp:
-                resp.raise_for_status()
-                data = await resp.json()
-                return data["access_token"]
+        async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
+            self._token_url,
+            data={
+                "grant_type": "client_credentials",
+                "client_id": self._client_id,
+                "client_secret": self._client_secret,
+            },
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            return data["access_token"]
 
     async def headers(self) -> dict[str, str]:
         async with self._lock:
@@ -237,7 +235,10 @@ class HttpClient:
         params: dict[str, Any] | None = None,
         response_type: type[T],
     ) -> Response[T]:
-        return await self._typed("POST", path, json=json, params=params, response_type=response_type)
+        return await self._typed(
+            "POST", path, json=json, params=params,
+            response_type=response_type,
+        )
 
     async def put[T](
         self,
@@ -257,7 +258,10 @@ class HttpClient:
         params: dict[str, Any] | None = None,
         response_type: type[T],
     ) -> Response[T]:
-        return await self._typed("PATCH", path, json=json, params=params, response_type=response_type)
+        return await self._typed(
+            "PATCH", path, json=json, params=params,
+            response_type=response_type,
+        )
 
     async def delete[T](
         self,

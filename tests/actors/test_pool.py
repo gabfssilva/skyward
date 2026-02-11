@@ -25,7 +25,7 @@ from skyward.actors.messages import (
     StopPool,
 )
 from skyward.actors.pool import pool_actor
-from skyward.api.spec import PoolSpec, Image
+from skyward.api.spec import Image, PoolSpec
 
 pytestmark = pytest.mark.xdist_group("pool-actor")
 

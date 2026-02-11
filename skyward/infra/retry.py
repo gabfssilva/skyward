@@ -73,13 +73,18 @@ def retry[**P, T](
         async def api_call():
             return await client.get("/data")
     """
+    should_retry: Callable[[Exception], bool]
     match on:
         case type() as exc_type if issubclass(exc_type, Exception):
-            should_retry: RetryPredicate = lambda e: isinstance(e, exc_type)
+            def _check_type(e: Exception) -> bool:
+                return isinstance(e, exc_type)
+            should_retry = _check_type
         case tuple() as exc_types:
-            should_retry = lambda e: isinstance(e, exc_types)
-        case _ if callable(on):
-            should_retry = on
+            def _check_types(e: Exception) -> bool:
+                return isinstance(e, exc_types)
+            should_retry = _check_types
+        case _:
+            should_retry = on  # type: ignore[reportAssignmentType]
 
     def decorator(func: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]:
         @functools.wraps(func)

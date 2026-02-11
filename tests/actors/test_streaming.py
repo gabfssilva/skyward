@@ -7,7 +7,6 @@ from skyward.actors.messages import (
     Log,
     Metric,
     StopMonitor,
-    _StreamedEvent,
     _StreamEnded,
 )
 from skyward.actors.streaming import _convert, instance_monitor
@@ -113,7 +112,7 @@ class TestConvertMetric:
         from skyward.infra.ssh import RawMetricEvent
 
         info = _test_instance()
-        assert _convert(RawMetricEvent(name="gpu_util", value="not-a-number", ts=0.0), info) is None
+        assert _convert(RawMetricEvent(name="gpu_util", value="not-a-number", ts=0.0), info) is None  # type: ignore[reportArgumentType]
 
 
 class TestConvertLog:

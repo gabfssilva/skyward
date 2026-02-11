@@ -14,9 +14,9 @@ from .messages import (
     NodeBecameReady,
     NodeId,
     NodeMsg,
-    Provision,
     ProviderMsg,
     ProviderName,
+    Provision,
 )
 
 

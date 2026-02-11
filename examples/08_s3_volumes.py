@@ -71,7 +71,6 @@ def save_checkpoint(checkpoint_dir: str, epoch: int, metrics: dict) -> str:
 @sky.compute
 def process_dataset(data_dir: str) -> dict:
     """Process files from S3 and return statistics."""
-    import os
 
     path = Path(data_dir)
     pool = sky.instance_info()

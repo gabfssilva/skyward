@@ -12,7 +12,6 @@ from types import MappingProxyType
 from skyward.actors.messages import InstanceMetadata
 from skyward.api.spec import PoolSpec
 
-
 # =============================================================================
 # Cluster State
 # =============================================================================
@@ -54,6 +53,10 @@ class VastAIClusterState:
     geolocation: str | None = None
 
     # Instances and pricing
-    instances: MappingProxyType[str, InstanceMetadata] = field(default_factory=lambda: MappingProxyType({}))
+    instances: MappingProxyType[str, InstanceMetadata] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )
     pending_nodes: frozenset[int] = frozenset()
-    instance_pricing: MappingProxyType[str, InstancePricing] = field(default_factory=lambda: MappingProxyType({}))
+    instance_pricing: MappingProxyType[str, InstancePricing] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )

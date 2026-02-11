@@ -14,15 +14,23 @@ Environment Variables:
     VERDA_CLIENT_SECRET: API client secret (required if not passed directly)
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .client import VerdaClient, VerdaError
+    from .handler import verda_provider_actor
+    from .state import VerdaClusterState
+
 # Only config - no heavy dependencies
 from .config import Verda
 
 
-# Lazy imports for backward compatibility
-def __getattr__(name: str):
-    if name == "VerdaHandler":
-        from .handler import VerdaHandler
-        return VerdaHandler
+def __getattr__(name: str) -> Any:
+    if name == "verda_provider_actor":
+        from .handler import verda_provider_actor
+        return verda_provider_actor
     if name in ("VerdaClient", "VerdaError"):
         from .client import VerdaClient, VerdaError
         if name == "VerdaClient":
@@ -40,6 +48,6 @@ __all__ = [
     # Lazy (loaded on demand)
     "VerdaClient",
     "VerdaError",
-    "VerdaHandler",
+    "verda_provider_actor",
     "VerdaClusterState",
 ]

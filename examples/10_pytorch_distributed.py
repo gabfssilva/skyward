@@ -20,7 +20,7 @@ def train_model(epochs: int, batch_size: int, learning_rate: float) -> dict:
     import torch
     import torch.distributed as dist
     import torch.nn as nn
-    from torch.nn.parallel import DistributedDataParallel as DDP
+    from torch.nn.parallel import DistributedDataParallel as DDP  # noqa: N817
     from torch.utils.data import DataLoader, TensorDataset
 
     pool = sky.instance_info()

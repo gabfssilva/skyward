@@ -137,7 +137,10 @@ if __name__ == "__main__":
 
         total = 0
         for r in sum_results:
-            print(f"  {r['role'].capitalize()} {r['node']}: {r['local_count']} items, sum={r['local_sum']}")
+            print(
+                f"  {r['role'].capitalize()} {r['node']}: "
+                f"{r['local_count']} items, sum={r['local_sum']}"
+            )
             total += r["local_sum"]
 
         print(f"  Total: {total} (expected: {sum(data)})")

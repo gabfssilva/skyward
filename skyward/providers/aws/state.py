@@ -12,7 +12,6 @@ from types import MappingProxyType
 from skyward.actors.messages import InstanceMetadata
 from skyward.api.spec import PoolSpec
 
-
 # =============================================================================
 # Infrastructure Resources
 # =============================================================================
@@ -100,6 +99,10 @@ class AWSClusterState:
     ssh_key_name: str
     ssh_key_path: str
     username: str
-    instances: MappingProxyType[str, InstanceMetadata] = field(default_factory=lambda: MappingProxyType({}))
+    instances: MappingProxyType[str, InstanceMetadata] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )
     pending_nodes: frozenset[int] = frozenset()
-    fleet_instance_ids: MappingProxyType[int, str] = field(default_factory=lambda: MappingProxyType({}))
+    fleet_instance_ids: MappingProxyType[int, str] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )

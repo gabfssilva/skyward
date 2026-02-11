@@ -13,7 +13,6 @@ from skyward.actors.messages import (
     InstanceReady,
     ProviderMsg,
     ShutdownRequested,
-    _ProvisioningDone,
 )
 from skyward.api.spec import Image, PoolSpec
 from tests.conftest import get_free_port
@@ -32,10 +31,16 @@ def mock_provider_actor(
     """A fake provider that immediately provisions."""
 
     def idle() -> Behavior[ProviderMsg]:
-        async def receive(ctx: ActorContext[ProviderMsg], msg: ProviderMsg) -> Behavior[ProviderMsg]:
+        async def receive(
+            ctx: ActorContext[ProviderMsg], msg: ProviderMsg,
+        ) -> Behavior[ProviderMsg]:
             match msg:
                 case ClusterRequested(request_id=rid, provider=prov):
-                    event = ClusterProvisioned(request_id=rid, cluster_id=f"c-{rid}", provider=prov)
+                    event = ClusterProvisioned(
+                        request_id=rid,
+                        cluster_id=f"c-{rid}",
+                        provider=prov,
+                    )
                     pool_ref.tell(event)
                     return active(cluster_id=f"c-{rid}")
                 case _:
@@ -44,7 +49,9 @@ def mock_provider_actor(
         return Behaviors.receive(receive)
 
     def active(cluster_id: str) -> Behavior[ProviderMsg]:
-        async def receive(ctx: ActorContext[ProviderMsg], msg: ProviderMsg) -> Behavior[ProviderMsg]:
+        async def receive(
+            ctx: ActorContext[ProviderMsg], msg: ProviderMsg,
+        ) -> Behavior[ProviderMsg]:
             match msg:
                 case ShutdownRequested():
                     return Behaviors.stopped()
@@ -66,7 +73,12 @@ def event_loop():
 @pytest.fixture(scope="module")
 def actor_system(event_loop):
     async def _start():
-        system = ClusteredActorSystem(name="test-provider", host="127.0.0.1", port=get_free_port(), node_id="prov-0")
+        system = ClusteredActorSystem(
+            name="test-provider",
+            host="127.0.0.1",
+            port=get_free_port(),
+            node_id="prov-0",
+        )
         await system.__aenter__()
         return system
 

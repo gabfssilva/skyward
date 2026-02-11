@@ -1,8 +1,9 @@
 import socket
 
 import pytest
+
 import skyward as sky
-from skyward.accelerators import T4, A100, RTX_4090
+from skyward.accelerators import A100, RTX_4090, T4
 
 
 def get_free_port() -> int:
