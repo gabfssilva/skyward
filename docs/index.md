@@ -1,28 +1,28 @@
-# Skyward Documentation
+<p align="center">
+  <img src="logo_sky.png" alt="Skyward" width="400">
+</p>
 
-Skyward is a Python library for ephemeral GPU compute. Spin up cloud GPUs, run your ML training code, and tear them down automatically. No infrastructure to manage.
+<p align="center">
+  <strong>Cloud accelerators with a single decorator</strong>
+</p>
 
-## Documentation
+<p align="center">
+  <a href="https://pypi.org/project/skyward/"><img src="https://img.shields.io/pypi/v/skyward.svg" alt="PyPI"></a>
+  <a href="https://pypi.org/project/skyward/"><img src="https://img.shields.io/pypi/pyversions/skyward.svg" alt="Python"></a>
+  <a href="https://github.com/gabfssilva/skyward/actions"><img src="https://img.shields.io/github/actions/workflow/status/gabfssilva/skyward/ci.yml" alt="Tests"></a>
+  <a href="https://github.com/gabfssilva/skyward/blob/main/LICENSE"><img src="https://img.shields.io/github/license/gabfssilva/skyward.svg" alt="License"></a>
+</p>
 
-| Document | Description |
-|----------|-------------|
-| [Getting Started](getting-started.md) | Installation, credentials setup, and first examples |
-| [Core Concepts](concepts.md) | Understanding the programming model and ephemeral compute |
-| [API Reference](api-reference.md) | Complete API documentation |
-| [Distributed Training](distributed-training.md) | Multi-GPU training with PyTorch, Keras, JAX, and HuggingFace |
-| [Providers](providers.md) | AWS, Verda, and VastAI configuration |
-| [Accelerators](accelerators.md) | GPU selection and MIG partitioning |
-| [Integrations](integrations/index.md) | PyTorch, Keras, JAX, Transformers, and Joblib |
-| [Examples](examples.md) | All 22 examples explained |
-| [Architecture](architecture.md) | Internal design and extension points |
+---
 
-## Quick Links
+Skyward is a Python library for ephemeral accelerator compute. Spin up cloud accelerators (GPUs, TPUs, Trainium, and more), run your ML training code, and tear them down automatically. No infrastructure to manage.
 
-- [Your First Remote Function](getting-started.md#your-first-remote-function)
-- [GPU Selection Guide](accelerators.md#gpu-selection-guide)
-- [PyTorch DDP Training](distributed-training.md#pytorch-distributed-training)
-- [Troubleshooting](troubleshooting.md)
-- [FAQ](faq.md)
+- **One decorator, any cloud.** `@compute` makes any function remotely executable. AWS, RunPod, VastAI, and Verda with a unified API.
+- **Operators, not boilerplate.** `>>` executes on one node, `@` broadcasts to all, `&` runs in parallel. No job configs, no YAML.
+- **Ephemeral by default.** Instances provision on demand and terminate automatically. Context managers guarantee cleanup.
+- **Multi-accelerator out of the box.** GPUs, TPUs, Trainium — with PyTorch DDP, Keras 3, JAX, TensorFlow, and HuggingFace integration decorators.
+- **Spot-aware.** Automatic spot instance selection, preemption detection, and replacement. Save 60-90% on compute costs.
+- **Python 3.12+.** PEP 695 generics, pattern matching, and modern async throughout.
 
 ## Quick Example
 
@@ -35,9 +35,9 @@ def train(data):
     model = create_model().cuda()
     return model.fit(data)
 
-with sky.ComputePool(provider=sky.AWS(), accelerator="A100") as pool:
+with sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.A100()) as pool:
     result = train(my_data) >> pool
-# GPU terminated automatically
+# Accelerator terminated automatically
 ```
 
 ## Execution Operators
@@ -49,13 +49,15 @@ with sky.ComputePool(provider=sky.AWS(), accelerator="A100") as pool:
 | `&` | `fn1() & fn2() >> pool` | Parallel execution |
 | `gather()` | `gather(fn1(), fn2()) >> pool` | Dynamic parallel execution |
 
-## Requirements
+## Next Steps
 
-- Python 3.12+
-- Cloud provider credentials (AWS, Verda, or VastAI)
+<div class="grid cards" markdown>
 
-## Getting Help
+- :material-rocket-launch: **[Getting Started](getting-started.md)** — Installation, credentials, and first examples
+- :material-lightbulb: **[Core Concepts](concepts.md)** — Programming model and ephemeral compute
+- :material-cloud: **[Providers](providers.md)** — AWS, RunPod, VastAI, and Verda
+- :material-chip: **[Accelerators](accelerators.md)** — Accelerator selection guide
+- :material-server-network: **[Distributed Training](distributed-training.md)** — Multi-node with PyTorch, Keras, JAX
+- :material-api: **[API Reference](reference/pool.md)** — Full autodoc of all public types
 
-- [Troubleshooting Guide](troubleshooting.md) — Common issues and solutions
-- [FAQ](faq.md) — Frequently asked questions
-- [GitHub Issues](https://github.com/gabfssilva/skyward/issues) — Report bugs or request features
+</div>

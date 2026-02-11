@@ -1,18 +1,18 @@
 def test_pool_creates_registry():
-    from skyward.api.pool import SyncComputePool
+    from skyward.api.pool import ComputePool
 
-    pool = SyncComputePool.__new__(SyncComputePool)
+    pool = ComputePool.__new__(ComputePool)
     pool._registry = None
 
     assert hasattr(pool, "_registry")
 
 
 def test_pool_has_collection_methods():
-    from skyward.api.pool import SyncComputePool
+    from skyward.api.pool import ComputePool
 
-    assert hasattr(SyncComputePool, "dict")
-    assert hasattr(SyncComputePool, "set")
-    assert hasattr(SyncComputePool, "counter")
-    assert hasattr(SyncComputePool, "queue")
-    assert hasattr(SyncComputePool, "barrier")
-    assert hasattr(SyncComputePool, "lock")
+    assert hasattr(ComputePool, "dict")
+    assert hasattr(ComputePool, "set")
+    assert hasattr(ComputePool, "counter")
+    assert hasattr(ComputePool, "queue")
+    assert hasattr(ComputePool, "barrier")
+    assert hasattr(ComputePool, "lock")

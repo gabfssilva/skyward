@@ -73,20 +73,6 @@ def train_vit(
         "test_accuracy": float(test_acc),
     }
 
-@sky.pool(
-    provider=sky.AWS(),
-    accelerator=sky.accelerators.T4G(),
-    nodes=2,
-    image=sky.Image(
-        pip=[ "keras==3.13.2", "jax[cuda12]==0.9.0.1" ],
-        env={ "KERAS_BACKEND": "jax" },
-        skyward_source='local'
-    ),
-)
-def clustered_train() -> tuple[dict, ...]:
-    return train_vit() @ sky
-
-
 def load_mnist() -> tuple[tuple[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]]:
     """Load and preprocess MNIST dataset."""
     (x_train, y_train), (x_test, y_test) = keras.datasets.mnist.load_data()
@@ -288,15 +274,25 @@ class ViT(keras.Model):
         }
 
 if __name__ == "__main__":
-    results = clustered_train()
+    with sky.ComputePool(
+        provider=sky.AWS(),
+        accelerator=sky.accelerators.T4G(),
+        nodes=2,
+        image=sky.Image(
+            pip=[ "keras==3.13.2", "jax[cuda12]==0.9.0.1" ],
+            env={ "KERAS_BACKEND": "jax" },
+            skyward_source='local'
+        ),
+    ) as pool:
+        results = train_vit() @ pool
 
-    print("\nResults:")
-    for r in results:
-        role = "HEAD" if r["is_head"] else "WORKER"
-        print(
-            f"  Node {r['node']} ({role}): "
-            f"{r['samples_trained']} samples, "
-            f"acc={r['final_accuracy']:.2%}, "
-            f"val_acc={r['final_val_accuracy']:.2%}, "
-            f"test_acc={r['test_accuracy']:.2%}"
-        )
+        print("\nResults:")
+        for r in results:
+            role = "HEAD" if r["is_head"] else "WORKER"
+            print(
+                f"  Node {r['node']} ({role}): "
+                f"{r['samples_trained']} samples, "
+                f"acc={r['final_accuracy']:.2%}, "
+                f"val_acc={r['final_val_accuracy']:.2%}, "
+                f"test_acc={r['test_accuracy']:.2%}"
+            )

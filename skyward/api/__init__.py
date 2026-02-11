@@ -3,7 +3,7 @@
 from .pool import (
     PendingCompute,
     PendingComputeGroup,
-    SyncComputePool,
+    ComputePool,
     compute,
     gather,
     pool,
@@ -32,7 +32,7 @@ from .runtime import (
 __all__ = [
     "PendingCompute",
     "PendingComputeGroup",
-    "SyncComputePool",
+    "ComputePool",
     "compute",
     "gather",
     "pool",

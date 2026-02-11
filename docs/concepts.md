@@ -4,7 +4,7 @@ This guide explains the fundamental concepts behind Skyward's programming model.
 
 ## Ephemeral Compute
 
-Skyward implements **ephemeral compute** — GPU resources that exist only for the duration of your training job.
+Skyward implements **ephemeral compute** — accelerator resources that exist only for the duration of your training job.
 
 ### The ML Infrastructure Problem
 
@@ -30,7 +30,7 @@ import skyward as sky
 
 with sky.ComputePool(
     provider=sky.AWS(),
-    accelerator="H100",
+    accelerator=sky.accelerators.H100(),
     nodes=4,
     image=sky.Image(pip=["torch", "transformers"]),
 ) as pool:
@@ -62,6 +62,7 @@ Machine learning workloads have unique characteristics that make ephemeral compu
 **1. Jobs Have a Defined End**
 
 Unlike web servers, training jobs complete:
+
 - Fine-tuning run: 2-8 hours
 - Pretraining run: days to weeks
 - Hyperparameter sweep: hours per trial
@@ -74,6 +75,7 @@ When the job ends, why should the infrastructure continue?
 "It worked on my GPU server" is the ML equivalent of "works on my machine."
 
 Persistent servers accumulate state:
+
 - Random pip installs during debugging
 - Cached datasets in /tmp
 - Environment variables set months ago
@@ -86,7 +88,7 @@ Ephemeral compute starts fresh every time:
 # Identical environments, reproducible results
 ```
 
-**3. GPU Idle Costs Are Brutal**
+**3. Idle Costs Are Brutal**
 
 | Instance | Hourly Cost | Weekend Idle Cost |
 |----------|-------------|-------------------|
@@ -98,12 +100,13 @@ One forgotten instance can cost more than a month of your cloud budget.
 
 **4. Different Experiments Need Different Resources**
 
-Monday: Quick prototype on a T4
-Tuesday: Full training on 4x A100
-Wednesday: Distributed training on 8 nodes
-Thursday: Inference benchmarks on H100
+- Monday: Quick prototype on a T4
+- Tuesday: Full training on 4x A100
+- Wednesday: Distributed training on 8 nodes
+- Thursday: Inference benchmarks on H100
 
 With persistent infrastructure, you either:
+
 - Maintain multiple server configurations (ops burden)
 - Over-provision and waste money
 - Under-provision and wait for scaling
@@ -113,9 +116,9 @@ With ephemeral compute:
 import skyward as sky
 
 # Each experiment gets exactly what it needs
-sky.ComputePool(accelerator="T4")           # Cheap prototyping
-sky.ComputePool(accelerator="A100", nodes=4) # Serious training
-sky.ComputePool(accelerator="H100", nodes=8) # Scale out
+sky.ComputePool(accelerator=sky.accelerators.T4())           # Cheap prototyping
+sky.ComputePool(accelerator=sky.accelerators.A100(), nodes=4) # Serious training
+sky.ComputePool(accelerator=sky.accelerators.H100(), nodes=8) # Scale out
 ```
 
 ### Ephemeral vs Serverless for ML
@@ -124,7 +127,7 @@ You might wonder: "Why not Lambda or Cloud Functions?"
 
 | | Serverless | Ephemeral (Skyward) |
 |--|------------|---------------------|
-| GPU support | None/Limited | Full (T4 to H100) |
+| Accelerator support | None/Limited | Full (T4 to H100, TPU, Trainium) |
 | Max runtime | 15 minutes | Days |
 | Memory | 10GB max | Up to 2TB |
 | Control | None | Full (instance type, spot, etc.) |
@@ -132,12 +135,13 @@ You might wonder: "Why not Lambda or Cloud Functions?"
 | Cold start | Every call | Once per pool |
 
 Serverless is great for web APIs. It's not designed for:
+
 - Loading 70B parameter models into VRAM
 - 8-hour training runs
 - Multi-node distributed training
-- GPU memory management
+- Accelerator memory management
 
-Skyward gives you **serverless ergonomics** (no infrastructure management) with **full GPU control** (pick your hardware, run for hours).
+Skyward gives you **serverless ergonomics** (no infrastructure management) with **full hardware control** (pick your accelerator, run for hours).
 
 ### Ephemeral vs Managed Platforms
 
@@ -174,14 +178,16 @@ def train(config):
 ### When to Use Ephemeral Compute
 
 **Perfect for:**
+
 - Training runs (fine-tuning, pretraining)
 - Hyperparameter sweeps (GridSearchCV, Optuna)
 - Batch inference (process dataset, generate embeddings)
-- Distributed training (multi-GPU, multi-node)
+- Distributed training (multi-accelerator, multi-node)
 - CI/CD for ML (test training pipelines)
 - Research experiments (quick iterations)
 
 **Not designed for:**
+
 - Serving models (use inference endpoints)
 - Real-time APIs (use Lambda/Cloud Run)
 - Databases (use managed databases)
@@ -233,9 +239,9 @@ def process(x: int) -> int:
 result = process.local(10)  # Returns 20 directly
 ```
 
-## The @sky.pool Decorator
+## Using ComputePool
 
-For simpler, more declarative code, use the `@sky.pool` decorator instead of the context manager:
+`ComputePool` is a context manager that provisions cloud resources, executes your computations, and cleans up automatically:
 
 ```python
 import skyward as sky
@@ -244,46 +250,40 @@ import skyward as sky
 def train(data):
     return model.fit(data)
 
-@sky.pool(provider=sky.AWS(), accelerator="A100", nodes=4)
-def main():
-    result = train(data) >> sky
-    return result
-
-main()  # provisions -> executes -> terminates
+with sky.ComputePool(
+    provider=sky.AWS(),
+    accelerator=sky.accelerators.A100(),
+    nodes=4,
+) as pool:
+    result = train(data) >> pool
+# Resources automatically released
 ```
 
-The decorator:
-1. Provisions resources when the function is called
-2. Sets up a context so `>> sky` knows which pool to use
-3. Automatically terminates when the function returns (or raises)
+The context manager:
 
-### Implicit Execution with `>> sky`
+1. Provisions resources when the `with` block is entered
+2. Provides a `pool` reference for dispatching computations
+3. Automatically terminates resources when the block exits (or raises)
 
-Inside a `@pool`-decorated function, use `>> sky` instead of `>> pool`:
+### Execution with `>> pool`
+
+Inside a `with sky.ComputePool(...) as pool:` block, use `>> pool` to dispatch computations:
 
 ```python
-@sky.pool(provider=sky.AWS(), accelerator="T4")
-def main():
-    result = train(x) >> sky          # Execute on one worker
-    all_results = init() @ sky        # Broadcast to all nodes
-    a, b = (fn1() & fn2()) >> sky     # Parallel execution
+with sky.ComputePool(
+    provider=sky.AWS(),
+    accelerator=sky.accelerators.T4(),
+) as pool:
+    result = train(x) >> pool          # Execute on one worker
+    all_results = init() @ pool        # Broadcast to all nodes
+    a, b = (fn1() & fn2()) >> pool     # Parallel execution
 ```
 
-The `sky` module acts as a proxy that retrieves the current pool from context.
+### Event Handlers
 
-### When to Use Each Approach
-
-| Use `@sky.pool` when... | Use `with ComputePool` when... |
-|-------------------------|-------------------------------|
-| Simple, self-contained jobs | Need pool access before execution |
-| Cleaner, more declarative code | Custom event handlers with `pool.on()` |
-| Single entry point | Dynamic pool creation |
-| Most use cases | Advanced patterns |
-
-**Example: Event handlers require `with`:**
+Register event handlers before entering the context:
 
 ```python
-# Event handlers need pool.on() before entering context
 pool = sky.ComputePool(provider=sky.AWS())
 pool.on(sky.Metrics, my_metrics_handler)  # Register before entering
 
@@ -321,7 +321,7 @@ import skyward as sky
 pool = sky.ComputePool(
     provider=sky.AWS(),                # Cloud provider
     nodes=2,                           # Number of instances
-    accelerator="A100",                # GPU type
+    accelerator=sky.accelerators.A100(),  # GPU type
     image=sky.Image(pip=["torch"]),    # Dependencies
     allocation="always-spot",                     # Use spot instances
     timeout=3600,                      # Auto-shutdown after 1 hour
@@ -348,27 +348,8 @@ with pool:
 | `image` | `Image` | Environment (pip, apt, env vars) |
 | `allocation` | `AllocationLike` | Instance allocation strategy |
 | `timeout` | `int` | Auto-shutdown in seconds |
-| `volume` | `Sequence[Volume]` | Mounted volumes |
 | `display` | `str` | "log", "spinner", or "quiet" |
 | `on_event` | `Callback` | Custom event handler |
-
-### MultiPool
-
-For managing multiple pools with different configurations, use `MultiPool`:
-
-```python
-import skyward as sky
-
-with sky.MultiPool(
-    sky.ComputePool(provider=sky.AWS(), accelerator="T4"),
-    sky.ComputePool(provider=sky.AWS(), accelerator="A100"),
-) as (t4_pool, a100_pool):
-    # Pools provisioned in parallel
-    result_t4 = benchmark() >> t4_pool
-    result_a100 = benchmark() >> a100_pool
-```
-
-`MultiPool` provisions all pools concurrently, reducing total setup time from `sum(t_i)` to `max(t_i)`.
 
 ## Execution Operators
 
@@ -379,7 +360,7 @@ Skyward uses Python operators to control how computations are executed.
 Execute on one worker, return single result:
 
 ```python
-result = my_function(x) >> sky
+result = my_function(x) >> pool
 ```
 
 ### `@` (Broadcast)
@@ -387,13 +368,12 @@ result = my_function(x) >> sky
 Execute on ALL workers, return tuple of results:
 
 ```python
-@sky.pool(provider=sky.AWS(), nodes=4)
-def main():
+with sky.ComputePool(provider=sky.AWS(), nodes=4) as pool:
     # With 4 nodes, returns tuple of 4 results
-    results = my_function(x) @ sky
+    results = my_function(x) @ pool
 
     # Useful for initialization
-    models = load_model(path) @ sky  # Load on all nodes
+    models = load_model(path) @ pool  # Load on all nodes
 ```
 
 ### `&` (Parallel Chain)
@@ -401,16 +381,15 @@ def main():
 Chain multiple computations for parallel execution with type safety:
 
 ```python
-@sky.pool(provider=sky.AWS())
-def main():
+with sky.ComputePool(provider=sky.AWS()) as pool:
     # Full type inference
     a: int
     b: float
     c: str
-    a, b, c = (fn1() & fn2() & fn3()) >> sky
+    a, b, c = (fn1() & fn2() & fn3()) >> pool
 
     # Supports up to 8 chained computations
-    r1, r2, r3, r4, r5 = (f1() & f2() & f3() & f4() & f5()) >> sky
+    r1, r2, r3, r4, r5 = (f1() & f2() & f3() & f4() & f5()) >> pool
 ```
 
 ### `gather()` (Dynamic Parallel)
@@ -420,13 +399,12 @@ Group any number of computations for parallel execution:
 ```python
 import skyward as sky
 
-@sky.pool(provider=sky.AWS())
-def main():
+with sky.ComputePool(provider=sky.AWS()) as pool:
     # Fixed number
-    r1, r2, r3 = sky.gather(fn(1), fn(2), fn(3)) >> sky
+    r1, r2, r3 = sky.gather(fn(1), fn(2), fn(3)) >> pool
 
     # Dynamic (e.g., from list comprehension)
-    results = sky.gather(*[process(x) for x in data]) >> sky
+    results = sky.gather(*[process(x) for x in data]) >> pool
 ```
 
 ## Image
@@ -483,24 +461,6 @@ def train(x_full, y_full):
     return fit(x_local, y_local)
 ```
 
-### `DistributedSampler`
-
-PyTorch DataLoader integration:
-
-```python
-import skyward as sky
-from torch.utils.data import DataLoader
-
-@sky.compute
-def train(epochs: int):
-    sampler = sky.DistributedSampler(dataset, shuffle=True)
-    loader = DataLoader(dataset, sampler=sampler)
-
-    for epoch in range(epochs):
-        sampler.set_epoch(epoch)  # Important for shuffling
-        for batch in loader:
-            train_step(batch)
-```
 
 ## Cluster Information
 
@@ -556,17 +516,20 @@ Skyward emits events throughout the execution lifecycle using an event-driven ar
 ### Event Types
 
 **Requests (Commands):**
+
 - `ClusterRequested` - User wants a cluster
 - `InstanceRequested` - Node needs an instance
 - `ShutdownRequested` - Graceful shutdown requested
 - `BootstrapRequested` - Request bootstrap on running instance
 
 **Cluster Lifecycle:**
+
 - `ClusterProvisioned` - Infrastructure ready
 - `ClusterReady` - All nodes ready
 - `ClusterDestroyed` - Cluster fully shut down
 
 **Instance Pipeline:**
+
 - `InstanceLaunched` - Provider launched instance, waiting for running state
 - `InstanceRunning` - Instance running with IP, ready for bootstrap
 - `InstanceProvisioned` - Instance created
@@ -576,19 +539,23 @@ Skyward emits events throughout the execution lifecycle using an event-driven ar
 - `InstanceDestroyed` - Instance terminated
 
 **Node Events:**
+
 - `NodeReady` - Node signals readiness
 
 **Execution Events:**
+
 - `TaskStarted` - Task execution started
 - `TaskCompleted` - Task completed (with success/error, duration)
 
 **Bootstrap Streaming:**
+
 - `BootstrapConsole` - Bootstrap stdout/stderr
 - `BootstrapPhase` - Bootstrap phase progress (started/completed/failed)
 - `BootstrapCommand` - Individual command being executed
 - `BootstrapFailed` - Bootstrap failed with error details
 
 **Observability:**
+
 - `Log` - Log line from instance
 - `Metric` - CPU/GPU/memory metric
 - `Error` - Generic error with fatal flag
@@ -653,34 +620,8 @@ sky.ComputePool(allocation="on-demand")
 sky.ComputePool(allocation="cheapest")
 ```
 
-## Volumes
-
-Mount external storage:
-
-```python
-import skyward as sky
-
-pool = sky.ComputePool(
-    provider=sky.AWS(),
-    volume=[
-        sky.S3Volume(
-            mount_path="/data",
-            bucket="my-bucket",
-            prefix="datasets/",
-            read_only=True,
-        ),
-        sky.S3Volume(
-            mount_path="/checkpoints",
-            bucket="my-bucket",
-            prefix="models/",
-            read_only=False,
-        ),
-    ],
-)
-```
-
 ## Next Steps
 
-- [Distributed Training](distributed-training.md) — Multi-GPU training guides
-- [Examples](examples.md) — Working code examples
-- [Troubleshooting](troubleshooting.md) — Common issues and solutions
+- [Distributed Training](distributed-training.md) — Multi-node training guides
+- [Providers](providers.md) — AWS, RunPod, VastAI, and Verda
+- [API Reference](reference/pool.md) — Complete API documentation

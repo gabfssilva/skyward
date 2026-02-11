@@ -82,19 +82,16 @@ def format_results(r: dict) -> None:
     print(f"{'═' * 50}\n")
 
 
-@sky.pool(
-    provider=sky.AWS(),
-    accelerator=sky.accelerators.T4G(),
-    image=sky.Image(
-        pip=["jax[cuda12]"],
-        skyward_source="local",
-        metrics=sky.metrics.Default()
-    ),
-    max_hourly_cost=0.5,
-    ttl=240
-)
-def main():
-    return benchmark(matrix_size=4096, iterations=50) >> sky
-
 if __name__ == "__main__":
-    format_results(main())
+    with sky.ComputePool(
+        provider=sky.AWS(),
+        accelerator=sky.accelerators.T4G(),
+        image=sky.Image(
+            pip=["jax[cuda12]"],
+            skyward_source="local",
+            metrics=sky.metrics.Default()
+        ),
+        max_hourly_cost=0.5,
+        ttl=240
+    ) as pool:
+        format_results(benchmark(matrix_size=4096, iterations=50) >> pool)

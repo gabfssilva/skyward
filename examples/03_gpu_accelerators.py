@@ -144,47 +144,43 @@ def train_simple_model(epochs: int) -> dict:
     }
 
 
-@sky.pool(
-    provider=sky.VastAI(),
-    image=sky.Image(pip=["torch", "numpy"]),
-    accelerator="L40S",
-    allocation="spot-if-available",
-)
-def main():
-    # Get GPU information
-    info = instance_information() @ sky
-    print(f"GPU Info: {info}")
-
-    # Heavy benchmark - ~5s on CPU vs ~0.1s on GPU
-    print("\n" + "=" * 60)
-    print("Heavy Matrix Operations Benchmark")
-    print("=" * 60)
-    heavy = heavy_matrix_ops(size=4096, iterations=50) >> sky
-    print(f"\nResults:")
-    print(f"  CPU time:  {heavy['cpu_time']:.2f}s")
-    if "gpu_time" in heavy:
-        print(f"  GPU time:  {heavy['gpu_time']:.2f}s")
-        print(f"  Speedup:   {heavy['speedup']:.1f}x")
-
-    # Quick matmul benchmark
-    print("\n" + "=" * 60)
-    print("Single Matmul 4096x4096")
-    print("=" * 60)
-    benchmark = matrix_multiply(4096) >> sky
-    print(f"  CPU: {benchmark['cpu_time']:.3f}s")
-    if "gpu_time" in benchmark:
-        print(f"  GPU: {benchmark['gpu_time']:.3f}s")
-        print(f"  Speedup: {benchmark['speedup']:.1f}x")
-
-    # Train a simple model
-    print("\n" + "=" * 60)
-    print("Neural Network Training (100 epochs)")
-    print("=" * 60)
-    result = train_simple_model(epochs=100) >> sky
-    print(f"  Device: {result['device']}")
-    print(f"  Initial loss: {result['initial_loss']:.4f}")
-    print(f"  Final loss: {result['final_loss']:.4f}")
-
-
 if __name__ == "__main__":
-    main()
+    with sky.ComputePool(
+        provider=sky.VastAI(),
+        image=sky.Image(pip=["torch", "numpy"]),
+        accelerator=sky.accelerators.L40S(),
+        allocation="spot-if-available",
+    ) as pool:
+        # Get GPU information
+        info = instance_information() @ pool
+        print(f"GPU Info: {info}")
+
+        # Heavy benchmark - ~5s on CPU vs ~0.1s on GPU
+        print("\n" + "=" * 60)
+        print("Heavy Matrix Operations Benchmark")
+        print("=" * 60)
+        heavy = heavy_matrix_ops(size=4096, iterations=50) >> pool
+        print(f"\nResults:")
+        print(f"  CPU time:  {heavy['cpu_time']:.2f}s")
+        if "gpu_time" in heavy:
+            print(f"  GPU time:  {heavy['gpu_time']:.2f}s")
+            print(f"  Speedup:   {heavy['speedup']:.1f}x")
+
+        # Quick matmul benchmark
+        print("\n" + "=" * 60)
+        print("Single Matmul 4096x4096")
+        print("=" * 60)
+        benchmark = matrix_multiply(4096) >> pool
+        print(f"  CPU: {benchmark['cpu_time']:.3f}s")
+        if "gpu_time" in benchmark:
+            print(f"  GPU: {benchmark['gpu_time']:.3f}s")
+            print(f"  Speedup: {benchmark['speedup']:.1f}x")
+
+        # Train a simple model
+        print("\n" + "=" * 60)
+        print("Neural Network Training (100 epochs)")
+        print("=" * 60)
+        result = train_simple_model(epochs=100) >> pool
+        print(f"  Device: {result['device']}")
+        print(f"  Initial loss: {result['initial_loss']:.4f}")
+        print(f"  Final loss: {result['final_loss']:.4f}")

@@ -8,7 +8,7 @@ The core model is different: instead of submitting jobs to a scheduler and waiti
 
 | HPC | Skyward |
 |-----|---------|
-| `sbatch` / `srun` | `@sky.pool()` |
+| `sbatch` / `srun` | `sky.ComputePool()` |
 | MPI rank | `instance_info().node` |
 | MPI world size | `instance_info().total_nodes` |
 | Rank 0 | `is_head` |
@@ -22,9 +22,8 @@ Distributed training patterns work the same way. You still have a head node coor
 Skyward sets up the environment variables that frameworks expect—`MASTER_ADDR`, `RANK`, `WORLD_SIZE` for PyTorch, `JAX_COORDINATOR_ADDRESS` for JAX, `TF_CONFIG` for TensorFlow. The framework handles communication via NCCL or Gloo, same as on a traditional cluster.
 
 ```python
-@sky.pool(provider=sky.VastAI(), accelerator="A100", nodes=4)
-def main():
-    train() @ sky  # runs on all 4 nodes
+with sky.ComputePool(provider=sky.VastAI(), accelerator=sky.accelerators.A100(), nodes=4) as pool:
+    train() @ pool  # runs on all 4 nodes
 ```
 
 This is roughly equivalent to:
@@ -41,7 +40,7 @@ Skyward doesn't wrap MPI. If your code uses `mpi4py` or raw MPI calls, you'll ne
 
 There's no job queue—clusters are provisioned immediately or fail. No waiting, but also no backlog management.
 
-Interconnect is cloud networking, not InfiniBand. For most ML workloads this is fine—gradient synchronization is bursty, not sustained. Workloads that require tight coupling (large all-to-all, frequent small messages) will feel the difference.
+Interconnect depends on the provider. Some cloud instances offer InfiniBand or equivalent (AWS EFA, p5 with 3200 Gbps networking). Others use standard cloud networking. For most ML workloads the difference is negligible—gradient synchronization is bursty, not sustained. Workloads that require tight coupling (large all-to-all, frequent small messages) should target providers and instance types with high-bandwidth interconnect.
 
 Checkpoint/restart isn't built in. Spot instances get replaced automatically on preemption, but your training code needs to handle saving and resuming state.
 
@@ -51,7 +50,7 @@ Checkpoint/restart isn't built in. Spot instances get replaced automatically on 
 |-|-----|---------|
 | Queue wait | Minutes to days | None (subject to provider availability) |
 | Latest GPUs | Depends on facility | Yes |
-| Interconnect | InfiniBand | Cloud networking |
+| Interconnect | InfiniBand | Varies (EFA, InfiniBand, cloud networking) |
 | Cost model | Allocation / grants | Pay-per-use |
 | Setup | Modules, MPI config | Decorators |
 | Fault tolerance | Checkpoint/restart | Spot replacement |
@@ -59,4 +58,4 @@ Checkpoint/restart isn't built in. Spot instances get replaced automatically on 
 
 ## When This Matters
 
-If you're training models with PyTorch, JAX, or TensorFlow and your bottleneck is getting access to GPUs, Skyward removes the queue. If your code is MPI-native or needs InfiniBand bandwidth, traditional HPC is still the right tool.
+If you're training models with PyTorch, JAX, or TensorFlow and your bottleneck is getting access to accelerators, Skyward removes the queue. If your code is MPI-native and tightly coupled, traditional HPC may still be the right tool—though cloud instances with EFA/InfiniBand are closing the gap.

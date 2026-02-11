@@ -1,21 +1,25 @@
 # Distributed Training
 
-This guide covers distributed training across multiple GPUs and nodes with Skyward.
+This guide covers distributed training across multiple accelerators and nodes with Skyward.
 
 ## Overview
 
 Skyward simplifies distributed training by automatically:
-- Provisioning multi-node GPU clusters
+
+- Provisioning multi-node accelerator clusters
 - Setting up distributed environment variables
 - Initializing framework-specific process groups
 - Partitioning data across workers
 
 Supported frameworks:
+
 - **PyTorch** - DistributedDataParallel (DDP)
 - **Keras 3** - DataParallel with JAX/TensorFlow/PyTorch backends
 - **JAX** - Native distributed training
 - **TensorFlow** - MultiWorkerMirroredStrategy
 - **HuggingFace** - Trainer with automatic distributed detection
+
+These come with out-of-the-box integration decorators that handle setup automatically. Any other distributed framework works too — use `sky.instance_info()` inside your `@sky.compute` function to get cluster topology (node index, total nodes, head address) and configure it yourself.
 
 ## PyTorch Distributed Training
 
@@ -39,23 +43,21 @@ def train(epochs: int) -> dict:
         model = DDP(model)
 
     # Data loading with distributed sampler
-    sampler = sky.DistributedSampler(dataset, shuffle=True)
-    loader = DataLoader(dataset, sampler=sampler, batch_size=64)
+    loader = DataLoader(dataset, batch_size=64)
 
     # Training loop
     for epoch in range(epochs):
-        sampler.set_epoch(epoch)  # Important!
         for batch in loader:
             train_step(model, batch)
 
     return {"node": info.node, "loss": final_loss}
 
 
-# Launch on 2 nodes with A100 GPUs
+# Launch on 2 nodes with A100 GPUs (works with any provider: AWS, RunPod, VastAI, Verda)
 with sky.ComputePool(
-    provider=sky.AWS(),
+    provider=sky.AWS(),  # or sky.RunPod(), sky.VastAI(), sky.Verda()
     nodes=2,
-    accelerator=sky.NVIDIA.A100,
+    accelerator=sky.accelerators.A100(),
     image=sky.Image(pip=["torch"]),
 ) as pool:
     results = train(epochs=10) @ pool
@@ -82,8 +84,8 @@ For explicit control, use the `@sky.integrations.torch` decorator:
 ```python
 import skyward as sky
 
-@sky.integrations.torch(backend="nccl")
 @sky.compute
+@sky.integrations.torch(backend="nccl")
 def train():
     import torch.distributed as dist
     # dist.is_initialized() is True
@@ -99,8 +101,8 @@ Keras 3 is backend-agnostic and works with JAX, TensorFlow, or PyTorch.
 ```python
 import skyward as sky
 
-@sky.integrations.keras(backend="jax")
 @sky.compute
+@sky.integrations.keras(backend="jax")
 def train_model(epochs: int) -> dict:
     import keras
     import numpy as np
@@ -139,7 +141,7 @@ def train_model(epochs: int) -> dict:
 with sky.ComputePool(
     provider=sky.AWS(),
     nodes=2,
-    accelerator="A100",
+    accelerator=sky.accelerators.A100(),
     image=sky.Image(
         pip=["keras>=3.2", "jax[cuda12]"],
         env={"KERAS_BACKEND": "jax"},
@@ -153,8 +155,8 @@ with sky.ComputePool(
 ```python
 import skyward as sky
 
-@sky.integrations.keras(backend="tensorflow")
 @sky.compute
+@sky.integrations.keras(backend="tensorflow")
 def train():
     import keras
     # Uses TF distributed strategy
@@ -175,8 +177,8 @@ with sky.ComputePool(
 ```python
 import skyward as sky
 
-@sky.integrations.jax()
 @sky.compute
+@sky.integrations.jax()
 def train():
     import jax
     import jax.numpy as jnp
@@ -194,7 +196,7 @@ def train():
 with sky.ComputePool(
     provider=sky.AWS(),
     nodes=4,
-    accelerator="H100",
+    accelerator=sky.accelerators.H100(),
     pip=["jax[cuda12]"],
 ) as pool:
     results = train() @ pool
@@ -214,8 +216,8 @@ with sky.ComputePool(
 ```python
 import skyward as sky
 
-@sky.integrations.transformers(backend="nccl")
 @sky.compute
+@sky.integrations.transformers(backend="nccl")
 def fine_tune():
     from transformers import (
         AutoModelForSequenceClassification,
@@ -263,7 +265,7 @@ def fine_tune():
 with sky.ComputePool(
     provider=sky.AWS(),
     nodes=2,
-    accelerator="A100",
+    accelerator=sky.accelerators.A100(),
     pip=["transformers", "datasets", "torch", "accelerate"],
 ) as pool:
     results = fine_tune() @ pool
@@ -307,10 +309,10 @@ x_local = sky.shard(x_full, shuffle=True, seed=42)
 ### DistributedSampler for PyTorch
 
 ```python
-import skyward as sky
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
-sampler = sky.DistributedSampler(dataset, shuffle=True)
+sampler = DistributedSampler(dataset, shuffle=True)
 loader = DataLoader(dataset, sampler=sampler, batch_size=32)
 
 for epoch in range(epochs):
@@ -371,42 +373,18 @@ Control stdout/stderr in distributed training:
 import skyward as sky
 from skyward import stdout, silent
 
-@stdout(only="head")
 @sky.compute
+@stdout(only="head")
 def train():
     # Only head node prints progress
     print(f"Epoch {epoch}: loss={loss:.4f}")
 
-@silent
 @sky.compute
+@silent
 def background_init():
     # No output from any node
     pass
 ```
-
-## MIG for Multi-Tenant Training
-
-Use MIG (Multi-Instance GPU) to run multiple training jobs on one GPU:
-
-```python
-import skyward as sky
-
-with sky.ComputePool(
-    provider=sky.AWS(),
-    accelerator=sky.AcceleratorSpec.NVIDIA.A100(mig="3g.40gb"),  # 2 workers per GPU
-    image=sky.Image(pip=["torch"]),
-) as pool:
-    # Each worker gets its own MIG partition
-    results = train() @ pool
-```
-
-MIG profiles for A100/H100:
-
-| Profile | Workers | Memory Each |
-|---------|---------|-------------|
-| `3g.40gb` | 2 | 40GB |
-| `2g.20gb` | 3 | 20GB |
-| `1g.10gb` | 7 | 10GB |
 
 ## Best Practices
 
@@ -490,6 +468,7 @@ os.environ["NCCL_DEBUG"] = "INFO"
 ### Connectivity Issues
 
 For multi-node training, ensure security groups allow:
+
 - TCP port 29500 (MASTER_PORT)
 - All high ports for NCCL (1024-65535)
 
@@ -511,6 +490,6 @@ else:
 
 ## Related Topics
 
-- [Accelerators](accelerators.md) — GPU selection and MIG partitioning
-- [Examples](examples.md) — Working code examples
-- [Troubleshooting](troubleshooting.md) — Common issues and solutions
+- [Accelerators](accelerators.md) — Accelerator selection guide
+- [Integrations](integrations.md) — Framework integration details
+- [API Reference](reference/pool.md) — Complete API documentation

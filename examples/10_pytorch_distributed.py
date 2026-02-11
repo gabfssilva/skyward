@@ -185,7 +185,7 @@ if __name__ == "__main__":
     # =================================================================
     # Multi-Node Training
     # =================================================================
-    with sky.SyncComputePool(
+    with sky.ComputePool(
         provider=sky.AWS(),
         nodes=2,
         accelerator='T4G',

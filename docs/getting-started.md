@@ -4,8 +4,8 @@ This guide will help you install Skyward and run your first cloud computation.
 
 ## Prerequisites
 
-- Python 3.13 or higher
-- Cloud provider credentials (AWS, Verda, or VastAI)
+- Python 3.12 or higher
+- Cloud provider credentials (AWS, RunPod, VastAI, or Verda)
 
 ## Installation
 
@@ -66,6 +66,7 @@ aws_secret_access_key = your_secret_key
 ```
 
 Required IAM permissions:
+
 - `ec2:*` - Instance management
 - `iam:PassRole` - For instance profiles
 - `ssm:*` - For Session Manager connectivity (optional but recommended)
@@ -76,6 +77,14 @@ Required IAM permissions:
 export VERDA_CLIENT_ID=your_client_id
 export VERDA_CLIENT_SECRET=your_client_secret
 ```
+
+### RunPod
+
+```bash
+export RUNPOD_API_KEY=your_api_key
+```
+
+Get your API key from **Settings > API Keys** at [runpod.io](https://www.runpod.io/).
 
 ### VastAI
 
@@ -99,13 +108,9 @@ def hello() -> str:
     import socket
     return f"Hello from {socket.gethostname()}!"
 
-@sky.pool(provider=sky.AWS())
-def main():
-    result = hello() >> sky
+with sky.ComputePool(provider=sky.AWS()) as pool:
+    result = hello() >> pool
     print(result)
-
-if __name__ == "__main__":
-    main()
 ```
 
 Run it:
@@ -123,7 +128,7 @@ uv run python hello.py
 5. Returns the result to your local machine
 6. Terminates the instance
 
-## Your First GPU Job
+## Your First Accelerator Job
 
 ```python
 import skyward as sky
@@ -138,19 +143,15 @@ def gpu_info() -> dict:
         "device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
     }
 
-@sky.pool(
+with sky.ComputePool(
     provider=sky.AWS(),
-    accelerator="T4",                 # Request a T4 GPU
+    accelerator=sky.accelerators.T4(),  # Request a T4 accelerator
     image=sky.Image(pip=["torch"]),   # Install PyTorch
     allocation="always-spot",         # Use spot instances (cheaper)
-)
-def main():
-    info = gpu_info() >> sky
+) as pool:
+    info = gpu_info() >> pool
     print(f"GPU: {info['device_name']}")
     print(f"CUDA devices: {info['device_count']}")
-
-if __name__ == "__main__":
-    main()
 ```
 
 ## Understanding the Output
@@ -187,14 +188,13 @@ import skyward as sky
 def square(x: int) -> int:
     return x * x
 
-@sky.pool(provider=sky.AWS())
-def main():
+with sky.ComputePool(provider=sky.AWS()) as pool:
     # Method 1: gather()
-    results = sky.gather(square(1), square(2), square(3)) >> sky
+    results = sky.gather(square(1), square(2), square(3)) >> pool
     print(results)  # (1, 4, 9)
 
     # Method 2: & operator
-    a, b, c = (square(4) & square(5) & square(6)) >> sky
+    a, b, c = (square(4) & square(5) & square(6)) >> pool
     print(a, b, c)  # 16 25 36
 ```
 
@@ -214,10 +214,9 @@ def worker_info() -> dict:
         "is_head": info.is_head,
     }
 
-@sky.pool(provider=sky.AWS(), nodes=4)
-def main():
+with sky.ComputePool(provider=sky.AWS(), nodes=4) as pool:
     # @ broadcasts to ALL nodes
-    results = worker_info() @ sky
+    results = worker_info() @ pool
     for r in results:
         print(f"Node {r['node']}/{r['total']} (head={r['is_head']})")
 ```
@@ -244,18 +243,34 @@ sky.ComputePool(provider=sky.AWS(), allocation="cheapest")
 
 ## Troubleshooting
 
-For common issues and solutions, see the [Troubleshooting Guide](troubleshooting.md).
-
 Quick fixes for the most common issues:
 
 - **"No instances available"**: Try a different region or use `allocation="spot-if-available"`
-- **"Permission denied"**: Check your IAM/API permissions
-- **"Bootstrap timeout"**: Increase timeout with `timeout=7200`
-- **Connection issues**: Verify SSM access is enabled (AWS)
+- **"Permission denied"**: Check your IAM/API permissions (AWS needs `ec2:*`, `iam:PassRole`)
+- **"Bootstrap timeout"**: Increase timeout with `timeout=7200`, or reduce pip dependencies
+- **Connection issues (AWS)**: Verify SSM access is enabled and the instance has outbound internet
+
+### Test Locally First
+
+Always test your function locally before running remotely:
+
+```python
+result = my_function.local(test_data)  # Runs locally, no cloud
+```
+
+### Enable Verbose Logging
+
+```python
+from loguru import logger
+import sys
+
+logger.remove()
+logger.add(sys.stderr, level="DEBUG")
+```
 
 ## Next Steps
 
 - [Core Concepts](concepts.md) — Understand the programming model
-- [Distributed Training](distributed-training.md) — Train models across multiple GPUs
-- [Examples](examples.md) — More example code
-- [FAQ](faq.md) — Frequently asked questions
+- [Providers](providers.md) — Configure AWS, RunPod, VastAI, or Verda
+- [Distributed Training](distributed-training.md) — Train models across multiple nodes
+- [Integrations](integrations.md) — PyTorch, Keras, JAX, joblib integrations

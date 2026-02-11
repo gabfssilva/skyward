@@ -136,8 +136,8 @@ sky.ComputePool(
 Built-in support for PyTorch DDP, Keras 3, JAX, and HuggingFace Transformers.
 
 ```python
-@sky.integrations.torch(backend="nccl")
 @sky.compute
+@sky.integrations.torch(backend="nccl")
 def train_distributed():
     import torch.distributed as dist
     from torch.nn.parallel import DistributedDataParallel as DDP

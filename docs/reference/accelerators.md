@@ -1,0 +1,3 @@
+# Accelerators
+
+::: skyward.accelerators

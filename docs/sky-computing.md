@@ -30,20 +30,19 @@ Sky Computing proposes:
 
 ## How Skyward Uses These Ideas
 
-Skyward focuses on a specific problem: **running Python functions on remote GPUs without worrying about where**.
+Skyward focuses on a specific problem: **running Python functions on remote accelerators without worrying about where**.
 
 ### Multi-Provider Selection
 
 Specify multiple providers — Skyward picks the best one:
 
 ```python
-@sky.pool(
-    provider=['aws', 'verda'],
+with sky.ComputePool(
+    provider=[sky.AWS(), sky.RunPod(), sky.Verda()],
     selection='cheapest',
-    accelerator='T4',
-)
-def main():
-    result = train(data) >> sky
+    accelerator=sky.accelerators.T4(),
+) as pool:
+    result = train(data) >> pool
 ```
 
 Selection strategies:
@@ -60,9 +59,9 @@ Selection strategies:
 If a provider fails to provision, Skyward tries the next one:
 
 ```python
-pool = ComputePool(
-    provider=[AWS(), Verda()],
-    accelerator="H100",
+pool = sky.ComputePool(
+    provider=[sky.AWS(), sky.Verda()],
+    accelerator=sky.accelerators.H100(),
 )
 # If AWS fails → tries Verda
 ```
@@ -75,10 +74,10 @@ No retry logic needed — it's handled for you.
 
 ```python
 # AWS
-ComputePool(provider=AWS(), accelerator="H100")
+sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.H100())
 
 # Verda
-ComputePool(provider=Verda(), accelerator="H100")
+sky.ComputePool(provider=sky.Verda(), accelerator=sky.accelerators.H100())
 
 # Both work — Skyward finds the right instance type
 ```
@@ -87,10 +86,10 @@ ComputePool(provider=Verda(), accelerator="H100")
 
 While the Berkeley paper focuses on interoperability, Skyward adds a specific philosophy: **ephemeral compute**.
 
-GPU infrastructure should exist only during your job. Not before, not after.
+Accelerator infrastructure should exist only during your job. Not before, not after.
 
 ```python
-with ComputePool(provider=AWS(), accelerator="H100", nodes=4) as pool:
+with sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.H100(), nodes=4) as pool:
     metrics = train(dataset) >> pool
 # Instances terminated automatically
 ```
@@ -112,16 +111,15 @@ a, b = (f1() & f2()) >> pool       # Parallel execution
 Built-in support for multi-node training:
 
 ```python
-@sky.integrations.torch(backend="nccl")
 @sky.compute
+@sky.integrations.torch(backend="nccl")
 def train():
     # MASTER_ADDR, RANK, WORLD_SIZE already configured
     model = DDP(MyModel().cuda())
     ...
 
-@sky.pool(provider=AWS(), nodes=4, accelerator="A100")
-def main():
-    results = train() @ sky  # Runs on all 4 nodes
+with sky.ComputePool(provider=sky.AWS(), nodes=4, accelerator=sky.accelerators.A100()) as pool:
+    results = train() @ pool  # Runs on all 4 nodes
 ```
 
 Also available: `@sky.integrations.keras()`, `@sky.integrations.jax()`, `@sky.integrations.transformers()`.
@@ -163,7 +161,7 @@ Skyward documentation:
 
 - [Core Concepts](concepts.md) — Programming model and ephemeral compute
 - [Getting Started](getting-started.md) — Installation and first steps
-- [Providers](providers.md) — AWS, Verda configuration
+- [Providers](providers.md) — AWS, RunPod, VastAI, Verda configuration
 
 [paper]: https://arxiv.org/abs/2205.07147
 [skypilot]: https://github.com/skypilot-org/skypilot

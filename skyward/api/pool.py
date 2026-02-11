@@ -63,10 +63,10 @@ from skyward.distributed.types import Consistency
 type Provider = AWS | RunPod | VastAI | Verda
 
 
-_active_pool: ContextVar[SyncComputePool | None] = ContextVar("active_pool", default=None)
+_active_pool: ContextVar[ComputePool | None] = ContextVar("active_pool", default=None)
 
 
-def _get_active_pool() -> SyncComputePool:
+def _get_active_pool() -> ComputePool:
     """Get the active pool from context."""
     pool = _active_pool.get()
     if pool is None:
@@ -129,7 +129,7 @@ class PendingCompute[T]:
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
 
-    def __rshift__(self, target: SyncComputePool | _Sky | types.ModuleType) -> T:
+    def __rshift__(self, target: ComputePool | _Sky | types.ModuleType) -> T:
         match target:
             case types.ModuleType() if hasattr(target, "sky"):
                 return target.sky.__rrshift__(self)  # type: ignore
@@ -138,7 +138,7 @@ class PendingCompute[T]:
             case _:
                 return target.run(self)  # type: ignore[union-attr]
 
-    def __gt__(self, target: SyncComputePool | _Sky | types.ModuleType) -> Future[T]:
+    def __gt__(self, target: ComputePool | _Sky | types.ModuleType) -> Future[T]:
         match target:
             case types.ModuleType() if hasattr(target, "sky"):
                 return target.sky._run_async(self)  # type: ignore
@@ -147,7 +147,7 @@ class PendingCompute[T]:
             case _:
                 return target.run_async(self)  # type: ignore[union-attr]
 
-    def __matmul__(self, target: SyncComputePool | _Sky | types.ModuleType) -> list[T] | tuple[T, ...]:
+    def __matmul__(self, target: ComputePool | _Sky | types.ModuleType) -> list[T] | tuple[T, ...]:
         """Broadcast to all nodes using @ operator."""
         match target:
             case types.ModuleType() if hasattr(target, "sky"):
@@ -189,7 +189,7 @@ class PendingComputeGroup:
             case _:
                 return PendingComputeGroup(items=(*self.items, other))
 
-    def __rshift__(self, target: SyncComputePool | _Sky | types.ModuleType) -> tuple[Any, ...]:
+    def __rshift__(self, target: ComputePool | _Sky | types.ModuleType) -> tuple[Any, ...]:
         """Execute all computations in parallel using >> operator."""
         match target:
             case types.ModuleType() if hasattr(target, "sky"):
@@ -239,7 +239,7 @@ def compute[F: Callable[..., Any]](fn: F) -> Callable[..., PendingCompute[Any]]:
 
 
 @dataclass
-class SyncComputePool:
+class ComputePool:
     """Synchronous ComputePool facade.
 
     Wraps v2's async ComputePool with a synchronous API. Uses a
@@ -300,7 +300,7 @@ class SyncComputePool:
     _executor: Executor | None = field(default=None, init=False, repr=False)
     _network_interfaces: dict[int, str] = field(default_factory=dict, init=False, repr=False)
 
-    def __enter__(self) -> SyncComputePool:
+    def __enter__(self) -> ComputePool:
         """Start pool and provision resources."""
         if self.logging:
             match self.logging:
@@ -755,7 +755,7 @@ class SyncComputePool:
 
     def __repr__(self) -> str:
         status = "active" if self._active else "inactive"
-        return f"SyncComputePool(nodes={self.nodes}, accelerator={self.accelerator}, {status})"
+        return f"ComputePool(nodes={self.nodes}, accelerator={self.accelerator}, {status})"
 
 
 class _PoolFactory:
@@ -790,12 +790,12 @@ class _PoolFactory:
         self._panel = panel
         self._logging = logging
         self._max_hourly_cost = max_hourly_cost
-        self._pool: SyncComputePool | None = None
+        self._pool: ComputePool | None = None
 
-    def _create_pool(self) -> SyncComputePool:
+    def _create_pool(self) -> ComputePool:
         """Create the underlying pool."""
         provider = self._provider or AWS()
-        return SyncComputePool(
+        return ComputePool(
             provider=provider,
             nodes=self._nodes,
             accelerator=self._accelerator,
@@ -811,7 +811,7 @@ class _PoolFactory:
             max_hourly_cost=self._max_hourly_cost,
         )
 
-    def __enter__(self) -> SyncComputePool:
+    def __enter__(self) -> ComputePool:
         """Use as context manager."""
         self._pool = self._create_pool()
         return self._pool.__enter__()

@@ -203,93 +203,89 @@ def producer_fill_queue(tasks: list[int]) -> dict:
 # =============================================================================
 
 
-@sky.pool(
-    provider=sky.AWS(),
-    nodes=4,
-    vcpus=2,
-    memory_gb=4,
-    image=sky.Image(skyward_source="local"),
-)
-def main():
-    # -----------------------------------------------------------------
-    # Example 1: Shared Cache
-    # -----------------------------------------------------------------
-    print("=" * 60)
-    print("Example 1: Shared Cache with Progress")
-    print("=" * 60)
-
-    items = [f"item_{i}" for i in range(100)]
-    cache_results = process_with_cache(items) @ sky
-
-    total_hits = sum(r["cache_hits"] for r in cache_results)
-    total_misses = sum(r["cache_misses"] for r in cache_results)
-    print(f"  Total items: {len(items)}")
-    print(f"  Cache hits: {total_hits}, misses: {total_misses}")
-    for r in cache_results:
-        print(f"    Node {r['node']}: {r['processed']} items, {r['cache_hits']} hits")
-
-    # -----------------------------------------------------------------
-    # Example 2: Result Accumulation
-    # -----------------------------------------------------------------
-    print("\n" + "=" * 60)
-    print("Example 2: Result Accumulation with Deduplication")
-    print("=" * 60)
-
-    for batch in range(3):
-        batch_results = accumulate_results(batch) @ sky
-        for r in batch_results:
-            print(f"    Batch {r['batch_id']} node {r['node']}: {r['status']}")
-
-    # -----------------------------------------------------------------
-    # Example 3: Synchronized Training
-    # -----------------------------------------------------------------
-    print("\n" + "=" * 60)
-    print("Example 3: Synchronized Training with Barrier")
-    print("=" * 60)
-
-    for epoch in range(3):
-        epoch_results = synchronized_epoch(epoch) @ sky
-        losses = [r["loss"] for r in epoch_results]
-        avg_loss = sum(losses) / len(losses)
-        print(f"  Epoch {epoch}: avg_loss={avg_loss:.4f}")
-
-    # -----------------------------------------------------------------
-    # Example 4: Safe Checkpoint Update
-    # -----------------------------------------------------------------
-    print("\n" + "=" * 60)
-    print("Example 4: Critical Section with Lock")
-    print("=" * 60)
-
-    for step in range(5):
-        update_results = safe_update_checkpoint(step) @ sky
-        updated = [r for r in update_results if r["updated_checkpoint"]]
-        if updated:
-            print(f"  Step {step}: checkpoint updated by node {updated[0]['node']}")
-
-    checkpoint = read_checkpoint() >> sky
-    best_loss = checkpoint.get("best_loss")
-    loss_str = f"{best_loss:.4f}" if best_loss is not None else "N/A"
-    print(f"  Final checkpoint: step={checkpoint.get('best_step')}, "
-          f"loss={loss_str}, "
-          f"saved_by=node_{checkpoint.get('saved_by')}")
-
-    # -----------------------------------------------------------------
-    # Example 5: Work Queue
-    # -----------------------------------------------------------------
-    print("\n" + "=" * 60)
-    print("Example 5: Dynamic Work Queue")
-    print("=" * 60)
-
-    tasks = list(range(20))
-    producer_fill_queue(tasks) @ sky
-
-    worker_results = worker_from_queue() @ sky
-
-    total_processed = sum(r["tasks_processed"] for r in worker_results)
-    for r in worker_results:
-        print(f"  Node {r['node']}: processed {r['tasks_processed']} tasks {r['tasks']}")
-    print(f"  Total tasks processed: {total_processed}/{len(tasks)}")
-
-
 if __name__ == "__main__":
-    main()
+    with sky.ComputePool(
+        provider=sky.AWS(),
+        nodes=4,
+        vcpus=2,
+        memory_gb=4,
+        image=sky.Image(skyward_source="local"),
+    ) as pool:
+        # -----------------------------------------------------------------
+        # Example 1: Shared Cache
+        # -----------------------------------------------------------------
+        print("=" * 60)
+        print("Example 1: Shared Cache with Progress")
+        print("=" * 60)
+
+        items = [f"item_{i}" for i in range(100)]
+        cache_results = process_with_cache(items) @ pool
+
+        total_hits = sum(r["cache_hits"] for r in cache_results)
+        total_misses = sum(r["cache_misses"] for r in cache_results)
+        print(f"  Total items: {len(items)}")
+        print(f"  Cache hits: {total_hits}, misses: {total_misses}")
+        for r in cache_results:
+            print(f"    Node {r['node']}: {r['processed']} items, {r['cache_hits']} hits")
+
+        # -----------------------------------------------------------------
+        # Example 2: Result Accumulation
+        # -----------------------------------------------------------------
+        print("\n" + "=" * 60)
+        print("Example 2: Result Accumulation with Deduplication")
+        print("=" * 60)
+
+        for batch in range(3):
+            batch_results = accumulate_results(batch) @ pool
+            for r in batch_results:
+                print(f"    Batch {r['batch_id']} node {r['node']}: {r['status']}")
+
+        # -----------------------------------------------------------------
+        # Example 3: Synchronized Training
+        # -----------------------------------------------------------------
+        print("\n" + "=" * 60)
+        print("Example 3: Synchronized Training with Barrier")
+        print("=" * 60)
+
+        for epoch in range(3):
+            epoch_results = synchronized_epoch(epoch) @ pool
+            losses = [r["loss"] for r in epoch_results]
+            avg_loss = sum(losses) / len(losses)
+            print(f"  Epoch {epoch}: avg_loss={avg_loss:.4f}")
+
+        # -----------------------------------------------------------------
+        # Example 4: Safe Checkpoint Update
+        # -----------------------------------------------------------------
+        print("\n" + "=" * 60)
+        print("Example 4: Critical Section with Lock")
+        print("=" * 60)
+
+        for step in range(5):
+            update_results = safe_update_checkpoint(step) @ pool
+            updated = [r for r in update_results if r["updated_checkpoint"]]
+            if updated:
+                print(f"  Step {step}: checkpoint updated by node {updated[0]['node']}")
+
+        checkpoint = read_checkpoint() >> pool
+        best_loss = checkpoint.get("best_loss")
+        loss_str = f"{best_loss:.4f}" if best_loss is not None else "N/A"
+        print(f"  Final checkpoint: step={checkpoint.get('best_step')}, "
+              f"loss={loss_str}, "
+              f"saved_by=node_{checkpoint.get('saved_by')}")
+
+        # -----------------------------------------------------------------
+        # Example 5: Work Queue
+        # -----------------------------------------------------------------
+        print("\n" + "=" * 60)
+        print("Example 5: Dynamic Work Queue")
+        print("=" * 60)
+
+        tasks = list(range(20))
+        producer_fill_queue(tasks) @ pool
+
+        worker_results = worker_from_queue() @ pool
+
+        total_processed = sum(r["tasks_processed"] for r in worker_results)
+        for r in worker_results:
+            print(f"  Node {r['node']}: processed {r['tasks_processed']} tasks {r['tasks']}")
+        print(f"  Total tasks processed: {total_processed}/{len(tasks)}")

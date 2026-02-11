@@ -25,31 +25,27 @@ def process_partition(data: list[int]) -> dict:
     }
 
 
-@sky.pool(
-    provider=sky.AWS(),
-    nodes=4,
-    accelerator=sky.accelerators.T4G(),
-    image=sky.Image(skyward_source='local'),
-)
-def main():
-    print("\nProcessing data across all nodes...")
-    data = list(range(1000))  # Full dataset
-    partition_results = process_partition(data) @ sky
-
-    total_sum = 0
-    for result in partition_results:
-        print(
-            f"  Node {result['node']}: "
-            f"{result['partition_size']} items, "
-            f"sum={result['partition_sum']}"
-        )
-        total_sum += result["partition_sum"]
-
-        print(f"  info: {result['info']}")
-
-    print(f"\nTotal sum across all nodes: {total_sum}")
-    print(f"Expected sum: {sum(data)}")
-
-
 if __name__ == "__main__":
-    main()
+    with sky.ComputePool(
+        provider=sky.AWS(),
+        nodes=4,
+        accelerator=sky.accelerators.T4G(),
+        image=sky.Image(skyward_source='local'),
+    ) as pool:
+        print("\nProcessing data across all nodes...")
+        data = list(range(1000))  # Full dataset
+        partition_results = process_partition(data) @ pool
+
+        total_sum = 0
+        for result in partition_results:
+            print(
+                f"  Node {result['node']}: "
+                f"{result['partition_size']} items, "
+                f"sum={result['partition_sum']}"
+            )
+            total_sum += result["partition_sum"]
+
+            print(f"  info: {result['info']}")
+
+        print(f"\nTotal sum across all nodes: {total_sum}")
+        print(f"Expected sum: {sum(data)}")

@@ -4,14 +4,13 @@ Skyward supports multiple cloud providers with a unified API.
 
 ## Provider Comparison
 
-| Feature | AWS | Verda | VastAI |
-|---------|-----|-------|--------|
-| **GPUs** | H100, A100, T4, L4, etc. | H100, A100, H200, GB200 | Marketplace (varies) |
-| **Spot Instances** | Yes (60-90% savings) | Yes | Yes (bid-based) |
-| **Regions** | 20+ | 3 | Global marketplace |
-| **MIG Support** | Yes | Yes | No |
-| **SSH Connectivity** | Yes | Yes | Yes |
-| **Trainium/Inferentia** | Yes | No | No |
+| Feature | AWS | RunPod | Verda | VastAI |
+|---------|-----|--------|-------|--------|
+| **GPUs** | H100, A100, T4, L4, etc. | H100, A100, A40, RTX series | H100, A100, H200, GB200 | Marketplace (varies) |
+| **Spot Instances** | Yes (60-90% savings) | Yes | Yes | Yes (bid-based) |
+| **Regions** | 20+ | Global (Secure + Community) | 3 | Global marketplace |
+| **SSH Connectivity** | Yes | Yes | Yes | Yes |
+| **Trainium/Inferentia** | Yes | No | No | No |
 
 ## AWS
 
@@ -38,7 +37,7 @@ import skyward as sky
 
 pool = sky.ComputePool(
     provider=sky.AWS(region="us-east-1"),
-    accelerator="A100",
+    accelerator=sky.accelerators.A100(),
 )
 ```
 
@@ -74,11 +73,13 @@ pool = sky.ComputePool(
 ### SSM Connectivity (Default)
 
 AWS uses Systems Manager (SSM) by default for all connectivity. This provides:
+
 - No SSH key management required
 - More reliable connections through AWS infrastructure
 - Works with private subnets (no public IP needed)
 
 SSM requires:
+
 - IAM role with `AmazonSSMManagedInstanceCore` policy (auto-created by Skyward)
 - VPC with SSM endpoints or outbound internet access
 
@@ -113,6 +114,44 @@ SSM requires:
 }
 ```
 
+## RunPod
+
+### Setup
+
+```bash
+export RUNPOD_API_KEY=your_api_key
+```
+
+### Usage
+
+```python
+import skyward as sky
+
+with sky.ComputePool(
+    provider=sky.RunPod(),
+    accelerator=sky.accelerators.A100(),
+    nodes=2,
+) as pool:
+    result = train(data) >> pool
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `api_key` | `str \| None` | `None` | API key (uses env var if None) |
+| `cloud_type` | `CloudType` | `SECURE` | Secure or Community cloud |
+| `container_disk_gb` | `int` | `50` | Container disk size |
+| `volume_gb` | `int` | `20` | Persistent volume size |
+| `data_center_ids` | `tuple \| "global"` | `"global"` | Preferred data centers |
+
+### Features
+
+- **Secure Cloud**: Enterprise-grade data centers with dedicated hardware
+- **Community Cloud**: Lower-cost peer-hosted GPUs
+- **Auto data center**: Automatic best-location selection
+- **SSH key auto-detection**: Reads from `~/.ssh/id_ed25519.pub` or `~/.ssh/id_rsa.pub`
+
 ## Verda
 
 ### Setup
@@ -128,7 +167,7 @@ import skyward as sky
 
 pool = sky.ComputePool(
     provider=sky.Verda(),  # Auto-discovers region
-    accelerator="H100",
+    accelerator=sky.accelerators.H100(),
 )
 ```
 
@@ -156,7 +195,7 @@ import skyward as sky
 # Auto-discovers region with requested GPU
 pool = sky.ComputePool(
     provider=sky.Verda(),
-    accelerator="H100",
+    accelerator=sky.accelerators.H100(),
 )
 ```
 
@@ -164,7 +203,6 @@ pool = sky.ComputePool(
 
 - **Auto region discovery**: Finds regions with available GPUs
 - **Spot instances**: Significant cost savings
-- **MIG support**: Multi-Instance GPU partitioning
 
 ## VastAI
 
@@ -186,7 +224,7 @@ import skyward as sky
 
 pool = sky.ComputePool(
     provider=sky.VastAI(geolocation="US"),
-    accelerator="RTX 4090",
+    accelerator=sky.accelerators.RTX_4090(),
 )
 ```
 
@@ -216,28 +254,36 @@ import skyward as sky
 
 pool = sky.ComputePool(
     provider=sky.VastAI(geolocation="US", min_reliability=0.95),
-    accelerator="RTX 4090",
+    accelerator=sky.accelerators.RTX_4090(),
     nodes=4,  # Automatically creates overlay network
 )
 ```
 
-See [VastAI Provider](providers/vastai.md) for detailed overlay network configuration.
-
 ## Choosing a Provider
 
 ### Use AWS When:
+
 - You need specific GPU types (H100, Trainium)
 - Spot instances are important for cost savings
 - Enterprise-grade reliability and support
 - You're already in the AWS ecosystem
 
+### Use RunPod When:
+
+- Fast GPU provisioning with minimal setup
+- Competitive pricing on popular GPUs (A100, H100, RTX series)
+- You want both Secure and Community cloud options
+- Simple API key authentication
+
 ### Use Verda When:
+
 - European data residency (Finland, Iceland, Israel)
 - H100/A100/GB200 availability
 - Automatic region selection
 - Competitive GPU pricing with spot support
 
 ### Use VastAI When:
+
 - Maximum cost savings (marketplace pricing)
 - Consumer GPUs (RTX 4090, 3090, etc.)
 - Flexible compute requirements
@@ -250,13 +296,12 @@ Use multiple providers with automatic fallback:
 ```python
 import skyward as sky
 
-@sky.pool(
+with sky.ComputePool(
     provider=[sky.AWS(), sky.Verda(), sky.VastAI()],
     selection="cheapest",
-    accelerator="A100",
-)
-def main():
-    return train() >> sky
+    accelerator=sky.accelerators.A100(),
+) as pool:
+    result = train() >> pool
 ```
 
 ### Selection Strategies
@@ -279,7 +324,7 @@ import skyward as sky
 pool = sky.ComputePool(
     provider=[sky.AWS(), sky.Verda()],
     selection="first",
-    accelerator="H100",
+    accelerator=sky.accelerators.H100(),
 )
 ```
 
@@ -298,7 +343,7 @@ def prefer_us_east(providers, spec):
 pool = sky.ComputePool(
     provider=[sky.AWS(), sky.Verda()],
     selection=prefer_us_east,
-    accelerator="A100",
+    accelerator=sky.accelerators.A100(),
 )
 ```
 
@@ -311,7 +356,7 @@ import skyward as sky
 pool = sky.ComputePool(
     provider=["aws", "verda"],
     selection="cheapest",
-    accelerator="A100",
+    accelerator=sky.accelerators.A100(),
 )
 ```
 
@@ -323,11 +368,11 @@ You can also use different providers for different stages:
 import skyward as sky
 
 # Training on AWS (H100 GPUs)
-with sky.ComputePool(provider=sky.AWS(), accelerator="H100") as train_pool:
+with sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.H100()) as train_pool:
     train_model() @ train_pool
 
 # Inference on Verda (cost-effective)
-with sky.ComputePool(provider=sky.Verda(), accelerator="A100") as infer_pool:
+with sky.ComputePool(provider=sky.Verda(), accelerator=sky.accelerators.A100()) as infer_pool:
     run_inference() >> infer_pool
 ```
 
@@ -356,12 +401,5 @@ with sky.ComputePool(provider=sky.Verda(), accelerator="A100") as infer_pool:
 ## Related Topics
 
 - [Getting Started](getting-started.md) — Installation and credentials setup
-- [Accelerators](accelerators.md) — GPU selection and MIG partitioning
-- [Troubleshooting](troubleshooting.md) — Common issues and solutions
-- [API Reference](api-reference.md) — Complete API documentation
-
-### Provider-Specific Documentation
-
-- [AWS Provider](providers/aws.md) — Detailed AWS configuration
-- [Verda Provider](providers/verda.md) — Verda configuration
-- [VastAI Provider](providers/vastai.md) — VastAI and overlay networks
+- [Accelerators](accelerators.md) — Accelerator selection guide
+- [API Reference](reference/pool.md) — Complete API documentation

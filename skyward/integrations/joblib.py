@@ -34,7 +34,7 @@ from joblib.parallel import ParallelBackendBase, register_parallel_backend
 from loguru import logger
 
 from skyward.accelerators import Accelerator
-from skyward.api.pool import SyncComputePool
+from skyward.api.pool import ComputePool
 from skyward.api.spec import DEFAULT_IMAGE, Image
 
 if TYPE_CHECKING:
@@ -86,7 +86,7 @@ class SkywardBackend(ParallelBackendBase):
     uses_threads = False  # type: ignore[assignment]
     supports_timeout = True  # type: ignore[assignment]
 
-    def __init__(self, pool: SyncComputePool, nesting_level: int = 0, **kwargs: Any) -> None:
+    def __init__(self, pool: ComputePool, nesting_level: int = 0, **kwargs: Any) -> None:
         super().__init__(nesting_level=nesting_level, **kwargs)
         self.pool = pool
         self.parallel: Parallel | None = None
@@ -140,7 +140,7 @@ class SkywardBackend(ParallelBackendBase):
 _backend_registered = False
 
 
-def _setup_backend(pool: SyncComputePool) -> None:
+def _setup_backend(pool: ComputePool) -> None:
     global _backend_registered
 
     def backend_factory() -> SkywardBackend:
@@ -156,7 +156,7 @@ def _setup_backend(pool: SyncComputePool) -> None:
 
 
 @contextmanager
-def sklearn_backend(pool: SyncComputePool) -> Iterator[None]:
+def sklearn_backend(pool: ComputePool) -> Iterator[None]:
     """Context manager to use Skyward as the joblib backend.
 
     Any sklearn code with `n_jobs=-1` will automatically distribute
@@ -197,7 +197,7 @@ def JoblibPool(
     timeout: int = 3600,
     panel: bool = True,
     joblib_version: str | None = None,
-) -> Iterator[SyncComputePool]:
+) -> Iterator[ComputePool]:
     """Compute pool with joblib backend for distributed parallel execution.
 
     Automatically adds joblib to pip dependencies and sets up the backend.
@@ -215,7 +215,7 @@ def JoblibPool(
         joblib_version: Specific joblib version (e.g., "1.3.0"). None for latest.
 
     Yields:
-        The active SyncComputePool.
+        The active ComputePool.
 
     Example:
         with JoblibPool(provider=sky.AWS(), nodes=4) as pool:
@@ -226,7 +226,7 @@ def JoblibPool(
     pkg = f"joblib=={joblib_version}" if joblib_version else "joblib"
     merged = _merge_pip(base, pkg)
 
-    pool = SyncComputePool(
+    pool = ComputePool(
         provider=provider,
         nodes=nodes,
         concurrency=concurrency,
@@ -259,7 +259,7 @@ def ScikitLearnPool(
     timeout: int = 3600,
     panel: bool = True,
     sklearn_version: str | None = None,
-) -> Iterator[SyncComputePool]:
+) -> Iterator[ComputePool]:
     """Compute pool with scikit-learn for distributed ML training.
 
     Automatically adds scikit-learn to pip dependencies and sets up the backend.
@@ -277,7 +277,7 @@ def ScikitLearnPool(
         sklearn_version: Specific sklearn version (e.g., "1.4.0"). None for latest.
 
     Yields:
-        The active SyncComputePool.
+        The active ComputePool.
 
     Example:
         with ScikitLearnPool(provider=sky.AWS(), nodes=4) as pool:
@@ -289,7 +289,7 @@ def ScikitLearnPool(
     pkg = f"scikit-learn=={sklearn_version}" if sklearn_version else "scikit-learn"
     merged = _merge_pip(base, pkg)
 
-    pool = SyncComputePool(
+    pool = ComputePool(
         provider=provider,
         nodes=nodes,
         concurrency=concurrency,

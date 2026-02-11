@@ -1,0 +1,101 @@
+site_name: Skyward
+site_url: https://gabfssilva.github.io/skyward/
+site_description: Distributed compute orchestration for ML/AI workloads. Cloud accelerators with a single decorator.
+repo_url: https://github.com/gabfssilva/skyward
+repo_name: gabfssilva/skyward
+
+theme:
+  name: material
+  logo: logo_sky.png
+  favicon: logo_sky.png
+  font:
+    text: Space Grotesk
+    code: Space Mono
+  palette:
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.highlight
+    - content.code.copy
+
+extra_css:
+  - stylesheets/extra.css
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+          options:
+            show_root_heading: true
+            show_source: false
+            docstring_style: numpy
+            members_order: source
+            show_if_no_docstring: true
+            heading_level: 2
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - pymdownx.details
+  - toc:
+      permalink: true
+  - attr_list
+  - md_in_html
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+nav:
+  - Home:
+      - Skyward: index.md
+      - Getting Started: getting-started.md
+      - Core Concepts: concepts.md
+      - Infrastructure:
+          - Providers: providers.md
+          - Accelerators: accelerators.md
+      - Clustering:
+          - Architecture: architecture.md
+          - Distributed Training: distributed-training.md
+          - Distributed Collections: distributed-collections.md
+      - Misc:
+          - Integrations: integrations.md
+          - Sky Computing: sky-computing.md
+          - For HPC Users: hpc.md
+  - API Reference:
+      - Core:
+          - Pool & Compute: reference/pool.md
+          - Runtime: reference/runtime.md
+          - Configuration: reference/config.md
+      - Providers:
+          - AWS: reference/providers/aws.md
+          - RunPod: reference/providers/runpod.md
+          - VastAI: reference/providers/vastai.md
+          - Verda: reference/providers/verda.md
+      - Distributed Collections: reference/distributed.md
+      - Events: reference/events.md
+      - Integrations: reference/integrations.md
+      - Accelerators: reference/accelerators.md

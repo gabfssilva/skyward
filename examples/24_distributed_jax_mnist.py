@@ -107,27 +107,23 @@ def train_distributed() -> dict:
     }
 
 
-@sky.pool(
-    provider=sky.AWS(),
-    nodes=2,
-    accelerator=sky.accelerators.T4G(),
-    image=sky.Image(
-        pip=["jax[cuda12]==0.8.2", "scikit-learn"],
-        skyward_source="local",
-    ),
-)
-def main():
-    results = train_distributed() @ sky
-
-    print("\nResults:")
-    for r in results:
-        print(
-            f"  Node {r['node']}: "
-            f"{r['train_samples']} samples, "
-            f"loss={r['final_loss']:.4f}, "
-            f"test_acc={r['test_accuracy']:.2%}"
-        )
-
-
 if __name__ == "__main__":
-    main()
+    with sky.ComputePool(
+        provider=sky.AWS(),
+        nodes=2,
+        accelerator=sky.accelerators.T4G(),
+        image=sky.Image(
+            pip=["jax[cuda12]==0.8.2", "scikit-learn"],
+            skyward_source="local",
+        ),
+    ) as pool:
+        results = train_distributed() @ pool
+
+        print("\nResults:")
+        for r in results:
+            print(
+                f"  Node {r['node']}: "
+                f"{r['train_samples']} samples, "
+                f"loss={r['final_loss']:.4f}, "
+                f"test_acc={r['test_accuracy']:.2%}"
+            )
