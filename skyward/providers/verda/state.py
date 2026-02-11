@@ -5,7 +5,7 @@ Manages runtime state for Verda clusters including instance information.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from skyward.providers.base import BaseClusterState
 
@@ -38,6 +38,9 @@ class VerdaClusterState(BaseClusterState):
 
     # Username for SSH
     username: str = "root"
+
+    # All launched instance IDs (tracked from creation, not just bootstrap)
+    launched_ids: set[str] = field(default_factory=set)
 
     # Pricing info (from instance type resolution)
     hourly_rate: float = 0.0  # Actual rate (spot or on-demand)

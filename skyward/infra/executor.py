@@ -156,7 +156,7 @@ async def _wait_for_ready(session: aiohttp.ClientSession, host: str, port: int) 
         except (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError):
             pass
         if attempt < 29:
-            logger.debug(f"Casty HTTP not ready (attempt {attempt + 1}/30)")
+            logger.debug("Casty HTTP not ready (attempt {a}/30)", a=attempt + 1)
             await asyncio.sleep(2.0)
     raise RuntimeError(f"Casty HTTP API not ready after 60s at {host}:{port}")
 
@@ -188,7 +188,10 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
                         timeout=aiohttp.ClientTimeout(total=cfg.job_timeout, connect=30.0),
                     )
                     await _wait_for_ready(session, cfg.head_ip, cfg.http_port)
-                    logger.info(f"Connected to Casty at {cfg.head_ip}:{cfg.http_port}")
+                    logger.info(
+                        "Connected to Casty at {host}:{port}",
+                        host=cfg.head_ip, port=cfg.http_port,
+                    )
                     reply_to.tell(Connected())
                     max_concurrent = cfg.num_nodes * (cfg.workers_per_node + 1)
                     return ready(
@@ -229,7 +232,7 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
                                     tb = ""
                             return ExecutionFailed(error=error, traceback=tb)
             except Exception as e:
-                logger.error(f"execute({fn_name}) failed: {e}")
+                logger.error("execute({fn_name}) failed: {err}", fn_name=fn_name, err=e)
                 return ExecutionFailed(error=str(e))
 
     async def _do_broadcast(
@@ -265,7 +268,7 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
                                     tb = ""
                             return ExecutionFailed(error=error, traceback=tb)
             except Exception as e:
-                logger.error(f"broadcast({fn_name}) failed: {e}")
+                logger.error("broadcast({fn_name}) failed: {err}", fn_name=fn_name, err=e)
                 return ExecutionFailed(error=str(e))
 
     async def _do_setup(
@@ -349,7 +352,7 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
                     return Behaviors.same()
 
                 case _SetupFailed(error=error, reply_to=reply_to):
-                    logger.error(f"Cluster setup failed: {error}")
+                    logger.error("Cluster setup failed: {err}", err=error)
                     reply_to.tell(ClusterReady())
                     return Behaviors.same()
 

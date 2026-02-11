@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from loguru import logger
+
 from skyward.infra.http import BearerAuth, HttpClient, HttpError
 from skyward.infra.retry import on_status_code, retry
 
@@ -99,6 +101,7 @@ class RunPodClient:
 
     def __init__(self, api_key: str) -> None:
         self._api_key = api_key
+        self._log = logger.bind(provider="runpod", component="client")
         self._http = HttpClient(
             RUNPOD_API_BASE,
             BearerAuth(api_key),
@@ -131,6 +134,7 @@ class RunPodClient:
     @retry(on=on_status_code(429, 503), max_attempts=3, base_delay=1.0)
     async def create_pod(self, params: PodCreateParams) -> PodResponse:
         """Create a new pod."""
+        self._log.debug("Creating pod")
         result: PodResponse | None = await self._request("POST", "/pods", json=dict(params))
         if not result:
             raise RunPodError("Failed to create pod: empty response")
@@ -159,6 +163,7 @@ class RunPodClient:
 
     async def terminate_pod(self, pod_id: str) -> None:
         """Terminate a pod (destroy)."""
+        self._log.debug("Terminating pod {pod_id}", pod_id=pod_id)
         await self._request("DELETE", f"/pods/{pod_id}")
 
     # =========================================================================
@@ -238,6 +243,7 @@ class RunPodClient:
         Returns:
             ClusterResponse with cluster id, name, and pods list.
         """
+        self._log.debug("Creating instant cluster")
         data = await self._graphql(CREATE_CLUSTER_MUTATION, {"input": dict(params)})
         cluster: ClusterResponse = data["createCluster"]
         return cluster

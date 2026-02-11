@@ -125,6 +125,7 @@ class VastAIClient:
         self._api_key = api_key
         self.config = config or VastAI()
         self._http = HttpClient(VAST_API_BASE, BearerAuth(api_key), timeout=60)
+        self._log = logger.bind(provider="vastai", component="client")
 
     async def __aenter__(self) -> VastAIClient:
         return self
@@ -175,7 +176,7 @@ class VastAIClient:
             )
         except VastAIError as e:
             if "duplicate" in str(e).lower() or "already exists" in str(e).lower():
-                logger.debug("SSH key already exists on VastAI")
+                self._log.debug("SSH key already exists")
                 return None
             raise
 
@@ -199,7 +200,10 @@ class VastAIClient:
                 error = result.get("msg") or result.get("error") or "unknown"
                 # Ignore "already associated" - key was auto-attached on instance creation
                 if "already associated" in error.lower():
-                    logger.debug(f"VastAI: SSH key already associated with instance {instance_id}")
+                    self._log.debug(
+                        "SSH key already associated with instance {iid}",
+                        iid=instance_id,
+                    )
                     return
                 raise VastAIError(f"Failed to attach SSH key to instance {instance_id}: {error}")
 
@@ -296,7 +300,7 @@ class VastAIClient:
         )
         query["limit"] = limit
 
-        logger.debug(f"VastAI: Search query: {query}")
+        self._log.debug("Search query: {query}", query=query)
         result: BundlesResponse | None = await self._request("POST", "/api/v0/bundles/", json=query)
         offers = result.get("offers", []) if result else []
 

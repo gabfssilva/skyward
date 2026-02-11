@@ -13,6 +13,7 @@ import uuid
 from typing import Any
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
+from loguru import logger
 
 from skyward.api.spec import PoolSpec
 
@@ -39,6 +40,7 @@ from .messages import (
     ProviderMsg,
     ProviderName,
     Provision,
+    ShutdownCompleted,
     ShutdownRequested,
     StartPool,
     StopPool,
@@ -53,6 +55,7 @@ from .node import node_actor
 
 def pool_actor() -> Behavior[PoolMsg]:
     """A pool tells this story: idle -> requesting -> provisioning -> ready -> shutting_down."""
+    log = logger.bind(actor="pool")
 
     def idle() -> Behavior[PoolMsg]:
         async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
@@ -65,6 +68,10 @@ def pool_actor() -> Behavior[PoolMsg]:
                 ):
                     request_id = f"pool-{uuid.uuid4().hex[:8]}"
                     provider = spec.provider or "aws"
+                    log.debug(
+                        "StartPool received, nodes={nodes} provider={provider} request_id={rid}",
+                        nodes=spec.nodes, provider=provider, rid=request_id,
+                    )
 
                     prov_ref.tell(
                         ClusterRequested(
@@ -102,6 +109,10 @@ def pool_actor() -> Behavior[PoolMsg]:
                     cluster_id=cluster_id,
                     provider=prov,
                 ) if rid == request_id:
+                    log.debug(
+                        "Cluster provisioned, cluster_id={cid} spawning {n} nodes",
+                        cid=cluster_id, n=spec.nodes,
+                    )
                     node_refs: dict[NodeId, ActorRef[NodeMsg]] = {}
                     for i in range(spec.nodes):
                         node_behavior = node_actor(
@@ -173,8 +184,13 @@ def pool_actor() -> Behavior[PoolMsg]:
 
                 case NodeBecameReady(node_id=nid, instance=info):
                     new_ready = {**ready_instances, nid: info}
+                    log.debug(
+                        "Node became ready, node_id={nid} progress={ready}/{total}",
+                        nid=nid, ready=len(new_ready), total=spec.nodes,
+                    )
 
                     if len(new_ready) == spec.nodes:
+                        log.debug("All nodes ready, cluster_id={cid}", cid=cluster_id)
                         instances = tuple(
                             new_ready[i] for i in sorted(new_ready)
                         )
@@ -210,6 +226,20 @@ def pool_actor() -> Behavior[PoolMsg]:
 
         return Behaviors.receive(receive)
 
+    def shutting_down(
+        stop_reply: ActorRef[PoolStopped],
+    ) -> Behavior[PoolMsg]:
+        async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
+            match msg:
+                case ShutdownCompleted():
+                    log.debug("Shutdown completed, stopping pool actor")
+                    stop_reply.tell(PoolStopped())
+                    return Behaviors.stopped()
+                case _:
+                    return Behaviors.same()
+
+        return Behaviors.receive(receive)
+
     def ready(
         cluster_id: ClusterId,
         spec: PoolSpec,
@@ -229,6 +259,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                     node=target_node,
                     reply_to=reply_to,
                 ):
+                    log.debug("ExecuteTask received, target_node={target}", target=target_node)
                     sorted_nodes = sorted(instances.keys())
                     match target_node:
                         case int(n) if n in instances:
@@ -269,6 +300,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                     kwargs=kwargs,
                     reply_to=reply_to,
                 ):
+                    log.debug("BroadcastTask received, broadcasting to {n} nodes", n=len(instances))
                     results: list[Any] = []
                     for _nid in sorted(instances.keys()):
                         try:
@@ -280,13 +312,20 @@ def pool_actor() -> Behavior[PoolMsg]:
                     return Behaviors.same()
 
                 case StopPool(reply_to=reply_to):
+                    log.debug("StopPool received, shutting down cluster={cid}", cid=cluster_id)
                     provider_ref.tell(
-                        ShutdownRequested(cluster_id=cluster_id)
+                        ShutdownRequested(
+                            cluster_id=cluster_id,
+                            reply_to=ctx.self,
+                        )
                     )
-                    reply_to.tell(PoolStopped())
-                    return Behaviors.stopped()
+                    return shutting_down(stop_reply=reply_to)
 
                 case InstancePreempted(instance=info, reason=reason):
+                    log.debug(
+                        "Instance preempted in ready state, node_id={nid} reason={reason}",
+                        nid=info.node, reason=reason,
+                    )
                     ref = node_refs.get(info.node)
                     if ref:
                         ref.tell(InstancePreempted(instance=info, reason=reason))

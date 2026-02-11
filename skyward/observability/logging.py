@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from loguru import logger
 
@@ -32,18 +32,29 @@ from loguru import logger
 
 type LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 
-# Detailed format for console (with colors)
+_CONTEXT_KEYS = (
+    "actor", "component", "integration", "provider",
+    "cluster_id", "node_id", "instance_id", "collection", "name",
+)
+
+
+def _format_context(record: Any) -> str:
+    extra = record.get("extra", {})
+    parts = [f"{k}={extra[k]}" for k in _CONTEXT_KEYS if k in extra]
+    return f" [{' '.join(parts)}]" if parts else ""
+
+
 CONSOLE_FORMAT = (
     "<green>{time:HH:mm:ss.SSS}</green> | "
     "<level>{level: <8}</level> | "
-    "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
+    "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan>"
+    "<dim>{extra[_ctx]}</dim> - "
     "<level>{message}</level>"
 )
 
-# Format for file output (no colors)
 FILE_FORMAT = (
     "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | "
-    "{name}:{function}:{line} - {message}"
+    "{name}:{function}:{line}{extra[_ctx]} - {message}"
 )
 
 
@@ -86,6 +97,8 @@ def _setup_logging(config: LogConfig) -> list[int]:
     logger.enable("skyward")
     handler_ids: list[int] = []
 
+    logger.configure(patcher=lambda r: r["extra"].update(_ctx=_format_context(r)))
+
     # Console output
     if config.console:
         hid = logger.add(
@@ -103,13 +116,13 @@ def _setup_logging(config: LogConfig) -> list[int]:
         Path(config.file).parent.mkdir(parents=True, exist_ok=True)
         hid = logger.add(
             config.file,
-            level="DEBUG",  # File always captures everything
+            level="DEBUG",
             format=FILE_FORMAT,
             rotation=config.rotation,
             retention=config.retention,
             compression="zip",
-            diagnose=False,  # Don't expose credentials in tracebacks
-            enqueue=False,  # Thread-safe via loguru's internal locks
+            diagnose=False,
+            enqueue=False,
         )
         handler_ids.append(hid)
 

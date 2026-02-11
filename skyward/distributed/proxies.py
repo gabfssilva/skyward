@@ -11,7 +11,11 @@ import time
 from collections.abc import Coroutine
 from typing import Any
 
+from loguru import logger
+
 from .types import Consistency
+
+log = logger.bind(component="distributed")
 
 _system_loop: asyncio.AbstractEventLoop | None = None
 
@@ -41,7 +45,11 @@ def _run_sync[T](coro: Coroutine[Any, Any, T]) -> T:
             raise
 
     future = asyncio.run_coroutine_threadsafe(coro, loop)
-    return future.result(timeout=30)
+    try:
+        return future.result(timeout=30)
+    except TimeoutError:
+        log.debug("Cross-thread coroutine submission timed out after 30s")
+        raise
 
 
 class CounterProxy:

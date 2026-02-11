@@ -40,6 +40,8 @@ from typing import Literal
 
 from loguru import logger
 
+log = logger.bind(component="throttle")
+
 
 class ThrottleError(Exception):
     """Raised when throttle limit is reached and on_limit='fail'."""
@@ -98,7 +100,7 @@ class Limiter:
                 if wait_time > 0:
                     if not block:
                         return False
-                    logger.debug(f"Throttle: waiting {wait_time:.2f}s for interval")
+                    log.debug("Waiting {wait:.2f}s for interval", wait=wait_time)
                     await asyncio.sleep(wait_time)
 
                 self._last_call = time.monotonic()
@@ -106,6 +108,7 @@ class Limiter:
         # Handle concurrency (controls max parallel executions)
         if self._semaphore is not None:
             if not block and self._semaphore.locked():
+                log.debug("Semaphore full, failing immediately")
                 return False
             await self._semaphore.acquire()
 

@@ -7,6 +7,8 @@ import json
 import os
 from collections.abc import Callable
 
+from loguru import logger
+
 
 def tensorflow[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Configure TensorFlow distributed training.
@@ -27,9 +29,11 @@ def tensorflow[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             from skyward.api.runtime import instance_info
 
+            log = logger.bind(integration="tensorflow")
             pool = instance_info()
 
             if not pool:
+                log.debug("Skipping distributed init (no pool)")
                 return fn(*args, **kwargs)
 
             # Build worker list - each node is one worker
@@ -46,6 +50,10 @@ def tensorflow[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
             }
 
             os.environ["TF_CONFIG"] = json.dumps(tf_config)
+            log.debug(
+                "TF_CONFIG set: {workers} workers, task_index={idx}",
+                workers=len(worker_addrs), idx=task_index,
+            )
 
             return fn(*args, **kwargs)
 

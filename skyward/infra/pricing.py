@@ -13,7 +13,11 @@ from functools import lru_cache
 from typing import Any, Literal
 from urllib.request import urlopen
 
+from loguru import logger
+
 from .cache import cached
+
+log = logger.bind(component="pricing")
 
 Provider = Literal["aws", "azure", "gcp"]
 
@@ -110,6 +114,7 @@ def _parse_savings_pct(value: str | int | None) -> int | None:
 
 
 def _fetch_json(url: str) -> list[dict[str, Any]]:
+    log.debug("Fetching pricing data from {url}", url=url)
     with urlopen(url, timeout=30) as resp:  # noqa: S310
         return json_mod.loads(resp.read())
 
@@ -161,6 +166,7 @@ _pricing_indexes: dict[Provider, dict[str, dict[str, Any]]] = {}
 def _get_pricing_index(provider: Provider) -> dict[str, dict[str, Any]]:
     """Get or build pricing index for provider."""
     if provider not in _pricing_indexes:
+        log.debug("Building pricing index for provider={provider}", provider=provider)
         fetcher = _FETCHERS.get(provider)
         if fetcher is None:
             raise ValueError(f"Unsupported provider: {provider}")
@@ -189,6 +195,10 @@ def get_instance_pricing(
 
     inst = index.get(_get_instance_type_key(instance_type))
     if inst is None:
+        log.debug(
+            "No pricing found for {type} on {provider}",
+            type=instance_type, provider=provider,
+        )
         return None
 
     linux = _extract_linux_pricing(inst, region)

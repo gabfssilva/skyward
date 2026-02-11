@@ -6,6 +6,8 @@ import functools
 from collections.abc import Callable
 from typing import Literal
 
+from loguru import logger
+
 Backend = Literal["jax", "torch", "tensorflow"] | None
 
 
@@ -37,38 +39,37 @@ def keras[**P, R](
         # First wrap with Keras distribution setup
         @functools.wraps(fn)
         def inner(*args: P.args, **kwargs: P.kwargs) -> R:
-            # Use v1's instance_info which reads from COMPUTE_POOL env var
             from skyward import instance_info
 
+            log = logger.bind(integration="keras", backend=effective)
             pool = instance_info()
 
-            print(f"[keras] pool={pool}")
+            log.debug("Pool info: {pool}", pool=pool)
 
             if pool and pool.total_nodes > 1:
                 import keras
 
                 devices = keras.distribution.list_devices()
-
-                print(f"[keras] devices={devices}")
+                log.debug("Available devices: {devices}", devices=devices)
 
                 if devices:
-                    print("[keras] Setting up DataParallel distribution")
+                    log.debug("Setting up DataParallel distribution")
                     keras.distribution.set_distribution(
                         keras.distribution.DataParallel(
                             devices=devices,
                             auto_shard_dataset=False,
                         )
                     )
-                    print("[keras] DataParallel distribution set")
+                    log.debug("DataParallel distribution set")
 
                     if effective == "jax":
                         from keras.src.backend.jax.distribution_lib import initialize_rng
                         initialize_rng()
-                        print("[keras] RNG synchronized across processes")
+                        log.debug("RNG synchronized across processes")
 
                 if seed is not None:
                     keras.utils.set_random_seed(seed)
-                    print(f"[keras] Random seed set to {seed} (post-distribution)")
+                    log.debug("Random seed set to {seed}", seed=seed)
 
             return fn(*args, **kwargs)
 

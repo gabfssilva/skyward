@@ -29,7 +29,10 @@ from skyward.actors.messages import (
     InstanceRequested,
     InstanceRunning,
     ProviderMsg,
+    ShutdownCompleted,
     ShutdownRequested,
+    _LocalInstallDone,
+    _LocalInstallFailed,
 )
 from skyward.actors.streaming import instance_monitor
 from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
@@ -92,6 +95,7 @@ async def _resolve_gpu_type(config: RunPod, spec: PoolSpec) -> str | None:
     async with RunPodClient(api_key) as client:
         gpu_types = await client.get_gpu_types()
 
+    log = logger.bind(provider="runpod")
     is_secure = config.cloud_type == CloudType.SECURE
     available = [
         g for g in gpu_types
@@ -103,7 +107,10 @@ async def _resolve_gpu_type(config: RunPod, spec: PoolSpec) -> str | None:
         display_name = gpu.get("displayName", "").upper()
         gpu_id = gpu.get("id", "").upper()
         if requested in display_name or requested in gpu_id:
-            logger.info(f"RunPod: Selected GPU type {gpu['id']} ({gpu.get('displayName')})")
+            log.info(
+                "Selected GPU type {gpu_id} ({name})",
+                gpu_id=gpu["id"], name=gpu.get("displayName"),
+            )
             return gpu["id"]
 
     available_names = [g.get("displayName", g["id"]) for g in available]
@@ -163,7 +170,7 @@ async def _create_cpu_pod(
     if config.data_center_ids != "global":
         params["dataCenterId"] = config.data_center_ids[0]
 
-    logger.info(f"RunPod: Creating CPU pod with instance {instance_id}")
+    logger.bind(provider="runpod").info("Creating CPU pod with instance {iid}", iid=instance_id)
     return await client.create_cpu_pod(params)
 
 
@@ -172,7 +179,10 @@ async def _create_instant_cluster(
     state: RunPodClusterState,
     event: ClusterRequested,
 ) -> None:
-    logger.info(f"RunPod: Creating Instant Cluster with {event.spec.nodes} nodes")
+    logger.bind(provider="runpod").info(
+        "Creating Instant Cluster with {n} nodes",
+        n=event.spec.nodes,
+    )
 
     api_key = get_api_key(config.api_key)
     cluster_type = "TRAINING"
@@ -200,11 +210,12 @@ async def _create_instant_cluster(
         async with RunPodClient(api_key) as client:
             cluster = await client.create_cluster(params)
     except RunPodError as e:
-        logger.error(f"RunPod: Failed to create Instant Cluster: {e}")
+        logger.bind(provider="runpod").error("Failed to create Instant Cluster: {err}", err=e)
         raise
 
     state.runpod_cluster_id = cluster["id"]
-    logger.info(f"RunPod: Instant Cluster created with id {state.runpod_cluster_id}")
+    _log = logger.bind(provider="runpod")
+    _log.info("Instant Cluster created with id {cid}", cid=state.runpod_cluster_id)
 
     for pod in cluster["pods"]:
         pod_id = pod["id"]
@@ -214,9 +225,12 @@ async def _create_instant_cluster(
         cluster_ip = pod.get("clusterIp")
         if cluster_ip:
             state.cluster_ips[node_id] = cluster_ip
-            logger.debug(f"RunPod: Node {node_id} -> pod {pod_id}, cluster IP {cluster_ip}")
+            _log.debug(
+                "Node {nid} -> pod {pid}, cluster IP {cip}",
+                nid=node_id, pid=pod_id, cip=cluster_ip,
+            )
         else:
-            logger.debug(f"RunPod: Node {node_id} -> pod {pod_id} (no cluster IP yet)")
+            _log.debug("Node {nid} -> pod {pid} (no cluster IP yet)", nid=node_id, pid=pod_id)
 
 
 async def _install_local_skyward(
@@ -250,7 +264,10 @@ async def _wait_for_running(
     cluster: RunPodClusterState,
     event: InstanceLaunched,
 ) -> InstanceRunning:
-    logger.info(f"RunPod: Waiting for pod {event.instance_id} to be running...")
+    logger.bind(provider="runpod").info(
+        "Waiting for pod {pid} to be running",
+        pid=event.instance_id,
+    )
 
     api_key = get_api_key(config.api_key)
 
@@ -282,7 +299,10 @@ async def _wait_for_running(
     if cluster.is_instant_cluster:
         private_ip = cluster.cluster_ips.get(event.node_id)
         if private_ip:
-            logger.debug(f"RunPod: Using cluster IP {private_ip} for node {event.node_id}")
+            logger.bind(provider="runpod").debug(
+                "Using cluster IP {ip} for node {nid}",
+                ip=private_ip, nid=event.node_id,
+            )
 
     cluster.hourly_rate = adjusted_rate
     cluster.on_demand_rate = hourly_rate
@@ -330,7 +350,10 @@ async def _run_bootstrap(
         ),
     )
 
-    logger.info(f"RunPod: Connecting to {info.ip}:{info.ssh_port} to run bootstrap...")
+    logger.bind(provider="runpod").info(
+        "Connecting to {ip}:{port} to run bootstrap",
+        ip=info.ip, port=info.ssh_port,
+    )
     from skyward.providers.bootstrap import run_bootstrap_via_ssh, wait_for_ssh
 
     transport = await wait_for_ssh(
@@ -352,7 +375,7 @@ async def _run_bootstrap(
     finally:
         await transport.close()
 
-    logger.debug(f"RunPod: Bootstrap script launched on {info.id}")
+    logger.bind(provider="runpod").debug("Bootstrap script launched on {iid}", iid=info.id)
     return info.id
 
 
@@ -365,6 +388,7 @@ def runpod_provider_actor(
     config: RunPod,
     pool_ref: ActorRef,
 ) -> Behavior[ProviderMsg]:
+    log = logger.bind(provider="runpod")
 
     def idle() -> Behavior[ProviderMsg]:
         async def receive(
@@ -395,7 +419,7 @@ def runpod_provider_actor(
                     api_key = get_api_key(config.api_key)
                     async with RunPodClient(api_key) as client:
                         await client.ensure_ssh_key(ssh_public_key)
-                        logger.debug("RunPod: SSH key registered on account")
+                        log.debug("SSH key registered on account")
 
                     gpu_type_id = await _resolve_gpu_type(config, event.spec)
                     state.gpu_type_id = gpu_type_id
@@ -429,9 +453,9 @@ def runpod_provider_actor(
                     if state.is_instant_cluster:
                         pod_id = state.pod_ids.get(event.node_id)
                         if pod_id:
-                            logger.info(
-                                f"RunPod: Instant Cluster pod "
-                                f"{pod_id} for node {event.node_id}"
+                            log.info(
+                                "Instant Cluster pod {pid} for node {nid}",
+                                pid=pod_id, nid=event.node_id,
                             )
                             state.pending_nodes.add(event.node_id)
                             launched = InstanceLaunched(
@@ -451,7 +475,7 @@ def runpod_provider_actor(
                             )
                         return Behaviors.same()
 
-                    logger.info(f"RunPod: Launching pod for node {event.node_id}")
+                    log.info("Launching pod for node {nid}", nid=event.node_id)
                     api_key = get_api_key(config.api_key)
 
                     try:
@@ -461,11 +485,11 @@ def runpod_provider_actor(
                             else:
                                 pod = await _create_cpu_pod(client, config, state)
                     except RunPodError as e:
-                        logger.error(f"RunPod: Failed to create pod: {e}")
+                        log.error("Failed to create pod: {err}", err=e)
                         return Behaviors.same()
 
                     pod_id = pod["id"]
-                    logger.debug(f"RunPod: Pod created with id {pod_id}")
+                    log.debug("Pod created with id {pid}", pid=pod_id)
                     state.pod_ids[event.node_id] = pod_id
                     state.pending_nodes.add(event.node_id)
                     machine = pod.get("machine") or {}
@@ -516,44 +540,64 @@ def runpod_provider_actor(
                     return Behaviors.same()
 
                 case _PodRunningFailed(instance_id=iid, error=err):
-                    logger.error(f"RunPod: Pod {iid} did not become ready: {err}")
+                    log.error("Pod {pid} did not become ready: {err}", pid=iid, err=err)
                     return Behaviors.same()
 
                 case _BootstrapScriptDone(instance_id=iid):
-                    logger.debug(f"RunPod: Bootstrap script dispatched on {iid}")
+                    log.debug("Bootstrap script dispatched on {iid}", iid=iid)
                     return Behaviors.same()
 
                 case _BootstrapScriptFailed(instance_id=iid, error=err):
-                    logger.error(f"RunPod: Bootstrap script failed on {iid}: {err}")
+                    log.error("Bootstrap script failed on {iid}: {err}", iid=iid, err=err)
                     return Behaviors.same()
 
                 case BootstrapDone(
                     instance=info, success=True,
                 ) if info.provider == "runpod":
-                    logger.info(
-                        f"RunPod: Bootstrap completed on {info.id},"
-                        f" skyward_source="
-                        f"{state.spec.image.skyward_source}"
+                    log.info(
+                        "Bootstrap completed on {iid}, skyward_source={src}",
+                        iid=info.id, src=state.spec.image.skyward_source,
                     )
                     if state.spec.image and state.spec.image.skyward_source == "local":
-                        logger.info(f"RunPod: Installing local skyward wheel on {info.id}...")
-                        await _install_local_skyward(info, state)
-                        logger.info(f"RunPod: Local skyward installed on {info.id}")
+                        log.info("Installing local skyward wheel on {iid}", iid=info.id)
+                        ctx.pipe_to_self(
+                            coro=_install_local_skyward(info, state),
+                            mapper=lambda _, inst=info: _LocalInstallDone(instance=inst),
+                            on_failure=lambda e, inst=info: _LocalInstallFailed(
+                                instance=inst, error=str(e),
+                            ),
+                        )
+                        return Behaviors.same()
                     state.add_instance(info)
                     pool_ref.tell(InstanceBootstrapped(instance=info))
+                    return Behaviors.same()
+
+                case _LocalInstallDone(instance=info):
+                    log.info("Local skyward installed on {iid}", iid=info.id)
+                    state.add_instance(info)
+                    pool_ref.tell(InstanceBootstrapped(instance=info))
+                    return Behaviors.same()
+
+                case _LocalInstallFailed(instance=info, error=error):
+                    log.error(
+                        "Local skyward install failed on {iid}: {err}",
+                        iid=info.id, err=error,
+                    )
                     return Behaviors.same()
 
                 case BootstrapDone(
                     instance=info, success=False, error=error,
                 ) if info.provider == "runpod":
-                    logger.error(f"RunPod: Bootstrap failed on {info.id}: {error}")
+                    log.error("Bootstrap failed on {iid}: {err}", iid=info.id, err=error)
                     return Behaviors.same()
 
-                case ShutdownRequested() as event:
-                    if event.cluster_id != state.cluster_id:
+                case ShutdownRequested(
+                    cluster_id=cid, reply_to=reply_to,
+                ):
+                    if cid != state.cluster_id:
                         return Behaviors.same()
 
-                    logger.info(f"RunPod: Shutting down cluster {state.cluster_id}")
+                    log.info("Shutting down cluster {cid}", cid=state.cluster_id)
                     api_key = get_api_key(config.api_key)
 
                     async with RunPodClient(api_key) as client:
@@ -565,7 +609,8 @@ def runpod_provider_actor(
                                 with suppress(Exception):
                                     await client.terminate_pod(pod_id)
 
-                    pass
+                    if reply_to is not None:
+                        reply_to.tell(ShutdownCompleted(cluster_id=state.cluster_id))
                     return Behaviors.stopped()
 
                 case _:

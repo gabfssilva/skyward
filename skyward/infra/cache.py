@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import cloudpickle
+from loguru import logger
 
 CACHE_DIR = Path.home() / ".skyward" / "cache"
 CACHE_VERSION = 1
@@ -23,6 +24,7 @@ class DiskCache:
         self.namespace = namespace
         self.cache_dir = CACHE_DIR / namespace
         self._index: dict[str, datetime] | None = None
+        self._log = logger.bind(component="cache", namespace=namespace)
 
     @property
     def index_file(self) -> Path:
@@ -48,6 +50,7 @@ class DiskCache:
                 else:
                     self._index = {}
             except Exception:
+                self._log.debug("Index corrupted, resetting")
                 self._index = {}
         else:
             self._index = {}
@@ -74,6 +77,7 @@ class DiskCache:
     def get(self, key: str, ttl: timedelta | None = None) -> tuple[bool, Any]:
         """Get value from cache."""
         if key not in self.index:
+            self._log.debug("Cache miss key={key}", key=key)
             return False, None
 
         if ttl is not None:
@@ -90,6 +94,7 @@ class DiskCache:
 
         try:
             value = cloudpickle.loads(path.read_bytes())
+            self._log.debug("Cache hit key={key}", key=key)
             return True, value
         except Exception:
             self._delete(key)
@@ -97,6 +102,7 @@ class DiskCache:
 
     def set(self, key: str, value: Any) -> None:
         """Store value in cache."""
+        self._log.debug("Cache set key={key}", key=key)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._key_path(key).write_bytes(cloudpickle.dumps(value))
         self.index[key] = datetime.now(UTC)
@@ -112,6 +118,7 @@ class DiskCache:
 
     def clear(self) -> None:
         """Clear all entries in this namespace."""
+        self._log.debug("Clearing cache")
         self._index = {}
         if self.cache_dir.exists():
             import shutil

@@ -24,6 +24,7 @@ from aiohttp import web
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 from casty.config import CastyConfig, FailureDetectorConfig, HeartbeatConfig
 from casty.sharding import ClusteredActorSystem
+from loguru import logger
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +65,7 @@ type WorkerMsg = ExecuteTask | _TaskDone | _TaskErrored
 
 
 def worker_behavior(node_id: int, concurrency: int = 1) -> Behavior[WorkerMsg]:
+    log = logger.bind(component="worker", node_id=node_id)
     sem = asyncio.Semaphore(concurrency)
 
     async def _execute(fn_bytes: bytes) -> TaskResult:
@@ -96,6 +98,7 @@ def worker_behavior(node_id: int, concurrency: int = 1) -> Behavior[WorkerMsg]:
     async def receive(ctx: ActorContext[WorkerMsg], msg: WorkerMsg) -> Behavior[WorkerMsg]:
         match msg:
             case ExecuteTask(fn_bytes=fn_bytes, reply_to=reply_to):
+                log.debug("ExecuteTask received, payload={size} bytes", size=len(fn_bytes))
                 ctx.pipe_to_self(
                     coro=_execute(fn_bytes),
                     mapper=lambda result: _TaskDone(result=result, reply_to=reply_to),
@@ -103,9 +106,11 @@ def worker_behavior(node_id: int, concurrency: int = 1) -> Behavior[WorkerMsg]:
                 )
                 return Behaviors.same()
             case _TaskDone(result=result, reply_to=reply_to):
+                log.debug("Task completed successfully")
                 reply_to.tell(result)
                 return Behaviors.same()
             case _TaskErrored(error=error, reply_to=reply_to):
+                log.debug("Task errored: {error}", error=error)
                 reply_to.tell(TaskFailed(
                     error=str(error),
                     traceback=traceback.format_exc(),
@@ -124,11 +129,14 @@ def create_app(
 ) -> web.Application:
     from skyward.infra.serialization import deserialize, serialize
 
+    log = logger.bind(component="worker")
+
     async def submit_job(request: web.Request) -> web.Response:
         payload_bytes = await request.read()
         payload = deserialize(payload_bytes)
         target_node = payload.get("node_id")
         fn_name = getattr(payload.get("fn"), "__name__", "?")
+        log.debug("Submit job: fn={fn} node_id={nid}", fn=fn_name, nid=target_node)
         print(f"[submit] {fn_name} node_id={target_node}", flush=True)
 
         fn_payload = {
@@ -181,6 +189,7 @@ def create_app(
         }
         fn_bytes = serialize(fn_payload)
 
+        log.debug("Broadcast job: fn={fn} payload={size} bytes", fn=fn_name, size=len(fn_bytes))
         print(f"[broadcast] {fn_name} payload={len(fn_bytes)} bytes, asking...", flush=True)
 
         responses: tuple[TaskResult, ...] = await system.ask(
@@ -245,7 +254,9 @@ async def main(
         suppress_dead_letters_on_shutdown=True
     )
 
+    log = logger.bind(component="worker", node_id=node_id)
     quorum = num_nodes if num_nodes > 1 else None
+    log.debug("Starting casty worker, quorum={quorum} port={port}", quorum=quorum, port=port)
     print(f"Casty worker {node_id} starting (quorum={quorum})...", flush=True)
 
     os.environ["SKYWARD_NODE_ID"] = str(node_id)
@@ -287,6 +298,7 @@ async def main(
         )
 
         if node_id == 0:
+            log.debug("Head node, starting HTTP server on port {port}", port=http_port)
             app = create_app(system, local_ref, broadcast_ref, num_nodes)
             runner = web.AppRunner(app)
             await runner.setup()

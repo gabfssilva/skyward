@@ -35,6 +35,7 @@ from skyward.actors.messages import (
     InstanceRequested,
     InstanceRunning,
     ProviderMsg,
+    ShutdownCompleted,
     ShutdownRequested,
     _ProvisioningDone,
 )
@@ -58,6 +59,7 @@ async def _search_offers(
     state: VastAIClusterState,
 ) -> list[OfferResponse]:
     """Search for GPU offers matching cluster spec."""
+    log = logger.bind(provider="vastai")
     spec = state.spec
     use_interruptible = spec.allocation in ("spot", "spot-if-available")
     gpu_name = (
@@ -74,13 +76,10 @@ async def _search_offers(
         with_cluster_id=spec.nodes > 1,
     )
 
-    logger.debug(
-        f"VastAI: Got {len(offers)} offers "
-        f"from API for gpu_name={gpu_name}"
-    )
+    log.debug("Got {n} offers from API for gpu_name={gpu}", n=len(offers), gpu=gpu_name)
     if offers:
         unique_gpus = {o["gpu_name"] for o in offers}
-        logger.debug(f"VastAI: Available GPU types: {unique_gpus}")
+        log.debug("Available GPU types: {gpus}", gpus=unique_gpus)
 
     if gpu_name:
         req_norm = gpu_name.upper()
@@ -88,20 +87,20 @@ async def _search_offers(
             o for o in offers
             if req_norm in o["gpu_name"].replace(" ", "_").upper()
         ]
-        logger.debug(f"VastAI: Filtered to {len(filtered)} offers matching '{req_norm}'")
+        log.debug("Filtered to {n} offers matching '{req}'", n=len(filtered), req=req_norm)
         offers = filtered
 
     if state.overlay_cluster_id is not None:
         before_cluster_filter = len(offers)
         offers = [o for o in offers if o.get("cluster_id") == state.overlay_cluster_id]
-        logger.debug(
-            f"VastAI: Cluster filter: {len(offers)}/{before_cluster_filter} offers "
-            f"in overlay cluster {state.overlay_cluster_id}"
+        log.debug(
+            "Cluster filter: {n}/{total} offers in overlay cluster {cid}",
+            n=len(offers), total=before_cluster_filter, cid=state.overlay_cluster_id,
         )
         if not offers:
-            logger.error(
-                f"VastAI: No offers in overlay cluster {state.overlay_cluster_id}. "
-                f"Cluster may have become unavailable."
+            log.error(
+                "No offers in overlay cluster {cid}, cluster may have become unavailable",
+                cid=state.overlay_cluster_id,
             )
 
     price_key = "min_bid" if use_interruptible else "dph_total"
@@ -119,14 +118,14 @@ async def _search_offers(
         offers = [o for o in offers if offer_price(o) <= max_per_instance]
 
         if offers:
-            logger.debug(
-                f"VastAI: Budget filter: {len(offers)}/{before_filter} offers "
-                f"within ${max_per_instance:.2f}/hr"
+            log.debug(
+                "Budget filter: {n}/{total} offers within ${budget:.2f}/hr",
+                n=len(offers), total=before_filter, budget=max_per_instance,
             )
         else:
-            logger.warning(
-                f"VastAI: No offers within budget ${max_per_instance:.2f}/hr "
-                f"(filtered {before_filter} offers)"
+            log.warning(
+                "No offers within budget ${budget:.2f}/hr (filtered {total} offers)",
+                budget=max_per_instance, total=before_filter,
             )
 
     return offers
@@ -157,28 +156,29 @@ async def _setup_overlay_network(
         with_cluster_id=True,
     )
 
+    log = logger.bind(provider="vastai")
     valid_clusters = select_all_valid_clusters(offers, spec.nodes, use_interruptible)
     if not valid_clusters:
-        logger.warning(f"VastAI: No clusters found with {spec.nodes} nodes")
+        log.warning("No clusters found with {n} nodes", n=spec.nodes)
         return None, None
 
     for idx, (physical_cluster_id, _) in enumerate(valid_clusters):
         suffix = "".join(random.choices(string.ascii_lowercase, k=8))
         overlay_name = f"skyward-{suffix}"
 
-        logger.info(
-            f"VastAI: Trying cluster {physical_cluster_id} "
-            f"({idx + 1}/{len(valid_clusters)})"
+        log.info(
+            "Trying cluster {cid} ({i}/{total})",
+            cid=physical_cluster_id, i=idx + 1, total=len(valid_clusters),
         )
 
         try:
             await client.create_overlay(physical_cluster_id, overlay_name)
-            logger.info(f"VastAI: Overlay '{overlay_name}' created")
+            log.info("Overlay '{name}' created", name=overlay_name)
             return overlay_name, physical_cluster_id
         except VastAIError as e:
-            logger.warning(f"VastAI: Overlay failed on cluster {physical_cluster_id}: {e}")
+            log.warning("Overlay failed on cluster {cid}: {err}", cid=physical_cluster_id, err=e)
 
-    logger.warning("VastAI: Failed to create overlay on any cluster")
+    log.warning("Failed to create overlay on any cluster")
     return None, None
 
 
@@ -205,7 +205,7 @@ async def _detect_container_ip(
         ip = output.strip()
 
         if ip:
-            logger.info(f"VastAI: Detected container IP {ip}")
+            logger.bind(provider="vastai").info("Detected container IP {ip}", ip=ip)
             return ip
 
         raise RuntimeError(f"Could not detect container IP. Output: {output!r}")
@@ -245,13 +245,16 @@ echo "$IFACE $IP"
 
             if len(parts) >= 2:
                 iface, ip = parts[0], parts[1]
-                logger.info(f"VastAI: Detected overlay IP {ip} on {iface}")
+                logger.bind(provider="vastai").info(
+                    "Detected overlay IP {ip} on {iface}",
+                    ip=ip, iface=iface,
+                )
                 return ip, iface
 
             if attempt < max_retries:
-                logger.debug(
-                    f"VastAI: Overlay IP not ready (attempt {attempt}/{max_retries}), "
-                    f"retrying in 2s..."
+                logger.bind(provider="vastai").debug(
+                    "Overlay IP not ready (attempt {a}/{total}), retrying in 2s",
+                    a=attempt, total=max_retries,
                 )
                 await asyncio.sleep(2)
 
@@ -304,6 +307,7 @@ def vastai_provider_actor(
     pool_ref: ActorRef,
 ) -> Behavior[ProviderMsg]:
     """Vast.ai provider tells this story: idle -> active -> stopped."""
+    log = logger.bind(provider="vastai")
 
     def idle() -> Behavior[ProviderMsg]:
         async def receive(
@@ -315,7 +319,7 @@ def vastai_provider_actor(
                     provider="vastai",
                     spec=spec,
                 ):
-                    logger.info(f"VastAI: Provisioning cluster for {spec.nodes} nodes")
+                    log.info("Provisioning cluster for {n} nodes", n=spec.nodes)
 
                     cluster_id = f"vastai-{uuid.uuid4().hex[:8]}"
                     state = VastAIClusterState(
@@ -377,7 +381,7 @@ def vastai_provider_actor(
                     cluster_id=cluster_id,
                     node_id=node_id,
                 ):
-                    logger.info(f"VastAI: Launching instance for node {node_id}")
+                    log.info("Launching instance for node {nid}", nid=node_id)
 
                     async def launch_instance() -> _ProvisioningDone:
                         use_interruptible = state.spec.allocation in ("spot", "spot-if-available")
@@ -402,16 +406,16 @@ def vastai_provider_actor(
                             offers = await _search_offers(client, config, state)
 
                             if not offers:
-                                logger.error(f"VastAI: No offers found for node {node_id}")
+                                log.error("No offers found for node {nid}", nid=node_id)
                                 return _ProvisioningDone(state=state)
 
                             for idx, offer in enumerate(offers):
                                 offer_id = offer["id"]
 
                                 if offer_id in new_reserved:
-                                    logger.debug(
-                                        f"VastAI: Offer {offer_id} "
-                                        f"already reserved, skipping..."
+                                    log.debug(
+                                        "Offer {oid} already reserved, skipping",
+                                        oid=offer_id,
                                     )
                                     continue
 
@@ -429,10 +433,12 @@ def vastai_provider_actor(
                                     else offer.get("dph_total", 0)
                                 )
 
-                                logger.info(
-                                    f"VastAI: Trying offer {idx + 1}/{len(offers)}: "
-                                    f"machine_id={offer.get('machine_id')}, "
-                                    f"price=${price_display:.3f}/hr"
+                                log.info(
+                                    "Trying offer {i}/{total}: "
+                                    "machine_id={mid}, price=${price:.3f}/hr",
+                                    i=idx + 1, total=len(offers),
+                                    mid=offer.get("machine_id"),
+                                    price=price_display,
                                 )
 
                                 try:
@@ -456,17 +462,16 @@ def vastai_provider_actor(
                                 except VastAIError as e:
                                     new_reserved = new_reserved - frozenset({offer_id})
                                     last_error = str(e)
-                                    logger.warning(
-                                        f"VastAI: Offer "
-                                        f"{idx + 1}/{len(offers)}"
-                                        f" failed: {e}"
+                                    log.warning(
+                                        "Offer {i}/{total} failed: {err}",
+                                        i=idx + 1, total=len(offers), err=e,
                                     )
                                     continue
 
                         if instance_id is None:
-                            logger.error(
-                                f"VastAI: All offers failed for node {node_id}. "
-                                f"Last error: {last_error}"
+                            log.error(
+                                "All offers failed for node {nid}, last error: {err}",
+                                nid=node_id, err=last_error,
                             )
                             return _ProvisioningDone(state=state)
 
@@ -490,7 +495,7 @@ def vastai_provider_actor(
                     instance=instance,
                     cluster_id=_,
                 ):
-                    logger.debug(f"VastAI: Starting bootstrap for instance {instance.id}")
+                    log.debug("Starting bootstrap for instance {iid}", iid=instance.id)
 
                     async def run_bootstrap() -> None:
                         from skyward.providers.bootstrap import (
@@ -551,7 +556,7 @@ def vastai_provider_actor(
                     return Behaviors.same()
 
                 case BootstrapDone(instance=info, success=True):
-                    logger.info(f"VastAI: Bootstrap completed for instance {info.id}")
+                    log.info("Bootstrap completed for instance {iid}", iid=info.id)
 
                     if state.spec.image.skyward_source == "local":
                         async def install_and_register() -> _ProvisioningDone:
@@ -575,25 +580,27 @@ def vastai_provider_actor(
                     return Behaviors.same()
 
                 case BootstrapDone(instance=info, success=False, error=error):
-                    logger.error(f"VastAI: Bootstrap failed for instance {info.id}: {error}")
+                    log.error("Bootstrap failed for instance {iid}: {err}", iid=info.id, err=error)
                     return Behaviors.same()
 
-                case ShutdownRequested(cluster_id=cluster_id):
-                    logger.info(f"VastAI: Shutting down cluster {cluster_id}")
+                case ShutdownRequested(
+                    cluster_id=cid, reply_to=reply_to,
+                ):
+                    log.info("Shutting down cluster {cid}", cid=cid)
 
-                    async def shutdown() -> None:
-                        async with client:
-                            for iid in state.instances:
-                                with suppress(Exception):
-                                    await client.destroy_instance(int(iid))
+                    async with client:
+                        for iid in state.instances:
+                            with suppress(Exception):
+                                await client.destroy_instance(int(iid))
 
-                            if state.overlay_name:
-                                with suppress(Exception):
-                                    await client.delete_overlay(state.overlay_name)
+                        if state.overlay_name:
+                            with suppress(Exception):
+                                await client.delete_overlay(state.overlay_name)
 
-                        await client.close()
+                    await client.close()
 
-                    ctx.pipe_to_self(shutdown(), mapper=lambda x: x)  # type: ignore[reportArgumentType]
+                    if reply_to is not None:
+                        reply_to.tell(ShutdownCompleted(cluster_id=state.cluster_id))
                     return Behaviors.stopped()
 
                 case _:
@@ -620,6 +627,7 @@ async def _wait_and_emit_running(
     instance_id: int,
 ) -> None:
     """Wait for instance to be running, join overlay, detect IPs, emit InstanceRunning."""
+    log = logger.bind(provider="vastai", instance_id=str(instance_id))
     use_interruptible = state.spec.allocation in ("spot", "spot-if-available")
     str_id = str(instance_id)
 
@@ -641,27 +649,28 @@ async def _wait_and_emit_running(
                 description=f"VastAI instance {str_id}",
             )
         except TimeoutError:
-            logger.error(f"VastAI: Instance {str_id} did not become ready")
+            log.error("Instance did not become ready")
             return
 
         if not info:
-            logger.error(f"VastAI: Instance {str_id} not found")
+            log.error("Instance not found")
             return
 
         direct_port = get_direct_ssh_port(info)
-        logger.debug(
-            f"VastAI: Instance {instance_id} connection info: "
-            f"public_ipaddr={info.get('public_ipaddr')!r}, direct_port={direct_port}, "
-            f"ssh_host={info.get('ssh_host')!r}, ports={info.get('ports')!r}"
+        log.debug(
+            "Connection info: public_ipaddr={pub_ip}, direct_port={dport}, "
+            "ssh_host={shost}, ports={ports}",
+            pub_ip=info.get("public_ipaddr"), dport=direct_port,
+            shost=info.get("ssh_host"), ports=info.get("ports"),
         )
         if info.get("public_ipaddr") and direct_port:
             ssh_host = info["public_ipaddr"]
             ssh_port = direct_port
-            logger.info(f"VastAI: Using direct IP {ssh_host}:{ssh_port}")
+            log.info("Using direct IP {host}:{port}", host=ssh_host, port=ssh_port)
         else:
             ssh_host = info["ssh_host"]
             ssh_port = info.get("ssh_port", 22)
-            logger.warning(f"VastAI: Falling back to SSH proxy {ssh_host}:{ssh_port}")
+            log.warning("Falling back to SSH proxy {host}:{port}", host=ssh_host, port=ssh_port)
 
         private_ip = ""
         network_interface = ""
@@ -669,16 +678,16 @@ async def _wait_and_emit_running(
         if state.overlay_name:
             try:
                 await client.join_overlay(state.overlay_name, instance_id)
-                logger.info(f"VastAI: Instance {instance_id} joined overlay '{state.overlay_name}'")
+                log.info("Joined overlay '{name}'", name=state.overlay_name)
 
                 private_ip, network_interface = await _detect_overlay_ip(ssh_host, ssh_port)
             except VastAIError as e:
-                logger.error(f"VastAI: Failed to join overlay '{state.overlay_name}': {e}")
+                log.error("Failed to join overlay '{name}': {err}", name=state.overlay_name, err=e)
                 with suppress(Exception):
                     await client.destroy_instance(instance_id)
                 return
             except RuntimeError as e:
-                logger.error(f"VastAI: Failed to detect overlay IP: {e}")
+                log.error("Failed to detect overlay IP: {err}", err=e)
                 with suppress(Exception):
                     await client.destroy_instance(instance_id)
                 return
@@ -686,7 +695,7 @@ async def _wait_and_emit_running(
             try:
                 private_ip = await _detect_container_ip(ssh_host, ssh_port)
             except RuntimeError as e:
-                logger.warning(f"VastAI: Could not detect container IP: {e}")
+                log.warning("Could not detect container IP: {err}", err=e)
                 private_ip = ssh_host
 
     pricing = state.instance_pricing.get(str_id)

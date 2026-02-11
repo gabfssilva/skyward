@@ -10,6 +10,7 @@ from dataclasses import replace
 from types import MappingProxyType
 
 from casty import ActorContext, Behavior, Behaviors, SpyEvent, Terminated
+from loguru import logger
 
 from skyward.accelerators.catalog import get_gpu_vram_gb
 from skyward.api.spec import PoolSpec
@@ -38,6 +39,7 @@ type PanelInput = SpyEvent
 
 def panel_actor(spec: PoolSpec) -> Behavior[PanelInput]:
     """Panel tells this story: idle -> observing -> stopped."""
+    log = logger.bind(actor="panel")
 
     def idle() -> Behavior[PanelInput]:
         async def setup(ctx: ActorContext[PanelInput]) -> Behavior[PanelInput]:
@@ -53,6 +55,7 @@ def panel_actor(spec: PoolSpec) -> Behavior[PanelInput]:
 
                 # ─── Cluster Lifecycle ────────────────────────────────
                 case SpyEvent(event=ClusterRequested() as ev):
+                    log.debug("Phase -> Provisioning, nodes={n}", n=ev.spec.nodes)
                     instances = MappingProxyType({
                         f"node-{i}": InstanceState(f"node-{i}")
                         for i in range(ev.spec.nodes)
@@ -80,6 +83,7 @@ def panel_actor(spec: PoolSpec) -> Behavior[PanelInput]:
                     return observing(new_state, renderer)
 
                 case SpyEvent(event=ClusterProvisioned()):
+                    log.debug("Phase -> Bootstrapping")
                     elapsed = time.monotonic() - state.start_time if state.start_time else 0.0
                     new_state = replace(state,
                         phase="Bootstrapping",
@@ -89,6 +93,7 @@ def panel_actor(spec: PoolSpec) -> Behavior[PanelInput]:
                     return observing(new_state, renderer)
 
                 case SpyEvent(event=ClusterReady() as ev):
+                    log.debug("Phase -> Executing, ready_nodes={n}", n=len(ev.nodes))
                     elapsed = time.monotonic() - state.start_time if state.start_time else 0.0
                     new_state = replace(state,
                         phase="Executing",
@@ -99,6 +104,7 @@ def panel_actor(spec: PoolSpec) -> Behavior[PanelInput]:
                     return observing(new_state, renderer)
 
                 case SpyEvent(event=ShutdownRequested()):
+                    log.debug("Phase -> Shutting down")
                     now = time.monotonic()
                     new_instances = {}
                     for iid, inst in state.instances.items():
@@ -319,6 +325,7 @@ def panel_actor(spec: PoolSpec) -> Behavior[PanelInput]:
 
                 # ─── Errors ───────────────────────────────────────────
                 case SpyEvent(event=Error() as ev):
+                    log.debug("Error received, fatal={fatal}", fatal=ev.fatal)
                     new_state = replace(state,
                         has_error=True,
                         phase="Error" if ev.fatal else state.phase,

@@ -8,6 +8,10 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 
+from loguru import logger
+
+log = logger.bind(component="wait")
+
 
 async def wait_for_ready[T](
     poll_fn: Callable[[], Awaitable[T | None]],
@@ -36,6 +40,10 @@ async def wait_for_ready[T](
         TimeoutError: If timeout is exceeded.
         RuntimeError: If resource reaches terminal state.
     """
+    log.debug(
+        "Polling for {desc}, timeout={timeout}s interval={interval}s",
+        desc=description, timeout=timeout, interval=interval,
+    )
     loop = asyncio.get_event_loop()
     start = loop.time()
 
@@ -44,6 +52,8 @@ async def wait_for_ready[T](
 
         if result is not None:
             if ready_check(result):
+                elapsed = loop.time() - start
+                log.debug("{desc} ready after {elapsed:.1f}s", desc=description, elapsed=elapsed)
                 return result
 
             if terminal_check is not None and terminal_check(result):

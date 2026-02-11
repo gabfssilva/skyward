@@ -7,6 +7,8 @@ import concurrent.futures
 from collections.abc import Callable
 from typing import Any
 
+from loguru import logger
+
 from .proxies import (
     BarrierProxy,
     CounterProxy,
@@ -16,6 +18,8 @@ from .proxies import (
     SetProxy,
 )
 from .types import Consistency
+
+log = logger.bind(component="distributed")
 
 
 def _call_on_loop[T](loop: asyncio.AbstractEventLoop, fn: Callable[[], T]) -> T:
@@ -54,6 +58,7 @@ class DistributedRegistry:
         *,
         consistency: Consistency | None = None,
     ) -> DictProxy:
+        log.debug("Creating distributed dict name={name}", name=name)
         d = self._get_distributed()
         map_ = _call_on_loop(self._loop, lambda: d.map[str, Any](name))
         return DictProxy(map_, consistency=consistency or "eventual")
@@ -64,6 +69,7 @@ class DistributedRegistry:
         *,
         consistency: Consistency | None = None,
     ) -> SetProxy:
+        log.debug("Creating distributed set name={name}", name=name)
         d = self._get_distributed()
         set_ = _call_on_loop(self._loop, lambda: d.set[Any](name))
         return SetProxy(set_, consistency=consistency or "eventual")
@@ -94,4 +100,5 @@ class DistributedRegistry:
         return LockProxy(lock)
 
     def cleanup(self) -> None:
+        log.debug("Cleaning up distributed registry")
         self._distributed = None

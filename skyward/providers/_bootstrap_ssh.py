@@ -77,14 +77,15 @@ async def install_local_skyward(
     from skyward.providers.common import _build_wheel_install_script, build_wheel
 
     # Build wheel locally
-    logger.info(f"{log_prefix}Building local skyward wheel...")
+    log = logger.bind(component="bootstrap_ssh")
+    log.info("Building local skyward wheel")
     wheel_path = build_wheel()
 
     # Build install script
     install_script = _build_wheel_install_script(wheel_name=wheel_path.name)
 
     # Upload wheel to /tmp (script will move it to SKYWARD_DIR)
-    logger.info(f"{log_prefix}Uploading wheel {wheel_path.name}...")
+    log.info("Uploading wheel {name}", name=wheel_path.name)
     await transport.write_bytes(f"/tmp/{wheel_path.name}", wheel_path.read_bytes())
 
     # Upload install script
@@ -92,19 +93,19 @@ async def install_local_skyward(
 
     # Execute install script
     sudo = "sudo " if use_sudo else ""
-    logger.info(f"{log_prefix}Running wheel install script on {info.id}...")
+    log.info("Running wheel install script on {iid}", iid=info.id)
     exit_code, stdout, stderr = await transport.run(
         f"{sudo}bash /tmp/.install-wheel.sh",
         timeout=180.0,
     )
-    logger.debug(f"{log_prefix}Install script output:\n{stdout}")
+    log.debug("Install script output:\n{out}", out=stdout)
     if stderr:
-        logger.debug(f"{log_prefix}Install script stderr:\n{stderr}")
+        log.debug("Install script stderr:\n{err}", err=stderr)
 
     if exit_code != 0:
         raise RuntimeError(f"Wheel install failed (exit {exit_code}): {stderr or stdout}")
 
-    logger.info(f"{log_prefix}Local skyward wheel installed on {info.id}")
+    log.info("Local skyward wheel installed on {iid}", iid=info.id)
 
 
 async def run_bootstrap_via_ssh(
@@ -126,13 +127,14 @@ async def run_bootstrap_via_ssh(
         bootstrap_script: The complete bootstrap script content.
         log_prefix: Prefix for log messages.
     """
-    logger.info(f"{log_prefix}Uploading bootstrap script to {info.id}...")
+    log = logger.bind(component="bootstrap_ssh")
+    log.info("Uploading bootstrap script to {iid}", iid=info.id)
     await transport.write_file("/opt/skyward/bootstrap.sh", bootstrap_script)
     await transport.run("chmod +x /opt/skyward/bootstrap.sh")
 
-    logger.info(f"{log_prefix}Running bootstrap on {info.id}...")
+    log.info("Running bootstrap on {iid}", iid=info.id)
     await transport.run(
         "nohup /opt/skyward/bootstrap.sh > /opt/skyward/bootstrap.log 2>&1 &"
     )
 
-    logger.info(f"{log_prefix}Bootstrap started on {info.id}")
+    log.info("Bootstrap started on {iid}", iid=info.id)

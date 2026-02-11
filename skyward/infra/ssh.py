@@ -414,7 +414,7 @@ class SSHTransport:
 
         # Start tail -F (capital F follows rotation)
         conn = self._require_connection()
-        logger.debug(f"Starting tail -F {log_path}")
+        logger.debug("Starting tail -F {path}", path=log_path)
 
         async with conn.create_process(f"tail -F {log_path}") as proc:
             deadline = asyncio.get_event_loop().time() + timeout
@@ -501,13 +501,16 @@ class SSHTransport:
         start = asyncio.get_event_loop().time()
         check_count = 0
 
-        logger.debug(f"Waiting for log file {log_path}...")
+        logger.debug("Waiting for log file {path}", path=log_path)
 
         while asyncio.get_event_loop().time() - start < timeout:
             check_count += 1
             if await self.file_exists(log_path):
                 elapsed = asyncio.get_event_loop().time() - start
-                logger.debug(f"Log file found after {elapsed:.1f}s ({check_count} checks)")
+                logger.debug(
+                    "Log file found after {elapsed:.1f}s ({checks} checks)",
+                    elapsed=elapsed, checks=check_count,
+                )
                 return
             await asyncio.sleep(1.0)
 

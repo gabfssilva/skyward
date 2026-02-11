@@ -104,8 +104,9 @@ def retry[**P, T](
                             delay += random.uniform(0, delay * 0.1)
 
                         logger.warning(
-                            f"Retry {attempt + 1}/{max_attempts} after {type(e).__name__}: "
-                            f"{e}. Waiting {delay:.1f}s..."
+                            "Retry {attempt}/{max} after {exc_type}: {err}. Waiting {delay:.1f}s",
+                            attempt=attempt + 1, max=max_attempts,
+                            exc_type=type(e).__name__, err=e, delay=delay,
                         )
                         await asyncio.sleep(delay)
                         continue

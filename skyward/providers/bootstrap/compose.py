@@ -8,6 +8,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Final
 
+from loguru import logger
+
+log = logger.bind(component="bootstrap")
+
 SKYWARD_DIR: Final = "/opt/skyward"
 
 EMIT_SH_PATH: Final = f"{SKYWARD_DIR}/emit.sh"
@@ -316,4 +320,5 @@ def bootstrap(
             base = make_header(Default())
 
     commands = [resolve(op) for op in ops if op is not None]
+    log.debug("Composing bootstrap script with {n} operations", n=len(commands))
     return base + "\n\n".join(commands)

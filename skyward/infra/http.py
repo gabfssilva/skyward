@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol, overload, runtime_checkable
 
 import aiohttp
+from loguru import logger
 
 # ─── Errors ──────────────────────────────────────────────────────────
 
@@ -62,6 +63,7 @@ class OAuth2Auth:
         self._lock = asyncio.Lock()
 
     async def _fetch_token(self) -> str:
+        logger.bind(component="http").debug("Fetching OAuth2 token")
         timeout = aiohttp.ClientTimeout(total=30)
         async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
             self._token_url,
@@ -106,6 +108,7 @@ class HttpClient:
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._default_headers = default_headers or {}
         self._session: aiohttp.ClientSession | None = None
+        self._log = logger.bind(component="http")
 
     def _url(self, path: str) -> str:
         return f"{self._base_url}{path}"
@@ -132,12 +135,14 @@ class HttpClient:
     ) -> tuple[int, Any, dict[str, str]]:
         session = await self._ensure_session()
         headers = await self._build_headers()
+        self._log.debug("{method} {path}", method=method, path=path)
 
         try:
             async with session.request(
                 method, self._url(path), headers=headers, json=json, params=params
             ) as resp:
                 if resp.status == 401 and self._auth:
+                    self._log.debug("401 received, refreshing auth and retrying")
                     await self._auth.on_401()
                     retry_headers = await self._build_headers()
                     async with session.request(
@@ -276,6 +281,7 @@ class HttpClient:
 
     async def close(self) -> None:
         if self._session and not self._session.closed:
+            self._log.debug("Closing HTTP session")
             await self._session.close()
 
     async def __aenter__(self) -> HttpClient:

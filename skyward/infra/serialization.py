@@ -6,6 +6,9 @@ import zlib
 from typing import Any, Final
 
 import cloudpickle
+from loguru import logger
+
+log = logger.bind(component="serialization")
 
 COMPRESSED_MAGIC: Final = b"\x00CZ"
 COMPRESSION_LEVEL: Final = 6
@@ -25,10 +28,14 @@ def serialize(obj: Any, compress: bool = True) -> bytes:
 
     if compress:
         compressed = zlib.compress(pickled, level=COMPRESSION_LEVEL)
-        # Only use compression if it actually reduces size
         if len(compressed) < len(pickled):
+            log.debug(
+                "Serialized {raw} -> {compressed} bytes",
+                raw=len(pickled), compressed=len(compressed),
+            )
             return COMPRESSED_MAGIC + compressed
 
+    log.debug("Serialized {size} bytes (uncompressed)", size=len(pickled))
     return pickled
 
 

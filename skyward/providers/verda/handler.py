@@ -25,7 +25,10 @@ from skyward.actors.messages import (
     InstanceRequested,
     InstanceRunning,
     ProviderMsg,
+    ShutdownCompleted,
     ShutdownRequested,
+    _LocalInstallDone,
+    _LocalInstallFailed,
 )
 from skyward.actors.streaming import instance_monitor
 from skyward.api.spec import PoolSpec
@@ -86,11 +89,15 @@ async def _resolve_instance_type(
 
     selected = candidates[0]
     supported_os = selected.get("supported_os", [])
-    logger.debug(f"Verda: Instance {selected['instance_type']} supported_os: {supported_os}")
+    log = logger.bind(provider="verda")
+    log.debug(
+        "Instance {itype} supported_os: {os}",
+        itype=selected["instance_type"], os=supported_os,
+    )
 
     os_image = _select_os_image(spec, supported_os)
 
-    logger.debug(f"Verda: Selected {selected['instance_type']} with image {os_image}")
+    log.debug("Selected {itype} with image {img}", itype=selected["instance_type"], img=os_image)
     return selected["instance_type"], os_image, selected
 
 
@@ -148,7 +155,7 @@ async def _find_available_region(
 
     for region, types in availability.items():
         if instance_type in types:
-            logger.info(f"Verda: Auto-selected region {region}")
+            logger.bind(provider="verda").info("Auto-selected region {region}", region=region)
             return region
 
     raise RuntimeError(f"No region has instance type '{instance_type}' available")
@@ -195,6 +202,7 @@ def verda_provider_actor(
     pool_ref: ActorRef,
 ) -> Behavior[ProviderMsg]:
     """A Verda provider tells this story: idle -> active -> stopped."""
+    log = logger.bind(provider="verda")
 
     def idle() -> Behavior[ProviderMsg]:
         async def receive(
@@ -206,7 +214,7 @@ def verda_provider_actor(
                     provider="verda",
                     spec=spec,
                 ):
-                    logger.info(f"Verda: Provisioning cluster for {spec.nodes} nodes")
+                    log.info("Provisioning cluster for {n} nodes", n=spec.nodes)
 
                     cluster_id = f"verda-{uuid.uuid4().hex[:8]}"
 
@@ -278,7 +286,7 @@ def verda_provider_actor(
                     if not state.instance_type or not state.os_image:
                         return Behaviors.same()
 
-                    logger.info(f"Verda: Launching instance for node {node_id}")
+                    log.info("Launching instance for node {nid}", nid=node_id)
 
                     use_spot = state.spec.allocation in ("spot", "spot-if-available")
 
@@ -300,12 +308,12 @@ def verda_provider_actor(
                             is_spot=use_spot,
                         )
                     except VerdaError as e:
-                        logger.error(f"Verda: Failed to create instance: {e}")
+                        log.error("Failed to create instance: {err}", err=e)
                         return Behaviors.same()
 
-                    state.pending_nodes.add(node_id)
-
                     instance_id = str(instance["id"])
+                    state.pending_nodes.add(node_id)
+                    state.launched_ids.add(instance_id)
 
                     try:
                         info = await wait_for_ready(
@@ -326,11 +334,11 @@ def verda_provider_actor(
                             description=f"Verda instance {instance_id}",
                         )
                     except TimeoutError:
-                        logger.error(f"Verda: Instance {instance_id} did not become ready")
+                        log.error("Instance {iid} did not become ready", iid=instance_id)
                         return Behaviors.same()
 
                     if not info:
-                        logger.error(f"Verda: Instance {instance_id} not found")
+                        log.error("Instance {iid} not found", iid=instance_id)
                         return Behaviors.same()
 
                     pool_ref.tell(InstanceRunning(
@@ -374,20 +382,41 @@ def verda_provider_actor(
 
                 case BootstrapDone(instance=info, success=True):
                     if state.spec.image and state.spec.image.skyward_source == "local":
-                        await _install_local_skyward(info, state)
+                        ctx.pipe_to_self(
+                            coro=_install_local_skyward(info, state),
+                            mapper=lambda _, inst=info: _LocalInstallDone(instance=inst),
+                            on_failure=lambda e, inst=info: _LocalInstallFailed(
+                                instance=inst, error=str(e),
+                            ),
+                        )
+                        return Behaviors.same()
 
                     state.add_instance(info)
                     pool_ref.tell(InstanceBootstrapped(instance=info))
                     return Behaviors.same()
 
-                case BootstrapDone(instance=info, success=False, error=error):
-                    logger.error(f"Verda: Bootstrap failed on {info.id}: {error}")
+                case _LocalInstallDone(instance=info):
+                    state.add_instance(info)
+                    pool_ref.tell(InstanceBootstrapped(instance=info))
                     return Behaviors.same()
 
-                case ShutdownRequested(cluster_id=cluster_id):
-                    logger.info(f"Verda: Shutting down cluster {cluster_id}")
+                case _LocalInstallFailed(instance=info, error=error):
+                    log.error(
+                        "Local skyward install failed on {iid}: {err}",
+                        iid=info.id, err=error,
+                    )
+                    return Behaviors.same()
 
-                    for instance_id in state.instance_ids:
+                case BootstrapDone(instance=info, success=False, error=error):
+                    log.error("Bootstrap failed on {iid}: {err}", iid=info.id, err=error)
+                    return Behaviors.same()
+
+                case ShutdownRequested(
+                    cluster_id=cid, reply_to=reply_to,
+                ):
+                    log.info("Shutting down cluster {cid}", cid=cid)
+
+                    for instance_id in state.launched_ids:
                         with suppress(Exception):
                             await client.delete_instance(instance_id)
 
@@ -395,8 +424,8 @@ def verda_provider_actor(
                         with suppress(Exception):
                             await client.delete_startup_script(state.startup_script_id)
 
-                    pass
-
+                    if reply_to is not None:
+                        reply_to.tell(ShutdownCompleted(cluster_id=state.cluster_id))
                     return Behaviors.stopped()
 
                 case _:

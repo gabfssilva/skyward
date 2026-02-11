@@ -85,10 +85,18 @@ class InstanceRequested:
 
 
 @dataclass(frozen=True, slots=True)
+class ShutdownCompleted:
+    """Provider confirms cluster shutdown is done."""
+
+    cluster_id: ClusterId
+
+
+@dataclass(frozen=True, slots=True)
 class ShutdownRequested:
     """Pool requests cluster shutdown."""
 
     cluster_id: ClusterId
+    reply_to: ActorRef[ShutdownCompleted] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -464,6 +472,7 @@ type PoolMsg = (
     | InstanceBootstrapped
     | InstancePreempted
     | NodeBecameReady
+    | ShutdownCompleted
 )
 
 
@@ -545,6 +554,17 @@ class _BootstrapScriptFailed:
     error: str
 
 
+@dataclass(frozen=True, slots=True)
+class _LocalInstallDone:
+    instance: InstanceMetadata
+
+
+@dataclass(frozen=True, slots=True)
+class _LocalInstallFailed:
+    instance: InstanceMetadata
+    error: str
+
+
 type ProviderMsg = (
     ClusterRequested
     | InstanceRequested
@@ -557,6 +577,8 @@ type ProviderMsg = (
     | _InstanceWaitFailed
     | _BootstrapScriptDone
     | _BootstrapScriptFailed
+    | _LocalInstallDone
+    | _LocalInstallFailed
 )
 
 

@@ -30,9 +30,12 @@ from skyward.actors.messages import (
     InstanceRequested,
     InstanceRunning,
     ProviderMsg,
+    ShutdownCompleted,
     ShutdownRequested,
     _InstanceNowRunning,
     _InstanceWaitFailed,
+    _LocalInstallDone,
+    _LocalInstallFailed,
 )
 from skyward.actors.streaming import instance_monitor
 from skyward.infra.pricing import get_instance_pricing
@@ -66,6 +69,7 @@ def aws_provider_actor(
     pool_ref: ActorRef,
 ) -> Behavior[ProviderMsg]:
     """An AWS provider tells this story: idle -> active -> stopped."""
+    log = logger.bind(provider="aws")
 
     def idle() -> Behavior[ProviderMsg]:
         async def receive(
@@ -75,10 +79,7 @@ def aws_provider_actor(
                 case ClusterRequested(
                     request_id=request_id, provider="aws", spec=spec,
                 ):
-                    logger.debug(
-                        "AWS: Provisioning infrastructure, keys, "
-                        "and instance configs..."
-                    )
+                    log.debug("Provisioning infrastructure, keys, and instance configs")
                     (
                         resources,
                         (ssh_key_name, ssh_key_path),
@@ -164,7 +165,10 @@ def aws_provider_actor(
                         )
 
                         if not instance_ids:
-                            logger.error(f"AWS: Failed to launch instance for node {node_id}")
+                            log.error(
+                                "Failed to launch instance for node {node_id}",
+                                node_id=node_id,
+                            )
                             return Behaviors.same()
 
                         instance_id = instance_ids[0]
@@ -213,7 +217,14 @@ def aws_provider_actor(
 
                 case BootstrapDone(instance=info, success=True):
                     if state.spec.image and state.spec.image.skyward_source == "local":
-                        await _install_local_skyward(info, state)
+                        ctx.pipe_to_self(
+                            coro=_install_local_skyward(info, state),
+                            mapper=lambda _, i=info: _LocalInstallDone(instance=i),
+                            on_failure=lambda e, i=info: _LocalInstallFailed(
+                                instance=i, error=str(e),
+                            ),
+                        )
+                        return Behaviors.same()
 
                     new_state = replace(state,
                         instances=MappingProxyType({**state.instances, info.id: info}),
@@ -223,7 +234,22 @@ def aws_provider_actor(
                     return active(state=new_state)
 
                 case BootstrapDone(instance=info, success=False, error=error):
-                    logger.error(f"AWS: Bootstrap failed on {info.id}: {error}")
+                    log.error("Bootstrap failed on {iid}: {error}", iid=info.id, error=error)
+                    return Behaviors.same()
+
+                case _LocalInstallDone(instance=info):
+                    new_state = replace(state,
+                        instances=MappingProxyType({**state.instances, info.id: info}),
+                        pending_nodes=state.pending_nodes - {info.node},
+                    )
+                    pool_ref.tell(InstanceBootstrapped(instance=info))
+                    return active(state=new_state)
+
+                case _LocalInstallFailed(instance=info, error=error):
+                    log.error(
+                        "Local skyward install failed on {iid}: {error}",
+                        iid=info.id, error=error,
+                    )
                     return Behaviors.same()
 
                 case _InstanceNowRunning(event=event):
@@ -233,17 +259,22 @@ def aws_provider_actor(
                 case _InstanceWaitFailed(
                     instance_id=iid, node_id=nid, error=error,
                 ):
-                    logger.error(
-                        f"AWS: Instance {iid} (node {nid}) "
-                        f"failed to reach running state: {error}"
+                    log.error(
+                        "Instance {iid} (node {nid}) failed to reach running state: {error}",
+                        iid=iid, nid=nid, error=error,
                     )
                     return Behaviors.same()
 
-                case ShutdownRequested(cluster_id=cluster_id) if cluster_id == state.cluster_id:
-                    instance_ids = list(state.instances.keys())
-                    if instance_ids:
-                        await _terminate_instances(ec2, instance_ids)
+                case ShutdownRequested(
+                    cluster_id=cluster_id, reply_to=reply_to,
+                ) if cluster_id == state.cluster_id:
+                    all_ids: set[str] = set(state.instances.keys())
+                    all_ids.update(state.fleet_instance_ids.values())
+                    if all_ids:
+                        await _terminate_instances(ec2, list(all_ids))
 
+                    if reply_to is not None:
+                        reply_to.tell(ShutdownCompleted(cluster_id=cluster_id))
                     return Behaviors.stopped()
 
                 case _:
@@ -547,7 +578,7 @@ async def _select_instances(
                 (t, candidate_arch[t]) for t in sorted_types
             ]
             prices_str = ", ".join(f"{t}=${price_map[t]:.4f}" for t in sorted_types)
-            logger.info(f"Instance candidates: {prices_str}")
+            logger.info("Instance candidates: {prices}", prices=prices_str)
             return result
 
         result = [(t, candidate_arch[t]) for t in all_types[:max_candidates]]
@@ -572,7 +603,7 @@ def _fallback_instance(spec: PoolSpec) -> tuple[str, Architecture]:
             case _:
                 fallback = ("m7g.large", "arm64")
 
-    logger.warning(f"No instances found for spec. Using fallback {fallback[0]}")
+    logger.warning("No instances found for spec, using fallback {fallback}", fallback=fallback[0])
     return fallback
 
 
@@ -727,11 +758,13 @@ async def _launch_fleet(
                     "AllocationStrategy": strategy,
                     "SingleAvailabilityZone": True,
                     "SingleInstanceType": True,
+                    "MinTargetCapacity": n,
                 },
                 OnDemandOptions={
                     "AllocationStrategy": "lowest-price",
                     "SingleAvailabilityZone": True,
                     "SingleInstanceType": True,
+                    "MinTargetCapacity": n,
                 },
             )
 
@@ -799,7 +832,10 @@ async def _wait_running(
                 response = await client.describe_instances(InstanceIds=instance_ids)
             except ClientError as e:
                 if e.response.get("Error", {}).get("Code") == "InvalidInstanceID.NotFound":
-                    logger.debug(f"Instance not found yet (eventual consistency): {instance_ids}")
+                    logger.debug(
+                        "Instance not found yet (eventual consistency): {ids}",
+                        ids=instance_ids,
+                    )
                     return None
                 raise
             return [

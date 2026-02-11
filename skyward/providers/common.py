@@ -115,11 +115,11 @@ def build_wheel() -> Path:
         text=True,
     )
     if result.returncode != 0:
-        logger.error(f"Failed to build wheel: {result.stderr}")
+        logger.error("Failed to build wheel: {err}", err=result.stderr)
         raise RuntimeError(f"Failed to build wheel: {result.stderr}")
 
     wheel_path = next(Path(build_dir).glob("*.whl"))
-    logger.info(f"Built wheel: {wheel_path.name}")
+    logger.info("Built wheel: {name}", name=wheel_path.name)
     return wheel_path
 
 

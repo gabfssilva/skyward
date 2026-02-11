@@ -7,6 +7,8 @@ import os
 from collections.abc import Callable
 from typing import Literal
 
+from loguru import logger
+
 
 def torch[**P, R](
     _fn: Callable[P, R] | None = None,
@@ -31,9 +33,11 @@ def torch[**P, R](
 
             from skyward.api.runtime import instance_info
 
+            log = logger.bind(integration="torch")
             pool = instance_info()
 
             if not pool or dist.is_initialized():
+                log.debug("Skipping distributed init (no pool or already initialized)")
                 return fn(*args, **kwargs)
 
             world_size = pool.total_nodes
@@ -54,7 +58,12 @@ def torch[**P, R](
                     os.environ[key] = value
 
             be = backend or ("nccl" if torch.cuda.is_available() else "gloo")  # type: ignore[reportAttributeAccessIssue]
+            log.debug(
+                "Initializing process group: backend={be}, rank={rank}, world_size={ws}",
+                be=be, rank=global_rank, ws=world_size,
+            )
             dist.init_process_group(backend=be, init_method="env://")
+            log.debug("Process group initialized")
 
             return fn(*args, **kwargs)
 

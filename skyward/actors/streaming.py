@@ -54,7 +54,7 @@ async def _read_next(stream: AsyncIterator, info: InstanceMetadata) -> MonitorMs
     except StopAsyncIteration:
         return _StreamEnded()
     except Exception as e:
-        logger.warning(f"Instance monitor stream error on {info.id}: {e}")
+        logger.warning("Instance monitor stream error on {iid}: {err}", iid=info.id, err=e)
         return _StreamEnded(error=str(e))
 
 
@@ -70,7 +70,8 @@ def instance_monitor(
     async def _setup(ctx: ActorContext[MonitorMsg]) -> Behavior[MonitorMsg]:
         from skyward.infra.ssh import SSHTransport
 
-        logger.info(f"Instance monitor connecting to {info.id} at {info.ip}:{info.ssh_port}...")
+        log = logger.bind(actor="monitor", instance_id=info.id)
+        log.info("Connecting to {ip}:{port}", ip=info.ip, port=info.ssh_port)
 
         transport = SSHTransport(
             host=info.ip,
@@ -82,7 +83,7 @@ def instance_monitor(
         )
         await transport.connect()
 
-        logger.info(f"Instance monitor connected to {info.id}")
+        log.info("Connected")
 
         stream = transport.stream_events(timeout=600.0).__aiter__()
 

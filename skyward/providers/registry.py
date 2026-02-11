@@ -12,8 +12,11 @@ from collections.abc import Callable
 from typing import Any
 
 from casty import ActorRef, Behavior
+from loguru import logger
 
 from skyward.actors.messages import ProviderMsg
+
+log = logger.bind(component="registry")
 
 type ProviderActorFactory = Callable[[Any, ActorRef], Behavior[ProviderMsg]]
 
@@ -31,6 +34,9 @@ def get_provider_for_config(config: Any) -> tuple[ProviderActorFactory, str]:
     from .runpod.config import RunPod
     from .vastai.config import VastAI
     from .verda.config import Verda
+
+    config_type = type(config).__name__
+    log.debug("Resolving provider for config={config_type}", config_type=config_type)
 
     match config:
         case AWS():

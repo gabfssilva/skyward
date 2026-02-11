@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from loguru import logger
+
 from skyward.infra.http import HttpClient, HttpError
 
 from .types import (
@@ -25,6 +27,7 @@ class VerdaError(Exception):
 class VerdaClient:
     def __init__(self, http_client: HttpClient) -> None:
         self._http = http_client
+        self._log = logger.bind(provider="verda", component="client")
 
     async def _request(
         self,
@@ -97,14 +100,12 @@ class VerdaClient:
     async def create_startup_script(self, name: str, script: str) -> StartupScriptResponse:
         import json as json_mod
 
-        from loguru import logger
-
         try:
             text = await self._http.request(
                 "POST", "/scripts", json={"name": name, "script": script}, format="text"
             )
             text = text.strip()
-            logger.debug(f"Verda create_startup_script response: {text[:200]!r}")
+            self._log.debug("create_startup_script response: {resp}", resp=text[:200])
 
             if not text.startswith("{") and not text.startswith("["):
                 script_id = text.strip('"')
@@ -151,12 +152,10 @@ class VerdaClient:
 
         import json as json_mod
 
-        from loguru import logger
-
         try:
             text = await self._http.request("POST", "/instances", json=body, format="text")
             text = text.strip()
-            logger.debug(f"Verda create_instance response: {text[:200]!r}")
+            self._log.debug("create_instance response: {resp}", resp=text[:200])
 
             if not text.startswith("{") and not text.startswith("["):
                 instance_id = text.strip('"')

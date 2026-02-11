@@ -64,6 +64,14 @@ type Provider = AWS | RunPod | VastAI | Verda
 _active_pool: ContextVar[ComputePool | None] = ContextVar("active_pool", default=None)
 
 
+async def _cancel_pending_tasks() -> None:
+    current = asyncio.current_task()
+    pending = [t for t in asyncio.all_tasks() if t is not current and not t.done()]
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
+
+
 def _get_active_pool() -> ComputePool:
     """Get the active pool from context."""
     pool = _active_pool.get()
@@ -314,7 +322,7 @@ class ComputePool:
                     )
             self._log_handler_ids = _setup_logging(log_config)
 
-        logger.info(f"Starting pool with {self.nodes} nodes ({self.accelerator})")
+        logger.info("Starting pool with {n} nodes ({accel})", n=self.nodes, accel=self.accelerator)
 
         self._loop = asyncio.new_event_loop()
         self._loop_thread = threading.Thread(
@@ -330,7 +338,7 @@ class ComputePool:
             self._context_token = _active_pool.set(self)
             logger.info("Pool ready")
         except Exception as e:
-            logger.exception(f"Error starting pool: {e}")
+            logger.exception("Error starting pool: {err}", err=e)
             self._cleanup()
             raise
 
@@ -354,7 +362,7 @@ class ComputePool:
         except TimeoutError:
             logger.warning("Pool stop timed out after 30s, forcing cleanup")
         except Exception as e:
-            logger.warning(f"Error stopping pool: {e}")
+            logger.warning("Error stopping pool: {err}", err=e)
         finally:
             if self._registry is not None:
                 self._registry.cleanup()
@@ -561,6 +569,8 @@ class ComputePool:
             await self._system.__aexit__(None, None, None)
             self._system = None
 
+        await _cancel_pending_tasks()
+
     async def _create_executor(self) -> None:
         from skyward.providers.ssh_keys import get_ssh_key_path
 
@@ -659,7 +669,7 @@ class ComputePool:
         ) as transport:
             logger.debug("Starting Casty head on node 0...")
             pid = await _start_node(transport, 0, host=head_addr)
-            logger.debug(f"Casty head PID: {pid}")
+            logger.debug("Casty head PID: {pid}", pid=pid)
             self._network_interfaces[0] = await detect_network_interface(transport)
 
         async def _start_worker(node_id: int, info: Any) -> None:
@@ -670,7 +680,7 @@ class ComputePool:
                 port=info.ssh_port,
             ) as transport:
                 worker_addr = info.private_ip or info.ip
-                logger.debug(f"Starting Casty worker on node {node_id}...")
+                logger.debug("Starting Casty worker on node {nid}", nid=node_id)
                 seeds = f"{head_addr}:{casty_port}"
                 await _start_node(
                     transport, node_id, host=worker_addr, seeds=seeds

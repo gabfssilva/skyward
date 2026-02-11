@@ -20,6 +20,7 @@ from skyward.actors.messages import (
     PoolMsg,
     PoolStarted,
     PoolStopped,
+    ShutdownCompleted,
     ShutdownRequested,
     StartPool,
     StopPool,
@@ -38,6 +39,9 @@ pytestmark = pytest.mark.xdist_group("pool-actor")
 def probe_actor(results: list) -> Behavior:
     async def receive(ctx, msg):
         results.append(msg)
+        match msg:
+            case ShutdownRequested(reply_to=reply_to) if reply_to is not None:
+                reply_to.tell(ShutdownCompleted(cluster_id=msg.cluster_id))
         return Behaviors.same()
     return Behaviors.receive(receive)
 

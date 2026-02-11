@@ -13,11 +13,17 @@ def slow_task(x):
 
 
 if __name__ == '__main__':
+    nodes = 10
+    concurrency = 10
+    tasks = 2000
+
+    effective_workers = nodes * concurrency
+
     with sky.integrations.JoblibPool(
         provider=sky.AWS(),
-        nodes=10,
+        nodes=nodes,
         image=sky.Image(pip=["joblib"], skyward_source='local'),
-        concurrency=10,
+        concurrency=concurrency,
     ) as pool:
         # just to warm up
         for _ in range(10):
@@ -29,17 +35,19 @@ if __name__ == '__main__':
         print(f"\nBroadcast ping: {pongs} in {ping_elapsed * 1000:.0f}ms")
 
         t0 = perf_counter()
+
         results = Parallel(n_jobs=-1)(
-            delayed(slow_task)(i) for i in range(2000)
+            delayed(slow_task)(i) for i in range(tasks)
         )
+
         elapsed = perf_counter() - t0
 
         print(f"\n{'=' * 50}")
-        print("Tasks: 200 | Nodes: 5 | Concurrency: 10")
-        print("Effective workers: 50")
+        print(f"Tasks: {tasks} | Nodes: {nodes} | Concurrency: {concurrency}")
+        print(f"Effective workers: {effective_workers}")
         print(f"Total time: {elapsed:.2f}s")
-        print(f"Throughput: {200 / elapsed:.2f} tasks/s")
-        print(f"Ideal time (200 tasks / 50 workers * 5s): {200 / 50 * 5:.0f}s")
-        print(f"Efficiency: {(200 / 50 * 5) / elapsed * 100:.1f}%")
+        print(f"Throughput: {tasks / elapsed:.2f} tasks/s")
+        print(f"Ideal time ({tasks} tasks / {effective_workers} workers * 5s): {tasks / effective_workers * 5:.0f}s")
+        print(f"Efficiency: {(tasks / effective_workers * 5) / elapsed * 100:.1f}%")
         print(f"{'=' * 50}")
         print(results)
