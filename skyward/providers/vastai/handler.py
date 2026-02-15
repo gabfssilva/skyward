@@ -31,7 +31,6 @@ from skyward.actors.messages import (
     ClusterProvisioned,
     ClusterRequested,
     InstanceBootstrapped,
-    InstanceMetadata,
     InstanceRequested,
     InstanceRunning,
     ProviderMsg,
@@ -39,7 +38,6 @@ from skyward.actors.messages import (
     ShutdownRequested,
     _ProvisioningDone,
 )
-from skyward.actors.streaming import instance_monitor
 from skyward.providers.ssh_keys import get_ssh_key_path
 from skyward.providers.wait import wait_for_ready
 
@@ -266,36 +264,6 @@ echo "$IFACE $IP"
         await transport.close()
 
 
-async def _install_local_skyward(
-    instance_info: InstanceMetadata,
-    ssh_host: str,
-    ssh_port: int,
-) -> None:
-    """Install local skyward wheel on a remote instance."""
-    from skyward.providers.bootstrap import install_local_skyward, wait_for_ssh
-
-    key_path = get_ssh_key_path()
-
-    transport = await wait_for_ssh(
-        host=ssh_host,
-        user="root",
-        key_path=key_path,
-        timeout=60.0,
-        port=ssh_port,
-        log_prefix="VastAI: ",
-    )
-
-    try:
-        await install_local_skyward(
-            transport=transport,
-            info=instance_info,
-            log_prefix="VastAI: ",
-            use_sudo=False,
-        )
-    finally:
-        await transport.close()
-
-
 # =============================================================================
 # Actor Behavior
 # =============================================================================
@@ -304,7 +272,6 @@ async def _install_local_skyward(
 def vastai_provider_actor(
     config: VastAI,
     client: VastAIClient,
-    pool_ref: ActorRef,
 ) -> Behavior[ProviderMsg]:
     """Vast.ai provider tells this story: idle -> active -> stopped."""
     log = logger.bind(provider="vastai")
@@ -318,6 +285,7 @@ def vastai_provider_actor(
                     request_id=request_id,
                     provider="vastai",
                     spec=spec,
+                    reply_to=caller,
                 ):
                     log.info("Provisioning cluster for {n} nodes", n=spec.nodes)
 
@@ -349,11 +317,12 @@ def vastai_provider_actor(
                             overlay_cluster_id=overlay_cluster_id,
                         )
 
-                        pool_ref.tell(ClusterProvisioned(
-                            request_id=request_id,
-                            cluster_id=cluster_id,
-                            provider="vastai",
-                        ))
+                        if caller:
+                            caller.tell(ClusterProvisioned(
+                                request_id=request_id,
+                                cluster_id=cluster_id,
+                                provider="vastai",
+                            ))
 
                         return _ProvisioningDone(state=new_state)
 
@@ -367,21 +336,28 @@ def vastai_provider_actor(
     def active(
         state: VastAIClusterState,
         reserved_offers: frozenset[int] = frozenset(),
+        node_refs: dict[int, ActorRef] | None = None,
     ) -> Behavior[ProviderMsg]:
+        refs = node_refs or {}
+
         async def receive(
             ctx: ActorContext[ProviderMsg], msg: ProviderMsg,
         ) -> Behavior[ProviderMsg]:
             match msg:
                 case _ProvisioningDone(state=new_state):
-                    return active(new_state, reserved_offers)
+                    return active(new_state, reserved_offers, refs)
 
                 case InstanceRequested(
                     request_id=request_id,
                     provider="vastai",
                     cluster_id=cluster_id,
                     node_id=node_id,
+                    reply_to=node_ref,
                 ):
                     log.info("Launching instance for node {nid}", nid=node_id)
+                    new_refs = {**refs}
+                    if node_ref:
+                        new_refs[node_id] = node_ref
 
                     async def launch_instance() -> _ProvisioningDone:
                         use_interruptible = state.spec.allocation in ("spot", "spot-if-available")
@@ -481,14 +457,14 @@ def vastai_provider_actor(
                         )
 
                         await _wait_and_emit_running(
-                            client, config, new_state, pool_ref,
+                            client, config, new_state, new_refs,
                             request_id, cluster_id, node_id, instance_id,
                         )
 
                         return _ProvisioningDone(state=new_state)
 
                     ctx.pipe_to_self(launch_instance(), mapper=lambda x: x)  # type: ignore[reportArgumentType]
-                    return active(state, reserved_offers)
+                    return active(state, reserved_offers, new_refs)
 
                 case BootstrapRequested(
                     request_id=_,
@@ -542,45 +518,14 @@ def vastai_provider_actor(
                             await transport.close()
 
                     ctx.pipe_to_self(run_bootstrap(), mapper=lambda x: x)  # type: ignore[reportArgumentType]
-
-                    ctx.spawn(
-                        instance_monitor(
-                            info=instance,
-                            ssh_user="root",
-                            ssh_key_path=get_ssh_key_path(),
-                            pool_ref=pool_ref,
-                            reply_to=ctx.self,
-                        ),
-                        f"monitor-{instance.id}",
-                    )
                     return Behaviors.same()
 
                 case BootstrapDone(instance=info, success=True):
-                    log.info("Bootstrap completed for instance {iid}", iid=info.id)
-
-                    if state.spec.image.skyward_source == "local":
-                        async def install_and_register() -> _ProvisioningDone:
-                            await _install_local_skyward(info, info.ip, info.ssh_port)
-                            new_state = replace(state,
-                                instances=MappingProxyType({**state.instances, info.id: info}),
-                                pending_nodes=state.pending_nodes - {info.node},
-                            )
-                            pool_ref.tell(InstanceBootstrapped(instance=info))
-                            return _ProvisioningDone(state=new_state)
-
-                        ctx.pipe_to_self(install_and_register(), mapper=lambda x: x)  # type: ignore[reportArgumentType]
-                    else:
-                        new_state = replace(state,
-                            instances=MappingProxyType({**state.instances, info.id: info}),
-                            pending_nodes=state.pending_nodes - {info.node},
-                        )
-                        pool_ref.tell(InstanceBootstrapped(instance=info))
-                        return active(new_state, reserved_offers)
-
+                    if (target := refs.get(info.node)):
+                        target.tell(InstanceBootstrapped(instance=info))
                     return Behaviors.same()
 
-                case BootstrapDone(instance=info, success=False, error=error):
-                    log.error("Bootstrap failed for instance {iid}: {err}", iid=info.id, err=error)
+                case BootstrapDone(success=False):
                     return Behaviors.same()
 
                 case ShutdownRequested(
@@ -620,7 +565,7 @@ async def _wait_and_emit_running(
     client: VastAIClient,
     config: VastAI,
     state: VastAIClusterState,
-    pool_ref: ActorRef,
+    node_refs: dict[int, ActorRef],
     request_id: str,
     cluster_id: str,
     node_id: int,
@@ -715,7 +660,8 @@ async def _wait_and_emit_running(
     total_vram_mb = info.get("gpu_ram", 0)
     gpu_vram_gb = int(total_vram_mb / 1024 / gpu_count) if gpu_count else 0
 
-    pool_ref.tell(InstanceRunning(
+    key_path = get_ssh_key_path()
+    running = InstanceRunning(
         request_id=request_id,
         cluster_id=cluster_id,
         node_id=node_id,
@@ -736,4 +682,9 @@ async def _wait_and_emit_running(
         memory_gb=memory_gb,
         gpu_vram_gb=gpu_vram_gb,
         region=config.geolocation or "Global",
-    ))
+        ssh_user="root",
+        ssh_key_path=key_path,
+    )
+    target = node_refs.get(node_id)
+    if target:
+        target.tell(running)

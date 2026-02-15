@@ -2,8 +2,7 @@
 
 Story: idle -> active -> stopped.
 
-The actor receives ProviderMsg and communicates lifecycle events
-via pool_ref. Observability is provided transparently via Behaviors.spy().
+The actor receives ProviderMsg and responds via reply_to on each message.
 """
 
 from __future__ import annotations
@@ -21,16 +20,12 @@ from skyward.actors.messages import (
     ClusterProvisioned,
     ClusterRequested,
     InstanceBootstrapped,
-    InstanceMetadata,
     InstanceRequested,
     InstanceRunning,
     ProviderMsg,
     ShutdownCompleted,
     ShutdownRequested,
-    _LocalInstallDone,
-    _LocalInstallFailed,
 )
-from skyward.actors.streaming import instance_monitor
 from skyward.api.spec import PoolSpec
 from skyward.providers.ssh_keys import ensure_ssh_key_on_provider, get_ssh_key_path
 from skyward.providers.wait import wait_for_ready
@@ -166,31 +161,6 @@ def _generate_user_data(config: Verda, spec: PoolSpec) -> str:
     return spec.image.generate_bootstrap(ttl=ttl)
 
 
-async def _install_local_skyward(
-    info: InstanceMetadata, cluster: VerdaClusterState
-) -> None:
-    from skyward.providers.bootstrap import install_local_skyward, wait_for_ssh
-
-    ssh_key_path = get_ssh_key_path()
-
-    transport = await wait_for_ssh(
-        host=info.ip,
-        user=cluster.username,
-        key_path=ssh_key_path,
-        timeout=60.0,
-        log_prefix="Verda: ",
-    )
-
-    try:
-        await install_local_skyward(
-            transport=transport,
-            info=info,
-            log_prefix="Verda: ",
-        )
-    finally:
-        await transport.close()
-
-
 # =============================================================================
 # Actor behavior
 # =============================================================================
@@ -199,7 +169,6 @@ async def _install_local_skyward(
 def verda_provider_actor(
     config: Verda,
     client: VerdaClient,
-    pool_ref: ActorRef,
 ) -> Behavior[ProviderMsg]:
     """A Verda provider tells this story: idle -> active -> stopped."""
     log = logger.bind(provider="verda")
@@ -213,6 +182,7 @@ def verda_provider_actor(
                     request_id=request_id,
                     provider="verda",
                     spec=spec,
+                    reply_to=caller,
                 ):
                     log.info("Provisioning cluster for {n} nodes", n=spec.nodes)
 
@@ -256,12 +226,12 @@ def verda_provider_actor(
                     script = await client.create_startup_script(script_name, user_data)
                     state.startup_script_id = script["id"]
 
-                    event = ClusterProvisioned(
-                        request_id=request_id,
-                        cluster_id=cluster_id,
-                        provider="verda",
-                    )
-                    pool_ref.tell(event)
+                    if caller:
+                        caller.tell(ClusterProvisioned(
+                            request_id=request_id,
+                            cluster_id=cluster_id,
+                            provider="verda",
+                        ))
 
                     return active(state)
 
@@ -272,7 +242,10 @@ def verda_provider_actor(
 
     def active(
         state: VerdaClusterState,
+        node_refs: dict[int, ActorRef] | None = None,
     ) -> Behavior[ProviderMsg]:
+        refs = node_refs or {}
+
         async def receive(
             ctx: ActorContext[ProviderMsg], msg: ProviderMsg,
         ) -> Behavior[ProviderMsg]:
@@ -282,11 +255,15 @@ def verda_provider_actor(
                     cluster_id=cluster_id,
                     node_id=node_id,
                     provider="verda",
+                    reply_to=node_ref,
                 ):
                     if not state.instance_type or not state.os_image:
                         return Behaviors.same()
 
                     log.info("Launching instance for node {nid}", nid=node_id)
+                    new_refs = {**refs}
+                    if node_ref:
+                        new_refs[node_id] = node_ref
 
                     use_spot = state.spec.allocation in ("spot", "spot-if-available")
 
@@ -341,7 +318,7 @@ def verda_provider_actor(
                         log.error("Instance {iid} not found", iid=instance_id)
                         return Behaviors.same()
 
-                    pool_ref.tell(InstanceRunning(
+                    running = InstanceRunning(
                         request_id=request_id,
                         cluster_id=cluster_id,
                         node_id=node_id,
@@ -361,54 +338,26 @@ def verda_provider_actor(
                         memory_gb=state.memory_gb,
                         gpu_vram_gb=state.gpu_vram_gb,
                         region=state.region,
-                    ))
+                        ssh_user=state.username,
+                        ssh_key_path=state.ssh_key_path,
+                    )
+                    target = new_refs.get(node_id)
+                    if target:
+                        target.tell(running)
 
-                    return Behaviors.same()
+                    return active(state, new_refs)
 
                 case BootstrapRequested(
                     cluster_id=_, instance=instance_info,
                 ) if instance_info.provider == "verda":
-                    ctx.spawn(
-                        instance_monitor(
-                            info=instance_info,
-                            ssh_user=state.username,
-                            ssh_key_path=state.ssh_key_path,
-                            pool_ref=pool_ref,
-                            reply_to=ctx.self,
-                        ),
-                        f"monitor-{instance_info.id}",
-                    )
                     return Behaviors.same()
 
                 case BootstrapDone(instance=info, success=True):
-                    if state.spec.image and state.spec.image.skyward_source == "local":
-                        ctx.pipe_to_self(
-                            coro=_install_local_skyward(info, state),
-                            mapper=lambda _, inst=info: _LocalInstallDone(instance=inst),
-                            on_failure=lambda e, inst=info: _LocalInstallFailed(
-                                instance=inst, error=str(e),
-                            ),
-                        )
-                        return Behaviors.same()
-
-                    state.add_instance(info)
-                    pool_ref.tell(InstanceBootstrapped(instance=info))
+                    if (target := refs.get(info.node)):
+                        target.tell(InstanceBootstrapped(instance=info))
                     return Behaviors.same()
 
-                case _LocalInstallDone(instance=info):
-                    state.add_instance(info)
-                    pool_ref.tell(InstanceBootstrapped(instance=info))
-                    return Behaviors.same()
-
-                case _LocalInstallFailed(instance=info, error=error):
-                    log.error(
-                        "Local skyward install failed on {iid}: {err}",
-                        iid=info.id, err=error,
-                    )
-                    return Behaviors.same()
-
-                case BootstrapDone(instance=info, success=False, error=error):
-                    log.error("Bootstrap failed on {iid}: {err}", iid=info.id, err=error)
+                case BootstrapDone(success=False):
                     return Behaviors.same()
 
                 case ShutdownRequested(

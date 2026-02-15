@@ -2,8 +2,7 @@
 
 Story: idle -> active -> stopped.
 
-The actor receives ProviderMsg and communicates lifecycle events
-via pool_ref. Observability is provided transparently via Behaviors.spy().
+The actor receives ProviderMsg and responds via reply_to on each message.
 """
 
 from __future__ import annotations
@@ -37,7 +36,6 @@ from skyward.actors.messages import (
     _LocalInstallDone,
     _LocalInstallFailed,
 )
-from skyward.actors.streaming import instance_monitor
 from skyward.infra.pricing import get_instance_pricing
 from skyward.infra.retry import on_exception_message, retry
 
@@ -66,7 +64,6 @@ _AWS_INSTANCE_GPU = {
 def aws_provider_actor(
     config: AWS,
     ec2: EC2ClientFactory,
-    pool_ref: ActorRef,
 ) -> Behavior[ProviderMsg]:
     """An AWS provider tells this story: idle -> active -> stopped."""
     log = logger.bind(provider="aws")
@@ -78,6 +75,7 @@ def aws_provider_actor(
             match msg:
                 case ClusterRequested(
                     request_id=request_id, provider="aws", spec=spec,
+                    reply_to=caller,
                 ):
                     log.debug("Provisioning infrastructure, keys, and instance configs")
                     (
@@ -121,7 +119,8 @@ def aws_provider_actor(
                         cluster_id=cluster_id,
                         provider="aws",
                     )
-                    pool_ref.tell(provisioned)
+                    if caller:
+                        caller.tell(provisioned)
 
                     return active(state=state)
 
@@ -140,6 +139,7 @@ def aws_provider_actor(
                     provider="aws",
                     cluster_id=cluster_id,
                     node_id=node_id,
+                    reply_to=node_ref,
                     replacing=replacing,
                 ) if cluster_id == state.cluster_id:
                     pre_assigned = state.fleet_instance_ids.get(node_id)
@@ -173,10 +173,16 @@ def aws_provider_actor(
 
                         instance_id = instance_ids[0]
 
+                    new_node_refs = MappingProxyType({
+                        **state.node_refs,
+                        node_id: node_ref,
+                    }) if node_ref else state.node_refs
+
                     new_state = replace(
                         state,
                         pending_nodes=state.pending_nodes | {node_id},
                         fleet_instance_ids=new_fleet,
+                        node_refs=new_node_refs,
                     )
 
                     ctx.pipe_to_self(
@@ -202,20 +208,12 @@ def aws_provider_actor(
                 case BootstrapRequested(
                     instance=info,
                     cluster_id=cluster_id,
+                    reply_to=node_ref,
                 ) if cluster_id == state.cluster_id:
-                    ctx.spawn(
-                        instance_monitor(
-                            info=info,
-                            ssh_user=state.username,
-                            ssh_key_path=state.ssh_key_path,
-                            pool_ref=pool_ref,
-                            reply_to=ctx.self,
-                        ),
-                        f"monitor-{info.id}",
-                    )
                     return Behaviors.same()
 
                 case BootstrapDone(instance=info, success=True):
+                    node_ref = state.node_refs.get(info.node)
                     if state.spec.image and state.spec.image.skyward_source == "local":
                         ctx.pipe_to_self(
                             coro=_install_local_skyward(info, state),
@@ -224,26 +222,20 @@ def aws_provider_actor(
                                 instance=i, error=str(e),
                             ),
                         )
-                        return Behaviors.same()
-
-                    new_state = replace(state,
-                        instances=MappingProxyType({**state.instances, info.id: info}),
-                        pending_nodes=state.pending_nodes - {info.node},
-                    )
-                    pool_ref.tell(InstanceBootstrapped(instance=info))
-                    return active(state=new_state)
+                    elif node_ref:
+                        node_ref.tell(InstanceBootstrapped(instance=info))
+                    return Behaviors.same()
 
                 case BootstrapDone(instance=info, success=False, error=error):
                     log.error("Bootstrap failed on {iid}: {error}", iid=info.id, error=error)
                     return Behaviors.same()
 
                 case _LocalInstallDone(instance=info):
-                    new_state = replace(state,
-                        instances=MappingProxyType({**state.instances, info.id: info}),
-                        pending_nodes=state.pending_nodes - {info.node},
-                    )
-                    pool_ref.tell(InstanceBootstrapped(instance=info))
-                    return active(state=new_state)
+                    log.info("Local skyward installed on {iid}", iid=info.id)
+                    node_ref = state.node_refs.get(info.node)
+                    if node_ref:
+                        node_ref.tell(InstanceBootstrapped(instance=info))
+                    return Behaviors.same()
 
                 case _LocalInstallFailed(instance=info, error=error):
                     log.error(
@@ -253,7 +245,9 @@ def aws_provider_actor(
                     return Behaviors.same()
 
                 case _InstanceNowRunning(event=event):
-                    pool_ref.tell(event)
+                    target = state.node_refs.get(event.node_id)
+                    if target:
+                        target.tell(event)
                     return Behaviors.same()
 
                 case _InstanceWaitFailed(
@@ -350,6 +344,8 @@ async def _wait_and_build_running(
         memory_gb=memory_gb,
         gpu_vram_gb=gpu_vram_gb,
         region=config.region,
+        ssh_user=state.username,
+        ssh_key_path=state.ssh_key_path,
     )
 
 

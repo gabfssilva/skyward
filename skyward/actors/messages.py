@@ -27,6 +27,11 @@ type NodeId = int
 type ProviderName = Literal["aws", "vastai", "verda", "runpod"]
 
 
+# =============================================================================
+# Core Value Objects
+# =============================================================================
+
+
 @dataclass(frozen=True, slots=True)
 class InstanceMetadata:
     """Immutable snapshot of an instance's infrastructure metadata."""
@@ -39,6 +44,8 @@ class InstanceMetadata:
     network_interface: str = ""
     spot: bool = False
     ssh_port: int = 22
+    ssh_user: str = ""
+    ssh_key_path: str = ""
     hourly_rate: float = 0.0
     on_demand_rate: float = 0.0
     billing_increment: int = 1
@@ -51,6 +58,35 @@ class InstanceMetadata:
     region: str = ""
 
 
+@dataclass
+class InstanceRegistry:
+    """Tracks active instances for monitoring."""
+
+    _instances: dict[InstanceId, InstanceMetadata] = field(default_factory=dict)
+
+    def register(self, info: InstanceMetadata) -> None:
+        self._instances[info.id] = info
+
+    def unregister(self, instance_id: InstanceId) -> None:
+        self._instances.pop(instance_id, None)
+
+    @property
+    def instances(self) -> list[InstanceMetadata]:
+        return list(self._instances.values())
+
+    @property
+    def spot_instances(self) -> list[InstanceMetadata]:
+        return [i for i in self._instances.values() if i.spot]
+
+    def get(self, instance_id: InstanceId) -> InstanceMetadata | None:
+        return self._instances.get(instance_id)
+
+
+# =============================================================================
+# System Events — Requests (Commands)
+# =============================================================================
+
+
 @dataclass(frozen=True, slots=True)
 class ClusterRequested:
     """Pool requests a new cluster from a provider."""
@@ -58,6 +94,7 @@ class ClusterRequested:
     request_id: RequestId
     provider: ProviderName
     spec: PoolSpec
+    reply_to: ActorRef | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,14 +105,8 @@ class InstanceRequested:
     provider: ProviderName
     cluster_id: ClusterId
     node_id: NodeId
+    reply_to: ActorRef | None = None
     replacing: InstanceId | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ShutdownCompleted:
-    """Provider confirms cluster shutdown is done."""
-
-    cluster_id: ClusterId
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,12 +118,25 @@ class ShutdownRequested:
 
 
 @dataclass(frozen=True, slots=True)
+class ShutdownCompleted:
+    """Provider confirms cluster shutdown is done."""
+
+    cluster_id: ClusterId
+
+
+@dataclass(frozen=True, slots=True)
 class BootstrapRequested:
     """Request bootstrap on a running instance."""
 
     request_id: RequestId
     instance: InstanceMetadata
     cluster_id: ClusterId
+    reply_to: ActorRef | None = None
+
+
+# =============================================================================
+# System Events — Facts (Immutable records of what happened)
+# =============================================================================
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +183,8 @@ class InstanceRunning:
     memory_gb: float = 0.0
     gpu_vram_gb: int = 0
     region: str = ""
+    ssh_user: str = ""
+    ssh_key_path: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,48 +353,105 @@ type Fact = (
 type Event = Request | Fact
 
 
-@dataclass
-class InstanceRegistry:
-    """Tracks active instances for monitoring."""
+# =============================================================================
+# Instance Actor Messages (internal to instance lifecycle)
+# =============================================================================
 
-    _instances: dict[InstanceId, InstanceMetadata] = field(default_factory=dict)
 
-    def register(self, info: InstanceMetadata) -> None:
-        self._instances[info.id] = info
+@dataclass(frozen=True, slots=True)
+class Running:
+    ip: str
 
-    def unregister(self, instance_id: InstanceId) -> None:
-        self._instances.pop(instance_id, None)
 
-    @property
-    def instances(self) -> list[InstanceMetadata]:
-        return list(self._instances.values())
+@dataclass(frozen=True, slots=True)
+class Bootstrapping:
+    phase: str
+    status: str
+    elapsed: float | None = None
 
-    @property
-    def spot_instances(self) -> list[InstanceMetadata]:
-        return [i for i in self._instances.values() if i.spot]
 
-    def get(self, instance_id: InstanceId) -> InstanceMetadata | None:
-        return self._instances.get(instance_id)
+@dataclass(frozen=True, slots=True)
+class Bootstrapped:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class Preempted:
+    reason: str = "preempted"
+
+
+@dataclass(frozen=True, slots=True)
+class Execute:
+    fn_bytes: bytes
+    reply_to: ActorRef[Any]
+
+
+type InstanceMsg = Running | Bootstrapping | Bootstrapped | BootstrapDone | Log | Metric | Preempted | Execute
+
+
+# =============================================================================
+# Node Actor Messages
+# =============================================================================
 
 
 @dataclass(frozen=True, slots=True)
 class Provision:
     cluster_id: ClusterId
-    provider: ProviderName
+    provider_ref: ActorRef[Any]
+    cluster_client: Any
 
 
 @dataclass(frozen=True, slots=True)
-class Replace:
-    old_instance_id: InstanceId
+class InstanceBecameReady:
+    instance_id: InstanceId
+    ip: str
+
+
+@dataclass(frozen=True, slots=True)
+class InstanceDied:
+    instance_id: InstanceId
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExecuteOnNode:
+    fn_bytes: bytes
+    reply_to: ActorRef[Any]
+
+
+@dataclass(frozen=True, slots=True)
+class TaskResult:
+    value: Any
+    node_id: NodeId
 
 
 type NodeMsg = (
     Provision
-    | InstanceProvisioned
+    | InstanceLaunched
+    | InstanceRunning
     | InstanceBootstrapped
-    | InstancePreempted
+    | InstanceBecameReady
+    | InstanceDied
+    | ExecuteOnNode
+    | TaskResult
 )
+
+
+# =============================================================================
+# Pool Actor Messages
+# =============================================================================
+
+
+@dataclass(frozen=True, slots=True)
+class NodeBecameReady:
+    node_id: NodeId
+    instance: InstanceMetadata
+
+
+@dataclass(frozen=True, slots=True)
+class NodeLost:
+    node_id: NodeId
+    reason: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -363,17 +466,6 @@ class PoolStopped:
 
 
 @dataclass(frozen=True, slots=True)
-class ExecuteResult:
-    value: Any
-    node_id: int
-
-
-@dataclass(frozen=True, slots=True)
-class BroadcastResult:
-    values: tuple[Any, ...]
-
-
-@dataclass(frozen=True, slots=True)
 class StartPool:
     spec: PoolSpec
     provider_config: ProviderConfig
@@ -384,6 +476,17 @@ class StartPool:
 @dataclass(frozen=True, slots=True)
 class StopPool:
     reply_to: ActorRef[PoolStopped]
+
+
+@dataclass(frozen=True, slots=True)
+class ExecuteResult:
+    value: Any
+    node_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class BroadcastResult:
+    values: tuple[Any, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -403,48 +506,67 @@ class BroadcastTask:
     reply_to: ActorRef[BroadcastResult]
 
 
-@dataclass(frozen=True, slots=True)
-class NodeBecameReady:
-    node_id: NodeId
-    instance: InstanceMetadata
-
-
 type PoolMsg = (
     StartPool
     | StopPool
     | ExecuteTask
     | BroadcastTask
     | ClusterProvisioned
-    | InstanceRunning
-    | InstanceProvisioned
-    | InstanceBootstrapped
-    | InstancePreempted
     | NodeBecameReady
+    | NodeLost
     | ShutdownCompleted
+    | SubmitTask
+    | SubmitBroadcast
 )
 
 
-def _to_metadata(ev: InstanceRunning) -> InstanceMetadata:
-    return InstanceMetadata(
-        id=ev.instance_id,
-        node=ev.node_id,
-        provider=ev.provider,
-        ip=ev.ip,
-        private_ip=ev.private_ip or "",
-        network_interface=ev.network_interface,
-        spot=ev.spot,
-        ssh_port=ev.ssh_port,
-        hourly_rate=ev.hourly_rate,
-        on_demand_rate=ev.on_demand_rate,
-        billing_increment=ev.billing_increment,
-        instance_type=ev.instance_type,
-        gpu_count=ev.gpu_count,
-        gpu_model=ev.gpu_model,
-        vcpus=ev.vcpus,
-        memory_gb=ev.memory_gb,
-        gpu_vram_gb=ev.gpu_vram_gb,
-        region=ev.region,
-    )
+# =============================================================================
+# TaskManager Actor Messages
+# =============================================================================
+
+
+@dataclass(frozen=True, slots=True)
+class SubmitTask:
+    fn_bytes: bytes
+    reply_to: ActorRef[Any]
+
+
+@dataclass(frozen=True, slots=True)
+class SubmitBroadcast:
+    fn_bytes: bytes
+    reply_to: ActorRef[Any]
+
+
+@dataclass(frozen=True, slots=True)
+class NodeAvailable:
+    node_id: NodeId
+    node_ref: ActorRef[Any]
+    slots: int
+
+
+@dataclass(frozen=True, slots=True)
+class NodeUnavailable:
+    node_id: NodeId
+
+
+@dataclass(frozen=True, slots=True)
+class SlotFreed:
+    node_id: NodeId
+
+
+@dataclass(frozen=True, slots=True)
+class NodeSlots:
+    ref: ActorRef[Any]
+    total: int
+    used: int
+
+
+type TaskManagerMsg = NodeAvailable | NodeUnavailable | SlotFreed | SubmitTask | SubmitBroadcast
+
+
+# =============================================================================
+# Provider Actor Messages (internal)
+# =============================================================================
 
 
 @dataclass(frozen=True, slots=True)
@@ -525,6 +647,11 @@ type ProviderMsg = (
 )
 
 
+# =============================================================================
+# Monitor Actor Messages
+# =============================================================================
+
+
 @dataclass(frozen=True, slots=True)
 class StopMonitor:
     pass
@@ -542,3 +669,33 @@ class _StreamEnded:
 
 
 type MonitorMsg = StopMonitor | _StreamedEvent | _StreamEnded
+
+
+# =============================================================================
+# Helpers
+# =============================================================================
+
+
+def _to_metadata(ev: InstanceRunning) -> InstanceMetadata:
+    return InstanceMetadata(
+        id=ev.instance_id,
+        node=ev.node_id,
+        provider=ev.provider,
+        ip=ev.ip,
+        private_ip=ev.private_ip or "",
+        network_interface=ev.network_interface,
+        spot=ev.spot,
+        ssh_port=ev.ssh_port,
+        hourly_rate=ev.hourly_rate,
+        on_demand_rate=ev.on_demand_rate,
+        billing_increment=ev.billing_increment,
+        instance_type=ev.instance_type,
+        gpu_count=ev.gpu_count,
+        gpu_model=ev.gpu_model,
+        vcpus=ev.vcpus,
+        memory_gb=ev.memory_gb,
+        gpu_vram_gb=ev.gpu_vram_gb,
+        region=ev.region,
+        ssh_user=ev.ssh_user,
+        ssh_key_path=ev.ssh_key_path,
+    )

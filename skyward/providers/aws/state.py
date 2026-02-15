@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
+from casty import ActorRef
+
 from skyward.actors.messages import InstanceMetadata
 from skyward.api.spec import PoolSpec
 
@@ -104,5 +106,8 @@ class AWSClusterState:
     )
     pending_nodes: frozenset[int] = frozenset()
     fleet_instance_ids: MappingProxyType[int, str] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )
+    node_refs: MappingProxyType[int, ActorRef] = field(
         default_factory=lambda: MappingProxyType({}),
     )

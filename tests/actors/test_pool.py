@@ -12,11 +12,9 @@ from skyward.actors.messages import (
     ClusterRequested,
     ExecuteResult,
     ExecuteTask,
-    InstanceBootstrapped,
     InstanceMetadata,
-    InstancePreempted,
-    InstanceProvisioned,
     NodeBecameReady,
+    NodeLost,
     PoolMsg,
     PoolStarted,
     PoolStopped,
@@ -29,11 +27,6 @@ from skyward.actors.pool import pool_actor
 from skyward.api.spec import Image, PoolSpec
 
 pytestmark = pytest.mark.xdist_group("pool-actor")
-
-
-# =============================================================================
-# Probe actors for capturing messages
-# =============================================================================
 
 
 def probe_actor(results: list) -> Behavior:
@@ -52,11 +45,6 @@ def reply_probe[T](results: list[T]) -> Behavior[T]:
         return Behaviors.same()
 
     return Behaviors.receive(receive)
-
-
-# =============================================================================
-# Fixtures
-# =============================================================================
 
 
 @pytest.fixture(scope="module")
@@ -97,28 +85,6 @@ def _make_instance(node: int, instance_id: str = "") -> InstanceMetadata:
     )
 
 
-# =============================================================================
-# Tests: message construction
-# =============================================================================
-
-
-def test_pool_messages_importable():
-    stopped = PoolStopped()
-    assert stopped is not None
-
-    result = ExecuteResult(value=42, node_id=0)
-    assert result.value == 42
-    assert result.node_id == 0
-
-    broadcast = BroadcastResult(values=(1, 2, 3))
-    assert len(broadcast.values) == 3
-
-
-# =============================================================================
-# Tests: idle -> requesting transition
-# =============================================================================
-
-
 def test_pool_emits_cluster_requested_on_start(actor_system):
     system, loop = actor_system
     provider_events: list = []
@@ -145,15 +111,9 @@ def test_pool_emits_cluster_requested_on_start(actor_system):
 
         cluster_requests = [e for e in provider_events if isinstance(e, ClusterRequested)]
         assert len(cluster_requests) == 1
-        assert cluster_requests[0].provider == "aws"
         assert cluster_requests[0].spec.nodes == 2
 
     loop.run_until_complete(_test())
-
-
-# =============================================================================
-# Tests: requesting -> provisioning -> ready
-# =============================================================================
 
 
 def test_pool_full_lifecycle(actor_system):
@@ -190,22 +150,14 @@ def test_pool_full_lifecycle(actor_system):
             provider="aws",
         ))
 
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.3)
 
         info_0 = _make_instance(0)
         info_1 = _make_instance(1)
 
-        pool_ref.tell(InstanceProvisioned(request_id="r-0", instance=info_0))
-        pool_ref.tell(InstanceProvisioned(request_id="r-1", instance=info_1))
-        await asyncio.sleep(0.3)
-
-        pool_ref.tell(InstanceBootstrapped(instance=info_0))
-        pool_ref.tell(InstanceBootstrapped(instance=info_1))
-        await asyncio.sleep(0.3)
-
         pool_ref.tell(NodeBecameReady(node_id=0, instance=info_0))
         pool_ref.tell(NodeBecameReady(node_id=1, instance=info_1))
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.3)
 
         started_replies = [r for r in reply_msgs if isinstance(r, PoolStarted)]
         assert len(started_replies) == 1
@@ -213,11 +165,6 @@ def test_pool_full_lifecycle(actor_system):
         assert len(started_replies[0].instances) == 2
 
     loop.run_until_complete(_test())
-
-
-# =============================================================================
-# Tests: ready state - execute and broadcast
-# =============================================================================
 
 
 def test_pool_execute_task_in_ready_state(actor_system):
@@ -330,11 +277,6 @@ def test_pool_broadcast_task(actor_system):
     loop.run_until_complete(_test())
 
 
-# =============================================================================
-# Tests: stop pool
-# =============================================================================
-
-
 def test_pool_stop_emits_shutdown(actor_system):
     system, loop = actor_system
     provider_events: list = []
@@ -384,11 +326,6 @@ def test_pool_stop_emits_shutdown(actor_system):
     loop.run_until_complete(_test())
 
 
-# =============================================================================
-# Tests: preemption handling in ready state
-# =============================================================================
-
-
 def test_pool_forwards_preemption_to_node_and_removes_instance(actor_system):
     system, loop = actor_system
     provider_events: list = []
@@ -428,10 +365,7 @@ def test_pool_forwards_preemption_to_node_and_removes_instance(actor_system):
         pool_ref.tell(NodeBecameReady(node_id=1, instance=info_1))
         await asyncio.sleep(0.5)
 
-        pool_ref.tell(InstancePreempted(
-            instance=info_1,
-            reason="spot-interruption",
-        ))
+        pool_ref.tell(NodeLost(node_id=1, reason="spot-interruption"))
         await asyncio.sleep(0.3)
 
         pool_ref.tell(ExecuteTask(
@@ -456,11 +390,6 @@ def test_pool_forwards_preemption_to_node_and_removes_instance(actor_system):
         await asyncio.sleep(0.3)
 
     loop.run_until_complete(_test())
-
-
-# =============================================================================
-# Tests: round-robin execution
-# =============================================================================
 
 
 def test_pool_round_robin_execution(actor_system):

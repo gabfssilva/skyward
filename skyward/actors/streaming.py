@@ -109,7 +109,7 @@ def instance_monitor(
     info: InstanceMetadata,
     ssh_user: str,
     ssh_key_path: str,
-    pool_ref: ActorRef,
+    event_listener: ActorRef,
     reply_to: ActorRef[BootstrapDone],
 ) -> Behavior[MonitorMsg]:
     """An instance monitor tells this story: connecting → streaming → stopped."""
@@ -150,7 +150,7 @@ def instance_monitor(
         async def receive(ctx: ActorContext[MonitorMsg], msg: MonitorMsg) -> Behavior[MonitorMsg]:
             match msg:
                 case _StreamedEvent(event=event, lines_read=new_lines_read):
-                    pool_ref.tell(event)
+                    event_listener.tell(event)
 
                     ctx.pipe_to_self(_read_next(stream, info), mapper=lambda msg: msg)
 

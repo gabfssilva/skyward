@@ -495,8 +495,9 @@ class ComputePool:
 
     async def _start_async(self) -> None:
         """Start pool asynchronously using actors (zero bus)."""
+        from skyward.actors.messages import PoolStarted, StartPool
         from skyward.actors.panel import panel_actor
-        from skyward.actors.pool import PoolStarted, StartPool, pool_actor
+        from skyward.actors.pool import pool_actor
         from skyward.providers.registry import get_provider_for_config
 
         actor_factory, provider_name = get_provider_for_config(self.provider)
@@ -541,7 +542,7 @@ class ComputePool:
         )
         self._pool_ref = pool_ref
 
-        provider_behavior = actor_factory(self.provider, pool_ref)
+        provider_behavior = actor_factory(self.provider)
         provider_ref = self._system.spawn(
             Behaviors.spy(provider_behavior, panel_ref, spy_children=True)
             if spy
@@ -560,7 +561,10 @@ class ComputePool:
             timeout=float(self.timeout),
         )
         self._cluster_id = started.cluster_id
-        self._instances = {inst.node: inst for inst in started.instances}
+        self._instances = {
+            info.node: info
+            for info in started.instances
+        }
 
         await self._create_executor()
 
@@ -584,7 +588,7 @@ class ComputePool:
         self._host_to_node.clear()
 
         if self._pool_ref is not None and self._system is not None:
-            from skyward.actors.pool import StopPool
+            from skyward.actors.messages import StopPool
             await self._system.ask(
                 self._pool_ref,
                 lambda reply_to: StopPool(reply_to=reply_to),

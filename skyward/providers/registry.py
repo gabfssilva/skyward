@@ -11,10 +11,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from casty import ActorRef, Behavior
+from casty import Behavior
 from loguru import logger
 
-from skyward.actors.messages import PoolMsg, ProviderMsg
+from skyward.actors.messages import ProviderMsg
 
 if TYPE_CHECKING:
     from .aws.config import AWS
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 log = logger.bind(component="registry")
 
 type ProviderConfig = AWS | RunPod | VastAI | Verda
-type ProviderActorFactory = Callable[[ProviderConfig, ActorRef[PoolMsg]], Behavior[ProviderMsg]]
+type ProviderActorFactory = Callable[[ProviderConfig], Behavior[ProviderMsg]]
 
 
 def get_provider_for_config(config: ProviderConfig) -> tuple[ProviderActorFactory, str]:
@@ -35,7 +35,7 @@ def get_provider_for_config(config: ProviderConfig) -> tuple[ProviderActorFactor
 
     Returns:
         Tuple of (actor_factory, provider_name).
-        actor_factory(config, pool_ref) -> Behavior[ProviderMsg]
+        actor_factory(config) -> Behavior[ProviderMsg]
     """
     from .aws.config import AWS
     from .runpod.config import RunPod
@@ -49,9 +49,7 @@ def get_provider_for_config(config: ProviderConfig) -> tuple[ProviderActorFactor
         case AWS():
             from .aws.clients import EC2ClientFactory
 
-            def aws_factory(
-                cfg: ProviderConfig, pool_ref: ActorRef[PoolMsg],
-            ) -> Behavior[ProviderMsg]:
+            def aws_factory(cfg: ProviderConfig) -> Behavior[ProviderMsg]:
                 from collections.abc import AsyncIterator
                 from contextlib import asynccontextmanager
 
@@ -67,28 +65,24 @@ def get_provider_for_config(config: ProviderConfig) -> tuple[ProviderActorFactor
                     async with session.client("ec2", region_name=aws_cfg.region) as ec2:  # type: ignore[reportGeneralTypeIssues]
                         yield ec2
 
-                return aws_provider_actor(aws_cfg, EC2ClientFactory(ec2_factory), pool_ref)
+                return aws_provider_actor(aws_cfg, EC2ClientFactory(ec2_factory))
 
             return aws_factory, "aws"
 
         case VastAI():
-            def vastai_factory(
-                cfg: ProviderConfig, pool_ref: ActorRef[PoolMsg],
-            ) -> Behavior[ProviderMsg]:
+            def vastai_factory(cfg: ProviderConfig) -> Behavior[ProviderMsg]:
                 from .vastai.client import VastAIClient, get_api_key
                 from .vastai.handler import vastai_provider_actor
 
                 vastai_cfg: VastAI = cfg  # type: ignore[assignment]
                 api_key = vastai_cfg.api_key or get_api_key()
                 client = VastAIClient(api_key, config=vastai_cfg)
-                return vastai_provider_actor(vastai_cfg, client, pool_ref)
+                return vastai_provider_actor(vastai_cfg, client)
 
             return vastai_factory, "vastai"
 
         case Verda():
-            def verda_factory(
-                cfg: ProviderConfig, pool_ref: ActorRef[PoolMsg],
-            ) -> Behavior[ProviderMsg]:
+            def verda_factory(cfg: ProviderConfig) -> Behavior[ProviderMsg]:
                 from skyward.infra.http import HttpClient, OAuth2Auth
 
                 from .verda.client import VERDA_API_BASE, VerdaClient, get_credentials
@@ -102,18 +96,16 @@ def get_provider_for_config(config: ProviderConfig) -> tuple[ProviderActorFactor
                 auth = OAuth2Auth(client_id, client_secret, f"{VERDA_API_BASE}/oauth2/token")
                 http_client = HttpClient(VERDA_API_BASE, auth, timeout=60)
                 client = VerdaClient(http_client)
-                return verda_provider_actor(verda_cfg, client, pool_ref)
+                return verda_provider_actor(verda_cfg, client)
 
             return verda_factory, "verda"
 
         case RunPod():
-            def runpod_factory(
-                cfg: ProviderConfig, pool_ref: ActorRef[PoolMsg],
-            ) -> Behavior[ProviderMsg]:
+            def runpod_factory(cfg: ProviderConfig) -> Behavior[ProviderMsg]:
                 from .runpod.handler import runpod_provider_actor
 
                 runpod_cfg: RunPod = cfg  # type: ignore[assignment]
-                return runpod_provider_actor(runpod_cfg, pool_ref)
+                return runpod_provider_actor(runpod_cfg)
 
             return runpod_factory, "runpod"
 
