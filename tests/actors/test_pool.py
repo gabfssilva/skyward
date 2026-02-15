@@ -6,22 +6,21 @@ import pytest
 from casty import ActorContext, ActorRef, ActorSystem, Behavior, Behaviors
 
 from skyward.actors.messages import (
-    BroadcastResult,
-    BroadcastTask,
+    ClusterConnected,
     ClusterProvisioned,
     ClusterRequested,
-    ExecuteResult,
-    ExecuteTask,
     InstanceMetadata,
     NodeBecameReady,
     NodeLost,
     PoolMsg,
     PoolStarted,
     PoolStopped,
+    SetWorkerRef,
     ShutdownCompleted,
     ShutdownRequested,
     StartPool,
     StopPool,
+    SubmitTask,
 )
 from skyward.actors.pool import pool_actor
 from skyward.api.spec import Image, PoolSpec
@@ -167,16 +166,16 @@ def test_pool_full_lifecycle(actor_system):
     loop.run_until_complete(_test())
 
 
-def test_pool_execute_task_in_ready_state(actor_system):
+def test_pool_submit_task_delegates_to_task_manager(actor_system):
     system, loop = actor_system
     provider_events: list = []
     start_replies: list = []
-    exec_replies: list[ExecuteResult] = []
+    task_replies: list = []
 
     async def _test():
         provider_ref = system.spawn(probe_actor(provider_events), "provider-3")
         start_reply_ref = system.spawn(reply_probe(start_replies), "start-reply-3")
-        exec_reply_ref = system.spawn(reply_probe(exec_replies), "exec-reply-3")
+        task_reply_ref = system.spawn(reply_probe(task_replies), "task-reply-3")
 
         pool_ref: ActorRef[PoolMsg] = system.spawn(
             pool_actor(),
@@ -195,48 +194,36 @@ def test_pool_execute_task_in_ready_state(actor_system):
         request_id = [e for e in provider_events if isinstance(e, ClusterRequested)][0].request_id
         pool_ref.tell(ClusterProvisioned(
             request_id=request_id,
-            cluster_id="c-exec",
+            cluster_id="c-submit",
             provider="aws",
         ))
         await asyncio.sleep(0.3)
 
-        info_0 = _make_instance(0)
-        pool_ref.tell(NodeBecameReady(node_id=0, instance=info_0))
+        pool_ref.tell(NodeBecameReady(node_id=0, instance=_make_instance(0)))
         await asyncio.sleep(0.3)
 
-        pool_ref.tell(ExecuteTask(
-            fn=lambda x, y: x + y,
-            args=(3, 4),
-            kwargs={},
-            node=0,
-            reply_to=exec_reply_ref,
-        ))
+        pool_ref.tell(SubmitTask(fn_bytes=b"task-data", reply_to=task_reply_ref))
         await asyncio.sleep(0.3)
-
-        assert len(exec_replies) == 1
-        assert exec_replies[0].value == 7
-        assert exec_replies[0].node_id == 0
 
     loop.run_until_complete(_test())
 
 
-def test_pool_broadcast_task(actor_system):
+def test_pool_cluster_connected_distributes_worker_refs(actor_system):
     system, loop = actor_system
     provider_events: list = []
     start_replies: list = []
-    broadcast_replies: list[BroadcastResult] = []
+    node_msgs: list = []
 
     async def _test():
-        provider_ref = system.spawn(probe_actor(provider_events), "provider-4")
-        start_reply_ref = system.spawn(reply_probe(start_replies), "start-reply-4")
-        bcast_reply_ref = system.spawn(reply_probe(broadcast_replies), "bcast-reply-4")
+        provider_ref = system.spawn(probe_actor(provider_events), "provider-8")
+        start_reply_ref = system.spawn(reply_probe(start_replies), "start-reply-8")
 
         pool_ref: ActorRef[PoolMsg] = system.spawn(
             pool_actor(),
-            "pool-4",
+            "pool-8",
         )
 
-        spec = _make_spec(nodes=3)
+        spec = _make_spec(nodes=2)
         pool_ref.tell(StartPool(
             spec=spec,
             provider_config=None,
@@ -248,31 +235,19 @@ def test_pool_broadcast_task(actor_system):
         request_id = [e for e in provider_events if isinstance(e, ClusterRequested)][0].request_id
         pool_ref.tell(ClusterProvisioned(
             request_id=request_id,
-            cluster_id="c-bcast",
+            cluster_id="c-cc",
             provider="aws",
         ))
         await asyncio.sleep(0.3)
 
-        for i in range(3):
-            pool_ref.tell(NodeBecameReady(node_id=i, instance=_make_instance(i)))
-        await asyncio.sleep(0.5)
-
-        counter = {"n": 0}
-
-        def counting_fn():
-            counter["n"] += 1
-            return counter["n"]
-
-        pool_ref.tell(BroadcastTask(
-            fn=counting_fn,
-            args=(),
-            kwargs={},
-            reply_to=bcast_reply_ref,
-        ))
+        pool_ref.tell(NodeBecameReady(node_id=0, instance=_make_instance(0)))
+        pool_ref.tell(NodeBecameReady(node_id=1, instance=_make_instance(1)))
         await asyncio.sleep(0.3)
 
-        assert len(broadcast_replies) == 1
-        assert len(broadcast_replies[0].values) == 3
+        worker_0 = system.spawn(reply_probe(node_msgs), "fake-worker-0")
+        worker_1 = system.spawn(reply_probe(node_msgs), "fake-worker-1")
+        pool_ref.tell(ClusterConnected(worker_refs=((0, worker_0), (1, worker_1)), client=None))
+        await asyncio.sleep(0.3)
 
     loop.run_until_complete(_test())
 
@@ -326,16 +301,14 @@ def test_pool_stop_emits_shutdown(actor_system):
     loop.run_until_complete(_test())
 
 
-def test_pool_forwards_preemption_to_node_and_removes_instance(actor_system):
+def test_pool_node_lost_in_ready_state(actor_system):
     system, loop = actor_system
     provider_events: list = []
     start_replies: list = []
-    exec_replies: list[ExecuteResult] = []
 
     async def _test():
         provider_ref = system.spawn(probe_actor(provider_events), "provider-6")
         start_reply_ref = system.spawn(reply_probe(start_replies), "start-reply-6")
-        exec_reply_ref = system.spawn(reply_probe(exec_replies), "exec-reply-6")
 
         pool_ref: ActorRef[PoolMsg] = system.spawn(
             pool_actor(),
@@ -359,26 +332,12 @@ def test_pool_forwards_preemption_to_node_and_removes_instance(actor_system):
         ))
         await asyncio.sleep(0.3)
 
-        info_0 = _make_instance(0)
-        info_1 = _make_instance(1)
-        pool_ref.tell(NodeBecameReady(node_id=0, instance=info_0))
-        pool_ref.tell(NodeBecameReady(node_id=1, instance=info_1))
+        pool_ref.tell(NodeBecameReady(node_id=0, instance=_make_instance(0)))
+        pool_ref.tell(NodeBecameReady(node_id=1, instance=_make_instance(1)))
         await asyncio.sleep(0.5)
 
         pool_ref.tell(NodeLost(node_id=1, reason="spot-interruption"))
         await asyncio.sleep(0.3)
-
-        pool_ref.tell(ExecuteTask(
-            fn=lambda: "still-works",
-            args=(),
-            kwargs={},
-            node=None,
-            reply_to=exec_reply_ref,
-        ))
-        await asyncio.sleep(0.3)
-
-        assert len(exec_replies) == 1
-        assert exec_replies[0].node_id == 0
 
         new_info_1 = InstanceMetadata(
             id="i-new-1",
@@ -388,62 +347,5 @@ def test_pool_forwards_preemption_to_node_and_removes_instance(actor_system):
         )
         pool_ref.tell(NodeBecameReady(node_id=1, instance=new_info_1))
         await asyncio.sleep(0.3)
-
-    loop.run_until_complete(_test())
-
-
-def test_pool_round_robin_execution(actor_system):
-    system, loop = actor_system
-    provider_events: list = []
-    start_replies: list = []
-    exec_replies: list[ExecuteResult] = []
-
-    async def _test():
-        provider_ref = system.spawn(probe_actor(provider_events), "provider-7")
-        start_reply_ref = system.spawn(reply_probe(start_replies), "start-reply-7")
-        exec_reply_ref = system.spawn(reply_probe(exec_replies), "exec-reply-7")
-
-        pool_ref: ActorRef[PoolMsg] = system.spawn(
-            pool_actor(),
-            "pool-7",
-        )
-
-        spec = _make_spec(nodes=2)
-        pool_ref.tell(StartPool(
-            spec=spec,
-            provider_config=None,
-            provider_ref=provider_ref,
-            reply_to=start_reply_ref,
-        ))
-        await asyncio.sleep(0.3)
-
-        request_id = [e for e in provider_events if isinstance(e, ClusterRequested)][0].request_id
-        pool_ref.tell(ClusterProvisioned(
-            request_id=request_id,
-            cluster_id="c-rr",
-            provider="aws",
-        ))
-        await asyncio.sleep(0.3)
-
-        pool_ref.tell(NodeBecameReady(node_id=0, instance=_make_instance(0)))
-        pool_ref.tell(NodeBecameReady(node_id=1, instance=_make_instance(1)))
-        await asyncio.sleep(0.5)
-
-        for _ in range(4):
-            pool_ref.tell(ExecuteTask(
-                fn=lambda: "ok",
-                args=(),
-                kwargs={},
-                node=None,
-                reply_to=exec_reply_ref,
-            ))
-        await asyncio.sleep(0.5)
-
-        assert len(exec_replies) == 4
-        node_ids = [r.node_id for r in exec_replies]
-        assert node_ids[0] == 0
-        assert node_ids[1] == 1
-        assert node_ids[2] == 0
-        assert node_ids[3] == 1
 
     loop.run_until_complete(_test())

@@ -1,4 +1,8 @@
+from __future__ import annotations
+
 import uuid
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 
@@ -20,12 +24,29 @@ from skyward.actors.messages import (
     NodeMsg,
     Provision,
     Running,
+    SetWorkerRef,
     SlotFreed,
     TaskResult,
     _to_metadata,
 )
 
+if TYPE_CHECKING:
+    from casty import ClusterClient
+
 type NodeId = int
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveState:
+    cluster_id: str
+    provider_ref: ActorRef
+    worker_ref: ActorRef | None
+    client: ClusterClient | None
+    instance_ref: ActorRef | None
+    pending_tasks: tuple[tuple[bytes, ActorRef], ...] = ()
+    inflight: tuple[tuple[int, ActorRef], ...] = ()
+    task_counter: int = 0
+    current_metadata: InstanceMetadata | None = None
 
 
 def node_actor(
@@ -34,71 +55,68 @@ def node_actor(
     task_manager: ActorRef | None = None,
     panel: ActorRef | None = None,
 ) -> Behavior[NodeMsg]:
+    """A node tells this story: idle → provisioning → waiting → bootstrapping → active."""
 
-    def _request_instance(
-        provider_ref: ActorRef, cluster_id: str, node_ref: ActorRef, provider_name: str = "aws",
-    ) -> None:
+    def _request_instance(provider_ref: ActorRef, cluster_id: str, node_ref: ActorRef) -> None:
         provider_ref.tell(InstanceRequested(
             request_id=str(uuid.uuid4()),
-            provider=provider_name,  # type: ignore[arg-type]
+            provider="aws",  # type: ignore[arg-type]
             cluster_id=cluster_id,
             node_id=node_id,
             reply_to=node_ref,
         ))
 
+    def _spawn_instance(
+        ctx: ActorContext, instance_id: str, provider_ref: ActorRef,
+        worker_ref: ActorRef | None, client: ClusterClient | None = None,
+        metadata: InstanceMetadata | None = None,
+    ) -> ActorRef:
+        behavior = instance_actor(
+            instance_id=instance_id,
+            provider_ref=provider_ref,
+            worker_ref=worker_ref,
+            client=client,
+            parent=ctx.self,
+            metadata=metadata,
+            _skip_tunnel=True,
+        )
+        return ctx.spawn(
+            Behaviors.spy(behavior, observer=panel) if panel else behavior,
+            name=f"instance-{instance_id}",
+        )
+
     def idle() -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
             match msg:
-                case Provision(cluster_id, provider_ref, cluster_client):
+                case Provision(cluster_id, provider_ref):
                     _request_instance(provider_ref, cluster_id, ctx.self)
-                    return provisioning(cluster_id, provider_ref, cluster_client)
+                    return provisioning(cluster_id, provider_ref)
             return Behaviors.same()
         return Behaviors.receive(receive)
 
     def provisioning(
         cluster_id: str,
         provider_ref: ActorRef,
-        cluster_client: object,
+        worker_ref: ActorRef | None = None,
+        client: ClusterClient | None = None,
         pending_tasks: tuple[tuple[bytes, ActorRef], ...] = (),
     ) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
             match msg:
+                case SetWorkerRef(worker_ref=wref, client=cl):
+                    return provisioning(cluster_id, provider_ref, wref, cl or client, pending_tasks)
                 case InstanceLaunched(instance_id=iid):
-                    behavior = instance_actor(
-                        instance_id=iid,
-                        provider_ref=provider_ref,
-                        cluster_client=cluster_client,
-                        parent=ctx.self,
-                        _skip_tunnel=True,
-                    )
-                    instance_ref = ctx.spawn(
-                        Behaviors.spy(behavior, observer=panel) if panel else behavior,
-                        name=f"instance-{iid}",
-                    )
+                    instance_ref = _spawn_instance(ctx, iid, provider_ref, worker_ref, client)
                     return waiting_for_running(
-                        cluster_id, provider_ref, cluster_client, instance_ref, pending_tasks
+                        cluster_id, provider_ref, worker_ref, client, instance_ref, pending_tasks,
                     )
                 case InstanceRunning() as event:
                     metadata = _to_metadata(event)
-                    pool.tell(InstanceProvisioned(
-                        request_id=event.request_id,
-                        instance=metadata,
-                    ))
-
-                    behavior = instance_actor(
-                        instance_id=metadata.id,
-                        provider_ref=provider_ref,
-                        cluster_client=cluster_client,
-                        parent=ctx.self,
-                        metadata=metadata,
-                        _skip_tunnel=True,
-                    )
-                    instance_ref = ctx.spawn(
-                        Behaviors.spy(behavior, observer=panel) if panel else behavior,
-                        name=f"instance-{metadata.id}",
+                    pool.tell(InstanceProvisioned(request_id=event.request_id, instance=metadata))
+                    instance_ref = _spawn_instance(
+                        ctx, metadata.id, provider_ref, worker_ref, client, metadata,
                     )
                     instance_ref.tell(Running(ip=metadata.ip))
-
                     provider_ref.tell(BootstrapRequested(
                         request_id=str(uuid.uuid4()),
                         instance=metadata,
@@ -106,13 +124,12 @@ def node_actor(
                         reply_to=ctx.self,
                     ))
                     return bootstrapping(
-                        cluster_id, provider_ref, cluster_client, instance_ref, metadata, pending_tasks
+                        cluster_id, provider_ref, worker_ref, client,
+                        instance_ref, metadata, pending_tasks,
                     )
                 case ExecuteOnNode(fn_bytes, reply_to):
                     return provisioning(
-                        cluster_id,
-                        provider_ref,
-                        cluster_client,
+                        cluster_id, provider_ref, worker_ref, client,
                         (*pending_tasks, (fn_bytes, reply_to)),
                     )
             return Behaviors.same()
@@ -121,18 +138,21 @@ def node_actor(
     def waiting_for_running(
         cluster_id: str,
         provider_ref: ActorRef,
-        cluster_client: object,
+        worker_ref: ActorRef | None,
+        client: ClusterClient | None,
         instance_ref: ActorRef,
         pending_tasks: tuple[tuple[bytes, ActorRef], ...] = (),
     ) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
             match msg:
+                case SetWorkerRef(worker_ref=wref, client=cl):
+                    instance_ref.tell(SetWorkerRef(worker_ref=wref, client=cl))
+                    return waiting_for_running(
+                        cluster_id, provider_ref, wref, cl or client, instance_ref, pending_tasks,
+                    )
                 case InstanceRunning() as event:
                     metadata = _to_metadata(event)
-                    pool.tell(InstanceProvisioned(
-                        request_id=event.request_id,
-                        instance=metadata,
-                    ))
+                    pool.tell(InstanceProvisioned(request_id=event.request_id, instance=metadata))
                     instance_ref.tell(Running(ip=metadata.ip))
                     provider_ref.tell(BootstrapRequested(
                         request_id=str(uuid.uuid4()),
@@ -141,18 +161,15 @@ def node_actor(
                         reply_to=ctx.self,
                     ))
                     return bootstrapping(
-                        cluster_id, provider_ref, cluster_client,
+                        cluster_id, provider_ref, worker_ref, client,
                         instance_ref, metadata, pending_tasks,
                     )
-                case InstanceDied(_, _):
+                case InstanceDied():
                     _request_instance(provider_ref, cluster_id, ctx.self)
-                    return provisioning(cluster_id, provider_ref, cluster_client, pending_tasks)
+                    return provisioning(cluster_id, provider_ref, worker_ref, client, pending_tasks)
                 case ExecuteOnNode(fn_bytes, reply_to):
                     return waiting_for_running(
-                        cluster_id,
-                        provider_ref,
-                        cluster_client,
-                        instance_ref,
+                        cluster_id, provider_ref, worker_ref, client, instance_ref,
                         (*pending_tasks, (fn_bytes, reply_to)),
                     )
             return Behaviors.same()
@@ -161,138 +178,95 @@ def node_actor(
     def bootstrapping(
         cluster_id: str,
         provider_ref: ActorRef,
-        cluster_client: object,
+        worker_ref: ActorRef | None,
+        client: ClusterClient | None,
         instance_ref: ActorRef,
         metadata: InstanceMetadata,
         pending_tasks: tuple[tuple[bytes, ActorRef], ...] = (),
     ) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
             match msg:
-                case InstanceBecameReady(instance_id=iid, ip=ip):
-                    final_metadata = metadata
-                    pool.tell(NodeBecameReady(node_id=node_id, instance=final_metadata))
-                    return active(
-                        cluster_id,
-                        provider_ref,
-                        cluster_client,
-                        instance_ref=instance_ref,
-                        pending_tasks=pending_tasks,
-                        inflight={},
-                        current_metadata=final_metadata,
+                case SetWorkerRef(worker_ref=wref, client=cl):
+                    instance_ref.tell(SetWorkerRef(worker_ref=wref, client=cl))
+                    return bootstrapping(
+                        cluster_id, provider_ref, wref, cl or client,
+                        instance_ref, metadata, pending_tasks,
                     )
-                case InstanceBootstrapped(instance=instance):
-                    pool.tell(NodeBecameReady(node_id=node_id, instance=instance))
-                    return active(
-                        cluster_id,
-                        provider_ref,
-                        cluster_client,
-                        instance_ref=instance_ref,
-                        pending_tasks=pending_tasks,
-                        inflight={},
-                        current_metadata=instance,
-                    )
-                case InstanceDied(_, reason):
+                case InstanceBecameReady():
+                    pool.tell(NodeBecameReady(node_id=node_id, instance=metadata))
+                    return active(ActiveState(
+                        cluster_id=cluster_id, provider_ref=provider_ref,
+                        worker_ref=worker_ref, client=client,
+                        instance_ref=instance_ref, pending_tasks=pending_tasks,
+                        current_metadata=metadata,
+                    ))
+                case InstanceBootstrapped(instance=inst):
+                    pool.tell(NodeBecameReady(node_id=node_id, instance=inst))
+                    return active(ActiveState(
+                        cluster_id=cluster_id, provider_ref=provider_ref,
+                        worker_ref=worker_ref, client=client,
+                        instance_ref=instance_ref, pending_tasks=pending_tasks,
+                        current_metadata=inst,
+                    ))
+                case InstanceDied(reason=reason):
                     pool.tell(NodeLost(node_id=node_id, reason=reason))
                     _request_instance(provider_ref, cluster_id, ctx.self)
-                    return provisioning(cluster_id, provider_ref, cluster_client, pending_tasks)
+                    return provisioning(cluster_id, provider_ref, worker_ref, client, pending_tasks)
                 case ExecuteOnNode(fn_bytes, reply_to):
                     return bootstrapping(
-                        cluster_id,
-                        provider_ref,
-                        cluster_client,
-                        instance_ref,
-                        metadata,
+                        cluster_id, provider_ref, worker_ref, client, instance_ref, metadata,
                         (*pending_tasks, (fn_bytes, reply_to)),
                     )
             return Behaviors.same()
         return Behaviors.receive(receive)
 
-    def active(
-        cluster_id: str,
-        provider_ref: ActorRef,
-        cluster_client: object,
-        instance_ref: ActorRef | None,
-        pending_tasks: tuple[tuple[bytes, ActorRef], ...] = (),
-        inflight: dict[int, ActorRef] | None = None,
-        task_counter: int = 0,
-        current_metadata: InstanceMetadata | None = None,
-    ) -> Behavior[NodeMsg]:
-        if inflight is None:
-            inflight = {}
-
+    def active(s: ActiveState) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
             match msg:
-                case InstanceBecameReady(instance_id, ip):
-                    metadata = current_metadata or InstanceMetadata(
-                        id=instance_id, node=node_id, provider="aws", ip=ip,
+                case SetWorkerRef(worker_ref=wref, client=cl):
+                    if s.instance_ref:
+                        s.instance_ref.tell(SetWorkerRef(worker_ref=wref, client=cl))
+                    return active(replace(s, worker_ref=wref, client=cl or s.client))
+                case InstanceBecameReady(instance_id=iid, ip=ip):
+                    meta = s.current_metadata or InstanceMetadata(
+                        id=iid, node=node_id, provider="aws", ip=ip,
                     )
-                    pool.tell(NodeBecameReady(node_id=node_id, instance=metadata))
-                    new_counter = task_counter
-                    new_inflight = dict(inflight)
-                    if instance_ref:
-                        for fn_bytes, reply_to in pending_tasks:
-                            instance_ref.tell(Execute(fn_bytes=fn_bytes, reply_to=ctx.self))
-                            new_inflight[new_counter] = reply_to
+                    pool.tell(NodeBecameReady(node_id=node_id, instance=meta))
+                    new_inflight = s.inflight
+                    new_counter = s.task_counter
+                    if s.instance_ref:
+                        for fn_bytes, rto in s.pending_tasks:
+                            s.instance_ref.tell(Execute(fn_bytes=fn_bytes, reply_to=ctx.self))
+                            new_inflight = (*new_inflight, (new_counter, rto))
                             new_counter += 1
-                    return active(
-                        cluster_id,
-                        provider_ref,
-                        cluster_client,
-                        instance_ref,
-                        pending_tasks=(),
-                        inflight=new_inflight,
-                        task_counter=new_counter,
-                        current_metadata=metadata,
-                    )
+                    return active(replace(
+                        s, pending_tasks=(), inflight=new_inflight,
+                        task_counter=new_counter, current_metadata=meta,
+                    ))
                 case InstanceRunning() as ev:
-                    metadata = _to_metadata(ev)
-                    return active(
-                        cluster_id,
-                        provider_ref,
-                        cluster_client,
-                        instance_ref,
-                        pending_tasks,
-                        inflight,
-                        task_counter,
-                        current_metadata=metadata,
-                    )
-                case InstanceDied(_, reason):
+                    return active(replace(s, current_metadata=_to_metadata(ev)))
+                case InstanceDied(reason=reason):
                     pool.tell(NodeLost(node_id=node_id, reason=reason))
-                    _request_instance(provider_ref, cluster_id, ctx.self)
-                    return provisioning(cluster_id, provider_ref, cluster_client, pending_tasks)
+                    _request_instance(s.provider_ref, s.cluster_id, ctx.self)
+                    return provisioning(
+                        s.cluster_id, s.provider_ref, s.worker_ref, s.client, s.pending_tasks,
+                    )
                 case ExecuteOnNode(fn_bytes, reply_to):
-                    if instance_ref:
-                        instance_ref.tell(Execute(fn_bytes=fn_bytes, reply_to=ctx.self))
-                        new_inflight = {**inflight, task_counter: reply_to}
-                        return active(
-                            cluster_id,
-                            provider_ref,
-                            cluster_client,
-                            instance_ref,
-                            pending_tasks,
-                            new_inflight,
-                            task_counter + 1,
-                            current_metadata=current_metadata,
-                        )
+                    if s.instance_ref:
+                        s.instance_ref.tell(Execute(fn_bytes=fn_bytes, reply_to=ctx.self))
+                        return active(replace(
+                            s,
+                            inflight=(*s.inflight, (s.task_counter, reply_to)),
+                            task_counter=s.task_counter + 1,
+                        ))
                     return Behaviors.same()
-                case TaskResult(value, _node_id):
-                    if inflight:
-                        first_key = next(iter(inflight))
-                        caller = inflight[first_key]
+                case TaskResult(value, _):
+                    if s.inflight:
+                        _, caller = s.inflight[0]
                         caller.tell(TaskResult(value=value, node_id=node_id))
-                        new_inflight = {k: v for k, v in inflight.items() if k != first_key}
                         if task_manager:
                             task_manager.tell(SlotFreed(node_id=node_id))
-                        return active(
-                            cluster_id,
-                            provider_ref,
-                            cluster_client,
-                            instance_ref,
-                            pending_tasks,
-                            new_inflight,
-                            task_counter,
-                            current_metadata=current_metadata,
-                        )
+                        return active(replace(s, inflight=s.inflight[1:]))
             return Behaviors.same()
         return Behaviors.receive(receive)
 

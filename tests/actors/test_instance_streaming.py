@@ -42,7 +42,7 @@ async def test_instance_streams_events_after_running(system):
         instance_actor(
             instance_id="i-123",
             provider_ref=provider_ref,
-            cluster_client=None,
+            worker_ref=None,
             parent=parent_ref,
             _tunnel_factory=mock_tunnel_factory,
         ),

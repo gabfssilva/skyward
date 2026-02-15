@@ -22,7 +22,7 @@ def test_node_messages_are_frozen():
         Provision,
     )
 
-    msg = Provision(cluster_id="c1", provider_ref=None, cluster_client=None)  # type: ignore[arg-type]
+    msg = Provision(cluster_id="c1", provider_ref=None)  # type: ignore[arg-type]
     assert msg.cluster_id == "c1"
 
 

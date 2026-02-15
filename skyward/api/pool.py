@@ -38,7 +38,13 @@ from casty import ActorRef, ActorSystem, Behaviors, CastyConfig
 from loguru import logger
 
 from skyward.accelerators import Accelerator
-from skyward.actors.messages import InstanceMetadata, PoolMsg
+from skyward.actors.messages import (
+    ClusterConnected,
+    InstanceMetadata,
+    PoolMsg,
+    SubmitTask,
+    TaskResult,
+)
 
 if TYPE_CHECKING:
     import asyncssh
@@ -55,7 +61,6 @@ from skyward.distributed import (
     _set_active_registry,
 )
 from skyward.distributed.types import Consistency
-from skyward.infra.executor import Executor, ExecutorConfig
 from skyward.observability.logging import LogConfig, _setup_logging, _teardown_logging
 from skyward.providers.aws.config import AWS
 from skyward.providers.runpod.config import RunPod
@@ -309,7 +314,7 @@ class ComputePool:
     _cluster_id: str = field(default="", init=False, repr=False)
     _instances: dict[int, InstanceMetadata] = field(default_factory=dict, init=False, repr=False)
     _spec: PoolSpec | None = field(default=None, init=False, repr=False)
-    _executor: Executor | None = field(default=None, init=False, repr=False)
+    _cluster_client: Any = field(default=None, init=False, repr=False)
     _network_interfaces: dict[int, str] = field(default_factory=dict, init=False, repr=False)
     _ssh_transports: list[SSHTransport] = field(default_factory=list, init=False, repr=False)
     _fwd_listeners: list[asyncssh.SSHListener] = field(
@@ -390,52 +395,85 @@ class ComputePool:
             if self._log_handler_ids:
                 _teardown_logging(self._log_handler_ids)
 
+    def _serialize_pending(self, pending: PendingCompute[Any]) -> bytes:
+        from skyward.infra.serialization import serialize
+        return serialize({"fn": pending.fn, "args": pending.args, "kwargs": pending.kwargs})
+
+    def _unwrap_result(self, result: TaskResult) -> Any:
+        match result.value:
+            case RuntimeError() as err:
+                raise err
+            case value:
+                return value
+
     def run[T](self, pending: PendingCompute[T]) -> T:
-        if not self._active or self._executor is None:
+        if not self._active or self._pool_ref is None or self._system is None:
             raise RuntimeError("Pool is not active")
 
-        return self._run_sync(
-            self._executor.execute(
-                pending.fn,
-                *pending.args,
-                **pending.kwargs,
+        fn_bytes = self._serialize_pending(pending)
+        result: TaskResult = self._run_sync(
+            self._system.ask(
+                self._pool_ref,
+                lambda reply_to: SubmitTask(fn_bytes=fn_bytes, reply_to=reply_to),
+                timeout=600.0,
             )
         )
+        return self._unwrap_result(result)
 
     def run_async[T](self, pending: PendingCompute[T]) -> Future[T]:
-        if not self._active or self._executor is None or self._loop is None:
+        if not self._active or self._pool_ref is None or self._system is None or self._loop is None:
             raise RuntimeError("Pool is not active")
 
-        return asyncio.run_coroutine_threadsafe(
-            self._executor.execute(pending.fn, *pending.args, **pending.kwargs),
-            self._loop,
-        )
+        fn_bytes = self._serialize_pending(pending)
+
+        async def _run() -> T:
+            result: TaskResult = await self._system.ask(  # type: ignore[union-attr]
+                self._pool_ref,
+                lambda reply_to: SubmitTask(fn_bytes=fn_bytes, reply_to=reply_to),
+                timeout=600.0,
+            )
+            return self._unwrap_result(result)
+
+        return asyncio.run_coroutine_threadsafe(_run(), self._loop)
 
     def broadcast[T](self, pending: PendingCompute[T]) -> list[T]:
-        """Execute computation on all nodes."""
-        if not self._active or self._executor is None:
+        if not self._active or self._pool_ref is None or self._system is None:
             raise RuntimeError("Pool is not active")
 
-        return self._run_sync(
-            self._executor.broadcast(
-                pending.fn,
-                *pending.args,
-                **pending.kwargs,
-            )
-        )
+        fn_bytes = self._serialize_pending(pending)
+
+        async def _broadcast() -> list[T]:
+            tasks = [
+                self._system.ask(  # type: ignore[union-attr]
+                    self._pool_ref,
+                    lambda reply_to: SubmitTask(fn_bytes=fn_bytes, reply_to=reply_to),
+                    timeout=600.0,
+                )
+                for _ in range(self.nodes)
+            ]
+            results = await asyncio.gather(*tasks)
+            return [self._unwrap_result(r) for r in results]
+
+        return self._run_sync(_broadcast())
 
     def run_parallel(self, group: PendingComputeGroup) -> tuple[Any, ...]:
-        """Execute multiple computations in parallel."""
-        if not self._active or self._executor is None:
+        if not self._active or self._pool_ref is None or self._system is None:
             raise RuntimeError("Pool is not active")
 
         async def _run_parallel() -> tuple[Any, ...]:
             tasks = [
-                self._executor.execute(p.fn, *p.args, **p.kwargs)  # type: ignore
+                self._system.ask(  # type: ignore[union-attr]
+                    self._pool_ref,
+                    lambda reply_to: SubmitTask(
+                        fn_bytes=self._serialize_pending(p),
+                        reply_to=reply_to,
+                    ),
+                    timeout=600.0,
+                )
                 for p in group.items
             ]
             results = await asyncio.gather(*tasks)
-            return tuple(results)
+            return tuple(self._unwrap_result(r) for r in results)
 
         return self._run_sync(_run_parallel())
 
@@ -444,16 +482,22 @@ class ComputePool:
         fn: Callable[[T], R],
         items: Sequence[T],
     ) -> list[R]:
-        """Map function over items in parallel across nodes."""
-        if not self._active or self._executor is None:
+        if not self._active or self._pool_ref is None or self._system is None:
             raise RuntimeError("Pool is not active")
 
         async def _map_async() -> list[R]:
             tasks = [
-                self._executor.execute(fn, item)  # type: ignore
+                self._system.ask(  # type: ignore[union-attr]
+                    self._pool_ref,
+                    lambda reply_to: SubmitTask(
+                        fn_bytes=self._serialize_pending(PendingCompute(fn=fn, args=(item,), kwargs={})),
+                        reply_to=reply_to,
+                    ),
+                    timeout=600.0,
+                )
                 for item in items
             ]
-            return list(await asyncio.gather(*tasks))
+            return [self._unwrap_result(r) for r in await asyncio.gather(*tasks)]
 
         return self._run_sync(_map_async())
 
@@ -566,14 +610,15 @@ class ComputePool:
             for info in started.instances
         }
 
-        await self._create_executor()
+        await self._setup_cluster_client()
 
     async def _stop_async(self) -> None:
         """Stop pool asynchronously."""
-        if self._executor is not None:
-            logger.debug("Disconnecting executor...")
-            await self._executor.disconnect()
-            self._executor = None
+        if self._cluster_client is not None:
+            logger.debug("Closing ClusterClient...")
+            with suppress(Exception):
+                await self._cluster_client.__aexit__(None, None, None)
+            self._cluster_client = None
 
         for listener in self._fwd_listeners:
             with suppress(Exception):
@@ -601,7 +646,12 @@ class ComputePool:
 
         await _cancel_pending_tasks()
 
-    async def _create_executor(self) -> None:
+    async def _setup_cluster_client(self) -> None:
+        from casty import ClusterClient
+
+        from skyward.infra.executor import _wait_for_workers
+        from skyward.infra.serialization import serialize
+        from skyward.infra.worker import ExecuteTask as WorkerExecuteTask
         from skyward.providers.ssh_keys import get_ssh_key_path
 
         head_info = self._instances.get(0)
@@ -614,27 +664,54 @@ class ComputePool:
 
         await self._start_casty_cluster(head_addr, ssh_user, ssh_key)
 
+        casty_port = 25520
+        client = ClusterClient(
+            contact_points=[(head_addr, casty_port)],
+            system_name="skyward",
+            address_map=dict(self._address_map),
+        )
+        await client.__aenter__()
+        self._cluster_client = client
+
+        worker_refs = await _wait_for_workers(
+            client, self.nodes, dict(self._host_to_node), timeout=120.0,
+        )
+
         pool_infos = [
             self._build_pool_info(info, head_addr).model_dump_json()
             if (info := self._instances.get(node_id)) is not None
             else ""
             for node_id in range(self.nodes)
         ]
-
         image_env = dict(self.image.env) if self.image and self.image.env else {}
-        casty_port = 25520
-        config = ExecutorConfig(
-            system_name="skyward",
-            contact_points=((head_addr, casty_port),),
-            address_map=dict(self._address_map),
-            host_to_node=dict(self._host_to_node),
-            num_nodes=self.nodes,
-            workers_per_node=self.concurrency,
-        )
-        self._executor = Executor(self._system, config)  # type: ignore[arg-type]
-        await self._executor.connect()
-        await self._executor.setup_cluster(env_vars=image_env, pool_infos=pool_infos)
-        logger.debug("Executor connected and ready")
+
+        def setup_env(all_infos: list[str], extra: dict[str, str]) -> str:
+            import os
+            nid = int(os.environ.get("SKYWARD_NODE_ID", "0"))
+            if all_infos and nid < len(all_infos):
+                os.environ["COMPUTE_POOL"] = all_infos[nid]
+            for k, v in extra.items():
+                os.environ[k] = v
+            return "ok"
+
+        fn_bytes = serialize({"fn": setup_env, "args": (pool_infos, image_env), "kwargs": {}})
+        setup_tasks = [
+            client.ask(
+                ref,
+                lambda reply_to: WorkerExecuteTask(fn_bytes=fn_bytes, reply_to=reply_to),
+                timeout=60.0,
+            )
+            for _, ref in sorted(worker_refs.items())
+        ]
+        await asyncio.gather(*setup_tasks)
+
+        if self._pool_ref is not None:
+            self._pool_ref.tell(ClusterConnected(
+                worker_refs=tuple(worker_refs.items()),
+                client=client,
+            ))
+
+        logger.debug("ClusterClient connected and cluster configured")
 
     async def _start_casty_cluster(
         self,

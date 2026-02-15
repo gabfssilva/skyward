@@ -10,13 +10,14 @@ are the contracts — the type union IS the actor's public API.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from casty import ActorRef
 
 if TYPE_CHECKING:
+    from casty import ClusterClient
+
     from skyward.api.spec import PoolSpec
     from skyward.providers.registry import ProviderConfig
 
@@ -386,7 +387,7 @@ class Execute:
     reply_to: ActorRef[Any]
 
 
-type InstanceMsg = Running | Bootstrapping | Bootstrapped | BootstrapDone | Log | Metric | Preempted | Execute
+type InstanceMsg = Running | Bootstrapping | Bootstrapped | BootstrapDone | Log | Metric | Preempted | Execute | SetWorkerRef
 
 
 # =============================================================================
@@ -397,8 +398,7 @@ type InstanceMsg = Running | Bootstrapping | Bootstrapped | BootstrapDone | Log 
 @dataclass(frozen=True, slots=True)
 class Provision:
     cluster_id: ClusterId
-    provider_ref: ActorRef[Any]
-    cluster_client: Any
+    provider_ref: ActorRef
 
 
 @dataclass(frozen=True, slots=True)
@@ -434,6 +434,7 @@ type NodeMsg = (
     | InstanceDied
     | ExecuteOnNode
     | TaskResult
+    | SetWorkerRef
 )
 
 
@@ -479,38 +480,21 @@ class StopPool:
 
 
 @dataclass(frozen=True, slots=True)
-class ExecuteResult:
-    value: Any
-    node_id: int
+class ClusterConnected:
+    worker_refs: tuple[tuple[NodeId, ActorRef], ...]
+    client: ClusterClient
 
 
 @dataclass(frozen=True, slots=True)
-class BroadcastResult:
-    values: tuple[Any, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class ExecuteTask:
-    fn: Callable[..., Any]
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
-    node: int | None
-    reply_to: ActorRef[ExecuteResult]
-
-
-@dataclass(frozen=True, slots=True)
-class BroadcastTask:
-    fn: Callable[..., Any]
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
-    reply_to: ActorRef[BroadcastResult]
+class SetWorkerRef:
+    worker_ref: ActorRef | None
+    client: ClusterClient | None = None
 
 
 type PoolMsg = (
     StartPool
     | StopPool
-    | ExecuteTask
-    | BroadcastTask
+    | ClusterConnected
     | ClusterProvisioned
     | NodeBecameReady
     | NodeLost

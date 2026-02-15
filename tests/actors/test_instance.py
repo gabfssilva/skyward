@@ -41,7 +41,7 @@ async def test_instance_waiting_receives_running(system):
         instance_actor(
             instance_id="i-123",
             provider_ref=system.spawn(collector_behavior([]), "provider"),
-            cluster_client=None,
+            worker_ref=None,
             parent=parent_ref,
             _skip_tunnel=True,
         ),
@@ -67,7 +67,7 @@ async def test_instance_preempted_in_waiting(system):
         instance_actor(
             instance_id="i-123",
             provider_ref=system.spawn(collector_behavior([]), "provider"),
-            cluster_client=None,
+            worker_ref=None,
             parent=parent_ref,
             _skip_tunnel=True,
         ),
@@ -95,7 +95,7 @@ async def test_instance_full_lifecycle(system):
         instance_actor(
             instance_id="i-123",
             provider_ref=provider_ref,
-            cluster_client=None,
+            worker_ref=None,
             parent=parent_ref,
             _skip_tunnel=True,
         ),
@@ -128,7 +128,7 @@ async def test_instance_preempted_in_ready(system):
         instance_actor(
             instance_id="i-123",
             provider_ref=system.spawn(collector_behavior([]), "provider"),
-            cluster_client=None,
+            worker_ref=None,
             parent=parent_ref,
             _skip_tunnel=True,
         ),

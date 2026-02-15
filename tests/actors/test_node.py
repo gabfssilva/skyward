@@ -59,7 +59,7 @@ async def test_node_provision_sends_instance_requested(system):
     provider_ref = system.spawn(collector_behavior(provider_msgs), "provider")
 
     node_ref = system.spawn(node_actor(node_id=0, pool=pool_ref, task_manager=None), "node-0")
-    node_ref.tell(Provision(cluster_id="c1", provider_ref=provider_ref, cluster_client=None))
+    node_ref.tell(Provision(cluster_id="c1", provider_ref=provider_ref))
     await asyncio.sleep(0.1)
 
     assert len(provider_msgs) == 1
@@ -75,7 +75,7 @@ async def test_node_spawns_instance_on_launched(system):
     provider_ref = system.spawn(collector_behavior(provider_msgs), "provider")
 
     node_ref = system.spawn(node_actor(node_id=0, pool=pool_ref, task_manager=None), "node-0")
-    node_ref.tell(Provision(cluster_id="c1", provider_ref=provider_ref, cluster_client=None))
+    node_ref.tell(Provision(cluster_id="c1", provider_ref=provider_ref))
     await asyncio.sleep(0.1)
 
     node_ref.tell(_launched())
@@ -102,7 +102,7 @@ async def test_node_enqueues_tasks_during_provisioning(system):
     reply_ref = system.spawn(collector_behavior(reply_msgs), "reply")
 
     node_ref = system.spawn(node_actor(node_id=0, pool=pool_ref, task_manager=None), "node-0")
-    node_ref.tell(Provision(cluster_id="c1", provider_ref=provider_ref, cluster_client=None))
+    node_ref.tell(Provision(cluster_id="c1", provider_ref=provider_ref))
     await asyncio.sleep(0.1)
 
     node_ref.tell(ExecuteOnNode(fn_bytes=b"task1", reply_to=reply_ref))
@@ -123,7 +123,7 @@ async def test_node_preemption_recovery(system):
     tm_ref = system.spawn(collector_behavior(tm_msgs), "tm")
 
     node_ref = system.spawn(node_actor(node_id=0, pool=pool_ref, task_manager=tm_ref), "node-0")
-    node_ref.tell(Provision(cluster_id="c1", provider_ref=provider_ref, cluster_client=None))
+    node_ref.tell(Provision(cluster_id="c1", provider_ref=provider_ref))
     await asyncio.sleep(0.1)
 
     node_ref.tell(_launched())
@@ -154,7 +154,7 @@ async def test_node_intercepts_task_result(system):
     reply_ref = system.spawn(collector_behavior(reply_msgs), "reply")
 
     node_ref = system.spawn(node_actor(node_id=0, pool=pool_ref, task_manager=tm_ref), "node-0")
-    node_ref.tell(Provision(cluster_id="c1", provider_ref=provider_ref, cluster_client=None))
+    node_ref.tell(Provision(cluster_id="c1", provider_ref=provider_ref))
     await asyncio.sleep(0.1)
 
     node_ref.tell(_launched())

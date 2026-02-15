@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import uuid
+from typing import TYPE_CHECKING
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 
 from skyward.actors.messages import (
-    BroadcastResult,
-    BroadcastTask,
+    ClusterConnected,
     ClusterProvisioned,
     ClusterRequested,
-    ExecuteResult,
-    ExecuteTask,
     InstanceMetadata,
     NodeAvailable,
     NodeBecameReady,
@@ -20,6 +18,7 @@ from skyward.actors.messages import (
     PoolStarted,
     PoolStopped,
     Provision,
+    SetWorkerRef,
     ShutdownCompleted,
     ShutdownRequested,
     StartPool,
@@ -30,20 +29,18 @@ from skyward.actors.messages import (
 from skyward.actors.node import node_actor
 from skyward.actors.task_manager import task_manager_actor
 
-type NodeId = int
+if TYPE_CHECKING:
+    from skyward.actors.messages import ClusterId, NodeId
+    from skyward.api.spec import PoolSpec
 
 
 def pool_actor() -> Behavior[PoolMsg]:
+    """A pool tells this story: idle → requesting → provisioning → ready → stopping."""
 
     def idle() -> Behavior[PoolMsg]:
         async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
             match msg:
-                case StartPool(
-                    spec=spec,
-                    provider_config=provider_config,
-                    provider_ref=provider_ref,
-                    reply_to=reply_to,
-                ):
+                case StartPool(spec=spec, provider_config=_, provider_ref=provider_ref, reply_to=reply_to):
                     request_id = str(uuid.uuid4())
                     provider_name = spec.provider or "unknown"
                     provider_ref.tell(ClusterRequested(
@@ -52,14 +49,16 @@ def pool_actor() -> Behavior[PoolMsg]:
                         spec=spec,
                         reply_to=ctx.self,
                     ))
-                    return requesting(spec, provider_config, provider_ref, reply_to, request_id)
+                    return requesting(spec, provider_ref, reply_to)
             return Behaviors.same()
         return Behaviors.receive(receive)
 
-    def requesting(spec, provider_config, provider_ref, reply_to, request_id) -> Behavior[PoolMsg]:
+    def requesting(
+        spec: PoolSpec, provider_ref: ActorRef, reply_to: ActorRef,
+    ) -> Behavior[PoolMsg]:
         async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
             match msg:
-                case ClusterProvisioned(cluster_id=cluster_id, provider=_):
+                case ClusterProvisioned(cluster_id=cluster_id):
                     tm_ref = ctx.spawn(task_manager_actor(), "task-manager")
 
                     node_refs: dict[NodeId, ActorRef] = {}
@@ -68,38 +67,43 @@ def pool_actor() -> Behavior[PoolMsg]:
                             node_actor(node_id=nid, pool=ctx.self, task_manager=tm_ref),
                             f"node-{nid}",
                         )
-                        ref.tell(Provision(
-                            cluster_id=cluster_id,
-                            provider_ref=provider_ref,
-                            cluster_client=None,
-                        ))
+                        ref.tell(Provision(cluster_id=cluster_id, provider_ref=provider_ref))
                         node_refs[nid] = ref
 
-                    instances: dict[NodeId, InstanceMetadata] = {}
                     return provisioning(
-                        spec,
-                        provider_config,
-                        provider_ref,
-                        reply_to,
-                        cluster_id,
-                        instances,
-                        node_refs,
-                        tm_ref,
+                        spec, provider_ref, reply_to, cluster_id,
+                        instances={}, node_refs=node_refs, tm_ref=tm_ref,
+                        worker_refs=(),
                     )
             return Behaviors.same()
         return Behaviors.receive(receive)
 
     def provisioning(
-        spec, provider_config, provider_ref, reply_to, cluster_id, instances, node_refs, tm_ref
+        spec: PoolSpec,
+        provider_ref: ActorRef,
+        reply_to: ActorRef,
+        cluster_id: ClusterId,
+        instances: dict[NodeId, InstanceMetadata],
+        node_refs: dict[NodeId, ActorRef],
+        tm_ref: ActorRef,
+        worker_refs: tuple[tuple[NodeId, ActorRef], ...],
     ) -> Behavior[PoolMsg]:
         async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
             match msg:
+                case ClusterConnected(worker_refs=refs, client=client):
+                    ref_map = dict(refs)
+                    for nid, node_ref in node_refs.items():
+                        node_ref.tell(SetWorkerRef(worker_ref=ref_map.get(nid), client=client))
+                    return provisioning(
+                        spec, provider_ref, reply_to, cluster_id,
+                        instances, node_refs, tm_ref, worker_refs=refs,
+                    )
                 case NodeBecameReady(node_id=nid, instance=instance):
                     new_instances = {**instances, nid: instance}
                     tm_ref.tell(NodeAvailable(
                         node_id=nid,
                         node_ref=node_refs[nid],
-                        slots=spec.concurrency if hasattr(spec, "concurrency") else 1,
+                        slots=spec.concurrency,
                     ))
                     if len(new_instances) == spec.nodes:
                         reply_to.tell(PoolStarted(
@@ -107,35 +111,30 @@ def pool_actor() -> Behavior[PoolMsg]:
                             instances=tuple(new_instances[i] for i in range(spec.nodes)),
                         ))
                         return ready(
-                            spec,
-                            provider_ref,
-                            cluster_id,
-                            new_instances,
-                            reply_to,
-                            node_refs,
-                            tm_ref,
+                            spec, provider_ref, cluster_id, new_instances,
+                            reply_to, node_refs, tm_ref,
+                            ready_nodes=frozenset(new_instances.keys()),
+                            worker_refs=worker_refs,
                         )
                     return provisioning(
-                        spec,
-                        provider_config,
-                        provider_ref,
-                        reply_to,
-                        cluster_id,
-                        new_instances,
-                        node_refs,
-                        tm_ref,
+                        spec, provider_ref, reply_to, cluster_id,
+                        new_instances, node_refs, tm_ref, worker_refs,
                     )
             return Behaviors.same()
         return Behaviors.receive(receive)
 
     def ready(
-        spec, provider_ref, cluster_id, instances, reply_to, node_refs, tm_ref
+        spec: PoolSpec,
+        provider_ref: ActorRef,
+        cluster_id: ClusterId,
+        instances: dict[NodeId, InstanceMetadata],
+        reply_to: ActorRef,
+        node_refs: dict[NodeId, ActorRef],
+        tm_ref: ActorRef,
+        ready_nodes: frozenset[int],
+        worker_refs: tuple[tuple[NodeId, ActorRef], ...],
     ) -> Behavior[PoolMsg]:
-        ready_nodes: set[int] = set(instances.keys())
-        node_cycle = _round_robin(list(range(spec.nodes)))
-
         async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
-            nonlocal ready_nodes
             match msg:
                 case SubmitTask(fn_bytes=fn_bytes, reply_to=task_reply):
                     tm_ref.tell(SubmitTask(fn_bytes=fn_bytes, reply_to=task_reply))
@@ -143,28 +142,34 @@ def pool_actor() -> Behavior[PoolMsg]:
                 case SubmitBroadcast(fn_bytes=fn_bytes, reply_to=bcast_reply):
                     tm_ref.tell(SubmitBroadcast(fn_bytes=fn_bytes, reply_to=bcast_reply))
                     return Behaviors.same()
-                case ExecuteTask(fn=fn, args=args, kwargs=kwargs, node=node, reply_to=exec_reply):
-                    target = node if node is not None else _next_ready(node_cycle, ready_nodes)
-                    if target is not None:
-                        result = fn(*args, **kwargs)
-                        exec_reply.tell(ExecuteResult(value=result, node_id=target))
-                    return Behaviors.same()
-                case BroadcastTask(fn=fn, args=args, kwargs=kwargs, reply_to=bcast_reply):
-                    values = tuple(fn(*args, **kwargs) for _ in range(spec.nodes))
-                    bcast_reply.tell(BroadcastResult(values=values))
-                    return Behaviors.same()
-                case NodeBecameReady(node_id=nid, instance=instance):
-                    ready_nodes.add(nid)
+                case ClusterConnected(worker_refs=refs, client=client):
+                    ref_map = dict(refs)
+                    for nid, node_ref in node_refs.items():
+                        node_ref.tell(SetWorkerRef(worker_ref=ref_map.get(nid), client=client))
+                    return ready(
+                        spec, provider_ref, cluster_id, instances,
+                        reply_to, node_refs, tm_ref, ready_nodes, worker_refs=refs,
+                    )
+                case NodeBecameReady(node_id=nid):
                     tm_ref.tell(NodeAvailable(
                         node_id=nid,
                         node_ref=node_refs.get(nid, tm_ref),
-                        slots=spec.concurrency if hasattr(spec, "concurrency") else 1,
+                        slots=spec.concurrency,
                     ))
-                    return Behaviors.same()
-                case NodeLost(node_id=nid, reason=_):
-                    ready_nodes.discard(nid)
+                    return ready(
+                        spec, provider_ref, cluster_id, instances,
+                        reply_to, node_refs, tm_ref,
+                        ready_nodes=ready_nodes | {nid},
+                        worker_refs=worker_refs,
+                    )
+                case NodeLost(node_id=nid):
                     tm_ref.tell(NodeUnavailable(node_id=nid))
-                    return Behaviors.same()
+                    return ready(
+                        spec, provider_ref, cluster_id, instances,
+                        reply_to, node_refs, tm_ref,
+                        ready_nodes=ready_nodes - {nid},
+                        worker_refs=worker_refs,
+                    )
                 case StopPool(reply_to=stop_reply):
                     provider_ref.tell(ShutdownRequested(
                         cluster_id=cluster_id,
@@ -174,8 +179,8 @@ def pool_actor() -> Behavior[PoolMsg]:
             return Behaviors.same()
         return Behaviors.receive(receive)
 
-    def stopping(stop_reply) -> Behavior[PoolMsg]:
-        async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
+    def stopping(stop_reply: ActorRef) -> Behavior[PoolMsg]:
+        async def receive(_ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
             match msg:
                 case ShutdownCompleted():
                     stop_reply.tell(PoolStopped())
@@ -184,18 +189,3 @@ def pool_actor() -> Behavior[PoolMsg]:
         return Behaviors.receive(receive)
 
     return idle()
-
-
-def _round_robin(nodes: list[int]):
-    idx = 0
-    while True:
-        yield nodes[idx % len(nodes)]
-        idx += 1
-
-
-def _next_ready(cycle, ready_nodes: set[int]) -> int | None:
-    for _ in range(len(ready_nodes) + 1):
-        n = next(cycle)
-        if n in ready_nodes:
-            return n
-    return None
