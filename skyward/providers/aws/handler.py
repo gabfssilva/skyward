@@ -524,14 +524,14 @@ async def _select_instances(
     import aioboto3  # type: ignore[reportMissingImports]
 
     min_vcpus = spec.vcpus or 2
-    min_memory_mib = (spec.memory_gb or 8) * 1024
+    min_memory_mib = int((spec.memory_gb or 0.5) * 1024)
     archs = [spec.architecture] if spec.architecture else ["x86_64", "arm64"]
 
     requirements: dict[str, Any] = {
         "VCpuCount": {"Min": min_vcpus},
         "MemoryMiB": {"Min": min_memory_mib},
         "InstanceGenerations": ["current"],
-        "BurstablePerformance": "excluded",
+        "BurstablePerformance": "excluded" if config.exclude_burstable else "included",
         "BareMetal": "excluded",
     }
 

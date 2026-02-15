@@ -47,6 +47,7 @@ class AWS:
         username: SSH username. Auto-detected from AMI if None.
         instance_timeout: Safety timeout in seconds. Default: 300.
         allocation_strategy: EC2 Fleet allocation strategy.
+        exclude_burstable: Exclude burstable instances (t3, t4g, etc.).
     """
 
     region: str = "us-east-1"
@@ -58,3 +59,4 @@ class AWS:
     username: str | None = None
     instance_timeout: int = 300
     allocation_strategy: AllocationStrategy = "price-capacity-optimized"
+    exclude_burstable: bool = False
