@@ -121,6 +121,8 @@ class PoolSpec:
     concurrency: int = 1
     provider: ProviderName | None = None
     max_hourly_cost: float | None = None
+    ssh_timeout: float = 300.0
+    ssh_retry_interval: float = 5.0
 
     def __post_init__(self) -> None:
         if self.nodes < 1:
@@ -202,6 +204,7 @@ class Image:
     excludes: list[str] | tuple[str, ...] = ()
     skyward_source: SkywardSource = "auto"
     metrics: MetricsConfig = field(default_factory=lambda: DefaultMetrics())
+    bootstrap_timeout: int = 300
 
     def __post_init__(self) -> None:
         """Convert lists to tuples for immutability."""

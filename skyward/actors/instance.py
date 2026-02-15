@@ -48,6 +48,8 @@ def instance_actor(
     _skip_tunnel: bool = False,
     _tunnel_factory: TunnelFactory | None = None,
     _skip_monitor: bool = False,
+    ssh_timeout: float = 300.0,
+    ssh_retry_interval: float = 5.0,
 ) -> Behavior[InstanceMsg]:
     """An instance tells this story: waiting → bootstrapping → ready."""
 
@@ -92,6 +94,8 @@ def instance_actor(
                     ssh_key_path=metadata.ssh_key_path,
                     event_listener=parent,
                     reply_to=ctx.self,
+                    ssh_timeout=ssh_timeout,
+                    ssh_retry_interval=ssh_retry_interval,
                 ),
                 f"monitor-{instance_id}",
             )

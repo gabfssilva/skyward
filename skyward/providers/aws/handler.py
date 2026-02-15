@@ -939,6 +939,8 @@ async def _sync_user_code(
         port=info.ssh_port,
         image=cluster.spec.image,
         use_sudo=True,
+        ssh_timeout=cluster.spec.ssh_timeout,
+        ssh_retry_interval=cluster.spec.ssh_retry_interval,
     )
 
 
@@ -952,7 +954,8 @@ async def _install_local_skyward(
         host=info.ip,
         user=cluster.username,
         key_path=cluster.ssh_key_path,
-        timeout=60.0,
+        timeout=cluster.spec.ssh_timeout,
+        poll_interval=cluster.spec.ssh_retry_interval,
         log_prefix="AWS: ",
     )
 
@@ -961,6 +964,7 @@ async def _install_local_skyward(
             transport=transport,
             info=info,
             log_prefix="AWS: ",
+            bootstrap_timeout=float(cluster.spec.image.bootstrap_timeout),
         )
     finally:
         await transport.close()

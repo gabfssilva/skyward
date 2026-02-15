@@ -41,3 +41,4 @@ class Verda:
     client_secret: str | None = None
     ssh_key_id: str | None = None
     instance_timeout: int = 300
+    request_timeout: int = 30

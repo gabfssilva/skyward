@@ -54,6 +54,8 @@ def node_actor(
     pool: ActorRef,
     task_manager: ActorRef | None = None,
     panel: ActorRef | None = None,
+    ssh_timeout: float = 300.0,
+    ssh_retry_interval: float = 5.0,
 ) -> Behavior[NodeMsg]:
     """A node tells this story: idle → provisioning → waiting → bootstrapping → active."""
 
@@ -79,6 +81,8 @@ def node_actor(
             parent=ctx.self,
             metadata=metadata,
             _skip_tunnel=True,
+            ssh_timeout=ssh_timeout,
+            ssh_retry_interval=ssh_retry_interval,
         )
         return ctx.spawn(
             Behaviors.spy(behavior, observer=panel) if panel else behavior,

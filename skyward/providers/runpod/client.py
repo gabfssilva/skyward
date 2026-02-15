@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .config import RunPod
 
 from loguru import logger
 
@@ -99,13 +102,14 @@ class RunPodClient:
             pod = await client.create_pod({...})
     """
 
-    def __init__(self, api_key: str) -> None:
+    def __init__(self, api_key: str, config: RunPod | None = None) -> None:
         self._api_key = api_key
+        self._config = config or RunPod()
         self._log = logger.bind(provider="runpod", component="client")
         self._http = HttpClient(
             RUNPOD_API_BASE,
             BearerAuth(api_key),
-            timeout=30,
+            timeout=self._config.request_timeout,
             default_headers={"Content-Type": "application/json"},
         )
 
@@ -179,7 +183,7 @@ class RunPodClient:
             async with HttpClient(
                 RUNPOD_GRAPHQL_URL,
                 BearerAuth(self._api_key),
-                timeout=60,
+                timeout=self._config.request_timeout * 2,
                 default_headers={"Content-Type": "application/json"},
             ) as http:
                 data = await http.request(

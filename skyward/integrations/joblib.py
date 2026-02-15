@@ -194,7 +194,7 @@ def JoblibPool(
     vcpus: int | None = None,
     memory_gb: int | None = None,
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
-    timeout: int = 3600,
+    provision_timeout: int = 3600,
     panel: bool = True,
     joblib_version: str | None = None,
 ) -> Iterator[ComputePool]:
@@ -210,7 +210,7 @@ def JoblibPool(
         vcpus: CPU cores per worker.
         memory_gb: Memory per worker in GB.
         allocation: Instance allocation strategy.
-        timeout: Provisioning timeout in seconds.
+        provision_timeout: Provisioning timeout in seconds.
         panel: Enable Rich terminal dashboard.
         joblib_version: Specific joblib version (e.g., "1.3.0"). None for latest.
 
@@ -235,7 +235,7 @@ def JoblibPool(
         vcpus=vcpus,
         memory_gb=memory_gb,
         allocation=allocation,
-        timeout=timeout,
+        provision_timeout=provision_timeout,
         panel=panel,
     )
 
@@ -256,7 +256,7 @@ def ScikitLearnPool(
     vcpus: int | None = None,
     memory_gb: int | None = None,
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
-    timeout: int = 3600,
+    provision_timeout: int = 3600,
     panel: bool = True,
     sklearn_version: str | None = None,
 ) -> Iterator[ComputePool]:
@@ -272,7 +272,7 @@ def ScikitLearnPool(
         vcpus: CPU cores per worker.
         memory_gb: Memory per worker in GB.
         allocation: Instance allocation strategy.
-        timeout: Provisioning timeout in seconds.
+        provision_timeout: Provisioning timeout in seconds.
         panel: Enable Rich terminal dashboard.
         sklearn_version: Specific sklearn version (e.g., "1.4.0"). None for latest.
 
@@ -298,7 +298,7 @@ def ScikitLearnPool(
         vcpus=vcpus,
         memory_gb=memory_gb,
         allocation=allocation,
-        timeout=timeout,
+        provision_timeout=provision_timeout,
         panel=panel,
     )
 

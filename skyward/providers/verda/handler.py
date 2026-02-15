@@ -417,4 +417,6 @@ async def _sync_user_code_verda(
         port=info.ssh_port,  # type: ignore[attr-defined]
         image=state.spec.image,
         use_sudo=True,
+        ssh_timeout=state.spec.ssh_timeout,
+        ssh_retry_interval=state.spec.ssh_retry_interval,
     )

@@ -68,7 +68,11 @@ def pool_actor() -> Behavior[PoolMsg]:
                     node_refs: dict[NodeId, ActorRef] = {}
                     for nid in range(spec.nodes):
                         ref = ctx.spawn(
-                            node_actor(node_id=nid, pool=ctx.self, task_manager=tm_ref),
+                            node_actor(
+                                node_id=nid, pool=ctx.self, task_manager=tm_ref,
+                                ssh_timeout=spec.ssh_timeout,
+                                ssh_retry_interval=spec.ssh_retry_interval,
+                            ),
                             f"node-{nid}",
                         )
                         ref.tell(Provision(cluster_id=cluster_id, provider_ref=provider_ref))

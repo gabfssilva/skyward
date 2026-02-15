@@ -63,6 +63,7 @@ class RunPod:
     provision_timeout: float = 300.0
     bootstrap_timeout: float = 600.0
     instance_timeout: int = 300
+    request_timeout: int = 30
     cpu_clock: Literal["3c", "5c"] | str = "3c"
 
     @property

@@ -90,7 +90,7 @@ async def _resolve_gpu_type(config: RunPod, spec: PoolSpec) -> str | None:
         return None
 
     api_key = get_api_key(config.api_key)
-    async with RunPodClient(api_key) as client:
+    async with RunPodClient(api_key, config=config) as client:
         gpu_types = await client.get_gpu_types()
 
     log = logger.bind(provider="runpod")
@@ -205,7 +205,7 @@ async def _create_instant_cluster(
         params["dataCenterId"] = config.data_center_ids[0]
 
     try:
-        async with RunPodClient(api_key) as client:
+        async with RunPodClient(api_key, config=config) as client:
             cluster = await client.create_cluster(params)
     except RunPodError as e:
         logger.bind(provider="runpod").error("Failed to create Instant Cluster: {err}", err=e)
@@ -243,7 +243,7 @@ async def _wait_for_running(
 
     api_key = get_api_key(config.api_key)
 
-    async with RunPodClient(api_key) as client:
+    async with RunPodClient(api_key, config=config) as client:
         pod = await wait_for_ready(
             poll_fn=lambda: client.get_pod(event.instance_id),
             ready_check=lambda p: (
@@ -335,7 +335,8 @@ async def _run_bootstrap(
         user=cluster.username,
         key_path=cluster.ssh_key_path,
         port=info.ssh_port,
-        timeout=60.0,
+        timeout=cluster.spec.ssh_timeout,
+        poll_interval=cluster.spec.ssh_retry_interval,
     )
 
     try:
@@ -392,7 +393,7 @@ def runpod_provider_actor(
                     state.ssh_public_key = ssh_public_key
 
                     api_key = get_api_key(config.api_key)
-                    async with RunPodClient(api_key) as client:
+                    async with RunPodClient(api_key, config=config) as client:
                         await client.ensure_ssh_key(ssh_public_key)
                         log.debug("SSH key registered on account")
 
@@ -466,7 +467,7 @@ def runpod_provider_actor(
                     api_key = get_api_key(config.api_key)
 
                     try:
-                        async with RunPodClient(api_key) as client:
+                        async with RunPodClient(api_key, config=config) as client:
                             if state.gpu_type_id:
                                 pod = await _create_gpu_pod(client, config, state, event)
                             else:
@@ -565,7 +566,7 @@ def runpod_provider_actor(
                     log.info("Shutting down cluster {cid}", cid=state.cluster_id)
                     api_key = get_api_key(config.api_key)
 
-                    async with RunPodClient(api_key) as client:
+                    async with RunPodClient(api_key, config=config) as client:
                         if state.is_instant_cluster:
                             with suppress(Exception):
                                 await client.delete_cluster(state.runpod_cluster_id)  # type: ignore[arg-type]
@@ -599,4 +600,6 @@ async def _sync_user_code_runpod(
         port=info.ssh_port,  # type: ignore[attr-defined]
         image=state.spec.image,
         use_sudo=False,
+        ssh_timeout=state.spec.ssh_timeout,
+        ssh_retry_interval=state.spec.ssh_retry_interval,
     )

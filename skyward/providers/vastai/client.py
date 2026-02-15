@@ -124,7 +124,9 @@ class VastAIClient:
     def __init__(self, api_key: str, config: VastAI | None = None) -> None:
         self._api_key = api_key
         self.config = config or VastAI()
-        self._http = HttpClient(VAST_API_BASE, BearerAuth(api_key), timeout=60)
+        self._http = HttpClient(
+            VAST_API_BASE, BearerAuth(api_key), timeout=self.config.request_timeout,
+        )
         self._log = logger.bind(provider="vastai", component="client")
 
     async def __aenter__(self) -> VastAIClient:

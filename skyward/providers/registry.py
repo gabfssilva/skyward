@@ -94,7 +94,7 @@ def get_provider_for_config(config: ProviderConfig) -> tuple[ProviderActorFactor
                 if not client_id or not client_secret:
                     client_id, client_secret = get_credentials()
                 auth = OAuth2Auth(client_id, client_secret, f"{VERDA_API_BASE}/oauth2/token")
-                http_client = HttpClient(VERDA_API_BASE, auth, timeout=60)
+                http_client = HttpClient(VERDA_API_BASE, auth, timeout=verda_cfg.request_timeout)
                 client = VerdaClient(http_client)
                 return verda_provider_actor(verda_cfg, client)
 

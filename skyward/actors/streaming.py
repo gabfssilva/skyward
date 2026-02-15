@@ -111,6 +111,8 @@ def instance_monitor(
     ssh_key_path: str,
     event_listener: ActorRef,
     reply_to: ActorRef[BootstrapDone],
+    ssh_timeout: float = 300.0,
+    ssh_retry_interval: float = 5.0,
 ) -> Behavior[MonitorMsg]:
     """An instance monitor tells this story: connecting → streaming → stopped."""
 
@@ -125,8 +127,8 @@ def instance_monitor(
             user=ssh_user,
             key_path=ssh_key_path,
             port=info.ssh_port,
-            retry_max_attempts=60,
-            retry_delay=5.0,
+            retry_max_attempts=int(ssh_timeout / ssh_retry_interval) + 1,
+            retry_delay=ssh_retry_interval,
         )
         await transport.connect()
 

@@ -504,7 +504,8 @@ def vastai_provider_actor(
                             host=instance.ip,
                             user="root",
                             key_path=key_path,
-                            timeout=120.0,
+                            timeout=state.spec.ssh_timeout,
+                            poll_interval=state.spec.ssh_retry_interval,
                             port=instance.ssh_port,
                             log_prefix="VastAI: ",
                         )
@@ -723,4 +724,6 @@ async def _sync_user_code_vastai(
         port=info.ssh_port,  # type: ignore[attr-defined]
         image=state.spec.image,
         use_sudo=False,
+        ssh_timeout=state.spec.ssh_timeout,
+        ssh_retry_interval=state.spec.ssh_retry_interval,
     )

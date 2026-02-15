@@ -291,7 +291,6 @@ class ComputePool:
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available"
 
     image: Image = field(default_factory=lambda: DEFAULT_IMAGE)
-    timeout: int = 180
     ttl: int = 600
 
     concurrency: int = 1
@@ -301,6 +300,10 @@ class ComputePool:
     logging: LogConfig | bool = True
 
     max_hourly_cost: float | None = None
+
+    provision_timeout: int = 300
+    ssh_timeout: int = 300
+    ssh_retry_interval: int = 2
 
     _log_handler_ids: list[int] = field(default_factory=list, init=False, repr=False)
     _loop: asyncio.AbstractEventLoop | None = field(default=None, init=False, repr=False)
@@ -567,6 +570,8 @@ class ComputePool:
             concurrency=self.concurrency,
             provider=provider_name,  # type: ignore[arg-type]
             max_hourly_cost=self.max_hourly_cost,
+            ssh_timeout=float(self.ssh_timeout),
+            ssh_retry_interval=float(self.ssh_retry_interval),
         )
         self._spec = spec
 
@@ -608,7 +613,7 @@ class ComputePool:
                 provider_ref=provider_ref,
                 reply_to=reply_to,
             ),
-            timeout=float(self.timeout),
+            timeout=float(self.provision_timeout),
         )
         self._cluster_id = started.cluster_id
         self._instances = {
@@ -922,11 +927,13 @@ class _PoolFactory:
         architecture: Literal["x86_64", "arm64"] | None = None,
         image: Image | None = None,
         allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
-        timeout: int = 180,
         ttl: int = 600,
         panel: bool = True,
         logging: LogConfig | bool = True,
         max_hourly_cost: float | None = None,
+        provision_timeout: int = 300,
+        ssh_timeout: int = 300,
+        ssh_retry_interval: int = 2,
     ) -> None:
         self._provider = provider
         self._nodes = nodes
@@ -936,11 +943,13 @@ class _PoolFactory:
         self._architecture = architecture
         self._image = image
         self._allocation = allocation
-        self._timeout = timeout
         self._ttl = ttl
         self._panel = panel
         self._logging = logging
         self._max_hourly_cost = max_hourly_cost
+        self._provision_timeout = provision_timeout
+        self._ssh_timeout = ssh_timeout
+        self._ssh_retry_interval = ssh_retry_interval
         self._pool: ComputePool | None = None
 
     def _create_pool(self) -> ComputePool:
@@ -955,11 +964,13 @@ class _PoolFactory:
             architecture=self._architecture,  # type: ignore[arg-type]
             allocation=self._allocation,  # type: ignore[arg-type]
             image=self._image or DEFAULT_IMAGE,
-            timeout=self._timeout,
             ttl=self._ttl,
             panel=self._panel,
             logging=self._logging,
             max_hourly_cost=self._max_hourly_cost,
+            provision_timeout=self._provision_timeout,
+            ssh_timeout=self._ssh_timeout,
+            ssh_retry_interval=self._ssh_retry_interval,
         )
 
     def __enter__(self) -> ComputePool:
@@ -1007,11 +1018,13 @@ def pool(
     architecture: Literal["x86_64", "arm64"] | None = None,
     image: Image | None = None,
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
-    timeout: int = 180,
     ttl: int = 600,
     panel: bool = True,
     logging: LogConfig | bool = True,
     max_hourly_cost: float | None = None,
+    provision_timeout: int = 300,
+    ssh_timeout: int = 300,
+    ssh_retry_interval: int = 2,
 ) -> _PoolFactory: ...
 
 
@@ -1025,11 +1038,13 @@ def pool(
     architecture: Literal["x86_64", "arm64"] | None = None,
     image: Image | None = None,
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
-    timeout: int = 180,
     ttl: int = 600,
     panel: bool = True,
     logging: LogConfig | bool = True,
     max_hourly_cost: float | None = None,
+    provision_timeout: int = 300,
+    ssh_timeout: int = 300,
+    ssh_retry_interval: int = 2,
 ) -> _PoolFactory: ...
 
 
@@ -1042,11 +1057,13 @@ def pool(
     architecture: Literal["x86_64", "arm64"] | None = None,
     image: Image | None = None,
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
-    timeout: int = 180,
     ttl: int = 600,
     panel: bool = True,
     logging: LogConfig | bool = True,
     max_hourly_cost: float | None = None,
+    provision_timeout: int = 300,
+    ssh_timeout: int = 300,
+    ssh_retry_interval: int = 2,
 ) -> _PoolFactory | Callable[..., Any]:
     """Create a compute pool (context manager or decorator).
 
@@ -1067,11 +1084,13 @@ def pool(
         accelerator: GPU type.
         image: Environment specification.
         allocation: Instance allocation strategy.
-        timeout: Provisioning timeout.
         ttl: Auto-shutdown timeout in seconds (0 = use provider default).
         panel: Enable Rich terminal dashboard (default: True).
         logging: Log configuration. If True, logs to .skyward/skyward.log.
         max_hourly_cost: Maximum hourly cost in USD for the entire cluster.
+        provision_timeout: Max time to wait for cluster provisioning.
+        ssh_timeout: Max time to wait for SSH connectivity.
+        ssh_retry_interval: Interval between SSH connection attempts.
 
     Returns:
         A _PoolFactory that works as context manager or decorator.
@@ -1087,11 +1106,13 @@ def pool(
             architecture=architecture,
             image=image,
             allocation=allocation,
-            timeout=timeout,
             ttl=ttl,
             panel=panel,
             logging=logging,
             max_hourly_cost=max_hourly_cost,
+            provision_timeout=provision_timeout,
+            ssh_timeout=ssh_timeout,
+            ssh_retry_interval=ssh_retry_interval,
         )
         return factory(fn)
 
@@ -1104,9 +1125,11 @@ def pool(
         architecture=architecture,
         image=image,
         allocation=allocation,
-        timeout=timeout,
         ttl=ttl,
         panel=panel,
         logging=logging,
         max_hourly_cost=max_hourly_cost,
+        provision_timeout=provision_timeout,
+        ssh_timeout=ssh_timeout,
+        ssh_retry_interval=ssh_retry_interval,
     )

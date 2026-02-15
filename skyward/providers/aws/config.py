@@ -58,5 +58,6 @@ class AWS:
     instance_profile_arn: str | None = None
     username: str | None = None
     instance_timeout: int = 300
+    request_timeout: int = 30
     allocation_strategy: AllocationStrategy = "price-capacity-optimized"
     exclude_burstable: bool = False

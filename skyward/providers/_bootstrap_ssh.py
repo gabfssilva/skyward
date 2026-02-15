@@ -59,6 +59,7 @@ async def install_local_skyward(
     info: InstanceMetadata,
     log_prefix: str = "",
     use_sudo: bool = True,
+    bootstrap_timeout: float = 180.0,
 ) -> None:
     """Install local skyward wheel.
 
@@ -97,7 +98,7 @@ async def install_local_skyward(
     log.info("Running wheel install script on {iid}", iid=info.id)
     exit_code, stdout, stderr = await transport.run(
         f"{sudo}bash /tmp/.install-wheel.sh",
-        timeout=180.0,
+        timeout=bootstrap_timeout,
     )
     log.debug("Install script output:\n{out}", out=stdout)
     if stderr:
@@ -113,6 +114,7 @@ async def upload_user_code(
     transport: SSHTransport,
     tarball: bytes,
     use_sudo: bool = True,
+    timeout: float = 60.0,
 ) -> None:
     """Upload and extract user code tarball into the worker's site-packages.
 
@@ -136,7 +138,7 @@ async def upload_user_code(
     exit_code, stdout, stderr = await transport.run(
         f"{sudo}bash -c 'SP=$(echo {site_packages}); "
         f"tar xzf {remote_tar} -C $SP && rm -f {remote_tar}'",
-        timeout=60.0,
+        timeout=timeout,
     )
 
     if exit_code != 0:
@@ -152,6 +154,8 @@ async def sync_user_code(
     port: int,
     image: object,
     use_sudo: bool = True,
+    ssh_timeout: float = 60.0,
+    ssh_retry_interval: float = 5.0,
 ) -> None:
     """Build and upload user code if image.includes is non-empty.
 
@@ -176,7 +180,7 @@ async def sync_user_code(
 
     transport = await wait_for_ssh(
         host=host, user=user, key_path=key_path,
-        port=port, timeout=60.0,
+        port=port, timeout=ssh_timeout, poll_interval=ssh_retry_interval,
     )
 
     try:

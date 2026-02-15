@@ -48,6 +48,7 @@ class VastAI:
     geolocation: str | None = None
     bid_multiplier: float = 1.2
     instance_timeout: int = 300
+    request_timeout: int = 30
     docker_image: str | None = None
     disk_gb: int = 100
     use_overlay: bool = True
