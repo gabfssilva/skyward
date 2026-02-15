@@ -164,6 +164,8 @@ class Image:
         apt: List of apt packages to install.
         env: Environment variables to export.
         shell_vars: Shell commands for dynamic variable capture.
+        includes: Paths relative to CWD to sync to workers (dirs or .py files).
+        excludes: Glob patterns to ignore within includes (e.g., "__pycache__", "*.pyc").
         skyward_source: Where to install skyward from. "auto" detects editable
             installs as "local", otherwise "pypi".
         metrics: Metrics to collect (CPU, GPU, Memory, etc.). Use None to disable.
@@ -190,19 +192,27 @@ class Image:
         script = image.bootstrap(ttl=3600)
     """
 
-    python: str = "3.13"
+    python: str | Literal["auto"] = "auto"
     pip: list[str] | tuple[str, ...] = ()
     pip_extra_index_url: str | None = None
     apt: list[str] | tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
     shell_vars: dict[str, str] = field(default_factory=dict)
+    includes: list[str] | tuple[str, ...] = ()
+    excludes: list[str] | tuple[str, ...] = ()
     skyward_source: SkywardSource = "auto"
     metrics: MetricsConfig = field(default_factory=lambda: DefaultMetrics())
 
     def __post_init__(self) -> None:
         """Convert lists to tuples for immutability."""
+        if self.python == "auto":
+            import sys
+            object.__setattr__(self, "python", f"{sys.version_info.major}.{sys.version_info.minor}")
+
         object.__setattr__(self, "pip", tuple(self.pip) if self.pip else ())
         object.__setattr__(self, "apt", tuple(self.apt) if self.apt else ())
+        object.__setattr__(self, "includes", tuple(self.includes) if self.includes else ())
+        object.__setattr__(self, "excludes", tuple(self.excludes) if self.excludes else ())
 
         if self.skyward_source == "auto":
             object.__setattr__(self, "skyward_source", _detect_skyward_source())
@@ -235,6 +245,8 @@ class Image:
                 "apt": sorted(self.apt),
                 "env": dict(sorted(self.env.items())),
                 "shell_vars": dict(sorted(self.shell_vars.items())),
+                "includes": sorted(self.includes),
+                "excludes": sorted(self.excludes),
                 "skyward_source": self.skyward_source,
                 "metrics": metrics_data,
             },

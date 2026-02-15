@@ -35,6 +35,8 @@ from skyward.actors.messages import (
     _InstanceWaitFailed,
     _LocalInstallDone,
     _LocalInstallFailed,
+    _UserCodeSyncDone,
+    _UserCodeSyncFailed,
 )
 from skyward.infra.pricing import get_instance_pricing
 from skyward.infra.retry import on_exception_message, retry
@@ -213,7 +215,6 @@ def aws_provider_actor(
                     return Behaviors.same()
 
                 case BootstrapDone(instance=info, success=True):
-                    node_ref = state.node_refs.get(info.node)
                     if state.spec.image and state.spec.image.skyward_source == "local":
                         ctx.pipe_to_self(
                             coro=_install_local_skyward(info, state),
@@ -222,8 +223,18 @@ def aws_provider_actor(
                                 instance=i, error=str(e),
                             ),
                         )
-                    elif node_ref:
-                        node_ref.tell(InstanceBootstrapped(instance=info))
+                    elif state.spec.image and state.spec.image.includes:
+                        ctx.pipe_to_self(
+                            coro=_sync_user_code(info, state),
+                            mapper=lambda _, i=info: _UserCodeSyncDone(instance=i),
+                            on_failure=lambda e, i=info: _UserCodeSyncFailed(
+                                instance=i, error=str(e),
+                            ),
+                        )
+                    else:
+                        node_ref = state.node_refs.get(info.node)
+                        if node_ref:
+                            node_ref.tell(InstanceBootstrapped(instance=info))
                     return Behaviors.same()
 
                 case BootstrapDone(instance=info, success=False, error=error):
@@ -232,14 +243,37 @@ def aws_provider_actor(
 
                 case _LocalInstallDone(instance=info):
                     log.info("Local skyward installed on {iid}", iid=info.id)
-                    node_ref = state.node_refs.get(info.node)
-                    if node_ref:
-                        node_ref.tell(InstanceBootstrapped(instance=info))
+                    if state.spec.image and state.spec.image.includes:
+                        ctx.pipe_to_self(
+                            coro=_sync_user_code(info, state),
+                            mapper=lambda _, i=info: _UserCodeSyncDone(instance=i),
+                            on_failure=lambda e, i=info: _UserCodeSyncFailed(
+                                instance=i, error=str(e),
+                            ),
+                        )
+                    else:
+                        node_ref = state.node_refs.get(info.node)
+                        if node_ref:
+                            node_ref.tell(InstanceBootstrapped(instance=info))
                     return Behaviors.same()
 
                 case _LocalInstallFailed(instance=info, error=error):
                     log.error(
                         "Local skyward install failed on {iid}: {error}",
+                        iid=info.id, error=error,
+                    )
+                    return Behaviors.same()
+
+                case _UserCodeSyncDone(instance=info):
+                    log.info("User code synced to {iid}", iid=info.id)
+                    node_ref = state.node_refs.get(info.node)
+                    if node_ref:
+                        node_ref.tell(InstanceBootstrapped(instance=info))
+                    return Behaviors.same()
+
+                case _UserCodeSyncFailed(instance=info, error=error):
+                    log.error(
+                        "User code sync failed on {iid}: {error}",
                         iid=info.id, error=error,
                     )
                     return Behaviors.same()
@@ -890,6 +924,22 @@ async def _terminate_instances(ec2: EC2ClientFactory, instance_ids: list[Instanc
     async with ec2() as client:
         await client.terminate_instances(InstanceIds=list(instance_ids))
 
+
+
+async def _sync_user_code(
+    info: InstanceMetadata,
+    cluster: AWSClusterState,
+) -> None:
+    from skyward.providers.bootstrap import sync_user_code
+
+    await sync_user_code(
+        host=info.ip,
+        user=cluster.username,
+        key_path=cluster.ssh_key_path,
+        port=info.ssh_port,
+        image=cluster.spec.image,
+        use_sudo=True,
+    )
 
 
 async def _install_local_skyward(

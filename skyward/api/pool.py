@@ -656,7 +656,7 @@ class ComputePool:
         from casty import ClusterClient
 
         from skyward.infra.executor import _wait_for_workers
-        from skyward.infra.serialization import serialize
+        from skyward.infra.serialization import check_python_version, serialize
         from skyward.infra.worker import ExecuteTask as WorkerExecuteTask
         from skyward.providers.ssh_keys import get_ssh_key_path
 
@@ -690,6 +690,9 @@ class ComputePool:
             for node_id in range(self.nodes)
         ]
         image_env = dict(self.image.env) if self.image and self.image.env else {}
+
+        if self.image:
+            check_python_version(self.image.python)
 
         def setup_env(all_infos: list[str], extra: dict[str, str]) -> str:
             import os

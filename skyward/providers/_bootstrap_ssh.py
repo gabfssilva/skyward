@@ -10,6 +10,7 @@ from loguru import logger
 
 from skyward.actors.messages import InstanceMetadata
 from skyward.infra import SSHTransport
+from skyward.providers.bootstrap.compose import SKYWARD_DIR
 
 
 async def wait_for_ssh(
@@ -106,6 +107,82 @@ async def install_local_skyward(
         raise RuntimeError(f"Wheel install failed (exit {exit_code}): {stderr or stdout}")
 
     log.info("Local skyward wheel installed on {iid}", iid=info.id)
+
+
+async def upload_user_code(
+    transport: SSHTransport,
+    tarball: bytes,
+    use_sudo: bool = True,
+) -> None:
+    """Upload and extract user code tarball into the worker's site-packages.
+
+    Extracts directly into the venv's site-packages so modules are
+    importable without sys.path manipulation.
+
+    Args:
+        transport: Connected SSH transport.
+        tarball: Compressed tar.gz bytes from build_user_code_tarball.
+        use_sudo: Whether to use sudo for extraction.
+    """
+    log = logger.bind(component="bootstrap_ssh")
+    remote_tar = "/tmp/_user_code.tar.gz"
+
+    log.info("Uploading user code ({size:.1f} KB)", size=len(tarball) / 1024)
+    await transport.write_bytes(remote_tar, tarball)
+
+    sudo = "sudo " if use_sudo else ""
+    site_packages = f"{SKYWARD_DIR}/.venv/lib/python*/site-packages"
+
+    exit_code, stdout, stderr = await transport.run(
+        f"{sudo}bash -c 'SP=$(echo {site_packages}); "
+        f"tar xzf {remote_tar} -C $SP && rm -f {remote_tar}'",
+        timeout=60.0,
+    )
+
+    if exit_code != 0:
+        raise RuntimeError(f"User code extraction failed (exit {exit_code}): {stderr or stdout}")
+
+    log.info("User code uploaded and extracted to site-packages")
+
+
+async def sync_user_code(
+    host: str,
+    user: str,
+    key_path: str,
+    port: int,
+    image: object,
+    use_sudo: bool = True,
+) -> None:
+    """Build and upload user code if image.includes is non-empty.
+
+    Connects via SSH, builds tarball from local includes, uploads and extracts.
+
+    Args:
+        host: SSH host.
+        user: SSH username.
+        key_path: Path to SSH private key.
+        port: SSH port.
+        image: Image spec (must have includes/excludes attributes).
+        use_sudo: Whether to use sudo.
+    """
+    includes = getattr(image, "includes", ())
+    if not includes:
+        return
+
+    from skyward.providers.common import build_user_code_tarball
+
+    excludes = getattr(image, "excludes", ())
+    tarball = build_user_code_tarball(includes=includes, excludes=excludes)
+
+    transport = await wait_for_ssh(
+        host=host, user=user, key_path=key_path,
+        port=port, timeout=60.0,
+    )
+
+    try:
+        await upload_user_code(transport=transport, tarball=tarball, use_sudo=use_sudo)
+    finally:
+        await transport.close()
 
 
 async def run_bootstrap_via_ssh(

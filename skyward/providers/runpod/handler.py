@@ -30,6 +30,8 @@ from skyward.actors.messages import (
     ProviderMsg,
     ShutdownCompleted,
     ShutdownRequested,
+    _UserCodeSyncDone,
+    _UserCodeSyncFailed,
 )
 from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
 from skyward.providers.wait import wait_for_ready
@@ -511,11 +513,29 @@ def runpod_provider_actor(
                     return Behaviors.same()
 
                 case BootstrapDone(instance=info, success=True):
-                    if (target := refs.get(info.node)):
+                    if state.spec.image and state.spec.image.includes:
+                        ctx.pipe_to_self(
+                            coro=_sync_user_code_runpod(info, state),
+                            mapper=lambda _, i=info: _UserCodeSyncDone(instance=i),
+                            on_failure=lambda e, i=info: _UserCodeSyncFailed(
+                                instance=i, error=str(e),
+                            ),
+                        )
+                    elif (target := refs.get(info.node)):
                         target.tell(InstanceBootstrapped(instance=info))
                     return Behaviors.same()
 
                 case BootstrapDone(success=False):
+                    return Behaviors.same()
+
+                case _UserCodeSyncDone(instance=info):
+                    log.info("User code synced to {iid}", iid=info.id)
+                    if (target := refs.get(info.node)):
+                        target.tell(InstanceBootstrapped(instance=info))
+                    return Behaviors.same()
+
+                case _UserCodeSyncFailed(instance=info, error=err):
+                    log.error("User code sync failed on {iid}: {err}", iid=info.id, err=err)
                     return Behaviors.same()
 
                 case _PodRunning(event=running_event):
@@ -564,3 +584,19 @@ def runpod_provider_actor(
         return Behaviors.receive(receive)
 
     return idle()
+
+
+async def _sync_user_code_runpod(
+    info: object,
+    state: RunPodClusterState,
+) -> None:
+    from skyward.providers.bootstrap import sync_user_code
+
+    await sync_user_code(
+        host=info.ip,  # type: ignore[attr-defined]
+        user=state.username,
+        key_path=state.ssh_key_path,
+        port=info.ssh_port,  # type: ignore[attr-defined]
+        image=state.spec.image,
+        use_sudo=False,
+    )

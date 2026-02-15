@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import zlib
 from typing import Any, Final
 
@@ -12,6 +13,36 @@ log = logger.bind(component="serialization")
 
 COMPRESSED_MAGIC: Final = b"\x00CZ"
 COMPRESSION_LEVEL: Final = 6
+
+PYTHON_VERSION: Final = f"{sys.version_info.major}.{sys.version_info.minor}"
+
+
+class PythonVersionMismatchError(RuntimeError):
+    """Raised when local and remote Python versions don't match."""
+
+    def __init__(self, local: str, remote: str) -> None:
+        self.local = local
+        self.remote = remote
+        super().__init__(
+            f"Python version mismatch: local={local}, remote={remote}. "
+            f"Cloudpickle cannot safely serialize bytecode across versions. "
+            f"Set Image(python='{local}') or use Image(python='auto')."
+        )
+
+
+def check_python_version(remote_version: str) -> None:
+    """Validate that the remote Python version matches the local one.
+
+    Should be called before serializing tasks to workers.
+
+    Args:
+        remote_version: The Python version running on the worker.
+
+    Raises:
+        PythonVersionMismatchError: If versions differ.
+    """
+    if remote_version != PYTHON_VERSION:
+        raise PythonVersionMismatchError(local=PYTHON_VERSION, remote=remote_version)
 
 
 def serialize(obj: Any, compress: bool = True) -> bytes:

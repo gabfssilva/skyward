@@ -617,6 +617,17 @@ class _LocalInstallFailed:
     error: str
 
 
+@dataclass(frozen=True, slots=True)
+class _UserCodeSyncDone:
+    instance: InstanceMetadata
+
+
+@dataclass(frozen=True, slots=True)
+class _UserCodeSyncFailed:
+    instance: InstanceMetadata
+    error: str
+
+
 type ProviderMsg = (
     ClusterRequested
     | InstanceRequested
@@ -631,6 +642,8 @@ type ProviderMsg = (
     | _BootstrapScriptFailed
     | _LocalInstallDone
     | _LocalInstallFailed
+    | _UserCodeSyncDone
+    | _UserCodeSyncFailed
 )
 
 

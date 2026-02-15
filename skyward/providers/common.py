@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import fnmatch
+import io
 import subprocess
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -158,3 +161,68 @@ $UV_PATH pip install {SKYWARD_DIR}/{wheel_name}
 {SKYWARD_DIR}/.venv/bin/python -c 'import casty; print("Casty OK")'
 """
     return script
+
+
+_DEFAULT_EXCLUDES = (
+    "__pycache__",
+    "*.pyc",
+    "*.pyo",
+    ".git",
+    ".venv",
+    "node_modules",
+    "*.egg-info",
+)
+
+
+def build_user_code_tarball(
+    includes: tuple[str, ...],
+    excludes: tuple[str, ...] = (),
+    project_root: Path | None = None,
+) -> bytes:
+    """Build a tar.gz archive of user code paths for syncing to workers.
+
+    Args:
+        includes: Paths relative to project_root (dirs or .py files).
+        excludes: Additional glob patterns to ignore.
+        project_root: Root directory to resolve paths from. Defaults to CWD.
+
+    Returns:
+        Compressed tar bytes ready for upload.
+    """
+    root = project_root or Path.cwd()
+    all_excludes = _DEFAULT_EXCLUDES + tuple(excludes)
+
+    def _is_excluded(path: Path) -> bool:
+        return any(
+            fnmatch.fnmatch(part, pattern)
+            for part in path.parts
+            for pattern in all_excludes
+        )
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for include_path in includes:
+            source = root / include_path
+            if not source.exists():
+                logger.warning(
+                    "Include path does not exist, skipping: {path}",
+                    path=include_path,
+                )
+                continue
+
+            if source.is_file():
+                tar.add(str(source), arcname=include_path)
+            elif source.is_dir():
+                for file in source.rglob("*"):
+                    if file.is_file():
+                        rel = file.relative_to(root)
+                        if not _is_excluded(rel):
+                            tar.add(str(file), arcname=str(rel))
+
+    tarball = buf.getvalue()
+    logger.info(
+        "Built user code tarball: {size:.1f} KB from {n} includes",
+        size=len(tarball) / 1024,
+        n=len(includes),
+    )
+    return tarball
