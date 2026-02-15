@@ -129,4 +129,9 @@ dev = [
     "scikit-learn>=1.8.0",
     "pytest-timeout>=2.4.0",
     "textual>=7.5.0",
+    "mkdocs>=1.6.1",
+    "mkdocs-material>=9.7.1",
+    "pymdown-extensions>=10.20.1",
+    "mkdocstrings>=1.0.3",
+    "mkdocstrings-python>=2.0.2",
 ]
