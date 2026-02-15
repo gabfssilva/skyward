@@ -43,7 +43,33 @@ type AllocationStrategy = Literal[
 
 type Architecture = Literal["x86_64", "arm64"]
 
-type SkywardSource = Literal["local", "github", "pypi"]
+type SkywardSource = Literal["auto", "local", "github", "pypi"]
+
+
+def _detect_skyward_source() -> SkywardSource:
+    """Detect if skyward is installed from source (editable) or from a package registry."""
+    from importlib.metadata import packages_distributions
+
+    try:
+        dist_map = packages_distributions()
+        dists = dist_map.get("skyward", [])
+        if not dists:
+            return "local"
+
+        from importlib.metadata import distribution
+
+        dist = distribution(dists[0])
+        direct_url = dist.read_text("direct_url.json")
+        if direct_url:
+            import json as _json
+
+            data = _json.loads(direct_url)
+            if data.get("dir_info", {}).get("editable", False):
+                return "local"
+
+        return "pypi"
+    except Exception:
+        return "pypi"
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +164,7 @@ class Image:
         apt: List of apt packages to install.
         env: Environment variables to export.
         shell_vars: Shell commands for dynamic variable capture.
-        skyward_source: Where to install skyward from.
+        skyward_source: Where to install skyward from. "auto" detects editable installs as "local", otherwise "pypi".
         metrics: Metrics to collect (CPU, GPU, Memory, etc.). Use None to disable.
 
     Example:
@@ -169,13 +195,16 @@ class Image:
     apt: list[str] | tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
     shell_vars: dict[str, str] = field(default_factory=dict)
-    skyward_source: SkywardSource = "github"
+    skyward_source: SkywardSource = "auto"
     metrics: MetricsConfig = field(default_factory=lambda: DefaultMetrics())
 
     def __post_init__(self) -> None:
         """Convert lists to tuples for immutability."""
         object.__setattr__(self, "pip", tuple(self.pip) if self.pip else ())
         object.__setattr__(self, "apt", tuple(self.apt) if self.apt else ())
+
+        if self.skyward_source == "auto":
+            object.__setattr__(self, "skyward_source", _detect_skyward_source())
 
         match self.metrics:
             case list():
