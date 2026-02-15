@@ -21,7 +21,6 @@ import uuid
 from contextlib import suppress
 from dataclasses import replace
 from types import MappingProxyType
-from typing import Any
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 from loguru import logger
@@ -32,6 +31,7 @@ from skyward.actors.messages import (
     ClusterProvisioned,
     ClusterRequested,
     InstanceBootstrapped,
+    InstanceMetadata,
     InstanceRequested,
     InstanceRunning,
     ProviderMsg,
@@ -267,7 +267,7 @@ echo "$IFACE $IP"
 
 
 async def _install_local_skyward(
-    instance_info: Any,
+    instance_info: InstanceMetadata,
     ssh_host: str,
     ssh_port: int,
 ) -> None:

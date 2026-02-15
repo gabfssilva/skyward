@@ -325,12 +325,13 @@ class PanelState:
             market: Literal["spot", "on-demand"] = "spot" if inst.is_spot else "on-demand"
 
             status: Literal["bootstrapping", "ready", "done"]
-            if self.is_done:
-                status = "done"
-            elif inst.bootstrapped:
-                status = "ready"
-            else:
-                status = "bootstrapping"
+            match (self.is_done, inst.bootstrapped):
+                case (True, _):
+                    status = "done"
+                case (_, True):
+                    status = "ready"
+                case _:
+                    status = "bootstrapping"
 
             is_active = inst_id == active_id
             log_count = head_log_lines if is_active else secondary_log_lines

@@ -157,7 +157,7 @@ async def _wait_for_workers(
     expected: int,
     host_to_node: dict[str, int],
     timeout: float = 120.0,
-) -> dict[int, ActorRef[Any]]:
+) -> dict[int, ActorRef[ExecuteTask]]:
     deadline = asyncio.get_event_loop().time() + timeout
     log.debug(
         "Waiting for {n} workers, host_to_node={h2n}",
@@ -178,9 +178,9 @@ async def _wait_for_workers(
             )
             for inst in listing.instances:
                 log.debug(
-                    "  instance: node=({host}:{port}), ref={ref}, ref.address={addr}",
+                    "  instance: node=({host}:{port}), ref={ref}",
                     host=inst.node.host, port=inst.node.port,
-                    ref=inst.ref, addr=inst.ref.address,
+                    ref=inst.ref,
                 )
             return _build_worker_map(listing, host_to_node)
         remaining = deadline - asyncio.get_event_loop().time()
@@ -196,8 +196,8 @@ async def _wait_for_workers(
 
 def _build_worker_map(
     listing: Any, host_to_node: dict[str, int],
-) -> dict[int, ActorRef[Any]]:
-    worker_map: dict[int, ActorRef[Any]] = {}
+) -> dict[int, ActorRef[ExecuteTask]]:
+    worker_map: dict[int, ActorRef[ExecuteTask]] = {}
     for instance in listing.instances:
         host = instance.node.host
         nid = host_to_node.get(host)
@@ -276,7 +276,7 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
     async def _do_execute(
         client: ClusterClient,
         sem: asyncio.Semaphore,
-        worker_ref: ActorRef[Any],
+        worker_ref: ActorRef[ExecuteTask],
         fn_bytes: bytes,
         timeout: float,
     ) -> Executed | ExecutionFailed:
@@ -316,7 +316,7 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
     async def _do_broadcast(
         client: ClusterClient,
         sem: asyncio.Semaphore,
-        worker_refs: dict[int, ActorRef[Any]],
+        worker_refs: dict[int, ActorRef[ExecuteTask]],
         fn_bytes: bytes,
         timeout: float,
     ) -> Broadcasted | ExecutionFailed:
@@ -360,7 +360,7 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
 
     async def _do_setup(
         client: ClusterClient,
-        worker_refs: dict[int, ActorRef[Any]],
+        worker_refs: dict[int, ActorRef[ExecuteTask]],
         env_vars: dict[str, str],
         pool_infos: tuple[str, ...],
         timeout: float,
@@ -390,8 +390,8 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
 
         for nid, ref in sorted(worker_refs.items()):
             log.debug(
-                "_do_setup: will ask node {nid}, ref={ref}, ref.address={addr}",
-                nid=nid, ref=ref, addr=ref.address,
+                "_do_setup: will ask node {nid}, ref={ref}",
+                nid=nid, ref=ref,
             )
 
         tasks = []
@@ -417,7 +417,7 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
 
     def ready(
         client: ClusterClient,
-        worker_refs: dict[int, ActorRef[Any]],
+        worker_refs: dict[int, ActorRef[ExecuteTask]],
         num_nodes: int,
         sem: asyncio.Semaphore,
         job_timeout: float,

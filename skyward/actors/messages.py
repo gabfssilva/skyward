@@ -18,21 +18,13 @@ from casty import ActorRef
 
 if TYPE_CHECKING:
     from skyward.api.spec import PoolSpec
-
-# =============================================================================
-# Type Aliases
-# =============================================================================
+    from skyward.providers.registry import ProviderConfig
 
 type RequestId = str
 type ClusterId = str
 type InstanceId = str
 type NodeId = int
 type ProviderName = Literal["aws", "vastai", "verda", "runpod"]
-
-
-# =============================================================================
-# Value Objects
-# =============================================================================
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,11 +49,6 @@ class InstanceMetadata:
     memory_gb: float = 0.0
     gpu_vram_gb: int = 0
     region: str = ""
-
-
-# =============================================================================
-# Requests (Commands)
-# =============================================================================
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,11 +93,6 @@ class BootstrapRequested:
     request_id: RequestId
     instance: InstanceMetadata
     cluster_id: ClusterId
-
-
-# =============================================================================
-# Facts - what happened (immutable)
-# =============================================================================
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,11 +195,6 @@ class ClusterDestroyed:
     cluster_id: ClusterId
 
 
-# =============================================================================
-# Execution Events
-# =============================================================================
-
-
 @dataclass(frozen=True, slots=True)
 class TaskStarted:
     """Task execution started on an instance."""
@@ -257,11 +234,6 @@ class Log:
     stream: Literal["stdout", "stderr"] = "stdout"
 
 
-# =============================================================================
-# Bootstrap Streaming Events (from JSONL)
-# =============================================================================
-
-
 @dataclass(frozen=True, slots=True)
 class BootstrapConsole:
     """Console output during bootstrap."""
@@ -299,11 +271,6 @@ class BootstrapFailed:
     error: str
 
 
-# =============================================================================
-# Error Events
-# =============================================================================
-
-
 @dataclass(frozen=True, slots=True)
 class Error:
     """Something went wrong."""
@@ -312,10 +279,6 @@ class Error:
     message: str
     fatal: bool = False
 
-
-# =============================================================================
-# Type Unions (system events)
-# =============================================================================
 
 type Request = ClusterRequested | InstanceRequested | ShutdownRequested | BootstrapRequested
 
@@ -344,11 +307,6 @@ type Fact = (
 type Event = Request | Fact
 
 
-# =============================================================================
-# Instance Registry
-# =============================================================================
-
-
 @dataclass
 class InstanceRegistry:
     """Tracks active instances for monitoring."""
@@ -373,11 +331,6 @@ class InstanceRegistry:
         return self._instances.get(instance_id)
 
 
-# =============================================================================
-# Node Messages
-# =============================================================================
-
-
 @dataclass(frozen=True, slots=True)
 class Provision:
     cluster_id: ClusterId
@@ -396,11 +349,6 @@ type NodeMsg = (
     | InstanceBootstrapped
     | InstancePreempted
 )
-
-
-# =============================================================================
-# Pool Messages
-# =============================================================================
 
 
 @dataclass(frozen=True, slots=True)
@@ -428,7 +376,7 @@ class BroadcastResult:
 @dataclass(frozen=True, slots=True)
 class StartPool:
     spec: PoolSpec
-    provider_config: Any
+    provider_config: ProviderConfig
     provider_ref: ActorRef[ProviderMsg]
     reply_to: ActorRef[PoolStarted]
 
@@ -497,11 +445,6 @@ def _to_metadata(ev: InstanceRunning) -> InstanceMetadata:
         gpu_vram_gb=ev.gpu_vram_gb,
         region=ev.region,
     )
-
-
-# =============================================================================
-# Provider Messages
-# =============================================================================
 
 
 @dataclass(frozen=True, slots=True)
@@ -580,11 +523,6 @@ type ProviderMsg = (
     | _LocalInstallDone
     | _LocalInstallFailed
 )
-
-
-# =============================================================================
-# Monitor Messages
-# =============================================================================
 
 
 @dataclass(frozen=True, slots=True)

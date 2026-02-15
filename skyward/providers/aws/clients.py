@@ -9,16 +9,8 @@ from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from typing import Any
 
-# =============================================================================
-# Client Type
-# =============================================================================
-
 type Client[T] = Callable[[], AbstractAsyncContextManager[T]]
 """Factory that returns an async context manager for a client."""
-
-# =============================================================================
-# Wrapper Classes for DI (each needs a unique type)
-# =============================================================================
 
 
 class EC2ClientFactory:
@@ -29,6 +21,3 @@ class EC2ClientFactory:
 
     def __call__(self) -> AbstractAsyncContextManager[Any]:
         return self._factory()
-
-
-# =============================================================================

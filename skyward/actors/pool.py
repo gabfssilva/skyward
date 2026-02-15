@@ -10,12 +10,15 @@ transparently via Behaviors.spy() — the pool has no knowledge of observers.
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 from loguru import logger
 
 from skyward.api.spec import PoolSpec
+
+if TYPE_CHECKING:
+    from skyward.providers.registry import ProviderConfig
 
 from .messages import (
     BootstrapRequested,
@@ -47,11 +50,6 @@ from .messages import (
     _to_metadata,
 )
 from .node import node_actor
-
-# =============================================================================
-# Behavior
-# =============================================================================
-
 
 def pool_actor() -> Behavior[PoolMsg]:
     """A pool tells this story: idle -> requesting -> provisioning -> ready -> shutting_down."""
@@ -98,7 +96,7 @@ def pool_actor() -> Behavior[PoolMsg]:
         request_id: str,
         spec: PoolSpec,
         provider: ProviderName,
-        provider_config: Any,
+        provider_config: ProviderConfig,
         provider_ref: ActorRef[ProviderMsg],
         start_reply: ActorRef[PoolStarted],
     ) -> Behavior[PoolMsg]:
@@ -148,7 +146,7 @@ def pool_actor() -> Behavior[PoolMsg]:
         cluster_id: ClusterId,
         spec: PoolSpec,
         provider: ProviderName,
-        provider_config: Any,
+        provider_config: ProviderConfig,
         provider_ref: ActorRef[ProviderMsg],
         node_refs: dict[NodeId, ActorRef[NodeMsg]],
         ready_instances: dict[NodeId, InstanceMetadata],
@@ -244,7 +242,7 @@ def pool_actor() -> Behavior[PoolMsg]:
         cluster_id: ClusterId,
         spec: PoolSpec,
         provider: ProviderName,
-        provider_config: Any,
+        provider_config: ProviderConfig,
         provider_ref: ActorRef[ProviderMsg],
         node_refs: dict[NodeId, ActorRef[NodeMsg]],
         instances: dict[NodeId, InstanceMetadata],

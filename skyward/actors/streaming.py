@@ -20,9 +20,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import TYPE_CHECKING
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
+
+if TYPE_CHECKING:
+    from skyward.infra.ssh import SSHTransport
 from loguru import logger
 
 from .messages import (
@@ -44,11 +47,6 @@ from .messages import (
 _MAX_RECONNECT_ATTEMPTS = 10
 _RECONNECT_BASE_DELAY = 2.0
 _RECONNECT_MAX_DELAY = 60.0
-
-# =============================================================================
-# Behavior
-# =============================================================================
-
 
 async def _read_next(stream: AsyncIterator, info: InstanceMetadata) -> MonitorMsg:
     try:
@@ -73,7 +71,7 @@ async def _reconnect(
     ssh_key_path: str,
     lines_read: int,
     ctx: ActorContext[MonitorMsg],
-) -> tuple[Any, AsyncIterator] | None:
+) -> tuple[SSHTransport, AsyncIterator] | None:
     from skyward.infra.ssh import SSHTransport
 
     log = logger.bind(actor="monitor", instance_id=info.id)
@@ -144,7 +142,7 @@ def instance_monitor(
         )
 
     def streaming(
-        transport: Any,
+        transport: SSHTransport,
         stream: AsyncIterator,
         bootstrap_signaled: bool,
         lines_read: int,
@@ -186,7 +184,9 @@ def instance_monitor(
                         if result is not None:
                             new_transport, new_stream = result
                             return Behaviors.with_lifecycle(
-                                streaming(new_transport, new_stream, bootstrap_signaled, lines_read),
+                                streaming(
+                                    new_transport, new_stream, bootstrap_signaled, lines_read,
+                                ),
                                 post_stop=lambda _: new_transport.close(),
                             )
 
@@ -204,11 +204,6 @@ def instance_monitor(
         return Behaviors.receive(receive)
 
     return Behaviors.setup(_setup)
-
-
-# =============================================================================
-# Event Conversion
-# =============================================================================
 
 
 def _convert(raw_event: object, info: InstanceMetadata) -> Event | None:

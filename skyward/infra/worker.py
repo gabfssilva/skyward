@@ -154,7 +154,7 @@ async def main(
         host=host,
         port=port,
         node_id=f"node-{node_id}",
-        seed_nodes=seeds or [],
+        seed_nodes=tuple(seeds) if seeds else None,
         bind_host="0.0.0.0",
         config=config,
         required_quorum=quorum,

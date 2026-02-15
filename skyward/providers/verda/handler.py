@@ -11,7 +11,6 @@ from __future__ import annotations
 import re
 import uuid
 from contextlib import suppress
-from typing import Any
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 from loguru import logger
@@ -22,6 +21,7 @@ from skyward.actors.messages import (
     ClusterProvisioned,
     ClusterRequested,
     InstanceBootstrapped,
+    InstanceMetadata,
     InstanceRequested,
     InstanceRunning,
     ProviderMsg,
@@ -167,7 +167,7 @@ def _generate_user_data(config: Verda, spec: PoolSpec) -> str:
 
 
 async def _install_local_skyward(
-    info: Any, cluster: VerdaClusterState
+    info: InstanceMetadata, cluster: VerdaClusterState
 ) -> None:
     from skyward.providers.bootstrap import install_local_skyward, wait_for_ssh
 

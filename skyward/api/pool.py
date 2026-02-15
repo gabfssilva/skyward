@@ -29,15 +29,21 @@ import types
 from collections.abc import Callable, Coroutine, Iterator, Sequence
 from concurrent.futures import Future
 from contextlib import suppress
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from casty import ActorRef, ActorSystem, Behaviors, CastyConfig
 from loguru import logger
 
 from skyward.accelerators import Accelerator
+from skyward.actors.messages import InstanceMetadata, PoolMsg
+
+if TYPE_CHECKING:
+    import asyncssh
+
+    from skyward.infra.ssh import SSHTransport
 from skyward.distributed import (
     BarrierProxy,
     CounterProxy,
@@ -296,18 +302,22 @@ class ComputePool:
     _loop_thread: threading.Thread | None = field(default=None, init=False, repr=False)
 
     _active: bool = field(default=False, init=False, repr=False)
-    _context_token: Any = field(default=None, init=False, repr=False)
+    _context_token: Token[ComputePool | None] | None = field(default=None, init=False, repr=False)
     _registry: DistributedRegistry | None = field(default=None, init=False, repr=False)
     _system: ActorSystem | None = field(default=None, init=False, repr=False)
-    _pool_ref: Any = field(default=None, init=False, repr=False)
+    _pool_ref: ActorRef[PoolMsg] | None = field(default=None, init=False, repr=False)
     _cluster_id: str = field(default="", init=False, repr=False)
-    _instances: dict[int, Any] = field(default_factory=dict, init=False, repr=False)
+    _instances: dict[int, InstanceMetadata] = field(default_factory=dict, init=False, repr=False)
     _spec: PoolSpec | None = field(default=None, init=False, repr=False)
     _executor: Executor | None = field(default=None, init=False, repr=False)
     _network_interfaces: dict[int, str] = field(default_factory=dict, init=False, repr=False)
-    _ssh_transports: list[Any] = field(default_factory=list, init=False, repr=False)
-    _fwd_listeners: list[Any] = field(default_factory=list, init=False, repr=False)
-    _address_map: dict[tuple[str, int], tuple[str, int]] = field(default_factory=dict, init=False, repr=False)
+    _ssh_transports: list[SSHTransport] = field(default_factory=list, init=False, repr=False)
+    _fwd_listeners: list[asyncssh.SSHListener] = field(
+        default_factory=list, init=False, repr=False,
+    )
+    _address_map: dict[tuple[str, int], tuple[str, int]] = field(
+        default_factory=dict, init=False, repr=False,
+    )
     _host_to_node: dict[str, int] = field(default_factory=dict, init=False, repr=False)
 
     def __enter__(self) -> ComputePool:
@@ -486,7 +496,7 @@ class ComputePool:
     async def _start_async(self) -> None:
         """Start pool asynchronously using actors (zero bus)."""
         from skyward.actors.panel import panel_actor
-        from skyward.actors.pool import PoolMsg, PoolStarted, StartPool, pool_actor
+        from skyward.actors.pool import PoolStarted, StartPool, pool_actor
         from skyward.providers.registry import get_provider_for_config
 
         actor_factory, provider_name = get_provider_for_config(self.provider)
@@ -676,7 +686,7 @@ class ComputePool:
             await transport.run(tail_cmd, timeout=10.0)
             return stdout.strip()
 
-        async def _setup_node(node_id: int, info: Any) -> None:
+        async def _setup_node(node_id: int, info: InstanceMetadata) -> None:
             private_ip = info.private_ip or info.ip
             transport = SSHTransport(
                 host=info.ip,
@@ -723,7 +733,7 @@ class ComputePool:
 
         logger.debug("Casty cluster started ({n} tunnels)", n=len(self._address_map))
 
-    def _build_pool_info(self, info: Any, head_addr: str) -> Any:
+    def _build_pool_info(self, info: InstanceMetadata, head_addr: str) -> Any:
         from skyward.providers.pool_info import build_pool_info
 
         peers = [

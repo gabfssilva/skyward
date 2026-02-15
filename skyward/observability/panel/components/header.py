@@ -39,13 +39,14 @@ class Header:
         has_active = any(s == "in_progress" for s in vm.phases.values())
         all_done = all(s == "completed" for s in vm.phases.values())
 
-        if all_done:
-            marker, marker_style = "", "green bold"
-        elif has_active:
-            marker = "" if vm.blink_on else ""
-            marker_style = "cyan bold"
-        else:
-            marker, marker_style = "", "dim"
+        match (all_done, has_active):
+            case (True, _):
+                marker, marker_style = "", "green bold"
+            case (_, True):
+                marker = "" if vm.blink_on else ""
+                marker_style = "cyan bold"
+            case _:
+                marker, marker_style = "", "dim"
 
         # Compose header
         text.append(f"{marker} ", style=marker_style)
