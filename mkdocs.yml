@@ -63,6 +63,9 @@ markdown_extensions:
   - pymdownx.details
   - toc:
       permalink: true
+  - pymdownx.snippets:
+      check_paths: true
+      dedent_subsections: true
   - attr_list
   - md_in_html
   - pymdownx.emoji:
@@ -85,6 +88,20 @@ nav:
           - Integrations: integrations.md
           - Sky Computing: sky-computing.md
           - For HPC Users: hpc.md
+  - Guides:
+      - Getting Started:
+          - "Hello, Skyward!": guides/hello-skyward.md
+          - Parallel Execution: guides/parallel-execution.md
+          - Broadcast: guides/broadcast.md
+          - Using Accelerators: guides/using-accelerators.md
+          - Data Sharding: guides/data-sharding.md
+      - Distributed Training:
+          - PyTorch Distributed: guides/pytorch-distributed.md
+          - Keras Training: guides/keras-training.md
+          - HuggingFace Fine-tuning: guides/huggingface-finetuning.md
+      - Misc:
+          - Joblib Concurrency: guides/joblib-concurrency.md
+          - Scikit Grid Search: guides/scikit-grid-search.md
   - API Reference:
       - Core:
           - Pool & Compute: reference/pool.md

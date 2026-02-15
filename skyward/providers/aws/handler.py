@@ -524,7 +524,7 @@ async def _select_instances(
     import aioboto3  # type: ignore[reportMissingImports]
 
     min_vcpus = spec.vcpus or 2
-    min_memory_mib = int((spec.memory_gb or 0.5) * 1024)
+    min_memory_mib = int((spec.memory_gb or 1) * 1024)
     archs = [spec.architecture] if spec.architecture else ["x86_64", "arm64"]
 
     requirements: dict[str, Any] = {
