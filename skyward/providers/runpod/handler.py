@@ -152,8 +152,8 @@ async def _create_cpu_pod(
     config: RunPod,
     cluster: RunPodClusterState,
 ) -> PodResponse:
-    vcpus = cluster.spec.vcpus or 4
-    memory_gb = cluster.spec.memory_gb or 8
+    vcpus = cluster.spec.vcpus or 2
+    memory_gb = cluster.spec.memory_gb or 2
     disk_gb = min(config.container_disk_gb, 20)
     instance_id = f"cpu{config.cpu_clock}-{vcpus}-{memory_gb}"
 
