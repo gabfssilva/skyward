@@ -84,13 +84,16 @@ def format_results(r: dict) -> None:
 if __name__ == "__main__":
     with sky.ComputePool(
         provider=sky.AWS(),
-        accelerator=sky.accelerators.T4G(),
+        accelerator=sky.accelerators.L4(),
         image=sky.Image(
             pip=["jax[cuda12]"],
             skyward_source="local",
             metrics=sky.metrics.Default()
         ),
         max_hourly_cost=0.5,
-        ttl=240
+        ttl=240,
+        logging=sky.LogConfig(
+            level='TRACE'
+        )
     ) as pool:
         format_results(benchmark(matrix_size=4096, iterations=50) >> pool)

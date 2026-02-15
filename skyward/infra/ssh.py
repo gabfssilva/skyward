@@ -387,38 +387,40 @@ class SSHTransport:
         log_path: str = "/opt/skyward/events.jsonl",
         timeout: float = 600.0,
         wait_for_file_timeout: float = 120.0,
-    ) -> AsyncIterator[RawStreamEvent]:
-        """Stream events from JSONL log file via tail -F.
+        start_line: int = 0,
+    ) -> AsyncIterator[tuple[int, RawStreamEvent]]:
+        """Stream events from JSONL log file via tail -F with offset tracking.
 
-        Async version of v1's stream_events(). Uses tail -F to follow
-        file rotation. Yields parsed events as they are emitted.
+        Uses tail -n +{start_line+1} -F to read from a specific line offset,
+        ensuring no events are lost on first connection or reconnection.
 
         The timeout is adaptive: it resets on each event received.
-        This means long-running operations that produce output won't timeout.
 
         Args:
             log_path: Path to events.jsonl on remote.
             timeout: Maximum time between events before timeout.
             wait_for_file_timeout: Max time to wait for log file to exist.
+            start_line: Line offset to start reading from (0 = beginning).
 
         Yields:
-            Parsed stream events (console, phase, command, metric, log).
+            Tuples of (lines_read, event) where lines_read is the cumulative
+            count of lines processed (for reconnection tracking).
 
         Raises:
             BootstrapError: If a phase fails.
             TimeoutError: If no events received within timeout.
             FileNotFoundError: If log file doesn't appear in time.
         """
-        # Wait for log file to exist
         await self._wait_for_log_file(log_path, wait_for_file_timeout)
 
-        # Start tail -F (capital F follows rotation)
         conn = self._require_connection()
-        logger.debug("Starting tail -F {path}", path=log_path)
+        tail_offset = start_line + 1
+        logger.debug("Starting tail -n +{offset} -F {path}", offset=tail_offset, path=log_path)
 
-        async with conn.create_process(f"tail -F {log_path}") as proc:
+        async with conn.create_process(f"tail -n +{tail_offset} -F {log_path}") as proc:
             deadline = asyncio.get_event_loop().time() + timeout
             buffer = ""
+            lines_read = start_line
 
             while True:
                 remaining = deadline - asyncio.get_event_loop().time()
@@ -426,21 +428,19 @@ class SSHTransport:
                     raise TimeoutError(f"Events stream timeout after {timeout}s of inactivity")
 
                 try:
-                    # Read with timeout
                     chunk = await asyncio.wait_for(
                         proc.stdout.read(4096),
                         timeout=min(1.0, remaining),
                     )
 
                     if not chunk:
-                        # EOF - process ended
                         break
 
                     buffer += chunk
 
-                    # Process complete lines
                     while "\n" in buffer:
                         line, buffer = buffer.split("\n", 1)
+                        lines_read += 1
                         line = line.strip()
                         if not line:
                             continue
@@ -449,29 +449,26 @@ class SSHTransport:
                         if event is None:
                             continue
 
-                        yield event
+                        yield lines_read, event
 
-                        # Refresh deadline on event received
                         deadline = asyncio.get_event_loop().time() + timeout
 
-                        # Check for failure
                         match event:
                             case RawBootstrapPhase(event="failed", phase=phase, error=error):
                                 raise BootstrapError(phase, error or "unknown")
 
                 except TimeoutError:
-                    # Check if deadline exceeded
                     if asyncio.get_event_loop().time() >= deadline:
                         raise TimeoutError(
                             f"Events stream timeout after {timeout}s of inactivity"
                         ) from None
-                    # Otherwise, just a read timeout - continue loop
 
     async def stream_bootstrap(
         self,
         log_path: str = "/opt/skyward/events.jsonl",
         timeout: float = 600.0,
-    ) -> AsyncIterator[RawStreamEvent]:
+        start_line: int = 0,
+    ) -> AsyncIterator[tuple[int, RawStreamEvent]]:
         """Stream bootstrap events until completion.
 
         Convenience wrapper around stream_events() that stops when
@@ -480,18 +477,18 @@ class SSHTransport:
         Args:
             log_path: Path to events.jsonl on remote.
             timeout: Maximum time between events.
+            start_line: Line offset to start reading from.
 
         Yields:
-            Bootstrap events until completion.
+            Tuples of (lines_read, event) until bootstrap completion.
 
         Raises:
             BootstrapError: If bootstrap fails.
             TimeoutError: If timeout exceeded.
         """
-        async for event in self.stream_events(log_path, timeout):
-            yield event
+        async for lines_read, event in self.stream_events(log_path, timeout, start_line=start_line):
+            yield lines_read, event
 
-            # Stop on bootstrap completion
             match event:
                 case RawBootstrapPhase(phase="bootstrap", event="completed"):
                     return

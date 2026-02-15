@@ -237,10 +237,7 @@ def _generate_collector(m: Metric) -> str:
         local idx=0
         {m.command} | while read val; do
             if [ -n "$val" ]; then
-                local j='{{\\"type\\":\\"metric\\"'
-                j="$j,\\"name\\":\\"{m.name}_$idx\\""
-                j="$j,\\"value\\":$val,\\"ts\\":$ts}}"
-                emit "$j"
+                emit "{{\\"type\\":\\"metric\\",\\"name\\":\\"{m.name}_$idx\\",\\"value\\":$val,\\"ts\\":$ts}}"
             fi
             idx=$((idx + 1))
         done
@@ -255,10 +252,7 @@ def _generate_collector(m: Metric) -> str:
         local ts=$(date +%s.%N)
         local val=$({m.command})
         if [ -n "$val" ]; then
-            local j='{{\\"type\\":\\"metric\\"'
-            j="$j,\\"name\\":\\"{m.name}\\""
-            j="$j,\\"value\\":$val,\\"ts\\":$ts}}"
-            emit "$j"
+            emit "{{\\"type\\":\\"metric\\",\\"name\\":\\"{m.name}\\",\\"value\\":$val,\\"ts\\":$ts}}"
         fi
         sleep {m.interval}
     done

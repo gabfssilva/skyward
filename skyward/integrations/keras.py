@@ -6,8 +6,6 @@ import functools
 from collections.abc import Callable
 from typing import Literal
 
-from loguru import logger
-
 Backend = Literal["jax", "torch", "tensorflow"] | None
 
 
@@ -39,6 +37,7 @@ def keras[**P, R](
         # First wrap with Keras distribution setup
         @functools.wraps(fn)
         def inner(*args: P.args, **kwargs: P.kwargs) -> R:
+            from loguru import logger
             from skyward import instance_info
 
             log = logger.bind(integration="keras", backend=effective)

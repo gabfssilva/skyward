@@ -49,7 +49,7 @@ from skyward.distributed import (
     _set_active_registry,
 )
 from skyward.distributed.types import Consistency
-from skyward.infra.executor import HTTP_PORT, Executor, ExecutorConfig
+from skyward.infra.executor import Executor, ExecutorConfig
 from skyward.observability.logging import LogConfig, _setup_logging, _teardown_logging
 from skyward.providers.aws.config import AWS
 from skyward.providers.runpod.config import RunPod
@@ -305,6 +305,10 @@ class ComputePool:
     _spec: PoolSpec | None = field(default=None, init=False, repr=False)
     _executor: Executor | None = field(default=None, init=False, repr=False)
     _network_interfaces: dict[int, str] = field(default_factory=dict, init=False, repr=False)
+    _ssh_transports: list[Any] = field(default_factory=list, init=False, repr=False)
+    _fwd_listeners: list[Any] = field(default_factory=list, init=False, repr=False)
+    _address_map: dict[tuple[str, int], tuple[str, int]] = field(default_factory=dict, init=False, repr=False)
+    _host_to_node: dict[str, int] = field(default_factory=dict, init=False, repr=False)
 
     def __enter__(self) -> ComputePool:
         """Start pool and provision resources."""
@@ -557,6 +561,18 @@ class ComputePool:
             await self._executor.disconnect()
             self._executor = None
 
+        for listener in self._fwd_listeners:
+            with suppress(Exception):
+                listener.close()
+        self._fwd_listeners.clear()
+
+        for transport in self._ssh_transports:
+            with suppress(Exception):
+                await transport.close()
+        self._ssh_transports.clear()
+        self._address_map.clear()
+        self._host_to_node.clear()
+
         if self._pool_ref is not None and self._system is not None:
             from skyward.actors.pool import StopPool
             await self._system.ask(
@@ -592,14 +608,14 @@ class ComputePool:
         ]
 
         image_env = dict(self.image.env) if self.image and self.image.env else {}
+        casty_port = 25520
         config = ExecutorConfig(
-            head_ip=head_info.ip,
-            ssh_port=head_info.ssh_port,
-            user=ssh_user,
-            key_path=ssh_key,
+            system_name="skyward",
+            contact_points=((head_addr, casty_port),),
+            address_map=dict(self._address_map),
+            host_to_node=dict(self._host_to_node),
             num_nodes=self.nodes,
             workers_per_node=self.concurrency,
-            http_port=HTTP_PORT,
         )
         self._executor = Executor(self._system, config)  # type: ignore[arg-type]
         await self._executor.connect()
@@ -620,7 +636,6 @@ class ComputePool:
         venv_dir = f"{SKYWARD_DIR}/.venv"
         python_bin = f"{venv_dir}/bin/python"
         casty_port = 25520
-        http_port = HTTP_PORT
         logger.debug("Starting Casty cluster via SSH...")
 
         head_info = self._instances.get(0)
@@ -638,7 +653,7 @@ class ComputePool:
             seeds_arg = f"--seeds {seeds} " if seeds else ""
             casty_cmd = (
                 f"nohup {python_bin} -m skyward.infra.worker "
-                f"--node-id {node_id} --port {casty_port} --http-port {http_port} "
+                f"--node-id {node_id} --port {casty_port} "
                 f"--num-nodes {self.nodes} --host {host} "
                 f"--workers-per-node {self.concurrency} "
                 f"{seeds_arg}"
@@ -661,39 +676,52 @@ class ComputePool:
             await transport.run(tail_cmd, timeout=10.0)
             return stdout.strip()
 
-        async with SSHTransport(
-            host=head_info.ip,
-            user=ssh_user,
-            key_path=ssh_key,
-            port=head_info.ssh_port,
-        ) as transport:
-            logger.debug("Starting Casty head on node 0...")
-            pid = await _start_node(transport, 0, host=head_addr)
-            logger.debug("Casty head PID: {pid}", pid=pid)
-            self._network_interfaces[0] = await detect_network_interface(transport)
-
-        async def _start_worker(node_id: int, info: Any) -> None:
-            async with SSHTransport(
+        async def _setup_node(node_id: int, info: Any) -> None:
+            private_ip = info.private_ip or info.ip
+            transport = SSHTransport(
                 host=info.ip,
                 user=ssh_user,
                 key_path=ssh_key,
                 port=info.ssh_port,
-            ) as transport:
-                worker_addr = info.private_ip or info.ip
+            )
+            await transport.connect()
+            self._ssh_transports.append(transport)
+
+            if node_id == 0:
+                logger.debug("Starting Casty head on node 0...")
+                pid = await _start_node(transport, 0, host=head_addr)
+                logger.debug("Casty head PID: {pid}", pid=pid)
+            else:
                 logger.debug("Starting Casty worker on node {nid}", nid=node_id)
                 seeds = f"{head_addr}:{casty_port}"
                 await _start_node(
-                    transport, node_id, host=worker_addr, seeds=seeds
+                    transport, node_id, host=private_ip, seeds=seeds,
                 )
-                self._network_interfaces[node_id] = await detect_network_interface(transport)
+
+            self._network_interfaces[node_id] = await detect_network_interface(transport)
+
+            listener = await transport._conn.forward_local_port(  # type: ignore[union-attr]
+                "", 0, "127.0.0.1", casty_port,
+            )
+            local_port = listener.get_port()
+            self._fwd_listeners.append(listener)
+            self._address_map[(private_ip, casty_port)] = ("127.0.0.1", local_port)
+            self._host_to_node[private_ip] = node_id
+
+            logger.debug(
+                "Tunnel node-{nid}: :{local} → {pub}→127.0.0.1:{remote}",
+                nid=node_id, local=local_port, pub=info.ip, remote=casty_port,
+            )
+
+        await _setup_node(0, head_info)
 
         await asyncio.gather(*(
-            _start_worker(node_id, info)
+            _setup_node(node_id, info)
             for node_id, info in self._instances.items()
             if node_id != 0
         ))
 
-        logger.debug("Casty cluster started")
+        logger.debug("Casty cluster started ({n} tunnels)", n=len(self._address_map))
 
     def _build_pool_info(self, info: Any, head_addr: str) -> Any:
         from skyward.providers.pool_info import build_pool_info

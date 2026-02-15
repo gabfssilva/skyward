@@ -595,6 +595,7 @@ class StopMonitor:
 @dataclass(frozen=True, slots=True)
 class _StreamedEvent:
     event: Event
+    lines_read: int = 0
 
 
 @dataclass(frozen=True, slots=True)

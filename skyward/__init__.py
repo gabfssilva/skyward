@@ -12,7 +12,7 @@
 
 from skyward import accelerators as accelerators
 from skyward import integrations as integrations
-from skyward.observability import metrics as metrics
+from skyward.observability import metrics as metrics, LogConfig
 
 from .actors.messages import (
     ClusterDestroyed,
@@ -132,6 +132,7 @@ __all__ = [
     "Fact",
     "Event",
     "metrics",
+    "LogConfig",
     "accelerators",
     "integrations",
 ]

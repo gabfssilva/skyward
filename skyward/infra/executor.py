@@ -1,29 +1,36 @@
-"""Executor actor for remote function execution via Casty.
+"""Executor actor for remote function execution via Casty ClusterClient.
 
 The executor tells this story: connecting → ready → stopped.
 
+In the connecting state, it receives pre-built SSH tunnel information
+(address_map) from the pool layer and creates a ClusterClient to discover
+and communicate with remote worker actors directly.
+
+SSH tunnels are managed by the pool layer — the executor only consumes them.
+
 Routing is sequential (mailbox guarantees round-robin correctness).
-HTTP calls are concurrent (create_task + semaphore for backpressure).
+Actor asks are concurrent (create_task + semaphore for backpressure).
 The Executor class is a thin facade over the actor for the outside world.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging as _logging
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
-import aiohttp
-import asyncssh
-from casty import ActorContext, ActorRef, ActorSystem, Behavior, Behaviors
+from casty import ActorContext, ActorRef, ActorSystem, Behavior, Behaviors, ClusterClient
 from loguru import logger
 
-from .serialization import deserialize, serialize
+from .serialization import serialize
+from .worker import WORKER_KEY, ExecuteTask, TaskFailed, TaskResult, TaskSucceeded
 
-CASTY_PORT = 25520
-HTTP_PORT = 8265
+_logging.getLogger("casty").setLevel(_logging.DEBUG)
+
+log = logger.bind(component="executor")
 
 
 # ─── Config ──────────────────────────────────────────────────────────
@@ -31,13 +38,12 @@ HTTP_PORT = 8265
 
 @dataclass(frozen=True, slots=True)
 class ExecutorConfig:
-    head_ip: str
-    user: str
-    key_path: str
+    system_name: str
+    contact_points: tuple[tuple[str, int], ...]
+    address_map: dict[tuple[str, int], tuple[str, int]]
+    host_to_node: dict[str, int]
     num_nodes: int
     workers_per_node: int = 1
-    ssh_port: int = 22
-    http_port: int = HTTP_PORT
     connect_timeout: float = 120.0
     job_timeout: float = 600.0
 
@@ -143,22 +149,75 @@ type ExecutorMsg = (
 )
 
 
+# ─── Helpers ─────────────────────────────────────────────────────────
+
+
+async def _wait_for_workers(
+    client: ClusterClient,
+    expected: int,
+    host_to_node: dict[str, int],
+    timeout: float = 120.0,
+) -> dict[int, ActorRef[Any]]:
+    deadline = asyncio.get_event_loop().time() + timeout
+    log.debug(
+        "Waiting for {n} workers, host_to_node={h2n}",
+        n=expected, h2n=host_to_node,
+    )
+    listing = client.lookup(WORKER_KEY)
+    log.debug(
+        "Initial lookup: {n} instances found",
+        n=len(listing.instances),
+    )
+    while asyncio.get_event_loop().time() < deadline:
+        listing = client.lookup(WORKER_KEY)
+        found = len(listing.instances)
+        if found >= expected:
+            log.debug(
+                "Found {found}/{expected} workers, building map...",
+                found=found, expected=expected,
+            )
+            for inst in listing.instances:
+                log.debug(
+                    "  instance: node=({host}:{port}), ref={ref}, ref.address={addr}",
+                    host=inst.node.host, port=inst.node.port,
+                    ref=inst.ref, addr=inst.ref.address,
+                )
+            return _build_worker_map(listing, host_to_node)
+        remaining = deadline - asyncio.get_event_loop().time()
+        log.debug(
+            "Only {found}/{expected} workers, retrying ({remaining:.0f}s left)...",
+            found=found, expected=expected, remaining=remaining,
+        )
+        await asyncio.sleep(2.0)
+    raise RuntimeError(
+        f"Only found {len(listing.instances)}/{expected} workers after {timeout}s"
+    )
+
+
+def _build_worker_map(
+    listing: Any, host_to_node: dict[str, int],
+) -> dict[int, ActorRef[Any]]:
+    worker_map: dict[int, ActorRef[Any]] = {}
+    for instance in listing.instances:
+        host = instance.node.host
+        nid = host_to_node.get(host)
+        log.debug(
+            "Mapping host={host} → node_id={nid} (in host_to_node={h2n})",
+            host=host, nid=nid, h2n=host_to_node,
+        )
+        if nid is not None:
+            worker_map[nid] = instance.ref
+        else:
+            log.warning(
+                "Host {host} not found in host_to_node, skipping worker",
+                host=host,
+            )
+    result = dict(sorted(worker_map.items()))
+    log.debug("Final worker_map: {wm}", wm={k: str(v) for k, v in result.items()})
+    return result
+
+
 # ─── Behavior ────────────────────────────────────────────────────────
-
-
-async def _wait_for_ready(session: aiohttp.ClientSession, host: str, port: int) -> None:
-    for attempt in range(30):
-        try:
-            async with session.get("/health") as resp:
-                if resp.status == 200:
-                    logger.debug("Casty HTTP API is ready")
-                    return
-        except (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError):
-            pass
-        if attempt < 29:
-            logger.debug("Casty HTTP not ready (attempt {a}/30)", a=attempt + 1)
-            await asyncio.sleep(2.0)
-    raise RuntimeError(f"Casty HTTP API not ready after 60s at {host}:{port}")
 
 
 def _executor_behavior() -> Behavior[ExecutorMsg]:
@@ -166,117 +225,153 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
 
     def connecting() -> Behavior[ExecutorMsg]:
         async def receive(
-            ctx: ActorContext[ExecutorMsg], msg: ExecutorMsg,
+            _ctx: ActorContext[ExecutorMsg], msg: ExecutorMsg,
         ) -> Behavior[ExecutorMsg]:
             match msg:
                 case _Connect(config=cfg, reply_to=reply_to):
-                    ssh_conn = await asyncssh.connect(
-                        cfg.head_ip,
-                        port=cfg.ssh_port,
-                        username=cfg.user,
-                        client_keys=[cfg.key_path],
-                        known_hosts=None,
-                        connect_timeout=cfg.connect_timeout,
-                        keepalive_interval=15,
-                        keepalive_count_max=4,
+                    log.info(
+                        "CONNECT received: system={sys}, contact_points={pts}, "
+                        "address_map={am}, host_to_node={h2n}, num_nodes={n}",
+                        sys=cfg.system_name, pts=cfg.contact_points,
+                        am=cfg.address_map, h2n=cfg.host_to_node, n=cfg.num_nodes,
                     )
-                    tunnel = await ssh_conn.forward_local_port(
-                        "", 0, "127.0.0.1", cfg.http_port,
+
+                    log.debug("Creating ClusterClient...")
+                    client = ClusterClient(
+                        contact_points=list(cfg.contact_points),
+                        system_name=cfg.system_name,
+                        address_map=cfg.address_map,
                     )
-                    session = aiohttp.ClientSession(
-                        base_url=f"http://127.0.0.1:{tunnel.get_port()}",
-                        timeout=aiohttp.ClientTimeout(total=cfg.job_timeout, connect=30.0),
+                    log.debug("ClusterClient created, entering async context...")
+                    await client.__aenter__()
+                    log.info("ClusterClient entered, waiting for topology...")
+
+                    worker_refs = await _wait_for_workers(
+                        client, cfg.num_nodes, cfg.host_to_node, cfg.connect_timeout,
                     )
-                    await _wait_for_ready(session, cfg.head_ip, cfg.http_port)
-                    logger.info(
-                        "Connected to Casty at {host}:{port}",
-                        host=cfg.head_ip, port=cfg.http_port,
+                    log.info(
+                        "Discovered {n} workers: {nodes}",
+                        n=len(worker_refs), nodes=list(worker_refs.keys()),
                     )
+
+                    log.debug("Telling reply_to Connected()...")
                     reply_to.tell(Connected())
                     max_concurrent = cfg.num_nodes * (cfg.workers_per_node + 1)
-                    return ready(
-                        ssh_conn, tunnel, session,
-                        cfg.num_nodes, asyncio.Semaphore(max_concurrent),
+                    log.debug(
+                        "Transitioning to ready state (max_concurrent={mc}, job_timeout={jt})",
+                        mc=max_concurrent, jt=cfg.job_timeout,
                     )
-                case _:
+                    return ready(
+                        client, worker_refs, cfg.num_nodes,
+                        asyncio.Semaphore(max_concurrent), cfg.job_timeout,
+                    )
+                case other:
+                    log.warning(
+                        "Unexpected message in connecting state: {msg}",
+                        msg=type(other).__name__,
+                    )
                     return Behaviors.same()
         return Behaviors.receive(receive)
 
     async def _do_execute(
-        session: aiohttp.ClientSession,
+        client: ClusterClient,
         sem: asyncio.Semaphore,
-        fn: Callable[..., Any],
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
-        target: int,
+        worker_ref: ActorRef[Any],
+        fn_bytes: bytes,
+        timeout: float,
     ) -> Executed | ExecutionFailed:
-        fn_name = getattr(fn, "__name__", str(fn))
+        log.debug(
+            "_do_execute: acquiring semaphore, ref={ref}, payload={sz} bytes, timeout={t}",
+            ref=worker_ref, sz=len(fn_bytes), t=timeout,
+        )
         async with sem:
             try:
-                payload = serialize({"fn": fn, "args": args, "kwargs": kwargs, "node_id": target})
-                async with session.post(
-                    "/jobs", data=payload,
-                    headers={"Content-Type": "application/octet-stream"},
-                ) as resp:
-                    result = deserialize(await resp.read())
-                    match resp.status:
-                        case 200:
-                            return Executed(value=result)
-                        case _:
-                            match result:
-                                case dict():
-                                    error = result.get("error", "Unknown")
-                                    tb = result.get("traceback", "")
-                                case _:
-                                    error = str(result)
-                                    tb = ""
-                            return ExecutionFailed(error=error, traceback=tb)
+                log.debug(
+                    "_do_execute: calling client.ask(ref={ref}, timeout={t})...",
+                    ref=worker_ref, t=timeout,
+                )
+                result: TaskResult = await client.ask(
+                    worker_ref,
+                    lambda reply_to: ExecuteTask(fn_bytes=fn_bytes, reply_to=reply_to),
+                    timeout=timeout,
+                )
+                log.debug(
+                    "_do_execute: client.ask returned: {typ}",
+                    typ=type(result).__name__,
+                )
+                match result:
+                    case TaskSucceeded(result=value):
+                        log.debug("_do_execute: TaskSucceeded")
+                        return Executed(value=value)
+                    case TaskFailed(error=error, traceback=tb):
+                        log.error("_do_execute: TaskFailed: {err}", err=error)
+                        return ExecutionFailed(error=error, traceback=tb)
+                    case _:
+                        log.error("_do_execute: Unexpected result type: {r}", r=result)
+                        return ExecutionFailed(error=f"Unexpected result: {result}")
             except Exception as e:
-                logger.error("execute({fn_name}) failed: {err}", fn_name=fn_name, err=e)
+                log.error("_do_execute: exception: {err}", err=e, exc_info=True)
                 return ExecutionFailed(error=str(e))
 
     async def _do_broadcast(
-        session: aiohttp.ClientSession,
+        client: ClusterClient,
         sem: asyncio.Semaphore,
-        fn: Callable[..., Any],
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
-        num_nodes: int,
+        worker_refs: dict[int, ActorRef[Any]],
+        fn_bytes: bytes,
+        timeout: float,
     ) -> Broadcasted | ExecutionFailed:
-        fn_name = getattr(fn, "__name__", str(fn))
+        log.debug(
+            "_do_broadcast: {n} workers, payload={sz} bytes",
+            n=len(worker_refs), sz=len(fn_bytes),
+        )
         async with sem:
             try:
-                payload = serialize({
-                    "fn": fn, "args": args,
-                    "kwargs": kwargs, "num_nodes": num_nodes,
-                })
-                async with session.post(
-                    "/jobs/broadcast", data=payload,
-                    headers={"Content-Type": "application/octet-stream"},
-                ) as resp:
-                    result = deserialize(await resp.read())
-                    match resp.status:
-                        case 200:
-                            return Broadcasted(values=tuple(result))
-                        case _:
-                            match result:
-                                case dict():
-                                    error = result.get("error", "Unknown")
-                                    tb = result.get("traceback", "")
-                                case _:
-                                    error = str(result)
-                                    tb = ""
-                            return ExecutionFailed(error=error, traceback=tb)
+                tasks = [
+                    client.ask(
+                        ref,
+                        lambda reply_to: ExecuteTask(fn_bytes=fn_bytes, reply_to=reply_to),
+                        timeout=timeout,
+                    )
+                    for _nid, ref in sorted(worker_refs.items())
+                ]
+                log.debug("_do_broadcast: awaiting {n} tasks...", n=len(tasks))
+                results: list[TaskResult] = list(await asyncio.gather(*tasks))
+                log.debug("_do_broadcast: all tasks returned")
+
+                values: list[Any] = [None] * len(results)
+                for resp in results:
+                    match resp:
+                        case TaskFailed(error=error, traceback=tb, node_id=nid):
+                            log.error(
+                                "_do_broadcast: node {nid} failed: {err}",
+                                nid=nid, err=error,
+                            )
+                            return ExecutionFailed(
+                                error=f"Node {nid}: {error}", traceback=tb,
+                            )
+                        case TaskSucceeded(result=value, node_id=nid):
+                            if nid < len(values):
+                                values[nid] = value
+
+                return Broadcasted(values=tuple(values))
             except Exception as e:
-                logger.error("broadcast({fn_name}) failed: {err}", fn_name=fn_name, err=e)
+                log.error("_do_broadcast: exception: {err}", err=e, exc_info=True)
                 return ExecutionFailed(error=str(e))
 
     async def _do_setup(
-        session: aiohttp.ClientSession,
+        client: ClusterClient,
+        worker_refs: dict[int, ActorRef[Any]],
         env_vars: dict[str, str],
         pool_infos: tuple[str, ...],
-        num_nodes: int,
+        timeout: float,
     ) -> None:
+        log.info(
+            "_do_setup: env_vars={n_env} keys, pool_infos={n_pi} entries, "
+            "workers={n_w}, timeout={t}",
+            n_env=len(env_vars), n_pi=len(pool_infos),
+            n_w=len(worker_refs), t=timeout,
+        )
+
         def setup_env(all_infos: list[str], extra: dict[str, str]) -> str:
             import os
             nid = int(os.environ.get("SKYWARD_NODE_ID", "0"))
@@ -286,48 +381,101 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
                 os.environ[k] = v
             return "ok"
 
-        payload = serialize({
+        fn_bytes = serialize({
             "fn": setup_env,
             "args": (list(pool_infos), env_vars),
             "kwargs": {},
-            "num_nodes": num_nodes,
         })
-        async with session.post(
-            "/jobs/broadcast", data=payload,
-            headers={"Content-Type": "application/octet-stream"},
-        ) as resp:
-            deserialize(await resp.read())
+        log.debug("_do_setup: serialized payload={sz} bytes", sz=len(fn_bytes))
+
+        for nid, ref in sorted(worker_refs.items()):
+            log.debug(
+                "_do_setup: will ask node {nid}, ref={ref}, ref.address={addr}",
+                nid=nid, ref=ref, addr=ref.address,
+            )
+
+        tasks = []
+        for nid, ref in sorted(worker_refs.items()):
+            log.debug("_do_setup: creating ask task for node {nid}...", nid=nid)
+            task = client.ask(
+                ref,
+                lambda reply_to: ExecuteTask(fn_bytes=fn_bytes, reply_to=reply_to),
+                timeout=timeout,
+            )
+            tasks.append(task)
+
+        log.info("_do_setup: awaiting {n} setup tasks...", n=len(tasks))
+        try:
+            results = await asyncio.gather(*tasks)
+            log.info(
+                "_do_setup: all tasks completed, results={r}",
+                r=[type(r).__name__ for r in results],
+            )
+        except Exception as e:
+            log.error("_do_setup: gather failed: {err}", err=e, exc_info=True)
+            raise
 
     def ready(
-        ssh_conn: asyncssh.SSHClientConnection,
-        tunnel: Any,
-        session: aiohttp.ClientSession,
+        client: ClusterClient,
+        worker_refs: dict[int, ActorRef[Any]],
         num_nodes: int,
         sem: asyncio.Semaphore,
+        job_timeout: float,
         next_node: int = 0,
     ) -> Behavior[ExecutorMsg]:
         async def receive(
             ctx: ActorContext[ExecutorMsg], msg: ExecutorMsg,
         ) -> Behavior[ExecutorMsg]:
+            log.debug("ready: received {msg_type}", msg_type=type(msg).__name__)
             match msg:
                 case _Execute(fn=fn, args=args, kwargs=kwargs, node_id=nid, reply_to=reply_to):
                     target = nid if nid is not None else next_node % num_nodes
+                    ref = worker_refs.get(target)
+                    log.debug(
+                        "ready._Execute: target={t}, ref={r}, fn={fn}",
+                        t=target, r=ref,
+                        fn=getattr(fn, "__name__", str(fn)),
+                    )
+                    if ref is None:
+                        log.error("ready._Execute: No worker for node {t}", t=target)
+                        reply_to.tell(ExecutionFailed(
+                            error=f"No worker found for node {target}",
+                        ))
+                        return Behaviors.same()
+
+                    fn_bytes = serialize({"fn": fn, "args": args, "kwargs": kwargs})
+                    log.debug(
+                        "ready._Execute: serialized {sz} bytes, piping to self...",
+                        sz=len(fn_bytes),
+                    )
                     ctx.pipe_to_self(
-                        coro=_do_execute(session, sem, fn, args, kwargs, target),
+                        coro=_do_execute(client, sem, ref, fn_bytes, job_timeout),
                         mapper=lambda result: _ExecuteDone(result=result, reply_to=reply_to),
                         on_failure=lambda e: _ExecuteDone(
                             result=ExecutionFailed(error=str(e)), reply_to=reply_to,
                         ),
                     )
-                    return ready(ssh_conn, tunnel, session, num_nodes, sem, next_node=target + 1)
+                    return ready(
+                        client, worker_refs, num_nodes, sem,
+                        job_timeout, next_node=target + 1,
+                    )
 
                 case _ExecuteDone(result=result, reply_to=reply_to):
+                    log.debug(
+                        "ready._ExecuteDone: result={typ}",
+                        typ=type(result).__name__,
+                    )
                     reply_to.tell(result)
                     return Behaviors.same()
 
                 case _Broadcast(fn=fn, args=args, kwargs=kwargs, reply_to=reply_to):
+                    fn_bytes = serialize({"fn": fn, "args": args, "kwargs": kwargs})
+                    log.debug(
+                        "ready._Broadcast: {sz} bytes, piping to self...",
+                        sz=len(fn_bytes),
+                    )
                     ctx.pipe_to_self(
-                        coro=_do_broadcast(session, sem, fn, args, kwargs, num_nodes),
+                        coro=_do_broadcast(client, sem, worker_refs, fn_bytes, job_timeout),
                         mapper=lambda result: _BroadcastDone(result=result, reply_to=reply_to),
                         on_failure=lambda e: _BroadcastDone(
                             result=ExecutionFailed(error=str(e)), reply_to=reply_to,
@@ -336,39 +484,51 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
                     return Behaviors.same()
 
                 case _BroadcastDone(result=result, reply_to=reply_to):
+                    log.debug(
+                        "ready._BroadcastDone: result={typ}",
+                        typ=type(result).__name__,
+                    )
                     reply_to.tell(result)
                     return Behaviors.same()
 
                 case _SetupCluster(env_vars=env_vars, pool_infos=pool_infos, reply_to=reply_to):
+                    log.info(
+                        "ready._SetupCluster: env_vars={n_env}, pool_infos={n_pi}, "
+                        "piping _do_setup to self...",
+                        n_env=len(env_vars), n_pi=len(pool_infos),
+                    )
                     ctx.pipe_to_self(
-                        coro=_do_setup(session, env_vars, pool_infos, num_nodes),
+                        coro=_do_setup(
+                            client, worker_refs, env_vars, pool_infos, job_timeout,
+                        ),
                         mapper=lambda _: _SetupDone(reply_to=reply_to),
                         on_failure=lambda e: _SetupFailed(error=str(e), reply_to=reply_to),
                     )
                     return Behaviors.same()
 
                 case _SetupDone(reply_to=reply_to):
+                    log.info("ready._SetupDone: cluster setup complete")
                     reply_to.tell(ClusterReady())
                     return Behaviors.same()
 
                 case _SetupFailed(error=error, reply_to=reply_to):
-                    logger.error("Cluster setup failed: {err}", err=error)
+                    log.error("ready._SetupFailed: {err}", err=error)
                     reply_to.tell(ClusterReady())
                     return Behaviors.same()
 
                 case _Disconnect(reply_to=reply_to):
+                    log.debug("ready._Disconnect: closing ClusterClient...")
                     with suppress(Exception):
-                        await session.close()
-                    with suppress(Exception):
-                        tunnel.close()
-                    with suppress(Exception):
-                        ssh_conn.close()
-                        await asyncio.wait_for(ssh_conn.wait_closed(), timeout=5.0)
-                    logger.debug("Executor disconnected")
+                        await client.__aexit__(None, None, None)
+                    log.debug("ready._Disconnect: done")
                     reply_to.tell(Disconnected())
                     return Behaviors.stopped()
 
-                case _:
+                case other:
+                    log.warning(
+                        "ready: unexpected message: {msg}",
+                        msg=type(other).__name__,
+                    )
                     return Behaviors.same()
 
         return Behaviors.receive(receive)
@@ -386,12 +546,15 @@ class Executor:
         self._ref: ActorRef[ExecutorMsg] | None = None
 
     async def connect(self) -> None:
+        log.debug("Executor.connect: spawning executor actor...")
         self._ref = self._system.spawn(_executor_behavior(), "executor")
+        log.debug("Executor.connect: sending _Connect message...")
         await self._system.ask(
             self._ref,
             lambda reply_to: _Connect(config=self._config, reply_to=reply_to),
             timeout=self._config.connect_timeout,
         )
+        log.info("Executor.connect: connected successfully")
 
     async def execute[T](
         self,
@@ -401,6 +564,11 @@ class Executor:
         **kwargs: Any,
     ) -> T:
         assert self._ref is not None
+        fn_name = getattr(fn, "__name__", str(fn))
+        log.debug(
+            "Executor.execute: fn={fn}, node_id={nid}",
+            fn=fn_name, nid=node_id,
+        )
         result = await self._system.ask(
             self._ref,
             lambda reply_to: _Execute(
@@ -408,6 +576,10 @@ class Executor:
                 node_id=node_id, reply_to=reply_to,
             ),
             timeout=self._config.job_timeout,
+        )
+        log.debug(
+            "Executor.execute: result={typ}",
+            typ=type(result).__name__,
         )
         match result:
             case Executed(value=v):
@@ -424,6 +596,8 @@ class Executor:
         **kwargs: Any,
     ) -> list[T]:
         assert self._ref is not None
+        fn_name = getattr(fn, "__name__", str(fn))
+        log.debug("Executor.broadcast: fn={fn}", fn=fn_name)
         result = await self._system.ask(
             self._ref,
             lambda reply_to: _Broadcast(
@@ -431,6 +605,10 @@ class Executor:
                 reply_to=reply_to,
             ),
             timeout=self._config.job_timeout,
+        )
+        log.debug(
+            "Executor.broadcast: result={typ}",
+            typ=type(result).__name__,
         )
         match result:
             case Broadcasted(values=vs):
@@ -442,6 +620,10 @@ class Executor:
 
     async def setup_cluster(self, env_vars: dict[str, str], pool_infos: list[str]) -> None:
         assert self._ref is not None
+        log.info(
+            "Executor.setup_cluster: env_vars={n_env}, pool_infos={n_pi}",
+            n_env=len(env_vars), n_pi=len(pool_infos),
+        )
         await self._system.ask(
             self._ref,
             lambda reply_to: _SetupCluster(
@@ -451,10 +633,12 @@ class Executor:
             ),
             timeout=60.0,
         )
+        log.info("Executor.setup_cluster: completed")
 
     async def disconnect(self) -> None:
         if self._ref is None:
             return
+        log.debug("Executor.disconnect: sending _Disconnect...")
         with suppress(Exception):
             await self._system.ask(
                 self._ref,
@@ -462,6 +646,7 @@ class Executor:
                 timeout=10.0,
             )
         self._ref = None
+        log.debug("Executor.disconnect: done")
 
     @property
     def is_connected(self) -> bool:

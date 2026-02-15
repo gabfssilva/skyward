@@ -7,9 +7,6 @@ import os
 from collections.abc import Callable
 from typing import Literal
 
-from loguru import logger
-
-
 def torch[**P, R](
     _fn: Callable[P, R] | None = None,
     *,
@@ -31,6 +28,7 @@ def torch[**P, R](
             import torch  # type: ignore[reportMissingImports]
             import torch.distributed as dist  # type: ignore[reportMissingImports]
 
+            from loguru import logger
             from skyward.api.runtime import instance_info
 
             log = logger.bind(integration="torch")

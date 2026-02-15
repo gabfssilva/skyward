@@ -6,8 +6,6 @@ import functools
 import os
 from collections.abc import Callable
 
-from loguru import logger
-
 
 def jax[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Configure JAX distributed training.
@@ -28,6 +26,7 @@ def jax[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             import jax
 
+            from loguru import logger
             from skyward.api.runtime import instance_info
 
             log = logger.bind(integration="jax")

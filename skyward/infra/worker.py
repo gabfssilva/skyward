@@ -1,13 +1,14 @@
 """Casty worker service for remote nodes.
 
 Runs as a long-lived process on each node in the cluster.
-Starts a ClusteredActorSystem, spawns worker actors for task execution,
-and exposes an HTTP API for job submission via aiohttp.
+Starts a ClusteredActorSystem and spawns discoverable worker actors
+for direct task execution via ClusterClient.
 
 Architecture:
-- Each node spawns a local worker actor for single-node execution.
-- A broadcasted actor handles fan-out execution across all nodes.
-- The head node (node 0) runs the HTTP server; others wait forever.
+- Each node spawns a local worker actor wrapped in Behaviors.discoverable().
+- Workers register with WORKER_KEY for service discovery.
+- The executor discovers workers via ClusterClient.lookup(WORKER_KEY).
+- All nodes are symmetric (no head-only HTTP server).
 """
 
 from __future__ import annotations
@@ -20,10 +21,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
-from aiohttp import web
-from casty import ActorContext, ActorRef, Behavior, Behaviors
-from casty.config import CastyConfig, FailureDetectorConfig, HeartbeatConfig
-from casty.sharding import ClusteredActorSystem
+from casty import (
+    ActorContext, ActorRef, Behavior, Behaviors, ServiceKey,
+    CastyConfig, FailureDetectorConfig, HeartbeatConfig,
+    ClusteredActorSystem
+)
 from loguru import logger
 
 
@@ -62,6 +64,8 @@ class _TaskErrored:
 
 
 type WorkerMsg = ExecuteTask | _TaskDone | _TaskErrored
+
+WORKER_KEY: ServiceKey[WorkerMsg] = ServiceKey("skyward-worker")
 
 
 def worker_behavior(node_id: int, concurrency: int = 1) -> Behavior[WorkerMsg]:
@@ -121,126 +125,10 @@ def worker_behavior(node_id: int, concurrency: int = 1) -> Behavior[WorkerMsg]:
     return Behaviors.receive(receive)
 
 
-def create_app(
-    system: ClusteredActorSystem,
-    local_ref: ActorRef[WorkerMsg],
-    broadcast_ref: ActorRef[WorkerMsg],
-    num_nodes: int,
-) -> web.Application:
-    from skyward.infra.serialization import deserialize, serialize
-
-    log = logger.bind(component="worker")
-
-    async def submit_job(request: web.Request) -> web.Response:
-        payload_bytes = await request.read()
-        payload = deserialize(payload_bytes)
-        target_node = payload.get("node_id")
-        fn_name = getattr(payload.get("fn"), "__name__", "?")
-        log.debug("Submit job: fn={fn} node_id={nid}", fn=fn_name, nid=target_node)
-        print(f"[submit] {fn_name} node_id={target_node}", flush=True)
-
-        fn_payload = {
-            "fn": payload["fn"],
-            "args": payload.get("args", ()),
-            "kwargs": payload.get("kwargs", {}),
-        }
-        fn_bytes = serialize(fn_payload)
-
-        match target_node:
-            case int(nid):
-                ref = system.lookup("/worker", node=f"node-{nid}")
-                if ref is None:
-                    ref = local_ref
-            case _:
-                ref = local_ref
-
-        response = await system.ask(
-            ref,
-            lambda reply_to: ExecuteTask(
-                fn_bytes=fn_bytes,
-                reply_to=reply_to,
-            ),
-            timeout=600.0,
-        )
-
-        match response:
-            case TaskFailed(error=error, traceback=tb):
-                error_data = {"error": error, "traceback": tb}
-                return web.Response(
-                    body=serialize(error_data),
-                    content_type="application/octet-stream",
-                    status=500,
-                )
-            case TaskSucceeded(result=result):
-                return web.Response(body=serialize(result), content_type="application/octet-stream")
-            case _:
-                return web.Response(status=500, text="Unexpected response")
-
-    async def broadcast_job(request: web.Request) -> web.Response:
-
-        payload_bytes = await request.read()
-        payload = deserialize(payload_bytes)
-
-        fn_name = getattr(payload.get("fn"), "__name__", "unknown")
-        fn_payload = {
-            "fn": payload["fn"],
-            "args": payload.get("args", ()),
-            "kwargs": payload.get("kwargs", {}),
-        }
-        fn_bytes = serialize(fn_payload)
-
-        log.debug("Broadcast job: fn={fn} payload={size} bytes", fn=fn_name, size=len(fn_bytes))
-        print(f"[broadcast] {fn_name} payload={len(fn_bytes)} bytes, asking...", flush=True)
-
-        responses: tuple[TaskResult, ...] = await system.ask(
-            broadcast_ref,
-            lambda reply_to: ExecuteTask(
-                fn_bytes=fn_bytes,
-                reply_to=reply_to,  # type: ignore[reportArgumentType]
-            ),
-            timeout=600.0,
-        )
-
-        node_ids = [r.node_id for r in responses]
-        print(
-            f"[broadcast] {fn_name} got {len(responses)} responses: {node_ids}",
-            flush=True,
-        )
-
-        results = [None] * len(responses)
-        for resp in responses:
-            match resp:
-                case TaskFailed(error=error, traceback=tb, node_id=nid):
-                    error_data = {
-                        "error": f"Node {nid}: {error}",
-                        "traceback": tb,
-                    }
-                    return web.Response(
-                        body=serialize(error_data),
-                        content_type="application/octet-stream",
-                        status=500,
-                    )
-                case TaskSucceeded(result=result, node_id=nid):
-                    if nid < len(results):
-                        results[nid] = result
-
-        return web.Response(body=serialize(results), content_type="application/octet-stream")
-
-    async def health(_request: web.Request) -> web.Response:
-        return web.json_response({"status": "ready"})
-
-    app = web.Application()
-    app.router.add_post("/jobs", submit_job)
-    app.router.add_post("/jobs/broadcast", broadcast_job)
-    app.router.add_get("/health", health)
-    return app
-
-
 async def main(
     node_id: int,
     port: int,
     seeds: list[tuple[str, int]] | None,
-    http_port: int = 8265,
     num_nodes: int = 1,
     host: str = "0.0.0.0",
     workers_per_node: int = 1,
@@ -281,15 +169,12 @@ async def main(
         set_system_loop(loop)
         _set_active_registry(DistributedRegistry(system, loop=loop))
 
-        local_ref = system.spawn(
-            worker_behavior(node_id, concurrency=workers_per_node),
-            "worker",
-        )
-        broadcast_ref = system.spawn(
-            Behaviors.broadcasted(
+        system.spawn(
+            Behaviors.discoverable(
                 worker_behavior(node_id, concurrency=workers_per_node),
+                key=WORKER_KEY,
             ),
-            "broadcast-worker",
+            "worker",
         )
         print(
             f"Casty worker {node_id} ready "
@@ -297,16 +182,7 @@ async def main(
             flush=True,
         )
 
-        if node_id == 0:
-            log.debug("Head node, starting HTTP server on port {port}", port=http_port)
-            app = create_app(system, local_ref, broadcast_ref, num_nodes)
-            runner = web.AppRunner(app)
-            await runner.setup()
-            site = web.TCPSite(runner, "0.0.0.0", http_port)
-            await site.start()
-            await asyncio.Event().wait()
-        else:
-            await asyncio.Event().wait()
+        await asyncio.Event().wait()
 
 
 def _parse_seeds(seeds_str: str | None) -> list[tuple[str, int]] | None:
@@ -323,7 +199,6 @@ def cli() -> None:
     parser = argparse.ArgumentParser(description="Casty worker service")
     parser.add_argument("--node-id", type=int, required=True)
     parser.add_argument("--port", type=int, default=25520)
-    parser.add_argument("--http-port", type=int, default=8265)
     parser.add_argument("--num-nodes", type=int, default=1)
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument(
@@ -335,10 +210,24 @@ def cli() -> None:
 
     seeds = _parse_seeds(args.seeds)
     asyncio.run(main(
-        args.node_id, args.port, seeds, args.http_port, args.num_nodes, args.host,
+        args.node_id, args.port, seeds, args.num_nodes, args.host,
         workers_per_node=args.workers_per_node,
     ))
 
 
 if __name__ == "__main__":
-    cli()
+    # When running as `python -m skyward.infra.worker`, the import chain
+    # (skyward → api.pool → infra.executor → infra.worker) loads this module
+    # as 'skyward.infra.worker' first, then Python re-executes it as __main__.
+    # This creates duplicate class objects: __main__.TaskSucceeded vs
+    # skyward.infra.worker.TaskSucceeded. Pickle stores the __main__ version,
+    # which the client can't resolve (its __main__ is a different module).
+    # Fix: delegate to the properly-imported module so all class references
+    # point to 'skyward.infra.worker', not '__main__'.
+    import sys
+
+    _proper = sys.modules.get("skyward.infra.worker")
+    if _proper is not None:
+        _proper.cli()
+    else:
+        cli()

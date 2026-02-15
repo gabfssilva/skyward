@@ -30,7 +30,7 @@ from loguru import logger
 # Disable by default (library behavior)
 # logger.disable("skyward")
 
-type LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
+type LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "TRACE"]
 
 _CONTEXT_KEYS = (
     "actor", "component", "integration", "provider",
