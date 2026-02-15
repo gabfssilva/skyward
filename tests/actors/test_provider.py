@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 from casty import ActorContext, ActorRef, Behavior, Behaviors
-from casty.sharding import ClusteredActorSystem
+from casty.sharding import ClusteredActorSystem  # type: ignore[import-not-found]
 
 from skyward.actors.messages import (
     BootstrapDone,

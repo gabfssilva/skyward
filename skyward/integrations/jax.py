@@ -25,8 +25,8 @@ def jax[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
         @functools.wraps(fn)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             import jax
-
             from loguru import logger
+
             from skyward.api.runtime import instance_info
 
             log = logger.bind(integration="jax")

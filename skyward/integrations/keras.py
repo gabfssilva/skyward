@@ -38,6 +38,7 @@ def keras[**P, R](
         @functools.wraps(fn)
         def inner(*args: P.args, **kwargs: P.kwargs) -> R:
             from loguru import logger
+
             from skyward import instance_info
 
             log = logger.bind(integration="keras", backend=effective)

@@ -10,7 +10,6 @@ from skyward.actors.messages import (
     TaskResult,
 )
 from skyward.infra.worker import (
-    ExecuteTask as WorkerExecuteTask,
     TaskSucceeded as WorkerTaskSucceeded,
 )
 
@@ -54,7 +53,7 @@ async def test_instance_pipe_to_self_executes_via_client(system):
             instance_id="i-123",
             provider_ref=system.spawn(collector_behavior([]), "provider"),
             worker_ref=worker_ref,
-            client=fake_client,
+            client=fake_client,  # type: ignore[arg-type]
             parent=parent_ref,
             _skip_tunnel=True,
         ),
@@ -94,7 +93,7 @@ async def test_instance_pipe_to_self_handles_failure(system):
             instance_id="i-123",
             provider_ref=system.spawn(collector_behavior([]), "provider"),
             worker_ref=worker_ref,
-            client=FailingClient(),
+            client=FailingClient(),  # type: ignore[arg-type]
             parent=parent_ref,
             _skip_tunnel=True,
         ),

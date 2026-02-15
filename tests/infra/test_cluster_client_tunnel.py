@@ -18,10 +18,16 @@ from typing import Any
 
 import asyncssh
 import pytest
-
-from casty import ActorContext, ActorRef, Behavior, Behaviors, ServiceKey
-from casty import ClusterClient
-from casty import ClusteredActorSystem, ShardEnvelope
+from casty import (
+    ActorContext,
+    ActorRef,
+    Behavior,
+    Behaviors,
+    ClusterClient,
+    ClusteredActorSystem,
+    ServiceKey,
+    ShardEnvelope,
+)
 
 
 @dataclass(frozen=True)
@@ -298,6 +304,20 @@ async def test_discoverable_lookup_ask_through_tunnel() -> None:
         os.unlink(key_file)
 
 
+@dataclass(frozen=True)
+class _DoAsk:
+    reply_to: ActorRef[str]
+
+
+@dataclass(frozen=True)
+class _AskDone:
+    result: str
+    reply_to: ActorRef[str]
+
+
+type _AskMsg = _DoAsk | _AskDone
+
+
 @pytest.mark.timeout(30)
 async def test_discoverable_ask_from_actor_through_tunnel() -> None:
     """client.ask from inside an actor behavior through SSH tunnel.
@@ -306,18 +326,6 @@ async def test_discoverable_ask_from_actor_through_tunnel() -> None:
     uses ClusterClient.ask to reach a discoverable worker on a remote cluster
     through an SSH forward tunnel.
     """
-
-    @dataclass(frozen=True)
-    class DoAsk:
-        reply_to: ActorRef[str]
-
-    @dataclass(frozen=True)
-    class _AskDone:
-        result: str
-        reply_to: ActorRef[str]
-
-    type _AskMsg = DoAsk | _AskDone
-
     key = asyncssh.generate_private_key("ssh-rsa")
     with tempfile.NamedTemporaryFile(suffix=".key", delete=False) as f:
         f.write(key.export_private_key())
@@ -385,7 +393,7 @@ async def test_discoverable_ask_from_actor_through_tunnel() -> None:
                             ctx: ActorContext[_AskMsg], msg: _AskMsg,
                         ) -> Behavior[_AskMsg]:
                             match msg:
-                                case DoAsk(reply_to=reply_to):
+                                case _DoAsk(reply_to=reply_to):
                                     ctx.pipe_to_self(
                                         coro=cl.ask(
                                             wr,
@@ -419,7 +427,7 @@ async def test_discoverable_ask_from_actor_through_tunnel() -> None:
                         )
                         result = await local_system.ask(
                             asker_ref,
-                            lambda r: DoAsk(reply_to=r),
+                            lambda r: _DoAsk(reply_to=r),
                             timeout=10.0,
                         )
                         assert result == "pong-node-1-from-actor"
@@ -463,7 +471,7 @@ async def test_multinode_per_node_tunnels() -> None:
                 host="127.0.0.1",
                 port=0,
                 node_id="node-1",
-                seed_nodes=[("127.0.0.1", port_0)],
+                seed_nodes=(("127.0.0.1", port_0),),
             ) as system_1:
                 port_1 = system_1.self_node.port
 

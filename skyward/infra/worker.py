@@ -22,9 +22,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from casty import (
-    ActorContext, ActorRef, Behavior, Behaviors, ServiceKey,
-    CastyConfig, FailureDetectorConfig, HeartbeatConfig,
-    ClusteredActorSystem
+    ActorContext,
+    ActorRef,
+    Behavior,
+    Behaviors,
+    CastyConfig,
+    ClusteredActorSystem,
+    FailureDetectorConfig,
+    HeartbeatConfig,
+    ServiceKey,
 )
 from loguru import logger
 

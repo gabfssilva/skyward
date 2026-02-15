@@ -6,11 +6,8 @@ from casty import ActorSystem, Behavior, Behaviors
 from skyward.actors.messages import (
     Bootstrapped,
     Bootstrapping,
-    Execute,
     InstanceBecameReady,
     InstanceDied,
-    Log,
-    Metric,
     Preempted,
     Running,
 )

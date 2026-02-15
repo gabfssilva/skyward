@@ -15,7 +15,6 @@ from skyward.actors.messages import (
     PoolMsg,
     PoolStarted,
     PoolStopped,
-    SetWorkerRef,
     ShutdownCompleted,
     ShutdownRequested,
     StartPool,
@@ -101,7 +100,7 @@ def test_pool_emits_cluster_requested_on_start(actor_system):
         spec = _make_spec(nodes=2)
         pool_ref.tell(StartPool(
             spec=spec,
-            provider_config=None,
+            provider_config=None,  # type: ignore[arg-type]
             provider_ref=provider_ref,
             reply_to=reply_ref,
         ))
@@ -132,7 +131,7 @@ def test_pool_full_lifecycle(actor_system):
         spec = _make_spec(nodes=2)
         pool_ref.tell(StartPool(
             spec=spec,
-            provider_config=None,
+            provider_config=None,  # type: ignore[arg-type]
             provider_ref=provider_ref,
             reply_to=reply_ref,
         ))
@@ -185,7 +184,7 @@ def test_pool_submit_task_delegates_to_task_manager(actor_system):
         spec = _make_spec(nodes=1)
         pool_ref.tell(StartPool(
             spec=spec,
-            provider_config=None,
+            provider_config=None,  # type: ignore[arg-type]
             provider_ref=provider_ref,
             reply_to=start_reply_ref,
         ))
@@ -226,7 +225,7 @@ def test_pool_cluster_connected_distributes_worker_refs(actor_system):
         spec = _make_spec(nodes=2)
         pool_ref.tell(StartPool(
             spec=spec,
-            provider_config=None,
+            provider_config=None,  # type: ignore[arg-type]
             provider_ref=provider_ref,
             reply_to=start_reply_ref,
         ))
@@ -246,7 +245,7 @@ def test_pool_cluster_connected_distributes_worker_refs(actor_system):
 
         worker_0 = system.spawn(reply_probe(node_msgs), "fake-worker-0")
         worker_1 = system.spawn(reply_probe(node_msgs), "fake-worker-1")
-        pool_ref.tell(ClusterConnected(worker_refs=((0, worker_0), (1, worker_1)), client=None))
+        pool_ref.tell(ClusterConnected(worker_refs=((0, worker_0), (1, worker_1)), client=None))  # type: ignore[arg-type]
         await asyncio.sleep(0.3)
 
     loop.run_until_complete(_test())
@@ -271,7 +270,7 @@ def test_pool_stop_emits_shutdown(actor_system):
         spec = _make_spec(nodes=1)
         pool_ref.tell(StartPool(
             spec=spec,
-            provider_config=None,
+            provider_config=None,  # type: ignore[arg-type]
             provider_ref=provider_ref,
             reply_to=start_reply_ref,
         ))
@@ -318,7 +317,7 @@ def test_pool_node_lost_in_ready_state(actor_system):
         spec = _make_spec(nodes=2)
         pool_ref.tell(StartPool(
             spec=spec,
-            provider_config=None,
+            provider_config=None,  # type: ignore[arg-type]
             provider_ref=provider_ref,
             reply_to=start_reply_ref,
         ))

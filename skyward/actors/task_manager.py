@@ -57,7 +57,9 @@ def task_manager_actor() -> Behavior[TaskManagerMsg]:
         if nodes is None:
             nodes = {}
 
-        async def receive(ctx: ActorContext[TaskManagerMsg], msg: TaskManagerMsg) -> Behavior[TaskManagerMsg]:
+        async def receive(
+            ctx: ActorContext[TaskManagerMsg], msg: TaskManagerMsg,
+        ) -> Behavior[TaskManagerMsg]:
             match msg:
                 case NodeAvailable(node_id, node_ref, slots):
                     new_nodes = {**nodes, node_id: NodeSlots(node_ref, total=slots, used=0)}
@@ -70,7 +72,8 @@ def task_manager_actor() -> Behavior[TaskManagerMsg]:
                     if node_id not in nodes:
                         return Behaviors.same()
                     slot = nodes[node_id]
-                    new_nodes = {**nodes, node_id: NodeSlots(slot.ref, slot.total, max(0, slot.used - 1))}
+                    new_used = max(0, slot.used - 1)
+                    new_nodes = {**nodes, node_id: NodeSlots(slot.ref, slot.total, new_used)}
                     remaining, new_nodes, rr = _drain_queue(queue, new_nodes, round_robin)
                     return active(new_nodes, remaining, rr)
                 case SubmitTask(fn_bytes, reply_to):
@@ -82,7 +85,7 @@ def task_manager_actor() -> Behavior[TaskManagerMsg]:
                     new_nodes = {**nodes, nid: NodeSlots(slot.ref, slot.total, slot.used + 1)}
                     return active(new_nodes, queue, round_robin + 1)
                 case SubmitBroadcast(fn_bytes, reply_to):
-                    for nid, slot in nodes.items():
+                    for _nid, slot in nodes.items():
                         slot.ref.tell(ExecuteOnNode(fn_bytes=fn_bytes, reply_to=reply_to))
                     return Behaviors.same()
             return Behaviors.same()

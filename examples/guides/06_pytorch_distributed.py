@@ -10,7 +10,7 @@ def train(epochs: int, batch_size: int, lr: float) -> dict:
     import torch
     import torch.distributed as dist
     import torch.nn as nn
-    from torch.nn.parallel import DistributedDataParallel as DDP
+    from torch.nn.parallel import DistributedDataParallel as DDP  # noqa: N817
     from torch.utils.data import DataLoader, TensorDataset
     from torch.utils.data.distributed import DistributedSampler
 
@@ -85,4 +85,5 @@ if __name__ == "__main__":
 
         for r in results:
             role = "HEAD" if r["is_head"] else "WORKER"
-            print(f"Node {r['node']} ({role}): loss={r['final_loss']:.4f}, acc={r['final_accuracy']:.1f}%")
+            loss, acc = r['final_loss'], r['final_accuracy']
+            print(f"Node {r['node']} ({role}): loss={loss:.4f}, acc={acc:.1f}%")

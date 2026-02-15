@@ -427,6 +427,7 @@ class ComputePool:
         fn_bytes = self._serialize_pending(pending)
 
         async def _run() -> T:
+            assert self._pool_ref is not None
             result: TaskResult = await self._system.ask(  # type: ignore[union-attr]
                 self._pool_ref,
                 lambda reply_to: SubmitTask(fn_bytes=fn_bytes, reply_to=reply_to),
@@ -443,6 +444,7 @@ class ComputePool:
         fn_bytes = self._serialize_pending(pending)
 
         async def _broadcast() -> list[T]:
+            assert self._pool_ref is not None
             tasks = [
                 self._system.ask(  # type: ignore[union-attr]
                     self._pool_ref,
@@ -461,10 +463,11 @@ class ComputePool:
             raise RuntimeError("Pool is not active")
 
         async def _run_parallel() -> tuple[Any, ...]:
+            assert self._pool_ref is not None
             tasks = [
                 self._system.ask(  # type: ignore[union-attr]
                     self._pool_ref,
-                    lambda reply_to: SubmitTask(
+                    lambda reply_to, p=p: SubmitTask(
                         fn_bytes=self._serialize_pending(p),
                         reply_to=reply_to,
                     ),
@@ -486,11 +489,14 @@ class ComputePool:
             raise RuntimeError("Pool is not active")
 
         async def _map_async() -> list[R]:
+            assert self._pool_ref is not None
             tasks = [
                 self._system.ask(  # type: ignore[union-attr]
                     self._pool_ref,
-                    lambda reply_to: SubmitTask(
-                        fn_bytes=self._serialize_pending(PendingCompute(fn=fn, args=(item,), kwargs={})),
+                    lambda reply_to, item=item: SubmitTask(
+                        fn_bytes=self._serialize_pending(
+                            PendingCompute(fn=fn, args=(item,), kwargs={})
+                        ),
                         reply_to=reply_to,
                     ),
                     timeout=600.0,

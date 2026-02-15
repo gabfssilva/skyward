@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from skyward.actors.messages import ClusterId, InstanceId, InstanceMetadata
 from skyward.api.spec import PoolSpec
 
+
 @dataclass
 class BaseClusterState:
     """Base class for provider cluster state.

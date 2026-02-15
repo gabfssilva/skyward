@@ -59,4 +59,6 @@ if __name__ == "__main__":
         grid_search.fit(X_train, y_train)
 
     best_clf = grid_search.best_params_["clf"]
-    print(f"Best: {type(best_clf).__name__}, CV={grid_search.best_score_:.2%}, Test={grid_search.score(X_test, y_test):.2%}")
+    cv_score = grid_search.best_score_
+    test_score = grid_search.score(X_test, y_test)
+    print(f"Best: {type(best_clf).__name__}, CV={cv_score:.2%}, Test={test_score:.2%}")

@@ -49,4 +49,5 @@ if __name__ == "__main__":
         print(f"Instance: {info}")
 
         result = matrix_benchmark(4096) >> pool
-        print(f"CPU: {result['cpu']:.3f}s | GPU: {result['gpu']:.3f}s | Speedup: {result['speedup']:.0f}x")
+        cpu_time, gpu_time, speedup = result['cpu'], result['gpu'], result['speedup']
+        print(f"CPU: {cpu_time:.3f}s | GPU: {gpu_time:.3f}s | Speedup: {speedup:.0f}x")

@@ -4,8 +4,6 @@ import pytest
 from casty import ActorSystem, Behavior, Behaviors
 
 from skyward.actors.messages import (
-    Bootstrapped,
-    Execute,
     ExecuteOnNode,
     InstanceBecameReady,
     InstanceDied,
@@ -14,7 +12,6 @@ from skyward.actors.messages import (
     NodeBecameReady,
     NodeLost,
     Provision,
-    Running,
     SlotFreed,
     TaskResult,
 )

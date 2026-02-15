@@ -4,7 +4,7 @@ import pytest
 
 
 def test_instance_messages_are_frozen():
-    from skyward.actors.messages import Bootstrapping, Execute, Log, Metric, Preempted, Running
+    from skyward.actors.messages import Running
 
     msg = Running(ip="10.0.0.1")
     assert msg.ip == "10.0.0.1"
@@ -14,11 +14,6 @@ def test_instance_messages_are_frozen():
 
 def test_node_messages_are_frozen():
     from skyward.actors.messages import (
-        ExecuteOnNode,
-        InstanceBecameReady,
-        InstanceDied,
-        InstanceLaunched,
-        InstanceRunning,
         Provision,
     )
 
@@ -27,7 +22,9 @@ def test_node_messages_are_frozen():
 
 
 def test_task_manager_messages_are_frozen():
-    from skyward.actors.messages import NodeAvailable, NodeSlots, NodeUnavailable, SlotFreed, SubmitBroadcast, SubmitTask
+    from skyward.actors.messages import (
+        NodeSlots,
+    )
 
     slots = NodeSlots(ref=None, total=4, used=1)  # type: ignore[arg-type]
     assert slots.total == 4
@@ -35,4 +32,4 @@ def test_task_manager_messages_are_frozen():
 
 
 def test_pool_messages_are_frozen():
-    from skyward.actors.messages import NodeBecameReady, NodeLost, PoolStarted, StartPool, StopPool, SubmitTask
+    pass

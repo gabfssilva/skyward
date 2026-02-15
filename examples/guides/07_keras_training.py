@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import keras
-import numpy as np
 from keras import layers
 
 import skyward as sky
@@ -60,4 +59,6 @@ if __name__ == "__main__":
         results = train_mnist() @ pool
 
         for r in results:
-            print(f"  Node {r['node']}: {r['samples']} samples, acc={r['final_accuracy']:.2%}, test={r['test_accuracy']:.2%}")
+            node, samples = r['node'], r['samples']
+            train_acc, test_acc = r['final_accuracy'], r['test_accuracy']
+            print(f"  Node {node}: {samples} samples, acc={train_acc:.2%}, test={test_acc:.2%}")

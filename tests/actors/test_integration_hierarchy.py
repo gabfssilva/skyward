@@ -7,7 +7,6 @@ from skyward.actors.messages import (
     ClusterProvisioned,
     ClusterRequested,
     InstanceRequested,
-    PoolStarted,
     StartPool,
 )
 
@@ -43,7 +42,6 @@ def fake_provider(pool_ref) -> Behavior:
                     request_id=rid, cluster_id="c-test", provider=prov,
                 ))
             case InstanceRequested():
-                iid = f"i-{instance_counter}"
                 instance_counter += 1
         return Behaviors.same()
     return Behaviors.receive(receive)
@@ -61,8 +59,8 @@ async def test_full_lifecycle_with_task_execution(system):
     provider_ref = system.spawn(fake_provider(pool_ref), "provider")
 
     pool_ref.tell(StartPool(
-        spec=FakeSpec(nodes=1),
-        provider_config=None,
+        spec=FakeSpec(nodes=1),  # type: ignore[arg-type]
+        provider_config=None,  # type: ignore[arg-type]
         provider_ref=provider_ref,
         reply_to=reply_ref,
     ))

@@ -164,7 +164,8 @@ class Image:
         apt: List of apt packages to install.
         env: Environment variables to export.
         shell_vars: Shell commands for dynamic variable capture.
-        skyward_source: Where to install skyward from. "auto" detects editable installs as "local", otherwise "pypi".
+        skyward_source: Where to install skyward from. "auto" detects editable
+            installs as "local", otherwise "pypi".
         metrics: Metrics to collect (CPU, GPU, Memory, etc.). Use None to disable.
 
     Example:

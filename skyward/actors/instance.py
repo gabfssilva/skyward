@@ -24,7 +24,11 @@ from skyward.actors.messages import (
 from skyward.actors.streaming import instance_monitor
 from skyward.infra.worker import (
     ExecuteTask as WorkerExecuteTask,
+)
+from skyward.infra.worker import (
     TaskFailed as WorkerTaskFailed,
+)
+from skyward.infra.worker import (
     TaskSucceeded as WorkerTaskSucceeded,
 )
 
@@ -51,7 +55,9 @@ def instance_actor(
         wref: ActorRef | None = worker_ref,
         cl: ClusterClient | None = client,
     ) -> Behavior[InstanceMsg]:
-        async def receive(ctx: ActorContext[InstanceMsg], msg: InstanceMsg) -> Behavior[InstanceMsg]:
+        async def receive(
+            ctx: ActorContext[InstanceMsg], msg: InstanceMsg,
+        ) -> Behavior[InstanceMsg]:
             match msg:
                 case SetWorkerRef(worker_ref=new_wref, client=new_cl):
                     return waiting(new_wref, new_cl or cl)
@@ -90,7 +96,9 @@ def instance_actor(
                 f"monitor-{instance_id}",
             )
 
-        async def receive(ctx: ActorContext[InstanceMsg], msg: InstanceMsg) -> Behavior[InstanceMsg]:
+        async def receive(
+            ctx: ActorContext[InstanceMsg], msg: InstanceMsg,
+        ) -> Behavior[InstanceMsg]:
             match msg:
                 case SetWorkerRef(worker_ref=new_wref, client=new_cl):
                     return bootstrapping(ip, ctx, new_wref, new_cl or cl)
@@ -98,7 +106,8 @@ def instance_actor(
                     provider_ref.tell(done)
                     return ready(ip, wref, cl)
                 case BootstrapDone(success=False, error=error):
-                    parent.tell(InstanceDied(instance_id=instance_id, reason=error or "bootstrap failed"))
+                    reason = error or "bootstrap failed"
+                    parent.tell(InstanceDied(instance_id=instance_id, reason=reason))
                     return Behaviors.stopped()
                 case Bootstrapping():
                     return Behaviors.same()
@@ -114,7 +123,9 @@ def instance_actor(
     def ready(
         ip: str, wref: ActorRef | None, cl: ClusterClient | None,
     ) -> Behavior[InstanceMsg]:
-        async def receive(ctx: ActorContext[InstanceMsg], msg: InstanceMsg) -> Behavior[InstanceMsg]:
+        async def receive(
+            ctx: ActorContext[InstanceMsg], msg: InstanceMsg,
+        ) -> Behavior[InstanceMsg]:
             match msg:
                 case SetWorkerRef(worker_ref=new_wref, client=new_cl):
                     return ready(ip, new_wref, new_cl or cl)
@@ -122,10 +133,10 @@ def instance_actor(
                     ctx.pipe_to_self(
                         cl.ask(
                             wref,
-                            lambda rto: WorkerExecuteTask(fn_bytes=fn_bytes, reply_to=rto),
+                            lambda rto: WorkerExecuteTask(fn_bytes=fn_bytes, reply_to=rto),  # type: ignore[arg-type]
                             timeout=600.0,
                         ),
-                        on_failure=lambda e: WorkerTaskFailed(
+                        on_failure=lambda e: WorkerTaskFailed(  # type: ignore[return-value]
                             error=str(e), traceback="", node_id=0,
                         ),
                     )

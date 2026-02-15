@@ -47,7 +47,8 @@ if __name__ == '__main__':
         print(f"Effective workers: {effective_workers}")
         print(f"Total time: {elapsed:.2f}s")
         print(f"Throughput: {tasks / elapsed:.2f} tasks/s")
-        print(f"Ideal time ({tasks} tasks / {effective_workers} workers * 5s): {tasks / effective_workers * 5:.0f}s")
+        ideal_time = tasks / effective_workers * 5
+        print(f"Ideal time ({tasks} tasks / {effective_workers} workers * 5s): {ideal_time:.0f}s")
         print(f"Efficiency: {(tasks / effective_workers * 5) / elapsed * 100:.1f}%")
         print(f"{'=' * 50}")
         print(results)

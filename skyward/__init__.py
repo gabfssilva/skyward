@@ -12,7 +12,8 @@
 
 from skyward import accelerators as accelerators
 from skyward import integrations as integrations
-from skyward.observability import metrics as metrics, LogConfig
+from skyward.observability import LogConfig
+from skyward.observability import metrics as metrics
 
 from .actors.messages import (
     ClusterDestroyed,

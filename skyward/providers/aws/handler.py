@@ -15,7 +15,7 @@ from dataclasses import replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
-from casty import ActorContext, ActorRef, Behavior, Behaviors
+from casty import ActorContext, Behavior, Behaviors
 from loguru import logger
 
 from skyward.actors.messages import (

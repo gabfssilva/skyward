@@ -13,7 +13,7 @@ from __future__ import annotations
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 from loguru import logger

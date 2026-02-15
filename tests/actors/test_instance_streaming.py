@@ -8,7 +8,6 @@ from skyward.actors.messages import (
     Bootstrapped,
     Bootstrapping,
     InstanceBecameReady,
-    Preempted,
     Running,
 )
 

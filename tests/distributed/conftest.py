@@ -4,7 +4,7 @@ import asyncio
 import threading
 
 import pytest
-from casty.sharding import ClusteredActorSystem
+from casty.sharding import ClusteredActorSystem  # type: ignore[import-not-found]
 
 from skyward.distributed.proxies import set_system_loop
 from skyward.distributed.registry import DistributedRegistry

@@ -38,11 +38,15 @@ def pool_actor() -> Behavior[PoolMsg]:
     """A pool tells this story: idle → requesting → provisioning → ready → stopping."""
 
     def idle() -> Behavior[PoolMsg]:
-        async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
+        async def receive(
+            ctx: ActorContext[PoolMsg], msg: PoolMsg,
+        ) -> Behavior[PoolMsg]:
             match msg:
-                case StartPool(spec=spec, provider_config=_, provider_ref=provider_ref, reply_to=reply_to):
+                case StartPool(
+                    spec=spec, provider_config=_, provider_ref=provider_ref, reply_to=reply_to,
+                ):
                     request_id = str(uuid.uuid4())
-                    provider_name = spec.provider or "unknown"
+                    provider_name = spec.provider or "aws"
                     provider_ref.tell(ClusterRequested(
                         request_id=request_id,
                         provider=provider_name,

@@ -387,7 +387,10 @@ class Execute:
     reply_to: ActorRef[Any]
 
 
-type InstanceMsg = Running | Bootstrapping | Bootstrapped | BootstrapDone | Log | Metric | Preempted | Execute | SetWorkerRef
+type InstanceMsg = (
+    Running | Bootstrapping | Bootstrapped | BootstrapDone
+    | Log | Metric | Preempted | Execute | SetWorkerRef
+)
 
 
 # =============================================================================

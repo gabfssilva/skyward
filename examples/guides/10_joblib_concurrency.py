@@ -28,8 +28,8 @@ if __name__ == "__main__":
 
         elapsed = perf_counter() - t0
 
-        print(f"Tasks: 2000 | Nodes: 10 | Concurrency: 10")
-        print(f"Effective workers: 100")
+        print("Tasks: 2000 | Nodes: 10 | Concurrency: 10")
+        print("Effective workers: 100")
         print(f"Total time: {elapsed:.2f}s")
         print(f"Throughput: {2000 / elapsed:.2f} tasks/s")
         print(f"Ideal time: {2000 / 100 * 5:.0f}s")
