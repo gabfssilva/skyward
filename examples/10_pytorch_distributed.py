@@ -182,22 +182,19 @@ def evaluate_model(test_data: list, test_labels: list) -> dict:
 
 
 if __name__ == "__main__":
-    # =================================================================
-    # Multi-Node Training
-    # =================================================================
     with sky.ComputePool(
         provider=sky.AWS(),
         nodes=2,
         accelerator='T4G',
         image=sky.Image(
             pip=["torch"],
+            skyward_source='local',
         )
     ) as pool:
         print("=" * 60)
         print("Starting Distributed Training")
         print("=" * 60)
 
-        # Train on all nodes (broadcast)
         results = train_model(
             epochs=10,
             batch_size=64,
@@ -217,7 +214,6 @@ if __name__ == "__main__":
                 f"acc={r['final_accuracy']:.2f}%"
             )
 
-        # Evaluation (synthetic test data)
         import random
 
         test_x = [[random.gauss(0, 1) for _ in range(100)] for _ in range(1000)]
