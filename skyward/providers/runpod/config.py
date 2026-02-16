@@ -33,7 +33,7 @@ class CloudType(Enum):
 
 
 @dataclass(frozen=True, slots=True)
-class RunPod(ProviderConfig[RunPodCloudProvider]):
+class RunPod(ProviderConfig):
     """RunPod GPU Pods provider configuration.
 
     SSH keys are automatically detected from ~/.ssh/id_ed25519.pub or
@@ -75,6 +75,9 @@ class RunPod(ProviderConfig[RunPodCloudProvider]):
     async def create_provider(self) -> RunPodCloudProvider:
         from skyward.providers.runpod.provider import RunPodCloudProvider
         return await RunPodCloudProvider.create(self)
+
+    @property
+    def type(self) -> str: return "runpod"
 
     @property
     def region(self) -> str:

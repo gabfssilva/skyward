@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from skyward.api.provider import ProviderConfig
+
 if TYPE_CHECKING:
     from skyward.providers.vastai.provider import VastAICloudProvider
 
@@ -17,7 +19,7 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
-class VastAI:
+class VastAI(ProviderConfig):
     """Vast.ai provider configuration.
 
     Vast.ai is a GPU marketplace with dynamic offers from various hosts.
@@ -61,6 +63,9 @@ class VastAI:
     async def create_provider(self) -> VastAICloudProvider:
         from skyward.providers.vastai.provider import VastAICloudProvider
         return await VastAICloudProvider.create(self)
+
+    @property
+    def type(self) -> str: return "vastai"
 
     @classmethod
     def ubuntu(

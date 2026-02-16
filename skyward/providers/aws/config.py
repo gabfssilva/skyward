@@ -24,7 +24,7 @@ type UbuntuVersion = Literal["20.04", "22.04", "24.04"] | str
 
 
 @dataclass(frozen=True, slots=True)
-class AWS(ProviderConfig[AWSCloudProvider]):
+class AWS(ProviderConfig):
     """AWS provider configuration.
 
     Immutable configuration that defines how to connect to AWS and
@@ -58,6 +58,9 @@ class AWS(ProviderConfig[AWSCloudProvider]):
     request_timeout: int = 30
     allocation_strategy: AllocationStrategy = "price-capacity-optimized"
     exclude_burstable: bool = False
+
+    @property
+    def type(self) -> str: return "aws"
 
     async def create_provider(self) -> AWSCloudProvider:
         from skyward.providers.aws.provider import AWSCloudProvider

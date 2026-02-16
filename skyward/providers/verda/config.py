@@ -19,7 +19,7 @@ if typing.TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
-class Verda(ProviderConfig[VerdaCloudProvider]):
+class Verda(ProviderConfig):
     """Verda Cloud provider configuration.
 
     SSH keys are automatically detected from ~/.ssh/id_ed25519.pub or
@@ -48,6 +48,9 @@ class Verda(ProviderConfig[VerdaCloudProvider]):
     ssh_key_id: str | None = None
     instance_timeout: int = 300
     request_timeout: int = 30
+
+    @property
+    def type(self) -> str: return "verda"
 
     async def create_provider(self) -> VerdaCloudProvider:
         from skyward.providers.verda.provider import VerdaCloudProvider

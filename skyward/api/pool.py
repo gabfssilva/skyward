@@ -44,6 +44,7 @@ from skyward.actors.messages import (
     SubmitTask,
     TaskResult,
 )
+from skyward.api.provider import ProviderConfig
 from skyward.distributed import (
     BarrierProxy,
     CounterProxy,
@@ -58,14 +59,8 @@ from skyward.distributed.types import Consistency
 from skyward.observability.logger import logger
 from skyward.observability.logging import LogConfig, setup_logging, teardown_logging
 from skyward.providers.aws.config import AWS
-from skyward.providers.runpod.config import RunPod
-from skyward.providers.vastai.config import VastAI
-from skyward.providers.verda.config import Verda
 
 from .spec import DEFAULT_IMAGE, Image, PoolSpec
-
-type Provider = AWS | RunPod | VastAI | Verda
-
 
 _active_pool: ContextVar[ComputePool | None] = ContextVar("active_pool", default=None)
 
@@ -256,20 +251,6 @@ def compute(fn: Callable[..., Any]) -> Callable[..., PendingCompute[Any]]:
     return wrapper
 
 
-def _provider_name(provider: Provider) -> str:
-    match provider:
-        case AWS():
-            return "aws"
-        case VastAI():
-            return "vastai"
-        case Verda():
-            return "verda"
-        case RunPod():
-            return "runpod"
-        case _:
-            return "unknown"
-
-
 @dataclass
 class ComputePool:
     """Synchronous ComputePool facade.
@@ -296,7 +277,7 @@ class ComputePool:
             return train(data) >> sky
     """
 
-    provider: Provider
+    provider: ProviderConfig
 
     nodes: int = 1
     accelerator: str | Accelerator | None = None
@@ -603,8 +584,8 @@ class ComputePool:
         from skyward.actors.panel import panel_actor
         from skyward.actors.pool import pool_actor
 
-        cloud_provider = self.provider.create_provider()
-        provider_name = _provider_name(self.provider)
+        cloud_provider = await self.provider.create_provider()
+        provider_name = self.provider.type
 
         region = getattr(self.provider, "region", "unknown")
 
@@ -663,7 +644,6 @@ class ComputePool:
             info.node: info
             for info in started.instances
         }
-
 
     async def _stop_async(self) -> None:
         """Stop pool asynchronously."""
@@ -735,7 +715,7 @@ class _PoolFactory:
 
     def __init__(
         self,
-        provider: Provider | None = None,
+        provider: ProviderConfig | None = None,
         nodes: int = 1,
         accelerator: str | Accelerator | None = None,
         vcpus: int | None = None,
@@ -806,9 +786,8 @@ class _PoolFactory:
             self._pool = None
 
 
-
 def pool(
-    provider: Provider | None = None,
+    provider: ProviderConfig | None = None,
     nodes: int = 1,
     accelerator: str | Accelerator | None = None,
     vcpus: int | None = None,
