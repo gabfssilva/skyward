@@ -16,38 +16,17 @@ Environment Variables:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .client import VerdaClient, VerdaError
-    from .handler import verda_provider_actor
-    from .state import VerdaClusterState
+    from .provider import VerdaCloudProvider
 
-# Only config - no heavy dependencies
 from .config import Verda
 
-
-def __getattr__(name: str) -> Any:
-    if name == "verda_provider_actor":
-        from .handler import verda_provider_actor
-        return verda_provider_actor
-    if name in ("VerdaClient", "VerdaError"):
-        from .client import VerdaClient, VerdaError
-        if name == "VerdaClient":
-            return VerdaClient
-        return VerdaError
-    if name == "VerdaClusterState":
-        from .state import VerdaClusterState
-        return VerdaClusterState
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
 __all__ = [
-    # Config (always available)
     "Verda",
-    # Lazy (loaded on demand)
     "VerdaClient",
     "VerdaError",
-    "verda_provider_actor",
-    "VerdaClusterState",
+    "VerdaCloudProvider"
 ]

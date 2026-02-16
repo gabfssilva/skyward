@@ -10,6 +10,7 @@ from .pool import (
     pool,
     sky,
 )
+from .provider import ProviderConfig
 from .runtime import (
     CallbackWriter,
     InstanceInfo,
@@ -56,5 +57,6 @@ __all__ = [
     "Instance",
     "InstanceStatus",
     "Cluster",
-    "ClusterStatus"
+    "ClusterStatus",
+    "ProviderConfig"
 ]

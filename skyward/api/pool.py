@@ -602,9 +602,8 @@ class ComputePool:
         from skyward.actors.messages import PoolStarted, StartPool
         from skyward.actors.panel import panel_actor
         from skyward.actors.pool import pool_actor
-        from skyward.providers.registry import create_provider
 
-        cloud_provider = await create_provider(self.provider)
+        cloud_provider = self.provider.create_provider()
         provider_name = _provider_name(self.provider)
 
         region = getattr(self.provider, "region", "unknown")

@@ -5,12 +5,14 @@ Immutable configuration dataclass for AWS provider.
 
 from __future__ import annotations
 
+import typing
 from dataclasses import dataclass
 from typing import Literal
 
-# =============================================================================
-# Types
-# =============================================================================
+from skyward.api.provider import ProviderConfig
+
+if typing.TYPE_CHECKING:
+    from skyward.providers.aws.provider import AWSCloudProvider
 
 type AllocationStrategy = Literal[
     "price-capacity-optimized",  # Default: balance price and capacity
@@ -21,13 +23,8 @@ type AllocationStrategy = Literal[
 type UbuntuVersion = Literal["20.04", "22.04", "24.04"] | str
 
 
-# =============================================================================
-# Configuration
-# =============================================================================
-
-
 @dataclass(frozen=True, slots=True)
-class AWS:
+class AWS(ProviderConfig[AWSCloudProvider]):
     """AWS provider configuration.
 
     Immutable configuration that defines how to connect to AWS and
@@ -61,3 +58,7 @@ class AWS:
     request_timeout: int = 30
     allocation_strategy: AllocationStrategy = "price-capacity-optimized"
     exclude_burstable: bool = False
+
+    async def create_provider(self) -> AWSCloudProvider:
+        from skyward.providers.aws.provider import AWSCloudProvider
+        return await AWSCloudProvider.create(self)

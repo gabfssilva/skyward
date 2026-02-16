@@ -17,8 +17,8 @@ from casty import ActorRef
 
 if TYPE_CHECKING:
     from skyward.api.model import Cluster, Instance
+    from skyward.api.provider import ProviderConfig
     from skyward.api.spec import PoolSpec
-    from skyward.providers.registry import ProviderConfig
 
 type RequestId = str
 type ClusterId = str

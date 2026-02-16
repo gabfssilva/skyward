@@ -1,9 +1,11 @@
-"""Cloud providers for Skyward v2.
+"""Cloud providers for Skyward.
 
-Each provider is an event-driven component that handles:
-- ClusterRequested → provisions infrastructure
-- InstanceRequested → launches instances
-- ShutdownRequested → terminates resources
+Each provider implements the CloudProvider[C, S] protocol:
+- prepare → provisions cluster-level infrastructure
+- provision → launches instances
+- get_instance → polls instance status
+- terminate → destroys instances
+- teardown → cleans up cluster resources
 
 Available providers:
 - AWS: Amazon Web Services (EC2 Fleet, spot instances)
@@ -12,10 +14,7 @@ Available providers:
 - Verda: GPU cloud (dedicated instances, spot pricing)
 
 NOTE: Only config classes are imported at module level to avoid pulling in
-SDK dependencies (aioboto3, httpx, etc.). Handlers and modules should be
-imported explicitly when needed:
-
-    from skyward.providers.aws import AWSHandler
+SDK dependencies (aioboto3, httpx, etc.).
 """
 
 # Only import config classes - these have NO SDK dependencies

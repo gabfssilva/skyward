@@ -5,9 +5,15 @@ Immutable configuration dataclass for RunPod provider.
 
 from __future__ import annotations
 
+import typing
 from dataclasses import dataclass
 from enum import Enum
 from typing import Literal
+
+from skyward.api.provider import ProviderConfig
+
+if typing.TYPE_CHECKING:
+    from skyward.providers.runpod.provider import RunPodCloudProvider
 
 # =============================================================================
 # Cloud Type Enum
@@ -27,7 +33,7 @@ class CloudType(Enum):
 
 
 @dataclass(frozen=True, slots=True)
-class RunPod:
+class RunPod(ProviderConfig[RunPodCloudProvider]):
     """RunPod GPU Pods provider configuration.
 
     SSH keys are automatically detected from ~/.ssh/id_ed25519.pub or
@@ -65,6 +71,10 @@ class RunPod:
     instance_timeout: int = 300
     request_timeout: int = 30
     cpu_clock: Literal["3c", "5c"] | str = "3c"
+
+    async def create_provider(self) -> RunPodCloudProvider:
+        from skyward.providers.runpod.provider import RunPodCloudProvider
+        return await RunPodCloudProvider.create(self)
 
     @property
     def region(self) -> str:

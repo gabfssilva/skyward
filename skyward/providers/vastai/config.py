@@ -6,7 +6,10 @@ Immutable configuration dataclass for Vast.ai provider.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from skyward.providers.vastai.provider import VastAICloudProvider
 
 # =============================================================================
 # Configuration
@@ -54,6 +57,10 @@ class VastAI:
     use_overlay: bool = True
     overlay_timeout: int = 120
     require_direct_port: bool = False
+
+    async def create_provider(self) -> VastAICloudProvider:
+        from skyward.providers.vastai.provider import VastAICloudProvider
+        return await VastAICloudProvider.create(self)
 
     @classmethod
     def ubuntu(

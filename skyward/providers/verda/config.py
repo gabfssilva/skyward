@@ -5,7 +5,13 @@ Immutable configuration dataclass for Verda provider.
 
 from __future__ import annotations
 
+import typing
 from dataclasses import dataclass
+
+from skyward.api.provider import ProviderConfig
+
+if typing.TYPE_CHECKING:
+    from skyward.providers.verda.provider import VerdaCloudProvider
 
 # =============================================================================
 # Configuration
@@ -13,7 +19,7 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True, slots=True)
-class Verda:
+class Verda(ProviderConfig[VerdaCloudProvider]):
     """Verda Cloud provider configuration.
 
     SSH keys are automatically detected from ~/.ssh/id_ed25519.pub or
@@ -42,3 +48,7 @@ class Verda:
     ssh_key_id: str | None = None
     instance_timeout: int = 300
     request_timeout: int = 30
+
+    async def create_provider(self) -> VerdaCloudProvider:
+        from skyward.providers.verda.provider import VerdaCloudProvider
+        return await VerdaCloudProvider.create(self)

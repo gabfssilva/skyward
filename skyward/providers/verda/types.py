@@ -8,10 +8,6 @@ from __future__ import annotations
 import re
 from typing import NotRequired, TypedDict
 
-# =============================================================================
-# Response Types
-# =============================================================================
-
 
 class CPUInfo(TypedDict):
     """CPU configuration."""
@@ -92,11 +88,6 @@ class AvailabilityRegion(TypedDict):
 
     location_code: str
     availabilities: list[str]
-
-
-# =============================================================================
-# Helper functions for accessing typed data
-# =============================================================================
 
 
 GPU_MODEL_NORMALIZATIONS = {

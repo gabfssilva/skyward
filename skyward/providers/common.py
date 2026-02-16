@@ -9,84 +9,9 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-from skyward.actors.messages import InstanceRunning, ProviderName
 from skyward.infra.ssh import SSHTransport
 from skyward.observability.logger import logger
 from skyward.providers.bootstrap.compose import SKYWARD_DIR
-
-
-def build_instance_running_event(
-    *,
-    request_id: str,
-    cluster_id: str,
-    node_id: int,
-    provider: ProviderName,
-    instance_id: str,
-    ip: str,
-    private_ip: str,
-    ssh_port: int = 22,
-    spot: bool = False,
-    hourly_rate: float = 0.0,
-    on_demand_rate: float = 0.0,
-    billing_increment: int = 1,
-    instance_type: str = "",
-    gpu_count: int = 0,
-    gpu_model: str = "",
-    vcpus: int = 0,
-    memory_gb: float = 0.0,
-    gpu_vram_gb: int = 0,
-    network_interface: str = "",
-) -> InstanceRunning:
-    """Build InstanceRunning event with consistent field handling.
-
-    Centralizes event construction to ensure all providers emit consistent
-    InstanceRunning events.
-
-    Args:
-        request_id: Original request ID.
-        cluster_id: Cluster the instance belongs to.
-        node_id: Node index within the cluster.
-        provider: Provider name (e.g., "aws", "vastai").
-        instance_id: Provider-specific instance ID.
-        ip: Public IP for SSH access.
-        private_ip: Private IP for internal communication.
-        ssh_port: SSH port (default 22).
-        spot: Whether this is a spot/interruptible instance.
-        hourly_rate: Current hourly cost.
-        on_demand_rate: On-demand price for comparison.
-        billing_increment: Billing granularity in seconds.
-        instance_type: Provider-specific instance type.
-        gpu_count: Number of GPUs.
-        gpu_model: GPU model name.
-        vcpus: Number of vCPUs.
-        memory_gb: Memory in GB.
-        gpu_vram_gb: GPU VRAM per GPU in GB.
-        network_interface: Network interface for overlay (if applicable).
-
-    Returns:
-        Configured InstanceRunning event.
-    """
-    return InstanceRunning(
-        request_id=request_id,
-        cluster_id=cluster_id,
-        node_id=node_id,
-        provider=provider,
-        instance_id=instance_id,
-        ip=ip,
-        private_ip=private_ip,
-        ssh_port=ssh_port,
-        spot=spot,
-        hourly_rate=hourly_rate,
-        on_demand_rate=on_demand_rate,
-        billing_increment=billing_increment,
-        instance_type=instance_type,
-        gpu_count=gpu_count,
-        gpu_model=gpu_model,
-        vcpus=vcpus,
-        memory_gb=memory_gb,
-        gpu_vram_gb=gpu_vram_gb,
-        network_interface=network_interface,
-    )
 
 
 async def detect_network_interface(transport: SSHTransport) -> str:
@@ -131,10 +56,14 @@ def _build_wheel_install_script(wheel_name: str) -> str:
     Installs the skyward wheel into the venv. Service startup (Casty)
     is handled by bootstrap, not this script.
 
-    Args:
-        wheel_name: Name of the wheel file to install.
+    Parameters
+    ----------
+    wheel_name
+        Name of the wheel file to install.
 
-    Returns:
+    Returns
+    -------
+    str
         Shell script string.
     """
     script = f"""#!/bin/bash
@@ -180,12 +109,18 @@ def build_user_code_tarball(
 ) -> bytes:
     """Build a tar.gz archive of user code paths for syncing to workers.
 
-    Args:
-        includes: Paths relative to project_root (dirs or .py files).
-        excludes: Additional glob patterns to ignore.
-        project_root: Root directory to resolve paths from. Defaults to CWD.
+    Parameters
+    ----------
+    includes
+        Paths relative to project_root (dirs or .py files).
+    excludes
+        Additional glob patterns to ignore.
+    project_root
+        Root directory to resolve paths from. Defaults to CWD.
 
-    Returns:
+    Returns
+    -------
+    bytes
         Compressed tar bytes ready for upload.
     """
     root = project_root or Path.cwd()
