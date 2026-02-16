@@ -9,10 +9,9 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-from loguru import logger
-
 from skyward.actors.messages import InstanceRunning, ProviderName
 from skyward.infra.ssh import SSHTransport
+from skyward.observability.logger import logger
 from skyward.providers.bootstrap.compose import SKYWARD_DIR
 
 

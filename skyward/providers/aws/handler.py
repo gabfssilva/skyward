@@ -17,7 +17,6 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
-from loguru import logger
 
 from skyward.actors.messages import (
     BootstrapDone,
@@ -42,6 +41,7 @@ from skyward.actors.messages import (
 from skyward.infra.cache import cached
 from skyward.infra.pricing import get_instance_pricing
 from skyward.infra.retry import on_exception_message, retry
+from skyward.observability.logger import logger
 
 from .clients import EC2ClientFactory
 from .config import AWS, AllocationStrategy

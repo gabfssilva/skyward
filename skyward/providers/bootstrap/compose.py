@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Final
 
-from loguru import logger
+from skyward.observability.logger import logger
 
 log = logger.bind(component="bootstrap")
 

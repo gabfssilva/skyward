@@ -33,24 +33,17 @@ from contextlib import suppress
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
 from casty import ActorRef, ActorSystem, Behaviors, CastyConfig
-from loguru import logger
 
 from skyward.accelerators import Accelerator
 from skyward.actors.messages import (
-    ClusterConnected,
     InstanceMetadata,
     PoolMsg,
     SubmitTask,
     TaskResult,
 )
-
-if TYPE_CHECKING:
-    import asyncssh
-
-    from skyward.infra.ssh import SSHTransport
 from skyward.distributed import (
     BarrierProxy,
     CounterProxy,
@@ -62,7 +55,8 @@ from skyward.distributed import (
     _set_active_registry,
 )
 from skyward.distributed.types import Consistency
-from skyward.observability.logging import LogConfig, _setup_logging, _teardown_logging
+from skyward.observability.logger import logger
+from skyward.observability.logging import LogConfig, setup_logging, teardown_logging
 from skyward.providers.aws.config import AWS
 from skyward.providers.runpod.config import RunPod
 from skyward.providers.vastai.config import VastAI
@@ -262,6 +256,20 @@ def compute(fn: Callable[..., Any]) -> Callable[..., PendingCompute[Any]]:
     return wrapper
 
 
+def _provider_name(provider: Provider) -> str:
+    match provider:
+        case AWS():
+            return "aws"
+        case VastAI():
+            return "vastai"
+        case Verda():
+            return "verda"
+        case RunPod():
+            return "runpod"
+        case _:
+            return "unknown"
+
+
 @dataclass
 class ComputePool:
     """Synchronous ComputePool facade.
@@ -324,16 +332,6 @@ class ComputePool:
     _cluster_id: str = field(default="", init=False, repr=False)
     _instances: dict[int, InstanceMetadata] = field(default_factory=dict, init=False, repr=False)
     _spec: PoolSpec | None = field(default=None, init=False, repr=False)
-    _cluster_client: Any = field(default=None, init=False, repr=False)
-    _network_interfaces: dict[int, str] = field(default_factory=dict, init=False, repr=False)
-    _ssh_transports: list[SSHTransport] = field(default_factory=list, init=False, repr=False)
-    _fwd_listeners: list[asyncssh.SSHListener] = field(
-        default_factory=list, init=False, repr=False,
-    )
-    _address_map: dict[tuple[str, int], tuple[str, int]] = field(
-        default_factory=dict, init=False, repr=False,
-    )
-    _host_to_node: dict[str, int] = field(default_factory=dict, init=False, repr=False)
 
     def __enter__(self) -> ComputePool:
         """Start pool and provision resources."""
@@ -349,7 +347,7 @@ class ComputePool:
                         rotation=self.logging.rotation,
                         retention=self.logging.retention,
                     )
-            self._log_handler_ids = _setup_logging(log_config)
+            self._log_handler_ids = setup_logging(log_config)
 
         logger.info("Starting pool with {n} nodes ({accel})", n=self.nodes, accel=self.accelerator)
 
@@ -411,7 +409,7 @@ class ComputePool:
             logger.info("Pool stopped")
 
             if self._log_handler_ids:
-                _teardown_logging(self._log_handler_ids)
+                teardown_logging(self._log_handler_ids)
 
     def _serialize_pending(self, pending: PendingCompute[Any]) -> bytes:
         from skyward.infra.serialization import serialize
@@ -604,9 +602,10 @@ class ComputePool:
         from skyward.actors.messages import PoolStarted, StartPool
         from skyward.actors.panel import panel_actor
         from skyward.actors.pool import pool_actor
-        from skyward.providers.registry import get_provider_for_config
+        from skyward.providers.registry import create_provider
 
-        actor_factory, provider_name = get_provider_for_config(self.provider)
+        cloud_provider = await create_provider(self.provider)
+        provider_name = _provider_name(self.provider)
 
         region = getattr(self.provider, "region", "unknown")
 
@@ -650,20 +649,12 @@ class ComputePool:
         )
         self._pool_ref = pool_ref
 
-        provider_behavior = actor_factory(self.provider)
-        provider_ref = self._system.spawn(
-            Behaviors.spy(provider_behavior, panel_ref, spy_children=True)
-            if spy
-            else provider_behavior,
-            "provider",
-        )
-
         started: PoolStarted = await self._system.ask(
             pool_ref,
             lambda reply_to: StartPool(
                 spec=spec,
                 provider_config=self.provider,
-                provider_ref=provider_ref,
+                provider=cloud_provider,
                 reply_to=reply_to,
             ),
             timeout=float(self.provision_timeout),
@@ -674,7 +665,6 @@ class ComputePool:
             for info in started.instances
         }
 
-        await self._setup_cluster_client()
 
     async def _stop_async(self) -> None:
         """Stop pool asynchronously."""
@@ -688,244 +678,11 @@ class ComputePool:
             )
             logger.debug("StopPool completed, cluster destroyed")
 
-        if self._cluster_client is not None:
-            logger.debug("Closing ClusterClient...")
-            with suppress(Exception):
-                await self._cluster_client.__aexit__(None, None, None)
-            self._cluster_client = None
-
-        for listener in self._fwd_listeners:
-            with suppress(Exception):
-                listener.close()
-        self._fwd_listeners.clear()
-
-        for transport in self._ssh_transports:
-            with suppress(Exception):
-                await transport.close()
-        self._ssh_transports.clear()
-        self._address_map.clear()
-        self._host_to_node.clear()
-
         if self._system is not None:
             await self._system.__aexit__(None, None, None)
             self._system = None
 
         await _cancel_pending_tasks()
-
-    async def _setup_cluster_client(self) -> None:
-        from casty import ClusterClient
-
-        from skyward.infra.executor import _wait_for_workers
-        from skyward.infra.serialization import check_python_version, serialize
-        from skyward.infra.worker import ExecuteTask as WorkerExecuteTask
-        from skyward.providers.ssh_keys import get_ssh_key_path
-
-        head_info = self._instances.get(0)
-        if head_info is None:
-            raise RuntimeError("Head node (node 0) not available")
-
-        head_addr = head_info.private_ip or head_info.ip
-        ssh_user = self._get_ssh_user()
-        ssh_key = get_ssh_key_path()
-
-        await self._start_casty_cluster(head_addr, ssh_user, ssh_key)
-
-        casty_port = 25520
-        client = ClusterClient(
-            contact_points=[(head_addr, casty_port)],
-            system_name="skyward",
-            address_map=dict(self._address_map),
-        )
-        await client.__aenter__()
-        self._cluster_client = client
-
-        worker_refs = await _wait_for_workers(
-            client, self.nodes, dict(self._host_to_node), timeout=120.0,
-        )
-
-        pool_infos = [
-            self._build_pool_info(info, head_addr).model_dump_json()
-            if (info := self._instances.get(node_id)) is not None
-            else ""
-            for node_id in range(self.nodes)
-        ]
-        image_env = dict(self.image.env) if self.image and self.image.env else {}
-
-        if self.image:
-            check_python_version(self.image.python)
-
-        def setup_env(all_infos: list[str], extra: dict[str, str]) -> str:
-            import os
-            nid = int(os.environ.get("SKYWARD_NODE_ID", "0"))
-            if all_infos and nid < len(all_infos):
-                os.environ["COMPUTE_POOL"] = all_infos[nid]
-            for k, v in extra.items():
-                os.environ[k] = v
-            return "ok"
-
-        fn_bytes = serialize({"fn": setup_env, "args": (pool_infos, image_env), "kwargs": {}})
-        setup_tasks = [
-            client.ask(
-                ref,
-                lambda reply_to: WorkerExecuteTask(fn_bytes=fn_bytes, reply_to=reply_to),
-                timeout=60.0,
-            )
-            for _, ref in sorted(worker_refs.items())
-        ]
-        await asyncio.gather(*setup_tasks)
-
-        if self._pool_ref is not None:
-            self._pool_ref.tell(ClusterConnected(
-                worker_refs=tuple(worker_refs.items()),
-                client=client,
-            ))
-
-        logger.debug("ClusterClient connected and cluster configured")
-
-    async def _start_casty_cluster(
-        self,
-        head_addr: str,
-        ssh_user: str,
-        ssh_key: str,
-    ) -> None:
-        from skyward.infra.ssh import SSHTransport
-        from skyward.providers.bootstrap import EMIT_SH_PATH
-        from skyward.providers.bootstrap.compose import SKYWARD_DIR
-        from skyward.providers.common import detect_network_interface
-
-        venv_dir = f"{SKYWARD_DIR}/.venv"
-        python_bin = f"{venv_dir}/bin/python"
-        casty_port = 25520
-        logger.debug("Starting Casty cluster via SSH...")
-
-        head_info = self._instances.get(0)
-        if head_info is None:
-            raise RuntimeError("Head node not available")
-
-        use_sudo = ssh_user != "root"
-
-        async def _start_node(
-            transport: SSHTransport,
-            node_id: int,
-            host: str,
-            seeds: str = "",
-        ) -> str:
-            seeds_arg = f"--seeds {seeds} " if seeds else ""
-            casty_cmd = (
-                f"nohup {python_bin} -m skyward.infra.worker "
-                f"--node-id {node_id} --port {casty_port} "
-                f"--num-nodes {self.nodes} --host {host} "
-                f"--workers-per-node {self.concurrency} "
-                f"{seeds_arg}"
-                f"> /var/log/casty.log 2>&1 & echo $!"
-            )
-            tail_inner = (
-                f"source {EMIT_SH_PATH} && "
-                f"tail -f /var/log/casty.log 2>/dev/null | while IFS= read -r line; do "
-                f'emit_console "[casty] $line"; done'
-            )
-            tail_cmd = f"nohup bash -c '{tail_inner}' </dev/null >/dev/null 2>&1 &"
-
-            if use_sudo:
-                casty_cmd = f"sudo bash -c '{casty_cmd}'"
-                tail_cmd = f"sudo {tail_cmd}"
-
-            exit_code, stdout, stderr = await transport.run(casty_cmd, timeout=60.0)
-            if exit_code != 0:
-                raise RuntimeError(f"Failed to start Casty node {node_id}: {stderr}")
-            await transport.run(tail_cmd, timeout=10.0)
-            return stdout.strip()
-
-        async def _setup_node(node_id: int, info: InstanceMetadata) -> None:
-            private_ip = info.private_ip or info.ip
-            transport = SSHTransport(
-                host=info.ip,
-                user=ssh_user,
-                key_path=ssh_key,
-                port=info.ssh_port,
-            )
-            await transport.connect()
-            self._ssh_transports.append(transport)
-
-            if node_id == 0:
-                logger.debug("Starting Casty head on node 0...")
-                pid = await _start_node(transport, 0, host=head_addr)
-                logger.debug("Casty head PID: {pid}", pid=pid)
-            else:
-                logger.debug("Starting Casty worker on node {nid}", nid=node_id)
-                seeds = f"{head_addr}:{casty_port}"
-                await _start_node(
-                    transport, node_id, host=private_ip, seeds=seeds,
-                )
-
-            self._network_interfaces[node_id] = await detect_network_interface(transport)
-
-            listener = await transport._conn.forward_local_port(  # type: ignore[union-attr]
-                "", 0, "127.0.0.1", casty_port,
-            )
-            local_port = listener.get_port()
-            self._fwd_listeners.append(listener)
-            self._address_map[(private_ip, casty_port)] = ("127.0.0.1", local_port)
-            self._host_to_node[private_ip] = node_id
-
-            logger.debug(
-                "Tunnel node-{nid}: :{local} → {pub}→127.0.0.1:{remote}",
-                nid=node_id, local=local_port, pub=info.ip, remote=casty_port,
-            )
-
-        await _setup_node(0, head_info)
-
-        await asyncio.gather(*(
-            _setup_node(node_id, info)
-            for node_id, info in self._instances.items()
-            if node_id != 0
-        ))
-
-        logger.debug("Casty cluster started ({n} tunnels)", n=len(self._address_map))
-
-    def _build_pool_info(self, info: InstanceMetadata, head_addr: str) -> Any:
-        from skyward.providers.pool_info import build_pool_info
-
-        peers = [
-            {"node": nid, "private_ip": ni.private_ip or ni.ip}
-            for nid, ni in self._instances.items()
-        ]
-
-        accelerator_count = info.gpu_count or 1
-        total_accelerators = sum(
-            (ni.gpu_count or 1) for ni in self._instances.values()
-        )
-
-        accelerator_name = None
-        if self._spec:
-            accelerator_name = self._spec.accelerator_name
-
-        return build_pool_info(
-            node=info.node,
-            total_nodes=self.nodes,
-            accelerator_count=accelerator_count,
-            total_accelerators=total_accelerators,
-            head_addr=head_addr,
-            head_port=29500,
-            job_id=self._cluster_id,
-            peers=peers,
-            accelerator_type=accelerator_name,
-            placement_group=(
-                self._network_interfaces.get(info.node)
-                or info.network_interface
-                or None
-            ),
-            worker=0,
-            workers_per_node=1,
-        )
-
-    def _get_ssh_user(self) -> str:
-        provider_name = getattr(self._spec, "provider", None) if self._spec else None
-        match provider_name:
-            case "verda" | "vastai" | "runpod":
-                return "root"
-            case _:
-                return "ubuntu"
 
     def _run_loop(self) -> None:
         """Run event loop in background thread."""

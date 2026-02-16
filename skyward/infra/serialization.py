@@ -7,7 +7,8 @@ import zlib
 from typing import Any, Final
 
 import cloudpickle
-from loguru import logger
+
+from skyward.observability.logger import logger
 
 log = logger.bind(component="serialization")
 

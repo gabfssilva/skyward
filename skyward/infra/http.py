@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol, overload, runtime_checkable
 
 import aiohttp
-from loguru import logger
+
+from skyward.observability.logger import logger
 
 # ─── Errors ──────────────────────────────────────────────────────────
 

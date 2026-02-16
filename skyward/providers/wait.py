@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 
-from loguru import logger
+from skyward.observability.logger import logger
 
 log = logger.bind(component="wait")
 

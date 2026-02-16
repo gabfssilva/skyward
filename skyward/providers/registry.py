@@ -8,13 +8,12 @@ Uses lazy loading to avoid importing heavy SDK dependencies until needed.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from casty import Behavior
-from loguru import logger
 
 from skyward.actors.messages import ProviderMsg
+from skyward.observability.logger import logger
 
 if TYPE_CHECKING:
     from .aws.config import AWS
@@ -25,17 +24,50 @@ if TYPE_CHECKING:
 log = logger.bind(component="registry")
 
 type ProviderConfig = AWS | RunPod | VastAI | Verda
-type ProviderActorFactory = Callable[[ProviderConfig], Behavior[ProviderMsg]]
+type ProviderActorFactory = Any
 
 
-def get_provider_for_config(config: ProviderConfig) -> tuple[ProviderActorFactory, str]:
-    """Get provider actor factory for a configuration object.
+async def create_provider(config: ProviderConfig) -> Any:
+    """Create a stateless CloudProvider for a configuration object.
 
     Uses lazy imports to only load SDK dependencies when needed.
 
     Returns:
-        Tuple of (actor_factory, provider_name).
-        actor_factory(config) -> Behavior[ProviderMsg]
+        A CloudProvider instance ready for prepare/provision/terminate/teardown.
+    """
+    from .aws.config import AWS
+    from .runpod.config import RunPod
+    from .vastai.config import VastAI
+    from .verda.config import Verda
+
+    config_type = type(config).__name__
+    log.debug("Creating provider for config={config_type}", config_type=config_type)
+
+    match config:
+        case AWS():
+            from .aws.provider import AWSCloudProvider
+            return await AWSCloudProvider.create(config)
+        case VastAI():
+            from .vastai.provider import VastAICloudProvider
+            return await VastAICloudProvider.create(config)
+        case Verda():
+            from .verda.provider import VerdaCloudProvider
+            return await VerdaCloudProvider.create(config)
+        case RunPod():
+            from .runpod.provider import RunPodCloudProvider
+            return await RunPodCloudProvider.create(config)
+        case _:
+            raise ValueError(
+                f"No provider registered for {type(config).__name__}. "
+                f"Available providers: AWS, VastAI, Verda, RunPod"
+            )
+
+
+def get_provider_for_config(config: ProviderConfig) -> tuple[ProviderActorFactory, str]:
+    """Legacy: Get provider actor factory for a configuration object.
+
+    Kept for backward compatibility with old handler-based approach.
+    New code should use create_provider() instead.
     """
     from .aws.config import AWS
     from .runpod.config import RunPod

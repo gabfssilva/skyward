@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any
 
 import cloudpickle
-from loguru import logger
+
+from skyward.observability.logger import logger
 
 CACHE_DIR = Path.home() / ".skyward" / "cache"
 CACHE_VERSION = 1

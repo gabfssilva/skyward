@@ -26,7 +26,7 @@ from casty import ActorContext, ActorRef, Behavior, Behaviors
 
 if TYPE_CHECKING:
     from skyward.infra.ssh import SSHTransport
-from loguru import logger
+from skyward.observability.logger import logger
 
 from .messages import (
     BootstrapCommand,

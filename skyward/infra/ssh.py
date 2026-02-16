@@ -14,7 +14,8 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 import asyncssh
-from loguru import logger
+
+from skyward.observability.logger import logger
 
 # =============================================================================
 # Stream Event Types (parsed from JSONL)

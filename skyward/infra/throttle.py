@@ -38,7 +38,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Literal
 
-from loguru import logger
+from skyward.observability.logger import logger
 
 log = logger.bind(component="throttle")
 

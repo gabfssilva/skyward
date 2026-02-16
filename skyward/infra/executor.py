@@ -23,7 +23,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from casty import ActorContext, ActorRef, ActorSystem, Behavior, Behaviors, ClusterClient
-from loguru import logger
+
+from skyward.observability.logger import logger
 
 from .serialization import serialize
 from .worker import WORKER_KEY, ExecuteTask, TaskFailed, TaskResult, TaskSucceeded

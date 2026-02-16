@@ -6,10 +6,9 @@ via JSONL event streaming.
 
 from __future__ import annotations
 
-from loguru import logger
-
 from skyward.actors.messages import InstanceMetadata
 from skyward.infra import SSHTransport
+from skyward.observability.logger import logger
 from skyward.providers.bootstrap.compose import SKYWARD_DIR
 
 

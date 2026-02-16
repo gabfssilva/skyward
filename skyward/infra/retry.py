@@ -32,7 +32,7 @@ import functools
 import random
 from collections.abc import Awaitable, Callable
 
-from loguru import logger
+from skyward.observability.logger import logger
 
 # Type for the retry predicate
 RetryPredicate = Callable[[Exception], bool]

@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
-from loguru import logger
 
 from skyward.actors.messages import (
     BootstrapDone,
@@ -33,6 +32,7 @@ from skyward.actors.messages import (
     _UserCodeSyncDone,
     _UserCodeSyncFailed,
 )
+from skyward.observability.logger import logger
 from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
 from skyward.providers.wait import wait_for_ready
 

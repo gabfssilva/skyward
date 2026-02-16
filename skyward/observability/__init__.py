@@ -1,12 +1,10 @@
 """Observability — logging, metrics, panel dashboard."""
 
 from .logging import (
-    CONSOLE_FORMAT,
-    FILE_FORMAT,
     LogConfig,
     LogLevel,
-    _setup_logging,
-    _teardown_logging,
+    setup_logging,
+    teardown_logging,
 )
 from .metrics import (
     CPU,
@@ -27,12 +25,10 @@ from .metrics import (
 )
 
 __all__ = [
-    "CONSOLE_FORMAT",
-    "FILE_FORMAT",
     "LogConfig",
     "LogLevel",
-    "_setup_logging",
-    "_teardown_logging",
+    "setup_logging",
+    "teardown_logging",
     "CPU",
     "Custom",
     "Default",

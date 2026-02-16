@@ -12,7 +12,6 @@ import re
 import uuid
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
-from loguru import logger
 
 from skyward.actors.messages import (
     BootstrapDone,
@@ -29,6 +28,7 @@ from skyward.actors.messages import (
     _UserCodeSyncFailed,
 )
 from skyward.api.spec import PoolSpec
+from skyward.observability.logger import logger
 from skyward.providers.ssh_keys import ensure_ssh_key_on_provider, get_ssh_key_path
 from skyward.providers.wait import wait_for_ready
 

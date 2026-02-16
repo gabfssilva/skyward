@@ -11,7 +11,7 @@ import time
 from collections.abc import Coroutine
 from typing import Any
 
-from loguru import logger
+from skyward.observability.logger import logger
 
 from .types import Consistency
 

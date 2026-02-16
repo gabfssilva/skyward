@@ -37,9 +37,8 @@ def keras[**P, R](
         # First wrap with Keras distribution setup
         @functools.wraps(fn)
         def inner(*args: P.args, **kwargs: P.kwargs) -> R:
-            from loguru import logger
-
             from skyward import instance_info
+            from skyward.observability.logger import logger
 
             log = logger.bind(integration="keras", backend=effective)
             pool = instance_info()

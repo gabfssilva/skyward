@@ -5,9 +5,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from loguru import logger
-
 from skyward.infra.http import HttpClient, HttpError
+from skyward.observability.logger import logger
 
 from .types import (
     AvailabilityRegion,

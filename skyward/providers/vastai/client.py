@@ -8,11 +8,10 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from loguru import logger
-
 from skyward.infra.http import BearerAuth, HttpClient, HttpError
 from skyward.infra.retry import on_status_code, retry
 from skyward.infra.throttle import throttle
+from skyward.observability.logger import logger
 
 from .config import VastAI
 from .types import (

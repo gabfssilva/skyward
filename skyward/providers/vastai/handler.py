@@ -23,7 +23,6 @@ from dataclasses import replace
 from types import MappingProxyType
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
-from loguru import logger
 
 from skyward.actors.messages import (
     BootstrapDone,
@@ -40,6 +39,7 @@ from skyward.actors.messages import (
     _UserCodeSyncDone,
     _UserCodeSyncFailed,
 )
+from skyward.observability.logger import logger
 from skyward.providers.ssh_keys import get_ssh_key_path
 from skyward.providers.wait import wait_for_ready
 

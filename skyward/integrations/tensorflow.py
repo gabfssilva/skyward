@@ -25,9 +25,8 @@ def tensorflow[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
     def decorator(fn: Callable[P, R]) -> Callable[P, R]:
         @functools.wraps(fn)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-            from loguru import logger
-
             from skyward.api.runtime import instance_info
+            from skyward.observability.logger import logger
 
             log = logger.bind(integration="tensorflow")
             pool = instance_info()

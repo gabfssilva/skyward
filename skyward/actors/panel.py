@@ -10,10 +10,10 @@ from dataclasses import replace
 from types import MappingProxyType
 
 from casty import ActorContext, Behavior, Behaviors, SpyEvent, Terminated
-from loguru import logger
 
 from skyward.accelerators.catalog import get_gpu_vram_gb
 from skyward.api.spec import PoolSpec
+from skyward.observability.logger import logger
 from skyward.observability.panel.renderer import PanelRenderer
 from skyward.observability.panel.state import InfraState, InstanceState, MetricsState, PanelState
 

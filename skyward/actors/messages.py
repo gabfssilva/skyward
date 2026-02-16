@@ -4,7 +4,7 @@ Two kinds of messages:
 - System events: ClusterRequested, InstanceProvisioned, etc.
 - Actor messages: StartPool, Provision, StopMonitor, etc.
 
-Actor message types (PoolMsg, NodeMsg, ProviderMsg, MonitorMsg)
+Actor message types (PoolMsg, NodeMsg, MonitorMsg)
 are the contracts — the type union IS the actor's public API.
 """
 
@@ -16,8 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from casty import ActorRef
 
 if TYPE_CHECKING:
-    from casty import ClusterClient
-
+    from skyward.api.model import Cluster, Instance
     from skyward.api.spec import PoolSpec
     from skyward.providers.registry import ProviderConfig
 
@@ -387,9 +386,74 @@ class Execute:
     reply_to: ActorRef[Any]
 
 
+@dataclass(frozen=True, slots=True)
+class _PollTick:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class _PollResult:
+    instance: Any | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _LocalInstallDone:
+    instance: InstanceMetadata
+
+
+@dataclass(frozen=True, slots=True)
+class _LocalInstallFailed:
+    instance: InstanceMetadata
+    error: str
+
+
+@dataclass(frozen=True, slots=True)
+class _UserCodeSyncDone:
+    instance: InstanceMetadata
+
+
+@dataclass(frozen=True, slots=True)
+class _UserCodeSyncFailed:
+    instance: InstanceMetadata
+    error: str
+
+
+@dataclass(frozen=True, slots=True)
+class _PostBootstrapFailed:
+    error: str
+
+
+@dataclass(frozen=True, slots=True)
+class _Connected:
+    transport: Any
+    listener: Any
+
+
+@dataclass(frozen=True, slots=True)
+class _ConnectionFailed:
+    error: str
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkerStarted:
+    client: Any
+    worker_ref: Any
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkerFailed:
+    error: str
+
+
 type InstanceMsg = (
     Running | Bootstrapping | Bootstrapped | BootstrapDone
-    | Log | Metric | Preempted | Execute | SetWorkerRef
+    | Log | Metric | Preempted | Execute | SetHeadAddr
+    | _PollTick | _PollResult
+    | _LocalInstallDone | _LocalInstallFailed
+    | _UserCodeSyncDone | _UserCodeSyncFailed
+    | _PostBootstrapFailed
+    | _Connected | _ConnectionFailed
+    | _WorkerStarted | _WorkerFailed
 )
 
 
@@ -400,14 +464,16 @@ type InstanceMsg = (
 
 @dataclass(frozen=True, slots=True)
 class Provision:
-    cluster_id: ClusterId
-    provider_ref: ActorRef
+    cluster: Any
+    provider: Any
+    instance: Any
 
 
 @dataclass(frozen=True, slots=True)
 class InstanceBecameReady:
     instance_id: InstanceId
     ip: str
+    metadata: InstanceMetadata | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -430,14 +496,11 @@ class TaskResult:
 
 type NodeMsg = (
     Provision
-    | InstanceLaunched
-    | InstanceRunning
-    | InstanceBootstrapped
     | InstanceBecameReady
     | InstanceDied
     | ExecuteOnNode
     | TaskResult
-    | SetWorkerRef
+    | SetHeadAddr
 )
 
 
@@ -473,7 +536,7 @@ class PoolStopped:
 class StartPool:
     spec: PoolSpec
     provider_config: ProviderConfig
-    provider_ref: ActorRef[ProviderMsg]
+    provider: Any
     reply_to: ActorRef[PoolStarted]
 
 
@@ -483,27 +546,38 @@ class StopPool:
 
 
 @dataclass(frozen=True, slots=True)
-class ClusterConnected:
-    worker_refs: tuple[tuple[NodeId, ActorRef], ...]
-    client: ClusterClient
+class SetHeadAddr:
+    head_addr: str
+    casty_port: int
+    num_nodes: int
+    concurrency: int
 
 
 @dataclass(frozen=True, slots=True)
-class SetWorkerRef:
-    worker_ref: ActorRef | None
-    client: ClusterClient | None = None
+class _ClusterReady:
+    cluster: Any
+
+
+@dataclass(frozen=True, slots=True)
+class _InstancesProvisioned:
+    instances: Any
+
+
+@dataclass(frozen=True, slots=True)
+class _ShutdownDone:
+    pass
 
 
 type PoolMsg = (
     StartPool
     | StopPool
-    | ClusterConnected
-    | ClusterProvisioned
     | NodeBecameReady
     | NodeLost
-    | ShutdownCompleted
     | SubmitTask
     | SubmitBroadcast
+    | _ClusterReady
+    | _InstancesProvisioned
+    | _ShutdownDone
 )
 
 
@@ -547,7 +621,7 @@ type TaskManagerMsg = NodeAvailable | NodeUnavailable | TaskResult | SubmitTask 
 
 
 # =============================================================================
-# Provider Actor Messages (internal)
+# Provider Actor Messages (legacy — kept for old handler.py files)
 # =============================================================================
 
 
@@ -598,28 +672,6 @@ class _BootstrapScriptDone:
 @dataclass(frozen=True, slots=True)
 class _BootstrapScriptFailed:
     instance_id: str
-    error: str
-
-
-@dataclass(frozen=True, slots=True)
-class _LocalInstallDone:
-    instance: InstanceMetadata
-
-
-@dataclass(frozen=True, slots=True)
-class _LocalInstallFailed:
-    instance: InstanceMetadata
-    error: str
-
-
-@dataclass(frozen=True, slots=True)
-class _UserCodeSyncDone:
-    instance: InstanceMetadata
-
-
-@dataclass(frozen=True, slots=True)
-class _UserCodeSyncFailed:
-    instance: InstanceMetadata
     error: str
 
 
@@ -694,4 +746,33 @@ def _to_metadata(ev: InstanceRunning) -> InstanceMetadata:
         region=ev.region,
         ssh_user=ev.ssh_user,
         ssh_key_path=ev.ssh_key_path,
+    )
+
+
+def _instance_to_metadata(
+    inst: Instance,
+    node_id: NodeId,
+    provider: ProviderName,
+    cluster: Cluster,  # type: ignore[type-arg]
+) -> InstanceMetadata:
+    return InstanceMetadata(
+        id=inst.id,
+        node=node_id,
+        provider=provider,
+        ip=inst.ip or "",
+        private_ip=inst.private_ip or "",
+        spot=inst.spot,
+        ssh_port=inst.ssh_port,
+        ssh_user=cluster.ssh_user,
+        ssh_key_path=cluster.ssh_key_path,
+        hourly_rate=inst.hourly_rate,
+        on_demand_rate=inst.on_demand_rate,
+        billing_increment=inst.billing_increment,
+        instance_type=inst.instance_type,
+        gpu_count=inst.gpu_count,
+        gpu_model=inst.gpu_model,
+        vcpus=inst.vcpus,
+        memory_gb=inst.memory_gb,
+        gpu_vram_gb=inst.gpu_vram_gb,
+        region=inst.region,
     )

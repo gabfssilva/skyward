@@ -31,11 +31,11 @@ from typing import TYPE_CHECKING, Any, Literal
 import cloudpickle
 from joblib import parallel_backend
 from joblib.parallel import ParallelBackendBase, register_parallel_backend
-from loguru import logger
 
 from skyward.accelerators import Accelerator
 from skyward.api.pool import ComputePool
 from skyward.api.spec import DEFAULT_IMAGE, Image
+from skyward.observability.logger import logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable

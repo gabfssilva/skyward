@@ -32,7 +32,8 @@ from casty import (
     HeartbeatConfig,
     ServiceKey,
 )
-from loguru import logger
+
+from skyward.observability.logger import logger
 
 
 @dataclass(frozen=True, slots=True)

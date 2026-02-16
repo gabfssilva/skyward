@@ -261,7 +261,7 @@ result = my_function.local(test_data)  # Runs locally, no cloud
 ### Enable Verbose Logging
 
 ```python
-from loguru import logger
+from skyward.observability.logger import logger
 import sys
 
 logger.remove()

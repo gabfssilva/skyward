@@ -8,10 +8,9 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .config import RunPod
 
-from loguru import logger
-
 from skyward.infra.http import BearerAuth, HttpClient, HttpError
 from skyward.infra.retry import on_status_code, retry
+from skyward.observability.logger import logger
 
 from .types import (
     ClusterCreateParams,

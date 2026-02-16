@@ -1,5 +1,6 @@
 """User-facing API — pool, compute, runtime."""
 
+from .model import Cluster, ClusterStatus, Instance, InstanceStatus
 from .pool import (
     ComputePool,
     PendingCompute,
@@ -52,4 +53,8 @@ __all__ = [
     "silent",
     "stderr",
     "stdout",
+    "Instance",
+    "InstanceStatus",
+    "Cluster",
+    "ClusterStatus"
 ]

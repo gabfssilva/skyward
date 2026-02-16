@@ -7,7 +7,7 @@ import concurrent.futures
 from collections.abc import Callable
 from typing import Any
 
-from loguru import logger
+from skyward.observability.logger import logger
 
 from .proxies import (
     BarrierProxy,

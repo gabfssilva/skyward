@@ -13,7 +13,7 @@ from functools import lru_cache
 from typing import Any, Literal
 from urllib.request import urlopen
 
-from loguru import logger
+from skyward.observability.logger import logger
 
 from .cache import cached
 

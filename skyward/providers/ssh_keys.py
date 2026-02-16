@@ -113,7 +113,7 @@ async def ensure_ssh_key_on_provider(
     Raises:
         RuntimeError: If no local SSH key found or key creation fails.
     """
-    from loguru import logger
+    from skyward.observability.logger import logger
 
     # Get local key
     public_path, public_key = get_local_ssh_key()
