@@ -24,9 +24,10 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import queue
 import threading
 import types
-from collections.abc import Callable, Coroutine, Iterator, Sequence
+from collections.abc import Callable, Coroutine, Generator, Iterator, Sequence
 from concurrent.futures import Future
 from contextlib import suppress
 from contextvars import ContextVar, Token
@@ -197,16 +198,19 @@ class PendingComputeGroup:
     """
 
     items: tuple[PendingCompute[Any], ...]
+    stream: bool = False
 
     def __and__(self, other: PendingCompute[Any] | PendingComputeGroup) -> PendingComputeGroup:
         """Add another computation to the group."""
         match other:
             case PendingComputeGroup():
-                return PendingComputeGroup(items=(*self.items, *other.items))
+                return PendingComputeGroup(items=(*self.items, *other.items), stream=self.stream)
             case _:
-                return PendingComputeGroup(items=(*self.items, other))
+                return PendingComputeGroup(items=(*self.items, other), stream=self.stream)
 
-    def __rshift__(self, target: ComputePool | _Sky | types.ModuleType) -> tuple[Any, ...]:
+    def __rshift__(
+        self, target: ComputePool | _Sky | types.ModuleType
+    ) -> tuple[Any, ...] | Generator[Any, None, None]:
         """Execute all computations in parallel using >> operator."""
         match target:
             case types.ModuleType() if hasattr(target, "sky"):
@@ -223,14 +227,17 @@ class PendingComputeGroup:
         return iter(self.items)
 
 
-def gather(*pendings: PendingCompute[Any]) -> PendingComputeGroup:
+def gather(*pendings: PendingCompute[Any], stream: bool = False) -> PendingComputeGroup:
     """Group computations for parallel execution.
 
     Example:
         results = gather(task1(), task2(), task3()) >> sky
         # results is a tuple of (result1, result2, result3)
+
+        for result in gather(task1(), task2(), task3(), stream=True) >> sky:
+            print(result)  # yields results as they complete
     """
-    return PendingComputeGroup(items=pendings)
+    return PendingComputeGroup(items=pendings, stream=stream)
 
 
 def compute(fn: Callable[..., Any]) -> Callable[..., PendingCompute[Any]]:
@@ -461,9 +468,14 @@ class ComputePool:
 
         return self._run_sync(_broadcast())
 
-    def run_parallel(self, group: PendingComputeGroup) -> tuple[Any, ...]:
+    def run_parallel(
+        self, group: PendingComputeGroup
+    ) -> tuple[Any, ...] | Generator[Any, None, None]:
         if not self._active or self._pool_ref is None or self._system is None:
             raise RuntimeError("Pool is not active")
+
+        if group.stream:
+            return self._run_parallel_stream(group)
 
         async def _run_parallel() -> tuple[Any, ...]:
             assert self._pool_ref is not None
@@ -482,6 +494,39 @@ class ComputePool:
             return tuple(self._unwrap_result(r) for r in results)
 
         return self._run_sync(_run_parallel())
+
+    def _run_parallel_stream(self, group: PendingComputeGroup) -> Generator[Any, None, None]:
+        q: queue.Queue[Any] = queue.Queue()
+        sentinel = object()
+
+        async def _feed_queue() -> None:
+            assert self._pool_ref is not None
+            tasks = [
+                asyncio.ensure_future(
+                    self._system.ask(  # type: ignore[union-attr]
+                        self._pool_ref,
+                        lambda reply_to, p=p: SubmitTask(
+                            fn_bytes=self._serialize_pending(p),
+                            reply_to=reply_to,
+                        ),
+                        timeout=600.0,
+                    )
+                )
+                for p in group.items
+            ]
+            for coro in asyncio.as_completed(tasks):
+                result = await coro
+                q.put(self._unwrap_result(result))
+            q.put(sentinel)
+
+        assert self._loop is not None
+        asyncio.run_coroutine_threadsafe(_feed_queue(), self._loop)
+
+        while True:
+            item = q.get()
+            if item is sentinel:
+                break
+            yield item
 
     def map[T, R](
         self,

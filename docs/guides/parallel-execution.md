@@ -7,7 +7,7 @@ In this guide you'll run **multiple computations concurrently** on a single remo
 Define the functions you want to run remotely:
 
 ```python
---8<-- "examples/guides/02_parallel_execution.py:6:24"
+--8<-- "examples/guides/02_parallel_execution.py:8:26"
 ```
 
 Each function is independent — they can run in any order, on the same instance, concurrently.
@@ -17,7 +17,7 @@ Each function is independent — they can run in any order, on the same instance
 Use `gather()` when you have a dynamic number of computations:
 
 ```python
---8<-- "examples/guides/02_parallel_execution.py:31:33"
+--8<-- "examples/guides/02_parallel_execution.py:33:35"
 ```
 
 `gather()` collects multiple `@sky.compute` calls into a single parallel batch. All calls execute concurrently on the remote instance and return as a tuple.
@@ -27,7 +27,7 @@ Use `gather()` when you have a dynamic number of computations:
 Use `&` when you have a fixed number of computations and want full type inference:
 
 ```python
---8<-- "examples/guides/02_parallel_execution.py:35:37"
+--8<-- "examples/guides/02_parallel_execution.py:37:39"
 ```
 
 The `&` operator preserves the return types — `a` is `int` and `b` is `int`, inferred from `multiply`'s return type.
@@ -37,10 +37,24 @@ The `&` operator preserves the return types — `a` is `int` and `b` is `int`, i
 You can chain up to 8 different computations with `&`:
 
 ```python
---8<-- "examples/guides/02_parallel_execution.py:39:41"
+--8<-- "examples/guides/02_parallel_execution.py:41:43"
 ```
 
 Each variable gets the correct type from its respective function.
+
+## Streaming Results with gather(stream=True)
+
+By default, `gather()` waits for **all** tasks to finish before returning a tuple. With `stream=True`, results are yielded **as they complete** — useful when tasks have varying durations and you want to process early results immediately:
+
+```python
+--8<-- "examples/guides/02_parallel_execution.py:45:50"
+```
+
+Results arrive in **completion order**, not submission order. This is ideal for:
+
+- Displaying progress as results arrive
+- Feeding partial results into a downstream pipeline
+- Reducing time-to-first-result when tasks have uneven durations
 
 ## Run the Full Example
 
@@ -55,6 +69,7 @@ uv run python examples/guides/02_parallel_execution.py
 **What you learned:**
 
 - **`gather()`** runs a dynamic number of computations in parallel.
+- **`gather(stream=True)`** yields results as they complete instead of waiting for all.
 - **`&` operator** chains computations with full type inference.
 - Both patterns use **`>>`** to send the batch to a pool.
 - You can **mix different functions** in a single parallel batch.

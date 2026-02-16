@@ -1,5 +1,7 @@
 """Parallel Execution — run multiple computations concurrently."""
 
+import time
+
 import skyward as sky
 
 
@@ -39,3 +41,10 @@ if __name__ == "__main__":
         # Mix different computations
         s, p, f = (process_chunk([1, 2, 3]) & multiply(10, 20) & factorial(5)) >> pool
         print(f"Mixed: sum={s}, product={p}, factorial={f}")  # 6, 200, 120
+
+        # gather(stream=True) yields results as they complete
+        tasks = [process_chunk([i] * 1000) for i in range(5)]
+        start = time.monotonic()
+        for result in sky.gather(*tasks, stream=True) >> pool:
+            elapsed = time.monotonic() - start
+            print(f"  [{elapsed:.1f}s] Got: {result}")
