@@ -12,7 +12,6 @@ from skyward.actors.messages import (
     NodeBecameReady,
     NodeLost,
     Provision,
-    SlotFreed,
     TaskResult,
 )
 
@@ -55,7 +54,7 @@ async def test_node_provision_sends_instance_requested(system):
     pool_ref = system.spawn(collector_behavior(pool_msgs), "pool")
     provider_ref = system.spawn(collector_behavior(provider_msgs), "provider")
 
-    node_ref = system.spawn(node_actor(node_id=0, pool=pool_ref, task_manager=None), "node-0")
+    node_ref = system.spawn(node_actor(node_id=0, pool=pool_ref), "node-0")
     node_ref.tell(Provision(cluster_id="c1", provider_ref=provider_ref))
     await asyncio.sleep(0.1)
 
@@ -71,7 +70,7 @@ async def test_node_spawns_instance_on_launched(system):
     pool_ref = system.spawn(collector_behavior(pool_msgs), "pool")
     provider_ref = system.spawn(collector_behavior(provider_msgs), "provider")
 
-    node_ref = system.spawn(node_actor(node_id=0, pool=pool_ref, task_manager=None), "node-0")
+    node_ref = system.spawn(node_actor(node_id=0, pool=pool_ref), "node-0")
     node_ref.tell(Provision(cluster_id="c1", provider_ref=provider_ref))
     await asyncio.sleep(0.1)
 
@@ -98,7 +97,7 @@ async def test_node_enqueues_tasks_during_provisioning(system):
     provider_ref = system.spawn(collector_behavior(provider_msgs), "provider")
     reply_ref = system.spawn(collector_behavior(reply_msgs), "reply")
 
-    node_ref = system.spawn(node_actor(node_id=0, pool=pool_ref, task_manager=None), "node-0")
+    node_ref = system.spawn(node_actor(node_id=0, pool=pool_ref), "node-0")
     node_ref.tell(Provision(cluster_id="c1", provider_ref=provider_ref))
     await asyncio.sleep(0.1)
 
@@ -114,12 +113,10 @@ async def test_node_preemption_recovery(system):
 
     pool_msgs: list = []
     provider_msgs: list = []
-    tm_msgs: list = []
     pool_ref = system.spawn(collector_behavior(pool_msgs), "pool")
     provider_ref = system.spawn(collector_behavior(provider_msgs), "provider")
-    tm_ref = system.spawn(collector_behavior(tm_msgs), "tm")
 
-    node_ref = system.spawn(node_actor(node_id=0, pool=pool_ref, task_manager=tm_ref), "node-0")
+    node_ref = system.spawn(node_actor(node_id=0, pool=pool_ref), "node-0")
     node_ref.tell(Provision(cluster_id="c1", provider_ref=provider_ref))
     await asyncio.sleep(0.1)
 
@@ -143,14 +140,12 @@ async def test_node_intercepts_task_result(system):
     from skyward.actors.node import node_actor
 
     pool_msgs: list = []
-    tm_msgs: list = []
     reply_msgs: list = []
     pool_ref = system.spawn(collector_behavior(pool_msgs), "pool")
     provider_ref = system.spawn(collector_behavior([]), "provider")
-    tm_ref = system.spawn(collector_behavior(tm_msgs), "tm")
     reply_ref = system.spawn(collector_behavior(reply_msgs), "reply")
 
-    node_ref = system.spawn(node_actor(node_id=0, pool=pool_ref, task_manager=tm_ref), "node-0")
+    node_ref = system.spawn(node_actor(node_id=0, pool=pool_ref), "node-0")
     node_ref.tell(Provision(cluster_id="c1", provider_ref=provider_ref))
     await asyncio.sleep(0.1)
 
@@ -167,5 +162,3 @@ async def test_node_intercepts_task_result(system):
 
     assert len(reply_msgs) == 1
     assert reply_msgs[0].value == "result-1"
-
-    assert any(isinstance(m, SlotFreed) for m in tm_msgs)

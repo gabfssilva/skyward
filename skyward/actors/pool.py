@@ -70,7 +70,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                     for nid in range(spec.nodes):
                         ref = ctx.spawn(
                             node_actor(
-                                node_id=nid, pool=ctx.self, task_manager=tm_ref,
+                                node_id=nid, pool=ctx.self,
                                 ssh_timeout=spec.ssh_timeout,
                                 ssh_retry_interval=spec.ssh_retry_interval,
                             ),
@@ -168,7 +168,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                 case NodeBecameReady(node_id=nid):
                     tm_ref.tell(NodeAvailable(
                         node_id=nid,
-                        node_ref=node_refs.get(nid, tm_ref),
+                        node_ref=node_refs[nid],
                         slots=spec.concurrency,
                     ))
                     return ready(

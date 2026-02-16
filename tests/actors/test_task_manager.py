@@ -7,9 +7,9 @@ from skyward.actors.messages import (
     ExecuteOnNode,
     NodeAvailable,
     NodeUnavailable,
-    SlotFreed,
     SubmitBroadcast,
     SubmitTask,
+    TaskResult,
 )
 
 
@@ -67,7 +67,7 @@ async def test_submit_task_queues_when_no_slots(system):
 
     assert len(node_msgs) == 1  # only 1 slot
 
-    tm_ref.tell(SlotFreed(node_id=0))
+    tm_ref.tell(TaskResult(value="done", node_id=0))
     await asyncio.sleep(0.1)
 
     assert len(node_msgs) == 2  # queue drained

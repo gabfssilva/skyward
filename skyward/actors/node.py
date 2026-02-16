@@ -25,7 +25,6 @@ from skyward.actors.messages import (
     Provision,
     Running,
     SetWorkerRef,
-    SlotFreed,
     TaskResult,
     _to_metadata,
 )
@@ -52,7 +51,6 @@ class ActiveState:
 def node_actor(
     node_id: NodeId,
     pool: ActorRef,
-    task_manager: ActorRef | None = None,
     panel: ActorRef | None = None,
     ssh_timeout: float = 300.0,
     ssh_retry_interval: float = 5.0,
@@ -268,8 +266,6 @@ def node_actor(
                     if s.inflight:
                         _, caller = s.inflight[0]
                         caller.tell(TaskResult(value=value, node_id=node_id))
-                        if task_manager:
-                            task_manager.tell(SlotFreed(node_id=node_id))
                         return active(replace(s, inflight=s.inflight[1:]))
             return Behaviors.same()
         return Behaviors.receive(receive)

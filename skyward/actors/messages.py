@@ -537,18 +537,13 @@ class NodeUnavailable:
 
 
 @dataclass(frozen=True, slots=True)
-class SlotFreed:
-    node_id: NodeId
-
-
-@dataclass(frozen=True, slots=True)
 class NodeSlots:
     ref: ActorRef[Any]
     total: int
     used: int
 
 
-type TaskManagerMsg = NodeAvailable | NodeUnavailable | SlotFreed | SubmitTask | SubmitBroadcast
+type TaskManagerMsg = NodeAvailable | NodeUnavailable | TaskResult | SubmitTask | SubmitBroadcast
 
 
 # =============================================================================
