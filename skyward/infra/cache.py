@@ -142,28 +142,43 @@ def cached[**P, R](
     key_func: Callable[..., str] | None = None,
     cache_falsy: bool = False,
 ) -> Callable[[Callable[P, R]], Callable[P, R]]:
-    """Decorator for caching function results to disk."""
+    """Decorator for caching function results to disk. Supports both sync and async functions."""
+    import inspect
 
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
         cache = get_cache(namespace)
 
+        def _resolve_key(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
+            cache_args = args[1:] if args and hasattr(args[0], "__dict__") else args
+            return key_func(*args, **kwargs) if key_func else cache._make_key(cache_args, kwargs)
+
+        def _should_cache(result: Any) -> bool:
+            return result is not None and (cache_falsy or result)
+
+        if inspect.iscoroutinefunction(func):
+
+            @wraps(func)
+            async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+                key = _resolve_key(args, kwargs)
+                hit, value = cache.get(key, ttl)
+                if hit:
+                    return value  # type: ignore[return-value]
+                result = await func(*args, **kwargs)  # type: ignore[misc]
+                if _should_cache(result):
+                    cache.set(key, result)
+                return result
+
+            return async_wrapper  # type: ignore[return-value]
+
         @wraps(func)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-            cache_args = args[1:] if args and hasattr(args[0], "__dict__") else args
-
-            key = (
-                key_func(*args, **kwargs) if key_func else cache._make_key(cache_args, kwargs)
-            )
-
+            key = _resolve_key(args, kwargs)
             hit, value = cache.get(key, ttl)
             if hit:
-                return value  # type: ignore
-
+                return value  # type: ignore[return-value]
             result = func(*args, **kwargs)
-
-            if result is not None and (cache_falsy or result):
+            if _should_cache(result):
                 cache.set(key, result)
-
             return result
 
         return wrapper

@@ -68,7 +68,11 @@ def pip(*packages: str, extra_index: str | None = None) -> Op:
         return lambda: "# No pip packages to install"
 
     pkg_list = " ".join(packages)
-    extra = f" --extra-index-url {extra_index}" if extra_index else ""
+    extra = (
+        f" --extra-index-url {extra_index} --index-strategy unsafe-best-match"
+        if extra_index
+        else ""
+    )
 
     return lambda: f"uv pip install {pkg_list}{extra}"
 
@@ -115,7 +119,11 @@ def uv_add(*packages: str, extra_index: str | None = None) -> Op:
         return lambda: "# No pip packages to install"
 
     pkg_list = " ".join(packages)
-    extra = f" --extra-index-url {extra_index}" if extra_index else ""
+    extra = (
+        f" --extra-index-url {extra_index} --index-strategy unsafe-best-match"
+        if extra_index
+        else ""
+    )
 
     return lambda: f"cd {SKYWARD_DIR} && uv add {pkg_list}{extra}"
 

@@ -12,6 +12,7 @@ import base64
 import uuid
 from contextlib import suppress
 from dataclasses import replace
+from datetime import timedelta
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
@@ -38,6 +39,7 @@ from skyward.actors.messages import (
     _UserCodeSyncDone,
     _UserCodeSyncFailed,
 )
+from skyward.infra.cache import cached
 from skyward.infra.pricing import get_instance_pricing
 from skyward.infra.retry import on_exception_message, retry
 
@@ -393,12 +395,14 @@ async def _ensure_infrastructure(
     ec2: EC2ClientFactory,
     prefix: str = "skyward",
 ) -> AWSResources:
-    subnet_ids = await _get_default_subnets(ec2)
-
     if config.security_group_id:
+        subnet_ids = await _get_default_subnets(ec2)
         security_group_id = config.security_group_id
     else:
-        security_group_id = await _ensure_security_group(ec2, prefix)
+        subnet_ids, security_group_id = await asyncio.gather(
+            _get_default_subnets(ec2),
+            _ensure_security_group(ec2, prefix),
+        )
 
     instance_profile_arn = config.instance_profile_arn or ""
 
@@ -535,17 +539,40 @@ async def _resolve_instance_configs(
 
     candidates = await _select_instances(config, spec)
 
-    configs = []
-    for instance_type, arch in candidates:
-        if spec.accelerator_name is not None:
-            ami = config.ami or await _get_dlami(config, arch)
-        else:
-            ami = config.ami or await _get_ubuntu_ami(config, arch)
-        configs.append(InstanceConfig(instance_type=instance_type, ami=ami, spot=spot))
+    if config.ami:
+        return [
+            InstanceConfig(instance_type=t, ami=config.ami, spot=spot)
+            for t, _ in candidates
+        ]
 
-    return configs
+    ami_lookup = _get_dlami if spec.accelerator_name is not None else _get_ubuntu_ami
+    unique_archs: list[Architecture] = list({arch for _, arch in candidates})
+    ami_results = await asyncio.gather(*(ami_lookup(config, a) for a in unique_archs))
+    ami_by_arch: dict[Architecture, str] = dict(zip(unique_archs, ami_results, strict=True))
+
+    return [
+        InstanceConfig(instance_type=t, ami=ami_by_arch[arch], spot=spot)
+        for t, arch in candidates
+    ]
 
 
+def _select_instances_cache_key(config: AWS, spec: PoolSpec, max_candidates: int = 5) -> str:
+    import hashlib
+
+    parts = (
+        config.region,
+        config.exclude_burstable,
+        spec.vcpus,
+        spec.memory_gb,
+        spec.architecture,
+        spec.accelerator_name,
+        spec.accelerator_count,
+        max_candidates,
+    )
+    return hashlib.sha256(str(parts).encode()).hexdigest()[:16]
+
+
+@cached(namespace="aws-instances", ttl=timedelta(hours=6), key_func=_select_instances_cache_key)
 async def _select_instances(
     config: AWS,
     spec: PoolSpec,
@@ -567,11 +594,9 @@ async def _select_instances(
 
     session = aioboto3.Session()
     async with session.client("ec2", region_name=config.region) as client:  # type: ignore[reportGeneralTypeIssues]
-        candidate_arch: dict[str, Architecture] = {}
 
-        for a in archs:
+        async def _query_arch(a: str) -> dict[str, Architecture]:
             arch_requirements = requirements.copy()
-
             if spec.accelerator_name:
                 arch_requirements["AcceleratorTypes"] = ["gpu"]
                 arch_requirements["AcceleratorNames"] = [spec.accelerator_name.lower()]
@@ -582,23 +607,36 @@ async def _select_instances(
                 VirtualizationTypes=["hvm"],
                 InstanceRequirements=arch_requirements,
             )
-            for r in response.get("InstanceTypes", []):
-                candidate_arch[r["InstanceType"]] = a  # type: ignore[assignment]
+            return {r["InstanceType"]: a for r in response.get("InstanceTypes", [])}  # type: ignore[misc]
+
+        arch_results = await asyncio.gather(*(_query_arch(a) for a in archs))
+        candidate_arch: dict[str, Architecture] = {}
+        for arch_map in arch_results:
+            candidate_arch.update(arch_map)
 
         if not candidate_arch:
             return [_fallback_instance(spec)]
 
         all_types = list(candidate_arch.keys())
-        price_map: dict[str, float] = {}
-        for i in range(0, len(all_types), 20):
-            batch = all_types[i:i + 20]
+
+        async def _query_prices(batch: list[str]) -> dict[str, float]:
             prices = await client.describe_spot_price_history(
                 InstanceTypes=batch,
                 ProductDescriptions=["Linux/UNIX"],
             )
+            batch_prices: dict[str, float] = {}
             for p in prices.get("SpotPriceHistory", []):
                 itype = p["InstanceType"]
                 price = float(p["SpotPrice"])
+                if itype not in batch_prices or price < batch_prices[itype]:
+                    batch_prices[itype] = price
+            return batch_prices
+
+        batches = [all_types[i:i + 20] for i in range(0, len(all_types), 20)]
+        price_results = await asyncio.gather(*(_query_prices(b) for b in batches))
+        price_map: dict[str, float] = {}
+        for batch_prices in price_results:
+            for itype, price in batch_prices.items():
                 if itype not in price_map or price < price_map[itype]:
                     price_map[itype] = price
 
@@ -646,6 +684,7 @@ def _arch_from_instance_type(instance_type: str) -> Architecture:
     return "x86_64"
 
 
+@cached(namespace="aws-amis", ttl=timedelta(hours=24))
 async def _get_ubuntu_ami(config: AWS, arch: Architecture) -> str:
     import aioboto3  # type: ignore[reportMissingImports]
 
@@ -667,6 +706,7 @@ async def _get_ubuntu_ami(config: AWS, arch: Architecture) -> str:
             raise RuntimeError(f"Failed to get Ubuntu AMI: {e}") from e
 
 
+@cached(namespace="aws-amis", ttl=timedelta(hours=24))
 async def _get_dlami(config: AWS, arch: Architecture) -> str:
     import aioboto3  # type: ignore[reportMissingImports]
 
