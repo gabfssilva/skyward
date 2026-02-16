@@ -149,8 +149,11 @@ def cached[**P, R](
         cache = get_cache(namespace)
 
         def _resolve_key(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
+            if key_func:
+                return key_func(*args, **kwargs)
             cache_args = args[1:] if args and hasattr(args[0], "__dict__") else args
-            return key_func(*args, **kwargs) if key_func else cache._make_key(cache_args, kwargs)
+            fn_id = (func.__module__, func.__qualname__)
+            return cache._make_key((*fn_id, *cache_args), kwargs)
 
         def _should_cache(result: Any) -> bool:
             return result is not None and (cache_falsy or result)

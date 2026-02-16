@@ -1,0 +1,11 @@
+[providers.aws-east]
+type = "aws"
+region = "us-east-1"
+
+[pools.demo]
+provider = "aws-east"
+nodes = 2
+allocation = "spot"
+
+[pools.demo.image]
+pip = ["numpy"]

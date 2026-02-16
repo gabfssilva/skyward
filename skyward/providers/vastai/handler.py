@@ -341,10 +341,12 @@ def vastai_provider_actor(
         node_refs: dict[int, ActorRef] | None = None,
     ) -> Behavior[ProviderMsg]:
         refs = node_refs or {}
+        alog = log.bind(state="active")
 
         async def receive(
             ctx: ActorContext[ProviderMsg], msg: ProviderMsg,
         ) -> Behavior[ProviderMsg]:
+            alog.debug("Received: {msg}", msg=type(msg).__name__)
             match msg:
                 case _ProvisioningDone(state=new_state):
                     return active(new_state, reserved_offers, refs)
@@ -356,7 +358,7 @@ def vastai_provider_actor(
                     node_id=node_id,
                     reply_to=node_ref,
                 ):
-                    log.info("Launching instance for node {nid}", nid=node_id)
+                    alog.info("Launching instance for node {nid}", nid=node_id)
                     new_refs = {**refs}
                     if node_ref:
                         new_refs[node_id] = node_ref
@@ -384,14 +386,14 @@ def vastai_provider_actor(
                             offers = await _search_offers(client, config, state)
 
                             if not offers:
-                                log.error("No offers found for node {nid}", nid=node_id)
+                                alog.error("No offers found for node {nid}", nid=node_id)
                                 return _ProvisioningDone(state=state)
 
                             for idx, offer in enumerate(offers):
                                 offer_id = offer["id"]
 
                                 if offer_id in new_reserved:
-                                    log.debug(
+                                    alog.debug(
                                         "Offer {oid} already reserved, skipping",
                                         oid=offer_id,
                                     )
@@ -411,7 +413,7 @@ def vastai_provider_actor(
                                     else offer.get("dph_total", 0)
                                 )
 
-                                log.info(
+                                alog.info(
                                     "Trying offer {i}/{total}: "
                                     "machine_id={mid}, price=${price:.3f}/hr",
                                     i=idx + 1, total=len(offers),
@@ -440,14 +442,14 @@ def vastai_provider_actor(
                                 except VastAIError as e:
                                     new_reserved = new_reserved - frozenset({offer_id})
                                     last_error = str(e)
-                                    log.warning(
+                                    alog.warning(
                                         "Offer {i}/{total} failed: {err}",
                                         i=idx + 1, total=len(offers), err=e,
                                     )
                                     continue
 
                         if instance_id is None:
-                            log.error(
+                            alog.error(
                                 "All offers failed for node {nid}, last error: {err}",
                                 nid=node_id, err=last_error,
                             )
@@ -473,7 +475,7 @@ def vastai_provider_actor(
                     instance=instance,
                     cluster_id=_,
                 ):
-                    log.debug("Starting bootstrap for instance {iid}", iid=instance.id)
+                    alog.debug("Starting bootstrap for instance {iid}", iid=instance.id)
 
                     async def run_bootstrap() -> None:
                         from skyward.providers.bootstrap import (
@@ -545,32 +547,63 @@ def vastai_provider_actor(
                     return Behaviors.same()
 
                 case _UserCodeSyncFailed(instance=info, error=err):
-                    log.error("User code sync failed on {iid}: {err}", iid=info.id, err=err)
+                    alog.error("User code sync failed on {iid}: {err}", iid=info.id, err=err)
                     return Behaviors.same()
 
                 case ShutdownRequested(
                     cluster_id=cid, reply_to=reply_to,
-                ):
-                    log.info("Shutting down cluster {cid}", cid=cid)
+                ) if cid == state.cluster_id:
+                    alog.info("ShutdownRequested matched for cluster {cid}", cid=cid)
 
-                    async with client:
-                        for iid in state.instances:
-                            with suppress(Exception):
-                                await client.destroy_instance(int(iid))
+                    async def _do_shutdown() -> None:
+                        async with client:
+                            async def _destroy(iid: str) -> None:
+                                try:
+                                    await client.destroy_instance(int(iid))
+                                except Exception as e:
+                                    alog.error("Failed to destroy {iid}: {err}", iid=iid, err=e)
 
-                        if state.overlay_name:
-                            with suppress(Exception):
-                                await client.delete_overlay(state.overlay_name)
+                            await asyncio.gather(*(_destroy(iid) for iid in state.instances))
 
-                    await client.close()
+                            if state.overlay_name:
+                                try:
+                                    await client.delete_overlay(state.overlay_name)
+                                except Exception as e:
+                                    alog.error(
+                                        "Failed to delete overlay {name}: {err}",
+                                        name=state.overlay_name, err=e,
+                                    )
 
-                    if reply_to is not None:
-                        reply_to.tell(ShutdownCompleted(cluster_id=state.cluster_id))
-                    return Behaviors.stopped()
+                        await client.close()
+
+                    ctx.pipe_to_self(
+                        coro=_do_shutdown(),
+                        mapper=lambda _: ShutdownCompleted(cluster_id=state.cluster_id),
+                    )
+                    return stopping(reply_to)
+
+                case ShutdownRequested(cluster_id=cid):
+                    alog.debug(
+                        "ShutdownRequested cluster_id mismatch: {rcid} != {scid}",
+                        rcid=cid, scid=state.cluster_id,
+                    )
+                    return Behaviors.same()
 
                 case _:
                     return Behaviors.same()
 
+        return Behaviors.receive(receive)
+
+    def stopping(reply_to: ActorRef | None) -> Behavior[ProviderMsg]:
+        async def receive(
+            _ctx: ActorContext[ProviderMsg], msg: ProviderMsg,
+        ) -> Behavior[ProviderMsg]:
+            match msg:
+                case ShutdownCompleted() as completed:
+                    if reply_to is not None:
+                        reply_to.tell(completed)
+                    return Behaviors.stopped()
+            return Behaviors.same()
         return Behaviors.receive(receive)
 
     return idle()

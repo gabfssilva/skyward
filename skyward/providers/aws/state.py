@@ -111,3 +111,4 @@ class AWSClusterState:
     node_refs: MappingProxyType[int, ActorRef] = field(
         default_factory=lambda: MappingProxyType({}),
     )
+    launched_instance_ids: frozenset[str] = frozenset()

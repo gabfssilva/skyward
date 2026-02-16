@@ -7,9 +7,9 @@ The actor receives ProviderMsg and responds via reply_to on each message.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import uuid
-from contextlib import suppress
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 from loguru import logger
@@ -247,10 +247,12 @@ def verda_provider_actor(
         node_refs: dict[int, ActorRef] | None = None,
     ) -> Behavior[ProviderMsg]:
         refs = node_refs or {}
+        alog = log.bind(state="active")
 
         async def receive(
             ctx: ActorContext[ProviderMsg], msg: ProviderMsg,
         ) -> Behavior[ProviderMsg]:
+            alog.debug("received: {msg}", msg=type(msg).__name__)
             match msg:
                 case InstanceRequested(
                     request_id=request_id,
@@ -262,7 +264,7 @@ def verda_provider_actor(
                     if not state.instance_type or not state.os_image:
                         return Behaviors.same()
 
-                    log.info("Launching instance for node {nid}", nid=node_id)
+                    alog.info("Launching instance for node {nid}", nid=node_id)
                     new_refs = {**refs}
                     if node_ref:
                         new_refs[node_id] = node_ref
@@ -287,7 +289,7 @@ def verda_provider_actor(
                             is_spot=use_spot,
                         )
                     except VerdaError as e:
-                        log.error("Failed to create instance: {err}", err=e)
+                        alog.error("Failed to create instance: {err}", err=e)
                         return Behaviors.same()
 
                     instance_id = str(instance["id"])
@@ -313,11 +315,11 @@ def verda_provider_actor(
                             description=f"Verda instance {instance_id}",
                         )
                     except TimeoutError:
-                        log.error("Instance {iid} did not become ready", iid=instance_id)
+                        alog.error("Instance {iid} did not become ready", iid=instance_id)
                         return Behaviors.same()
 
                     if not info:
-                        log.error("Instance {iid} not found", iid=instance_id)
+                        alog.error("Instance {iid} not found", iid=instance_id)
                         return Behaviors.same()
 
                     running = InstanceRunning(
@@ -376,29 +378,57 @@ def verda_provider_actor(
                     return Behaviors.same()
 
                 case _UserCodeSyncFailed(instance=info, error=err):
-                    log.error("User code sync failed on {iid}: {err}", iid=info.id, err=err)
+                    alog.error("User code sync failed on {iid}: {err}", iid=info.id, err=err)
                     return Behaviors.same()
 
                 case ShutdownRequested(
                     cluster_id=cid, reply_to=reply_to,
-                ):
-                    log.info("Shutting down cluster {cid}", cid=cid)
+                ) if cid == state.cluster_id:
+                    alog.info("ShutdownRequested matched for cluster {cid}", cid=cid)
 
-                    for instance_id in state.launched_ids:
-                        with suppress(Exception):
-                            await client.delete_instance(instance_id)
+                    async def _do_shutdown() -> None:
+                        async def _delete(iid: str) -> None:
+                            try:
+                                await client.delete_instance(iid)
+                            except Exception as e:
+                                alog.error("Failed to delete instance {iid}: {err}", iid=iid, err=e)
 
-                    if state.startup_script_id:
-                        with suppress(Exception):
-                            await client.delete_startup_script(state.startup_script_id)
+                        await asyncio.gather(*(_delete(iid) for iid in state.launched_ids))
 
-                    if reply_to is not None:
-                        reply_to.tell(ShutdownCompleted(cluster_id=state.cluster_id))
-                    return Behaviors.stopped()
+                        if state.startup_script_id:
+                            try:
+                                await client.delete_startup_script(state.startup_script_id)
+                            except Exception as e:
+                                alog.error("Failed to delete startup script: {err}", err=e)
+
+                    ctx.pipe_to_self(
+                        coro=_do_shutdown(),
+                        mapper=lambda _: ShutdownCompleted(cluster_id=state.cluster_id),
+                    )
+                    return stopping(reply_to)
+
+                case ShutdownRequested(cluster_id=cid):
+                    alog.debug(
+                        "ShutdownRequested cluster_id mismatch: {rcid} != {scid}",
+                        rcid=cid, scid=state.cluster_id,
+                    )
+                    return Behaviors.same()
 
                 case _:
                     return Behaviors.same()
 
+        return Behaviors.receive(receive)
+
+    def stopping(reply_to: ActorRef | None) -> Behavior[ProviderMsg]:
+        async def receive(
+            _ctx: ActorContext[ProviderMsg], msg: ProviderMsg,
+        ) -> Behavior[ProviderMsg]:
+            match msg:
+                case ShutdownCompleted() as completed:
+                    if reply_to is not None:
+                        reply_to.tell(completed)
+                    return Behaviors.stopped()
+            return Behaviors.same()
         return Behaviors.receive(receive)
 
     return idle()

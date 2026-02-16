@@ -633,6 +633,7 @@ type ProviderMsg = (
     | InstanceRequested
     | BootstrapRequested
     | ShutdownRequested
+    | ShutdownCompleted
     | InstanceReady
     | BootstrapDone
     | _ProvisioningDone

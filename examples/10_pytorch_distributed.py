@@ -185,7 +185,7 @@ if __name__ == "__main__":
     with sky.ComputePool(
         provider=sky.AWS(),
         nodes=2,
-        accelerator='T4G',
+        accelerator=sky.accelerators.T4(),
         image=sky.Image(
             pip=["torch"],
             skyward_source='local',

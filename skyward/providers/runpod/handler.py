@@ -10,8 +10,8 @@ stopped: all pods terminated.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
-from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -423,10 +423,12 @@ def runpod_provider_actor(
         node_refs: dict[int, ActorRef] | None = None,
     ) -> Behavior[ProviderMsg]:
         refs = node_refs or {}
+        alog = log.bind(state="active")
 
         async def receive(
             ctx: ActorContext[ProviderMsg], msg: ProviderMsg,
         ) -> Behavior[ProviderMsg]:
+            alog.debug("Received: {msg}", msg=type(msg).__name__)
             match msg:
                 case InstanceRequested(
                     provider="runpod", reply_to=node_ref,
@@ -441,7 +443,7 @@ def runpod_provider_actor(
                     if state.is_instant_cluster:
                         pod_id = state.pod_ids.get(event.node_id)
                         if pod_id:
-                            log.info(
+                            alog.info(
                                 "Instant Cluster pod {pid} for node {nid}",
                                 pid=pod_id, nid=event.node_id,
                             )
@@ -463,7 +465,7 @@ def runpod_provider_actor(
                             )
                         return active(state, new_refs)
 
-                    log.info("Launching pod for node {nid}", nid=event.node_id)
+                    alog.info("Launching pod for node {nid}", nid=event.node_id)
                     api_key = get_api_key(config.api_key)
 
                     try:
@@ -473,11 +475,11 @@ def runpod_provider_actor(
                             else:
                                 pod = await _create_cpu_pod(client, config, state)
                     except RunPodError as e:
-                        log.error("Failed to create pod: {err}", err=e)
+                        alog.error("Failed to create pod: {err}", err=e)
                         return Behaviors.same()
 
                     pod_id = pod["id"]
-                    log.debug("Pod created with id {pid}", pid=pod_id)
+                    alog.debug("Pod created with id {pid}", pid=pod_id)
                     state.pod_ids[event.node_id] = pod_id
                     state.pending_nodes.add(event.node_id)
                     machine = pod.get("machine") or {}
@@ -530,13 +532,13 @@ def runpod_provider_actor(
                     return Behaviors.same()
 
                 case _UserCodeSyncDone(instance=info):
-                    log.info("User code synced to {iid}", iid=info.id)
+                    alog.info("User code synced to {iid}", iid=info.id)
                     if (target := refs.get(info.node)):
                         target.tell(InstanceBootstrapped(instance=info))
                     return Behaviors.same()
 
                 case _UserCodeSyncFailed(instance=info, error=err):
-                    log.error("User code sync failed on {iid}: {err}", iid=info.id, err=err)
+                    alog.error("User code sync failed on {iid}: {err}", iid=info.id, err=err)
                     return Behaviors.same()
 
                 case _PodRunning(event=running_event):
@@ -546,42 +548,75 @@ def runpod_provider_actor(
                     return Behaviors.same()
 
                 case _PodRunningFailed(instance_id=iid, error=err):
-                    log.error("Pod {pid} did not become ready: {err}", pid=iid, err=err)
+                    alog.error("Pod {pid} did not become ready: {err}", pid=iid, err=err)
                     return Behaviors.same()
 
                 case _BootstrapScriptDone(instance_id=iid):
-                    log.debug("Bootstrap script dispatched on {iid}", iid=iid)
+                    alog.debug("Bootstrap script dispatched on {iid}", iid=iid)
                     return Behaviors.same()
 
                 case _BootstrapScriptFailed(instance_id=iid, error=err):
-                    log.error("Bootstrap script failed on {iid}: {err}", iid=iid, err=err)
+                    alog.error("Bootstrap script failed on {iid}: {err}", iid=iid, err=err)
                     return Behaviors.same()
 
                 case ShutdownRequested(
                     cluster_id=cid, reply_to=reply_to,
-                ):
-                    if cid != state.cluster_id:
-                        return Behaviors.same()
+                ) if cid == state.cluster_id:
+                    alog.info("ShutdownRequested for {cid}", cid=state.cluster_id)
 
-                    log.info("Shutting down cluster {cid}", cid=state.cluster_id)
-                    api_key = get_api_key(config.api_key)
+                    async def _do_shutdown() -> None:
+                        api_key = get_api_key(config.api_key)
+                        async with RunPodClient(api_key, config=config) as cl:
+                            if state.is_instant_cluster:
+                                try:
+                                    await cl.delete_cluster(state.runpod_cluster_id)  # type: ignore[arg-type]
+                                except Exception as e:
+                                    alog.error(
+                                        "Failed to delete cluster {cid}: {err}",
+                                        cid=state.runpod_cluster_id, err=e,
+                                    )
+                            else:
+                                async def _terminate(pod_id: str) -> None:
+                                    try:
+                                        await cl.terminate_pod(pod_id)
+                                    except Exception as e:
+                                        alog.error(
+                                            "Failed to terminate pod {pid}: {err}",
+                                            pid=pod_id, err=e,
+                                        )
 
-                    async with RunPodClient(api_key, config=config) as client:
-                        if state.is_instant_cluster:
-                            with suppress(Exception):
-                                await client.delete_cluster(state.runpod_cluster_id)  # type: ignore[arg-type]
-                        else:
-                            for pod_id in state.pod_ids.values():
-                                with suppress(Exception):
-                                    await client.terminate_pod(pod_id)
+                                await asyncio.gather(
+                                    *(_terminate(pid) for pid in state.pod_ids.values())
+                                )
 
-                    if reply_to is not None:
-                        reply_to.tell(ShutdownCompleted(cluster_id=state.cluster_id))
-                    return Behaviors.stopped()
+                    ctx.pipe_to_self(
+                        coro=_do_shutdown(),
+                        mapper=lambda _: ShutdownCompleted(cluster_id=state.cluster_id),
+                    )
+                    return stopping(reply_to)
+
+                case ShutdownRequested(cluster_id=cid):
+                    alog.debug(
+                        "ShutdownRequested cluster_id mismatch: {rcid} != {scid}",
+                        rcid=cid, scid=state.cluster_id,
+                    )
+                    return Behaviors.same()
 
                 case _:
                     return Behaviors.same()
 
+        return Behaviors.receive(receive)
+
+    def stopping(reply_to: ActorRef | None) -> Behavior[ProviderMsg]:
+        async def receive(
+            _ctx: ActorContext[ProviderMsg], msg: ProviderMsg,
+        ) -> Behavior[ProviderMsg]:
+            match msg:
+                case ShutdownCompleted() as completed:
+                    if reply_to is not None:
+                        reply_to.tell(completed)
+                    return Behaviors.stopped()
+            return Behaviors.same()
         return Behaviors.receive(receive)
 
     return idle()

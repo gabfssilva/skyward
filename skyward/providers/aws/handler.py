@@ -16,7 +16,7 @@ from datetime import timedelta
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
-from casty import ActorContext, Behavior, Behaviors
+from casty import ActorContext, ActorRef, Behavior, Behaviors
 from loguru import logger
 
 from skyward.actors.messages import (
@@ -116,7 +116,11 @@ def aws_provider_actor(
                     )
 
                     fleet_ids = MappingProxyType(dict(enumerate(instance_ids)))
-                    state = replace(state, fleet_instance_ids=fleet_ids)
+                    state = replace(
+                        state,
+                        fleet_instance_ids=fleet_ids,
+                        launched_instance_ids=frozenset(instance_ids),
+                    )
 
                     provisioned = ClusterProvisioned(
                         request_id=request_id,
@@ -134,9 +138,12 @@ def aws_provider_actor(
         return Behaviors.receive(receive)
 
     def active(state: AWSClusterState) -> Behavior[ProviderMsg]:
+        alog = log.bind(state="active")
+
         async def receive(
             ctx: ActorContext[ProviderMsg], msg: ProviderMsg,
         ) -> Behavior[ProviderMsg]:
+            alog.debug("Received: {msg}", msg=type(msg).__name__)
             match msg:
                 case InstanceRequested(
                     request_id=request_id,
@@ -169,7 +176,7 @@ def aws_provider_actor(
                         )
 
                         if not instance_ids:
-                            log.error(
+                            alog.error(
                                 "Failed to launch instance for node {node_id}",
                                 node_id=node_id,
                             )
@@ -187,6 +194,7 @@ def aws_provider_actor(
                         pending_nodes=state.pending_nodes | {node_id},
                         fleet_instance_ids=new_fleet,
                         node_refs=new_node_refs,
+                        launched_instance_ids=state.launched_instance_ids | {instance_id},
                     )
 
                     ctx.pipe_to_self(
@@ -240,11 +248,11 @@ def aws_provider_actor(
                     return Behaviors.same()
 
                 case BootstrapDone(instance=info, success=False, error=error):
-                    log.error("Bootstrap failed on {iid}: {error}", iid=info.id, error=error)
+                    alog.error("Bootstrap failed on {iid}: {error}", iid=info.id, error=error)
                     return Behaviors.same()
 
                 case _LocalInstallDone(instance=info):
-                    log.info("Local skyward installed on {iid}", iid=info.id)
+                    alog.info("Local skyward installed on {iid}", iid=info.id)
                     if state.spec.image and state.spec.image.includes:
                         ctx.pipe_to_self(
                             coro=_sync_user_code(info, state),
@@ -260,21 +268,21 @@ def aws_provider_actor(
                     return Behaviors.same()
 
                 case _LocalInstallFailed(instance=info, error=error):
-                    log.error(
+                    alog.error(
                         "Local skyward install failed on {iid}: {error}",
                         iid=info.id, error=error,
                     )
                     return Behaviors.same()
 
                 case _UserCodeSyncDone(instance=info):
-                    log.info("User code synced to {iid}", iid=info.id)
+                    alog.info("User code synced to {iid}", iid=info.id)
                     node_ref = state.node_refs.get(info.node)
                     if node_ref:
                         node_ref.tell(InstanceBootstrapped(instance=info))
                     return Behaviors.same()
 
                 case _UserCodeSyncFailed(instance=info, error=error):
-                    log.error(
+                    alog.error(
                         "User code sync failed on {iid}: {error}",
                         iid=info.id, error=error,
                     )
@@ -289,7 +297,7 @@ def aws_provider_actor(
                 case _InstanceWaitFailed(
                     instance_id=iid, node_id=nid, error=error,
                 ):
-                    log.error(
+                    alog.error(
                         "Instance {iid} (node {nid}) failed to reach running state: {error}",
                         iid=iid, nid=nid, error=error,
                     )
@@ -298,18 +306,45 @@ def aws_provider_actor(
                 case ShutdownRequested(
                     cluster_id=cluster_id, reply_to=reply_to,
                 ) if cluster_id == state.cluster_id:
-                    all_ids: set[str] = set(state.instances.keys())
+                    alog.info("ShutdownRequested for cluster {cid}", cid=cluster_id)
+                    all_ids: set[str] = set(state.launched_instance_ids)
                     all_ids.update(state.fleet_instance_ids.values())
-                    if all_ids:
-                        await _terminate_instances(ec2, list(all_ids))
 
-                    if reply_to is not None:
-                        reply_to.tell(ShutdownCompleted(cluster_id=cluster_id))
-                    return Behaviors.stopped()
+                    async def _do_shutdown() -> None:
+                        if all_ids:
+                            try:
+                                await _terminate_instances(ec2, list(all_ids))
+                            except Exception as e:
+                                alog.error("Failed to terminate {ids}: {err}", ids=all_ids, err=e)
+
+                    ctx.pipe_to_self(
+                        coro=_do_shutdown(),
+                        mapper=lambda _: ShutdownCompleted(cluster_id=cluster_id),
+                    )
+                    return stopping(reply_to)
+
+                case ShutdownRequested(cluster_id=cid):
+                    alog.debug(
+                        "ShutdownRequested cluster_id mismatch: {rcid} != {scid}",
+                        rcid=cid, scid=state.cluster_id,
+                    )
+                    return Behaviors.same()
 
                 case _:
                     return Behaviors.same()
 
+        return Behaviors.receive(receive)
+
+    def stopping(reply_to: ActorRef | None) -> Behavior[ProviderMsg]:
+        async def receive(
+            _ctx: ActorContext[ProviderMsg], msg: ProviderMsg,
+        ) -> Behavior[ProviderMsg]:
+            match msg:
+                case ShutdownCompleted() as completed:
+                    if reply_to is not None:
+                        reply_to.tell(completed)
+                    return Behaviors.stopped()
+            return Behaviors.same()
         return Behaviors.receive(receive)
 
     return idle()

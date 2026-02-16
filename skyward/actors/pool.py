@@ -4,6 +4,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
+from loguru import logger
 
 from skyward.actors.messages import (
     ClusterConnected,
@@ -96,6 +97,8 @@ def pool_actor() -> Behavior[PoolMsg]:
         tm_ref: ActorRef,
         worker_refs: tuple[tuple[NodeId, ActorRef], ...],
     ) -> Behavior[PoolMsg]:
+        log = logger.bind(actor="pool", state="provisioning")
+
         async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
             match msg:
                 case ClusterConnected(worker_refs=refs, client=client):
@@ -128,6 +131,8 @@ def pool_actor() -> Behavior[PoolMsg]:
                         spec, provider_ref, reply_to, cluster_id,
                         new_instances, node_refs, tm_ref, worker_refs,
                     )
+                case StopPool():
+                    log.debug("StopPool received while provisioning")
             return Behaviors.same()
         return Behaviors.receive(receive)
 
@@ -142,6 +147,8 @@ def pool_actor() -> Behavior[PoolMsg]:
         ready_nodes: frozenset[int],
         worker_refs: tuple[tuple[NodeId, ActorRef], ...],
     ) -> Behavior[PoolMsg]:
+        log = logger.bind(actor="pool", state="ready")
+
         async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
             match msg:
                 case SubmitTask(fn_bytes=fn_bytes, reply_to=task_reply):
@@ -179,6 +186,10 @@ def pool_actor() -> Behavior[PoolMsg]:
                         worker_refs=worker_refs,
                     )
                 case StopPool(reply_to=stop_reply):
+                    log.debug(
+                        "StopPool, sending ShutdownRequested for cluster {cid}",
+                        cid=cluster_id,
+                    )
                     provider_ref.tell(ShutdownRequested(
                         cluster_id=cluster_id,
                         reply_to=ctx.self,  # type: ignore[arg-type]
@@ -188,9 +199,13 @@ def pool_actor() -> Behavior[PoolMsg]:
         return Behaviors.receive(receive)
 
     def stopping(stop_reply: ActorRef) -> Behavior[PoolMsg]:
+        log = logger.bind(actor="pool", state="stopping")
+
         async def receive(_ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
+            log.debug("received: {msg}", msg=type(msg).__name__)
             match msg:
-                case ShutdownCompleted():
+                case ShutdownCompleted(cluster_id=cid):
+                    log.info("Cluster {cid} shutdown confirmed", cid=cid)
                     stop_reply.tell(PoolStopped())
                     return Behaviors.stopped()
             return Behaviors.same()

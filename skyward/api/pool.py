@@ -33,7 +33,7 @@ from contextlib import suppress
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal
 
 from casty import ActorRef, ActorSystem, Behaviors, CastyConfig
 from loguru import logger
@@ -381,6 +381,12 @@ class ComputePool:
     ) -> None:
         """Stop pool and release resources."""
         logger.info("Stopping pool...")
+        logger.debug(
+            "ComputePool.__exit__: _active={active}, _pool_ref={ref}, _system={sys}",
+            active=self._active,
+            ref=self._pool_ref is not None,
+            sys=self._system is not None,
+        )
         try:
             if self._context_token is not None:
                 _active_pool.reset(self._context_token)
@@ -392,6 +398,8 @@ class ComputePool:
             logger.warning("Pool stop timed out after 30s, forcing cleanup")
         except Exception as e:
             logger.warning("Error stopping pool: {err}", err=e)
+        except BaseException as e:
+            logger.error("Fatal error stopping pool: {err}", err=e)
         finally:
             if self._registry is not None:
                 self._registry.cleanup()
@@ -670,6 +678,16 @@ class ComputePool:
 
     async def _stop_async(self) -> None:
         """Stop pool asynchronously."""
+        if self._pool_ref is not None and self._system is not None:
+            from skyward.actors.messages import StopPool
+            logger.debug("Sending StopPool to pool actor...")
+            await self._system.ask(
+                self._pool_ref,
+                lambda reply_to: StopPool(reply_to=reply_to),
+                timeout=30.0,
+            )
+            logger.debug("StopPool completed, cluster destroyed")
+
         if self._cluster_client is not None:
             logger.debug("Closing ClusterClient...")
             with suppress(Exception):
@@ -687,14 +705,6 @@ class ComputePool:
         self._ssh_transports.clear()
         self._address_map.clear()
         self._host_to_node.clear()
-
-        if self._pool_ref is not None and self._system is not None:
-            from skyward.actors.messages import StopPool
-            await self._system.ask(
-                self._pool_ref,
-                lambda reply_to: StopPool(reply_to=reply_to),
-                timeout=30.0,
-            )
 
         if self._system is not None:
             await self._system.__aexit__(None, None, None)
@@ -958,6 +968,11 @@ class ComputePool:
         status = "active" if self._active else "inactive"
         return f"ComputePool(nodes={self.nodes}, accelerator={self.accelerator}, {status})"
 
+    @classmethod
+    def Named(cls, name: str) -> ComputePool:
+        from skyward.config import resolve_pool
+        return resolve_pool(name)
+
 
 class _PoolFactory:
     """Factory that can be used as context manager or decorator."""
@@ -1034,46 +1049,8 @@ class _PoolFactory:
             self._pool.__exit__(exc_type, exc_val, exc_tb)
             self._pool = None
 
-    def __call__[F: Callable[..., Any]](self, fn: F) -> F:
-        """Use as decorator."""
-
-        @functools.wraps(fn)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            p = self._create_pool()
-            with p:
-                return fn(*args, **kwargs)
-
-        return wrapper  # type: ignore
 
 
-@overload
-def pool(
-    provider: Callable[..., Any],
-) -> Callable[..., Any]: ...
-
-
-@overload
-def pool(
-    *,
-    provider: Provider | None = None,
-    nodes: int = 1,
-    accelerator: str | Accelerator | None = None,
-    vcpus: int | None = None,
-    memory_gb: int | None = None,
-    architecture: Literal["x86_64", "arm64"] | None = None,
-    image: Image | None = None,
-    allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
-    ttl: int = 600,
-    panel: bool = True,
-    logging: LogConfig | bool = True,
-    max_hourly_cost: float | None = None,
-    provision_timeout: int = 300,
-    ssh_timeout: int = 300,
-    ssh_retry_interval: int = 2,
-) -> _PoolFactory: ...
-
-
-@overload
 def pool(
     provider: Provider | None = None,
     nodes: int = 1,
@@ -1090,79 +1067,15 @@ def pool(
     provision_timeout: int = 300,
     ssh_timeout: int = 300,
     ssh_retry_interval: int = 2,
-) -> _PoolFactory: ...
+) -> _PoolFactory:
+    """Create a compute pool context manager.
 
-
-def pool(
-    provider: Provider | Callable[..., Any] | None = None,
-    nodes: int = 1,
-    accelerator: str | Accelerator | None = None,
-    vcpus: int | None = None,
-    memory_gb: int | None = None,
-    architecture: Literal["x86_64", "arm64"] | None = None,
-    image: Image | None = None,
-    allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
-    ttl: int = 600,
-    panel: bool = True,
-    logging: LogConfig | bool = True,
-    max_hourly_cost: float | None = None,
-    provision_timeout: int = 300,
-    ssh_timeout: int = 300,
-    ssh_retry_interval: int = 2,
-) -> _PoolFactory | Callable[..., Any]:
-    """Create a compute pool (context manager or decorator).
-
-    Can be used as:
-
-    1. Context manager:
+    Example:
         with pool(provider=AWS(), accelerator="A100") as p:
             result = train(data) >> p
-
-    2. Decorator:
-        @pool(provider=AWS(), accelerator="A100")
-        def main():
-            return train(data) >> sky
-
-    Args:
-        provider: Provider configuration (AWS, VastAI, or Verda).
-        nodes: Number of nodes.
-        accelerator: GPU type.
-        image: Environment specification.
-        allocation: Instance allocation strategy.
-        ttl: Auto-shutdown timeout in seconds (0 = use provider default).
-        panel: Enable Rich terminal dashboard (default: True).
-        logging: Log configuration. If True, logs to .skyward/skyward.log.
-        max_hourly_cost: Maximum hourly cost in USD for the entire cluster.
-        provision_timeout: Max time to wait for cluster provisioning.
-        ssh_timeout: Max time to wait for SSH connectivity.
-        ssh_retry_interval: Interval between SSH connection attempts.
-
-    Returns:
-        A _PoolFactory that works as context manager or decorator.
     """
-    if callable(provider):
-        fn = provider
-        factory = _PoolFactory(
-            provider=None,
-            nodes=nodes,
-            accelerator=accelerator,
-            vcpus=vcpus,
-            memory_gb=memory_gb,
-            architecture=architecture,
-            image=image,
-            allocation=allocation,
-            ttl=ttl,
-            panel=panel,
-            logging=logging,
-            max_hourly_cost=max_hourly_cost,
-            provision_timeout=provision_timeout,
-            ssh_timeout=ssh_timeout,
-            ssh_retry_interval=ssh_retry_interval,
-        )
-        return factory(fn)
-
     return _PoolFactory(
-        provider=provider,  # type: ignore[arg-type]
+        provider=provider,
         nodes=nodes,
         accelerator=accelerator,
         vcpus=vcpus,
