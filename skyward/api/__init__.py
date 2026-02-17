@@ -27,6 +27,7 @@ from .spec import (
     AllocationStrategy,
     Architecture,
     Image,
+    InflightStrategy,
     PoolSpec,
     PoolState,
 )
@@ -41,6 +42,7 @@ __all__ = [
     "sky",
     "AllocationStrategy",
     "Architecture",
+    "InflightStrategy",
     "DEFAULT_IMAGE",
     "Image",
     "PoolSpec",

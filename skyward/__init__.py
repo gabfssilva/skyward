@@ -49,6 +49,7 @@ from .api import (
     CallbackWriter,
     ComputePool,
     Image,
+    InflightStrategy,
     InstanceInfo,
     PendingCompute,
     PendingComputeGroup,
@@ -73,7 +74,7 @@ from .distributed import (
     queue,
     set,
 )
-from .providers import AWS, RunPod, VastAI, Verda
+from .providers import AWS, Docker, RunPod, VastAI, Verda
 
 __all__ = [
     "sky",
@@ -93,6 +94,7 @@ __all__ = [
     "CallbackWriter",
     "redirect_output",
     "AWS",
+    "Docker",
     "RunPod",
     "VastAI",
     "Verda",
@@ -100,6 +102,7 @@ __all__ = [
     "DEFAULT_IMAGE",
     "PoolSpec",
     "AllocationStrategy",
+    "InflightStrategy",
     "dict",
     "set",
     "counter",
