@@ -10,6 +10,7 @@ This is useful when:
 """
 
 import time
+from random import randint
 
 import skyward as sky
 
@@ -21,13 +22,13 @@ def simulate_work(task_id: int, duration: float) -> dict:
     return {"task_id": task_id, "duration": duration}
 
 
+def rand_delay() -> float:
+    return randint(1, 10) / 10
+
 if __name__ == "__main__":
     with sky.ComputePool(provider=sky.AWS()) as pool:
         tasks = [
-            simulate_work(1, 3.0),
-            simulate_work(2, 1.0),
-            simulate_work(3, 2.0),
-            simulate_work(4, 0.5),
+            simulate_work(i, rand_delay()) for i in range(50)
         ]
 
         # =================================================================
