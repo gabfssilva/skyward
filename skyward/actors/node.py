@@ -9,6 +9,7 @@ from skyward.actors.instance import instance_actor
 from skyward.actors.messages import (
     Execute,
     ExecuteOnNode,
+    HeadAddressKnown,
     InstanceBecameReady,
     InstanceDied,
     InstanceMetadata,
@@ -16,9 +17,11 @@ from skyward.actors.messages import (
     NodeLost,
     NodeMsg,
     Provision,
-    SetHeadAddr,
     TaskResult,
 )
+from skyward.observability.logger import logger
+
+log = logger.bind(actor="node")
 
 type NodeId = int
 
@@ -65,6 +68,7 @@ def node_actor(
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
             match msg:
                 case Provision(cluster=cluster, provider=provider, instance=instance):
+                    log.info("Node {nid} provisioning instance {iid}", nid=node_id, iid=instance.id)
                     instance_ref = _spawn_instance(ctx, instance, provider, cluster)
                     return waiting(cluster, provider, instance_ref)
             return Behaviors.same()
@@ -78,10 +82,19 @@ def node_actor(
     ) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
             match msg:
-                case SetHeadAddr() as h:
-                    instance_ref.tell(h)
+                case HeadAddressKnown() as h:
+                    if node_id == 0:
+                        log.debug("Node {nid} forwarding head address to pool", nid=node_id)
+                        pool.tell(h)
+                    else:
+                        log.debug("Node {nid} received head address", nid=node_id)
+                        instance_ref.tell(h)
                     return Behaviors.same()
                 case InstanceBecameReady(instance_id=iid, ip=ip, metadata=meta):
+                    log.info(
+                        "Node {nid} ready (instance={iid}, ip={ip})",
+                        nid=node_id, iid=iid, ip=ip,
+                    )
                     meta = meta or InstanceMetadata(
                         id=iid, node=node_id, provider=cluster.spec.provider or "aws", ip=ip,
                         ssh_user=cluster.ssh_user, ssh_key_path=cluster.ssh_key_path,
@@ -92,16 +105,21 @@ def node_actor(
                         instance_ref=instance_ref, pending_tasks=pending_tasks,
                         current_metadata=meta,
                     ))
-                case InstanceDied(reason=reason):
+                case InstanceDied(instance_id=dead_id, reason=reason):
+                    log.warning(
+                        "Node {nid} instance died: {reason}, replacing",
+                        nid=node_id, reason=reason,
+                    )
                     pool.tell(NodeLost(node_id=node_id, reason=reason))
                     ctx.pipe_to_self(
-                        _provision_replacement(provider, cluster),
+                        _terminate_and_replace(provider, cluster, dead_id),
                         mapper=lambda inst: Provision(
                             cluster=cluster, provider=provider, instance=inst,
                         ),
                     )
                     return replacing(cluster, provider, pending_tasks)
                 case ExecuteOnNode(fn_bytes, reply_to):
+                    log.debug("Node {nid} queuing task while waiting", nid=node_id)
                     return waiting(
                         cluster, provider, instance_ref,
                         (*pending_tasks, (fn_bytes, reply_to)),
@@ -116,7 +134,7 @@ def node_actor(
     ) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
             match msg:
-                case SetHeadAddr():
+                case HeadAddressKnown():
                     return Behaviors.same()
                 case Provision(instance=instance):
                     instance_ref = _spawn_instance(ctx, instance, provider, cluster)
@@ -132,11 +150,17 @@ def node_actor(
     def active(s: ActiveState) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
             match msg:
-                case SetHeadAddr() as h:
-                    if s.instance_ref:
+                case HeadAddressKnown() as h:
+                    if node_id == 0:
+                        pool.tell(h)
+                    elif s.instance_ref:
                         s.instance_ref.tell(h)
                     return Behaviors.same()
                 case InstanceBecameReady(instance_id=iid, ip=ip, metadata=meta):
+                    log.info(
+                        "Node {nid} replacement ready, replaying {n} pending tasks",
+                        nid=node_id, n=len(s.pending_tasks),
+                    )
                     meta = meta or s.current_metadata or InstanceMetadata(
                         id=iid, node=node_id, provider="aws", ip=ip,
                     )
@@ -152,16 +176,21 @@ def node_actor(
                         s, pending_tasks=(), inflight=new_inflight,
                         task_counter=new_counter, current_metadata=meta,
                     ))
-                case InstanceDied(reason=reason):
+                case InstanceDied(instance_id=dead_id, reason=reason):
+                    log.warning(
+                        "Node {nid} instance died while active: {reason}, replacing",
+                        nid=node_id, reason=reason,
+                    )
                     pool.tell(NodeLost(node_id=node_id, reason=reason))
                     ctx.pipe_to_self(
-                        _provision_replacement(s.provider, s.cluster),
+                        _terminate_and_replace(s.provider, s.cluster, dead_id),
                         mapper=lambda inst: Provision(
                             cluster=s.cluster, provider=s.provider, instance=inst,
                         ),
                     )
                     return replacing(s.cluster, s.provider, s.pending_tasks)
                 case ExecuteOnNode(fn_bytes, reply_to):
+                    log.debug("Node {nid} dispatching task {tid}", nid=node_id, tid=s.task_counter)
                     if s.instance_ref:
                         s.instance_ref.tell(Execute(fn_bytes=fn_bytes, reply_to=ctx.self))
                         return active(replace(
@@ -171,6 +200,7 @@ def node_actor(
                         ))
                     return Behaviors.same()
                 case TaskResult(value, _):
+                    log.debug("Node {nid} received task result", nid=node_id)
                     if s.inflight:
                         _, caller = s.inflight[0]
                         caller.tell(TaskResult(value=value, node_id=node_id))
@@ -181,7 +211,11 @@ def node_actor(
     return idle()
 
 
-async def _provision_replacement(provider: Any, cluster: Any) -> Any:
+async def _terminate_and_replace(provider: Any, cluster: Any, dead_id: str) -> Any:
+    try:
+        await provider.terminate((dead_id,))
+    except Exception as e:
+        log.warning("Failed to terminate dead instance {iid}: {err}", iid=dead_id, err=e)
     instances = await provider.provision(cluster, 1)
     if not instances:
         raise RuntimeError("Failed to provision replacement instance")
