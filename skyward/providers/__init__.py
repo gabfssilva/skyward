@@ -20,7 +20,7 @@ SDK dependencies (aioboto3, httpx, etc.).
 # Only import config classes - these have NO SDK dependencies
 # This allows `import skyward as sky` without requiring provider SDKs
 from .aws.config import AWS
-from .docker.config import Docker
+from .container.config import Container
 from .runpod.config import RunPod
 from .vastai.config import VastAI
 from .verda.config import Verda
@@ -28,7 +28,7 @@ from .verda.config import Verda
 __all__ = [
     # Config classes only - handlers must be imported explicitly
     "AWS",
-    "Docker",
+    "Container",
     "RunPod",
     "VastAI",
     "Verda",

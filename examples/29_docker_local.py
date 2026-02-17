@@ -1,10 +1,13 @@
-"""Local Development with Docker.
+"""Local Development with Containers.
 
-Runs compute tasks on local Docker containers instead of cloud instances.
+Runs compute tasks on local containers instead of cloud instances.
 No cloud credentials or GPU required — perfect for development and CI.
 
+Supports Docker, podman, nerdctl, and Apple's container CLI
+via the ``binary`` field (defaults to "docker").
+
 Requirements:
-    - Docker running locally
+    - A container runtime running locally (Docker, podman, etc.)
     - SSH key at ~/.ssh/id_ed25519 (or id_rsa)
 """
 
@@ -25,7 +28,7 @@ def hello(node_id: int) -> dict:
 
 if __name__ == "__main__":
     with sky.ComputePool(
-        provider=sky.Docker(image="ubuntu:24.04"),
+        provider=sky.Container(image="ubuntu:24.04", binary="container"),
         nodes=3,
         logging=sky.LogConfig(level="DEBUG"),
     ) as pool:

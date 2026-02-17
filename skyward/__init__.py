@@ -74,7 +74,7 @@ from .distributed import (
     queue,
     set,
 )
-from .providers import AWS, Docker, RunPod, VastAI, Verda
+from .providers import AWS, Container, RunPod, VastAI, Verda
 
 __all__ = [
     "sky",
@@ -94,7 +94,7 @@ __all__ = [
     "CallbackWriter",
     "redirect_output",
     "AWS",
-    "Docker",
+    "Container",
     "RunPod",
     "VastAI",
     "Verda",
