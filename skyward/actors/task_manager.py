@@ -1,4 +1,6 @@
 from collections import deque
+from dataclasses import dataclass, field, replace
+from typing import Any
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 
@@ -11,9 +13,21 @@ from skyward.actors.messages import (
     SubmitTask,
     TaskManagerMsg,
     TaskResult,
+    TaskSubmitted,
 )
+from skyward.infra.serialization import serialize
+from skyward.observability.logger import logger
+
+log = logger.bind(actor="task_manager")
 
 type NodeId = int
+
+
+@dataclass(slots=True)
+class PendingBroadcast:
+    caller: ActorRef
+    pending: set[NodeId]
+    results: dict[NodeId, Any] = field(default_factory=dict)
 
 
 def _pick_with_free_slot(
@@ -31,8 +45,13 @@ def _pick_with_free_slot(
     return None
 
 
+def _serialize_task(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bytes:
+    return serialize({"fn": fn, "args": args, "kwargs": kwargs})
+
+
 def _dispatch(
     nid: NodeId,
+    task_id: str,
     fn_bytes: bytes,
     reply_to: ActorRef,
     nodes: dict[NodeId, NodeSlots],
@@ -40,6 +59,7 @@ def _dispatch(
     inflight: dict[NodeId, deque[ActorRef]],
 ) -> dict[NodeId, NodeSlots]:
     slot = nodes[nid]
+    tm_ref.tell(TaskSubmitted(task_id=task_id, node_id=nid))
     slot.ref.tell(ExecuteOnNode(fn_bytes=fn_bytes, reply_to=tm_ref))
     inflight.setdefault(nid, deque()).append(reply_to)
     return {**nodes, nid: NodeSlots(slot.ref, slot.total, slot.used + 1)}
@@ -58,66 +78,135 @@ def _drain_queue(
         if nid is None:
             remaining.append(task)
             continue
-        nodes = _dispatch(nid, task.fn_bytes, task.reply_to, nodes, tm_ref, inflight)
+        fn_bytes = _serialize_task(task.fn, task.args, task.kwargs)
+        nodes = _dispatch(nid, task.task_id, fn_bytes, task.reply_to, nodes, tm_ref, inflight)
         round_robin += 1
     return tuple(remaining), nodes, round_robin
 
 
-def task_manager_actor() -> Behavior[TaskManagerMsg]:
+@dataclass(slots=True)
+class _State:
+    nodes: dict[NodeId, NodeSlots]
+    queue: tuple[SubmitTask, ...]
+    round_robin: int
+    inflight: dict[NodeId, deque[ActorRef]]
+    broadcasts: dict[str, PendingBroadcast]
+    max_inflight: int
 
-    def active(
-        nodes: dict[NodeId, NodeSlots] | None = None,
-        queue: tuple[SubmitTask, ...] = (),
-        round_robin: int = 0,
-        inflight: dict[NodeId, deque[ActorRef]] | None = None,
-    ) -> Behavior[TaskManagerMsg]:
-        if nodes is None:
-            nodes = {}
-        if inflight is None:
-            inflight = {}
+
+
+def task_manager_actor(max_inflight: int) -> Behavior[TaskManagerMsg]:
+
+    def active(s: _State) -> Behavior[TaskManagerMsg]:
 
         async def receive(
             ctx: ActorContext[TaskManagerMsg], msg: TaskManagerMsg,
         ) -> Behavior[TaskManagerMsg]:
             match msg:
                 case NodeAvailable(node_id, node_ref, slots):
-                    new_nodes = {**nodes, node_id: NodeSlots(ref=node_ref, total=slots, used=0)}
-                    remaining, new_nodes, rr = _drain_queue(
-                        queue, new_nodes, round_robin, ctx.self, inflight,
+                    num_nodes = len(s.nodes) + (1 if node_id not in s.nodes else 0)
+                    effective_slots = max(slots, s.max_inflight // num_nodes)
+                    log.info(
+                        "Node {nid} available ({slots} slots, effective={eff})",
+                        nid=node_id, slots=slots, eff=effective_slots,
                     )
-                    return active(new_nodes, remaining, rr, inflight)
+                    new_nodes = {
+                        **s.nodes,
+                        node_id: NodeSlots(ref=node_ref, total=effective_slots, used=0),
+                    }
+                    remaining, new_nodes, rr = _drain_queue(
+                        s.queue, new_nodes, s.round_robin, ctx.self, s.inflight,
+                    )
+                    if len(remaining) < len(s.queue):
+                        log.debug("Drained {n} queued tasks", n=len(s.queue) - len(remaining))
+                    return active(replace(s, nodes=new_nodes, queue=remaining, round_robin=rr))
+
                 case NodeUnavailable(node_id):
-                    new_nodes = {k: v for k, v in nodes.items() if k != node_id}
-                    inflight.pop(node_id, None)
-                    return active(new_nodes, queue, round_robin, inflight)
+                    log.info("Node {nid} unavailable", nid=node_id)
+                    new_nodes = {k: v for k, v in s.nodes.items() if k != node_id}
+                    s.inflight.pop(node_id, None)
+                    for bc in s.broadcasts.values():
+                        if node_id in bc.pending:
+                            bc.pending.discard(node_id)
+                            bc.results[node_id] = RuntimeError(
+                                f"Node {node_id} lost during broadcast",
+                            )
+                    new_s = replace(s, nodes=new_nodes)
+                    return _check_broadcasts(new_s)
+
                 case TaskResult(value, node_id):
-                    callers = inflight.get(node_id)
-                    if callers:
-                        caller = callers.popleft()
-                        caller.tell(TaskResult(value=value, node_id=node_id))
-                    if node_id not in nodes:
-                        return Behaviors.same()
-                    slot = nodes[node_id]
+                    broadcast_hit = False
+                    for bc in s.broadcasts.values():
+                        if node_id in bc.pending:
+                            bc.pending.discard(node_id)
+                            bc.results[node_id] = value
+                            broadcast_hit = True
+                            break
+
+                    if not broadcast_hit:
+                        callers = s.inflight.get(node_id)
+                        if callers:
+                            caller = callers.popleft()
+                            caller.tell(TaskResult(value=value, node_id=node_id))
+
+                    if node_id not in s.nodes:
+                        return _check_broadcasts(s) if broadcast_hit else Behaviors.same()
+                    slot = s.nodes[node_id]
                     new_used = max(0, slot.used - 1)
-                    new_nodes = {**nodes, node_id: NodeSlots(slot.ref, slot.total, new_used)}
+                    new_nodes = {**s.nodes, node_id: NodeSlots(slot.ref, slot.total, new_used)}
                     remaining, new_nodes, rr = _drain_queue(
-                        queue, new_nodes, round_robin, ctx.self, inflight,
+                        s.queue, new_nodes, s.round_robin, ctx.self, s.inflight,
                     )
-                    return active(new_nodes, remaining, rr, inflight)
-                case SubmitTask(fn_bytes, reply_to):
-                    nid = _pick_with_free_slot(nodes, round_robin)
+                    new_s = replace(s, nodes=new_nodes, queue=remaining, round_robin=rr)
+                    return _check_broadcasts(new_s) if broadcast_hit else active(new_s)
+
+                case SubmitTask() as task:
+                    nid = _pick_with_free_slot(s.nodes, s.round_robin)
                     if nid is None:
-                        return active(
-                            nodes, (*queue, SubmitTask(fn_bytes, reply_to)),
-                            round_robin, inflight,
+                        log.debug(
+                            "No available nodes, queuing task (queue_size={qs})",
+                            qs=len(s.queue) + 1,
                         )
-                    new_nodes = _dispatch(nid, fn_bytes, reply_to, nodes, ctx.self, inflight)
-                    return active(new_nodes, queue, round_robin + 1, inflight)
-                case SubmitBroadcast(fn_bytes, reply_to):
-                    for _nid, slot in nodes.items():
-                        slot.ref.tell(ExecuteOnNode(fn_bytes=fn_bytes, reply_to=reply_to))
-                    return Behaviors.same()
+                        return active(replace(s, queue=(*s.queue, task)))
+                    log.debug("Dispatching task to node {nid}", nid=nid)
+                    fn_bytes = _serialize_task(task.fn, task.args, task.kwargs)
+                    new_nodes = _dispatch(
+                        nid, task.task_id, fn_bytes, task.reply_to,
+                        s.nodes, ctx.self, s.inflight,
+                    )
+                    return active(replace(s, nodes=new_nodes, round_robin=s.round_robin + 1))
+
+                case SubmitBroadcast() as bcast:
+                    n = len(s.nodes)
+                    log.debug("Broadcasting task to {n} nodes", n=n)
+                    fn_bytes = _serialize_task(bcast.fn, bcast.args, bcast.kwargs)
+                    pending_nodes: set[NodeId] = set()
+                    new_nodes = dict(s.nodes)
+                    for nid, slot in s.nodes.items():
+                        slot.ref.tell(ExecuteOnNode(fn_bytes=fn_bytes, reply_to=ctx.self))
+                        new_nodes[nid] = NodeSlots(slot.ref, slot.total, slot.used + 1)
+                        pending_nodes.add(nid)
+                    s.broadcasts[bcast.task_id] = PendingBroadcast(
+                        caller=bcast.reply_to, pending=pending_nodes,
+                    )
+                    return active(replace(s, nodes=new_nodes))
+
             return Behaviors.same()
         return Behaviors.receive(receive)
 
-    return active()
+    def _check_broadcasts(s: _State) -> Behavior[TaskManagerMsg]:
+        done_ids: list[str] = []
+        for bid, bc in s.broadcasts.items():
+            if not bc.pending:
+                ordered = [bc.results[nid] for nid in sorted(bc.results)]
+                bc.caller.tell(ordered)
+                done_ids.append(bid)
+        for bid in done_ids:
+            del s.broadcasts[bid]
+        return active(s)
+
+    log.info("Task manager started (max_inflight={mi})", mi=max_inflight)
+    return active(_State(
+        nodes={}, queue=(), round_robin=0, inflight={}, broadcasts={},
+        max_inflight=max_inflight,
+    ))

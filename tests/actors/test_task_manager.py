@@ -27,6 +27,10 @@ def collector_behavior(collected: list) -> Behavior:
     return Behaviors.receive(receive)
 
 
+def _dummy_fn():
+    return "ok"
+
+
 @pytest.mark.asyncio
 async def test_submit_task_routes_to_available_node(system):
     from skyward.actors.task_manager import task_manager_actor
@@ -36,17 +40,16 @@ async def test_submit_task_routes_to_available_node(system):
 
     node_ref = system.spawn(collector_behavior(node_msgs), "node-0")
     reply_ref = system.spawn(collector_behavior(reply_msgs), "reply")
-    tm_ref = system.spawn(task_manager_actor(), "tm")
+    tm_ref = system.spawn(task_manager_actor(max_inflight=10), "tm")
 
     tm_ref.tell(NodeAvailable(node_id=0, node_ref=node_ref, slots=2))
     await asyncio.sleep(0.1)
 
-    tm_ref.tell(SubmitTask(fn_bytes=b"task1", reply_to=reply_ref))
+    tm_ref.tell(SubmitTask(fn=_dummy_fn, args=(), kwargs={}, reply_to=reply_ref))
     await asyncio.sleep(0.1)
 
     assert len(node_msgs) == 1
     assert isinstance(node_msgs[0], ExecuteOnNode)
-    assert node_msgs[0].fn_bytes == b"task1"
 
 
 @pytest.mark.asyncio
@@ -56,13 +59,13 @@ async def test_submit_task_queues_when_no_slots(system):
     node_msgs: list = []
     reply_ref = system.spawn(collector_behavior([]), "reply")
     node_ref = system.spawn(collector_behavior(node_msgs), "node-0")
-    tm_ref = system.spawn(task_manager_actor(), "tm")
+    tm_ref = system.spawn(task_manager_actor(max_inflight=10), "tm")
 
     tm_ref.tell(NodeAvailable(node_id=0, node_ref=node_ref, slots=1))
     await asyncio.sleep(0.1)
 
-    tm_ref.tell(SubmitTask(fn_bytes=b"task1", reply_to=reply_ref))
-    tm_ref.tell(SubmitTask(fn_bytes=b"task2", reply_to=reply_ref))
+    tm_ref.tell(SubmitTask(fn=_dummy_fn, args=(), kwargs={}, reply_to=reply_ref))
+    tm_ref.tell(SubmitTask(fn=_dummy_fn, args=(), kwargs={}, reply_to=reply_ref))
     await asyncio.sleep(0.1)
 
     assert len(node_msgs) == 1  # only 1 slot
@@ -80,9 +83,9 @@ async def test_submit_task_queues_when_no_nodes(system):
     node_msgs: list = []
     reply_ref = system.spawn(collector_behavior([]), "reply")
     node_ref = system.spawn(collector_behavior(node_msgs), "node-0")
-    tm_ref = system.spawn(task_manager_actor(), "tm")
+    tm_ref = system.spawn(task_manager_actor(max_inflight=10), "tm")
 
-    tm_ref.tell(SubmitTask(fn_bytes=b"task1", reply_to=reply_ref))
+    tm_ref.tell(SubmitTask(fn=_dummy_fn, args=(), kwargs={}, reply_to=reply_ref))
     await asyncio.sleep(0.1)
     assert len(node_msgs) == 0
 
@@ -100,13 +103,13 @@ async def test_broadcast_sends_to_all_nodes(system):
     reply_ref = system.spawn(collector_behavior([]), "reply")
     node0_ref = system.spawn(collector_behavior(node0_msgs), "node-0")
     node1_ref = system.spawn(collector_behavior(node1_msgs), "node-1")
-    tm_ref = system.spawn(task_manager_actor(), "tm")
+    tm_ref = system.spawn(task_manager_actor(max_inflight=10), "tm")
 
     tm_ref.tell(NodeAvailable(node_id=0, node_ref=node0_ref, slots=1))
     tm_ref.tell(NodeAvailable(node_id=1, node_ref=node1_ref, slots=1))
     await asyncio.sleep(0.1)
 
-    tm_ref.tell(SubmitBroadcast(fn_bytes=b"bcast", reply_to=reply_ref))
+    tm_ref.tell(SubmitBroadcast(fn=_dummy_fn, args=(), kwargs={}, reply_to=reply_ref))
     await asyncio.sleep(0.1)
 
     assert len(node0_msgs) == 1
@@ -120,13 +123,13 @@ async def test_node_unavailable_removes_node(system):
     node_msgs: list = []
     reply_ref = system.spawn(collector_behavior([]), "reply")
     node_ref = system.spawn(collector_behavior(node_msgs), "node-0")
-    tm_ref = system.spawn(task_manager_actor(), "tm")
+    tm_ref = system.spawn(task_manager_actor(max_inflight=10), "tm")
 
     tm_ref.tell(NodeAvailable(node_id=0, node_ref=node_ref, slots=2))
     tm_ref.tell(NodeUnavailable(node_id=0))
     await asyncio.sleep(0.1)
 
-    tm_ref.tell(SubmitTask(fn_bytes=b"task1", reply_to=reply_ref))
+    tm_ref.tell(SubmitTask(fn=_dummy_fn, args=(), kwargs={}, reply_to=reply_ref))
     await asyncio.sleep(0.1)
 
     assert len(node_msgs) == 0  # queued, no available nodes
@@ -141,14 +144,14 @@ async def test_round_robin_across_nodes(system):
     reply_ref = system.spawn(collector_behavior([]), "reply")
     node0_ref = system.spawn(collector_behavior(node0_msgs), "node-0")
     node1_ref = system.spawn(collector_behavior(node1_msgs), "node-1")
-    tm_ref = system.spawn(task_manager_actor(), "tm")
+    tm_ref = system.spawn(task_manager_actor(max_inflight=10), "tm")
 
     tm_ref.tell(NodeAvailable(node_id=0, node_ref=node0_ref, slots=2))
     tm_ref.tell(NodeAvailable(node_id=1, node_ref=node1_ref, slots=2))
     await asyncio.sleep(0.1)
 
-    tm_ref.tell(SubmitTask(fn_bytes=b"t1", reply_to=reply_ref))
-    tm_ref.tell(SubmitTask(fn_bytes=b"t2", reply_to=reply_ref))
+    tm_ref.tell(SubmitTask(fn=_dummy_fn, args=(), kwargs={}, reply_to=reply_ref))
+    tm_ref.tell(SubmitTask(fn=_dummy_fn, args=(), kwargs={}, reply_to=reply_ref))
     await asyncio.sleep(0.1)
 
     assert len(node0_msgs) == 1
