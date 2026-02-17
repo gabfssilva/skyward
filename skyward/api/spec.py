@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
@@ -44,6 +45,8 @@ type AllocationStrategy = Literal[
 type Architecture = Literal["x86_64", "arm64"]
 
 type SkywardSource = Literal["auto", "local", "github", "pypi"]
+
+type InflightStrategy = Callable[[int, int], int]
 
 
 def _detect_skyward_source() -> SkywardSource:
@@ -119,6 +122,7 @@ class PoolSpec:
     image: Image = field(default_factory=lambda: Image())
     ttl: int = 600
     concurrency: int = 1
+    max_inflight: int | InflightStrategy | None = None
     provider: ProviderName | None = None
     max_hourly_cost: float | None = None
     ssh_timeout: float = 300.0

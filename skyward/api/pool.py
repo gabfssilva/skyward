@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import queue
+import sys
 import threading
 import types
 from collections.abc import Callable, Coroutine, Generator, Iterator, Sequence
@@ -33,7 +34,7 @@ from contextlib import suppress
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import Any, Literal
+from typing import Any, Literal, overload
 
 from casty import ActorRef, ActorSystem, Behaviors, CastyConfig
 
@@ -41,6 +42,7 @@ from skyward.accelerators import Accelerator
 from skyward.actors.messages import (
     InstanceMetadata,
     PoolMsg,
+    SubmitBroadcast,
     SubmitTask,
     TaskResult,
 )
@@ -60,7 +62,7 @@ from skyward.observability.logger import logger
 from skyward.observability.logging import LogConfig, setup_logging, teardown_logging
 from skyward.providers.aws.config import AWS
 
-from .spec import DEFAULT_IMAGE, Image, PoolSpec
+from .spec import DEFAULT_IMAGE, Image, InflightStrategy, PoolSpec
 
 _active_pool: ContextVar[ComputePool | None] = ContextVar("active_pool", default=None)
 
@@ -130,11 +132,18 @@ class PendingCompute[T]:
         pending = train(data)  # Returns PendingCompute, doesn't execute
         result = pending >> sky  # Executes remotely on pool
         results = pending @ sky  # Broadcasts to all nodes
+
+        # Override timeout
+        result = train(data).with_timeout(600) >> sky
     """
 
     fn: Callable[..., T]
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
+    timeout: float | None = None
+
+    def with_timeout(self, timeout: float) -> PendingCompute[T]:
+        return PendingCompute(fn=self.fn, args=self.args, kwargs=self.kwargs, timeout=timeout)
 
     def __rshift__(self, target: ComputePool | _Sky | types.ModuleType) -> T:
         match target:
@@ -188,14 +197,28 @@ class PendingComputeGroup:
 
     items: tuple[PendingCompute[Any], ...]
     stream: bool = False
+    ordered: bool = True
+    timeout: float | None = None
+
+    def with_timeout(self, timeout: float) -> PendingComputeGroup:
+        return PendingComputeGroup(
+            items=self.items, stream=self.stream,
+            ordered=self.ordered, timeout=timeout,
+        )
 
     def __and__(self, other: PendingCompute[Any] | PendingComputeGroup) -> PendingComputeGroup:
         """Add another computation to the group."""
         match other:
             case PendingComputeGroup():
-                return PendingComputeGroup(items=(*self.items, *other.items), stream=self.stream)
+                return PendingComputeGroup(
+                    items=(*self.items, *other.items),
+                    stream=self.stream, ordered=self.ordered,
+                )
             case _:
-                return PendingComputeGroup(items=(*self.items, other), stream=self.stream)
+                return PendingComputeGroup(
+                    items=(*self.items, other),
+                    stream=self.stream, ordered=self.ordered,
+                )
 
     def __rshift__(
         self, target: ComputePool | _Sky | types.ModuleType
@@ -216,7 +239,11 @@ class PendingComputeGroup:
         return iter(self.items)
 
 
-def gather(*pendings: PendingCompute[Any], stream: bool = False) -> PendingComputeGroup:
+def gather(
+    *pendings: PendingCompute[Any],
+    stream: bool = False,
+    ordered: bool = True,
+) -> PendingComputeGroup:
     """Group computations for parallel execution.
 
     Example:
@@ -225,30 +252,35 @@ def gather(*pendings: PendingCompute[Any], stream: bool = False) -> PendingCompu
 
         for result in gather(task1(), task2(), task3(), stream=True) >> sky:
             print(result)  # yields results as they complete
+
+        for result in gather(task1(), task2(), task3(), stream=True, ordered=False) >> sky:
+            print(result)  # yields results as they complete, unordered
     """
-    return PendingComputeGroup(items=pendings, stream=stream)
+    return PendingComputeGroup(items=pendings, stream=stream, ordered=ordered)
 
 
-def compute(fn: Callable[..., Any]) -> Callable[..., PendingCompute[Any]]:
-    """Decorator to make a function lazy.
+@overload
+def compute[**P, T](fn: Callable[P, T]) -> Callable[P, PendingCompute[T]]: ...
 
-    The decorated function returns a PendingCompute instead of
-    executing immediately. Use >> or @ to send it to a pool.
+@overload
+def compute[**P, T](
+    *, timeout: float,
+) -> Callable[[Callable[P, T]], Callable[P, PendingCompute[T]]]: ...
 
-    Example:
-        @compute
-        def train(model, data):
-            return model.fit(data)
+def compute[**P, T](
+    fn: Callable[P, T] | None = None,
+    *,
+    timeout: float | None = None,
+) -> Callable[P, PendingCompute[T]] | Callable[[Callable[P, T]], Callable[P, PendingCompute[T]]]:
+    def decorator(f: Callable[P, T]) -> Callable[P, PendingCompute[T]]:
+        @functools.wraps(f)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> PendingCompute[T]:
+            return PendingCompute(fn=f, args=args, kwargs=kwargs, timeout=timeout)
+        return wrapper
 
-        result = train(my_model, my_data) >> sky  # execute on one node
-        results = train(my_model, my_data) @ sky  # broadcast to all
-    """
-
-    @functools.wraps(fn)
-    def wrapper(*args: Any, **kwargs: Any) -> PendingCompute[Any]:
-        return PendingCompute(fn=fn, args=args, kwargs=kwargs)
-
-    return wrapper
+    if fn is not None:
+        return decorator(fn)
+    return decorator
 
 
 @dataclass
@@ -290,12 +322,14 @@ class ComputePool:
     ttl: int = 600
 
     concurrency: int = 1
+    max_inflight: int | InflightStrategy | None = None
 
-    panel: bool = True
+    panel: bool = False
 
     logging: LogConfig | bool = True
 
     max_hourly_cost: float | None = None
+    default_compute_timeout: float = 300.0
 
     provision_timeout: int = 300
     ssh_timeout: int = 300
@@ -313,18 +347,20 @@ class ComputePool:
     _cluster_id: str = field(default="", init=False, repr=False)
     _instances: dict[int, InstanceMetadata] = field(default_factory=dict, init=False, repr=False)
     _spec: PoolSpec | None = field(default=None, init=False, repr=False)
+    _console_ref: ActorRef | None = field(default=None, init=False, repr=False)
+    _original_stdout: Any = field(default=None, init=False, repr=False)
 
     def __enter__(self) -> ComputePool:
         """Start pool and provision resources."""
         if self.logging:
             match self.logging:
                 case True:
-                    log_config = LogConfig(console=not self.panel)
+                    log_config = LogConfig(console=False)
                 case _:
                     log_config = LogConfig(
                         level=self.logging.level,
                         file=self.logging.file,
-                        console=self.logging.console and not self.panel,
+                        console=False,
                         rotation=self.logging.rotation,
                         retention=self.logging.retention,
                     )
@@ -344,6 +380,7 @@ class ComputePool:
             self._run_sync(self._start_async())
             self._active = True
             self._context_token = _active_pool.set(self)
+            self._install_stdout_redirect()
             logger.info("Pool ready")
         except Exception as e:
             logger.exception("Error starting pool: {err}", err=e)
@@ -367,6 +404,8 @@ class ComputePool:
             sys=self._system is not None,
         )
         try:
+            self._uninstall_stdout_redirect()
+
             if self._context_token is not None:
                 _active_pool.reset(self._context_token)
                 self._context_token = None
@@ -392,28 +431,34 @@ class ComputePool:
             if self._log_handler_ids:
                 teardown_logging(self._log_handler_ids)
 
-    def _serialize_pending(self, pending: PendingCompute[Any]) -> bytes:
-        from skyward.infra.serialization import serialize
-        return serialize({"fn": pending.fn, "args": pending.args, "kwargs": pending.kwargs})
-
-    def _unwrap_result(self, result: TaskResult) -> Any:
-        match result.value:
+    @staticmethod
+    def _unwrap_broadcast_result(value: Any) -> Any:
+        match value:
             case RuntimeError() as err:
                 raise err
-            case value:
+            case _:
                 return value
+
+    def _unwrap_result(self, result: TaskResult) -> Any:
+        return self._unwrap_broadcast_result(result.value)
+
+    def _resolve_timeout(self, pending: PendingCompute[Any]) -> float:
+        return pending.timeout if pending.timeout is not None else self.default_compute_timeout
+
+    def _submit(self, pending: PendingCompute[Any]) -> Callable[[ActorRef[Any]], SubmitTask]:
+        return lambda reply_to: SubmitTask(
+            fn=pending.fn, args=pending.args, kwargs=pending.kwargs,
+            reply_to=reply_to,
+        )
 
     def run[T](self, pending: PendingCompute[T]) -> T:
         if not self._active or self._pool_ref is None or self._system is None:
             raise RuntimeError("Pool is not active")
 
-        fn_bytes = self._serialize_pending(pending)
+        timeout = self._resolve_timeout(pending)
+        logger.debug("Submitting task: {fn}", fn=getattr(pending.fn, "__name__", repr(pending.fn)))
         result: TaskResult = self._run_sync(
-            self._system.ask(
-                self._pool_ref,
-                lambda reply_to: SubmitTask(fn_bytes=fn_bytes, reply_to=reply_to),
-                timeout=600.0,
-            )
+            self._system.ask(self._pool_ref, self._submit(pending), timeout=timeout)
         )
         return self._unwrap_result(result)
 
@@ -421,14 +466,14 @@ class ComputePool:
         if not self._active or self._pool_ref is None or self._system is None or self._loop is None:
             raise RuntimeError("Pool is not active")
 
-        fn_bytes = self._serialize_pending(pending)
+        timeout = self._resolve_timeout(pending)
+        fn_name = getattr(pending.fn, "__name__", repr(pending.fn))
+        logger.debug("Submitting async task: {fn}", fn=fn_name)
 
         async def _run() -> T:
             assert self._pool_ref is not None
             result: TaskResult = await self._system.ask(  # type: ignore[union-attr]
-                self._pool_ref,
-                lambda reply_to: SubmitTask(fn_bytes=fn_bytes, reply_to=reply_to),
-                timeout=600.0,
+                self._pool_ref, self._submit(pending), timeout=timeout,
             )
             return self._unwrap_result(result)
 
@@ -438,20 +483,21 @@ class ComputePool:
         if not self._active or self._pool_ref is None or self._system is None:
             raise RuntimeError("Pool is not active")
 
-        fn_bytes = self._serialize_pending(pending)
+        timeout = self._resolve_timeout(pending)
+        fn_name = getattr(pending.fn, "__name__", repr(pending.fn))
+        logger.debug("Broadcasting task: {fn} to {n} nodes", fn=fn_name, n=self.nodes)
 
         async def _broadcast() -> list[T]:
             assert self._pool_ref is not None
-            tasks = [
-                self._system.ask(  # type: ignore[union-attr]
-                    self._pool_ref,
-                    lambda reply_to: SubmitTask(fn_bytes=fn_bytes, reply_to=reply_to),
-                    timeout=600.0,
-                )
-                for _ in range(self.nodes)
-            ]
-            results = await asyncio.gather(*tasks)
-            return [self._unwrap_result(r) for r in results]
+            result = await self._system.ask(  # type: ignore[union-attr]
+                self._pool_ref,
+                lambda reply_to: SubmitBroadcast(
+                    fn=pending.fn, args=pending.args, kwargs=pending.kwargs,
+                    reply_to=reply_to,
+                ),
+                timeout=timeout,
+            )
+            return list(map(self._unwrap_broadcast_result, result))
 
         return self._run_sync(_broadcast())
 
@@ -461,6 +507,7 @@ class ComputePool:
         if not self._active or self._pool_ref is None or self._system is None:
             raise RuntimeError("Pool is not active")
 
+        logger.debug("Running {n} tasks in parallel", n=len(group.items))
         if group.stream:
             return self._run_parallel_stream(group)
 
@@ -468,16 +515,16 @@ class ComputePool:
             assert self._pool_ref is not None
             tasks = [
                 self._system.ask(  # type: ignore[union-attr]
-                    self._pool_ref,
-                    lambda reply_to, p=p: SubmitTask(
-                        fn_bytes=self._serialize_pending(p),
-                        reply_to=reply_to,
-                    ),
-                    timeout=600.0,
+                    self._pool_ref, self._submit(p), timeout=self._resolve_timeout(p),
                 )
                 for p in group.items
             ]
-            results = await asyncio.gather(*tasks)
+            coro = asyncio.gather(*tasks)
+            group_timeout = (
+                group.timeout if group.timeout is not None
+                else self.default_compute_timeout
+            )
+            results = await asyncio.wait_for(coro, timeout=group_timeout)
             return tuple(self._unwrap_result(r) for r in results)
 
         return self._run_sync(_run_parallel())
@@ -491,19 +538,19 @@ class ComputePool:
             tasks = [
                 asyncio.ensure_future(
                     self._system.ask(  # type: ignore[union-attr]
-                        self._pool_ref,
-                        lambda reply_to, p=p: SubmitTask(
-                            fn_bytes=self._serialize_pending(p),
-                            reply_to=reply_to,
-                        ),
-                        timeout=600.0,
+                        self._pool_ref, self._submit(p), timeout=self._resolve_timeout(p),
                     )
                 )
                 for p in group.items
             ]
-            for coro in asyncio.as_completed(tasks):
-                result = await coro
-                q.put(self._unwrap_result(result))
+            if group.ordered:
+                for task in tasks:
+                    result = await task
+                    q.put(self._unwrap_result(result))
+            else:
+                for coro in asyncio.as_completed(tasks):
+                    result = await coro
+                    q.put(self._unwrap_result(result))
             q.put(sentinel)
 
         assert self._loop is not None
@@ -528,13 +575,8 @@ class ComputePool:
             tasks = [
                 self._system.ask(  # type: ignore[union-attr]
                     self._pool_ref,
-                    lambda reply_to, item=item: SubmitTask(
-                        fn_bytes=self._serialize_pending(
-                            PendingCompute(fn=fn, args=(item,), kwargs={})
-                        ),
-                        reply_to=reply_to,
-                    ),
-                    timeout=600.0,
+                    self._submit(PendingCompute(fn=fn, args=(item,), kwargs={})),
+                    timeout=self.default_compute_timeout,
                 )
                 for item in items
             ]
@@ -546,44 +588,96 @@ class ComputePool:
         """Get or create a distributed dict."""
         if self._registry is None:
             raise RuntimeError("Pool is not active")
+        logger.debug("Creating distributed dict: {name}", name=name)
         return self._registry.dict(name, consistency=consistency)
 
     def set(self, name: str, *, consistency: Consistency | None = None) -> SetProxy:
         """Get or create a distributed set."""
         if self._registry is None:
             raise RuntimeError("Pool is not active")
+        logger.debug("Creating distributed set: {name}", name=name)
         return self._registry.set(name, consistency=consistency)
 
     def counter(self, name: str, *, consistency: Consistency | None = None) -> CounterProxy:
         """Get or create a distributed counter."""
         if self._registry is None:
             raise RuntimeError("Pool is not active")
+        logger.debug("Creating distributed counter: {name}", name=name)
         return self._registry.counter(name, consistency=consistency)
 
     def queue(self, name: str) -> QueueProxy:
         """Get or create a distributed queue."""
         if self._registry is None:
             raise RuntimeError("Pool is not active")
+        logger.debug("Creating distributed queue: {name}", name=name)
         return self._registry.queue(name)
 
     def barrier(self, name: str, n: int) -> BarrierProxy:
         """Get or create a distributed barrier."""
         if self._registry is None:
             raise RuntimeError("Pool is not active")
+        logger.debug("Creating distributed barrier: {name} (n={n})", name=name, n=n)
         return self._registry.barrier(name, n)
 
     def lock(self, name: str) -> LockProxy:
         """Get or create a distributed lock."""
         if self._registry is None:
             raise RuntimeError("Pool is not active")
+        logger.debug("Creating distributed lock: {name}", name=name)
         return self._registry.lock(name)
+
+    def _install_stdout_redirect(self) -> None:
+        if self._console_ref is None or self._system is None:
+            return
+        from skyward.actors.console import LocalOutput
+
+        ref = self._console_ref
+
+        class _ConsoleWriter:
+            def __init__(self, original: Any, stream: str = "stdout") -> None:
+                self._original = original
+                self._stream = stream
+
+            def write(self, s: str) -> int:
+                for line in s.splitlines(keepends=True):
+                    stripped = line.rstrip()
+                    if stripped:
+                        ref.tell(LocalOutput(line=stripped, stream=self._stream))
+                return len(s)
+
+            def flush(self) -> None:
+                pass
+
+            @property
+            def encoding(self) -> str:
+                return self._original.encoding
+
+            @property
+            def errors(self) -> str | None:
+                return self._original.errors
+
+            def fileno(self) -> int:
+                return self._original.fileno()
+
+            def isatty(self) -> bool:
+                return False
+
+        self._original_stdout = sys.stdout
+        sys.stdout = _ConsoleWriter(sys.stdout, "stdout")  # type: ignore[assignment]
+
+    def _uninstall_stdout_redirect(self) -> None:
+        if self._original_stdout is not None:
+            sys.stdout = self._original_stdout
+            self._original_stdout = None
 
     async def _start_async(self) -> None:
         """Start pool asynchronously using actors (zero bus)."""
+        from skyward.actors.console import console_actor
         from skyward.actors.messages import PoolStarted, StartPool
         from skyward.actors.panel import panel_actor
         from skyward.actors.pool import pool_actor
 
+        logger.info("Creating cloud provider ({type})", type=self.provider.type)
         cloud_provider = await self.provider.create_provider()
         provider_name = self.provider.type
 
@@ -600,12 +694,17 @@ class ComputePool:
             image=self.image,
             ttl=self.ttl,
             concurrency=self.concurrency,
+            max_inflight=self.max_inflight,
             provider=provider_name,  # type: ignore[arg-type]
             max_hourly_cost=self.max_hourly_cost,
             ssh_timeout=float(self.ssh_timeout),
             ssh_retry_interval=float(self.ssh_retry_interval),
         )
         self._spec = spec
+        logger.debug(
+            "Built PoolSpec: {nodes} nodes, region={region}, allocation={alloc}",
+            nodes=spec.nodes, region=spec.region, alloc=spec.allocation,
+        )
 
         self._system = ActorSystem("skyward", config=CastyConfig(
             suppress_dead_letters_on_shutdown=True
@@ -619,16 +718,30 @@ class ComputePool:
             else None
         )
 
-        pool_behavior = pool_actor()
-        spy = panel_ref is not None
-        pool_ref: ActorRef[PoolMsg] = self._system.spawn(
-            Behaviors.spy(pool_behavior, panel_ref, spy_children=True)
-            if spy
-            else pool_behavior,
-            "pool",
+        console_ref = (
+            self._system.spawn(console_actor(spec), "console")
+            if self.logging and not self.panel
+            else None
         )
+        self._console_ref = console_ref
+
+        pool_behavior = pool_actor()
+        if panel_ref is not None:
+            pool_behavior = Behaviors.spy(pool_behavior, panel_ref, spy_children=True)
+        if console_ref is not None:
+            pool_behavior = Behaviors.spy(pool_behavior, console_ref, spy_children=True)
+
+        logger.debug(
+            "Spawning pool actor (panel={panel}, console={console})",
+            panel=panel_ref is not None, console=console_ref is not None,
+        )
+        pool_ref: ActorRef[PoolMsg] = self._system.spawn(pool_behavior, "pool")
         self._pool_ref = pool_ref
 
+        logger.info(
+            "Waiting for pool to start (timeout={timeout}s)",
+            timeout=self.provision_timeout,
+        )
         started: PoolStarted = await self._system.ask(
             pool_ref,
             lambda reply_to: StartPool(
@@ -638,6 +751,10 @@ class ComputePool:
                 reply_to=reply_to,
             ),
             timeout=float(self.provision_timeout),
+        )
+        logger.info(
+            "Pool started, cluster_id={cid}, instances={n}",
+            cid=started.cluster_id, n=len(started.instances),
         )
         self._cluster_id = started.cluster_id
         self._instances = {
@@ -686,10 +803,13 @@ class ComputePool:
 
     def _cleanup(self) -> None:
         """Cleanup resources."""
+        logger.debug("Cleaning up event loop and thread")
         if self._loop:
             self._loop.call_soon_threadsafe(self._loop.stop)
+            logger.debug("Stopping event loop")
             if self._loop_thread:
                 self._loop_thread.join(timeout=5)
+                logger.debug("Event loop thread joined")
             with suppress(Exception):
                 self._loop.close()
             self._loop = None
@@ -724,12 +844,14 @@ class _PoolFactory:
         image: Image | None = None,
         allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
         ttl: int = 600,
-        panel: bool = True,
+        panel: bool = False,
         logging: LogConfig | bool = True,
         max_hourly_cost: float | None = None,
         provision_timeout: int = 300,
         ssh_timeout: int = 300,
         ssh_retry_interval: int = 2,
+        max_inflight: int | InflightStrategy | None = None,
+        default_compute_timeout: float = 300.0,
     ) -> None:
         self._provider = provider
         self._nodes = nodes
@@ -746,6 +868,8 @@ class _PoolFactory:
         self._provision_timeout = provision_timeout
         self._ssh_timeout = ssh_timeout
         self._ssh_retry_interval = ssh_retry_interval
+        self._max_inflight = max_inflight
+        self._default_compute_timeout = default_compute_timeout
         self._pool: ComputePool | None = None
 
     def _create_pool(self) -> ComputePool:
@@ -767,6 +891,8 @@ class _PoolFactory:
             provision_timeout=self._provision_timeout,
             ssh_timeout=self._ssh_timeout,
             ssh_retry_interval=self._ssh_retry_interval,
+            max_inflight=self._max_inflight,
+            default_compute_timeout=self._default_compute_timeout,
         )
 
     def __enter__(self) -> ComputePool:
@@ -796,12 +922,13 @@ def pool(
     image: Image | None = None,
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
     ttl: int = 600,
-    panel: bool = True,
+    panel: bool = False,
     logging: LogConfig | bool = True,
     max_hourly_cost: float | None = None,
     provision_timeout: int = 300,
     ssh_timeout: int = 300,
     ssh_retry_interval: int = 2,
+    default_compute_timeout: float = 300.0,
 ) -> _PoolFactory:
     """Create a compute pool context manager.
 
@@ -825,4 +952,5 @@ def pool(
         provision_timeout=provision_timeout,
         ssh_timeout=ssh_timeout,
         ssh_retry_interval=ssh_retry_interval,
+        default_compute_timeout=default_compute_timeout,
     )
