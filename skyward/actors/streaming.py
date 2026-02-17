@@ -152,6 +152,21 @@ def instance_monitor(
         async def receive(ctx: ActorContext[MonitorMsg], msg: MonitorMsg) -> Behavior[MonitorMsg]:
             match msg:
                 case _StreamedEvent(event=event, lines_read=new_lines_read):
+                    log = logger.bind(actor="monitor", instance_id=info.id)
+                    match event:
+                        case Metric():
+                            log.trace("metric: {name}={value}", name=event.name, value=event.value)
+                        case Log():
+                            log.info("{line}", line=event.line.rstrip())
+                        case BootstrapPhase():
+                            log.info("Phase {phase}: {ev}", phase=event.phase, ev=event.event)
+                        case BootstrapCommand():
+                            log.info("Command: {cmd}", cmd=event.command)
+                        case BootstrapConsole():
+                            log.info("{content}", content=event.content.rstrip())
+                        case BootstrapFailed():
+                            log.error("Bootstrap failed: {err}", err=event.error)
+
                     event_listener.tell(event)
 
                     ctx.pipe_to_self(_read_next(stream, info), mapper=lambda msg: msg)
@@ -160,6 +175,10 @@ def instance_monitor(
                     if not signaled:
                         match event:
                             case BootstrapPhase(phase="bootstrap", event="completed"):
+                                mon_log = logger.bind(
+                                    actor="monitor", instance_id=info.id,
+                                )
+                                mon_log.info("Bootstrap completion signal received")
                                 reply_to.tell(BootstrapDone(instance=info, success=True))
                                 signaled = True
                             case BootstrapFailed(error=error):
@@ -175,6 +194,10 @@ def instance_monitor(
                     return Behaviors.same()
 
                 case _StreamEnded(error=error):
+                    if error is None:
+                        logger.bind(
+                            actor="monitor", instance_id=info.id,
+                        ).info("Stream ended cleanly")
                     if error is not None:
                         logger.bind(actor="monitor", instance_id=info.id).warning(
                             "Stream ended with error, attempting reconnect: {err}", err=error,
