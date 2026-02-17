@@ -92,12 +92,13 @@ def panel_actor(spec: PoolSpec) -> Behavior[PanelInput]:
                     renderer.update_state(new_state)
                     return observing(new_state, renderer)
 
-                case SpyEvent(event=ClusterReady() as ev):
-                    log.debug("Phase -> Executing, ready_nodes={n}", n=len(ev.nodes))
+                case SpyEvent(event=ClusterReady(cluster=cluster)):
+                    nodes = cluster.instances
+                    log.debug("Phase -> Executing, ready_nodes={n}", n=len(nodes))
                     elapsed = time.monotonic() - state.start_time if state.start_time else 0.0
                     new_state = replace(state,
                         phase="Executing",
-                        ready=len(ev.nodes),
+                        ready=len(nodes),
                         phase_times=MappingProxyType({**state.phase_times, "bootstrap": elapsed}),
                     )
                     renderer.update_state(new_state)

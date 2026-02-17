@@ -5,7 +5,10 @@ from typing import TYPE_CHECKING, Any
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 
 from skyward.actors.messages import (
+    ClusterReady,
+    HeadAddressKnown,
     InstanceMetadata,
+    InstancesProvisioned,
     NodeAvailable,
     NodeBecameReady,
     NodeLost,
@@ -14,13 +17,10 @@ from skyward.actors.messages import (
     PoolStarted,
     PoolStopped,
     Provision,
-    SetHeadAddr,
     StartPool,
     StopPool,
     SubmitBroadcast,
     SubmitTask,
-    _ClusterReady,
-    _InstancesProvisioned,
     _ShutdownDone,
 )
 from skyward.actors.node import node_actor
@@ -43,9 +43,13 @@ def pool_actor() -> Behavior[PoolMsg]:
                 case StartPool(
                     spec=spec, provider_config=_, provider=provider, reply_to=reply_to,
                 ):
+                    logger.bind(actor="pool").info(
+                        "StartPool received: {nodes} nodes, accelerator={acc}",
+                        nodes=spec.nodes, acc=getattr(spec, "accelerator", None),
+                    )
                     ctx.pipe_to_self(
                         provider.prepare(spec),
-                        mapper=lambda cluster: _ClusterReady(cluster=cluster),
+                        mapper=lambda cluster: ClusterReady(cluster=cluster),
                     )
                     return requesting(spec, provider, reply_to)
             return Behaviors.same()
@@ -56,10 +60,14 @@ def pool_actor() -> Behavior[PoolMsg]:
     ) -> Behavior[PoolMsg]:
         async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
             match msg:
-                case _ClusterReady(cluster=cluster):
+                case ClusterReady(cluster=cluster):
+                    log = logger.bind(actor="pool")
+                    log.info("Cluster ready, provisioning {n} instances", n=spec.nodes)
                     ctx.pipe_to_self(
                         provider.provision(cluster, spec.nodes),
-                        mapper=lambda instances: _InstancesProvisioned(instances=instances),
+                        mapper=lambda instances: InstancesProvisioned(
+                            instances=instances, cluster=cluster,
+                        ),
                     )
                     return provisioning_instances(spec, provider, cluster, reply_to)
             return Behaviors.same()
@@ -70,8 +78,23 @@ def pool_actor() -> Behavior[PoolMsg]:
     ) -> Behavior[PoolMsg]:
         async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
             match msg:
-                case _InstancesProvisioned(instances=instances):
-                    tm_ref = ctx.spawn(task_manager_actor(), "task-manager")
+                case InstancesProvisioned(instances=instances):
+                    logger.bind(actor="pool").info(
+                        "Instances provisioned ({n}), spawning node actors",
+                        n=len(instances),
+                    )
+                    match spec.max_inflight:
+                        case int(n):
+                            resolved_inflight = n
+                        case None:
+                            resolved_inflight = spec.nodes * spec.concurrency
+                        case strategy:
+                            resolved_inflight = strategy(spec.nodes, spec.concurrency)
+
+                    tm_ref = ctx.spawn(
+                        task_manager_actor(max_inflight=resolved_inflight),
+                        "task-manager",
+                    )
 
                     node_refs: dict[NodeId, ActorRef] = {}
                     for nid, instance in enumerate(instances):
@@ -93,7 +116,6 @@ def pool_actor() -> Behavior[PoolMsg]:
                     return provisioning(
                         spec, provider, cluster, reply_to, cluster.id,
                         instances={}, node_refs=node_refs, tm_ref=tm_ref,
-                        head_addr_sent=False,
                     )
             return Behaviors.same()
         return Behaviors.receive(receive)
@@ -107,57 +129,35 @@ def pool_actor() -> Behavior[PoolMsg]:
         instances: dict[NodeId, InstanceMetadata],
         node_refs: dict[NodeId, ActorRef],
         tm_ref: ActorRef,
-        head_addr_sent: bool,
+        head_addr: str | None = None,
     ) -> Behavior[PoolMsg]:
         log = logger.bind(actor="pool", state="provisioning")
 
         async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
             match msg:
-                case NodeBecameReady(node_id=0, instance=meta) if not head_addr_sent:
-                    new_instances = {**instances, 0: meta}
-                    tm_ref.tell(NodeAvailable(
-                        node_id=0,
-                        node_ref=node_refs[0],
-                        slots=spec.concurrency,
-                    ))
-
-                    head_private = meta.private_ip or meta.ip
-                    head_msg = SetHeadAddr(
-                        head_addr=head_private,
-                        casty_port=25520,
-                        num_nodes=spec.nodes,
-                        concurrency=spec.concurrency,
-                    )
+                case HeadAddressKnown() as h:
+                    log.info("Head address known: {addr}", addr=h.head_addr)
                     for nid, node_ref in node_refs.items():
                         if nid != 0:
-                            node_ref.tell(head_msg)
-
-                    if len(new_instances) == spec.nodes:
-                        reply_to.tell(PoolStarted(
-                            cluster_id=cluster_id,
-                            instances=tuple(new_instances[i] for i in range(spec.nodes)),
-                        ))
-                        return ready(
-                            spec, provider, cluster, cluster_id, new_instances,
-                            reply_to, node_refs, tm_ref,
-                            ready_nodes=frozenset(new_instances.keys()),
-                            head_addr=head_private,
-                        )
+                            node_ref.tell(h)
                     return provisioning(
                         spec, provider, cluster, reply_to, cluster_id,
-                        new_instances, node_refs, tm_ref, head_addr_sent=True,
+                        instances, node_refs, tm_ref, head_addr=h.head_addr,
                     )
-                case NodeBecameReady(node_id=nid, instance=instance):
-                    new_instances = {**instances, nid: instance}
+                case NodeBecameReady(node_id=nid, instance=meta):
+                    new_instances = {**instances, nid: meta}
+                    log.info(
+                        "Node {nid} ready ({n}/{total})",
+                        nid=nid, n=len(new_instances), total=spec.nodes,
+                    )
                     tm_ref.tell(NodeAvailable(
                         node_id=nid,
                         node_ref=node_refs[nid],
                         slots=spec.concurrency,
                     ))
                     if len(new_instances) == spec.nodes:
-                        head_meta = new_instances.get(0)
-                        head_private = (head_meta.private_ip or head_meta.ip) if head_meta else ""
-                        reply_to.tell(PoolStarted(
+                        log.info("All {n} nodes ready, pool is operational", n=spec.nodes)
+                        ctx.self.tell(PoolStarted(
                             cluster_id=cluster_id,
                             instances=tuple(new_instances[i] for i in range(spec.nodes)),
                         ))
@@ -165,11 +165,11 @@ def pool_actor() -> Behavior[PoolMsg]:
                             spec, provider, cluster, cluster_id, new_instances,
                             reply_to, node_refs, tm_ref,
                             ready_nodes=frozenset(new_instances.keys()),
-                            head_addr=head_private,
+                            head_addr=head_addr or "",
                         )
                     return provisioning(
                         spec, provider, cluster, reply_to, cluster_id,
-                        new_instances, node_refs, tm_ref, head_addr_sent,
+                        new_instances, node_refs, tm_ref, head_addr=head_addr,
                     )
                 case StopPool():
                     log.debug("StopPool received while provisioning")
@@ -192,11 +192,16 @@ def pool_actor() -> Behavior[PoolMsg]:
 
         async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
             match msg:
-                case SubmitTask(fn_bytes=fn_bytes, reply_to=task_reply):
-                    tm_ref.tell(SubmitTask(fn_bytes=fn_bytes, reply_to=task_reply))
+                case PoolStarted() as started:
+                    reply_to.tell(started)
                     return Behaviors.same()
-                case SubmitBroadcast(fn_bytes=fn_bytes, reply_to=bcast_reply):
-                    tm_ref.tell(SubmitBroadcast(fn_bytes=fn_bytes, reply_to=bcast_reply))
+                case SubmitTask() as task:
+                    log.debug("Task submitted")
+                    tm_ref.tell(task)
+                    return Behaviors.same()
+                case SubmitBroadcast() as bcast:
+                    log.debug("Broadcast submitted to {n} nodes", n=len(ready_nodes))
+                    tm_ref.tell(bcast)
                     return Behaviors.same()
                 case NodeBecameReady(node_id=nid):
                     tm_ref.tell(NodeAvailable(
@@ -211,9 +216,13 @@ def pool_actor() -> Behavior[PoolMsg]:
                         head_addr=head_addr,
                     )
                 case NodeLost(node_id=nid):
+                    log.warning(
+                        "Node {nid} lost, {remaining} nodes remaining",
+                        nid=nid, remaining=len(ready_nodes) - 1,
+                    )
                     tm_ref.tell(NodeUnavailable(node_id=nid))
                     if head_addr:
-                        head_msg = SetHeadAddr(
+                        head_msg = HeadAddressKnown(
                             head_addr=head_addr,
                             casty_port=25520,
                             num_nodes=spec.nodes,
