@@ -60,7 +60,6 @@ from skyward.distributed import (
 from skyward.distributed.types import Consistency
 from skyward.observability.logger import logger
 from skyward.observability.logging import LogConfig, setup_logging, teardown_logging
-from skyward.providers.aws.config import AWS
 
 from .spec import DEFAULT_IMAGE, Image, InflightStrategy, PoolSpec
 
@@ -285,11 +284,7 @@ def compute[**P, T](
 
 @dataclass
 class ComputePool:
-    """Synchronous ComputePool facade.
-
-    Wraps v2's async ComputePool with a synchronous API. Uses a
-    dedicated background thread for the asyncio event loop.
-
+    """
     Args:
         provider: Cloud provider configuration (AWS, etc.).
         nodes: Number of nodes to provision.
@@ -323,8 +318,6 @@ class ComputePool:
 
     concurrency: int = 1
     max_inflight: int | InflightStrategy | None = None
-
-    panel: bool = False
 
     logging: LogConfig | bool = True
 
@@ -674,7 +667,6 @@ class ComputePool:
         """Start pool asynchronously using actors (zero bus)."""
         from skyward.actors.console import console_actor
         from skyward.actors.messages import PoolStarted, StartPool
-        from skyward.actors.panel import panel_actor
         from skyward.actors.pool import pool_actor
 
         logger.info("Creating cloud provider ({type})", type=self.provider.type)
@@ -712,28 +704,20 @@ class ComputePool:
 
         await self._system.__aenter__()
 
-        panel_ref = (
-            self._system.spawn(panel_actor(spec), "panel")
-            if self.panel
-            else None
-        )
-
         console_ref = (
             self._system.spawn(console_actor(spec), "console")
-            if self.logging and not self.panel
+            if self.logging
             else None
         )
         self._console_ref = console_ref
 
         pool_behavior = pool_actor()
-        if panel_ref is not None:
-            pool_behavior = Behaviors.spy(pool_behavior, panel_ref, spy_children=True)
         if console_ref is not None:
             pool_behavior = Behaviors.spy(pool_behavior, console_ref, spy_children=True)
 
         logger.debug(
-            "Spawning pool actor (panel={panel}, console={console})",
-            panel=panel_ref is not None, console=console_ref is not None,
+            "Spawning pool actor (console={console})",
+            console=console_ref is not None,
         )
         pool_ref: ActorRef[PoolMsg] = self._system.spawn(pool_behavior, "pool")
         self._pool_ref = pool_ref
@@ -828,129 +812,3 @@ class ComputePool:
     def Named(cls, name: str) -> ComputePool:
         from skyward.config import resolve_pool
         return resolve_pool(name)
-
-
-class _PoolFactory:
-    """Factory that can be used as context manager or decorator."""
-
-    def __init__(
-        self,
-        provider: ProviderConfig | None = None,
-        nodes: int = 1,
-        accelerator: str | Accelerator | None = None,
-        vcpus: int | None = None,
-        memory_gb: int | None = None,
-        architecture: Literal["x86_64", "arm64"] | None = None,
-        image: Image | None = None,
-        allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
-        ttl: int = 600,
-        panel: bool = False,
-        logging: LogConfig | bool = True,
-        max_hourly_cost: float | None = None,
-        provision_timeout: int = 300,
-        ssh_timeout: int = 300,
-        ssh_retry_interval: int = 2,
-        max_inflight: int | InflightStrategy | None = None,
-        default_compute_timeout: float = 300.0,
-    ) -> None:
-        self._provider = provider
-        self._nodes = nodes
-        self._accelerator = accelerator
-        self._vcpus = vcpus
-        self._memory_gb = memory_gb
-        self._architecture = architecture
-        self._image = image
-        self._allocation = allocation
-        self._ttl = ttl
-        self._panel = panel
-        self._logging = logging
-        self._max_hourly_cost = max_hourly_cost
-        self._provision_timeout = provision_timeout
-        self._ssh_timeout = ssh_timeout
-        self._ssh_retry_interval = ssh_retry_interval
-        self._max_inflight = max_inflight
-        self._default_compute_timeout = default_compute_timeout
-        self._pool: ComputePool | None = None
-
-    def _create_pool(self) -> ComputePool:
-        """Create the underlying pool."""
-        provider = self._provider or AWS()
-        return ComputePool(
-            provider=provider,
-            nodes=self._nodes,
-            accelerator=self._accelerator,
-            vcpus=self._vcpus,
-            memory_gb=self._memory_gb,
-            architecture=self._architecture,  # type: ignore[arg-type]
-            allocation=self._allocation,  # type: ignore[arg-type]
-            image=self._image or DEFAULT_IMAGE,
-            ttl=self._ttl,
-            panel=self._panel,
-            logging=self._logging,
-            max_hourly_cost=self._max_hourly_cost,
-            provision_timeout=self._provision_timeout,
-            ssh_timeout=self._ssh_timeout,
-            ssh_retry_interval=self._ssh_retry_interval,
-            max_inflight=self._max_inflight,
-            default_compute_timeout=self._default_compute_timeout,
-        )
-
-    def __enter__(self) -> ComputePool:
-        """Use as context manager."""
-        self._pool = self._create_pool()
-        return self._pool.__enter__()
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: TracebackType | None,
-    ) -> None:
-        """Exit context manager."""
-        if self._pool:
-            self._pool.__exit__(exc_type, exc_val, exc_tb)
-            self._pool = None
-
-
-def pool(
-    provider: ProviderConfig | None = None,
-    nodes: int = 1,
-    accelerator: str | Accelerator | None = None,
-    vcpus: int | None = None,
-    memory_gb: int | None = None,
-    architecture: Literal["x86_64", "arm64"] | None = None,
-    image: Image | None = None,
-    allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
-    ttl: int = 600,
-    panel: bool = False,
-    logging: LogConfig | bool = True,
-    max_hourly_cost: float | None = None,
-    provision_timeout: int = 300,
-    ssh_timeout: int = 300,
-    ssh_retry_interval: int = 2,
-    default_compute_timeout: float = 300.0,
-) -> _PoolFactory:
-    """Create a compute pool context manager.
-
-    Example:
-        with pool(provider=AWS(), accelerator="A100") as p:
-            result = train(data) >> p
-    """
-    return _PoolFactory(
-        provider=provider,
-        nodes=nodes,
-        accelerator=accelerator,
-        vcpus=vcpus,
-        memory_gb=memory_gb,
-        architecture=architecture,
-        image=image,
-        allocation=allocation,
-        ttl=ttl,
-        panel=panel,
-        logging=logging,
-        max_hourly_cost=max_hourly_cost,
-        provision_timeout=provision_timeout,
-        ssh_timeout=ssh_timeout,
-        ssh_retry_interval=ssh_retry_interval,
-        default_compute_timeout=default_compute_timeout,
-    )

@@ -40,7 +40,6 @@ class ActiveState:
 def node_actor(
     node_id: NodeId,
     pool: ActorRef,
-    panel: ActorRef | None = None,
     ssh_timeout: float = 300.0,
     ssh_retry_interval: float = 5.0,
 ) -> Behavior[NodeMsg]:
@@ -59,10 +58,7 @@ def node_actor(
             ssh_timeout=ssh_timeout,
             ssh_retry_interval=ssh_retry_interval,
         )
-        return ctx.spawn(
-            Behaviors.spy(behavior, observer=panel) if panel else behavior,
-            name=f"instance-{instance.id}",
-        )
+        return ctx.spawn(behavior, name=f"instance-{instance.id}")
 
     def idle() -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:

@@ -196,7 +196,6 @@ def JoblibPool(
     memory_gb: int | None = None,
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
     provision_timeout: int = 3600,
-    panel: bool = False,
     joblib_version: str | None = None,
 ) -> Iterator[ComputePool]:
     """Compute pool with joblib backend for distributed parallel execution.
@@ -212,7 +211,6 @@ def JoblibPool(
         memory_gb: Memory per worker in GB.
         allocation: Instance allocation strategy.
         provision_timeout: Provisioning timeout in seconds.
-        panel: Enable Rich terminal dashboard.
         joblib_version: Specific joblib version (e.g., "1.3.0"). None for latest.
 
     Yields:
@@ -238,7 +236,7 @@ def JoblibPool(
         memory_gb=memory_gb,
         allocation=allocation,
         provision_timeout=provision_timeout,
-        panel=panel,
+
     )
 
     with pool:
@@ -260,7 +258,6 @@ def ScikitLearnPool(
     memory_gb: int | None = None,
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
     provision_timeout: int = 3600,
-    panel: bool = True,
     sklearn_version: str | None = None,
 ) -> Iterator[ComputePool]:
     """Compute pool with scikit-learn for distributed ML training.
@@ -276,7 +273,6 @@ def ScikitLearnPool(
         memory_gb: Memory per worker in GB.
         allocation: Instance allocation strategy.
         provision_timeout: Provisioning timeout in seconds.
-        panel: Enable Rich terminal dashboard.
         sklearn_version: Specific sklearn version (e.g., "1.4.0"). None for latest.
 
     Yields:
@@ -303,7 +299,7 @@ def ScikitLearnPool(
         memory_gb=memory_gb,
         allocation=allocation,
         provision_timeout=provision_timeout,
-        panel=panel,
+
     )
 
     with pool:

@@ -298,9 +298,15 @@ class _State:
     live: Live | None = None
 
 
+_MAX_LOG_ENTRIES = 100
+
+
 def _inst(state: _State, instance_id: str, line: str) -> _State:
     entry = _LogEntry(instance_id=instance_id, line=line)
-    return replace(state, log=(*state.log, entry))
+    log = (*state.log, entry)
+    if len(log) > _MAX_LOG_ENTRIES:
+        log = log[-_MAX_LOG_ENTRIES:]
+    return replace(state, log=log)
 
 
 # ─── Rendering ────────────────────────────────────────────────────
@@ -596,10 +602,6 @@ def _render(state: _State) -> RenderableType:
     budget = max(1, term_h - header_height - footer_height)
     visible = state.log[-budget:]
 
-    truncated = len(state.log) > budget
-    if truncated:
-        parts.append(Text(f"  … {len(state.log) - budget} more", style="dim"))
-
     for entry in visible:
         line = Text()
         short_id = entry.instance_id[:8].center(8)
@@ -607,7 +609,7 @@ def _render(state: _State) -> RenderableType:
         line.append(f"  {entry.line}")
         parts.append(line)
 
-    used_log_lines = len(visible) + (1 if truncated else 0)
+    used_log_lines = len(visible)
     padding = budget - used_log_lines
     for _ in range(padding):
         parts.append(Text())

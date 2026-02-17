@@ -162,7 +162,6 @@ class TestResolvePool:
         pool = resolve_pool("minimal", project_dir=tmp_path)
         assert pool.allocation == "spot-if-available"
         assert pool.ttl == 600
-        assert pool.panel is True
 
     def test_runpod_pool(self, tmp_path: Path):
         (tmp_path / "skyward.toml").write_text(

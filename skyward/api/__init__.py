@@ -7,7 +7,6 @@ from .pool import (
     PendingComputeGroup,
     compute,
     gather,
-    pool,
     sky,
 )
 from .provider import ProviderConfig
@@ -38,7 +37,6 @@ __all__ = [
     "ComputePool",
     "compute",
     "gather",
-    "pool",
     "sky",
     "AllocationStrategy",
     "Architecture",
