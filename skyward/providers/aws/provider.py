@@ -11,24 +11,15 @@ from datetime import timedelta
 from skyward.api import PoolSpec
 from skyward.api.model import Cluster, Instance, InstanceStatus
 from skyward.infra.cache import cached
-from skyward.infra.pricing import get_instance_pricing
 from skyward.infra.retry import on_exception_message, retry
 from skyward.observability.logger import logger
 from skyward.providers.provider import CloudProvider
 
 from .clients import EC2ClientFactory
 from .config import AWS, AllocationStrategy
+from .instances import get_instance_spec
 
 type Architecture = str
-
-_AWS_INSTANCE_GPU: dict[str, str] = {
-    "g4dn": "T4",
-    "g5": "A10G",
-    "g6": "L4",
-    "p4d": "A100",
-    "p4de": "A100",
-    "p5": "H100",
-}
 
 log = logger.bind(provider="aws")
 
@@ -86,9 +77,14 @@ class AWSCloudProvider(CloudProvider[AWS, AWSSpecific]):
         return cls(config, EC2ClientFactory(ec2_factory))
 
     async def prepare(self, spec: PoolSpec) -> Cluster[AWSSpecific]:
+        log.info("Setting up AWS infrastructure")
         resources, (ssh_key_name, ssh_key_path) = await asyncio.gather(
             _ensure_infrastructure(self._config, self._ec2),
             _ensure_key_pair(self._config, self._ec2),
+        )
+        log.info(
+            "Infrastructure ready: sg={sg}, subnets={n}",
+            sg=resources.security_group_id, n=len(resources.subnet_ids),
         )
 
         return Cluster(
@@ -112,7 +108,7 @@ class AWSCloudProvider(CloudProvider[AWS, AWSSpecific]):
         )
 
         ttl = cluster.spec.ttl or self._config.instance_timeout
-        user_data = cluster.spec.image.generate_bootstrap(ttl=ttl)
+        user_data = _self_destruction_script(ttl, cluster.shutdown_command)
 
         instance_ids = await _launch_fleet(
             config=self._config,
@@ -125,10 +121,35 @@ class AWSCloudProvider(CloudProvider[AWS, AWSSpecific]):
             n=count,
         )
 
-        return [
-            Instance(id=iid, status="provisioning")
-            for iid in instance_ids
-        ]
+        details = await _get_instance_details(self._ec2, instance_ids)
+        detail_map = {d.id: d for d in details}
+
+        instances: list[Instance] = []
+        for iid in instance_ids:
+            detail = detail_map.get(iid)
+            real_type = detail.instance_type if detail else instance_configs[0].instance_type
+            spot = detail.spot if detail else instance_configs[0].spot
+            ispec = await get_instance_spec(real_type, self._config.region)
+            instances.append(Instance(
+                id=iid,
+                status="provisioning",
+                spot=spot,
+                instance_type=real_type,
+                gpu_count=ispec.gpu_count if ispec else 0,
+                gpu_model=ispec.gpu_model if ispec else "",
+                vcpus=ispec.vcpus if ispec else 0,
+                memory_gb=ispec.memory_gb if ispec else 0.0,
+                gpu_vram_gb=int(ispec.gpu_vram_gb) if ispec else 0,
+                region=self._config.region,
+                hourly_rate=(
+                    (ispec.spot_price if spot else ispec.ondemand_price) or 0.0
+                ) if ispec else 0.0,
+                on_demand_rate=(
+                    (ispec.ondemand_price or 0.0) if ispec else 0.0
+                ),
+                billing_increment=1,
+            ))
+        return instances
 
     async def get_instance(
         self, cluster: Cluster[AWSSpecific], instance_id: str,
@@ -142,9 +163,15 @@ class AWSCloudProvider(CloudProvider[AWS, AWSSpecific]):
             case "terminated" | "shutting-down":
                 return None
             case "running":
-                return _build_instance(detail, status="provisioned", region=self._config.region)
+                return await _build_instance(
+                    detail, status="provisioned",
+                    region=self._config.region,
+                )
             case _:
-                return _build_instance(detail, status="provisioning", region=self._config.region)
+                return await _build_instance(
+                    detail, status="provisioning",
+                    region=self._config.region,
+                )
 
     async def terminate(self, instance_ids: tuple[str, ...]) -> None:
         if not instance_ids:
@@ -153,6 +180,16 @@ class AWSCloudProvider(CloudProvider[AWS, AWSSpecific]):
 
     async def teardown(self, cluster: Cluster[AWSSpecific]) -> None:
         pass
+
+
+def _self_destruction_script(ttl: int, shutdown_command: str) -> str:
+    from skyward.providers.bootstrap.compose import resolve
+    from skyward.providers.bootstrap.ops import instance_timeout
+
+    lines = ["#!/bin/bash", "set -e"]
+    if ttl:
+        lines.append(resolve(instance_timeout(ttl, shutdown_command=shutdown_command)))
+    return "\n".join(lines) + "\n"
 
 
 async def _ensure_infrastructure(
@@ -183,13 +220,16 @@ async def _get_default_subnets(ec2: EC2ClientFactory) -> tuple[str, ...]:
             raise RuntimeError("No default VPC found")
 
         vpc_id = vpcs["Vpcs"][0]["VpcId"]
+        log.debug("Found default VPC {vpc}", vpc=vpc_id)
         subnets = await client.describe_subnets(
             Filters=[{"Name": "vpc-id", "Values": [vpc_id]}],
         )
         if not subnets["Subnets"]:
             raise RuntimeError("No subnets found in default VPC")
 
-        return tuple(s["SubnetId"] for s in subnets["Subnets"])
+        subnet_ids = tuple(s["SubnetId"] for s in subnets["Subnets"])
+        log.debug("Discovered {n} subnets in VPC {vpc}", n=len(subnet_ids), vpc=vpc_id)
+        return subnet_ids
 
 
 async def _ensure_security_group(ec2: EC2ClientFactory, prefix: str) -> str:
@@ -202,6 +242,7 @@ async def _ensure_security_group(ec2: EC2ClientFactory, prefix: str) -> str:
             )
             if resp["SecurityGroups"]:
                 sg_id = resp["SecurityGroups"][0]["GroupId"]
+                log.info("Found existing security group {sg}", sg=sg_id)
                 await _ensure_sg_rules(client, sg_id)
                 return sg_id
         except Exception:
@@ -226,6 +267,7 @@ async def _ensure_security_group(ec2: EC2ClientFactory, prefix: str) -> str:
             }],
         )
         sg_id = resp["GroupId"]
+        log.info("Created security group {sg}", sg=sg_id)
 
         await client.authorize_security_group_ingress(
             GroupId=sg_id,
@@ -302,6 +344,7 @@ async def _ensure_key_pair(config: AWS, ec2: EC2ClientFactory) -> tuple[str, str
         try:
             response = await client.describe_key_pairs(KeyNames=[key_name])
             if response.get("KeyPairs"):
+                log.info("Found existing SSH key pair {name}", name=key_name)
                 return key_name, private_key_path
         except Exception as e:
             if "InvalidKeyPair.NotFound" not in str(e):
@@ -310,6 +353,7 @@ async def _ensure_key_pair(config: AWS, ec2: EC2ClientFactory) -> tuple[str, str
             KeyName=key_name,
             PublicKeyMaterial=public_key.encode(),
         )
+        log.info("Imported SSH key pair {name}", name=key_name)
 
     return key_name, private_key_path
 
@@ -470,7 +514,9 @@ async def _get_ubuntu_ami(config: AWS, arch: Architecture) -> str:
     session = aioboto3.Session()
     async with session.client("ssm", region_name=config.region) as ssm:  # type: ignore[union-attr]
         response = await ssm.get_parameter(Name=param_name)
-        return response["Parameter"]["Value"]
+        ami = response["Parameter"]["Value"]
+        log.debug("Resolved Ubuntu AMI {ami} for {arch}", ami=ami, arch=arch)
+        return ami
 
 
 @cached(namespace="aws-amis", ttl=timedelta(hours=24))
@@ -488,7 +534,9 @@ async def _get_dlami(config: AWS, arch: Architecture) -> str:
     session = aioboto3.Session()
     async with session.client("ssm", region_name=config.region) as ssm:  # type: ignore[union-attr]
         response = await ssm.get_parameter(Name=param_name)
-        return response["Parameter"]["Value"]
+        ami = response["Parameter"]["Value"]
+        log.debug("Resolved DLAMI {ami} for {arch}", ami=ami, arch=arch)
+        return ami
 
 
 async def _launch_fleet(
@@ -555,6 +603,8 @@ async def _launch_fleet(
                 for inst in instances
             ]
 
+            log.info("Submitting fleet request for {n} instances (spot={spot})", n=n, spot=spot)
+
             fleet_response = await client.create_fleet(
                 Type="instant",
                 LaunchTemplateConfigs=[{
@@ -598,6 +648,10 @@ async def _launch_fleet(
             if len(instance_ids) < n:
                 raise RuntimeError(f"Fleet launched {len(instance_ids)}/{n}. Errors: {errors}")
 
+            log.info(
+                "Fleet launched {count} instances: {ids}",
+                count=len(instance_ids), ids=instance_ids,
+            )
             return instance_ids
 
         finally:
@@ -632,6 +686,7 @@ async def _get_instance_details(
     if not instance_ids:
         return []
 
+    log.debug("Polling instance details for {ids}", ids=instance_ids)
     async with ec2() as client:
         response = await client.describe_instances(InstanceIds=instance_ids)
         return sorted(
@@ -658,24 +713,10 @@ async def _terminate_instances(ec2: EC2ClientFactory, instance_ids: list[str]) -
         await client.terminate_instances(InstanceIds=instance_ids)
 
 
-def _build_instance(detail: _InstanceDetail, status: InstanceStatus, region: str) -> Instance:
-    from skyward.accelerators.catalog import get_gpu_vram_gb
 
-    instance_family = detail.instance_type.split(".")[0] if "." in detail.instance_type else ""
-    gpu_model = _AWS_INSTANCE_GPU.get(instance_family, "")
-    pricing = get_instance_pricing(detail.instance_type, "aws", region)
 
-    hourly_rate, on_demand_rate, gpu_count, vcpus, memory_gb = (
-        (
-            pricing.spot_avg if detail.spot and pricing.spot_avg else (pricing.ondemand or 0.0),
-            pricing.ondemand or 0.0,
-            pricing.gpu_count,
-            pricing.vcpu,
-            pricing.memory_gb,
-        )
-        if pricing
-        else (0.0, 0.0, 0, 0, 0.0)
-    )
+async def _build_instance(detail: _InstanceDetail, status: InstanceStatus, region: str) -> Instance:
+    ispec = await get_instance_spec(detail.instance_type, region)
 
     return Instance(
         id=detail.id,
@@ -685,13 +726,17 @@ def _build_instance(detail: _InstanceDetail, status: InstanceStatus, region: str
         ssh_port=22,
         spot=detail.spot,
         instance_type=detail.instance_type,
-        gpu_count=gpu_count,
-        gpu_model=gpu_model,
-        vcpus=vcpus,
-        memory_gb=memory_gb,
-        gpu_vram_gb=get_gpu_vram_gb(gpu_model),
+        gpu_count=ispec.gpu_count if ispec else 0,
+        gpu_model=ispec.gpu_model if ispec else "",
+        vcpus=ispec.vcpus if ispec else 0,
+        memory_gb=ispec.memory_gb if ispec else 0.0,
+        gpu_vram_gb=int(ispec.gpu_vram_gb) if ispec else 0,
         region=region,
-        hourly_rate=hourly_rate,
-        on_demand_rate=on_demand_rate,
+        hourly_rate=(
+            (ispec.spot_price if detail.spot else ispec.ondemand_price) or 0.0
+        ) if ispec else 0.0,
+        on_demand_rate=(
+            (ispec.ondemand_price or 0.0) if ispec else 0.0
+        ),
         billing_increment=1,
     )
