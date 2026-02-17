@@ -17,6 +17,8 @@ import asyncssh
 
 from skyward.observability.logger import logger
 
+log = logger.bind(component="ssh")
+
 # =============================================================================
 # Stream Event Types (parsed from JSONL)
 # =============================================================================
@@ -156,6 +158,7 @@ class SSHTransport:
             )
 
         self._conn = await do_connect()
+        log.info("SSH connection established to {host}:{port}", host=self.host, port=self.port)
 
     async def close(self) -> None:
         """Close SSH connection."""
@@ -164,6 +167,7 @@ class SSHTransport:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._conn.wait_closed(), timeout=5.0)
             self._conn = None
+            log.info("SSH connection closed to {host}:{port}", host=self.host, port=self.port)
 
     async def __aenter__(self) -> SSHTransport:
         await self.connect()
@@ -208,6 +212,7 @@ class SSHTransport:
         """
         conn = self._require_connection()
         cmd = " ".join(command)
+        log.trace("Executing command: {cmd}", cmd=cmd[:200])
 
         result = await conn.run(cmd, timeout=timeout, check=False)
 
@@ -300,6 +305,7 @@ class SSHTransport:
             remote: Remote destination path.
         """
         conn = self._require_connection()
+        log.info("Uploading {local} -> {remote}", local=local, remote=remote)
         await asyncssh.scp(local, (conn, remote))
 
     async def download(self, remote: str, local: str) -> None:
@@ -310,6 +316,7 @@ class SSHTransport:
             local: Local destination path.
         """
         conn = self._require_connection()
+        log.info("Downloading {remote} -> {local}", remote=remote, local=local)
         await asyncssh.scp((conn, remote), local)
 
     async def read_file(self, remote: str) -> str:
@@ -532,6 +539,7 @@ def _parse_jsonl_line(line: str) -> RawStreamEvent | None:
     try:
         data = json.loads(line)
     except json.JSONDecodeError:
+        log.warning("Failed to parse JSONL line: {line}", line=line[:200])
         return None
 
     match data.get("type"):

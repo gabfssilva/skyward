@@ -82,7 +82,12 @@ def deserialize(data: bytes) -> Any:
     Returns:
         The deserialized Python object.
     """
-    if data.startswith(COMPRESSED_MAGIC):
-        data = zlib.decompress(data[len(COMPRESSED_MAGIC) :])
+    log.debug("Deserializing {size} bytes", size=len(data))
+    try:
+        if data.startswith(COMPRESSED_MAGIC):
+            data = zlib.decompress(data[len(COMPRESSED_MAGIC) :])
 
-    return cloudpickle.loads(data)
+        return cloudpickle.loads(data)
+    except Exception as e:
+        log.error("Deserialization failed: {err}", err=e)
+        raise

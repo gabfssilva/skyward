@@ -155,9 +155,14 @@ class VastAIClient:
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
+        self._log.debug("{method} {path}", method=method, path=path)
         try:
             return await self._do_request(method, path, json, params)
         except HttpError as e:
+            self._log.warning(
+                "API error {method} {path}: {status}",
+                method=method, path=path, status=e.status,
+            )
             raise VastAIError(f"API error {e.status}: {e.body}") from e
 
     # =========================================================================
@@ -358,12 +363,14 @@ class VastAIClient:
         if price is not None:
             body["price"] = price
 
+        self._log.debug("Creating instance from offer {oid}, image={img}", oid=offer_id, img=image)
         result: CreateInstanceResponse = await self._request(
             "PUT", f"/api/v0/asks/{offer_id}/", json=body,
         )
 
         instance_id = result.get("new_contract") or result.get("id")
         if instance_id:
+            self._log.debug("Created instance {iid}", iid=instance_id)
             return int(instance_id)
 
         raise VastAIError(f"No instance ID in response: {result}")
@@ -398,6 +405,7 @@ class VastAIClient:
 
     async def destroy_instance(self, instance_id: int) -> None:
         """Destroy an instance."""
+        self._log.debug("Destroying instance {iid}", iid=instance_id)
         await self._request("DELETE", f"/api/v0/instances/{instance_id}/", json={})
 
     # =========================================================================
@@ -406,6 +414,7 @@ class VastAIClient:
 
     async def create_overlay(self, cluster_id: int, name: str) -> None:
         """Create an overlay network on a physical cluster."""
+        self._log.debug("Creating overlay '{name}' on cluster {cid}", name=name, cid=cluster_id)
         result: OverlayCreateResponse | None = await self._request(
             "POST", "/api/v0/overlay/", json={"cluster_id": cluster_id, "name": name}
         )
@@ -416,6 +425,7 @@ class VastAIClient:
 
     async def join_overlay(self, name: str, instance_id: int) -> None:
         """Join an instance to an overlay network."""
+        self._log.debug("Joining instance {iid} to overlay '{name}'", iid=instance_id, name=name)
         await self._request(
             "PUT", "/api/v0/overlay/",
             json={"name": name, "instance_id": instance_id},
@@ -433,6 +443,7 @@ class VastAIClient:
 
     async def delete_overlay(self, name: str) -> None:
         """Delete an overlay network by name."""
+        self._log.debug("Deleting overlay '{name}'", name=name)
         with suppress(VastAIError):
             await self._request(
                 "DELETE", "/api/v0/overlay/",

@@ -53,6 +53,7 @@ def tensorflow[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
                 "TF_CONFIG set: {workers} workers, task_index={idx}",
                 workers=len(worker_addrs), idx=task_index,
             )
+            log.info("TensorFlow distributed initialization complete")
 
             return fn(*args, **kwargs)
 

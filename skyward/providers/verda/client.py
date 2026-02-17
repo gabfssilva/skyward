@@ -35,9 +35,14 @@ class VerdaClient:
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
+        self._log.debug("{method} {path}", method=method, path=path)
         try:
             return await self._http.request(method, path, json=json, params=params)
         except HttpError as e:
+            self._log.warning(
+                "API error {method} {path}: {status}",
+                method=method, path=path, status=e.status,
+            )
             raise VerdaError(f"API error {e.status}: {e.body}") from e
 
     # =========================================================================
@@ -76,6 +81,7 @@ class VerdaClient:
 
     async def create_ssh_key(self, name: str, public_key: str) -> SSHKeyResponse:
         """Register a new SSH public key."""
+        self._log.debug("Creating SSH key '{name}'", name=name)
         result: SSHKeyResponse | None = await self._request(
             "POST", "/ssh-keys", json={"name": name, "key": public_key}
         )
@@ -195,6 +201,7 @@ class VerdaClient:
         - volume_ids: array of volume IDs to delete
         - delete_permanently: only works when volume_ids is provided
         """
+        self._log.debug("Deleting instance {iid}", iid=instance_id)
         # Get instance to retrieve attached volume IDs
         instance = await self.get_instance(instance_id)
         volume_ids = instance.get("volume_ids", []) if instance else []

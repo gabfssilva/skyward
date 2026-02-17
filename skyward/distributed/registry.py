@@ -80,21 +80,25 @@ class DistributedRegistry:
         *,
         consistency: Consistency | None = None,
     ) -> CounterProxy:
+        log.debug("Creating distributed counter name={name}", name=name)
         d = self._get_distributed()
         counter = _call_on_loop(self._loop, lambda: d.counter(name))
         return CounterProxy(counter, consistency=consistency or "eventual")
 
     def queue(self, name: str) -> QueueProxy:
+        log.debug("Creating distributed queue name={name}", name=name)
         d = self._get_distributed()
         queue = _call_on_loop(self._loop, lambda: d.queue[Any](name))
         return QueueProxy(queue)
 
     def barrier(self, name: str, n: int) -> BarrierProxy:
+        log.debug("Creating distributed barrier name={name} n={n}", name=name, n=n)
         d = self._get_distributed()
         barrier = _call_on_loop(self._loop, lambda: d.barrier(name))
         return BarrierProxy(barrier, n)
 
     def lock(self, name: str) -> LockProxy:
+        log.debug("Creating distributed lock name={name}", name=name)
         d = self._get_distributed()
         lock = _call_on_loop(self._loop, lambda: d.lock(name))
         return LockProxy(lock)
@@ -102,3 +106,4 @@ class DistributedRegistry:
     def cleanup(self) -> None:
         log.debug("Cleaning up distributed registry")
         self._distributed = None
+        log.debug("Distributed registry cleanup complete")

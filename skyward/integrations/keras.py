@@ -34,7 +34,6 @@ def keras[**P, R](
     def decorator(fn: Callable[P, R]) -> Callable[P, R]:
         effective = backend or "jax"
 
-        # First wrap with Keras distribution setup
         @functools.wraps(fn)
         def inner(*args: P.args, **kwargs: P.kwargs) -> R:
             from skyward import instance_info
@@ -43,6 +42,7 @@ def keras[**P, R](
             log = logger.bind(integration="keras", backend=effective)
             pool = instance_info()
 
+            log.debug("Using backend: {backend}", backend=effective)
             log.debug("Pool info: {pool}", pool=pool)
 
             if pool and pool.total_nodes > 1:
@@ -70,6 +70,7 @@ def keras[**P, R](
                     keras.utils.set_random_seed(seed)
                     log.debug("Random seed set to {seed}", seed=seed)
 
+            log.info("Keras distributed initialization complete")
             return fn(*args, **kwargs)
 
         # Then wrap with backend initializer (runs FIRST, before list_devices)

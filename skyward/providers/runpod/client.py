@@ -128,6 +128,10 @@ class RunPodClient:
         try:
             return await self._http.request(method, path, json=json, params=params)
         except HttpError as e:
+            self._log.warning(
+                "API error {method} {path}: {status}",
+                method=method, path=path, status=e.status,
+            )
             raise RunPodError(f"API error {e.status}: {e.body}") from e
 
     # =========================================================================
@@ -178,6 +182,8 @@ class RunPodClient:
         query: str,
         variables: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        op_name = query.strip().split("(")[0].split("{")[0].strip().split()[-1]
+        self._log.debug("Executing GraphQL: {op}", op=op_name)
         try:
             async with HttpClient(
                 RUNPOD_GRAPHQL_URL,
@@ -191,6 +197,10 @@ class RunPodClient:
 
             match data:
                 case dict() as d if "errors" in d:
+                    self._log.warning(
+                        "GraphQL error in {op}: {errors}",
+                        op=op_name, errors=d["errors"],
+                    )
                     raise RunPodError(f"GraphQL error: {d['errors']}")
                 case dict() as d:
                     return d.get("data", {})
@@ -212,10 +222,12 @@ class RunPodClient:
         key_content = public_key.strip()
 
         if key_content in existing:
+            self._log.debug("SSH key already registered on RunPod")
             return
 
         updated = f"{existing}\n{key_content}" if existing else key_content
         await self._graphql(UPDATE_USER_SETTINGS_MUTATION, {"input": {"pubKey": updated}})
+        self._log.debug("SSH key registered on RunPod")
 
     # =========================================================================
     # GPU Types (via GraphQL - no REST endpoint available)

@@ -104,14 +104,21 @@ def retry[**P, T](
                             delay += random.uniform(0, delay * 0.1)
 
                         logger.warning(
-                            "Retry {attempt}/{max} after {exc_type}: {err}. Waiting {delay:.1f}s",
+                            "Retry {attempt}/{max} for {fn}: {exc_type}: {err}."
+                            " Waiting {delay:.1f}s",
                             attempt=attempt + 1, max=max_attempts,
+                            fn=func.__qualname__,
                             exc_type=type(e).__name__, err=e, delay=delay,
                         )
                         await asyncio.sleep(delay)
                         continue
 
-                    # Don't retry: either predicate returned False or no retries left
+                    if not has_retries_left:
+                        logger.error(
+                            "Max retries ({max}) exceeded for {fn}: {exc_type}: {err}",
+                            max=max_attempts, fn=func.__qualname__,
+                            exc_type=type(e).__name__, err=e,
+                        )
                     raise
 
             # Should never reach here, but satisfy type checker

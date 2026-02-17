@@ -24,12 +24,16 @@ def compute_fingerprint(public_key: str) -> str:
     Returns:
         Fingerprint in format "aa:bb:cc:..." or empty string on error.
     """
+    from skyward.observability.logger import logger
+
     try:
         parts = public_key.strip().split()
         if len(parts) >= 2:
             decoded = base64.b64decode(parts[1])
             digest = hashlib.md5(decoded).hexdigest()
-            return ":".join(digest[i : i + 2] for i in range(0, len(digest), 2))
+            fingerprint = ":".join(digest[i : i + 2] for i in range(0, len(digest), 2))
+            logger.debug("Computed SSH key fingerprint: {fp}", fp=fingerprint)
+            return fingerprint
     except Exception:
         pass
     return ""
@@ -136,6 +140,10 @@ async def ensure_ssh_key_on_provider(
     logger.info(f"{provider_name}: Creating SSH key '{key_name}'")
     try:
         new_key = await create_key_fn(key_name, public_key)
+        logger.info(
+            "{provider}: SSH key provisioned with id={kid}",
+            provider=provider_name, kid=new_key["id"],
+        )
         return new_key["id"]
     except Exception as e:
         # Handle race condition - key might have been created by another process

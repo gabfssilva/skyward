@@ -23,6 +23,7 @@ _system_loop: asyncio.AbstractEventLoop | None = None
 def set_system_loop(loop: asyncio.AbstractEventLoop) -> None:
     global _system_loop
     _system_loop = loop
+    log.debug("System event loop registered for distributed proxies")
 
 
 def _get_loop() -> asyncio.AbstractEventLoop:
@@ -48,7 +49,10 @@ def _run_sync[T](coro: Coroutine[Any, Any, T]) -> T:
     try:
         return future.result(timeout=30)
     except TimeoutError:
-        log.debug("Cross-thread coroutine submission timed out after 30s")
+        log.warning("Cross-thread coroutine submission timed out after 30s")
+        raise
+    except Exception:
+        log.debug("Cross-thread coroutine submission failed")
         raise
 
 

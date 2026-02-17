@@ -75,6 +75,7 @@ class VerdaCloudProvider(CloudProvider[Verda, VerdaSpecific]):
             create_key_fn=lambda name, key: self._client.create_ssh_key(name, key),  # type: ignore[reportArgumentType]
             provider_name="verda",
         )
+        log.debug("SSH key ensured: id={kid}", kid=ssh_key_id)
         ssh_key_path = get_ssh_key_path()
 
         instance_type, os_image, itype_data = await _resolve_instance_type(
@@ -90,9 +91,9 @@ class VerdaCloudProvider(CloudProvider[Verda, VerdaSpecific]):
         ) or 0.0
 
         ttl = spec.ttl or self._config.instance_timeout
-        user_data = spec.image.generate_bootstrap(ttl=ttl)
-        script_name = f"skyward-bootstrap-verda-{uuid.uuid4().hex[:8]}"
-        script = await self._client.create_startup_script(script_name, user_data)
+        startup_content = _self_destruction_script(ttl, "shutdown -h now")
+        script_name = f"skyward-startup-verda-{uuid.uuid4().hex[:8]}"
+        script = await self._client.create_startup_script(script_name, startup_content)
 
         return Cluster(
             id=f"verda-{uuid.uuid4().hex[:8]}",
@@ -127,6 +128,7 @@ class VerdaCloudProvider(CloudProvider[Verda, VerdaSpecific]):
 
         instances: list[Instance] = []
         for i in range(count):
+            log.info("Provisioning instance {i}/{count}", i=i + 1, count=count)
             region = await _find_available_region(
                 self._client, specific.instance_type, use_spot, specific.region,
             )
@@ -180,6 +182,16 @@ class VerdaCloudProvider(CloudProvider[Verda, VerdaSpecific]):
             log.error("Failed to delete startup script: {err}", err=e)
 
 
+def _self_destruction_script(ttl: int, shutdown_command: str) -> str:
+    from skyward.providers.bootstrap.compose import resolve
+    from skyward.providers.bootstrap.ops import instance_timeout
+
+    lines = ["#!/bin/bash", "set -e"]
+    if ttl:
+        lines.append(resolve(instance_timeout(ttl, shutdown_command=shutdown_command)))
+    return "\n".join(lines) + "\n"
+
+
 def _build_verda_instance(
     info: InstanceResponse, status: InstanceStatus, specific: VerdaSpecific,
 ) -> Instance:
@@ -209,6 +221,10 @@ async def _resolve_instance_type(
 
     instance_types = await client.list_instance_types()
     availability = await client.get_availability(is_spot=use_spot)
+    log.debug(
+        "Availability: {n} regions, {t} instance types",
+        n=len(availability), t=len(instance_types),
+    )
 
     available_types = {t for region_types in availability.values() for t in region_types}
 
@@ -226,6 +242,7 @@ async def _resolve_instance_type(
         )
 
     candidates = [itype for itype in instance_types if _matches(itype)]
+    log.debug("Found {n} matching instance type candidates", n=len(candidates))
 
     if not candidates:
         raise RuntimeError(f"No instance types match accelerator={spec.accelerator_name}")

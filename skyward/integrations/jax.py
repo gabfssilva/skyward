@@ -58,10 +58,14 @@ def jax[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]:
                 "NCCL_SOCKET_IFNAME": nccl_iface,
             }
 
+            set_vars = {}
             for key, value in env.items():
                 if not value:
                     continue
                 os.environ[key] = value
+                set_vars[key] = value
+
+            log.debug("Env vars set: {vars}", vars=set_vars)
 
             local_device_ids = list(range(pool.accelerators)) if pool.accelerators > 0 else None
 

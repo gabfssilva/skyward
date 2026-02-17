@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
+from uuid import uuid4
 
 from casty import ActorRef
 
@@ -227,14 +228,6 @@ class InstanceDestroyed:
 
 
 @dataclass(frozen=True, slots=True)
-class ClusterReady:
-    """All nodes are ready - cluster is operational."""
-
-    cluster_id: ClusterId
-    nodes: tuple[InstanceMetadata, ...]
-
-
-@dataclass(frozen=True, slots=True)
 class ClusterDestroyed:
     """Cluster was fully shut down."""
 
@@ -445,15 +438,26 @@ class _WorkerFailed:
     error: str
 
 
+@dataclass(frozen=True, slots=True)
+class _BootstrapUploaded:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class _BootstrapUploadFailed:
+    error: str
+
+
 type InstanceMsg = (
     Running | Bootstrapping | Bootstrapped | BootstrapDone
-    | Log | Metric | Preempted | Execute | SetHeadAddr
+    | Log | Metric | Preempted | Execute | HeadAddressKnown
     | _PollTick | _PollResult
     | _LocalInstallDone | _LocalInstallFailed
     | _UserCodeSyncDone | _UserCodeSyncFailed
     | _PostBootstrapFailed
     | _Connected | _ConnectionFailed
     | _WorkerStarted | _WorkerFailed
+    | _BootstrapUploaded | _BootstrapUploadFailed
 )
 
 
@@ -500,7 +504,7 @@ type NodeMsg = (
     | InstanceDied
     | ExecuteOnNode
     | TaskResult
-    | SetHeadAddr
+    | HeadAddressKnown
 )
 
 
@@ -546,7 +550,7 @@ class StopPool:
 
 
 @dataclass(frozen=True, slots=True)
-class SetHeadAddr:
+class HeadAddressKnown:
     head_addr: str
     casty_port: int
     num_nodes: int
@@ -554,13 +558,14 @@ class SetHeadAddr:
 
 
 @dataclass(frozen=True, slots=True)
-class _ClusterReady:
-    cluster: Any
+class ClusterReady:
+    cluster: Cluster
 
 
 @dataclass(frozen=True, slots=True)
-class _InstancesProvisioned:
-    instances: Any
+class InstancesProvisioned:
+    cluster: Cluster
+    instances: tuple[Instance, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -571,12 +576,14 @@ class _ShutdownDone:
 type PoolMsg = (
     StartPool
     | StopPool
+    | PoolStarted
+    | HeadAddressKnown
     | NodeBecameReady
     | NodeLost
     | SubmitTask
     | SubmitBroadcast
-    | _ClusterReady
-    | _InstancesProvisioned
+    | ClusterReady
+    | InstancesProvisioned
     | _ShutdownDone
 )
 
@@ -588,14 +595,20 @@ type PoolMsg = (
 
 @dataclass(frozen=True, slots=True)
 class SubmitTask:
-    fn_bytes: bytes
+    fn: Any
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
     reply_to: ActorRef[Any]
+    task_id: str = field(default_factory=lambda: uuid4().hex[:8])
 
 
 @dataclass(frozen=True, slots=True)
 class SubmitBroadcast:
-    fn_bytes: bytes
+    fn: Any
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
     reply_to: ActorRef[Any]
+    task_id: str = field(default_factory=lambda: uuid4().hex[:8])
 
 
 @dataclass(frozen=True, slots=True)
@@ -617,7 +630,16 @@ class NodeSlots:
     used: int
 
 
-type TaskManagerMsg = NodeAvailable | NodeUnavailable | TaskResult | SubmitTask | SubmitBroadcast
+@dataclass(frozen=True, slots=True)
+class TaskSubmitted:
+    task_id: str
+    node_id: NodeId
+
+
+type TaskManagerMsg = (
+    NodeAvailable | NodeUnavailable | TaskResult
+    | SubmitTask | SubmitBroadcast | TaskSubmitted
+)
 
 
 # =============================================================================

@@ -56,7 +56,12 @@ def torch[**P, R](
                 if value:
                     os.environ[key] = value
 
+            log.debug("Env vars set: {vars}", vars={k: v for k, v in env.items() if v})
+
             be = backend or ("nccl" if torch.cuda.is_available() else "gloo")  # type: ignore[reportAttributeAccessIssue]
+            if backend is None:
+                cuda = torch.cuda.is_available()  # type: ignore[reportAttributeAccessIssue]
+                log.debug("Auto-detected backend: {be} (CUDA available={cuda})", be=be, cuda=cuda)
             log.debug(
                 "Initializing process group: backend={be}, rank={rank}, world_size={ws}",
                 be=be, rank=global_rank, ws=world_size,

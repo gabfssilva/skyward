@@ -74,6 +74,7 @@ class RunPodCloudProvider(CloudProvider[RunPod, RunPodSpecific]):
 
         async with RunPodClient(api_key, config=self._config) as client:
             await client.ensure_ssh_key(ssh_public_key)
+            log.debug("SSH key ensured on RunPod account")
 
         gpu_type_id, gpu_vram_gb = await _resolve_gpu_type(self._config, spec)
 
@@ -150,6 +151,11 @@ class RunPodCloudProvider(CloudProvider[RunPod, RunPodSpecific]):
         if not pod:
             return None
 
+        log.debug(
+            "Pod {pid} status: desired={desired}, ip={ip}",
+            pid=instance_id, desired=pod.get("desiredStatus"),
+            ip=pod.get("publicIp"),
+        )
         match pod.get("desiredStatus"):
             case "TERMINATED":
                 return None
@@ -236,6 +242,11 @@ async def _resolve_gpu_type(config: RunPod, spec: PoolSpec) -> tuple[str | None,
         g for g in gpu_types
         if (is_secure and g.get("secureCloud")) or (not is_secure and g.get("communityCloud"))
     ]
+    log.debug(
+        "GPU types: {total} total, {avail} available for cloud_type={cloud}",
+        total=len(gpu_types), avail=len(available),
+        cloud=config.cloud_type.value,
+    )
 
     requested = spec.accelerator_name.upper()
     gpu = next(
@@ -320,6 +331,11 @@ async def _create_gpu_pod(
 ) -> PodResponse:
     use_spot = cluster.spec.allocation in ("spot", "spot-if-available")
 
+    log.debug(
+        "Creating GPU pod for node {idx}: gpu={gpu}, count={count}",
+        idx=node_index, gpu=cluster.specific.gpu_type_id,
+        count=cluster.spec.accelerator_count or 1,
+    )
     params: PodCreateParams = {
         "name": f"skyward-{cluster.id}-{node_index}",
         "imageName": _get_image_name(cluster.spec),

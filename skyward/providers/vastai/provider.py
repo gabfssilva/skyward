@@ -199,6 +199,16 @@ class VastAICloudProvider(CloudProvider[VastAI, VastAISpecific]):
                 )
 
 
+def _self_destruction_script(ttl: int, shutdown_command: str) -> str:
+    from skyward.providers.bootstrap.compose import resolve
+    from skyward.providers.bootstrap.ops import instance_timeout
+
+    lines = ["#!/bin/bash", "set -e", "tail -f /dev/null &"]
+    if ttl:
+        lines.append(resolve(instance_timeout(ttl, shutdown_command=shutdown_command)))
+    return "\n".join(lines) + "\n"
+
+
 def _build_vastai_instance(
     info: InstanceResponse, status: InstanceStatus, specific: VastAISpecific,
 ) -> Instance:
@@ -251,6 +261,10 @@ async def _search_offers(
         else None
     )
 
+    log.debug(
+        "Searching offers: gpu={gpu}, geo={geo}, interruptible={spot}",
+        gpu=gpu_name, geo=config.geolocation, spot=use_interruptible,
+    )
     offers = await client.search_offers(
         gpu_name=gpu_name,
         min_reliability=config.min_reliability,
@@ -258,6 +272,7 @@ async def _search_offers(
         use_interruptible=use_interruptible,
         with_cluster_id=spec.nodes > 1,
     )
+    log.debug("Found {n} offers", n=len(offers))
 
     if gpu_name:
         req_norm = gpu_name.upper()
@@ -308,7 +323,8 @@ async def _try_create_from_offers(
     use_interruptible = cluster.spec.allocation in ("spot", "spot-if-available")
     docker_image = cluster.specific.docker_image
     label = f"skyward-{cluster.id}-{len(cluster.instances)}"
-    minimal_onstart = "#!/bin/bash\nset -e\nmkdir -p /opt/skyward\ntail -f /dev/null\n"
+    ttl = cluster.spec.ttl or config.instance_timeout
+    minimal_onstart = _self_destruction_script(ttl, cluster.shutdown_command)
 
     for idx, offer in enumerate(offers):
         offer_id = offer["id"]
@@ -323,6 +339,11 @@ async def _try_create_from_offers(
             else None
         )
 
+        log.debug(
+            "Trying offer {i}/{total}: id={oid}, gpu={gpu}",
+            i=idx + 1, total=len(offers),
+            oid=offer_id, gpu=offer.get("gpu_name"),
+        )
         try:
             instance_id = await client.create_instance(
                 offer_id=offer_id,

@@ -26,5 +26,9 @@ def transformers[**P, R](
             ...
     """
     from skyward.integrations.torch import torch
+    from skyward.observability.logger import logger
+
+    log = logger.bind(integration="transformers")
+    log.debug("Delegating to torch integration with backend={backend}", backend=backend)
 
     return torch(backend=backend)

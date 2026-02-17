@@ -66,7 +66,7 @@ class LogConfig:
 
     level: LogLevel = "INFO"
     file: str = ".skyward/skyward.log"
-    console: bool = False
+    console: bool = True
     rotation: str = "50 MB"
     retention: int = 10
 

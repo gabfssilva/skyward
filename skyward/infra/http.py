@@ -74,6 +74,12 @@ class OAuth2Auth:
                 "client_secret": self._client_secret,
             },
         ) as resp:
+            if resp.status >= 400:
+                body = await resp.text()
+                logger.bind(component="http").error(
+                    "OAuth2 token fetch failed: status={status} body={body}",
+                    status=resp.status, body=body[:200],
+                )
             resp.raise_for_status()
             data = await resp.json()
             return data["access_token"]
@@ -164,6 +170,12 @@ class HttpClient:
     async def _parse(
         self, resp: aiohttp.ClientResponse, format: Literal["json", "text"]
     ) -> tuple[int, Any, dict[str, str]]:
+        if resp.status >= 400:
+            body = await resp.text()
+            self._log.warning(
+                "HTTP {status} from {url}",
+                status=resp.status, url=str(resp.url),
+            )
         resp.raise_for_status()
         resp_headers = dict(resp.headers)
         match format:

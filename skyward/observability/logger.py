@@ -18,8 +18,9 @@ import os
 import shutil
 import sys
 from collections.abc import Callable
-from typing import TextIO
+from typing import Any, TextIO
 
+from rich.console import Console
 from rich.logging import RichHandler
 
 TRACE = 5
@@ -30,8 +31,8 @@ _skyward_root = logging.getLogger("skyward")
 type Patcher = Callable[[logging.LogRecord], None]
 
 
-def _caller_logger() -> logging.Logger:
-    frame = inspect.stack()[2]
+def _caller_logger(depth: int = 2) -> logging.Logger:
+    frame = inspect.stack()[depth]
     module = frame.frame.f_globals.get("__name__", "skyward")
     return logging.getLogger(module)
 
@@ -53,49 +54,54 @@ class BoundLogger:
     def bind(self, **kwargs: object) -> BoundLogger:
         return BoundLogger({**self._extras, **kwargs})
 
-    def _log(self, level: int, message: str, /, *args: object, **kwargs: object) -> None:
+    def _log(
+        self, level: int, message: str, /, *args: Any,
+        _stacklevel: int = 1, **kwargs: Any,
+    ) -> None:
         exc_info = kwargs.pop("exc_info", False)
         text = _format_message(message, args, kwargs)
-        lib_logger = _caller_logger()
+        depth = _stacklevel + 2
+        lib_logger = _caller_logger(depth)
         if not lib_logger.isEnabledFor(level):
             return
+        frame = inspect.stack()[depth]
         record = lib_logger.makeRecord(
             name=lib_logger.name,
             level=level,
-            fn="",
-            lno=0,
+            fn=frame.filename,
+            lno=frame.lineno,
             msg=text,
             args=(),
             exc_info=None,
         )
-        frame = inspect.stack()[2]
-        record.pathname = frame.filename
-        record.filename = os.path.basename(frame.filename)
-        record.lineno = frame.lineno
         record.funcName = frame.function
+        record.filename = os.path.basename(frame.filename)
+        record._ctx = ""  # type: ignore[attr-defined]
         for k, v in self._extras.items():
             setattr(record, k, v)
         record.extras = self._extras  # type: ignore[attr-defined]
+        if _patcher is not None:
+            _patcher(record)
         if exc_info:
             record.exc_info = sys.exc_info()
         lib_logger.handle(record)
 
-    def trace(self, message: str, /, *args: object, **kwargs: object) -> None:
+    def trace(self, message: str, /, *args: Any, **kwargs: Any) -> None:
         self._log(TRACE, message, *args, **kwargs)
 
-    def debug(self, message: str, /, *args: object, **kwargs: object) -> None:
+    def debug(self, message: str, /, *args: Any, **kwargs: Any) -> None:
         self._log(logging.DEBUG, message, *args, **kwargs)
 
-    def info(self, message: str, /, *args: object, **kwargs: object) -> None:
+    def info(self, message: str, /, *args: Any, **kwargs: Any) -> None:
         self._log(logging.INFO, message, *args, **kwargs)
 
-    def warning(self, message: str, /, *args: object, **kwargs: object) -> None:
+    def warning(self, message: str, /, *args: Any, **kwargs: Any) -> None:
         self._log(logging.WARNING, message, *args, **kwargs)
 
-    def error(self, message: str, /, *args: object, **kwargs: object) -> None:
+    def error(self, message: str, /, *args: Any, **kwargs: Any) -> None:
         self._log(logging.ERROR, message, *args, **kwargs)
 
-    def exception(self, message: str, /, *args: object, **kwargs: object) -> None:
+    def exception(self, message: str, /, *args: Any, **kwargs: Any) -> None:
         kwargs["exc_info"] = True
         self._log(logging.ERROR, message, *args, **kwargs)
 
@@ -156,7 +162,7 @@ def _make_file_handler(
     handler.setLevel(level)
     handler.setFormatter(logging.Formatter(
         "%(asctime)s.%(msecs)03d | %(levelname)-8s | "
-        "%(name)s:%(funcName)s:%(lineno)d - %(message)s",
+        "%(name)s:%(funcName)s:%(lineno)d%(_ctx)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     ))
     return handler
@@ -164,12 +170,10 @@ def _make_file_handler(
 
 def _make_console_handler(level: int) -> logging.Handler:
     handler = RichHandler(
-        level=level,
-        console=None,
+        console=Console(stderr=True),
         show_time=True,
-        show_level=True,
-        show_path=True,
-        markup=True,
+        show_path=False,
+        markup=False,
         rich_tracebacks=True,
     )
     handler.setLevel(level)
@@ -183,23 +187,24 @@ class LoguruCompat:
     def bind(self, **kwargs: object) -> BoundLogger:
         return self._bound.bind(**kwargs)
 
-    def trace(self, message: str, /, *args: object, **kwargs: object) -> None:
-        self._bound.trace(message, *args, **kwargs)
+    def trace(self, message: str, /, *args: Any, **kwargs: Any) -> None:
+        self._bound._log(TRACE, message, *args, _stacklevel=2, **kwargs)
 
-    def debug(self, message: str, /, *args: object, **kwargs: object) -> None:
-        self._bound.debug(message, *args, **kwargs)
+    def debug(self, message: str, /, *args: Any, **kwargs: Any) -> None:
+        self._bound._log(logging.DEBUG, message, *args, _stacklevel=2, **kwargs)
 
-    def info(self, message: str, /, *args: object, **kwargs: object) -> None:
-        self._bound.info(message, *args, **kwargs)
+    def info(self, message: str, /, *args: Any, **kwargs: Any) -> None:
+        self._bound._log(logging.INFO, message, *args, _stacklevel=2, **kwargs)
 
-    def warning(self, message: str, /, *args: object, **kwargs: object) -> None:
-        self._bound.warning(message, *args, **kwargs)
+    def warning(self, message: str, /, *args: Any, **kwargs: Any) -> None:
+        self._bound._log(logging.WARNING, message, *args, _stacklevel=2, **kwargs)
 
-    def error(self, message: str, /, *args: object, **kwargs: object) -> None:
-        self._bound.error(message, *args, **kwargs)
+    def error(self, message: str, /, *args: Any, **kwargs: Any) -> None:
+        self._bound._log(logging.ERROR, message, *args, _stacklevel=2, **kwargs)
 
-    def exception(self, message: str, /, *args: object, **kwargs: object) -> None:
-        self._bound.exception(message, *args, **kwargs)
+    def exception(self, message: str, /, *args: Any, **kwargs: Any) -> None:
+        kwargs["exc_info"] = True
+        self._bound._log(logging.ERROR, message, *args, _stacklevel=2, **kwargs)
 
     def remove(self, handler_id: int | None = None) -> None:
         if handler_id is None:

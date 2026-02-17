@@ -50,8 +50,8 @@ class DiskCache:
                     }
                 else:
                     self._index = {}
-            except Exception:
-                self._log.debug("Index corrupted, resetting")
+            except Exception as e:
+                self._log.warning("Index corrupted, resetting: {err}", err=e)
                 self._index = {}
         else:
             self._index = {}
@@ -105,11 +105,16 @@ class DiskCache:
         """Store value in cache."""
         self._log.debug("Cache set key={key}", key=key)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self._key_path(key).write_bytes(cloudpickle.dumps(value))
+        try:
+            self._key_path(key).write_bytes(cloudpickle.dumps(value))
+        except OSError as e:
+            self._log.warning("Disk write failed for key={key}: {err}", key=key, err=e)
+            return
         self.index[key] = datetime.now(UTC)
         self._save_index()
 
     def _delete(self, key: str) -> None:
+        self._log.debug("Cache delete key={key}", key=key)
         path = self._key_path(key)
         if path.exists():
             path.unlink()
