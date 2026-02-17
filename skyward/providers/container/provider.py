@@ -30,6 +30,7 @@ _DOCKERFILE = (
 )
 
 _SSH_PORT_BASE = 10022
+_CONTAINER_PREFIX = "skyward"
 
 
 def _make_entrypoint(ttl: int) -> str:
@@ -42,8 +43,8 @@ def _make_entrypoint(ttl: int) -> str:
     )
 
 
-def _is_docker(binary: str) -> bool:
-    return binary in ("docker", "podman", "nerdctl")
+def _is_apple_container(binary: str) -> bool:
+    return binary == "container"
 
 
 class ContainerProvider(CloudProvider[Container, str]):
@@ -66,10 +67,7 @@ class ContainerProvider(CloudProvider[Container, str]):
     async def _ensure_image(self) -> None:
         tag = f"skyward-ssh:{hashlib.md5(self._config.image.encode()).hexdigest()[:12]}"
         try:
-            if _is_docker(self._bin):
-                await run(self._bin, "image", "inspect", tag)
-            else:
-                await run(self._bin, "image", "inspect", tag)
+            await run(self._bin, "image", "inspect", tag)
             log.debug("Image {tag} already exists", tag=tag)
             self._image = tag
             return
@@ -124,34 +122,35 @@ class ContainerProvider(CloudProvider[Container, str]):
         self, entrypoint: str, pub_key: str,
         cluster: Cluster[str], network_name: str,
     ) -> Instance:
-        name = f"skyward-{uuid.uuid4().hex[:12]}"
+        short_id = uuid.uuid4().hex[:12]
+        container_name = f"{_CONTAINER_PREFIX}-{short_id}"
         ssh_port = self._next_ssh_port()
 
         cmd: list[str] = [
             self._bin, "run", "-d",
-            "--name", name,
+            "--name", container_name,
             "-e", f"SSH_PUB_KEY={pub_key}",
             "-p", f"{ssh_port}:22",
             "--network", network_name,
             "-l", f"{_CLUSTER_LABEL}={cluster.id}",
         ]
 
-        if cluster.spec.vcpus:
-            cmd.extend(["--cpus", str(cluster.spec.vcpus)])
-        if cluster.spec.memory_gb:
-            if _is_docker(self._bin):
-                cmd.extend(["--memory", f"{cluster.spec.memory_gb}g"])
-            else:
-                cmd.extend(["--memory", f"{int(cluster.spec.memory_gb * 1024)}M"])
+        vcpus = cluster.spec.vcpus or 1
+        memory_gb = cluster.spec.memory_gb or 1
+        cmd.extend(["--cpus", str(vcpus)])
+        if _is_apple_container(self._bin):
+            cmd.extend(["--memory", f"{int(memory_gb * 1024)}M"])
+        else:
+            cmd.extend(["--memory", f"{memory_gb}g"])
 
         cmd.extend([self._image, "sh", "-c", entrypoint])
 
         await run(*cmd)
 
-        log.info("Container {id} launched (ssh port {port})", id=name, port=ssh_port)
+        log.info("Container {id} launched (ssh port {port})", id=container_name, port=ssh_port)
 
         return Instance(
-            id=name,
+            id=short_id,
             status="provisioning",
             instance_type="container",
             vcpus=cluster.spec.vcpus or 1,
@@ -159,8 +158,9 @@ class ContainerProvider(CloudProvider[Container, str]):
         )
 
     async def get_instance(self, cluster: Cluster[str], instance_id: str) -> Instance | None:
+        container_name = f"{_CONTAINER_PREFIX}-{instance_id}"
         try:
-            info = await run_json(self._bin, "inspect", instance_id)
+            info = await run_json(self._bin, "inspect", container_name)
         except RuntimeError:
             return None
 
@@ -181,7 +181,8 @@ class ContainerProvider(CloudProvider[Container, str]):
 
     async def terminate(self, instance_ids: tuple[str, ...]) -> None:
         for iid in instance_ids:
-            await _stop_and_remove(self._bin, iid)
+            container_name = f"{_CONTAINER_PREFIX}-{iid}"
+            await _stop_and_remove(self._bin, container_name)
             log.info("Container {id} terminated", id=iid)
 
     async def teardown(self, cluster: Cluster[str]) -> None:
@@ -198,13 +199,7 @@ class ContainerProvider(CloudProvider[Container, str]):
 
 
 def _parse_inspect(data: dict, binary: str) -> tuple[bool, str | None, int]:
-    if _is_docker(binary):
-        running = data.get("State", {}).get("Running", False)
-        networks = data.get("NetworkSettings", {}).get("Networks", {})
-        private_ip = next(iter(networks.values()))["IPAddress"] if networks else None
-        ports = data.get("NetworkSettings", {}).get("Ports", {}).get("22/tcp")
-        ssh_port = int(ports[0]["HostPort"]) if ports else 22
-    else:
+    if _is_apple_container(binary):
         running = data.get("status") == "running"
         net_list = data.get("networks", [])
         private_ip = net_list[0]["ipv4Address"].split("/")[0] if net_list else None
@@ -213,11 +208,17 @@ def _parse_inspect(data: dict, binary: str) -> tuple[bool, str | None, int]:
             (p["hostPort"] for p in published if p.get("containerPort") == 22),
             22,
         )
+    else:
+        running = data.get("State", {}).get("Running", False)
+        networks = data.get("NetworkSettings", {}).get("Networks", {})
+        private_ip = next(iter(networks.values()))["IPAddress"] if networks else None
+        ports = data.get("NetworkSettings", {}).get("Ports", {}).get("22/tcp")
+        ssh_port = int(ports[0]["HostPort"]) if ports else 22
     return running, private_ip, ssh_port
 
 
 async def _stop_and_remove(binary: str, container_id: str) -> None:
-    if _is_docker(binary):
+    if _is_apple_container(binary):
         try:
             await run(binary, "kill", container_id)
         except RuntimeError as e:
@@ -238,7 +239,7 @@ async def _stop_and_remove(binary: str, container_id: str) -> None:
 
 
 async def _list_cluster_containers(binary: str, cluster_id: str) -> list[str]:
-    if _is_docker(binary):
+    if _is_apple_container(binary):
         try:
             raw = await run(
                 binary, "ps", "-a",

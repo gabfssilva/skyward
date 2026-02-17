@@ -41,13 +41,11 @@ def apt(*packages: str, quiet: bool = True, update: bool = True) -> Op:
     pkg_list = " ".join(packages)
 
     def generate() -> str:
-        lines = [
-            # Wait for any existing apt/dpkg processes to finish
-            "while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 1; done",
-        ]
+        lock_wait = "-o DPkg::Lock::Timeout=-1"
+        lines = []
         if update:
-            lines.append(f"apt-get update {flags}".strip())
-        lines.append(f"apt-get install {install_flags} {pkg_list}")
+            lines.append(f"apt-get {lock_wait} update {flags}".strip())
+        lines.append(f"apt-get {lock_wait} install {install_flags} {pkg_list}")
         return "\n".join(lines)
 
     return generate

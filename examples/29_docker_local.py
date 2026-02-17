@@ -10,29 +10,31 @@ Requirements:
     - A container runtime running locally (Docker, podman, etc.)
     - SSH key at ~/.ssh/id_ed25519 (or id_rsa)
 """
+from time import sleep
 
 import skyward as sky
 
 
 @sky.compute
-def hello(node_id: int) -> dict:
-    import os
-    import socket
+def hello(n: int) -> str:
+    sleep(0.5)
 
-    return {
-        "node": node_id,
-        "hostname": socket.gethostname(),
-        "pid": os.getpid(),
-    }
-
+    match n % 3:
+        case 0:
+            return "hello, 🌎!"
+        case 1:
+            return "hello, 🌍!"
+        case _:
+            return "hello, 🌏"
 
 if __name__ == "__main__":
     with sky.ComputePool(
-        provider=sky.Container(image="ubuntu:24.04", binary="container"),
+        provider=sky.Container(image="ubuntu:24.04", binary="docker"),
+        vcpus=2,
+        memory_gb=2,
         nodes=3,
-        logging=sky.LogConfig(level="DEBUG"),
     ) as pool:
-        results = sky.gather(*(hello(i) for i in range(3))) >> pool
+        results = sky.gather(*(hello(i) for i in range(30))) >> pool
 
         for r in results:
             print(f"Node {r['node']}: hostname={r['hostname']} pid={r['pid']}")
