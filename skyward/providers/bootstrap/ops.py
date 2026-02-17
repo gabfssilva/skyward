@@ -43,7 +43,7 @@ def apt(*packages: str, quiet: bool = True, update: bool = True) -> Op:
     def generate() -> str:
         lines = [
             # Wait for any existing apt/dpkg processes to finish
-            "while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done",
+            "while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 1; done",
         ]
         if update:
             lines.append(f"apt-get update {flags}".strip())

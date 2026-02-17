@@ -11,6 +11,7 @@ from skyward.actors.messages import (
     Bootstrapped,
     Bootstrapping,
     Execute,
+    HeadAddressKnown,
     InstanceBecameReady,
     InstanceDied,
     InstanceMetadata,
@@ -18,8 +19,9 @@ from skyward.actors.messages import (
     Log,
     Metric,
     Preempted,
-    SetHeadAddr,
     TaskResult,
+    _BootstrapUploaded,
+    _BootstrapUploadFailed,
     _Connected,
     _ConnectionFailed,
     _instance_to_metadata,
@@ -63,6 +65,7 @@ def instance_actor(
 
     def polling() -> Behavior[InstanceMsg]:
         async def setup(ctx: ActorContext[InstanceMsg]) -> Behavior[InstanceMsg]:
+            log.info("Polling for instance readiness")
             start_time = asyncio.get_event_loop().time()
 
             async def _do_poll() -> _PollResult:
@@ -81,13 +84,13 @@ def instance_actor(
     def _polling_receive(
         ctx: ActorContext[InstanceMsg],
         start_time: float,
-        head_info: SetHeadAddr | None,
+        head_info: HeadAddressKnown | None,
     ) -> Behavior[InstanceMsg]:
         async def receive(
             ctx: ActorContext[InstanceMsg], msg: InstanceMsg,
         ) -> Behavior[InstanceMsg]:
             match msg:
-                case SetHeadAddr() as h:
+                case HeadAddressKnown() as h:
                     return _polling_receive(ctx, start_time, h)
                 case _PollResult(instance=inst) if (
                     inst and inst.status == "provisioned" and inst.ip
@@ -115,6 +118,7 @@ def instance_actor(
                     )
                     return _polling_receive(ctx, start_time, head_info)
                 case Preempted():
+                    log.warning("Preempted during polling")
                     parent.tell(InstanceDied(instance_id=instance_id, reason="preempted"))
                     return Behaviors.stopped()
             return Behaviors.same()
@@ -123,9 +127,10 @@ def instance_actor(
     def connecting(
         ip: str,
         metadata: InstanceMetadata,
-        head_info: SetHeadAddr | None,
+        head_info: HeadAddressKnown | None,
     ) -> Behavior[InstanceMsg]:
         async def setup(ctx: ActorContext[InstanceMsg]) -> Behavior[InstanceMsg]:
+            log.info("Opening SSH tunnel to {ip}", ip=ip)
             ctx.pipe_to_self(
                 _open_tunnel(metadata, cluster),
                 mapper=lambda result: _Connected(transport=result[0], listener=result[1]),
@@ -139,18 +144,20 @@ def instance_actor(
         ctx: ActorContext[InstanceMsg],
         ip: str,
         metadata: InstanceMetadata,
-        head_info: SetHeadAddr | None,
+        head_info: HeadAddressKnown | None,
     ) -> Behavior[InstanceMsg]:
         async def receive(
             ctx: ActorContext[InstanceMsg], msg: InstanceMsg,
         ) -> Behavior[InstanceMsg]:
             match msg:
                 case _Connected(transport=transport, listener=listener):
+                    log.info("SSH tunnel established")
                     return bootstrapping(ip, ctx, metadata, transport, listener, head_info)
                 case _ConnectionFailed(error=error):
+                    log.error("SSH connection failed: {error}", error=error)
                     parent.tell(InstanceDied(instance_id=instance_id, reason=error))
                     return Behaviors.stopped()
-                case SetHeadAddr() as h:
+                case HeadAddressKnown() as h:
                     return _connecting_receive(ctx, ip, metadata, h)
                 case Preempted():
                     parent.tell(InstanceDied(instance_id=instance_id, reason="preempted"))
@@ -162,8 +169,9 @@ def instance_actor(
         ip: str, ctx: ActorContext[InstanceMsg],
         metadata: InstanceMetadata,
         transport: Any, listener: Any,
-        head_info: SetHeadAddr | None,
+        head_info: HeadAddressKnown | None,
     ) -> Behavior[InstanceMsg]:
+        log.info("Starting bootstrap")
         if not _skip_monitor and metadata.ssh_user and metadata.ssh_key_path:
             ctx.spawn(
                 instance_monitor(
@@ -178,27 +186,44 @@ def instance_actor(
                 f"monitor-{instance_id}",
             )
 
+        ctx.pipe_to_self(
+            _run_bootstrap(transport, metadata, cluster, spec),
+            mapper=lambda _: _BootstrapUploaded(),
+            on_failure=lambda e: _BootstrapUploadFailed(error=str(e)),
+        )
+
         async def receive(
             ctx: ActorContext[InstanceMsg], msg: InstanceMsg,
         ) -> Behavior[InstanceMsg]:
             match msg:
-                case SetHeadAddr() as h:
+                case HeadAddressKnown() as h:
                     return bootstrapping(ip, ctx, metadata, transport, listener, h)
                 case BootstrapDone(success=True, instance=done_info):
+                    log.info("Bootstrap completed successfully")
                     return _start_post_bootstrap(
                         ip, ctx, transport, listener,
                         done_info or metadata, head_info,
                     )
                 case BootstrapDone(success=False, error=error):
+                    log.error("Bootstrap failed: {error}", error=error)
                     reason = error or "bootstrap failed"
                     await _cleanup_transport(transport, listener)
                     parent.tell(InstanceDied(instance_id=instance_id, reason=reason))
+                    return Behaviors.stopped()
+                case _BootstrapUploaded():
+                    log.info("Bootstrap script uploaded and started")
+                    return Behaviors.same()
+                case _BootstrapUploadFailed(error=error):
+                    log.error("Bootstrap upload failed: {error}", error=error)
+                    await _cleanup_transport(transport, listener)
+                    parent.tell(InstanceDied(instance_id=instance_id, reason=error))
                     return Behaviors.stopped()
                 case Bootstrapping():
                     return Behaviors.same()
                 case Bootstrapped():
                     return _start_post_bootstrap(ip, ctx, transport, listener, metadata, head_info)
                 case Preempted():
+                    log.warning("Preempted during bootstrap")
                     await _cleanup_transport(transport, listener)
                     parent.tell(InstanceDied(instance_id=instance_id, reason="preempted"))
                     return Behaviors.stopped()
@@ -209,7 +234,7 @@ def instance_actor(
         ip: str, ctx: ActorContext[InstanceMsg],
         transport: Any, listener: Any,
         metadata: InstanceMetadata,
-        head_info: SetHeadAddr | None,
+        head_info: HeadAddressKnown | None,
     ) -> Behavior[InstanceMsg]:
         if spec.image and getattr(spec.image, "skyward_source", None) == "local":
             ctx.pipe_to_self(
@@ -233,16 +258,15 @@ def instance_actor(
         ip: str,
         transport: Any, listener: Any,
         metadata: InstanceMetadata,
-        head_info: SetHeadAddr | None,
+        head_info: HeadAddressKnown | None,
     ) -> Behavior[InstanceMsg]:
         async def receive(
             ctx: ActorContext[InstanceMsg], msg: InstanceMsg,
         ) -> Behavior[InstanceMsg]:
             match msg:
-                case SetHeadAddr() as h:
+                case HeadAddressKnown() as h:
                     return post_bootstrap(ip, transport, listener, metadata, h)
                 case _LocalInstallDone(instance=info):
-                    log.info("Local skyward installed on {iid}", iid=info.id)
                     if spec.image and getattr(spec.image, "includes", None):
                         ctx.pipe_to_self(
                             _sync_user_code(info, spec, cluster),
@@ -252,7 +276,6 @@ def instance_actor(
                         return Behaviors.same()
                     return ready(ip, transport, listener, metadata, head_info)
                 case _UserCodeSyncDone():
-                    log.info("User code synced to {iid}", iid=instance_id)
                     return ready(ip, transport, listener, metadata, head_info)
                 case _PostBootstrapFailed(error=err):
                     await _cleanup_transport(transport, listener)
@@ -269,13 +292,26 @@ def instance_actor(
         ip: str,
         transport: Any, listener: Any,
         metadata: InstanceMetadata,
-        head_info: SetHeadAddr | None,
+        head_info: HeadAddressKnown | None,
     ) -> Behavior[InstanceMsg]:
         is_head = node_id == 0
 
-        if is_head or head_info is not None:
+        if is_head:
+            head_private = metadata.private_ip or metadata.ip
+            parent.tell(HeadAddressKnown(
+                head_addr=head_private,
+                casty_port=25520,
+                num_nodes=spec.nodes,
+                concurrency=spec.concurrency,
+            ))
+            log.info("Starting worker (role=head)")
             return _start_worker(ip, transport, listener, metadata, head_info)
 
+        if head_info is not None:
+            log.info("Starting worker (role=worker)")
+            return _start_worker(ip, transport, listener, metadata, head_info)
+
+        log.info("Waiting for head address before starting worker")
         return waiting_for_head(ip, transport, listener, metadata)
 
     def waiting_for_head(
@@ -287,9 +323,11 @@ def instance_actor(
             ctx: ActorContext[InstanceMsg], msg: InstanceMsg,
         ) -> Behavior[InstanceMsg]:
             match msg:
-                case SetHeadAddr() as h:
+                case HeadAddressKnown() as h:
+                    log.info("Head address received, starting worker")
                     return _start_worker(ip, transport, listener, metadata, h)
                 case Preempted():
+                    log.warning("Preempted while waiting for head")
                     await _cleanup_transport(transport, listener)
                     parent.tell(InstanceDied(instance_id=instance_id, reason="preempted"))
                     return Behaviors.stopped()
@@ -300,7 +338,7 @@ def instance_actor(
         ip: str,
         transport: Any, listener: Any,
         metadata: InstanceMetadata,
-        head_info: SetHeadAddr | None,
+        head_info: HeadAddressKnown | None,
     ) -> Behavior[InstanceMsg]:
         async def setup(ctx: ActorContext[InstanceMsg]) -> Behavior[InstanceMsg]:
             ctx.pipe_to_self(
@@ -323,15 +361,18 @@ def instance_actor(
         ) -> Behavior[InstanceMsg]:
             match msg:
                 case _WorkerStarted(client=client, worker_ref=wref):
+                    log.info("Worker joined cluster successfully")
                     parent.tell(InstanceBecameReady(
                         instance_id=instance_id, ip=ip, metadata=metadata,
                     ))
                     return joined(ip, client, wref, transport, listener)
                 case _WorkerFailed(error=error):
+                    log.error("Worker failed to start: {error}", error=error)
                     await _cleanup_transport(transport, listener)
                     parent.tell(InstanceDied(instance_id=instance_id, reason=error))
                     return Behaviors.stopped()
                 case Preempted():
+                    log.warning("Preempted while starting worker")
                     await _cleanup_transport(transport, listener)
                     parent.tell(InstanceDied(instance_id=instance_id, reason="preempted"))
                     return Behaviors.stopped()
@@ -348,6 +389,7 @@ def instance_actor(
         ) -> Behavior[InstanceMsg]:
             match msg:
                 case Execute(fn_bytes=fn_bytes):
+                    log.debug("Executing task")
                     ctx.pipe_to_self(
                         client.ask(
                             worker_ref,
@@ -360,14 +402,17 @@ def instance_actor(
                     )
                     return Behaviors.same()
                 case WorkerTaskSucceeded(result=value, node_id=nid):
+                    log.debug("Task succeeded")
                     parent.tell(TaskResult(value=value, node_id=nid))
                     return Behaviors.same()
                 case WorkerTaskFailed(error=error, node_id=nid):
+                    log.warning("Task failed: {error}", error=error)
                     parent.tell(TaskResult(value=RuntimeError(error), node_id=nid))
                     return Behaviors.same()
                 case Log() | Metric():
                     pass
                 case Preempted():
+                    log.warning("Preempted while joined")
                     await _cleanup(client, transport, listener)
                     parent.tell(InstanceDied(instance_id=instance_id, reason="preempted"))
                     return Behaviors.stopped()
@@ -397,11 +442,13 @@ async def _do_start_worker(
     transport: Any,
     listener: Any,
     metadata: InstanceMetadata,
-    head_info: SetHeadAddr | None,
+    head_info: HeadAddressKnown | None,
     node_id: int,
     cluster: Any,
     spec: Any,
 ) -> tuple[Any, Any]:
+    import logging as _logging
+
     from casty import ClusterClient
 
     from skyward.infra.executor import _wait_for_workers
@@ -409,6 +456,8 @@ async def _do_start_worker(
     from skyward.infra.worker import ExecuteTask as WorkerExecuteTask
     from skyward.providers.bootstrap.compose import EMIT_SH_PATH, SKYWARD_DIR
     from skyward.providers.common import detect_network_interface
+
+    _logging.getLogger("casty").setLevel(_logging.ERROR)
 
     log = logger.bind(actor="instance", instance_id=metadata.id)
 
@@ -428,7 +477,7 @@ async def _do_start_worker(
 
     seeds_arg = f"--seeds {seeds} " if seeds else ""
     casty_cmd = (
-        f"nohup {python_bin} -m skyward.infra.worker "
+        f'nohup {python_bin} -c "from skyward.infra.worker import cli; cli()" '
         f"--node-id {node_id} --port {casty_port} "
         f"--num-nodes {num_nodes} --host {host} "
         f"--workers-per-node {concurrency} "
@@ -438,7 +487,7 @@ async def _do_start_worker(
     tail_inner = (
         f"source {EMIT_SH_PATH} && "
         f"tail -f /var/log/casty.log 2>/dev/null | while IFS= read -r line; do "
-        f'emit_console "[casty] $line"; done'
+        f'emit_console "$line"; done'
     )
     tail_cmd = f"nohup bash -c '{tail_inner}' </dev/null >/dev/null 2>&1 &"
 
@@ -547,4 +596,26 @@ async def _sync_user_code(info: InstanceMetadata, spec: Any, cluster: Any) -> No
     await sync_user_code(
         host=info.ip, user=cluster.ssh_user, key_path=cluster.ssh_key_path,
         port=info.ssh_port, image=spec.image, use_sudo=cluster.use_sudo,
+    )
+
+
+async def _run_bootstrap(
+    transport: Any, metadata: InstanceMetadata, cluster: Any, spec: Any,
+) -> None:
+    from skyward.providers._bootstrap_ssh import run_bootstrap_via_ssh
+
+    image = spec.image
+    if not image:
+        return
+
+    ssh_user = metadata.ssh_user or cluster.ssh_user
+    use_sudo = ssh_user != "root"
+
+    bootstrap_script = image.generate_bootstrap(ttl=0)
+
+    await run_bootstrap_via_ssh(
+        transport=transport,
+        info=metadata,
+        bootstrap_script=bootstrap_script,
+        use_sudo=use_sudo,
     )

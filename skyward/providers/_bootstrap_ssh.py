@@ -86,6 +86,8 @@ async def install_local_skyward(
     install_script = _build_wheel_install_script(wheel_name=wheel_path.name)
 
     # Upload wheel to /tmp (script will move it to SKYWARD_DIR)
+    wheel_size = wheel_path.stat().st_size
+    log.debug("Wheel size: {size:.1f} KB", size=wheel_size / 1024)
     log.info("Uploading wheel {name}", name=wheel_path.name)
     await transport.write_bytes(f"/tmp/{wheel_path.name}", wheel_path.read_bytes())
 
@@ -100,8 +102,6 @@ async def install_local_skyward(
         timeout=bootstrap_timeout,
     )
     log.debug("Install script output:\n{out}", out=stdout)
-    if stderr:
-        log.debug("Install script stderr:\n{err}", err=stderr)
 
     if exit_code != 0:
         raise RuntimeError(f"Wheel install failed (exit {exit_code}): {stderr or stdout}")
@@ -192,6 +192,7 @@ async def run_bootstrap_via_ssh(
     transport: SSHTransport,
     info: InstanceMetadata,
     bootstrap_script: str,
+    use_sudo: bool = False,
     log_prefix: str = "",
 ) -> None:
     """Upload and execute bootstrap script via SSH (fire-and-forget).
@@ -207,14 +208,28 @@ async def run_bootstrap_via_ssh(
         bootstrap_script: The complete bootstrap script content.
         log_prefix: Prefix for log messages.
     """
+    import base64
+
     log = logger.bind(component="bootstrap_ssh")
-    log.info("Uploading bootstrap script to {iid}", iid=info.id)
-    await transport.write_file("/opt/skyward/bootstrap.sh", bootstrap_script)
-    await transport.run("chmod +x /opt/skyward/bootstrap.sh")
+    log.info(
+        "Uploading bootstrap script to {iid} ({size:.1f} KB)",
+        iid=info.id, size=len(bootstrap_script) / 1024,
+    )
+
+    encoded = base64.b64encode(bootstrap_script.encode()).decode()
+    sudo = "sudo " if use_sudo else ""
+    exit_code, _, stderr = await transport.run(
+        f"{sudo}bash -c \""
+        f"mkdir -p /opt/skyward && "
+        f"echo '{encoded}' | base64 -d > /opt/skyward/bootstrap.sh && "
+        f"chmod +x /opt/skyward/bootstrap.sh\"",
+    )
+    if exit_code != 0:
+        raise RuntimeError(f"Bootstrap upload failed: {stderr}")
 
     log.info("Running bootstrap on {iid}", iid=info.id)
     await transport.run(
-        "nohup /opt/skyward/bootstrap.sh > /opt/skyward/bootstrap.log 2>&1 &"
+        f"{sudo}bash -c 'nohup /opt/skyward/bootstrap.sh > /opt/skyward/bootstrap.log 2>&1 &'"
     )
 
     log.info("Bootstrap started on {iid}", iid=info.id)

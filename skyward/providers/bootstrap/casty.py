@@ -41,7 +41,7 @@ def casty_service(
             seeds_arg = f"--seeds {head_ip}:{port}"
 
         cmd = (
-            f"{python_bin} -m skyward.infra.worker "
+            f'{python_bin} -c "from skyward.infra.worker import cli; cli()" '
             f"--node-id {node_id} "
             f"--port {port} "
             f"{seeds_arg}"
