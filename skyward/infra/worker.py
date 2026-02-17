@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -91,13 +92,13 @@ def worker_behavior(node_id: int, concurrency: int = 1) -> Behavior[WorkerMsg]:
                     kwargs = payload.get("kwargs", {})
                     fn_name = getattr(fn, "__name__", str(fn))
 
-                    print(f"[worker-{node_id}] Executing {fn_name}...", flush=True)
+                    log.info("Executing {fn_name}", fn_name=fn_name)
                     result = fn(*args, **kwargs)
-                    print(f"[worker-{node_id}] {fn_name} completed", flush=True)
+                    log.info("Task {fn_name} completed", fn_name=fn_name)
                     return TaskSucceeded(result=result, node_id=node_id)
                 except Exception as e:
                     fn_name = "unknown"
-                    print(f"[worker-{node_id}] {fn_name} failed: {e}", flush=True)
+                    log.error("Task {fn_name} failed: {err}", fn_name=fn_name, err=e)
                     return TaskFailed(
                         error=str(e),
                         traceback=traceback.format_exc(),
@@ -152,7 +153,7 @@ async def main(
     log = logger.bind(component="worker", node_id=node_id)
     quorum = num_nodes if num_nodes > 1 else None
     log.debug("Starting casty worker, quorum={quorum} port={port}", quorum=quorum, port=port)
-    print(f"Casty worker {node_id} starting (quorum={quorum})...", flush=True)
+    log.info("Casty worker starting, quorum={quorum} port={port}", quorum=quorum, port=port)
 
     os.environ["SKYWARD_NODE_ID"] = str(node_id)
 
@@ -183,10 +184,9 @@ async def main(
             ),
             "worker",
         )
-        print(
-            f"Casty worker {node_id} ready "
-            f"(cluster={num_nodes} nodes, concurrency={workers_per_node})",
-            flush=True,
+        log.info(
+            "Casty worker ready (cluster={num_nodes} nodes, concurrency={concurrency})",
+            num_nodes=num_nodes, concurrency=workers_per_node,
         )
 
         await asyncio.Event().wait()
@@ -202,6 +202,12 @@ def _parse_seeds(seeds_str: str | None) -> list[tuple[str, int]] | None:
     ]
 
 
+def _redirect_stdio_to_log(log_path: str = "/var/log/casty.log") -> None:
+    log_file = open(log_path, "a", buffering=1)  # noqa: SIM115
+    sys.stdout = log_file
+    sys.stderr = log_file
+
+
 def cli() -> None:
     parser = argparse.ArgumentParser(description="Casty worker service")
     parser.add_argument("--node-id", type=int, required=True)
@@ -213,7 +219,13 @@ def cli() -> None:
         help="Comma-separated seed addresses (host:port)",
     )
     parser.add_argument("--workers-per-node", type=int, default=1)
+    parser.add_argument(
+        "--log-file", type=str, default="/var/log/casty.log",
+        help="Redirect stdout/stderr to this file",
+    )
     args = parser.parse_args()
+
+    _redirect_stdio_to_log(args.log_file)
 
     seeds = _parse_seeds(args.seeds)
     asyncio.run(main(

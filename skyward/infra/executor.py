@@ -157,7 +157,7 @@ async def _wait_for_workers(
     client: ClusterClient,
     expected: int,
     host_to_node: dict[str, int],
-    timeout: float = 120.0,
+    timeout: float = 240.0,
 ) -> dict[int, ActorRef[ExecuteTask]]:
     deadline = asyncio.get_event_loop().time() + timeout
     log.debug(
@@ -184,12 +184,16 @@ async def _wait_for_workers(
                     ref=inst.ref,
                 )
             return _build_worker_map(listing, host_to_node)
+
         remaining = deadline - asyncio.get_event_loop().time()
-        log.debug(
-            "Only {found}/{expected} workers, retrying ({remaining:.0f}s left)...",
-            found=found, expected=expected, remaining=remaining,
-        )
-        await asyncio.sleep(2.0)
+
+        if remaining < 10:
+            log.debug(
+                "Only {found}/{expected} workers, retrying ({remaining:.0f}s left)...",
+                found=found, expected=expected, remaining=remaining,
+            )
+
+        await asyncio.sleep(1.0)
     raise RuntimeError(
         f"Only found {len(listing.instances)}/{expected} workers after {timeout}s"
     )
@@ -257,7 +261,7 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
 
                     log.debug("Telling reply_to Connected()...")
                     reply_to.tell(Connected())
-                    max_concurrent = cfg.num_nodes * (cfg.workers_per_node + 1)
+                    max_concurrent = cfg.num_nodes * (cfg.workers_per_node + 3)
                     log.debug(
                         "Transitioning to ready state (max_concurrent={mc}, job_timeout={jt})",
                         mc=max_concurrent, jt=cfg.job_timeout,
