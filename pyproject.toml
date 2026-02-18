@@ -104,8 +104,11 @@ include = ["skyward", "tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-addopts = "-m 'not integration and not ec2' --durations=0 -n auto"
+addopts = "--durations=0 --dist loadgroup -n auto"
+timeout_func_only = true
 markers = [
+    "e2e: end-to-end tests requiring container runtime",
+    "slow: tests that take >10s",
     "integration: marks tests as integration tests (require Docker)",
     "ec2: marks tests as EC2 integration tests (require AWS credentials)",
 ]

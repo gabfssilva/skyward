@@ -53,7 +53,7 @@ class InstanceMetadata:
     instance_type: str = ""
     gpu_count: int = 0
     gpu_model: str = ""
-    vcpus: int = 0
+    vcpus: float = 0
     memory_gb: float = 0.0
     gpu_vram_gb: int = 0
     region: str = ""
@@ -180,7 +180,7 @@ class InstanceRunning:
     instance_type: str = ""
     gpu_count: int = 0
     gpu_model: str = ""
-    vcpus: int = 0
+    vcpus: float = 0
     memory_gb: float = 0.0
     gpu_vram_gb: int = 0
     region: str = ""

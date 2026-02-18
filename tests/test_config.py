@@ -9,6 +9,8 @@ from skyward.providers.runpod.config import RunPod
 from skyward.providers.vastai.config import VastAI
 from skyward.providers.verda.config import Verda
 
+pytestmark = [pytest.mark.xdist_group("unit")]
+
 
 class TestDeepMerge:
     def test_shallow_override(self):

@@ -6,6 +6,8 @@ from aiohttp.test_utils import TestServer
 
 from skyward.infra.http import BearerAuth, HttpClient, HttpError, OAuth2Auth, Response
 
+pytestmark = [pytest.mark.xdist_group("unit")]
+
 
 def make_app(
     *,

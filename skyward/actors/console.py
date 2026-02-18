@@ -363,9 +363,9 @@ def _render_cluster_col(state: _State) -> Group:
     if total_vcpus or total_ram:
         hw_parts: list[str] = []
         if total_vcpus:
-            hw_parts.append(f"{total_vcpus} vCPUs")
+            hw_parts.append(f"{total_vcpus:.2f} vCPUs")
         if total_ram:
-            hw_parts.append(f"{total_ram:.0f} GB RAM")
+            hw_parts.append(f"{total_ram:.2f} GB RAM")
         lines.append(Text(f"  {' · '.join(hw_parts)}"))
 
     hourly = sum(i.hourly_rate for i in insts)

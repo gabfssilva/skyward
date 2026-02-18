@@ -29,10 +29,10 @@ def hello(n: int) -> str:
 
 if __name__ == "__main__":
     with sky.ComputePool(
-        provider=sky.Container(image="ubuntu:24.04", binary="docker"),
-        vcpus=2,
-        memory_gb=2,
+        provider=sky.Container(),
         nodes=3,
+        memory_gb=0.2,
+        vcpus=0.2
     ) as pool:
         results = sky.gather(*(hello(i) for i in range(30))) >> pool
 

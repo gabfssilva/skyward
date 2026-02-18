@@ -5,6 +5,7 @@ import hashlib
 import tempfile
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from skyward.api import PoolSpec
@@ -29,7 +30,6 @@ _DOCKERFILE = (
     "EXPOSE 22\n"
 )
 
-_SSH_PORT_BASE = 10022
 _CONTAINER_PREFIX = "skyward"
 
 
@@ -46,31 +46,30 @@ def _make_entrypoint(ttl: int) -> str:
 def _is_apple_container(binary: str) -> bool:
     return binary == "container"
 
+@dataclass(frozen=True, slots=True)
+class ContainerSpecific:
+    network: str
+    image: str
+    context: str
 
-class ContainerProvider(CloudProvider[Container, str]):
+
+class ContainerProvider(CloudProvider[Container, ContainerSpecific]):
 
     def __init__(self, config: Container) -> None:
         self._config = config
         self._bin = config.binary
         self._image: str = ""
-        self._port_counter = 0
 
     @classmethod
     async def create(cls, config: Container) -> ContainerProvider:
         return cls(config)
 
-    def _next_ssh_port(self) -> int:
-        port = _SSH_PORT_BASE + self._port_counter
-        self._port_counter += 1
-        return port
-
-    async def _ensure_image(self) -> None:
+    async def _ensure_image(self) -> str:
         tag = f"skyward-ssh:{hashlib.md5(self._config.image.encode()).hexdigest()[:12]}"
         try:
             await run(self._bin, "image", "inspect", tag)
             log.debug("Image {tag} already exists", tag=tag)
-            self._image = tag
-            return
+            return tag
         except RuntimeError:
             pass
 
@@ -82,13 +81,13 @@ class ContainerProvider(CloudProvider[Container, str]):
             await run(self._bin, "build", "-t", tag, tmpdir)
 
         log.info("Image {tag} built", tag=tag)
-        self._image = tag
+        return tag
 
-    async def prepare(self, spec: PoolSpec) -> Cluster[str]:
+    async def prepare(self, spec: PoolSpec) -> Cluster[ContainerSpecific]:
         cluster_id = f"skyward-{uuid.uuid4().hex[:8]}"
         ssh_key_path = get_ssh_key_path()
 
-        await self._ensure_image()
+        tag = await self._ensure_image()
 
         network_name = f"{_NETWORK_PREFIX}-{cluster_id}"
         await run(self._bin, "network", "create", network_name)
@@ -103,61 +102,67 @@ class ContainerProvider(CloudProvider[Container, str]):
             ssh_user=self._config.ssh_user,
             use_sudo=False,
             shutdown_command="kill 1",
-            specific=network_name,
+            specific=ContainerSpecific(
+                network=network_name,
+                image=tag,
+                context=await run(self._config.binary, 'context', 'show'),
+            ),
         )
 
-    async def provision(self, cluster: Cluster[str], count: int) -> Sequence[Instance]:
+    async def provision(
+        self, cluster: Cluster[ContainerSpecific], count: int,
+    ) -> Sequence[Instance]:
         _, pub_key = get_local_ssh_key()
-        network_name = f"{_NETWORK_PREFIX}-{cluster.id}"
         ttl = cluster.spec.ttl or 0
         entrypoint = _make_entrypoint(ttl)
 
         coros = [
-            self._launch_instance(entrypoint, pub_key, cluster, network_name)
+            self._launch_instance(entrypoint, pub_key, cluster)
             for _ in range(count)
         ]
         return await asyncio.gather(*coros)
 
     async def _launch_instance(
         self, entrypoint: str, pub_key: str,
-        cluster: Cluster[str], network_name: str,
+        cluster: Cluster[ContainerSpecific],
     ) -> Instance:
         short_id = uuid.uuid4().hex[:12]
         container_name = f"{_CONTAINER_PREFIX}-{short_id}"
-        ssh_port = self._next_ssh_port()
 
         cmd: list[str] = [
             self._bin, "run", "-d",
             "--name", container_name,
             "-e", f"SSH_PUB_KEY={pub_key}",
-            "-p", f"{ssh_port}:22",
-            "--network", network_name,
+            "-p", "0:22",
+            "--network", cluster.specific.network,
             "-l", f"{_CLUSTER_LABEL}={cluster.id}",
         ]
 
-        vcpus = cluster.spec.vcpus or 1
-        memory_gb = cluster.spec.memory_gb or 1
+        vcpus = cluster.spec.vcpus or 0.5
+        memory_gb = cluster.spec.memory_gb or 0.5
         cmd.extend(["--cpus", str(vcpus)])
         if _is_apple_container(self._bin):
             cmd.extend(["--memory", f"{int(memory_gb * 1024)}M"])
         else:
             cmd.extend(["--memory", f"{memory_gb}g"])
 
-        cmd.extend([self._image, "sh", "-c", entrypoint])
+        cmd.extend([cluster.specific.image, "sh", "-c", entrypoint])
 
         await run(*cmd)
 
-        log.info("Container {id} launched (ssh port {port})", id=container_name, port=ssh_port)
+        log.info("Container {id} launched", id=container_name)
 
         return Instance(
             id=short_id,
             status="provisioning",
-            instance_type="container",
-            vcpus=cluster.spec.vcpus or 1,
-            memory_gb=cluster.spec.memory_gb or 1,
+            instance_type=cluster.specific.context,
+            vcpus=vcpus,
+            memory_gb=memory_gb,
         )
 
-    async def get_instance(self, cluster: Cluster[str], instance_id: str) -> Instance | None:
+    async def get_instance(
+        self, cluster: Cluster[ContainerSpecific], instance_id: str,
+    ) -> Instance | None:
         container_name = f"{_CONTAINER_PREFIX}-{instance_id}"
         try:
             info = await run_json(self._bin, "inspect", container_name)
@@ -189,14 +194,14 @@ class ContainerProvider(CloudProvider[Container, str]):
 
         await asyncio.gather(*(_kill(iid) for iid in instance_ids))
 
-    async def teardown(self, cluster: Cluster[str]) -> None:
+    async def teardown(self, cluster: Cluster[ContainerSpecific]) -> None:
         import asyncio
 
         ids = await _list_cluster_containers(self._bin, cluster.id)
         await asyncio.gather(*(_stop_and_remove(self._bin, cid) for cid in ids))
 
         try:
-            await run(self._bin, "network", "rm", cluster.specific)
+            await run(self._bin, "network", "rm", cluster.specific.network)
         except RuntimeError as e:
             log.warning("Failed to remove network {net}: {err}", net=cluster.specific, err=e)
 

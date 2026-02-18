@@ -115,8 +115,8 @@ class PoolSpec:
     nodes: int
     accelerator: Accelerator | str | None
     region: str
-    vcpus: int | None = None
-    memory_gb: int | None = None
+    vcpus: float | None = None
+    memory_gb: float | None = None
     architecture: Architecture | None = None
     allocation: AllocationStrategy = "spot-if-available"
     image: Image = field(default_factory=lambda: Image())

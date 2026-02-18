@@ -307,8 +307,8 @@ class ComputePool:
 
     nodes: int = 1
     accelerator: str | Accelerator | None = None
-    vcpus: int | None = None
-    memory_gb: int | None = None
+    vcpus: float | None = None
+    memory_gb: float | None = None
     architecture: Literal["x86_64", "arm64"] | None = None
     allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available"
 
