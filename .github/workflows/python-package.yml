@@ -63,5 +63,7 @@ jobs:
         python-version: ${{ matrix.python-version }}
     - name: Install dependencies
       run: uv sync --dev
+    - name: Generate SSH key
+      run: ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
     - name: Run ${{ matrix.test-group }} tests
       run: uv run pytest ${{ matrix.test-filter }}

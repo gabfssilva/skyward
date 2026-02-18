@@ -1,22 +1,25 @@
 # Cloud Providers
 
-Skyward supports multiple cloud providers with a unified API.
+Skyward supports five providers. Four are cloud services — AWS, RunPod, Verda, VastAI — and one is local containers for development and CI. All implement the same `CloudProvider` protocol, so the orchestration layer (actor system, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
+
+Provider configs are lightweight frozen dataclasses. They hold configuration — region, API keys, disk sizes — but don't import any cloud SDK at module level. The SDK is loaded lazily when the pool starts, so `import skyward` stays fast regardless of which providers are installed.
 
 ## Provider Comparison
 
-| Feature | AWS | RunPod | Verda | VastAI |
-|---------|-----|--------|-------|--------|
-| **GPUs** | H100, A100, T4, L4, etc. | H100, A100, A40, RTX series | H100, A100, H200, GB200 | Marketplace (varies) |
-| **Spot Instances** | Yes (60-90% savings) | Yes | Yes | Yes (bid-based) |
-| **Regions** | 20+ | Global (Secure + Community) | 3 | Global marketplace |
-| **SSH Connectivity** | Yes | Yes | Yes | Yes |
-| **Trainium/Inferentia** | Yes | No | No | No |
+| Feature | AWS | RunPod | Verda | VastAI | Container |
+|---------|-----|--------|-------|--------|-----------|
+| **GPUs** | H100, A100, T4, L4, Trainium, Inferentia | H100, A100, A40, RTX series | H100, A100, H200, GB200 | Marketplace (varies) | None (CPU) |
+| **Spot Instances** | Yes (60-90% savings) | Yes | Yes | Yes (bid-based) | N/A |
+| **Regions** | 20+ | Global (Secure + Community) | FIN, ICL, ISR | Global marketplace | Local |
+| **Auth** | AWS credentials | API key | Client ID + Secret | API key | None |
 
 ## AWS
 
-### Setup
+AWS uses EC2 Fleet for provisioning, with automatic spot-to-on-demand fallback. Instances are launched in a VPC with security groups managed by Skyward (or you can provide your own). SSH keys are created per cluster and cleaned up on teardown.
 
-**Environment Variables:**
+AMI resolution happens automatically via SSM Parameter Store — Skyward looks up the latest Ubuntu AMI for your chosen version and architecture. You can override this with a custom AMI.
+
+### Setup
 
 ```bash
 export AWS_ACCESS_KEY_ID=your_access_key
@@ -24,7 +27,7 @@ export AWS_SECRET_ACCESS_KEY=your_secret_key
 export AWS_DEFAULT_REGION=us-east-1
 ```
 
-**Or use AWS CLI:**
+Or use the AWS CLI:
 
 ```bash
 aws configure
@@ -35,10 +38,12 @@ aws configure
 ```python
 import skyward as sky
 
-pool = sky.ComputePool(
+with sky.ComputePool(
     provider=sky.AWS(region="us-east-1"),
     accelerator=sky.accelerators.A100(),
-)
+    nodes=2,
+) as pool:
+    result = train(data) >> pool
 ```
 
 ### Parameters
@@ -46,42 +51,14 @@ pool = sky.ComputePool(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `region` | `str` | `"us-east-1"` | AWS region |
-| `ami` | `str` | `None` | Custom AMI ID (auto-detected if None) |
-| `subnet_id` | `str` | `None` | VPC subnet (auto-created if None) |
-| `allocation_strategy` | `str` | `"price-capacity-optimized"` | Spot allocation strategy |
-
-### Available Regions
-
-| Region | GPUs | Trainium |
-|--------|------|----------|
-| `us-east-1` | H100, A100, T4, L4 | Yes |
-| `us-east-2` | A100, T4 | No |
-| `us-west-2` | H100, A100, T4, L4 | Yes |
-| `eu-west-1` | A100, T4 | No |
-| `ap-northeast-1` | T4, L4 | No |
-
-### Instance Types
-
-| Instance | GPUs | Memory | Use Case |
-|----------|------|--------|----------|
-| `p5.48xlarge` | 8x H100 | 640GB | Large model training |
-| `p4d.24xlarge` | 8x A100 | 320GB | Distributed training |
-| `g5.xlarge` | 1x A10G | 24GB | Inference |
-| `g4dn.xlarge` | 1x T4 | 16GB | Development |
-| `trn1.32xlarge` | 16x Trainium | 512GB | NeuronX training |
-
-### SSM Connectivity (Default)
-
-AWS uses Systems Manager (SSM) by default for all connectivity. This provides:
-
-- No SSH key management required
-- More reliable connections through AWS infrastructure
-- Works with private subnets (no public IP needed)
-
-SSM requires:
-
-- IAM role with `AmazonSSMManagedInstanceCore` policy (auto-created by Skyward)
-- VPC with SSM endpoints or outbound internet access
+| `ami` | `str or None` | `None` | Custom AMI ID. Auto-resolved via SSM if not set. |
+| `ubuntu_version` | `str` | `"24.04"` | Ubuntu LTS version for auto-resolved AMIs |
+| `subnet_id` | `str or None` | `None` | VPC subnet. Uses default VPC if not set. |
+| `security_group_id` | `str or None` | `None` | Security group. Auto-created if not set. |
+| `instance_profile_arn` | `str or None` | `None` | IAM instance profile. Auto-created if not set. |
+| `username` | `str or None` | `None` | SSH user. Auto-detected from AMI if not set. |
+| `allocation_strategy` | `str` | `"price-capacity-optimized"` | EC2 Fleet spot allocation strategy |
+| `exclude_burstable` | `bool` | `False` | Exclude burstable instances (t3, t4g) |
 
 ### Required IAM Permissions
 
@@ -101,7 +78,10 @@ SSM requires:
                 "ec2:AuthorizeSecurityGroupIngress",
                 "ec2:DescribeSecurityGroups",
                 "ec2:CreateKeyPair",
-                "ec2:DescribeKeyPairs"
+                "ec2:DescribeKeyPairs",
+                "ec2:CreateFleet",
+                "ec2:DescribeFleets",
+                "ssm:GetParameter"
             ],
             "Resource": "*"
         },
@@ -115,6 +95,10 @@ SSM requires:
 ```
 
 ## RunPod
+
+RunPod offers GPU pods in two tiers: **Secure Cloud** (enterprise-grade, dedicated hardware) and **Community Cloud** (lower-cost, peer-hosted). Skyward provisions pods via RunPod's GraphQL API, configures SSH access, and manages the full lifecycle.
+
+SSH keys are auto-detected from `~/.ssh/id_ed25519.pub` or `~/.ssh/id_rsa.pub` and registered on your RunPod account.
 
 ### Setup
 
@@ -139,25 +123,25 @@ with sky.ComputePool(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `api_key` | `str \| None` | `None` | API key (uses env var if None) |
-| `cloud_type` | `CloudType` | `SECURE` | Secure or Community cloud |
-| `container_disk_gb` | `int` | `50` | Container disk size |
-| `volume_gb` | `int` | `20` | Persistent volume size |
-| `data_center_ids` | `tuple \| "global"` | `"global"` | Preferred data centers |
-
-### Features
-
-- **Secure Cloud**: Enterprise-grade data centers with dedicated hardware
-- **Community Cloud**: Lower-cost peer-hosted GPUs
-- **Auto data center**: Automatic best-location selection
-- **SSH key auto-detection**: Reads from `~/.ssh/id_ed25519.pub` or `~/.ssh/id_rsa.pub`
+| `api_key` | `str or None` | `None` | API key (falls back to `RUNPOD_API_KEY` env var) |
+| `cloud_type` | `CloudType` | `SECURE` | `CloudType.SECURE` or `CloudType.COMMUNITY` |
+| `container_disk_gb` | `int` | `50` | Container disk size in GB |
+| `volume_gb` | `int` | `20` | Persistent volume size in GB |
+| `volume_mount_path` | `str` | `"/workspace"` | Volume mount path |
+| `data_center_ids` | `tuple or "global"` | `"global"` | Preferred data centers or `"global"` for auto-selection |
+| `ports` | `tuple[str, ...]` | `("22/tcp",)` | Port mappings |
 
 ## Verda
+
+Verda is a GPU cloud with data centers in Europe and the Middle East. It uses OAuth2 authentication with a client ID and secret — not a single API key.
+
+SSH keys are auto-detected and registered on Verda if needed. If `region` is not specified (the default is `"FIN-01"`), Verda uses its default region. The provider also supports auto-region discovery: if the requested GPU isn't available in the configured region, Skyward finds another region with availability.
 
 ### Setup
 
 ```bash
-export VERDA_API_KEY=your_api_key
+export VERDA_CLIENT_ID=your_client_id
+export VERDA_CLIENT_SECRET=your_client_secret
 ```
 
 ### Usage
@@ -165,17 +149,22 @@ export VERDA_API_KEY=your_api_key
 ```python
 import skyward as sky
 
-pool = sky.ComputePool(
-    provider=sky.Verda(),  # Auto-discovers region
+with sky.ComputePool(
+    provider=sky.Verda(),
     accelerator=sky.accelerators.H100(),
-)
+    nodes=4,
+) as pool:
+    results = train() @ pool
 ```
 
 ### Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `region` | `str` | `None` | Region (auto-discovers if None) |
+| `region` | `str` | `"FIN-01"` | Preferred region |
+| `client_id` | `str or None` | `None` | OAuth2 client ID (falls back to `VERDA_CLIENT_ID`) |
+| `client_secret` | `str or None` | `None` | OAuth2 client secret (falls back to `VERDA_CLIENT_SECRET`) |
+| `ssh_key_id` | `str or None` | `None` | Specific SSH key ID to use |
 
 ### Available Regions
 
@@ -185,216 +174,114 @@ pool = sky.ComputePool(
 | `ICL-01` | Iceland | H100, A100 |
 | `ISR-01` | Israel | H100, A100 |
 
-### Auto Region Discovery
-
-Verda automatically selects the best available region:
-
-```python
-import skyward as sky
-
-# Auto-discovers region with requested GPU
-pool = sky.ComputePool(
-    provider=sky.Verda(),
-    accelerator=sky.accelerators.H100(),
-)
-```
-
-### Features
-
-- **Auto region discovery**: Finds regions with available GPUs
-- **Spot instances**: Significant cost savings
-
 ## VastAI
 
-VastAI is a GPU marketplace offering competitive pricing from independent providers worldwide.
+VastAI is a GPU marketplace — instances are Docker containers running on hosts from independent providers worldwide. Pricing is dynamic, and reliability varies by host. Skyward filters offers by reliability score, CUDA version, and optional geolocation, then provisions containers via the VastAI API.
+
+SSH keys are auto-detected from `~/.ssh/id_ed25519.pub` or `~/.ssh/id_rsa.pub` and registered on VastAI if needed. For multi-node clusters, VastAI supports overlay networks for NCCL communication between instances.
 
 ### Setup
 
 ```bash
-pip install vastai
-vastai set api-key YOUR_API_KEY
+export VAST_API_KEY=your_api_key
 ```
 
-Get your API key at: https://cloud.vast.ai/account/
+Get your API key at: [https://cloud.vast.ai/account/](https://cloud.vast.ai/account/)
 
 ### Usage
 
 ```python
 import skyward as sky
 
-pool = sky.ComputePool(
+with sky.ComputePool(
     provider=sky.VastAI(geolocation="US"),
     accelerator=sky.accelerators.RTX_4090(),
-)
+    nodes=2,
+) as pool:
+    result = train(data) >> pool
 ```
 
 ### Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `geolocation` | `str` | `None` | Filter by location (e.g., "US", "EU") |
-| `min_reliability` | `float` | `0.9` | Minimum provider reliability score (0-1) |
-| `bid_multiplier` | `float` | `1.0` | Multiplier for spot bidding |
-| `auto_shutdown` | `int` | `None` | Auto-terminate after N seconds |
+| `api_key` | `str or None` | `None` | API key (falls back to `VAST_API_KEY`) |
+| `min_reliability` | `float` | `0.95` | Minimum host reliability score (0.0-1.0) |
+| `min_cuda` | `float` | `12.0` | Minimum CUDA version |
+| `geolocation` | `str or None` | `None` | Filter by region/country (e.g., `"US"`, `"EU"`) |
+| `bid_multiplier` | `float` | `1.2` | Multiplier for spot bid price |
+| `docker_image` | `str or None` | `None` | Base Docker image for containers |
+| `disk_gb` | `int` | `100` | Disk space in GB |
+| `use_overlay` | `bool` | `True` | Enable overlay networking for multi-node clusters |
+| `require_direct_port` | `bool` | `False` | Only select offers with direct port access |
 
-### Features
-
-- **Dynamic marketplace**: Real-time pricing from global providers
-- **Reliability filtering**: Filter by provider track record
-- **Geolocation**: Target specific regions for latency
-- **Overlay networks**: Multi-node NCCL support for distributed training
-- **Interruptible instances**: Significant cost savings with spot-like pricing
-
-### Overlay Networks
-
-VastAI supports overlay networks for multi-node distributed training:
+VastAI also provides a helper for building NVIDIA CUDA base images:
 
 ```python
-import skyward as sky
-
-pool = sky.ComputePool(
-    provider=sky.VastAI(geolocation="US", min_reliability=0.95),
-    accelerator=sky.accelerators.RTX_4090(),
-    nodes=4,  # Automatically creates overlay network
-)
+image_name = sky.VastAI.ubuntu(version="24.04", cuda="12.9.1")
+# → "nvcr.io/nvidia/cuda:12.9.1-runtime-ubuntu24.04"
 ```
 
-## Choosing a Provider
+## Container
 
-### Use AWS When:
+The Container provider runs compute nodes as local containers — Docker, podman, nerdctl, or Apple's container CLI. No cloud credentials, no costs. Useful for development, CI testing, and validating your code before deploying to real hardware.
 
-- You need specific GPU types (H100, Trainium)
-- Spot instances are important for cost savings
-- Enterprise-grade reliability and support
-- You're already in the AWS ecosystem
+Containers are launched with SSH access, joined to a shared network, and bootstrapped the same way cloud instances are. From the pool's perspective, they look like any other nodes.
 
-### Use RunPod When:
-
-- Fast GPU provisioning with minimal setup
-- Competitive pricing on popular GPUs (A100, H100, RTX series)
-- You want both Secure and Community cloud options
-- Simple API key authentication
-
-### Use Verda When:
-
-- European data residency (Finland, Iceland, Israel)
-- H100/A100/GB200 availability
-- Automatic region selection
-- Competitive GPU pricing with spot support
-
-### Use VastAI When:
-
-- Maximum cost savings (marketplace pricing)
-- Consumer GPUs (RTX 4090, 3090, etc.)
-- Flexible compute requirements
-- Multi-node training with overlay networks
-
-## Multi-Provider Selection
-
-Use multiple providers with automatic fallback:
+### Usage
 
 ```python
 import skyward as sky
 
 with sky.ComputePool(
-    provider=[sky.AWS(), sky.Verda(), sky.VastAI()],
-    selection="cheapest",
-    accelerator=sky.accelerators.A100(),
+    provider=sky.Container(),
+    nodes=2,
+    image=sky.Image(pip=["numpy"]),
 ) as pool:
-    result = train() >> pool
+    result = train(data) >> pool
 ```
 
-### Selection Strategies
+### Parameters
 
-| Strategy | Description | Use Case |
-|----------|-------------|----------|
-| `"first"` | Use first provider in list | Explicit priority |
-| `"cheapest"` | Compare spot/on-demand prices | Cost optimization |
-| `"available"` | First with matching instances | Availability priority |
-| Custom callable | Your selection logic | Complex requirements |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `image` | `str` | `"ubuntu:24.04"` | Docker image |
+| `ssh_user` | `str` | `"root"` | SSH user inside the container |
+| `binary` | `str` | `"docker"` | Container runtime (`"docker"`, `"podman"`, `"nerdctl"`) |
+| `container_prefix` | `str or None` | `None` | Prefix for container names |
+| `network` | `str or None` | `None` | Docker network name. Auto-created if not set. |
 
-### Automatic Fallback
+## Choosing a Provider
 
-If the selected provider fails (no capacity, provisioning error), Skyward automatically tries the next:
+**AWS** — When you need specific hardware (H100, Trainium, Inferentia), spot instance savings, or enterprise reliability. Best if you're already in the AWS ecosystem.
 
-```python
-import skyward as sky
+**RunPod** — Fast provisioning, competitive pricing, minimal setup. Both Secure Cloud (dedicated) and Community Cloud (cheaper) tiers. Good for A100/H100/RTX workloads.
 
-# AWS first, fallback to Verda if AWS fails
-pool = sky.ComputePool(
-    provider=[sky.AWS(), sky.Verda()],
-    selection="first",
-    accelerator=sky.accelerators.H100(),
-)
-```
+**Verda** — European data residency (Finland, Iceland, Israel). H100/A100/H200/GB200 availability with automatic region selection.
 
-### Custom Selection
+**VastAI** — Maximum cost savings through marketplace pricing. Consumer GPUs (RTX 4090, 3090) available alongside datacenter hardware. Overlay networks for multi-node training.
 
-```python
-import skyward as sky
-
-def prefer_us_east(providers, spec):
-    """Prefer providers with us-east region."""
-    for p in providers:
-        if hasattr(p.config, 'region') and "us-east" in (p.config.region or ""):
-            return p
-    return providers[0]
-
-pool = sky.ComputePool(
-    provider=[sky.AWS(), sky.Verda()],
-    selection=prefer_us_east,
-    accelerator=sky.accelerators.A100(),
-)
-```
-
-### String Shortcuts
-
-```python
-import skyward as sky
-
-# Instead of sky.AWS(), you can use strings:
-pool = sky.ComputePool(
-    provider=["aws", "verda"],
-    selection="cheapest",
-    accelerator=sky.accelerators.A100(),
-)
-```
-
-### Sequential Multi-Provider Workflows
-
-You can also use different providers for different stages:
-
-```python
-import skyward as sky
-
-# Training on AWS (H100 GPUs)
-with sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.H100()) as train_pool:
-    train_model() @ train_pool
-
-# Inference on Verda (cost-effective)
-with sky.ComputePool(provider=sky.Verda(), accelerator=sky.accelerators.A100()) as infer_pool:
-    run_inference() >> infer_pool
-```
+**Container** — Local development and CI. Zero cost, instant provisioning. Validates your code end-to-end before deploying to a real provider.
 
 ## Common Issues
 
 ### AWS: "No instances available"
 
 1. Try a different region
-2. Use `allocation="spot-if-available"` to fallback to on-demand
-3. Request a service quota increase
+2. Use `allocation="spot-if-available"` (the default) to fall back to on-demand
+3. Request a service quota increase in the AWS console
 
 ### Verda: "Region not available"
 
-1. Remove the `region` parameter to enable auto-discovery
+1. The default region is `"FIN-01"` — try a different one or let auto-discovery find capacity
 2. Check your account's region access
 
 ### VastAI: "No offers available"
 
-1. Lower `min_reliability` threshold (e.g., 0.8)
-2. Expand `geolocation` filter or remove it
+1. Lower `min_reliability` (e.g., 0.8)
+2. Expand or remove the `geolocation` filter
 3. Try a different accelerator type
-4. Check marketplace availability at https://cloud.vast.ai/
+4. Check marketplace availability at [https://cloud.vast.ai/](https://cloud.vast.ai/)
 
 ---
 

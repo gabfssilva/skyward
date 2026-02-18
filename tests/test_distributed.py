@@ -9,13 +9,6 @@ pytestmark = [
     pytest.mark.e2e,
     pytest.mark.timeout(120),
     pytest.mark.xdist_group("pool"),
-    pytest.mark.xfail(
-        reason="Distributed collections ContextVar (_active_registry) does not propagate "
-        "through Casty actor system to @compute functions. "
-        "worker.py sets _active_registry in main(), but Casty spawns actors in separate "
-        "contexts, so asyncio.to_thread(_run) in worker_behavior doesn't inherit it.",
-        strict=False,
-    ),
 ]
 
 

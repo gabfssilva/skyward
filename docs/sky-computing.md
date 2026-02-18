@@ -32,54 +32,35 @@ Sky Computing proposes:
 
 Skyward focuses on a specific problem: **running Python functions on remote accelerators without worrying about where**.
 
-### Multi-Provider Selection
-
-Specify multiple providers — Skyward picks the best one:
-
-```python
-with sky.ComputePool(
-    provider=[sky.AWS(), sky.RunPod(), sky.Verda()],
-    selection='cheapest',
-    accelerator=sky.accelerators.T4(),
-) as pool:
-    result = train(data) >> pool
-```
-
-Selection strategies:
-
-| Strategy | Behavior |
-|----------|----------|
-| `"first"` | Use first provider in list (default) |
-| `"cheapest"` | Compare prices, pick lowest |
-| `"available"` | First provider with matching instances |
-| `callable` | Your custom logic |
-
-### Automatic Fallback
-
-If a provider fails to provision, Skyward tries the next one:
-
-```python
-pool = sky.ComputePool(
-    provider=[sky.AWS(), sky.Verda()],
-    accelerator=sky.accelerators.H100(),
-)
-# If AWS fails → tries Verda
-```
-
-No retry logic needed — it's handled for you.
-
 ### Unified Resource Specification
 
-`accelerator="H100"` works across all providers:
+The same accelerator works across all providers — Skyward finds the right instance type:
 
 ```python
 # AWS
 sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.H100())
 
+# RunPod
+sky.ComputePool(provider=sky.RunPod(), accelerator=sky.accelerators.H100())
+
 # Verda
 sky.ComputePool(provider=sky.Verda(), accelerator=sky.accelerators.H100())
+```
 
-# Both work — Skyward finds the right instance type
+You describe the hardware you need (`"A100"`, `sky.accelerators.H100(count=4)`), and the provider translates that into whatever its API requires — an EC2 instance type, a RunPod GPU pod, a VastAI marketplace offer. The abstraction means your code doesn't change when you switch providers.
+
+### Provider Portability
+
+Because providers implement the same `CloudProvider` protocol, switching between them is a one-line change. The rest of your code — the `@sky.compute` functions, the operators, the `Image` specification — stays identical. This is the practical realization of the Sky Computing idea: you're not locked to a single cloud.
+
+```python
+# Development: local containers, zero cost
+with sky.ComputePool(provider=sky.Container(), nodes=2) as pool:
+    result = train(data) >> pool
+
+# Production: real GPUs
+with sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.H100(), nodes=4) as pool:
+    result = train(data) >> pool
 ```
 
 ## What Skyward Adds: Ephemeral Compute
@@ -129,7 +110,9 @@ Also available: `@sky.integrations.keras()`, `@sky.integrations.jax()`, `@sky.in
 Distribute scikit-learn workloads:
 
 ```python
-with sky.integrations.JoblibPool(provider=AWS(), nodes=4, concurrency=4):
+import skyward as sky
+
+with sky.integrations.JoblibPool(provider=sky.AWS(), nodes=4, concurrency=4) as pool:
     grid = GridSearchCV(estimator, param_grid, n_jobs=-1)
     grid.fit(X, y)  # Distributed across 16 workers
 ```
@@ -161,7 +144,7 @@ Skyward documentation:
 
 - [Core Concepts](concepts.md) — Programming model and ephemeral compute
 - [Getting Started](getting-started.md) — Installation and first steps
-- [Providers](providers.md) — AWS, RunPod, VastAI, Verda configuration
+- [Providers](providers.md) — AWS, RunPod, VastAI, Verda, Container configuration
 
 [paper]: https://arxiv.org/abs/2205.07147
 [skypilot]: https://github.com/skypilot-org/skypilot

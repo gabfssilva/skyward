@@ -8,11 +8,10 @@ This module provides the user-facing synchronous API that mirrors v1:
     def train(data):
         return model.fit(data)
 
-    @sky.pool(provider=sky.AWS(), accelerator="A100", nodes=4)
-    def main():
-        result = train(data) >> sky          # execute on one node
-        results = train(data) @ sky          # broadcast to all nodes
-        a, b = (task1() & task2()) >> sky    # parallel execution
+    with sky.ComputePool(provider=sky.AWS(), accelerator="A100", nodes=4) as pool:
+        result = train(data) >> pool         # execute on one node
+        results = train(data) @ pool         # broadcast to all nodes
+        a, b = (task1() & task2()) >> pool   # parallel execution
 
 Internally, this facade:
 1. Runs v2's async provisioning in a sync context
@@ -294,13 +293,8 @@ class ComputePool:
         timeout: Provisioning timeout in seconds.
 
     Example:
-        with pool(provider=AWS(), accelerator="A100") as p:
-            result = train(data) >> p
-
-        # Or with decorator:
-        @pool(provider=AWS(), accelerator="A100")
-        def main():
-            return train(data) >> sky
+        with ComputePool(provider=AWS(), accelerator="A100") as pool:
+            result = train(data) >> pool
     """
 
     provider: ProviderConfig

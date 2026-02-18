@@ -34,7 +34,9 @@ if __name__ == "__main__":
         memory_gb=1,
         vcpus=1
     ) as pool:
+        all_results = hello(10) @ pool
+
         results = sky.gather(*(hello(i) for i in range(30))) >> pool
 
-        for r in results:
+        for r in all_results:
             print(r)

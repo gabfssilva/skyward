@@ -76,7 +76,11 @@ type WorkerMsg = ExecuteTask | _TaskDone | _TaskErrored
 WORKER_KEY: ServiceKey[WorkerMsg] = ServiceKey("skyward-worker")
 
 
-def worker_behavior(node_id: int, concurrency: int = 1) -> Behavior[WorkerMsg]:
+def worker_behavior(
+    node_id: int,
+    concurrency: int = 1,
+    registry: Any = None,
+) -> Behavior[WorkerMsg]:
     log = logger.bind(component="worker", node_id=node_id)
     sem = asyncio.Semaphore(concurrency)
 
@@ -84,6 +88,11 @@ def worker_behavior(node_id: int, concurrency: int = 1) -> Behavior[WorkerMsg]:
         async with sem:
             def _run() -> TaskResult:
                 from skyward.infra.serialization import deserialize
+
+                if registry is not None:
+                    from skyward.distributed import _set_active_registry
+
+                    _set_active_registry(registry)
 
                 try:
                     payload = deserialize(fn_bytes)
@@ -175,11 +184,12 @@ async def main(
         pool_size = max((os.cpu_count() or 1) + 4, workers_per_node)
         loop.set_default_executor(ThreadPoolExecutor(max_workers=pool_size))
         set_system_loop(loop)
-        _set_active_registry(DistributedRegistry(system, loop=loop))
+        registry = DistributedRegistry(system, loop=loop)
+        _set_active_registry(registry)
 
         system.spawn(
             Behaviors.discoverable(
-                worker_behavior(node_id, concurrency=workers_per_node),
+                worker_behavior(node_id, concurrency=workers_per_node, registry=registry),
                 key=WORKER_KEY,
             ),
             "worker",

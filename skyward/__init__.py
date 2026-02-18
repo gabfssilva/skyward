@@ -6,8 +6,8 @@
     def train(data):
         return model.fit(data)
 
-    with sky.pool(provider=sky.AWS(), accelerator="A100") as p:
-        result = train(data) >> sky
+    with sky.ComputePool(provider=sky.AWS(), accelerator="A100") as pool:
+        result = train(data) >> pool
 """
 
 try:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import tarfile
+from pathlib import Path
 
 import pytest
 
@@ -53,13 +54,6 @@ class TestEnvVars:
 
 
 class TestIncludes:
-    @pytest.mark.xfail(
-        reason="Image.includes only supports paths relative to CWD. "
-        "Absolute paths outside the project root cause ValueError in "
-        "build_user_code_tarball (file.relative_to(root) fails). "
-        "The pool then hangs waiting for bootstrap that silently failed.",
-        strict=False,
-    )
     @pytest.mark.timeout(60)
     def test_local_module_importable_on_worker(self, tmp_path):
         module_dir = tmp_path / "my_test_module"
@@ -124,3 +118,18 @@ class TestTarballBuilding:
             names = tar.getnames()
 
         assert not any(".csv" in n for n in names)
+
+    def test_includes_absolute_path(self, tmp_path):
+        lib = tmp_path / "mymod"
+        lib.mkdir()
+        (lib / "__init__.py").write_text("x = 1")
+        (lib / "util.py").write_text("y = 2")
+
+        tar_bytes = build_user_code_tarball(
+            includes=(str(lib),), project_root=Path("/nonexistent"),
+        )
+        with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
+            names = tar.getnames()
+
+        assert "mymod/__init__.py" in names
+        assert "mymod/util.py" in names

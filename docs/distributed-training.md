@@ -13,11 +13,10 @@ Skyward simplifies distributed training by automatically:
 
 Supported frameworks:
 
-- **PyTorch** - DistributedDataParallel (DDP)
-- **Keras 3** - DataParallel with JAX/TensorFlow/PyTorch backends
-- **JAX** - Native distributed training
-- **TensorFlow** - MultiWorkerMirroredStrategy
-- **HuggingFace** - Trainer with automatic distributed detection
+- **PyTorch** — DistributedDataParallel (DDP)
+- **Keras 3** — DataParallel distribution (JAX backend)
+- **JAX** — Native distributed training
+- **HuggingFace** — Trainer with automatic distributed detection
 
 These come with out-of-the-box integration decorators that handle setup automatically. Any other distributed framework works too — use `sky.instance_info()` inside your `@sky.compute` function to get cluster topology (node index, total nodes, head address) and configure it yourself.
 
@@ -94,7 +93,7 @@ def train():
 
 ## Keras 3 Training
 
-Keras 3 is backend-agnostic and works with JAX, TensorFlow, or PyTorch.
+Keras 3 is backend-agnostic, but the Skyward distribution integration — `DataParallel` with automatic device discovery and RNG synchronization — is currently **JAX-only**. For torch and tensorflow backends, the decorator delegates to the respective framework's distributed init (DDP for torch, TF distributed for tensorflow), but does not configure Keras-level distribution primitives.
 
 ### JAX Backend (Recommended)
 
@@ -148,28 +147,6 @@ with sky.ComputePool(
     ),
 ) as pool:
     results = train_model(epochs=10) @ pool
-```
-
-### TensorFlow Backend
-
-```python
-import skyward as sky
-
-@sky.compute
-@sky.integrations.keras(backend="tensorflow")
-def train():
-    import keras
-    # Uses TF distributed strategy
-    ...
-
-with sky.ComputePool(
-    provider=sky.AWS(),
-    image=sky.Image(
-        pip=["keras>=3.2", "tensorflow"],
-        env={"KERAS_BACKEND": "tensorflow"},
-    ),
-) as pool:
-    results = train() @ pool
 ```
 
 ## JAX Distributed Training
@@ -372,16 +349,15 @@ Control stdout/stderr in distributed training:
 
 ```python
 import skyward as sky
-from skyward import stdout, silent
 
 @sky.compute
-@stdout(only="head")
+@sky.stdout(only="head")
 def train():
     # Only head node prints progress
     print(f"Epoch {epoch}: loss={loss:.4f}")
 
 @sky.compute
-@silent
+@sky.silent
 def background_init():
     # No output from any node
     pass

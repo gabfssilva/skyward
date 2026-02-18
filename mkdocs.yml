@@ -64,7 +64,7 @@ markdown_extensions:
   - toc:
       permalink: true
   - pymdownx.snippets:
-      check_paths: true
+      check_paths: false
       dedent_subsections: true
   - attr_list
   - md_in_html

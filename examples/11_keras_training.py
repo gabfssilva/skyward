@@ -21,7 +21,7 @@ import skyward as sky
 
 @sky.compute
 @sky.integrations.keras(backend="jax", seed=42)
-# @sky.stdout(only=lambda i: i.node == 0)
+@sky.stdout(only=lambda i: i.node == 0)
 def train_vit(
     vit_config: ViTConfig | None = None,
     training_config: TrainingConfig | None = None,

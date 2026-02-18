@@ -188,7 +188,6 @@ if __name__ == "__main__":
         accelerator=sky.accelerators.T4(),
         image=sky.Image(
             pip=["torch"],
-            skyward_source='local',
         )
     ) as pool:
         print("=" * 60)

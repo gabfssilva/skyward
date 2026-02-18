@@ -136,7 +136,10 @@ def build_user_code_tarball(
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         for include_path in includes:
-            source = root / include_path
+            path_obj = Path(include_path)
+            absolute = path_obj.is_absolute()
+            source = path_obj if absolute else root / include_path
+
             if not source.exists():
                 logger.warning(
                     "Include path does not exist, skipping: {path}",
@@ -145,11 +148,12 @@ def build_user_code_tarball(
                 continue
 
             if source.is_file():
-                tar.add(str(source), arcname=include_path)
+                arcname = source.name if absolute else include_path
+                tar.add(str(source), arcname=arcname)
             elif source.is_dir():
                 for file in source.rglob("*"):
                     if file.is_file():
-                        rel = file.relative_to(root)
+                        rel = file.relative_to(source.parent if absolute else root)
                         if not _is_excluded(rel):
                             tar.add(str(file), arcname=str(rel))
 
