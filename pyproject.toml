@@ -84,6 +84,7 @@ packages = ["skyward"]
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+exclude = ["skyward/_version.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "ANN", "B", "C4", "SIM"]
