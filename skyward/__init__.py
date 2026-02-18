@@ -66,6 +66,7 @@ from .api import (
     stderr,
     stdout,
 )
+from .app import App
 from .distributed import (
     barrier,
     counter,
@@ -77,6 +78,7 @@ from .distributed import (
 from .providers import AWS, Container, RunPod, VastAI, Verda
 
 __all__ = [
+    "App",
     "sky",
     "pool",
     "compute",

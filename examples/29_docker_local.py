@@ -25,7 +25,7 @@ def hello(n: int) -> str:
         case 1:
             return "hello, 🌍!"
         case _:
-            return "hello, 🌏"
+            return "hello, 🌏!"
 
 if __name__ == "__main__":
     with sky.ComputePool(
@@ -37,4 +37,4 @@ if __name__ == "__main__":
         results = sky.gather(*(hello(i) for i in range(30))) >> pool
 
         for r in results:
-            print(f"Node {r['node']}: hostname={r['hostname']} pid={r['pid']}")
+            print(r)

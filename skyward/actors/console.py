@@ -21,6 +21,7 @@ import tty
 from dataclasses import dataclass, replace
 from enum import Enum, auto
 from types import MappingProxyType
+from typing import Any
 
 from casty import ActorContext, Behavior, Behaviors, SpyEvent, Terminated
 from rich.console import Console, Group, RenderableType
@@ -635,10 +636,53 @@ def _format_task(fn: object, args: tuple, kwargs: dict, max_sig: int = 40) -> st
 def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
     """Console tells this story: idle → observing → stopped."""
 
+    _original_stdout: list[Any] = []
+
+    def _install_stdout_redirect(ctx: ActorContext[ConsoleInput]) -> None:
+        ref = ctx.self
+
+        class _ConsoleWriter:
+            def __init__(self, original: Any, stream: str = "stdout") -> None:
+                self._original = original
+                self._stream = stream
+
+            def write(self, s: str) -> int:
+                for line in s.splitlines(keepends=True):
+                    stripped = line.rstrip()
+                    if stripped:
+                        ref.tell(LocalOutput(line=stripped, stream=self._stream))
+                return len(s)
+
+            def flush(self) -> None:
+                pass
+
+            @property
+            def encoding(self) -> str:
+                return self._original.encoding
+
+            @property
+            def errors(self) -> str | None:
+                return self._original.errors
+
+            def fileno(self) -> int:
+                return self._original.fileno()
+
+            def isatty(self) -> bool:
+                return False
+
+        _original_stdout.append(sys.stdout)
+        sys.stdout = _ConsoleWriter(sys.stdout, "stdout")  # type: ignore[assignment]
+
+    async def _uninstall_stdout_redirect(_ctx: ActorContext[ConsoleInput]) -> None:
+        if _original_stdout:
+            sys.stdout = _original_stdout.pop()
+
     def idle() -> Behavior[ConsoleInput]:
         async def setup(ctx: ActorContext[ConsoleInput]) -> Behavior[ConsoleInput]:
+            _install_stdout_redirect(ctx)
             timeline = _Timeline(total=spec.nodes)
-            return observing(_State(timeline=timeline))
+            behavior = observing(_State(timeline=timeline))
+            return Behaviors.with_lifecycle(behavior, post_stop=_uninstall_stdout_redirect)
         return Behaviors.setup(setup)
 
     def observing(state: _State) -> Behavior[ConsoleInput]:
@@ -877,6 +921,8 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
                 live = Live(
                     renderable, console=new_state.console,
                     refresh_per_second=60, screen=False,
+                    redirect_stdout=False,
+                    redirect_stderr=False,
                 )
                 live.start()
                 return observing(replace(new_state, live=live))

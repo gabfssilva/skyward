@@ -180,15 +180,20 @@ class ContainerProvider(CloudProvider[Container, str]):
         )
 
     async def terminate(self, instance_ids: tuple[str, ...]) -> None:
-        for iid in instance_ids:
+        import asyncio
+
+        async def _kill(iid: str) -> None:
             container_name = f"{_CONTAINER_PREFIX}-{iid}"
             await _stop_and_remove(self._bin, container_name)
             log.info("Container {id} terminated", id=iid)
 
+        await asyncio.gather(*(_kill(iid) for iid in instance_ids))
+
     async def teardown(self, cluster: Cluster[str]) -> None:
+        import asyncio
+
         ids = await _list_cluster_containers(self._bin, cluster.id)
-        for cid in ids:
-            await _stop_and_remove(self._bin, cid)
+        await asyncio.gather(*(_stop_and_remove(self._bin, cid) for cid in ids))
 
         try:
             await run(self._bin, "network", "rm", cluster.specific)
@@ -229,11 +234,7 @@ async def _stop_and_remove(binary: str, container_id: str) -> None:
             log.warning("Failed to remove container {id}: {err}", id=container_id, err=e)
     else:
         try:
-            await run(binary, "stop", container_id)
-        except RuntimeError as e:
-            log.warning("Failed to stop container {id}: {err}", id=container_id, err=e)
-        try:
-            await run(binary, "rm", container_id)
+            await run(binary, "rm", "-f", container_id)
         except RuntimeError as e:
             log.warning("Failed to remove container {id}: {err}", id=container_id, err=e)
 

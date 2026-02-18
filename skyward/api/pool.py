@@ -25,7 +25,6 @@ from __future__ import annotations
 import asyncio
 import functools
 import queue
-import sys
 import threading
 import types
 from collections.abc import Callable, Coroutine, Generator, Iterator, Sequence
@@ -340,8 +339,8 @@ class ComputePool:
     _cluster_id: str = field(default="", init=False, repr=False)
     _instances: dict[int, InstanceMetadata] = field(default_factory=dict, init=False, repr=False)
     _spec: PoolSpec | None = field(default=None, init=False, repr=False)
-    _console_ref: ActorRef | None = field(default=None, init=False, repr=False)
-    _original_stdout: Any = field(default=None, init=False, repr=False)
+    _app: Any = field(default=None, init=False, repr=False)
+    _owns_app: bool = field(default=False, init=False, repr=False)
 
     def __enter__(self) -> ComputePool:
         """Start pool and provision resources."""
@@ -361,6 +360,15 @@ class ComputePool:
 
         logger.info("Starting pool with {n} nodes ({accel})", n=self.nodes, accel=self.accelerator)
 
+        from skyward.app import App, get_app
+
+        app = get_app()
+        if app is None:
+            app = App(console=bool(self.logging))
+            app.__enter__()
+            self._owns_app = True
+        self._app = app
+
         self._loop = asyncio.new_event_loop()
         self._loop_thread = threading.Thread(
             target=self._run_loop,
@@ -373,7 +381,6 @@ class ComputePool:
             self._run_sync(self._start_async())
             self._active = True
             self._context_token = _active_pool.set(self)
-            self._install_stdout_redirect()
             logger.info("Pool ready")
         except Exception as e:
             logger.exception("Error starting pool: {err}", err=e)
@@ -397,8 +404,6 @@ class ComputePool:
             sys=self._system is not None,
         )
         try:
-            self._uninstall_stdout_redirect()
-
             if self._context_token is not None:
                 _active_pool.reset(self._context_token)
                 self._context_token = None
@@ -418,6 +423,12 @@ class ComputePool:
                 self._registry = None
 
             self._active = False
+
+            if self._owns_app and self._app is not None:
+                self._app.__exit__(None, None, None)
+                self._app = None
+                self._owns_app = False
+
             self._cleanup()
             logger.info("Pool stopped")
 
@@ -619,53 +630,8 @@ class ComputePool:
         logger.debug("Creating distributed lock: {name}", name=name)
         return self._registry.lock(name)
 
-    def _install_stdout_redirect(self) -> None:
-        if self._console_ref is None or self._system is None:
-            return
-        from skyward.actors.console import LocalOutput
-
-        ref = self._console_ref
-
-        class _ConsoleWriter:
-            def __init__(self, original: Any, stream: str = "stdout") -> None:
-                self._original = original
-                self._stream = stream
-
-            def write(self, s: str) -> int:
-                for line in s.splitlines(keepends=True):
-                    stripped = line.rstrip()
-                    if stripped:
-                        ref.tell(LocalOutput(line=stripped, stream=self._stream))
-                return len(s)
-
-            def flush(self) -> None:
-                pass
-
-            @property
-            def encoding(self) -> str:
-                return self._original.encoding
-
-            @property
-            def errors(self) -> str | None:
-                return self._original.errors
-
-            def fileno(self) -> int:
-                return self._original.fileno()
-
-            def isatty(self) -> bool:
-                return False
-
-        self._original_stdout = sys.stdout
-        sys.stdout = _ConsoleWriter(sys.stdout, "stdout")  # type: ignore[assignment]
-
-    def _uninstall_stdout_redirect(self) -> None:
-        if self._original_stdout is not None:
-            sys.stdout = self._original_stdout
-            self._original_stdout = None
-
     async def _start_async(self) -> None:
         """Start pool asynchronously using actors (zero bus)."""
-        from skyward.actors.console import console_actor
         from skyward.actors.messages import PoolStarted, StartPool
         from skyward.actors.pool import pool_actor
 
@@ -704,20 +670,18 @@ class ComputePool:
 
         await self._system.__aenter__()
 
-        console_ref = (
-            self._system.spawn(console_actor(spec), "console")
-            if self.logging
-            else None
-        )
-        self._console_ref = console_ref
+        if self._app is not None:
+            self._app.setup_console(self._system, spec)
+
+        spy = self._app.spy if self._app is not None else None
 
         pool_behavior = pool_actor()
-        if console_ref is not None:
-            pool_behavior = Behaviors.spy(pool_behavior, console_ref, spy_children=True)
+        if spy is not None:
+            pool_behavior = Behaviors.spy(pool_behavior, spy, spy_children=True)
 
         logger.debug(
-            "Spawning pool actor (console={console})",
-            console=console_ref is not None,
+            "Spawning pool actor (spy={spy})",
+            spy=spy is not None,
         )
         pool_ref: ActorRef[PoolMsg] = self._system.spawn(pool_behavior, "pool")
         self._pool_ref = pool_ref

@@ -32,7 +32,10 @@ type Patcher = Callable[[logging.LogRecord], None]
 
 
 def _caller_logger(depth: int = 2) -> logging.Logger:
-    frame = inspect.stack()[depth]
+    stack = inspect.stack()
+    if depth >= len(stack):
+        return _skyward_root
+    frame = stack[depth]
     module = frame.frame.f_globals.get("__name__", "skyward")
     return logging.getLogger(module)
 
@@ -64,7 +67,8 @@ class BoundLogger:
         lib_logger = _caller_logger(depth)
         if not lib_logger.isEnabledFor(level):
             return
-        frame = inspect.stack()[depth]
+        stack = inspect.stack()
+        frame = stack[depth] if depth < len(stack) else stack[-1]
         record = lib_logger.makeRecord(
             name=lib_logger.name,
             level=level,
