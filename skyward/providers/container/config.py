@@ -23,13 +23,15 @@ class Container(ProviderConfig):
 
     Example:
         >>> import skyward as sky
-        >>> with sky.pool(provider=sky.Container(), nodes=2) as p:
+        >>> with sky.ComputePool(provider=sky.Container(), nodes=2) as p:
         ...     result = train(data) >> sky
     """
 
     image: str = _DEFAULT_IMAGE
     ssh_user: str = "root"
     binary: str = "docker"
+    container_prefix: str | None = None
+    network: str | None = None
 
     async def create_provider(self) -> ContainerProvider:
         from skyward.providers.container.provider import ContainerProvider

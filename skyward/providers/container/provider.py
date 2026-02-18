@@ -59,6 +59,8 @@ class ContainerProvider(CloudProvider[Container, ContainerSpecific]):
         self._config = config
         self._bin = config.binary
         self._image: str = ""
+        self._container_prefix = config.container_prefix or _CONTAINER_PREFIX
+        self._shared_network = config.network
 
     @classmethod
     async def create(cls, config: Container) -> ContainerProvider:
@@ -83,16 +85,33 @@ class ContainerProvider(CloudProvider[Container, ContainerSpecific]):
         log.info("Image {tag} built", tag=tag)
         return tag
 
+    async def _ensure_network(self, cluster_id: str) -> str:
+        if self._shared_network:
+            try:
+                await run(
+                    self._bin, "network", "inspect", self._shared_network,
+                )
+            except RuntimeError:
+                await run(
+                    self._bin, "network", "create", self._shared_network,
+                )
+                log.info("Shared network created: {net}", net=self._shared_network)
+            return self._shared_network
+
+        network_name = f"{_NETWORK_PREFIX}-{cluster_id}"
+        await run(self._bin, "network", "create", network_name)
+        log.info(
+            "Cluster {id} network created: {net}",
+            id=cluster_id, net=network_name,
+        )
+        return network_name
+
     async def prepare(self, spec: PoolSpec) -> Cluster[ContainerSpecific]:
         cluster_id = f"skyward-{uuid.uuid4().hex[:8]}"
         ssh_key_path = get_ssh_key_path()
 
         tag = await self._ensure_image()
-
-        network_name = f"{_NETWORK_PREFIX}-{cluster_id}"
-        await run(self._bin, "network", "create", network_name)
-
-        log.info("Cluster {id} network created: {net}", id=cluster_id, net=network_name)
+        network_name = await self._ensure_network(cluster_id)
 
         return Cluster(
             id=cluster_id,
@@ -127,7 +146,7 @@ class ContainerProvider(CloudProvider[Container, ContainerSpecific]):
         cluster: Cluster[ContainerSpecific],
     ) -> Instance:
         short_id = uuid.uuid4().hex[:12]
-        container_name = f"{_CONTAINER_PREFIX}-{short_id}"
+        container_name = f"{self._container_prefix}-{short_id}"
 
         cmd: list[str] = [
             self._bin, "run", "-d",
@@ -163,7 +182,7 @@ class ContainerProvider(CloudProvider[Container, ContainerSpecific]):
     async def get_instance(
         self, cluster: Cluster[ContainerSpecific], instance_id: str,
     ) -> Instance | None:
-        container_name = f"{_CONTAINER_PREFIX}-{instance_id}"
+        container_name = f"{self._container_prefix}-{instance_id}"
         try:
             info = await run_json(self._bin, "inspect", container_name)
         except RuntimeError:
@@ -188,7 +207,7 @@ class ContainerProvider(CloudProvider[Container, ContainerSpecific]):
         import asyncio
 
         async def _kill(iid: str) -> None:
-            container_name = f"{_CONTAINER_PREFIX}-{iid}"
+            container_name = f"{self._container_prefix}-{iid}"
             await _stop_and_remove(self._bin, container_name)
             log.info("Container {id} terminated", id=iid)
 
@@ -200,10 +219,14 @@ class ContainerProvider(CloudProvider[Container, ContainerSpecific]):
         ids = await _list_cluster_containers(self._bin, cluster.id)
         await asyncio.gather(*(_stop_and_remove(self._bin, cid) for cid in ids))
 
-        try:
-            await run(self._bin, "network", "rm", cluster.specific.network)
-        except RuntimeError as e:
-            log.warning("Failed to remove network {net}: {err}", net=cluster.specific, err=e)
+        if not self._shared_network:
+            try:
+                await run(self._bin, "network", "rm", cluster.specific.network)
+            except RuntimeError as e:
+                log.warning(
+                    "Failed to remove network {net}: {err}",
+                    net=cluster.specific.network, err=e,
+                )
 
         log.info("Cluster {id} torn down", id=cluster.id)
 
