@@ -7,8 +7,7 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build:
-
+  check:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -27,5 +26,42 @@ jobs:
       run: uv run ruff check skyward/ tests/
     - name: Type check with pyright
       run: uv run pyright skyward/
-    - name: Test with pytest
-      run: uv run pytest -n auto
+    - name: Unit tests
+      run: uv run pytest tests/test_http.py tests/test_serialization.py tests/test_config.py
+
+  e2e:
+    needs: [check]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+        test-group: [pool, distributed, image, torch, jax, keras, parallel]
+        include:
+          - test-group: pool
+            test-filter: tests/test_compute.py tests/test_broadcast.py tests/test_output_control.py tests/test_runtime.py tests/test_async.py tests/test_parallel.py
+          - test-group: distributed
+            test-filter: tests/test_distributed.py
+          - test-group: image
+            test-filter: tests/test_image.py
+          - test-group: torch
+            test-filter: "tests/test_integrations.py -k 'TestTorchIntegration or TestTransformersIntegration'"
+          - test-group: jax
+            test-filter: "tests/test_integrations.py -k TestJaxIntegration"
+          - test-group: keras
+            test-filter: "tests/test_integrations.py -k TestKerasIntegration"
+          - test-group: parallel
+            test-filter: "tests/test_integrations.py -k 'TestJoblibIntegration or TestScikitLearnIntegration'"
+
+    name: e2e / ${{ matrix.test-group }} / ${{ matrix.python-version }}
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      run: uv sync --dev
+    - name: Run ${{ matrix.test-group }} tests
+      run: uv run pytest ${{ matrix.test-filter }}
