@@ -364,7 +364,7 @@ class ComputePool:
 
         app = get_app()
         if app is None:
-            app = App(console=bool(self.logging))
+            app = App()
             app.__enter__()
             self._owns_app = True
         self._app = app
@@ -671,7 +671,7 @@ class ComputePool:
         await self._system.__aenter__()
 
         if self._app is not None:
-            self._app.setup_console(self._system, spec)
+            self._app.setup(self._system, spec)
 
         spy = self._app.spy if self._app is not None else None
 

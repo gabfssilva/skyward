@@ -48,20 +48,20 @@ def keras[**P, R](
             if pool and pool.total_nodes > 1:
                 import keras
 
-                devices = keras.distribution.list_devices()
-                log.debug("Available devices: {devices}", devices=devices)
+                if effective == "jax":
+                    devices = keras.distribution.list_devices()
+                    log.debug("Available devices: {devices}", devices=devices)
 
-                if devices:
-                    log.debug("Setting up DataParallel distribution")
-                    keras.distribution.set_distribution(
-                        keras.distribution.DataParallel(
-                            devices=devices,
-                            auto_shard_dataset=False,
+                    if devices:
+                        log.debug("Setting up DataParallel distribution")
+                        keras.distribution.set_distribution(
+                            keras.distribution.DataParallel(
+                                devices=devices,
+                                auto_shard_dataset=False,
+                            )
                         )
-                    )
-                    log.debug("DataParallel distribution set")
+                        log.debug("DataParallel distribution set")
 
-                    if effective == "jax":
                         from keras.src.backend.jax.distribution_lib import initialize_rng
                         initialize_rng()
                         log.debug("RNG synchronized across processes")

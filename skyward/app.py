@@ -37,8 +37,8 @@ class App:
             _active_app.reset(self._context_token)
             self._context_token = None
 
-    def setup_console(self, system: ActorSystem, spec: Any) -> None:
-        """Spawn console actor. It manages its own stdout redirect lifecycle."""
+    def setup(self, system: ActorSystem, spec: Any) -> None:
+        """Wire App into the actor system. Spawns console if enabled."""
         if not self.console or self._spy_ref is not None:
             return
 

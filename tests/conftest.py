@@ -8,7 +8,7 @@ from skyward import ComputePool, Image
 
 @pytest.fixture(scope="session")
 def pool():
-    with ComputePool(
+    with sky.App(console=False), ComputePool(
         provider=sky.Container(network="skyward", container_prefix='skyward-default'),
         nodes=2,
         concurrency=5,
@@ -19,7 +19,7 @@ def pool():
 
 @pytest.fixture(scope="session")
 def pip_pool():
-    with ComputePool(
+    with sky.App(console=False), ComputePool(
         provider=sky.Container(network="skyward", container_prefix='skyward-pip'),
         nodes=1,
         concurrency=5,
@@ -32,20 +32,20 @@ def pip_pool():
 
 @pytest.fixture(scope="session")
 def apt_pool():
-    with ComputePool(
+    with sky.App(console=False), ComputePool(
         provider=sky.Container(network="skyward", container_prefix='skyward-apt'),
         nodes=1,
         concurrency=2,
         image=Image(apt=["jq"]),
         memory_gb=1,
-        vcpus=1
+        vcpus=1,
     ) as p:
         yield p
 
 
 @pytest.fixture(scope="session")
 def env_pool():
-    with ComputePool(
+    with sky.App(console=False), ComputePool(
         provider=sky.Container(network="skyward", container_prefix='skyward-env'),
         nodes=1,
         image=Image(env={"MY_TEST_VAR": "hello123"}),
@@ -57,7 +57,7 @@ def env_pool():
 
 @pytest.fixture(scope="session")
 def torch_pool():
-    with ComputePool(
+    with sky.App(console=False), ComputePool(
         provider=sky.Container(network="skyward", container_prefix='skyward-torch'),
         concurrency=2,
         nodes=2,
@@ -73,7 +73,7 @@ def torch_pool():
 
 @pytest.fixture(scope="session")
 def jax_pool():
-    with ComputePool(
+    with sky.App(console=False), ComputePool(
         provider=sky.Container(network="skyward", container_prefix='skyward-jax'),
         nodes=2,
         vcpus=2,
@@ -85,7 +85,7 @@ def jax_pool():
 
 @pytest.fixture(scope="session")
 def keras_pool():
-    with ComputePool(
+    with sky.App(console=False), ComputePool(
         provider=sky.Container(network="skyward", container_prefix='skyward-keras'),
         nodes=2,
         vcpus=2,
@@ -101,7 +101,7 @@ def keras_pool():
 
 @pytest.fixture(scope="session")
 def parallel_pool():
-    with ComputePool(
+    with sky.App(console=False), ComputePool(
         provider=sky.Container(network="skyward", container_prefix='skyward-parallel'),
         nodes=2,
         vcpus=1,

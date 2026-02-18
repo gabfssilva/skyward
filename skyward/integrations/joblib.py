@@ -22,6 +22,7 @@ Uses joblib's pluggable backend system for seamless integration.
 
 from __future__ import annotations
 
+import sys
 import warnings
 from collections.abc import Iterator
 from concurrent.futures import Future
@@ -45,23 +46,24 @@ if TYPE_CHECKING:
     from skyward.api.provider import ProviderConfig as Provider
 
 
-_PROVIDER_MODULES = {"urllib3", "botocore", "boto3", "aioboto3"}
+_SAFE_ROOTS = sys.stdlib_module_names | {"builtins"}
 
 
-def _strip_provider_warning_filters() -> None:
-    """Remove warning filters injected by cloud provider SDKs.
+def _strip_local_warning_filters() -> None:
+    """Keep only stdlib/builtin warning filters for safe cross-environment serialization.
 
-    sklearn.utils.parallel.Parallel captures warnings.filters and pickles
-    them into every task via cloudpickle. Provider SDKs (e.g. aioboto3 →
-    urllib3) register warning filters whose category classes live in modules
-    not installed on workers, causing ModuleNotFoundError on deserialization.
+    sklearn.utils.parallel.Parallel captures ``warnings.filters`` and pickles
+    them into every task via cloudpickle.  Filters whose category classes come
+    from third-party modules (pytest, cloud SDKs, …) reference modules that may
+    not exist on workers, causing ``ModuleNotFoundError`` on deserialization.
+
+    Only stdlib/builtin categories (``DeprecationWarning``, ``FutureWarning``,
+    …) are guaranteed to exist everywhere.  Third-party packages installed on
+    workers will re-inject their own filters at import time.
     """
     warnings.filters[:] = [  # type: ignore[reportIndexIssue]
         f for f in warnings.filters
-        if not any(
-            isinstance(x, type) and x.__module__.split(".")[0] in _PROVIDER_MODULES
-            for x in f
-        )
+        if f[2].__module__.split(".")[0] in _SAFE_ROOTS
     ]
 
 
@@ -162,6 +164,7 @@ def sklearn_backend(pool: ComputePool) -> Iterator[None]:
     """
     logger.info("Activating sklearn/joblib backend with Skyward pool")
     _setup_backend(pool)
+    _strip_local_warning_filters()
     with parallel_backend("skyward"):
         yield
     logger.debug("sklearn/joblib backend deactivated")
@@ -302,6 +305,6 @@ def ScikitLearnPool(
 
     with pool:
         _setup_backend(pool)
-        _strip_provider_warning_filters()
+        _strip_local_warning_filters()
         with parallel_backend("skyward"):
             yield pool
