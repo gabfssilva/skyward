@@ -377,6 +377,7 @@ class Preempted:
 class Execute:
     fn_bytes: bytes
     reply_to: ActorRef[Any]
+    task_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -448,6 +449,14 @@ class _BootstrapUploadFailed:
     error: str
 
 
+@dataclass(frozen=True, slots=True)
+class _CorrelatedTaskResult:
+    task_id: str
+    value: Any
+    node_id: int
+    error: bool = False
+
+
 type InstanceMsg = (
     Running | Bootstrapping | Bootstrapped | BootstrapDone
     | Log | Metric | Preempted | Execute | HeadAddressKnown
@@ -458,6 +467,7 @@ type InstanceMsg = (
     | _Connected | _ConnectionFailed
     | _WorkerStarted | _WorkerFailed
     | _BootstrapUploaded | _BootstrapUploadFailed
+    | _CorrelatedTaskResult
 )
 
 
@@ -490,12 +500,14 @@ class InstanceDied:
 class ExecuteOnNode:
     fn_bytes: bytes
     reply_to: ActorRef[Any]
+    task_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
 class TaskResult:
     value: Any
     node_id: NodeId
+    task_id: str = ""
 
 
 type NodeMsg = (

@@ -24,6 +24,7 @@ from skyward.actors.messages import (
     _BootstrapUploadFailed,
     _Connected,
     _ConnectionFailed,
+    _CorrelatedTaskResult,
     _instance_to_metadata,
     _LocalInstallDone,
     _PollResult,
@@ -35,9 +36,6 @@ from skyward.actors.messages import (
 from skyward.actors.streaming import instance_monitor
 from skyward.infra.worker import (
     ExecuteTask as WorkerExecuteTask,
-)
-from skyward.infra.worker import (
-    TaskFailed as WorkerTaskFailed,
 )
 from skyward.infra.worker import (
     TaskSucceeded as WorkerTaskSucceeded,
@@ -388,26 +386,35 @@ def instance_actor(
             ctx: ActorContext[InstanceMsg], msg: InstanceMsg,
         ) -> Behavior[InstanceMsg]:
             match msg:
-                case Execute(fn_bytes=fn_bytes):
-                    log.debug("Executing task")
+                case Execute(fn_bytes=fn_bytes, task_id=tid):
+                    log.debug("Executing task {tid}", tid=tid)
                     ctx.pipe_to_self(
                         client.ask(
                             worker_ref,
                             lambda rto: WorkerExecuteTask(fn_bytes=fn_bytes, reply_to=rto),  # type: ignore[arg-type]
                             timeout=600.0,
                         ),
-                        on_failure=lambda e: WorkerTaskFailed(  # type: ignore[return-value]
-                            error=str(e), traceback="", node_id=0,
+                        mapper=lambda result, _tid=tid: _CorrelatedTaskResult(  # type: ignore[return-value]
+                            task_id=_tid,
+                            value=(
+                                result.result
+                                if isinstance(result, WorkerTaskSucceeded)
+                                else RuntimeError(result.error)
+                            ),
+                            node_id=result.node_id,
+                            error=not isinstance(result, WorkerTaskSucceeded),
+                        ),
+                        on_failure=lambda e, _tid=tid: _CorrelatedTaskResult(  # type: ignore[return-value]
+                            task_id=_tid, value=RuntimeError(str(e)), node_id=0, error=True,
                         ),
                     )
                     return Behaviors.same()
-                case WorkerTaskSucceeded(result=value, node_id=nid):
-                    log.debug("Task succeeded")
-                    parent.tell(TaskResult(value=value, node_id=nid))
-                    return Behaviors.same()
-                case WorkerTaskFailed(error=error, node_id=nid):
-                    log.warning("Task failed: {error}", error=error)
-                    parent.tell(TaskResult(value=RuntimeError(error), node_id=nid))
+                case _CorrelatedTaskResult(task_id=tid, value=value, node_id=nid, error=is_err):
+                    if is_err:
+                        log.warning("Task {tid} failed: {error}", tid=tid, error=value)
+                    else:
+                        log.debug("Task {tid} succeeded", tid=tid)
+                    parent.tell(TaskResult(value=value, node_id=nid, task_id=tid))
                     return Behaviors.same()
                 case Log() | Metric():
                     pass

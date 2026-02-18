@@ -64,13 +64,15 @@ async def test_submit_task_queues_when_no_slots(system):
     tm_ref.tell(NodeAvailable(node_id=0, node_ref=node_ref, slots=1))
     await asyncio.sleep(0.1)
 
-    tm_ref.tell(SubmitTask(fn=_dummy_fn, args=(), kwargs={}, reply_to=reply_ref))
-    tm_ref.tell(SubmitTask(fn=_dummy_fn, args=(), kwargs={}, reply_to=reply_ref))
+    task1 = SubmitTask(fn=_dummy_fn, args=(), kwargs={}, reply_to=reply_ref)
+    task2 = SubmitTask(fn=_dummy_fn, args=(), kwargs={}, reply_to=reply_ref)
+    tm_ref.tell(task1)
+    tm_ref.tell(task2)
     await asyncio.sleep(0.1)
 
     assert len(node_msgs) == 1  # only 1 slot
 
-    tm_ref.tell(TaskResult(value="done", node_id=0))
+    tm_ref.tell(TaskResult(value="done", node_id=0, task_id=task1.task_id))
     await asyncio.sleep(0.1)
 
     assert len(node_msgs) == 2  # queue drained

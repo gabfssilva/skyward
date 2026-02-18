@@ -6,9 +6,7 @@ import skyward as sky
 
 
 def slow_task(x):
-    print(f"Task {x} starting")
     sleep(5)
-    print(f"Task {x} done")
     return x * 2
 
 
@@ -24,6 +22,7 @@ if __name__ == '__main__':
         nodes=nodes,
         image=sky.Image(pip=["joblib"], skyward_source='local'),
         concurrency=concurrency,
+        max_inflight=tasks
     ) as pool:
         # just to warm up
         for _ in range(10):

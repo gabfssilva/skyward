@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
@@ -32,7 +32,7 @@ class ActiveState:
     provider: Any
     instance_ref: ActorRef | None
     pending_tasks: tuple[tuple[bytes, ActorRef], ...] = ()
-    inflight: tuple[tuple[int, ActorRef], ...] = ()
+    inflight: dict[str, ActorRef] = field(default_factory=dict)
     task_counter: int = 0
     current_metadata: InstanceMetadata | None = None
 
@@ -161,12 +161,15 @@ def node_actor(
                         id=iid, node=node_id, provider="aws", ip=ip,
                     )
                     pool.tell(NodeBecameReady(node_id=node_id, instance=meta))
-                    new_inflight = s.inflight
+                    new_inflight = dict(s.inflight)
                     new_counter = s.task_counter
                     if s.instance_ref:
                         for fn_bytes, rto in s.pending_tasks:
-                            s.instance_ref.tell(Execute(fn_bytes=fn_bytes, reply_to=ctx.self))
-                            new_inflight = (*new_inflight, (new_counter, rto))
+                            tid = str(new_counter)
+                            s.instance_ref.tell(Execute(
+                                fn_bytes=fn_bytes, reply_to=ctx.self, task_id=tid,
+                            ))
+                            new_inflight[tid] = rto
                             new_counter += 1
                     return active(replace(
                         s, pending_tasks=(), inflight=new_inflight,
@@ -185,22 +188,27 @@ def node_actor(
                         ),
                     )
                     return replacing(s.cluster, s.provider, s.pending_tasks)
-                case ExecuteOnNode(fn_bytes, reply_to):
-                    log.debug("Node {nid} dispatching task {tid}", nid=node_id, tid=s.task_counter)
+                case ExecuteOnNode(fn_bytes, reply_to, task_id=tid):
+                    local_tid = tid or str(s.task_counter)
+                    log.debug("Node {nid} dispatching task {tid}", nid=node_id, tid=local_tid)
                     if s.instance_ref:
-                        s.instance_ref.tell(Execute(fn_bytes=fn_bytes, reply_to=ctx.self))
+                        s.instance_ref.tell(Execute(
+                            fn_bytes=fn_bytes, reply_to=ctx.self, task_id=local_tid,
+                        ))
+                        new_inflight = {**s.inflight, local_tid: reply_to}
                         return active(replace(
                             s,
-                            inflight=(*s.inflight, (s.task_counter, reply_to)),
+                            inflight=new_inflight,
                             task_counter=s.task_counter + 1,
                         ))
                     return Behaviors.same()
-                case TaskResult(value, _):
-                    log.debug("Node {nid} received task result", nid=node_id)
-                    if s.inflight:
-                        _, caller = s.inflight[0]
-                        caller.tell(TaskResult(value=value, node_id=node_id))
-                        return active(replace(s, inflight=s.inflight[1:]))
+                case TaskResult(value, _, task_id=tid):
+                    log.debug("Node {nid} received task result (tid={tid})", nid=node_id, tid=tid)
+                    caller = s.inflight.get(tid)
+                    if caller:
+                        caller.tell(TaskResult(value=value, node_id=node_id, task_id=tid))
+                        new_inflight = {k: v for k, v in s.inflight.items() if k != tid}
+                        return active(replace(s, inflight=new_inflight))
             return Behaviors.same()
         return Behaviors.receive(receive)
 

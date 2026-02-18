@@ -42,9 +42,7 @@ if TYPE_CHECKING:
 
     from joblib import Parallel
 
-    from skyward.providers import AWS, RunPod, VastAI, Verda
-
-    type Provider = AWS | VastAI | Verda | RunPod
+    from skyward.api.provider import ProviderConfig as Provider
 
 
 _PROVIDER_MODULES = {"urllib3", "botocore", "boto3", "aioboto3"}

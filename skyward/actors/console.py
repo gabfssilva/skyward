@@ -876,7 +876,7 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
             case None:
                 live = Live(
                     renderable, console=new_state.console,
-                    refresh_per_second=60, screen=True,
+                    refresh_per_second=60, screen=False,
                 )
                 live.start()
                 return observing(replace(new_state, live=live))

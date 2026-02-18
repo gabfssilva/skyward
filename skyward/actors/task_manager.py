@@ -1,4 +1,3 @@
-from collections import deque
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -56,12 +55,12 @@ def _dispatch(
     reply_to: ActorRef,
     nodes: dict[NodeId, NodeSlots],
     tm_ref: ActorRef,
-    inflight: dict[NodeId, deque[ActorRef]],
+    inflight: dict[str, ActorRef],
 ) -> dict[NodeId, NodeSlots]:
     slot = nodes[nid]
     tm_ref.tell(TaskSubmitted(task_id=task_id, node_id=nid))
-    slot.ref.tell(ExecuteOnNode(fn_bytes=fn_bytes, reply_to=tm_ref))
-    inflight.setdefault(nid, deque()).append(reply_to)
+    slot.ref.tell(ExecuteOnNode(fn_bytes=fn_bytes, reply_to=tm_ref, task_id=task_id))
+    inflight[task_id] = reply_to
     return {**nodes, nid: NodeSlots(slot.ref, slot.total, slot.used + 1)}
 
 
@@ -70,7 +69,7 @@ def _drain_queue(
     nodes: dict[NodeId, NodeSlots],
     round_robin: int,
     tm_ref: ActorRef,
-    inflight: dict[NodeId, deque[ActorRef]],
+    inflight: dict[str, ActorRef],
 ) -> tuple[tuple[SubmitTask, ...], dict[NodeId, NodeSlots], int]:
     remaining: list[SubmitTask] = []
     for task in queue:
@@ -89,7 +88,7 @@ class _State:
     nodes: dict[NodeId, NodeSlots]
     queue: tuple[SubmitTask, ...]
     round_robin: int
-    inflight: dict[NodeId, deque[ActorRef]]
+    inflight: dict[str, ActorRef]
     broadcasts: dict[str, PendingBroadcast]
     max_inflight: int
 
@@ -124,7 +123,6 @@ def task_manager_actor(max_inflight: int) -> Behavior[TaskManagerMsg]:
                 case NodeUnavailable(node_id):
                     log.info("Node {nid} unavailable", nid=node_id)
                     new_nodes = {k: v for k, v in s.nodes.items() if k != node_id}
-                    s.inflight.pop(node_id, None)
                     for bc in s.broadcasts.values():
                         if node_id in bc.pending:
                             bc.pending.discard(node_id)
@@ -134,7 +132,7 @@ def task_manager_actor(max_inflight: int) -> Behavior[TaskManagerMsg]:
                     new_s = replace(s, nodes=new_nodes)
                     return _check_broadcasts(new_s)
 
-                case TaskResult(value, node_id):
+                case TaskResult(value, node_id, task_id=tid):
                     broadcast_hit = False
                     for bc in s.broadcasts.values():
                         if node_id in bc.pending:
@@ -144,10 +142,9 @@ def task_manager_actor(max_inflight: int) -> Behavior[TaskManagerMsg]:
                             break
 
                     if not broadcast_hit:
-                        callers = s.inflight.get(node_id)
-                        if callers:
-                            caller = callers.popleft()
-                            caller.tell(TaskResult(value=value, node_id=node_id))
+                        caller = s.inflight.pop(tid, None)
+                        if caller:
+                            caller.tell(TaskResult(value=value, node_id=node_id, task_id=tid))
 
                     if node_id not in s.nodes:
                         return _check_broadcasts(s) if broadcast_hit else Behaviors.same()
