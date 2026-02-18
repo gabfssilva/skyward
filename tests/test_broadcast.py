@@ -12,8 +12,7 @@ class TestBroadcast:
         @sky.compute
         def whoami():
             info = sky.instance_info()
-            assert info is not None
-            return info.node
+            return info.node if info else None
 
         nodes = whoami() @ pool
         assert sorted(nodes) == [0, 1]
@@ -31,8 +30,7 @@ class TestBroadcast:
         @sky.compute
         def node_specific():
             info = sky.instance_info()
-            assert info is not None
-            return f"node-{info.node}"
+            return f"node-{info.node}" if info else None
 
         results = sorted(node_specific() @ pool)
         assert results == ["node-0", "node-1"]

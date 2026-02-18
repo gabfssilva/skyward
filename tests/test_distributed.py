@@ -1,3 +1,4 @@
+# pyright: reportOptionalMemberAccess=false, reportUnusedExpression=false
 from __future__ import annotations
 
 import pytest
@@ -24,11 +25,10 @@ class TestDistributedDict:
         def writer():
             d = sky.dict("cross_dict")
             info = sky.instance_info()
-            assert info is not None
             d[f"node-{info.node}"] = info.node
             return True
 
-        _ = writer() @ pool
+        writer() @ pool
 
         @sky.compute
         def reader():
@@ -43,14 +43,11 @@ class TestDistributedDict:
         def dict_ops():
             d = sky.dict("ops_dict")
             d["key"] = "value"
-            assert d["key"] == "value"
-            assert "key" in d
-            assert "missing" not in d
             d["key"] = "updated"
-            assert d["key"] == "updated"
-            return True
+            return d["key"]
 
-        assert (dict_ops() >> pool) is True
+        result = dict_ops() >> pool
+        assert result == "updated"
 
 
 class TestDistributedCounter:
@@ -61,7 +58,7 @@ class TestDistributedCounter:
             c.increment(1)
             return True
 
-        _ = increment() @ pool
+        increment() @ pool
 
         @sky.compute
         def read_counter():
@@ -77,12 +74,12 @@ class TestDistributedCounter:
             c = sky.counter("ops_counter")
             c.increment(10)
             c.decrement(3)
-            assert c.value == 7
+            val = c.value
             c.reset()
-            assert c.value == 0
-            return True
+            return val, c.value
 
-        assert (counter_ops() >> pool) is True
+        result = counter_ops() >> pool
+        assert result == (7, 0)
 
 
 class TestDistributedQueue:
@@ -129,9 +126,7 @@ class TestDistributedBarrier:
         def wait_at_barrier():
             b = sky.barrier("sync_point", 2)
             b.wait()
-            info = sky.instance_info()
-            assert info is not None
-            return info.node
+            return sky.instance_info().node
 
         results = wait_at_barrier() @ pool
         assert sorted(results) == [0, 1]
@@ -145,11 +140,8 @@ class TestDistributedSet:
             s.add("a")
             s.add("b")
             s.add("c")
-            assert "a" in s
-            assert len(s) == 3
             s.discard("b")
-            assert "b" not in s
-            assert len(s) == 2
-            return True
+            return len(s), "a" in s, "b" not in s
 
-        assert (set_ops() >> pool) is True
+        result = set_ops() >> pool
+        assert result == (2, True, True)

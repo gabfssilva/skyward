@@ -1,3 +1,4 @@
+# pyright: reportOptionalMemberAccess=false
 from __future__ import annotations
 
 import pytest
@@ -12,7 +13,6 @@ class TestInstanceInfo:
         @sky.compute
         def get_info():
             info = sky.instance_info()
-            assert info is not None
             return {
                 "node": info.node,
                 "total_nodes": info.total_nodes,
@@ -28,7 +28,6 @@ class TestInstanceInfo:
         @sky.compute
         def check_head():
             info = sky.instance_info()
-            assert info is not None
             return info.is_head == (info.node == 0)
 
         results = check_head() @ pool
@@ -37,9 +36,7 @@ class TestInstanceInfo:
     def test_each_node_has_unique_index(self, pool):
         @sky.compute
         def get_node():
-            info = sky.instance_info()
-            assert info is not None
-            return info.node
+            return sky.instance_info().node
 
         nodes = get_node() @ pool
         assert len(set(nodes)) == 2
@@ -47,9 +44,7 @@ class TestInstanceInfo:
     def test_job_id_consistent(self, pool):
         @sky.compute
         def get_job_id():
-            info = sky.instance_info()
-            assert info is not None
-            return info.job_id
+            return sky.instance_info().job_id
 
         job_ids = get_job_id() @ pool
         assert len(set(job_ids)) == 1

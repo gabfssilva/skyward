@@ -17,8 +17,7 @@ class TestStdoutControl:
             print("hello from node")
             sys.stdout.flush()
             info = sky.instance_info()
-            assert info is not None
-            return info.node
+            return info.node if info else None
 
         results = print_node() @ pool
         assert sorted(results) == [0, 1]
@@ -29,8 +28,7 @@ class TestStdoutControl:
         def print_node():
             print("hello")
             info = sky.instance_info()
-            assert info is not None
-            return info.node
+            return info.node if info else None
 
         results = print_node() @ pool
         assert sorted(results) == [0, 1]

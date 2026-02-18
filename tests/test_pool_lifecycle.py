@@ -34,9 +34,7 @@ class TestPoolLifecycle:
         ) as pool:
             @sky.compute
             def whoami():
-                info = sky.instance_info()
-                assert info is not None
-                return info.node
+                return sky.instance_info().node  # pyright: ignore[reportOptionalMemberAccess]
 
             nodes = whoami() @ pool
             assert sorted(nodes) == [0, 1, 2]
