@@ -65,8 +65,8 @@ def pool_actor() -> Behavior[PoolMsg]:
                     log.info("Cluster ready, provisioning {n} instances", n=spec.nodes)
                     ctx.pipe_to_self(
                         provider.provision(cluster, spec.nodes),
-                        mapper=lambda instances: InstancesProvisioned(
-                            instances=instances, cluster=cluster,
+                        mapper=lambda result: InstancesProvisioned(
+                            instances=result[1], cluster=result[0],
                         ),
                     )
                     return provisioning_instances(spec, provider, cluster, reply_to)
@@ -78,7 +78,7 @@ def pool_actor() -> Behavior[PoolMsg]:
     ) -> Behavior[PoolMsg]:
         async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
             match msg:
-                case InstancesProvisioned(instances=instances):
+                case InstancesProvisioned(instances=instances, cluster=cluster):
                     logger.bind(actor="pool").info(
                         "Instances provisioned ({n}), spawning node actors",
                         n=len(instances),
@@ -245,7 +245,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                     )
 
                     async def _shutdown() -> None:
-                        await provider.terminate(instance_ids)
+                        await provider.terminate(cluster, instance_ids)
                         await provider.teardown(cluster)
 
                     ctx.pipe_to_self(

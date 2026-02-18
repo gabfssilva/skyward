@@ -5,7 +5,7 @@ import hashlib
 import tempfile
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from skyward.api import PoolSpec
@@ -13,7 +13,7 @@ from skyward.api.model import Cluster, Instance
 from skyward.observability.logger import logger
 from skyward.providers.container.cli import run, run_json
 from skyward.providers.container.config import Container
-from skyward.providers.provider import CloudProvider
+from skyward.providers.provider import WarmableCloudProvider
 from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
 
 log = logger.bind(provider="container")
@@ -49,16 +49,15 @@ def _is_apple_container(binary: str) -> bool:
 @dataclass(frozen=True, slots=True)
 class ContainerSpecific:
     network: str
-    image: str
+    base_image: str
     context: str
 
 
-class ContainerProvider(CloudProvider[Container, ContainerSpecific]):
+class ContainerProvider(WarmableCloudProvider[Container, ContainerSpecific]):
 
     def __init__(self, config: Container) -> None:
         self._config = config
         self._bin = config.binary
-        self._image: str = ""
         self._container_prefix = config.container_prefix or _CONTAINER_PREFIX
         self._shared_network = config.network
 
@@ -66,7 +65,18 @@ class ContainerProvider(CloudProvider[Container, ContainerSpecific]):
     async def create(cls, config: Container) -> ContainerProvider:
         return cls(config)
 
-    async def _ensure_image(self) -> str:
+    async def _is_prebaked(self, pool: PoolSpec) -> bool:
+        try:
+            await run(self._bin, "image", "inspect", self._image_name(pool))
+            log.debug("Image {tag} already exists", tag=self._image_name(pool))
+            return True
+        except RuntimeError:
+            return False
+
+    def _image_name(self, pool: PoolSpec) -> str:
+        return f"{self._config.image}-{pool.image.content_hash()}"
+
+    async def _ensure_base_image(self) -> str:
         tag = f"skyward-ssh:{hashlib.md5(self._config.image.encode()).hexdigest()[:12]}"
         try:
             await run(self._bin, "image", "inspect", tag)
@@ -110,8 +120,12 @@ class ContainerProvider(CloudProvider[Container, ContainerSpecific]):
         cluster_id = f"skyward-{uuid.uuid4().hex[:8]}"
         ssh_key_path = get_ssh_key_path()
 
-        tag = await self._ensure_image()
+        base_image = await self._ensure_base_image()
         network_name = await self._ensure_network(cluster_id)
+        prebaked = await self._is_prebaked(spec)
+
+        if prebaked:
+            log.info("Image is prebaked with tag={tag}", tag=self._image_name(spec))
 
         return Cluster(
             id=cluster_id,
@@ -123,14 +137,15 @@ class ContainerProvider(CloudProvider[Container, ContainerSpecific]):
             shutdown_command="kill 1",
             specific=ContainerSpecific(
                 network=network_name,
-                image=tag,
+                base_image=base_image,
                 context=await run(self._config.binary, 'context', 'show'),
             ),
+            prebaked=prebaked,
         )
 
     async def provision(
         self, cluster: Cluster[ContainerSpecific], count: int,
-    ) -> Sequence[Instance]:
+    ) -> tuple[Cluster[ContainerSpecific], Sequence[Instance]]:
         _, pub_key = get_local_ssh_key()
         ttl = cluster.spec.ttl or 0
         entrypoint = _make_entrypoint(ttl)
@@ -139,7 +154,8 @@ class ContainerProvider(CloudProvider[Container, ContainerSpecific]):
             self._launch_instance(entrypoint, pub_key, cluster)
             for _ in range(count)
         ]
-        return await asyncio.gather(*coros)
+        instances = sorted(await asyncio.gather(*coros), key=lambda i: i.id)
+        return replace(cluster, instances=tuple(instances)), instances
 
     async def _launch_instance(
         self, entrypoint: str, pub_key: str,
@@ -165,7 +181,8 @@ class ContainerProvider(CloudProvider[Container, ContainerSpecific]):
         else:
             cmd.extend(["--memory", f"{memory_gb}g"])
 
-        cmd.extend([cluster.specific.image, "sh", "-c", entrypoint])
+        image = self._image_name(cluster.spec) if cluster.prebaked else cluster.specific.base_image
+        cmd.extend([image, "sh", "-c", entrypoint])
 
         await run(*cmd)
 
@@ -181,20 +198,20 @@ class ContainerProvider(CloudProvider[Container, ContainerSpecific]):
 
     async def get_instance(
         self, cluster: Cluster[ContainerSpecific], instance_id: str,
-    ) -> Instance | None:
+    ) -> tuple[Cluster[ContainerSpecific], Instance | None]:
         container_name = f"{self._container_prefix}-{instance_id}"
         try:
             info = await run_json(self._bin, "inspect", container_name)
         except RuntimeError:
-            return None
+            return cluster, None
 
         data = info[0] if isinstance(info, list) else info
 
         running, private_ip, ssh_port = _parse_inspect(data, self._bin)
         if not running:
-            return None
+            return cluster, None
 
-        return Instance(
+        return cluster, Instance(
             id=instance_id,
             status="provisioned",
             ip="127.0.0.1",
@@ -203,19 +220,18 @@ class ContainerProvider(CloudProvider[Container, ContainerSpecific]):
             instance_type="container",
         )
 
-    async def terminate(self, instance_ids: tuple[str, ...]) -> None:
-        import asyncio
-
+    async def terminate(
+        self, cluster: Cluster[ContainerSpecific], instance_ids: tuple[str, ...],
+    ) -> Cluster[ContainerSpecific]:
         async def _kill(iid: str) -> None:
             container_name = f"{self._container_prefix}-{iid}"
             await _stop_and_remove(self._bin, container_name)
             log.info("Container {id} terminated", id=iid)
 
         await asyncio.gather(*(_kill(iid) for iid in instance_ids))
+        return cluster
 
-    async def teardown(self, cluster: Cluster[ContainerSpecific]) -> None:
-        import asyncio
-
+    async def teardown(self, cluster: Cluster[ContainerSpecific]) -> Cluster[ContainerSpecific]:
         ids = await _list_cluster_containers(self._bin, cluster.id)
         await asyncio.gather(*(_stop_and_remove(self._bin, cid) for cid in ids))
 
@@ -229,7 +245,30 @@ class ContainerProvider(CloudProvider[Container, ContainerSpecific]):
                 )
 
         log.info("Cluster {id} torn down", id=cluster.id)
+        return cluster
 
+    async def save(self, cluster: Cluster[ContainerSpecific]) -> Cluster[ContainerSpecific]:
+        if _is_apple_container(self._bin):
+            return cluster
+
+        tag = self._image_name(cluster.spec)
+
+        try:
+            await run(self._bin, "image", "inspect", tag)
+            log.debug("Prebaked image {tag} already exists", tag=tag)
+            return cluster
+        except RuntimeError:
+            pass
+
+        if not cluster.instances:
+            log.warning("No instances in cluster {id}, skipping save", id=cluster.id)
+            return cluster
+
+        container_name = f"{self._container_prefix}-{cluster.instances[0].id}"
+        log.info("Saving prebaked image as {tag} from {cid}", tag=tag, cid=container_name)
+        await run(self._bin, "commit", container_name, tag)
+        log.info("Prebaked image {tag} saved", tag=tag)
+        return cluster
 
 def _parse_inspect(data: dict, binary: str) -> tuple[bool, str | None, int]:
     if _is_apple_container(binary):
@@ -268,27 +307,12 @@ async def _stop_and_remove(binary: str, container_id: str) -> None:
 
 
 async def _list_cluster_containers(binary: str, cluster_id: str) -> list[str]:
-    if _is_apple_container(binary):
-        try:
-            raw = await run(
-                binary, "ps", "-a",
-                "--filter", f"label={_CLUSTER_LABEL}={cluster_id}",
-                "-q",
-            )
-            return [c.strip() for c in raw.splitlines() if c.strip()]
-        except RuntimeError:
-            return []
-
     try:
-        containers = await run_json(binary, "list", "--all", "--format", "json")
+        raw = await run(
+            binary, "ps", "-a",
+            "--filter", f"label={_CLUSTER_LABEL}={cluster_id}",
+            "-q",
+        )
+        return [c.strip() for c in raw.splitlines() if c.strip()]
     except RuntimeError:
         return []
-
-    if not isinstance(containers, list):
-        return []
-
-    return [
-        c.get("configuration", {}).get("id", c.get("id", ""))
-        for c in containers
-        if c.get("configuration", {}).get("labels", {}).get(_CLUSTER_LABEL) == cluster_id
-    ]

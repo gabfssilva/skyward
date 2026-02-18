@@ -3,6 +3,10 @@
 .idea/
 
 __pycache__/
+skyward/_version.py
 
 docs/plans/
+docs/guides/ignored/
+examples/guides/ignored/
 PLANNED_PROVIDERS.md
+site/

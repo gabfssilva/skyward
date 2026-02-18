@@ -10,6 +10,11 @@
         result = train(data) >> sky
 """
 
+try:
+    from skyward._version import __version__ as __version__
+except ModuleNotFoundError:
+    __version__: str = "0.0.0+unknown"
+
 from skyward import accelerators as accelerators
 from skyward import integrations as integrations
 from skyward.observability import LogConfig
@@ -78,6 +83,7 @@ from .distributed import (
 from .providers import AWS, Container, RunPod, VastAI, Verda
 
 __all__ = [
+    "__version__",
     "App",
     "sky",
     "pool",

@@ -122,7 +122,7 @@ class VerdaCloudProvider(CloudProvider[Verda, VerdaSpecific]):
 
     async def provision(
         self, cluster: Cluster[VerdaSpecific], count: int,
-    ) -> Sequence[Instance]:
+    ) -> tuple[Cluster[VerdaSpecific], Sequence[Instance]]:
         specific = cluster.specific
         use_spot = cluster.spec.allocation in ("spot", "spot-if-available")
 
@@ -151,35 +151,39 @@ class VerdaCloudProvider(CloudProvider[Verda, VerdaSpecific]):
 
             instances.append(Instance(id=str(resp["id"]), status="provisioning"))
 
-        return instances
+        return cluster, instances
 
     async def get_instance(
         self, cluster: Cluster[VerdaSpecific], instance_id: str,
-    ) -> Instance | None:
+    ) -> tuple[Cluster[VerdaSpecific], Instance | None]:
         info = await self._client.get_instance(instance_id)
         if not info:
-            return None
+            return cluster, None
 
         match info["status"]:
             case "error" | "discontinued" | "deleted":
-                return None
+                return cluster, None
             case "running" if info.get("ip"):
-                return _build_verda_instance(info, "provisioned", cluster.specific)
+                return cluster, _build_verda_instance(info, "provisioned", cluster.specific)
             case _:
-                return _build_verda_instance(info, "provisioning", cluster.specific)
+                return cluster, _build_verda_instance(info, "provisioning", cluster.specific)
 
-    async def terminate(self, instance_ids: tuple[str, ...]) -> None:
+    async def terminate(
+        self, cluster: Cluster[VerdaSpecific], instance_ids: tuple[str, ...],
+    ) -> Cluster[VerdaSpecific]:
         for iid in instance_ids:
             try:
                 await self._client.delete_instance(iid)
             except Exception as e:
                 log.error("Failed to delete instance {iid}: {err}", iid=iid, err=e)
+        return cluster
 
-    async def teardown(self, cluster: Cluster[VerdaSpecific]) -> None:
+    async def teardown(self, cluster: Cluster[VerdaSpecific]) -> Cluster[VerdaSpecific]:
         try:
             await self._client.delete_startup_script(cluster.specific.startup_script_id)
         except Exception as e:
             log.error("Failed to delete startup script: {err}", err=e)
+        return cluster
 
 
 def _self_destruction_script(ttl: int, shutdown_command: str) -> str:

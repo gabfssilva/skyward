@@ -108,7 +108,7 @@ class VastAICloudProvider(CloudProvider[VastAI, VastAISpecific]):
 
     async def provision(
         self, cluster: Cluster[VastAISpecific], count: int,
-    ) -> Sequence[Instance]:
+    ) -> tuple[Cluster[VastAISpecific], Sequence[Instance]]:
         specific = cluster.specific
         api_key = get_api_key()
 
@@ -149,29 +149,31 @@ class VastAICloudProvider(CloudProvider[VastAI, VastAISpecific]):
                     billing_increment=1,
                 ))
 
-        return instances
+        return cluster, instances
 
     async def get_instance(
         self, cluster: Cluster[VastAISpecific], instance_id: str,
-    ) -> Instance | None:
+    ) -> tuple[Cluster[VastAISpecific], Instance | None]:
         api_key = get_api_key()
         async with VastAIClient(api_key, config=self._config) as client:
             info = await client.get_instance(int(instance_id))
 
         if not info:
-            return None
+            return cluster, None
 
         match info.get("actual_status"):
             case "exited" | "error" | "destroyed":
-                return None
+                return cluster, None
             case "running" if info.get("ssh_host") or info.get("public_ipaddr"):
-                return _build_vastai_instance(info, "provisioned", cluster.specific)
+                return cluster, _build_vastai_instance(info, "provisioned", cluster.specific)
             case _:
-                return _build_vastai_instance(info, "provisioning", cluster.specific)
+                return cluster, _build_vastai_instance(info, "provisioning", cluster.specific)
 
-    async def terminate(self, instance_ids: tuple[str, ...]) -> None:
+    async def terminate(
+        self, cluster: Cluster[VastAISpecific], instance_ids: tuple[str, ...],
+    ) -> Cluster[VastAISpecific]:
         if not instance_ids:
-            return
+            return cluster
 
         api_key = get_api_key()
         async with VastAIClient(api_key, config=self._config) as client:
@@ -182,11 +184,12 @@ class VastAICloudProvider(CloudProvider[VastAI, VastAISpecific]):
                     log.error("Failed to destroy {iid}: {err}", iid=iid, err=e)
 
             await asyncio.gather(*(_destroy(iid) for iid in instance_ids))
+        return cluster
 
-    async def teardown(self, cluster: Cluster[VastAISpecific]) -> None:
+    async def teardown(self, cluster: Cluster[VastAISpecific]) -> Cluster[VastAISpecific]:
         specific = cluster.specific
         if not specific.has_overlay:
-            return
+            return cluster
 
         api_key = get_api_key()
         async with VastAIClient(api_key, config=self._config) as client:
@@ -197,6 +200,7 @@ class VastAICloudProvider(CloudProvider[VastAI, VastAISpecific]):
                     "Failed to delete overlay '{name}': {err}",
                     name=specific.overlay_name, err=e,
                 )
+        return cluster
 
 
 def _self_destruction_script(ttl: int, shutdown_command: str) -> str:

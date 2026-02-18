@@ -232,6 +232,8 @@ class Image:
 
     def content_hash(self) -> str:
         """Generate hash for AMI/snapshot caching."""
+        from skyward import __version__
+
         metrics_data = None
         if self.metrics:
             metrics_data = [
@@ -255,6 +257,7 @@ class Image:
                 "includes": sorted(self.includes),
                 "excludes": sorted(self.excludes),
                 "skyward_source": self.skyward_source,
+                "skyward_version": __version__,
                 "metrics": metrics_data,
             },
             sort_keys=True,

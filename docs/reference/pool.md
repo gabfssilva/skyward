@@ -4,8 +4,6 @@
 
 ::: skyward.compute
 
-::: skyward.pool
-
 ::: skyward.sky
 
 ::: skyward.gather

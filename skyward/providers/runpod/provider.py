@@ -114,12 +114,12 @@ class RunPodCloudProvider(CloudProvider[RunPod, RunPodSpecific]):
 
     async def provision(
         self, cluster: Cluster[RunPodSpecific], count: int,
-    ) -> Sequence[Instance]:
+    ) -> tuple[Cluster[RunPodSpecific], Sequence[Instance]]:
         specific = cluster.specific
         api_key = get_api_key(self._config.api_key)
 
         if specific.is_instant_cluster:
-            return [
+            return cluster, [
                 Instance(id=pid, status="provisioning")
                 for _, pid in specific.pod_ids[:count]
             ]
@@ -139,17 +139,17 @@ class RunPodCloudProvider(CloudProvider[RunPod, RunPodSpecific]):
 
                 instances.append(Instance(id=pod["id"], status="provisioning"))
 
-        return instances
+        return cluster, instances
 
     async def get_instance(
         self, cluster: Cluster[RunPodSpecific], instance_id: str,
-    ) -> Instance | None:
+    ) -> tuple[Cluster[RunPodSpecific], Instance | None]:
         api_key = get_api_key(self._config.api_key)
         async with RunPodClient(api_key, config=self._config) as client:
             pod = await client.get_pod(instance_id)
 
         if not pod:
-            return None
+            return cluster, None
 
         log.debug(
             "Pod {pid} status: desired={desired}, ip={ip}",
@@ -158,15 +158,17 @@ class RunPodCloudProvider(CloudProvider[RunPod, RunPodSpecific]):
         )
         match pod.get("desiredStatus"):
             case "TERMINATED":
-                return None
+                return cluster, None
             case "RUNNING" if pod.get("publicIp"):
-                return _build_runpod_instance(pod, "provisioned", cluster.specific)
+                return cluster, _build_runpod_instance(pod, "provisioned", cluster.specific)
             case _:
-                return _build_runpod_instance(pod, "provisioning", cluster.specific)
+                return cluster, _build_runpod_instance(pod, "provisioning", cluster.specific)
 
-    async def terminate(self, instance_ids: tuple[str, ...]) -> None:
+    async def terminate(
+        self, cluster: Cluster[RunPodSpecific], instance_ids: tuple[str, ...],
+    ) -> Cluster[RunPodSpecific]:
         if not instance_ids:
-            return
+            return cluster
 
         api_key = get_api_key(self._config.api_key)
         async with RunPodClient(api_key, config=self._config) as client:
@@ -177,11 +179,12 @@ class RunPodCloudProvider(CloudProvider[RunPod, RunPodSpecific]):
                     log.error("Failed to terminate pod {pid}: {err}", pid=pod_id, err=e)
 
             await asyncio.gather(*(_terminate(pid) for pid in instance_ids))
+        return cluster
 
-    async def teardown(self, cluster: Cluster[RunPodSpecific]) -> None:
+    async def teardown(self, cluster: Cluster[RunPodSpecific]) -> Cluster[RunPodSpecific]:
         specific = cluster.specific
         if not specific.is_instant_cluster:
-            return
+            return cluster
 
         api_key = get_api_key(self._config.api_key)
         async with RunPodClient(api_key, config=self._config) as client:
@@ -192,6 +195,7 @@ class RunPodCloudProvider(CloudProvider[RunPod, RunPodSpecific]):
                     "Failed to delete cluster {cid}: {err}",
                     cid=specific.runpod_cluster_id, err=e,
                 )
+        return cluster
 
 
 def _build_runpod_instance(

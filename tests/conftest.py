@@ -69,3 +69,44 @@ def torch_pool():
         ),
     ) as p:
         yield p
+
+
+@pytest.fixture(scope="session")
+def jax_pool():
+    with ComputePool(
+        provider=sky.Container(network="skyward", container_prefix='skyward-jax'),
+        nodes=2,
+        vcpus=2,
+        memory_gb=2,
+        image=Image(pip=["jax"]),
+    ) as p:
+        yield p
+
+
+@pytest.fixture(scope="session")
+def keras_pool():
+    with ComputePool(
+        provider=sky.Container(network="skyward", container_prefix='skyward-keras'),
+        nodes=2,
+        vcpus=2,
+        memory_gb=2,
+        image=Image(
+            pip=["keras", "torch"],
+            pip_extra_index_url='https://download.pytorch.org/whl/cpu',
+            env={"KERAS_BACKEND": "torch"},
+        ),
+    ) as p:
+        yield p
+
+
+@pytest.fixture(scope="session")
+def parallel_pool():
+    with ComputePool(
+        provider=sky.Container(network="skyward", container_prefix='skyward-parallel'),
+        nodes=2,
+        vcpus=1,
+        memory_gb=1,
+        concurrency=3,
+        image=Image(pip=["joblib", "scikit-learn"]),
+    ) as p:
+        yield p

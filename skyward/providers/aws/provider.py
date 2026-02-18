@@ -102,7 +102,9 @@ class AWSCloudProvider(CloudProvider[AWS, AWSSpecific]):
             ),
         )
 
-    async def provision(self, cluster: Cluster[AWSSpecific], count: int) -> Sequence[Instance]:
+    async def provision(
+        self, cluster: Cluster[AWSSpecific], count: int,
+    ) -> tuple[Cluster[AWSSpecific], Sequence[Instance]]:
         instance_configs = await _resolve_instance_configs(
             self._config, self._ec2, cluster.spec,
         )
@@ -149,37 +151,40 @@ class AWSCloudProvider(CloudProvider[AWS, AWSSpecific]):
                 ),
                 billing_increment=1,
             ))
-        return instances
+        return cluster, instances
 
     async def get_instance(
         self, cluster: Cluster[AWSSpecific], instance_id: str,
-    ) -> Instance | None:
+    ) -> tuple[Cluster[AWSSpecific], Instance | None]:
         details = await _get_instance_details(self._ec2, [instance_id])
         if not details:
-            return None
+            return cluster, None
 
         detail = details[0]
         match detail.state:
             case "terminated" | "shutting-down":
-                return None
+                return cluster, None
             case "running":
-                return await _build_instance(
+                return cluster, await _build_instance(
                     detail, status="provisioned",
                     region=self._config.region,
                 )
             case _:
-                return await _build_instance(
+                return cluster, await _build_instance(
                     detail, status="provisioning",
                     region=self._config.region,
                 )
 
-    async def terminate(self, instance_ids: tuple[str, ...]) -> None:
+    async def terminate(
+        self, cluster: Cluster[AWSSpecific], instance_ids: tuple[str, ...],
+    ) -> Cluster[AWSSpecific]:
         if not instance_ids:
-            return
+            return cluster
         await _terminate_instances(self._ec2, list(instance_ids))
+        return cluster
 
-    async def teardown(self, cluster: Cluster[AWSSpecific]) -> None:
-        pass
+    async def teardown(self, cluster: Cluster[AWSSpecific]) -> Cluster[AWSSpecific]:
+        return cluster
 
 
 def _self_destruction_script(ttl: int, shutdown_command: str) -> str:

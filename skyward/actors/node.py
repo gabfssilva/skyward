@@ -217,10 +217,10 @@ def node_actor(
 
 async def _terminate_and_replace(provider: Any, cluster: Any, dead_id: str) -> Any:
     try:
-        await provider.terminate((dead_id,))
+        await provider.terminate(cluster, (dead_id,))
     except Exception as e:
         log.warning("Failed to terminate dead instance {iid}: {err}", iid=dead_id, err=e)
-    instances = await provider.provision(cluster, 1)
+    _, instances = await provider.provision(cluster, 1)
     if not instances:
         raise RuntimeError("Failed to provision replacement instance")
     return instances[0]

@@ -75,6 +75,9 @@ build-backend = "hatchling.build"
 [tool.hatch.version]
 source = "vcs"
 
+[tool.hatch.build.hooks.vcs]
+version-file = "skyward/_version.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["skyward"]
 
@@ -99,6 +102,7 @@ ignore = [
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
 include = ["skyward", "tests"]
+reportMissingImports = "warning"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

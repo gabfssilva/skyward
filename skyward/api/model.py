@@ -53,3 +53,4 @@ class Cluster[S]:
     shutdown_command: str
     specific: S
     instances: tuple[Instance, ...] = ()
+    prebaked: bool = False

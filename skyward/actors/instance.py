@@ -29,6 +29,8 @@ from skyward.actors.messages import (
     _LocalInstallDone,
     _PollResult,
     _PostBootstrapFailed,
+    _SnapshotFailed,
+    _SnapshotSaved,
     _UserCodeSyncDone,
     _WorkerFailed,
     _WorkerStarted,
@@ -41,6 +43,7 @@ from skyward.infra.worker import (
     TaskSucceeded as WorkerTaskSucceeded,
 )
 from skyward.observability.logger import logger
+from skyward.providers.provider import WarmableCloudProvider
 
 
 def instance_actor(
@@ -67,7 +70,7 @@ def instance_actor(
             start_time = asyncio.get_event_loop().time()
 
             async def _do_poll() -> _PollResult:
-                inst = await provider.get_instance(cluster, instance_id)
+                _, inst = await provider.get_instance(cluster, instance_id)
                 return _PollResult(instance=inst)
 
             ctx.pipe_to_self(
@@ -107,7 +110,7 @@ def instance_actor(
 
                     async def _poll_after_delay() -> _PollResult:
                         await asyncio.sleep(poll_interval)
-                        inst = await provider.get_instance(cluster, instance_id)
+                        _, inst = await provider.get_instance(cluster, instance_id)
                         return _PollResult(instance=inst)
 
                     ctx.pipe_to_self(
@@ -184,6 +187,10 @@ def instance_actor(
                 f"monitor-{instance_id}",
             )
 
+        if cluster.prebaked:
+            log.info("Prebaked image detected, skipping bootstrap")
+            return _start_post_bootstrap(ip, ctx, transport, listener, metadata, head_info)
+
         ctx.pipe_to_self(
             _run_bootstrap(transport, metadata, cluster, spec),
             mapper=lambda _: _BootstrapUploaded(),
@@ -198,9 +205,17 @@ def instance_actor(
                     return bootstrapping(ip, ctx, metadata, transport, listener, h)
                 case BootstrapDone(success=True, instance=done_info):
                     log.info("Bootstrap completed successfully")
+                    final_metadata = done_info or metadata
+                    match provider:
+                        case WarmableCloudProvider() if node_id == 0:
+                            log.info("Snapshotting provider image...")
+                            ctx.pipe_to_self(
+                                provider.save(cluster),
+                                mapper=lambda _: _SnapshotSaved(),
+                                on_failure=lambda e: _SnapshotFailed(error=str(e)),
+                            )
                     return _start_post_bootstrap(
-                        ip, ctx, transport, listener,
-                        done_info or metadata, head_info,
+                        ip, ctx, transport, listener, final_metadata, head_info,
                     )
                 case BootstrapDone(success=False, error=error):
                     log.error("Bootstrap failed: {error}", error=error)
@@ -279,6 +294,10 @@ def instance_actor(
                     await _cleanup_transport(transport, listener)
                     parent.tell(InstanceDied(instance_id=instance_id, reason=err))
                     return Behaviors.stopped()
+                case _SnapshotSaved():
+                    log.info("Snapshot saved")
+                case _SnapshotFailed(error=error):
+                    log.warning("Snapshot failed: {error}", error=error)
                 case Preempted():
                     await _cleanup_transport(transport, listener)
                     parent.tell(InstanceDied(instance_id=instance_id, reason="preempted"))
@@ -324,6 +343,10 @@ def instance_actor(
                 case HeadAddressKnown() as h:
                     log.info("Head address received, starting worker")
                     return _start_worker(ip, transport, listener, metadata, h)
+                case _SnapshotSaved():
+                    log.info("Snapshot saved")
+                case _SnapshotFailed(error=error):
+                    log.warning("Snapshot failed: {error}", error=error)
                 case Preempted():
                     log.warning("Preempted while waiting for head")
                     await _cleanup_transport(transport, listener)
@@ -369,6 +392,10 @@ def instance_actor(
                     await _cleanup_transport(transport, listener)
                     parent.tell(InstanceDied(instance_id=instance_id, reason=error))
                     return Behaviors.stopped()
+                case _SnapshotSaved():
+                    log.info("Snapshot saved")
+                case _SnapshotFailed(error=error):
+                    log.warning("Snapshot failed: {error}", error=error)
                 case Preempted():
                     log.warning("Preempted while starting worker")
                     await _cleanup_transport(transport, listener)
@@ -418,6 +445,10 @@ def instance_actor(
                     return Behaviors.same()
                 case Log() | Metric():
                     pass
+                case _SnapshotSaved():
+                    log.info("Snapshot saved")
+                case _SnapshotFailed(error=error):
+                    log.warning("Snapshot failed: {error}", error=error)
                 case Preempted():
                     log.warning("Preempted while joined")
                     await _cleanup(client, transport, listener)

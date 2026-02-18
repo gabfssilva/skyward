@@ -17,7 +17,7 @@ import skyward as sky
 
 @sky.compute
 def hello(n: int) -> str:
-    sleep(0.5)
+    sleep(2)
 
     match n % 3:
         case 0:
@@ -31,8 +31,8 @@ if __name__ == "__main__":
     with sky.ComputePool(
         provider=sky.Container(),
         nodes=3,
-        memory_gb=0.2,
-        vcpus=0.2
+        memory_gb=1,
+        vcpus=1
     ) as pool:
         results = sky.gather(*(hello(i) for i in range(30))) >> pool
 

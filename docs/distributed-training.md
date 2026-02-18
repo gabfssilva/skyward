@@ -197,7 +197,7 @@ with sky.ComputePool(
     provider=sky.AWS(),
     nodes=4,
     accelerator=sky.accelerators.H100(),
-    pip=["jax[cuda12]"],
+    image=sky.Image(pip=["jax[cuda12]"]),
 ) as pool:
     results = train() @ pool
 ```
@@ -266,7 +266,7 @@ with sky.ComputePool(
     provider=sky.AWS(),
     nodes=2,
     accelerator=sky.accelerators.A100(),
-    pip=["transformers", "datasets", "torch", "accelerate"],
+    image=sky.Image(pip=["transformers", "datasets", "torch", "accelerate"]),
 ) as pool:
     results = fine_tune() @ pool
 ```
@@ -350,20 +350,21 @@ def train():
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `id` | `str` | Instance ID |
-| `node` | `int` | Node index (0-based) |
-| `provider` | `str` | Provider name |
-| `ip` | `str` | Public IP |
-| `private_ip` | `str` | Private IP (for inter-node communication) |
-| `network_interface` | `str` | NCCL interface |
-| `spot` | `bool` | True if spot instance |
-| `hourly_rate` | `float` | Actual rate (USD/hr) |
-| `instance_type` | `str` | Instance type |
-| `gpu_count` | `int` | Number of GPUs |
-| `gpu_model` | `str` | GPU model (e.g., "A100") |
-| `vcpus` | `int` | vCPUs |
-| `memory_gb` | `float` | System RAM |
-| `gpu_vram_gb` | `int` | VRAM per GPU |
+| `node` | `int` | Node index (0 to total_nodes - 1) |
+| `worker` | `int` | Worker index within this node (default 0) |
+| `total_nodes` | `int` | Total number of nodes in the pool |
+| `workers_per_node` | `int` | Workers per node (e.g., 2 for MIG) |
+| `accelerators` | `int` | Number of accelerators on this node |
+| `total_accelerators` | `int` | Total accelerators in the pool |
+| `head_addr` | `str` | IP address of the head node |
+| `head_port` | `int` | Port for head node coordination |
+| `job_id` | `str` | Unique identifier for this pool execution |
+| `peers` | `list[PeerInfo]` | Information about all peer nodes |
+| `accelerator` | `AcceleratorInfo \| None` | Accelerator type, count, and memory |
+| `network` | `NetworkInfo` | Network interface and bandwidth |
+| `is_head` | `bool` | True if this is the head worker (property) |
+| `global_worker_index` | `int` | Global index across all workers (property) |
+| `total_workers` | `int` | Total workers across all nodes (property) |
 
 ### Output Control
 

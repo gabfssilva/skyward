@@ -99,6 +99,8 @@ nav:
           - PyTorch Distributed: guides/pytorch-distributed.md
           - Keras Training: guides/keras-training.md
           - HuggingFace Fine-tuning: guides/huggingface-finetuning.md
+      - Testing:
+          - Local Containers: guides/local-containers.md
       - Misc:
           - Joblib Concurrency: guides/joblib-concurrency.md
           - Scikit Grid Search: guides/scikit-grid-search.md

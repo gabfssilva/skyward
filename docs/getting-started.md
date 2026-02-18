@@ -147,7 +147,7 @@ with sky.ComputePool(
     provider=sky.AWS(),
     accelerator=sky.accelerators.T4(),  # Request a T4 accelerator
     image=sky.Image(pip=["torch"]),   # Install PyTorch
-    allocation="always-spot",         # Use spot instances (cheaper)
+    allocation="spot",                # Use spot instances (cheaper)
 ) as pool:
     info = gpu_info() >> pool
     print(f"GPU: {info['device_name']}")
@@ -232,7 +232,7 @@ import skyward as sky
 sky.ComputePool(provider=sky.AWS(), allocation="spot-if-available")
 
 # Always use spot (fails if unavailable) - maximum savings
-sky.ComputePool(provider=sky.AWS(), allocation="always-spot")
+sky.ComputePool(provider=sky.AWS(), allocation="spot")
 
 # Always on-demand (for critical workloads)
 sky.ComputePool(provider=sky.AWS(), allocation="on-demand")

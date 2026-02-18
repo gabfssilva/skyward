@@ -450,6 +450,16 @@ class _BootstrapUploadFailed:
 
 
 @dataclass(frozen=True, slots=True)
+class _SnapshotSaved:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class _SnapshotFailed:
+    error: str
+
+
+@dataclass(frozen=True, slots=True)
 class _CorrelatedTaskResult:
     task_id: str
     value: Any
@@ -467,6 +477,7 @@ type InstanceMsg = (
     | _Connected | _ConnectionFailed
     | _WorkerStarted | _WorkerFailed
     | _BootstrapUploaded | _BootstrapUploadFailed
+    | _SnapshotSaved | _SnapshotFailed
     | _CorrelatedTaskResult
 )
 

@@ -6,20 +6,15 @@ from skyward.api import Cluster, Instance, PoolSpec
 
 @runtime_checkable
 class CloudProvider[C, S](Protocol):
-    """Stateless interface for cloud provider operations.
+    """Interface for cloud provider operations.
 
-    Implementations hold only immutable config (API keys, region, etc.).
-    All lifecycle state lives in the actors that call these methods.
-    The Cluster object flows through every call as the shared context.
+    Every method that receives a Cluster returns an (optionally updated)
+    Cluster, allowing the immutable context to evolve across the lifecycle.
     """
 
     @classmethod
     async def create(cls, config: C) -> Self:
-        """Create a new instance of the provider.
-
-        Parameters
-        ...
-        """
+        """Create a new instance of the provider."""
         ...
 
     async def prepare(self, spec: PoolSpec) -> Cluster[S]:
@@ -29,80 +24,48 @@ class CloudProvider[C, S](Protocol):
         SSH key registration, VPC/security groups (AWS), overlay
         networks (VastAI), GPU type resolution, etc.
 
-        Parameters
-        ----------
-        spec
-            User-defined pool specification (accelerator, nodes, image, etc.).
-
         Returns
         -------
-        Cluster
-            Immutable context with cluster ID, SSH credentials, and
-            provider-specific infrastructure references.
+        Cluster[S]
+            Immutable cluster context for subsequent calls.
         """
         ...
 
-    async def provision(self, cluster: Cluster[S], count: int) -> Sequence[Instance]:
+    async def provision(
+        self, cluster: Cluster[S], count: int,
+    ) -> tuple[Cluster[S], Sequence[Instance]]:
         """Launch compute instances.
 
-        Creates instances using the provider's native mechanism:
-        EC2 Fleet (AWS), create_pod (RunPod), marketplace offer
-        search (VastAI), or create_instance (Verda).
-
-        Parameters
-        ----------
-        cluster
-            Cluster context returned by prepare.
-        count
-            Number of instances to launch. Providers that support
-            batch creation (AWS Fleet, RunPod Instant Cluster) launch
-            all at once. Others launch individually.
-
         Returns
         -------
-        Sequence[Instance]
-            Launched instances in "provisioning" state. IP may not
-            be available yet — poll with get_instance until ready.
+        tuple[Cluster[S], Sequence[Instance]]
+            Updated cluster and launched instances in "provisioning" state.
         """
         ...
 
-    async def get_instance(self, cluster: Cluster[S], instance_id: str) -> Instance | None:
+    async def get_instance(
+        self, cluster: Cluster[S], instance_id: str,
+    ) -> tuple[Cluster[S], Instance | None]:
         """Query current state of an instance.
 
-        Parameters
-        ----------
-        cluster
-            Cluster context returned by prepare.
-        instance_id
-            Provider-specific instance identifier.
-
         Returns
         -------
-        Instance | None
-            Current instance status with IP, SSH port, and metadata
-            when available. None if the instance no longer exists.
+        tuple[Cluster[S], Instance | None]
+            Updated cluster and current instance status.
         """
         ...
 
-    async def terminate(self, instance_ids: tuple[str, ...]) -> None:
-        """Terminate one or more instances.
-
-        Parameters
-        ----------
-        instance_ids
-            Provider-specific instance identifiers to destroy.
-        """
+    async def terminate(self, cluster: Cluster[S], instance_ids: tuple[str, ...]) -> Cluster[S]:
+        """Terminate one or more instances."""
         ...
 
-    async def teardown(self, cluster: Cluster[S]) -> None:
-        """Clean up cluster-level resources.
+    async def teardown(self, cluster: Cluster[S]) -> Cluster[S]:
+        """Clean up cluster-level resources."""
+        ...
 
-        Destroys infrastructure created during prepare: overlay
-        networks, startup scripts, security groups, etc.
 
-        Parameters
-        ----------
-        cluster
-            Cluster context returned by prepare.
-        """
+@runtime_checkable
+class WarmableCloudProvider[C, S](CloudProvider[C, S], Protocol):
+    async def save(self, cluster: Cluster[S]) -> Cluster[S]:
+        """Save a prebaked image from the current cluster state."""
         ...

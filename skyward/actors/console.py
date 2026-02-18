@@ -26,6 +26,7 @@ from typing import Any
 from casty import ActorContext, Behavior, Behaviors, SpyEvent, Terminated
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
+from rich.progress_bar import ProgressBar
 from rich.style import Style
 from rich.table import Table
 from rich.text import Text
@@ -127,9 +128,11 @@ def _is_dark_background() -> bool:
 
 
 _DARK: bool = _is_dark_background()
+_WHITE = "rgb(255,255,255)"
+_BLACK = "rgb(0,0,0)"
 
-_BADGE_FG = "rgb(0,0,0)" if _DARK else "rgb(255,255,255)"
-_BADGE_BG = "rgb(255,255,255)" if _DARK else "rgb(0,0,0)"
+_BADGE_FG = _BLACK if _DARK else _WHITE
+_BADGE_BG = _WHITE if _DARK else _BLACK
 
 _FIXED_BADGES: dict[str, Style] = {
     "skyward": Style(color=_BADGE_FG, bgcolor=_BADGE_BG, bold=True),
@@ -159,7 +162,7 @@ def _badge_style(text: str) -> Style:
             if 30 < hue < 330:
                 break
         r, g, b = _hsl_to_rgb(hue / 360, 0.65, 0.45)
-        _badge_registry[text] = Style(color="white", bgcolor=f"rgb({r},{g},{b})")
+        _badge_registry[text] = Style(color=_WHITE, bgcolor=f"rgb({r},{g},{b})")
 
     return _badge_registry[text]
 
@@ -380,6 +383,9 @@ def _render_cluster_col(state: _State) -> Group:
 
 
 
+_TASK_RIGHT_W = 18  # 5 (time) + 3 (gap) + 10 (badge)
+
+
 def _render_tasks_col(state: _State, width: int) -> Group:
     lines: list[RenderableType] = []
     badge = Text(" tasks ", style=_badge_style("tasks"))
@@ -388,38 +394,75 @@ def _render_tasks_col(state: _State, width: int) -> Group:
     lines.append(badge)
 
     max_sig = int(width * 0.5)
-    visible = list(state.task_order[-8:])
+    running = [t for t in state.task_order if state.tasks[t].status == _TaskStatus.RUNNING]
+    done_ids = [t for t in state.task_order if state.tasks[t].status == _TaskStatus.DONE]
+    remaining = max(0, 8 - len(running[:8]))
+    visible = running[:8] + done_ids[-remaining:] if remaining else running[:8]
     n_instances = len(state.instances)
 
     for tid in visible:
         entry = state.tasks[tid]
-        line = Text("  ")
         name = _format_task(entry.fn, entry.args, entry.kwargs, max_sig=max_sig)
+        left = Text("  ")
+        time_text = Text()
+        badge_text = Text()
 
         match entry.status:
             case _TaskStatus.RUNNING:
                 elapsed = time.monotonic() - entry.started_at
-                line.append("◆ ", style=_glow_style())
-                line.append(name)
-                if entry.kind == "broadcast" and n_instances > 0:
-                    line.append(f"  ({entry.broadcast_done}/{n_instances})", style="dim")
-                line.append(f"  {elapsed:.1f}s", style=_glow_style())
-                if entry.instance_id:
-                    line.append("  ")
-                    line.append(f" {entry.instance_id[:8]} ", style=_badge_style(entry.instance_id))
-            case _TaskStatus.DONE:
-                duration = f"  {entry.elapsed:.1f}s" if entry.elapsed is not None else ""
-                line.append("✓ ", style="green")
-                line.append(name)
-                line.append(duration, style="green")
-                if entry.kind == "broadcast":
-                    line.append("  ")
-                    line.append(" broadcast ", style=_badge_style("broadcast"))
-                elif entry.instance_id:
-                    line.append("  ")
-                    line.append(f" {entry.instance_id[:8]} ", style=_badge_style(entry.instance_id))
+                left.append("◆ ", style=_glow_style())
+                left.append(name)
 
-        lines.append(line)
+                if entry.kind == "broadcast" and n_instances > 0:
+                    time_text.append(f"({entry.broadcast_done}/{n_instances}) ", style="dim")
+                time_text.append(f"{elapsed:.1f}s", style=_glow_style())
+                if entry.instance_id:
+                    badge_text.append(
+                        f" {entry.instance_id[:8]} ",
+                        style=_badge_style(entry.instance_id),
+                    )
+
+                pct = 0.5 + 0.4 * math.sin(time.monotonic() * 2.0)
+                bar: RenderableType = ProgressBar(
+                    total=1.0, completed=pct,
+                    complete_style=_glow_style(),
+                )
+
+            case _TaskStatus.DONE:
+                left.append("✓ ", style="green")
+                left.append(name)
+
+                if entry.elapsed is not None:
+                    time_text.append(f"{entry.elapsed:.1f}s", style="green")
+                if entry.kind == "broadcast":
+                    badge_text.append(" broadcast ", style=_badge_style("broadcast"))
+                elif entry.instance_id:
+                    badge_text.append(
+                        f" {entry.instance_id[:8]} ",
+                        style=_badge_style(entry.instance_id),
+                    )
+
+                bar = ProgressBar(
+                    total=1.0, completed=1.0,
+                    finished_style="dim",
+                )
+
+            case _:
+                bar = Text()
+
+        right = Text()
+        right.append_text(time_text)
+        filler = _TASK_RIGHT_W - len(time_text.plain) - len(badge_text.plain)
+        if filler > 0:
+            right.append(" " * filler)
+        right.append_text(badge_text)
+
+        row = Table.grid(padding=(0, 1))
+        row.add_column(no_wrap=True)
+        row.add_column(ratio=1)
+        row.add_column(width=_TASK_RIGHT_W, no_wrap=True)
+        row.add_row(left, bar, right)
+        lines.append(row)
 
     return Group(*lines)
 
@@ -813,6 +856,7 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
                         task_id=tid, fn=ev.fn, args=ev.args,
                         kwargs=ev.kwargs, kind="single",
                         started_at=time.monotonic(),
+                        instance_id='waiting ',
                     )
                     new_tasks = MappingProxyType({**state.tasks, tid: entry})
                     new_order = (*state.task_order, tid)
@@ -843,19 +887,21 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
                         return _refresh(replace(state, tasks=new_tasks))
                     return Behaviors.same()
 
-                case SpyEvent(event=TaskResult(node_id=nid)):
-                    first_running = next(
+                case SpyEvent(event=TaskResult(node_id=nid, task_id=tid)):
+                    target = tid if tid in state.tasks else next(
                         (
-                            tid for tid in state.task_order
-                            if state.tasks[tid].status == _TaskStatus.RUNNING
+                            t for t in state.task_order
+                            if state.tasks[t].status == _TaskStatus.RUNNING
                         ),
                         None,
                     )
-                    if first_running is None:
+                    if target is None:
                         return Behaviors.same()
-                    entry = state.tasks[first_running]
+                    entry = state.tasks[target]
                     elapsed = time.monotonic() - entry.started_at
-                    iid = state.instances[nid].id if nid < len(state.instances) else ""
+                    iid = entry.instance_id or (
+                        state.instances[nid].id if nid < len(state.instances) else ""
+                    )
                     match entry.kind:
                         case "broadcast":
                             new_done = entry.broadcast_done + 1
@@ -871,7 +917,7 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
                                 entry, status=_TaskStatus.DONE,
                                 elapsed=elapsed, instance_id=iid,
                             )
-                    new_tasks = MappingProxyType({**state.tasks, first_running: updated})
+                    new_tasks = MappingProxyType({**state.tasks, target: updated})
                     return _refresh(replace(state, tasks=new_tasks))
 
                 case SpyEvent(event=Metric() as ev):
