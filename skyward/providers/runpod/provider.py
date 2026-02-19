@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from skyward.accelerators.catalog import SPECS
 from skyward.api import PoolSpec
 from skyward.api.model import Cluster, Instance, InstanceStatus
+from skyward.infra.http import HttpClient
 from skyward.observability.logger import logger
 from skyward.providers.provider import CloudProvider
 from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
@@ -16,7 +19,6 @@ from .config import CloudType, RunPod
 from .types import (
     ClusterCreateParams,
     CpuPodCreateParams,
-    PodCreateParams,
     PodResponse,
     get_gpu_model,
     get_ssh_port,
@@ -24,15 +26,134 @@ from .types import (
 
 log = logger.bind(provider="runpod")
 
-_DEFAULT_IMAGE = "runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04"
+_CUDA_DOTTED_RE = re.compile(r"cuda(\d+)\.(\d+)")
+_CUDA_COMPACT_RE = re.compile(r"cu(?:da)?(\d{2})(\d)\d")
+_UBUNTU_RE = re.compile(r"ubuntu(\d{2})\.?(\d{2})")
+_TAG_VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
+_FALLBACK_IMAGE = "runpod/base:1.0.3-cuda1290-ubuntu2204"
+_DOCKER_HUB_URL = "https://hub.docker.com"
+_DOCKER_HUB_REPO = "runpod/base"
 
 
-def _get_image_name(spec: PoolSpec) -> str:
+def _parse_cuda_version(version: str) -> tuple[int, int]:
+    major, minor, *_ = version.split(".")
+    return (int(major), int(minor))
+
+
+def _get_cuda_range(spec: PoolSpec) -> tuple[str | None, str | None]:
+    """Extract CUDA min/max from the accelerator specification."""
+    match spec.accelerator:
+        case None:
+            return None, None
+        case str(name):
+            catalog = SPECS.get(name)
+            if catalog and "cuda" in catalog:
+                return catalog["cuda"].get("min"), catalog["cuda"].get("max")
+            return None, None
+        case accel if accel.metadata and "cuda" in accel.metadata:
+            cuda = accel.metadata["cuda"]
+            return cuda.get("min"), cuda.get("max")
+        case _:
+            return None, None
+
+
+async def _fetch_docker_tags() -> list[str]:
+    """Fetch available image tags from Docker Hub (paginated)."""
+    namespace, name = _DOCKER_HUB_REPO.split("/")
+    all_tags: list[str] = []
+    path = f"/v2/repositories/{namespace}/{name}/tags/"
+    params: dict[str, str] | None = {"page_size": "100", "ordering": "-last_updated"}
+
+    try:
+        async with HttpClient(_DOCKER_HUB_URL, timeout=15) as http:
+            for _ in range(5):
+                data = await http.request("GET", path, params=params)
+                if not data:
+                    break
+                all_tags.extend(tag["name"] for tag in data.get("results", []))
+                next_url = data.get("next")
+                if not next_url:
+                    break
+                path = next_url.removeprefix(_DOCKER_HUB_URL)
+                params = None
+    except Exception as e:
+        log.warning("Failed to fetch Docker Hub tags: {err}", err=e)
+
+    return all_tags
+
+
+def _ubuntu_matches(tag: str, ubuntu: str) -> bool:
+    if ubuntu == "newest":
+        return True
+    compact = ubuntu.replace(".", "")
+    return f"ubuntu{compact}" in tag or f"ubuntu{ubuntu}" in tag
+
+
+def _extract_ubuntu(tag: str) -> tuple[int, int]:
+    m = _UBUNTU_RE.search(tag)
+    return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+
+
+def _extract_tag_version(tag: str) -> tuple[int, int, int]:
+    m = _TAG_VERSION_RE.match(tag)
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else (0, 0, 0)
+
+
+def _select_best_image(
+    tags: list[str],
+    cuda_min: tuple[int, int],
+    cuda_max: tuple[int, int],
+    ubuntu: str,
+) -> str | None:
+    """Select the newest image within the CUDA version range."""
+    candidates: list[tuple[tuple[int, int, int], tuple[int, int], tuple[int, int], str]] = []
+    for tag in tags:
+        if tag.endswith("-test") or "-dev-" in tag or "ubuntu" not in tag:
+            continue
+        if not _ubuntu_matches(tag, ubuntu):
+            continue
+        m = _CUDA_DOTTED_RE.search(tag) or _CUDA_COMPACT_RE.search(tag)
+        if not m:
+            continue
+        cuda_ver = (int(m.group(1)), int(m.group(2)))
+        if cuda_min <= cuda_ver <= cuda_max:
+            candidates.append((_extract_tag_version(tag), cuda_ver, _extract_ubuntu(tag), tag))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+    return f"{_DOCKER_HUB_REPO}:{candidates[0][3]}"
+
+
+async def _resolve_image(spec: PoolSpec, config: RunPod) -> str:
+    """Resolve the best RunPod container image for the given spec."""
     match getattr(spec.image, "container_image", None):
         case str() as img:
             return img
         case _:
-            return _DEFAULT_IMAGE
+            pass
+
+    cuda_min, cuda_max = _get_cuda_range(spec)
+    if cuda_min is None:
+        return _FALLBACK_IMAGE
+
+    min_ver = _parse_cuda_version(cuda_min)
+    max_ver = _parse_cuda_version(cuda_max) if cuda_max else (99, 99)
+
+    tags = await _fetch_docker_tags()
+    if image := _select_best_image(tags, min_ver, max_ver, config.ubuntu):
+        log.info(
+            "Selected image {image} for CUDA {min}-{max}",
+            image=image, min=cuda_min, max=cuda_max,
+        )
+        return image
+
+    log.warning(
+        "No matching image for CUDA {min}-{max}, using fallback",
+        min=cuda_min, max=cuda_max,
+    )
+    return _FALLBACK_IMAGE
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +163,7 @@ class RunPodSpecific:
     gpu_type_id: str | None
     cloud_type: str
     gpu_vram_gb: int = 0
+    image_name: str = _FALLBACK_IMAGE
     runpod_cluster_id: str | None = None
     pod_ids: tuple[tuple[int, str], ...] = ()
     cluster_ips: tuple[tuple[int, str], ...] = ()
@@ -77,6 +199,7 @@ class RunPodCloudProvider(CloudProvider[RunPod, RunPodSpecific]):
             log.debug("SSH key ensured on RunPod account")
 
         gpu_type_id, gpu_vram_gb = await _resolve_gpu_type(self._config, spec)
+        image_name = await _resolve_image(spec, self._config)
 
         runpod_cluster_id: str | None = None
         pod_ids: tuple[tuple[int, str], ...] = ()
@@ -84,7 +207,7 @@ class RunPodCloudProvider(CloudProvider[RunPod, RunPodSpecific]):
 
         if spec.nodes >= 2 and gpu_type_id:
             runpod_cluster_id, pod_ids, cluster_ips = await _create_instant_cluster(
-                self._config, spec, gpu_type_id,
+                self._config, spec, gpu_type_id, image_name,
             )
 
         shutdown_command = (
@@ -106,6 +229,7 @@ class RunPodCloudProvider(CloudProvider[RunPod, RunPodSpecific]):
                 gpu_type_id=gpu_type_id,
                 cloud_type=self._config.cloud_type.value,
                 gpu_vram_gb=gpu_vram_gb,
+                image_name=image_name,
                 runpod_cluster_id=runpod_cluster_id,
                 pod_ids=pod_ids,
                 cluster_ips=cluster_ips,
@@ -119,9 +243,15 @@ class RunPodCloudProvider(CloudProvider[RunPod, RunPodSpecific]):
         api_key = get_api_key(self._config.api_key)
 
         if specific.is_instant_cluster:
+            async with RunPodClient(api_key, config=self._config) as client:
+                pods = await asyncio.gather(*(
+                    client.get_pod(pid)
+                    for _, pid in specific.pod_ids[:count]
+                ))
             return cluster, [
-                Instance(id=pid, status="provisioning")
-                for _, pid in specific.pod_ids[:count]
+                _build_runpod_instance(pod, "provisioning", specific)
+                if pod else Instance(id=pid, status="provisioning")
+                for (_, pid), pod in zip(specific.pod_ids[:count], pods, strict=True)
             ]
 
         instances: list[Instance] = []
@@ -136,8 +266,7 @@ class RunPodCloudProvider(CloudProvider[RunPod, RunPodSpecific]):
                 except RunPodError as e:
                     log.error("Failed to create pod: {err}", err=e)
                     continue
-
-                instances.append(Instance(id=pod["id"], status="provisioning"))
+                instances.append(_build_runpod_instance(pod, "provisioning", specific))
 
         return cluster, instances
 
@@ -202,9 +331,10 @@ def _build_runpod_instance(
     pod: PodResponse, status: InstanceStatus, specific: RunPodSpecific,
 ) -> Instance:
     gpu = pod.get("gpu")
-    instance_type = gpu.get("id", "") if gpu else ""
     machine = pod.get("machine") or {}
+    instance_type = gpu.get("id", "") if gpu else ""
     region = machine.get("dataCenterId") or machine.get("location") or ""
+    hourly_rate = pod.get("adjustedCostPerHr") or pod.get("costPerHr") or 0.0
 
     private_ip: str | None = None
     if specific.is_instant_cluster:
@@ -227,7 +357,7 @@ def _build_runpod_instance(
         memory_gb=pod.get("memoryInGb", 0.0),
         region=region,
         gpu_vram_gb=specific.gpu_vram_gb,
-        hourly_rate=pod.get("adjustedCostPerHr", 0.0),
+        hourly_rate=hourly_rate,
         on_demand_rate=pod.get("costPerHr", 0.0),
         billing_increment=1,
     )
@@ -280,6 +410,7 @@ async def _create_instant_cluster(
     config: RunPod,
     spec: PoolSpec,
     gpu_type_id: str,
+    image_name: str,
 ) -> tuple[str, tuple[tuple[int, str], ...], tuple[tuple[int, str], ...]]:
     """Create a RunPod Instant Cluster.
 
@@ -291,7 +422,6 @@ async def _create_instant_cluster(
     log.info("Creating Instant Cluster with {n} nodes", n=spec.nodes)
 
     api_key = get_api_key(config.api_key)
-    image_name = _get_image_name(spec)
 
     params: ClusterCreateParams = {
         "clusterName": f"skyward-{uuid.uuid4().hex[:8]}",
@@ -327,6 +457,16 @@ async def _create_instant_cluster(
     return cluster_id, tuple(pod_ids), tuple(cluster_ips)
 
 
+def _extract_cuda_from_image(image_name: str) -> str | None:
+    """Extract CUDA version string from image name for allowedCudaVersions."""
+    tag = image_name.split(":")[-1] if ":" in image_name else image_name
+    if m := _CUDA_DOTTED_RE.search(tag):
+        return f"{m.group(1)}.{m.group(2)}"
+    if m := _CUDA_COMPACT_RE.search(tag):
+        return f"{m.group(1)}.{m.group(2)}"
+    return None
+
+
 async def _create_gpu_pod(
     client: RunPodClient,
     config: RunPod,
@@ -334,29 +474,30 @@ async def _create_gpu_pod(
     node_index: int,
 ) -> PodResponse:
     use_spot = cluster.spec.allocation in ("spot", "spot-if-available")
+    image_name = cluster.specific.image_name
+    cuda_version = _extract_cuda_from_image(image_name)
 
     log.debug(
-        "Creating GPU pod for node {idx}: gpu={gpu}, count={count}",
+        "Creating GPU pod for node {idx}: gpu={gpu}, count={count}, cuda={cuda}",
         idx=node_index, gpu=cluster.specific.gpu_type_id,
-        count=cluster.spec.accelerator_count or 1,
+        count=cluster.spec.accelerator_count or 1, cuda=cuda_version,
     )
-    params: PodCreateParams = {
-        "name": f"skyward-{cluster.id}-{node_index}",
-        "imageName": _get_image_name(cluster.spec),
-        "gpuTypeIds": [cluster.specific.gpu_type_id or ""],
-        "gpuCount": cluster.spec.accelerator_count or 1,
-        "cloudType": config.cloud_type.value.upper(),
-        "containerDiskInGb": config.container_disk_gb,
-        "volumeInGb": config.volume_gb,
-        "volumeMountPath": config.volume_mount_path,
-        "ports": list(config.ports),
-        "interruptible": use_spot,
-    }
 
-    if config.data_center_ids != "global":
-        params["dataCenterIds"] = list(config.data_center_ids)
-
-    return await client.create_pod(params)
+    return await client.deploy_gpu_pod(
+        name=f"skyward-{cluster.id}-{node_index}",
+        image_name=image_name,
+        gpu_type_id=cluster.specific.gpu_type_id or "",
+        gpu_count=cluster.spec.accelerator_count or 1,
+        cloud_type=config.cloud_type.value.upper(),
+        container_disk_gb=config.container_disk_gb,
+        volume_gb=config.volume_gb,
+        volume_mount_path=config.volume_mount_path,
+        ports=",".join(config.ports),
+        interruptible=use_spot,
+        data_center_id=config.data_center_ids[0] if config.data_center_ids != "global" else None,
+        deploy_cost=cluster.spec.max_hourly_cost,
+        allowed_cuda_versions=[cuda_version] if cuda_version else None,
+    )
 
 
 async def _create_cpu_pod(

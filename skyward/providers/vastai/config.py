@@ -45,10 +45,12 @@ class VastAI(ProviderConfig):
         use_overlay: Enable overlay networking for multi-node clusters.
         overlay_timeout: Timeout for overlay operations in seconds.
         require_direct_port: Only select offers with direct port access (no SSH proxy).
+        verified_only: Only select offers from verified hosts (default True).
     """
 
     api_key: str | None = None
     min_reliability: float = 0.95
+    verified_only: bool = True
     min_cuda: float = 12.0
     geolocation: str | None = None
     bid_multiplier: float = 1.2

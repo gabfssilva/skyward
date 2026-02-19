@@ -149,7 +149,26 @@ class VerdaCloudProvider(CloudProvider[Verda, VerdaSpecific]):
                 log.error("Failed to create instance: {err}", err=e)
                 continue
 
-            instances.append(Instance(id=str(resp["id"]), status="provisioning"))
+            instances.append(Instance(
+                id=str(resp["id"]),
+                status="provisioning",
+                spot=use_spot,
+                instance_type=specific.instance_type,
+                gpu_count=specific.gpu_count,
+                gpu_model=specific.gpu_model,
+                gpu_vram_gb=specific.gpu_vram_gb,
+                vcpus=specific.vcpus,
+                memory_gb=specific.memory_gb,
+                region=region,
+                hourly_rate=specific.hourly_rate,
+                on_demand_rate=specific.on_demand_rate,
+                billing_increment=1,
+            ))
+
+        if not instances:
+            raise RuntimeError(
+                f"Failed to provision any of the {count} requested instances",
+            )
 
         return cluster, instances
 

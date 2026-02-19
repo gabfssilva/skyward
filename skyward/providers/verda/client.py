@@ -144,7 +144,7 @@ class VerdaClient:
             "instance_type": instance_type,
             "image": image,
             "ssh_key_ids": ssh_key_ids,
-            "location": location,
+            "location_code": location,
             "is_spot": is_spot,
         }
 

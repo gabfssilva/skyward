@@ -74,6 +74,36 @@ mutation DeployCpuPod($input: deployCpuPodInput!) {
 """
 
 
+DEPLOY_ON_DEMAND_MUTATION = """
+mutation DeployOnDemand($input: PodFindAndDeployOnDemandInput) {
+  podFindAndDeployOnDemand(input: $input) {
+    id
+    desiredStatus
+    imageName
+    costPerHr
+    gpuCount
+    vcpuCount
+    memoryInGb
+    machine { dataCenterId gpuDisplayName }
+  }
+}
+"""
+
+DEPLOY_SPOT_MUTATION = """
+mutation DeploySpot($input: PodRentInterruptableInput!) {
+  podRentInterruptable(input: $input) {
+    id
+    desiredStatus
+    imageName
+    costPerHr
+    gpuCount
+    vcpuCount
+    memoryInGb
+    machine { dataCenterId gpuDisplayName }
+  }
+}
+"""
+
 MYSELF_QUERY = """
 query { myself { id pubKey } }
 """
@@ -140,12 +170,67 @@ class RunPodClient:
 
     @retry(on=on_status_code(429, 503), max_attempts=3, base_delay=1.0)
     async def create_pod(self, params: PodCreateParams) -> PodResponse:
-        """Create a new pod."""
+        """Create a new pod via REST API."""
         self._log.debug("Creating pod")
         result: PodResponse | None = await self._request("POST", "/pods", json=dict(params))
         if not result:
             raise RunPodError("Failed to create pod: empty response")
         return result
+
+    @retry(on=on_status_code(429, 503), max_attempts=3, base_delay=1.0)
+    async def deploy_gpu_pod(
+        self,
+        *,
+        name: str,
+        image_name: str,
+        gpu_type_id: str,
+        gpu_count: int = 1,
+        cloud_type: str = "SECURE",
+        container_disk_gb: int = 50,
+        volume_gb: int = 20,
+        volume_mount_path: str = "/workspace",
+        ports: str = "22/tcp",
+        interruptible: bool = False,
+        data_center_id: str | None = None,
+        deploy_cost: float | None = None,
+        allowed_cuda_versions: list[str] | None = None,
+    ) -> PodResponse:
+        """Deploy a GPU pod via GraphQL with allowedCudaVersions support."""
+        input_vars: dict[str, Any] = {
+            "name": name,
+            "imageName": image_name,
+            "gpuTypeId": gpu_type_id,
+            "gpuCount": gpu_count,
+            "cloudType": cloud_type,
+            "containerDiskInGb": container_disk_gb,
+            "volumeInGb": volume_gb,
+            "volumeMountPath": volume_mount_path,
+            "ports": ports,
+            "startSsh": True,
+        }
+
+        if data_center_id:
+            input_vars["dataCenterId"] = data_center_id
+        if allowed_cuda_versions:
+            input_vars["allowedCudaVersions"] = allowed_cuda_versions
+
+        if interruptible:
+            if deploy_cost:
+                input_vars["bidPerGpu"] = deploy_cost
+            mutation = DEPLOY_SPOT_MUTATION
+            result_key = "podRentInterruptable"
+        else:
+            if deploy_cost:
+                input_vars["deployCost"] = deploy_cost
+            mutation = DEPLOY_ON_DEMAND_MUTATION
+            result_key = "podFindAndDeployOnDemand"
+
+        self._log.debug("Deploying GPU pod via GraphQL ({key})", key=result_key)
+        data = await self._graphql(mutation, {"input": input_vars})
+        pod: PodResponse | None = data.get(result_key)
+        if not pod:
+            raise RunPodError(f"Failed to deploy pod: empty response from {result_key}")
+        return pod
 
     @retry(on=on_status_code(429, 503), max_attempts=3, base_delay=1.0)
     async def get_pod(self, pod_id: str) -> PodResponse | None:

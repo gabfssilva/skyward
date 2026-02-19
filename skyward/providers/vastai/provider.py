@@ -273,6 +273,7 @@ async def _search_offers(
         gpu_name=gpu_name,
         min_reliability=config.min_reliability,
         geolocation=config.geolocation,
+        verified_only=config.verified_only,
         use_interruptible=use_interruptible,
         with_cluster_id=spec.nodes > 1,
     )
@@ -411,6 +412,7 @@ async def _setup_overlay_network(
         gpu_name=gpu_name,
         min_reliability=config.min_reliability,
         geolocation=config.geolocation,
+        verified_only=config.verified_only,
         use_interruptible=use_interruptible,
         with_cluster_id=True,
     )

@@ -611,25 +611,25 @@ def _measure_height(renderable: RenderableType, width: int) -> int:
     return capture.get().count("\n") + 1
 
 
-_SKYWARD_COL_WIDTH = 35
+_SKYWARD_COL_WIDTH = 33
+_CLUSTER_COL_WIDTH = 38
 
 
 def _render(state: _State) -> RenderableType:
     parts: list[RenderableType] = []
     term_w = state.console.size.width
-    left_width = _SKYWARD_COL_WIDTH + 4 + _SKYWARD_COL_WIDTH
-    tasks_width = max(20, term_w - left_width - 4)
-    cluster_width = _SKYWARD_COL_WIDTH
+    left_width = _SKYWARD_COL_WIDTH + 2 + _CLUSTER_COL_WIDTH
+    tasks_width = max(20, term_w - left_width - 2)
 
-    left_top = Table.grid(padding=(0, 4))
+    left_top = Table.grid(padding=(0, 2))
     left_top.add_column(width=_SKYWARD_COL_WIDTH)
-    left_top.add_column(width=cluster_width)
+    left_top.add_column(width=_CLUSTER_COL_WIDTH)
     left_top.add_row(
         _render_skyward_col(state),
         _render_cluster_col(state),
     )
 
-    header = Table.grid(padding=(0, 4))
+    header = Table.grid(padding=(0, 2))
     header.add_column(width=left_width)
     header.add_column(width=tasks_width)
     header.add_row(left_top, _render_tasks_col(state, tasks_width))

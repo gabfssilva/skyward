@@ -61,6 +61,7 @@ class RunPod(ProviderConfig):
 
     api_key: str | None = None
     cloud_type: CloudType = CloudType.SECURE
+    ubuntu: Literal["20.04", "22.04", "24.04", "newest"] | str = "newest"
     container_disk_gb: int = 50
     volume_gb: int = 20
     volume_mount_path: str = "/workspace"

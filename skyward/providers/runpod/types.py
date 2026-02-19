@@ -191,10 +191,10 @@ def get_ssh_port(pod: PodResponse) -> int:
 
 def get_gpu_model(pod: PodResponse) -> str:
     """Extract GPU model from pod response."""
-    machine = pod.get("machine")
-    if machine:
-        return machine.get("gpuDisplayName", "")
+    machine = pod.get("machine") or {}
+    if name := machine.get("gpuDisplayName") or machine.get("gpuTypeId"):
+        return name
     gpu = pod.get("gpu")
     if gpu:
-        return gpu.get("gpuType", "")
+        return gpu.get("displayName") or gpu.get("gpuType") or ""
     return ""
