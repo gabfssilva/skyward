@@ -98,7 +98,7 @@ nav:
       - Distributed Training:
           - PyTorch Distributed: guides/pytorch-distributed.md
           - Keras Training: guides/keras-training.md
-          - JAX MicroGPT: guides/jax-microgpt.md
+          - MicroGPT Distributed: guides/microgpt-distributed.md
           - HuggingFace Fine-tuning: guides/huggingface-finetuning.md
       - Testing:
           - Local Containers: guides/local-containers.md
