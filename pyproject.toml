@@ -109,13 +109,18 @@ reportMissingImports = "warning"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-addopts = "--durations=0 --dist loadgroup -s --log-cli-level=DEBUG"
+addopts = "--durations=0 --dist loadgroup -s --log-cli-level=INFO"
 timeout_func_only = true
 markers = [
     "e2e: end-to-end tests requiring container runtime",
     "slow: tests that take >10s",
     "integration: marks tests as integration tests (require Docker)",
     "ec2: marks tests as EC2 integration tests (require AWS credentials)",
+    "sanity: provider sanity tests (real cloud, real GPUs)",
+    "aws: AWS provider tests",
+    "runpod: RunPod provider tests",
+    "vastai: VastAI provider tests",
+    "verda: Verda provider tests",
 ]
 
 [dependency-groups]

@@ -109,9 +109,9 @@ def train_distributed() -> dict:
 
 if __name__ == "__main__":
     with sky.ComputePool(
-        provider=sky.AWS(),
+        provider=sky.Verda(),
         nodes=2,
-        accelerator=sky.accelerators.T4G(),
+        accelerator=sky.accelerators.A100(),
         image=sky.Image(
             pip=["jax[cuda12]==0.8.2", "scikit-learn"],
             skyward_source="local",

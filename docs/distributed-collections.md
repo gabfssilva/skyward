@@ -1,31 +1,19 @@
 # Distributed Collections
 
-Skyward provides distributed data structures that are shared across all nodes in a pool. They work like their Python counterparts but are automatically replicated and synchronized across the cluster.
+When compute functions run across multiple nodes, they sometimes need to share state. A training loop might track global progress. A batch processor might deduplicate work across workers. A distributed pipeline might need a synchronization point where all nodes wait before proceeding. A checkpoint routine might need mutual exclusion so two nodes don't write conflicting state simultaneously.
 
-## Available Collections
+Skyward provides distributed data structures for these cases. They look like their Python counterparts — `dict`, `set`, `counter`, `queue`, `barrier`, `lock` — but they're backed by Casty's distributed actor system and replicated across the [cluster](architecture.md). Any node can read and write to them, and the cluster handles synchronization automatically.
 
-| Collection | Create | Python Equivalent |
-|------------|--------|-------------------|
-| `pool.dict(name)` | Key-value store | `dict` |
-| `pool.set(name)` | Unique value store | `set` |
-| `pool.counter(name)` | Atomic counter | `int` |
-| `pool.queue(name)` | FIFO queue | `queue.Queue` |
-| `pool.barrier(name, n)` | Synchronization point | `threading.Barrier` |
-| `pool.lock(name)` | Mutual exclusion | `threading.Lock` |
-
-Collections are created lazily by name — calling `pool.dict("cache")` on any node returns the same shared dict. Inside `@sky.compute` functions, use the module-level shortcuts (`sky.dict`, `sky.counter`, etc.) which reference the active pool automatically.
+Collections are created lazily by name. Calling `sky.dict("cache")` on any node returns a proxy to the same shared dict — if the collection doesn't exist yet, the cluster creates it; if it already exists, you get a reference to the existing one. Inside `@sky.compute` functions, use the module-level shortcuts (`sky.dict`, `sky.counter`, `sky.set`, etc.) which resolve the active pool automatically through a `ContextVar`. You can also access them via the pool directly: `pool.dict("cache")`, `pool.counter("steps")`, etc.
 
 ## Dict
 
-Shared key-value store across all workers. Supports standard Python dict syntax.
+The distributed dict is a shared key-value store across all workers. The most common use case is a distributed cache: if one node computes an expensive result, other nodes can read it instead of recomputing.
 
 ```python
-import skyward as sky
-
 @sky.compute
 def process_with_cache(items: list[str]) -> dict:
     cache = sky.dict("embeddings")
-    info = sky.instance_info()
 
     for item in sky.shard(items):
         if item in cache:
@@ -34,26 +22,16 @@ def process_with_cache(items: list[str]) -> dict:
             result = compute_embedding(item)
             cache[item] = result
 
-    return {"node": info.node, "processed": len(items)}
-
-with sky.ComputePool(provider=sky.AWS(), nodes=4) as pool:
-    results = process_with_cache(items) @ pool
+    return {"processed": len(items)}
 ```
 
-**API:**
+The dict supports standard Python syntax: `cache[key]`, `cache[key] = value`, `del cache[key]`, `key in cache`, `cache.get(key, default)`, `cache.update(...)`, and `cache.pop(key, default)`.
 
-- `cache[key]` / `cache[key] = value` / `del cache[key]`
-- `key in cache`
-- `cache.get(key, default=None)`
-- `cache.update({...})`
-- `cache.pop(key, default=None)`
-
-!!! note
-    Dict uses entity-per-key internally, so enumeration methods (`keys()`, `values()`, `items()`, `len()`) are not available. Use it as a distributed cache with get/put/delete/contains semantics.
+Internally, each key is managed by a separate actor (entity-per-key), which means reads and writes to different keys don't contend with each other. This design makes the dict highly concurrent — hundreds of nodes can read and write to different keys simultaneously without coordination overhead. The trade-off is that enumeration methods — `keys()`, `values()`, `items()`, `len()` — are not available, because there's no single actor that knows about all keys. Think of it as a distributed cache with get/put/delete/contains semantics, not a full `dict` replacement.
 
 ## Counter
 
-Atomic distributed counter with increment/decrement.
+The distributed counter is an atomic integer shared across all workers. Every node can increment and decrement it, and all operations are serialized through the counter's backing actor — no lost updates, no race conditions.
 
 ```python
 @sky.compute
@@ -63,16 +41,11 @@ def train_step(batch) -> dict:
     return {"step": int(progress)}
 ```
 
-**API:**
-
-- `progress.value` — current value
-- `progress.increment(n=1)` / `progress.decrement(n=1)`
-- `progress.reset(value=0)`
-- `int(progress)` — cast to int
+The counter supports `progress.value` (current value), `progress.increment(n=1)`, `progress.decrement(n=1)`, `progress.reset(value=0)`, and `int(progress)` for casting. It's useful for tracking global progress across workers, counting processed items, or implementing simple distributed coordination where all you need is a shared integer.
 
 ## Set
 
-Distributed set for tracking unique values across workers.
+The distributed set tracks unique values across workers. The typical use case is deduplication — ensuring that a batch isn't processed twice even when multiple nodes receive overlapping work.
 
 ```python
 @sky.compute
@@ -87,16 +60,11 @@ def deduplicate(batch_id: int) -> str:
     return "processed"
 ```
 
-**API:**
-
-- `value in s`
-- `len(s)`
-- `s.add(value)`
-- `s.discard(value)`
+The set supports `value in s`, `len(s)`, `s.add(value)`, and `s.discard(value)`. Unlike the dict, the set does support `len()` because it's backed by a single replicated actor rather than entity-per-key.
 
 ## Queue
 
-FIFO work queue for dynamic task distribution.
+The distributed queue is a FIFO work queue for dynamic task distribution. Unlike the static partitioning that `shard()` provides — where each node gets a predetermined slice of the data — a queue lets workers pull tasks at their own pace. Fast workers process more items, slow workers process fewer, and the overall throughput adapts to heterogeneous performance.
 
 ```python
 @sky.compute
@@ -117,22 +85,13 @@ def worker() -> list:
             break
         results.append(task * 2)
     return results
-
-with sky.ComputePool(provider=sky.AWS(), nodes=4) as pool:
-    producer(list(range(20))) @ pool
-    results = worker() @ pool
 ```
 
-**API:**
-
-- `queue.put(value)`
-- `queue.get(timeout=None)` — returns `None` on timeout
-- `queue.empty()`
-- `len(queue)`
+The queue supports `queue.put(value)`, `queue.get(timeout=None)` (returns `None` on timeout), `queue.empty()`, and `len(queue)`. The producer-consumer pattern shown above is a common way to implement dynamic load balancing: the head node fills the queue, all workers drain it at their own pace, and the work naturally distributes based on each worker's processing speed.
 
 ## Barrier
 
-Synchronization point — all workers must arrive before any can proceed.
+The distributed barrier is a synchronization point where all workers must arrive before any can proceed. This is useful when your distributed computation has phases that must complete globally before the next phase begins — for example, ensuring all nodes have finished an epoch before aggregating results, or waiting for all nodes to load a model before starting inference.
 
 ```python
 @sky.compute
@@ -141,18 +100,16 @@ def synchronized_epoch(epoch: int) -> dict:
     sync = sky.barrier("epoch_sync", n=info.total_nodes)
 
     loss = train_one_epoch(epoch)
-    sync.wait()  # all nodes reach here before continuing
+    sync.wait()  # blocks until all n workers arrive
 
     return {"node": info.node, "loss": loss}
 ```
 
-**API:**
-
-- `barrier.wait()` — blocks until `n` workers arrive
+The barrier is created with a participant count `n`. When `n` workers have called `wait()`, all of them are released simultaneously. If any worker fails to arrive — because of an error, a timeout, or a preempted spot instance — the others will block until their task times out. Barriers work best when all nodes are expected to reach the synchronization point reliably.
 
 ## Lock
 
-Mutual exclusion for critical sections. Supports context manager protocol.
+The distributed lock provides mutual exclusion across the cluster. When multiple nodes need to update shared state atomically — like writing the best checkpoint so far, or coordinating access to an external resource — a lock ensures only one node enters the critical section at a time.
 
 ```python
 @sky.compute
@@ -170,19 +127,11 @@ def safe_checkpoint(step: int) -> bool:
     return False
 ```
 
-**API:**
-
-- `lock.acquire()` / `lock.release()`
-- `with lock:` — context manager
+The lock supports `lock.acquire()`, `lock.release()`, and the context manager protocol (`with lock:`). Casty's distributed locking ensures that only one holder exists across the cluster at any time — if node 0 holds the lock, node 1's `acquire()` blocks until node 0 releases it, regardless of which physical machine each node runs on.
 
 ## Consistency
 
-Collections support two consistency levels:
-
-| Level | Behavior |
-|-------|----------|
-| `"eventual"` | Faster reads, may see slightly stale values (default) |
-| `"strong"` | Linearizable reads, always see latest value |
+Collections support two consistency levels, configured at creation time:
 
 ```python
 # Default: eventual consistency (faster)
@@ -192,11 +141,13 @@ cache = sky.dict("cache")
 cache = sky.dict("cache", consistency="strong")
 ```
 
-Eventual consistency is sufficient for most use cases (caches, progress counters). Use strong consistency when correctness depends on reading the latest value (e.g., checkpoint coordination).
+With **eventual consistency** (the default), reads are fast but may see slightly stale values. A write on node 0 might not be visible on node 1 for a brief window while replication propagates. This is sufficient for most use cases — caches, progress counters, deduplication sets — where reading a slightly outdated value doesn't affect correctness.
+
+With **strong consistency**, every read returns the latest written value. This is slower because it requires coordination with the actor managing the data, but it's necessary when correctness depends on seeing the most recent state — for example, when using a lock and a dict together to coordinate checkpoint writes, you want the dict reads inside the critical section to be strongly consistent.
 
 ## Async Interface
 
-All collections also expose async methods for use in async contexts:
+All collections expose async methods for use in async contexts. The naming convention adds `_async` to each operation:
 
 ```python
 await cache.get_async(key)
@@ -206,9 +157,10 @@ await queue.put_async(value)
 await lock.acquire_async()
 ```
 
----
+The sync interface (the default, used in most `@sky.compute` functions) blocks the calling thread while waiting for the actor response. The async interface returns awaitables, which is useful if you're writing custom async logic inside a worker or integrating with an existing async codebase.
 
-## Related Topics
+## Next Steps
 
-- [Distributed Training](distributed-training.md) — Multi-node training guides
+- [Distributed Training](distributed-training.md) — Multi-node training with shared state across workers
+- [Clustering](architecture.md) — How the Casty actor cluster powers distributed collections
 - [API Reference](reference/distributed.md) — Full API documentation
