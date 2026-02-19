@@ -17,6 +17,7 @@ from skyward.actors.messages import (
     PoolStarted,
     PoolStopped,
     Provision,
+    ProvisionFailed,
     StartPool,
     StopPool,
     SubmitBroadcast,
@@ -74,30 +75,45 @@ def pool_actor() -> Behavior[PoolMsg]:
         return Behaviors.receive(receive)
 
     def provisioning_instances(
-        spec: PoolSpec, provider: Any, cluster: Any, reply_to: ActorRef,
+        spec: PoolSpec,
+        provider: Any,
+        cluster: Any,
+        reply_to: ActorRef,
+        spawned: dict[NodeId, ActorRef] | None = None,
+        attempt: int = 1,
+        early_ready: tuple[NodeBecameReady, ...] = (),
     ) -> Behavior[PoolMsg]:
+        if spawned is None:
+            spawned = {}
+        log = logger.bind(actor="pool", state="provisioning_instances")
+
         async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
             match msg:
-                case InstancesProvisioned(instances=instances, cluster=cluster):
-                    logger.bind(actor="pool").info(
-                        "Instances provisioned ({n}), spawning node actors",
-                        n=len(instances),
+                case NodeBecameReady() as nbr:
+                    log.debug(
+                        "Node {nid} ready early (buffered)",
+                        nid=nbr.node_id,
                     )
-                    match spec.max_inflight:
-                        case int(n):
-                            resolved_inflight = n
-                        case None:
-                            resolved_inflight = spec.nodes * spec.concurrency
-                        case strategy:
-                            resolved_inflight = strategy(spec.nodes, spec.concurrency)
-
-                    tm_ref = ctx.spawn(
-                        task_manager_actor(max_inflight=resolved_inflight),
-                        "task-manager",
+                    return provisioning_instances(
+                        spec, provider, cluster, reply_to,
+                        spawned=spawned, attempt=attempt,
+                        early_ready=(*early_ready, nbr),
                     )
+                case InstancesProvisioned(
+                    instances=instances, cluster=updated_cluster,
+                ):
+                    log.info(
+                        "Instances provisioned ({n}), attempt "
+                        "{attempt}/{max}",
+                        n=len(instances), attempt=attempt,
+                        max=spec.max_provision_attempts,
+                    )
+                    new_spawned = dict(spawned)
+                    remaining = spec.nodes - len(new_spawned)
+                    to_spawn = instances[:remaining]
 
-                    node_refs: dict[NodeId, ActorRef] = {}
-                    for nid, instance in enumerate(instances):
+                    for instance in to_spawn:
+                        nid = len(new_spawned)
                         ref = ctx.spawn(
                             node_actor(
                                 node_id=nid, pool=ctx.self,
@@ -107,16 +123,94 @@ def pool_actor() -> Behavior[PoolMsg]:
                             f"node-{nid}",
                         )
                         ref.tell(Provision(
-                            cluster=cluster,
+                            cluster=updated_cluster,
                             provider=provider,
                             instance=instance,
                         ))
-                        node_refs[nid] = ref
+                        new_spawned[nid] = ref
 
-                    return provisioning(
-                        spec, provider, cluster, reply_to, cluster.id,
-                        instances={}, node_refs=node_refs, tm_ref=tm_ref,
+                    if len(new_spawned) >= spec.nodes:
+                        log.info(
+                            "All {n} instances provisioned, "
+                            "spawning task manager",
+                            n=spec.nodes,
+                        )
+                        match spec.max_inflight:
+                            case int(n):
+                                resolved_inflight = n
+                            case None:
+                                resolved_inflight = (
+                                    spec.nodes * spec.concurrency
+                                )
+                            case strategy:
+                                resolved_inflight = strategy(
+                                    spec.nodes, spec.concurrency,
+                                )
+
+                        tm_ref = ctx.spawn(
+                            task_manager_actor(
+                                max_inflight=resolved_inflight,
+                            ),
+                            "task-manager",
+                        )
+                        for nbr in early_ready:
+                            ctx.self.tell(nbr)
+                        return provisioning(
+                            spec, provider, updated_cluster, reply_to,
+                            updated_cluster.id,
+                            instances={}, node_refs=new_spawned,
+                            tm_ref=tm_ref,
+                        )
+
+                    still_needed = spec.nodes - len(new_spawned)
+                    if attempt < spec.max_provision_attempts:
+                        log.info(
+                            "Got {got}/{need} nodes, retrying in "
+                            "{delay}s (attempt {next}/{max})",
+                            got=len(new_spawned), need=spec.nodes,
+                            delay=spec.provision_retry_delay,
+                            next=attempt + 1,
+                            max=spec.max_provision_attempts,
+                        )
+
+                        async def _retry_provision() -> (
+                            tuple[Any, tuple[Any, ...]]
+                        ):
+                            import asyncio as _asyncio
+
+                            await _asyncio.sleep(
+                                spec.provision_retry_delay,
+                            )
+                            return await provider.provision(
+                                updated_cluster, still_needed,
+                            )
+
+                        ctx.pipe_to_self(
+                            _retry_provision(),
+                            mapper=lambda result: InstancesProvisioned(
+                                instances=result[1], cluster=result[0],
+                            ),
+                        )
+                        return provisioning_instances(
+                            spec, provider, updated_cluster, reply_to,
+                            spawned=new_spawned, attempt=attempt + 1,
+                            early_ready=early_ready,
+                        )
+
+                    log.error(
+                        "Exhausted {max} provision attempts, "
+                        "only got {got}/{need} nodes",
+                        max=spec.max_provision_attempts,
+                        got=len(new_spawned), need=spec.nodes,
                     )
+                    reply_to.tell(ProvisionFailed(
+                        reason=(
+                            f"Only provisioned {len(new_spawned)}"
+                            f"/{spec.nodes} nodes after "
+                            f"{spec.max_provision_attempts} attempts"
+                        ),
+                    ))
+                    return Behaviors.stopped()
             return Behaviors.same()
         return Behaviors.receive(receive)
 

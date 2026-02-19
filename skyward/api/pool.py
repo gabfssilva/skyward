@@ -40,6 +40,7 @@ from skyward.accelerators import Accelerator
 from skyward.actors.messages import (
     InstanceMetadata,
     PoolMsg,
+    ProvisionFailed,
     SubmitBroadcast,
     SubmitTask,
     TaskResult,
@@ -320,6 +321,8 @@ class ComputePool:
     provision_timeout: int = 300
     ssh_timeout: int = 300
     ssh_retry_interval: int = 2
+    provision_retry_delay: float = 10.0
+    max_provision_attempts: int = 10
 
     _log_handler_ids: list[int] = field(default_factory=list, init=False, repr=False)
     _loop: asyncio.AbstractEventLoop | None = field(default=None, init=False, repr=False)
@@ -651,6 +654,8 @@ class ComputePool:
             max_hourly_cost=self.max_hourly_cost,
             ssh_timeout=float(self.ssh_timeout),
             ssh_retry_interval=float(self.ssh_retry_interval),
+            provision_retry_delay=self.provision_retry_delay,
+            max_provision_attempts=self.max_provision_attempts,
         )
         self._spec = spec
         logger.debug(
@@ -684,7 +689,7 @@ class ComputePool:
             "Waiting for pool to start (timeout={timeout}s)",
             timeout=self.provision_timeout,
         )
-        started: PoolStarted = await self._system.ask(
+        result: PoolStarted | ProvisionFailed = await self._system.ask(
             pool_ref,
             lambda reply_to: StartPool(
                 spec=spec,
@@ -694,15 +699,23 @@ class ComputePool:
             ),
             timeout=float(self.provision_timeout),
         )
-        logger.info(
-            "Pool started, cluster_id={cid}, instances={n}",
-            cid=started.cluster_id, n=len(started.instances),
-        )
-        self._cluster_id = started.cluster_id
-        self._instances = {
-            info.node: info
-            for info in started.instances
-        }
+        match result:
+            case ProvisionFailed(reason=reason):
+                raise RuntimeError(
+                    f"Pool provisioning failed: {reason}"
+                )
+            case PoolStarted(
+                cluster_id=cluster_id, instances=instances,
+            ):
+                logger.info(
+                    "Pool started, cluster_id={cid}, instances={n}",
+                    cid=cluster_id, n=len(instances),
+                )
+                self._cluster_id = cluster_id
+                self._instances = {
+                    info.node: info
+                    for info in instances
+                }
 
     async def _stop_async(self) -> None:
         """Stop pool asynchronously."""

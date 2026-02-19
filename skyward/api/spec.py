@@ -127,6 +127,8 @@ class PoolSpec:
     max_hourly_cost: float | None = None
     ssh_timeout: float = 300.0
     ssh_retry_interval: float = 5.0
+    provision_retry_delay: float = 10.0
+    max_provision_attempts: int = 10
 
     def __post_init__(self) -> None:
         if self.nodes < 1:
