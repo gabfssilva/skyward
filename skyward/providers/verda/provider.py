@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from skyward.api import PoolSpec
 from skyward.api.model import Cluster, Instance, InstanceStatus
 from skyward.observability.logger import logger
-from skyward.providers.provider import CloudProvider
+from skyward.providers.provider import Provider
 from skyward.providers.ssh_keys import ensure_ssh_key_on_provider, get_ssh_key_path
 
 from .client import VerdaClient, VerdaError
@@ -46,7 +46,7 @@ class VerdaSpecific:
     memory_gb: float
 
 
-class VerdaCloudProvider(CloudProvider[Verda, VerdaSpecific]):
+class VerdaProvider(Provider[Verda, VerdaSpecific]):
     """Stateless Verda provider. Holds only immutable config + client."""
 
     def __init__(self, config: Verda, client: VerdaClient) -> None:
@@ -54,7 +54,7 @@ class VerdaCloudProvider(CloudProvider[Verda, VerdaSpecific]):
         self._client = client
 
     @classmethod
-    async def create(cls, config: Verda) -> VerdaCloudProvider:
+    async def create(cls, config: Verda) -> VerdaProvider:
         from skyward.infra.http import HttpClient, OAuth2Auth
 
         from .client import VERDA_API_BASE, get_credentials
@@ -154,9 +154,9 @@ class VerdaCloudProvider(CloudProvider[Verda, VerdaSpecific]):
                 status="provisioning",
                 spot=use_spot,
                 instance_type=specific.instance_type,
-                gpu_count=specific.gpu_count,
-                gpu_model=specific.gpu_model,
-                gpu_vram_gb=specific.gpu_vram_gb,
+                accelerator_count=specific.gpu_count,
+                accelerator_model=specific.gpu_model,
+                accelerator_vram_gb=specific.gpu_vram_gb,
                 vcpus=specific.vcpus,
                 memory_gb=specific.memory_gb,
                 region=region,
@@ -225,11 +225,11 @@ def _build_verda_instance(
         ssh_port=22,
         spot=bool(info.get("is_spot", False)),
         instance_type=specific.instance_type,
-        gpu_count=specific.gpu_count,
-        gpu_model=specific.gpu_model,
+        accelerator_count=specific.gpu_count,
+        accelerator_model=specific.gpu_model,
         vcpus=specific.vcpus,
         memory_gb=specific.memory_gb,
-        gpu_vram_gb=specific.gpu_vram_gb,
+        accelerator_vram_gb=specific.gpu_vram_gb,
         region=specific.region,
         hourly_rate=specific.hourly_rate,
         on_demand_rate=specific.on_demand_rate,

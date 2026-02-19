@@ -353,13 +353,13 @@ def _render_cluster_col(state: _State) -> Group:
     if first.instance_type:
         lines.append(Text(f"  {first.instance_type}", style="dim"))
 
-    if first.gpu_model:
-        total_gpu = sum(i.gpu_count for i in insts)
-        vram_total = sum(i.gpu_vram_gb * i.gpu_count for i in insts)
-        gpu_label = f"  {total_gpu}× {first.gpu_model}"
+    if first.accelerator_model:
+        total_accel = sum(i.accelerator_count for i in insts)
+        vram_total = sum(i.accelerator_vram_gb * i.accelerator_count for i in insts)
+        accel_label = f"  {total_accel}× {first.accelerator_model}"
         if vram_total:
-            gpu_label += f" ({vram_total} GB)"
-        lines.append(Text(gpu_label))
+            accel_label += f" ({vram_total} GB)"
+        lines.append(Text(accel_label))
 
     total_vcpus = sum(i.vcpus for i in insts)
     total_ram = sum(i.memory_gb for i in insts)

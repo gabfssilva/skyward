@@ -51,11 +51,11 @@ class InstanceMetadata:
     on_demand_rate: float = 0.0
     billing_increment: int = 1
     instance_type: str = ""
-    gpu_count: int = 0
-    gpu_model: str = ""
+    accelerator_count: int = 0
+    accelerator_model: str = ""
     vcpus: float = 0
     memory_gb: float = 0.0
-    gpu_vram_gb: int = 0
+    accelerator_vram_gb: int = 0
     region: str = ""
 
 
@@ -178,11 +178,11 @@ class InstanceRunning:
     on_demand_rate: float = 0.0
     billing_increment: int = 1
     instance_type: str = ""
-    gpu_count: int = 0
-    gpu_model: str = ""
+    accelerator_count: int = 0
+    accelerator_model: str = ""
     vcpus: float = 0
     memory_gb: float = 0.0
-    gpu_vram_gb: int = 0
+    accelerator_vram_gb: int = 0
     region: str = ""
     ssh_user: str = ""
     ssh_key_path: str = ""
@@ -560,11 +560,18 @@ class PoolStopped:
 
 
 @dataclass(frozen=True, slots=True)
+class ProvisionFailed:
+    """Provisioning failed after exhausting all retry attempts."""
+
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class StartPool:
     spec: PoolSpec
     provider_config: ProviderConfig
     provider: Any
-    reply_to: ActorRef[PoolStarted]
+    reply_to: ActorRef[PoolStarted | ProvisionFailed]
 
 
 @dataclass(frozen=True, slots=True)
@@ -600,6 +607,7 @@ type PoolMsg = (
     StartPool
     | StopPool
     | PoolStarted
+    | ProvisionFailed
     | HeadAddressKnown
     | NodeBecameReady
     | NodeLost
@@ -783,11 +791,11 @@ def _to_metadata(ev: InstanceRunning) -> InstanceMetadata:
         on_demand_rate=ev.on_demand_rate,
         billing_increment=ev.billing_increment,
         instance_type=ev.instance_type,
-        gpu_count=ev.gpu_count,
-        gpu_model=ev.gpu_model,
+        accelerator_count=ev.accelerator_count,
+        accelerator_model=ev.accelerator_model,
         vcpus=ev.vcpus,
         memory_gb=ev.memory_gb,
-        gpu_vram_gb=ev.gpu_vram_gb,
+        accelerator_vram_gb=ev.accelerator_vram_gb,
         region=ev.region,
         ssh_user=ev.ssh_user,
         ssh_key_path=ev.ssh_key_path,
@@ -814,10 +822,10 @@ def _instance_to_metadata(
         on_demand_rate=inst.on_demand_rate,
         billing_increment=inst.billing_increment,
         instance_type=inst.instance_type,
-        gpu_count=inst.gpu_count,
-        gpu_model=inst.gpu_model,
+        accelerator_count=inst.accelerator_count,
+        accelerator_model=inst.accelerator_model,
         vcpus=inst.vcpus,
         memory_gb=inst.memory_gb,
-        gpu_vram_gb=inst.gpu_vram_gb,
+        accelerator_vram_gb=inst.accelerator_vram_gb,
         region=inst.region,
     )

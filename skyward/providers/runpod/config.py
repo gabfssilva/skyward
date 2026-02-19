@@ -13,7 +13,7 @@ from typing import Literal
 from skyward.api.provider import ProviderConfig
 
 if typing.TYPE_CHECKING:
-    from skyward.providers.runpod.provider import RunPodCloudProvider
+    from skyward.providers.runpod.provider import RunPodProvider
 
 # =============================================================================
 # Cloud Type Enum
@@ -73,9 +73,9 @@ class RunPod(ProviderConfig):
     request_timeout: int = 30
     cpu_clock: Literal["3c", "5c"] | str = "3c"
 
-    async def create_provider(self) -> RunPodCloudProvider:
-        from skyward.providers.runpod.provider import RunPodCloudProvider
-        return await RunPodCloudProvider.create(self)
+    async def create_provider(self) -> RunPodProvider:
+        from skyward.providers.runpod.provider import RunPodProvider
+        return await RunPodProvider.create(self)
 
     @property
     def type(self) -> str: return "runpod"

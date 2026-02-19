@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from skyward.api.provider import ProviderConfig
 
 if typing.TYPE_CHECKING:
-    from skyward.providers.verda.provider import VerdaCloudProvider
+    from skyward.providers.verda.provider import VerdaProvider
 
 # =============================================================================
 # Configuration
@@ -52,6 +52,6 @@ class Verda(ProviderConfig):
     @property
     def type(self) -> str: return "verda"
 
-    async def create_provider(self) -> VerdaCloudProvider:
-        from skyward.providers.verda.provider import VerdaCloudProvider
-        return await VerdaCloudProvider.create(self)
+    async def create_provider(self) -> VerdaProvider:
+        from skyward.providers.verda.provider import VerdaProvider
+        return await VerdaProvider.create(self)

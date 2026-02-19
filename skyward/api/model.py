@@ -21,11 +21,11 @@ class Instance:
     ssh_port: int = 22
     spot: bool = False
     instance_type: str = ""
-    gpu_count: int = 0
-    gpu_model: str = ""
+    accelerator_count: int = 0
+    accelerator_model: str = ""
     vcpus: float = 0
     memory_gb: float = 0.0
-    gpu_vram_gb: int = 0
+    accelerator_vram_gb: int = 0
     region: str = ""
     hourly_rate: float = 0.0
     on_demand_rate: float = 0.0

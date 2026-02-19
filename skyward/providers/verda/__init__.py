@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .client import VerdaClient, VerdaError
-    from .provider import VerdaCloudProvider
+    from .provider import VerdaProvider
 
 from .config import Verda
 
@@ -28,5 +28,5 @@ __all__ = [
     "Verda",
     "VerdaClient",
     "VerdaError",
-    "VerdaCloudProvider"
+    "VerdaProvider"
 ]

@@ -11,7 +11,7 @@ from skyward.api import PoolSpec
 from skyward.api.model import Cluster, Instance, InstanceStatus
 from skyward.infra.http import HttpClient
 from skyward.observability.logger import logger
-from skyward.providers.provider import CloudProvider
+from skyward.providers.provider import Provider
 from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
 
 from .client import RunPodClient, RunPodError, get_api_key
@@ -179,14 +179,14 @@ class RunPodSpecific:
         return next((ip for nid, ip in self.cluster_ips if nid == node_id), None)
 
 
-class RunPodCloudProvider(CloudProvider[RunPod, RunPodSpecific]):
+class RunPodProvider(Provider[RunPod, RunPodSpecific]):
     """Stateless RunPod provider. Holds only immutable config."""
 
     def __init__(self, config: RunPod) -> None:
         self._config = config
 
     @classmethod
-    async def create(cls, config: RunPod) -> RunPodCloudProvider:
+    async def create(cls, config: RunPod) -> RunPodProvider:
         return cls(config)
 
     async def prepare(self, spec: PoolSpec) -> Cluster[RunPodSpecific]:
@@ -351,12 +351,12 @@ def _build_runpod_instance(
         ssh_port=get_ssh_port(pod),
         spot=pod.get("interruptible", False),
         instance_type=instance_type,
-        gpu_count=pod.get("gpuCount", 0),
-        gpu_model=get_gpu_model(pod),
+        accelerator_count=pod.get("gpuCount", 0),
+        accelerator_model=get_gpu_model(pod),
         vcpus=pod.get("vcpuCount", 0),
         memory_gb=pod.get("memoryInGb", 0.0),
         region=region,
-        gpu_vram_gb=specific.gpu_vram_gb,
+        accelerator_vram_gb=specific.gpu_vram_gb,
         hourly_rate=hourly_rate,
         on_demand_rate=pod.get("costPerHr", 0.0),
         billing_increment=1,

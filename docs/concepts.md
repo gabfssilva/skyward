@@ -259,7 +259,7 @@ The `shuffle` parameter randomizes the order before sharding, with a fixed `seed
 
 Throughout this page, the `provider` parameter has appeared in every `ComputePool` example — `sky.AWS()`, `sky.RunPod()`, `sky.VastAI()`, `sky.Verda()`, `sky.Container()`. The provider is the bridge between Skyward's orchestration model and a specific cloud's API. It knows how to translate abstract requests ("I need 4 machines with A100 GPUs") into the concrete API calls that each cloud requires.
 
-All providers implement the same protocol — `CloudProvider[C, S]` — which defines five operations that map directly to the pool lifecycle discussed earlier:
+All providers implement the same protocol — `Provider[C, S]` — which defines five operations that map directly to the pool lifecycle discussed earlier:
 
 - `prepare(spec)` — Set up cluster-level infrastructure before any instance exists: register SSH keys, create VPCs and security groups (AWS), resolve GPU types, configure overlay networks. Returns an immutable `Cluster` context that flows through all subsequent calls.
 - `provision(cluster, count)` — Launch the requested number of instances. Returns them in a "provisioning" state — the machines exist, but may not be running yet.

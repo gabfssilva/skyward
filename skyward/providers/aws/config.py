@@ -12,7 +12,7 @@ from typing import Literal
 from skyward.api.provider import ProviderConfig
 
 if typing.TYPE_CHECKING:
-    from skyward.providers.aws.provider import AWSCloudProvider
+    from skyward.providers.aws.provider import AWSProvider
 
 type AllocationStrategy = Literal[
     "price-capacity-optimized",  # Default: balance price and capacity
@@ -62,6 +62,6 @@ class AWS(ProviderConfig):
     @property
     def type(self) -> str: return "aws"
 
-    async def create_provider(self) -> AWSCloudProvider:
-        from skyward.providers.aws.provider import AWSCloudProvider
-        return await AWSCloudProvider.create(self)
+    async def create_provider(self) -> AWSProvider:
+        from skyward.providers.aws.provider import AWSProvider
+        return await AWSProvider.create(self)

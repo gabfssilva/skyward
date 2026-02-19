@@ -13,7 +13,7 @@ from skyward.api.model import Cluster, Instance
 from skyward.observability.logger import logger
 from skyward.providers.container.cli import run, run_json
 from skyward.providers.container.config import Container
-from skyward.providers.provider import WarmableCloudProvider
+from skyward.providers.provider import WarmableProvider
 from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
 
 log = logger.bind(provider="container")
@@ -53,7 +53,7 @@ class ContainerSpecific:
     context: str
 
 
-class ContainerProvider(WarmableCloudProvider[Container, ContainerSpecific]):
+class ContainerProvider(WarmableProvider[Container, ContainerSpecific]):
 
     def __init__(self, config: Container) -> None:
         self._config = config

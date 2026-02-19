@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from skyward.api import PoolSpec
 from skyward.api.model import Cluster, Instance, InstanceStatus
 from skyward.observability.logger import logger
-from skyward.providers.provider import CloudProvider
+from skyward.providers.provider import Provider
 from skyward.providers.ssh_keys import get_ssh_key_path
 
 from .client import VastAIClient, VastAIError, get_api_key, select_all_valid_clusters
@@ -46,14 +46,14 @@ class VastAISpecific:
         return self.overlay_name is not None
 
 
-class VastAICloudProvider(CloudProvider[VastAI, VastAISpecific]):
+class VastAIProvider(Provider[VastAI, VastAISpecific]):
     """Stateless VastAI provider. Holds only immutable config."""
 
     def __init__(self, config: VastAI) -> None:
         self._config = config
 
     @classmethod
-    async def create(cls, config: VastAI) -> VastAICloudProvider:
+    async def create(cls, config: VastAI) -> VastAIProvider:
         return cls(config)
 
     async def prepare(self, spec: PoolSpec) -> Cluster[VastAISpecific]:
@@ -138,9 +138,9 @@ class VastAICloudProvider(CloudProvider[VastAI, VastAISpecific]):
                     status="provisioning",
                     spot=result.spot,
                     instance_type=result.gpu_name,
-                    gpu_count=result.gpu_count,
-                    gpu_model=result.gpu_name,
-                    gpu_vram_gb=result.gpu_vram_gb,
+                    accelerator_count=result.gpu_count,
+                    accelerator_model=result.gpu_name,
+                    accelerator_vram_gb=result.gpu_vram_gb,
                     vcpus=result.vcpus,
                     memory_gb=result.memory_gb,
                     region=specific.geolocation or "Global",
@@ -240,11 +240,11 @@ def _build_vastai_instance(
         ssh_port=ssh_port,
         spot=info.get("is_bid", False),
         instance_type=gpu_name,
-        gpu_count=gpu_count,
-        gpu_model=gpu_name,
+        accelerator_count=gpu_count,
+        accelerator_model=gpu_name,
         vcpus=int(info.get("cpu_cores_effective", 0)) if "cpu_cores_effective" in info else 0,  # type: ignore[operator]
         memory_gb=info.get("cpu_ram", 0) / 1024,  # type: ignore[operator]
-        gpu_vram_gb=int(total_vram_mb / 1024 / gpu_count) if gpu_count else 0,
+        accelerator_vram_gb=int(total_vram_mb / 1024 / gpu_count) if gpu_count else 0,
         region=specific.geolocation or "Global",
         hourly_rate=hourly_rate,
         on_demand_rate=hourly_rate,

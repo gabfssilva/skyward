@@ -20,7 +20,7 @@ Skyward focuses on a specific problem within this vision: **running Python funct
 
 ### Provider Portability
 
-All providers implement the same `CloudProvider` protocol — five methods (`prepare`, `provision`, `get_instance`, `terminate`, `teardown`) that map to the pool lifecycle. Switching between providers is a one-line change:
+All providers implement the same `Provider` protocol — five methods (`prepare`, `provision`, `get_instance`, `terminate`, `teardown`) that map to the pool lifecycle. Switching between providers is a one-line change:
 
 ```python
 # Development: local containers, zero cost

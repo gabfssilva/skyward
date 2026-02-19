@@ -13,7 +13,7 @@ from skyward.api.model import Cluster, Instance, InstanceStatus
 from skyward.infra.cache import cached
 from skyward.infra.retry import on_exception_message, retry
 from skyward.observability.logger import logger
-from skyward.providers.provider import CloudProvider
+from skyward.providers.provider import Provider
 
 from .clients import EC2ClientFactory
 from .config import AWS, AllocationStrategy
@@ -54,7 +54,7 @@ class _InstanceDetail:
     state: str
 
 
-class AWSCloudProvider(CloudProvider[AWS, AWSSpecific]):
+class AWSProvider(Provider[AWS, AWSSpecific]):
     """Stateless AWS provider. Holds only immutable config + client factory."""
 
     def __init__(self, config: AWS, ec2: EC2ClientFactory) -> None:
@@ -62,7 +62,7 @@ class AWSCloudProvider(CloudProvider[AWS, AWSSpecific]):
         self._ec2 = ec2
 
     @classmethod
-    async def create(cls, config: AWS) -> AWSCloudProvider:
+    async def create(cls, config: AWS) -> AWSProvider:
         from collections.abc import AsyncIterator
         from contextlib import asynccontextmanager
 
@@ -137,11 +137,11 @@ class AWSCloudProvider(CloudProvider[AWS, AWSSpecific]):
                 status="provisioning",
                 spot=spot,
                 instance_type=real_type,
-                gpu_count=ispec.gpu_count if ispec else 0,
-                gpu_model=ispec.gpu_model if ispec else "",
+                accelerator_count=ispec.gpu_count if ispec else 0,
+                accelerator_model=ispec.gpu_model if ispec else "",
                 vcpus=ispec.vcpus if ispec else 0,
                 memory_gb=ispec.memory_gb if ispec else 0.0,
-                gpu_vram_gb=int(ispec.gpu_vram_gb) if ispec else 0,
+                accelerator_vram_gb=int(ispec.gpu_vram_gb) if ispec else 0,
                 region=self._config.region,
                 hourly_rate=(
                     (ispec.spot_price if spot else ispec.ondemand_price) or 0.0
@@ -731,11 +731,11 @@ async def _build_instance(detail: _InstanceDetail, status: InstanceStatus, regio
         ssh_port=22,
         spot=detail.spot,
         instance_type=detail.instance_type,
-        gpu_count=ispec.gpu_count if ispec else 0,
-        gpu_model=ispec.gpu_model if ispec else "",
+        accelerator_count=ispec.gpu_count if ispec else 0,
+        accelerator_model=ispec.gpu_model if ispec else "",
         vcpus=ispec.vcpus if ispec else 0,
         memory_gb=ispec.memory_gb if ispec else 0.0,
-        gpu_vram_gb=int(ispec.gpu_vram_gb) if ispec else 0,
+        accelerator_vram_gb=int(ispec.gpu_vram_gb) if ispec else 0,
         region=region,
         hourly_rate=(
             (ispec.spot_price if detail.spot else ispec.ondemand_price) or 0.0

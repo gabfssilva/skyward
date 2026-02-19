@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Literal
 from skyward.api.provider import ProviderConfig
 
 if TYPE_CHECKING:
-    from skyward.providers.vastai.provider import VastAICloudProvider
+    from skyward.providers.vastai.provider import VastAIProvider
 
 # =============================================================================
 # Configuration
@@ -62,9 +62,9 @@ class VastAI(ProviderConfig):
     overlay_timeout: int = 120
     require_direct_port: bool = False
 
-    async def create_provider(self) -> VastAICloudProvider:
-        from skyward.providers.vastai.provider import VastAICloudProvider
-        return await VastAICloudProvider.create(self)
+    async def create_provider(self) -> VastAIProvider:
+        from skyward.providers.vastai.provider import VastAIProvider
+        return await VastAIProvider.create(self)
 
     @property
     def type(self) -> str: return "vastai"

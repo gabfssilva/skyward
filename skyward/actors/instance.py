@@ -43,7 +43,7 @@ from skyward.infra.worker import (
     TaskSucceeded as WorkerTaskSucceeded,
 )
 from skyward.observability.logger import logger
-from skyward.providers.provider import WarmableCloudProvider
+from skyward.providers.provider import WarmableProvider
 
 
 def instance_actor(
@@ -207,7 +207,7 @@ def instance_actor(
                     log.info("Bootstrap completed successfully")
                     final_metadata = done_info or metadata
                     match provider:
-                        case WarmableCloudProvider() if node_id == 0:
+                        case WarmableProvider() if node_id == 0:
                             log.info("Snapshotting provider image...")
                             ctx.pipe_to_self(
                                 provider.save(cluster),
@@ -561,7 +561,7 @@ async def _do_start_worker(
     from skyward.providers.pool_info import build_pool_info
 
     all_nodes = spec.nodes
-    accelerator_count = metadata.gpu_count or 1
+    accelerator_count = metadata.accelerator_count or 1
     total_accelerators = accelerator_count * all_nodes
     head_addr = head_info.head_addr if head_info else private_ip
 

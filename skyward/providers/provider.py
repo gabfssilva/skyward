@@ -5,7 +5,7 @@ from skyward.api import Cluster, Instance, PoolSpec
 
 
 @runtime_checkable
-class CloudProvider[C, S](Protocol):
+class Provider[C, S](Protocol):
     """Interface for cloud provider operations.
 
     Every method that receives a Cluster returns an (optionally updated)
@@ -65,7 +65,7 @@ class CloudProvider[C, S](Protocol):
 
 
 @runtime_checkable
-class WarmableCloudProvider[C, S](CloudProvider[C, S], Protocol):
+class WarmableProvider[C, S](Provider[C, S], Protocol):
     async def save(self, cluster: Cluster[S]) -> Cluster[S]:
         """Save a prebaked image from the current cluster state."""
         ...
