@@ -278,9 +278,9 @@ def format_results(results: list[dict]) -> None:
 if __name__ == "__main__":
     with sky.ComputePool(
         provider=sky.VastAI(),
-        nodes=2,
         accelerator=sky.accelerators.RTX_4090(),
-        image=sky.Image(pip=["jax[cuda13]"]),
+        nodes=2,
+        image=sky.Image(pip=["jax[cuda12]"]),
     ) as pool:
         results = train_microgpt() @ pool
 

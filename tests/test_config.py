@@ -5,6 +5,7 @@ import pytest
 from skyward.api.pool import ComputePool
 from skyward.config import _deep_merge, load_config, resolve_pool
 from skyward.providers.aws.config import AWS
+from skyward.providers.gcp.config import GCP
 from skyward.providers.runpod.config import RunPod
 from skyward.providers.vastai.config import VastAI
 from skyward.providers.verda.config import Verda
@@ -150,10 +151,10 @@ class TestResolvePool:
 
     def test_unknown_provider_type_raises(self, tmp_path: Path):
         (tmp_path / "skyward.toml").write_text(
-            '[providers.bad]\ntype = "gcp"\n\n'
+            '[providers.bad]\ntype = "fake"\n\n'
             '[pools.x]\nprovider = "bad"\nnodes = 1\n'
         )
-        with pytest.raises(ValueError, match="gcp"):
+        with pytest.raises(ValueError, match="fake"):
             resolve_pool("x", project_dir=tmp_path)
 
     def test_pool_defaults(self, tmp_path: Path):
@@ -184,6 +185,22 @@ class TestResolvePool:
         )
         pool = resolve_pool("gpu", project_dir=tmp_path)
         assert isinstance(pool.provider, Verda)
+
+    def test_gcp_pool(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            '[providers.g]\n'
+            'type = "gcp"\n'
+            'project = "my-project"\n'
+            'zone = "us-central1-a"\n'
+            '\n'
+            '[pools.gpu]\n'
+            'provider = "g"\n'
+            'nodes = 1\n'
+        )
+        pool = resolve_pool("gpu", project_dir=tmp_path)
+        assert isinstance(pool.provider, GCP)
+        assert pool.provider.project == "my-project"
+        assert pool.provider.zone == "us-central1-a"
 
     def test_global_provider_project_pool(self, tmp_path: Path):
         global_toml = tmp_path / "defaults.toml"

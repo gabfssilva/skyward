@@ -901,8 +901,8 @@ wheels = [
 ]
 
 [[package]]
-name = "google-cloud-batch"
-version = "0.19.0"
+name = "google-cloud-compute"
+version = "1.43.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "google-api-core", extra = ["grpc"] },
@@ -911,26 +911,25 @@ dependencies = [
     { name = "proto-plus" },
     { name = "protobuf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c2/f3/a4d7cfaa89d597ea2147fd1f16d2bf8dcb58acbb4e50d0af8410b5239fa0/google_cloud_batch-0.19.0.tar.gz", hash = "sha256:3512f81066603d35e1f6faf0bfa634ea86506a7873a34913edc9b4fe230f37f0", size = 200597, upload-time = "2025-12-04T17:50:08.245Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/df/e0/2ff59f2712c0b62ae376a532e732e76dee585e3a5eb028ac6ccfef0824e4/google_cloud_compute-1.43.0.tar.gz", hash = "sha256:113fd6a5e1832e5d032b94e391c3bd7e3b06e1bee0ed6665085dfefffb41360a", size = 4875940, upload-time = "2026-01-29T15:32:57.332Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/da/1e/5f182176f9f59ac7dbc8de23255d024f51d38157d3db6df48e2136e838d8/google_cloud_batch-0.19.0-py3-none-any.whl", hash = "sha256:ba66d3f098c2be62285908108e6781534cc347f4c2e1b5da3775c0cbc47fc5bd", size = 176687, upload-time = "2025-12-04T17:49:41.715Z" },
+    { url = "https://files.pythonhosted.org/packages/e3/13/1a8333bb12656415b09f6d4528f78ca74f65dbbdd2bd2b3cfe4ac27e0110/google_cloud_compute-1.43.0-py3-none-any.whl", hash = "sha256:cbf25521cffff64bced7b8ce2ccde4d95c72edb6d95b566bbf9c116abd2a45b8", size = 3686689, upload-time = "2026-01-29T15:32:43.466Z" },
 ]
 
 [[package]]
-name = "google-cloud-run"
-version = "0.13.0"
+name = "google-cloud-tpu"
+version = "1.25.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "google-api-core", extra = ["grpc"] },
     { name = "google-auth" },
-    { name = "grpc-google-iam-v1" },
     { name = "grpcio" },
     { name = "proto-plus" },
     { name = "protobuf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0e/0d/28412b08dce5eb7cff7653bb7e6fedffc8fdc802b46689024557675f9cc7/google_cloud_run-0.13.0.tar.gz", hash = "sha256:97534ad76d3a2c2047d124c0a0a294a4822fcc24331eba0f294cadfb193c49ad", size = 436585, upload-time = "2025-12-11T15:01:40.485Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/30/95/df27840b4607307c997baa08abc64eb97c522af7e6e7d126b2b320a13eb7/google_cloud_tpu-1.25.0.tar.gz", hash = "sha256:00e8114b05f7f9afcc17949e54c0ab788ea3b8df4048880eb59bd99e29fb6c2b", size = 252947, upload-time = "2026-01-15T13:04:47.349Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7a/7a/a207e4e5e61f0cade88c7856036a381fc274082c96699985a6067ca08df7/google_cloud_run-0.13.0-py3-none-any.whl", hash = "sha256:ec61a8ec2e38e04d482643ef8a6f371630c8a7d6173ab6c69c1d80ad9754220f", size = 398768, upload-time = "2025-12-11T15:01:35.779Z" },
+    { url = "https://files.pythonhosted.org/packages/cf/0d/bc7d29ed413131d1e98576f4b54f3e95d5c12f7addf8f82e619a04e1d71c/google_cloud_tpu-1.25.0-py3-none-any.whl", hash = "sha256:78cee23d0a36c5b7da8d1a9fed9e0fb855743268c5548207b02bf380fc2be424", size = 198552, upload-time = "2026-01-15T12:17:38.642Z" },
 ]
 
 [[package]]
@@ -943,11 +942,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/e5/7b/adfd75544c415c487b33061fe7ae526165241c1ea133f9a9125a56b39fd8/googleapis_common_protos-1.72.0.tar.gz", hash = "sha256:e55a601c1b32b52d7a3e65f43563e2aa61bcd737998ee672ac9b951cd49319f5", size = 147433, upload-time = "2025-11-06T18:29:24.087Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c4/ab/09169d5a4612a5f92490806649ac8d41e3ec9129c636754575b3553f4ea4/googleapis_common_protos-1.72.0-py3-none-any.whl", hash = "sha256:4299c5a82d5ae1a9702ada957347726b167f9f8d1fc352477702a1e851ff4038", size = 297515, upload-time = "2025-11-06T18:29:13.14Z" },
-]
-
-[package.optional-dependencies]
-grpc = [
-    { name = "grpcio" },
 ]
 
 [[package]]
@@ -980,20 +974,6 @@ version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4d/51/c936033e16d12b627ea334aaaaf42229c37620d0f15593456ab69ab48161/griffelib-2.0.0-py3-none-any.whl", hash = "sha256:01284878c966508b6d6f1dbff9b6fa607bc062d8261c5c7253cb285b06422a7f", size = 142004, upload-time = "2026-02-09T19:09:40.561Z" },
-]
-
-[[package]]
-name = "grpc-google-iam-v1"
-version = "0.14.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "googleapis-common-protos", extra = ["grpc"] },
-    { name = "grpcio" },
-    { name = "protobuf" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/76/1e/1011451679a983f2f5c6771a1682542ecb027776762ad031fd0d7129164b/grpc_google_iam_v1-0.14.3.tar.gz", hash = "sha256:879ac4ef33136c5491a6300e27575a9ec760f6cdf9a2518798c1b8977a5dc389", size = 23745, upload-time = "2025-10-15T21:14:53.318Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/4a/bd/330a1bbdb1afe0b96311249e699b6dc9cfc17916394fd4503ac5aca2514b/grpc_google_iam_v1-0.14.3-py3-none-any.whl", hash = "sha256:7a7f697e017a067206a3dfef44e4c634a34d3dee135fe7d7a4613fe3e59217e6", size = 32690, upload-time = "2025-10-15T21:14:51.72Z" },
 ]
 
 [[package]]
@@ -3135,8 +3115,9 @@ all = [
     { name = "azure-mgmt-containerinstance" },
     { name = "boto3-stubs", extra = ["ec2", "ecr", "iam", "s3", "sts"] },
     { name = "datasets" },
-    { name = "google-cloud-batch" },
-    { name = "google-cloud-run" },
+    { name = "google-auth" },
+    { name = "google-cloud-compute" },
+    { name = "google-cloud-tpu" },
     { name = "torch" },
     { name = "torchvision" },
     { name = "transformers" },
@@ -3160,8 +3141,9 @@ dev = [
     { name = "torch" },
 ]
 gcp = [
-    { name = "google-cloud-batch" },
-    { name = "google-cloud-run" },
+    { name = "google-auth" },
+    { name = "google-cloud-compute" },
+    { name = "google-cloud-tpu" },
 ]
 huggingface = [
     { name = "accelerate" },
@@ -3172,8 +3154,9 @@ providers = [
     { name = "aioboto3" },
     { name = "azure-mgmt-containerinstance" },
     { name = "boto3-stubs", extra = ["ec2", "ecr", "iam", "s3", "sts"] },
-    { name = "google-cloud-batch" },
-    { name = "google-cloud-run" },
+    { name = "google-auth" },
+    { name = "google-cloud-compute" },
+    { name = "google-cloud-tpu" },
     { name = "verda" },
 ]
 pytorch = [
@@ -3229,12 +3212,15 @@ requires-dist = [
     { name = "cloudpickle", specifier = ">=3.1.2" },
     { name = "datasets", marker = "extra == 'all'", specifier = ">=4.4.1" },
     { name = "datasets", marker = "extra == 'huggingface'", specifier = ">=4.4.1" },
-    { name = "google-cloud-batch", marker = "extra == 'all'", specifier = ">=0.17" },
-    { name = "google-cloud-batch", marker = "extra == 'gcp'", specifier = ">=0.17" },
-    { name = "google-cloud-batch", marker = "extra == 'providers'", specifier = ">=0.17" },
-    { name = "google-cloud-run", marker = "extra == 'all'", specifier = ">=0.10" },
-    { name = "google-cloud-run", marker = "extra == 'gcp'", specifier = ">=0.10" },
-    { name = "google-cloud-run", marker = "extra == 'providers'", specifier = ">=0.10" },
+    { name = "google-auth", marker = "extra == 'all'", specifier = ">=2.0.0" },
+    { name = "google-auth", marker = "extra == 'gcp'", specifier = ">=2.0.0" },
+    { name = "google-auth", marker = "extra == 'providers'", specifier = ">=2.0.0" },
+    { name = "google-cloud-compute", marker = "extra == 'all'", specifier = ">=1.20.0" },
+    { name = "google-cloud-compute", marker = "extra == 'gcp'", specifier = ">=1.20.0" },
+    { name = "google-cloud-compute", marker = "extra == 'providers'", specifier = ">=1.20.0" },
+    { name = "google-cloud-tpu", marker = "extra == 'all'", specifier = ">=1.25.0" },
+    { name = "google-cloud-tpu", marker = "extra == 'gcp'", specifier = ">=1.25.0" },
+    { name = "google-cloud-tpu", marker = "extra == 'providers'", specifier = ">=1.25.0" },
     { name = "jax", marker = "extra == 'dev'", specifier = ">=0.8.1" },
     { name = "keras", marker = "extra == 'dev'", specifier = ">=3.12.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13" },

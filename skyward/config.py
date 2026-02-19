@@ -14,11 +14,12 @@ if TYPE_CHECKING:
     from skyward.api.pool import ComputePool
     from skyward.api.spec import Image
     from skyward.providers.aws.config import AWS
+    from skyward.providers.gcp.config import GCP
     from skyward.providers.runpod.config import RunPod
     from skyward.providers.vastai.config import VastAI
     from skyward.providers.verda.config import Verda
 
-    type ProviderConfig = AWS | RunPod | VastAI | Verda
+    type ProviderConfig = AWS | GCP | RunPod | VastAI | Verda
 
 type RawConfig = dict[str, Any]
 
@@ -60,12 +61,14 @@ def load_config(
 
 def _get_provider_map() -> dict[str, type]:
     from skyward.providers.aws.config import AWS
+    from skyward.providers.gcp.config import GCP
     from skyward.providers.runpod.config import RunPod
     from skyward.providers.vastai.config import VastAI
     from skyward.providers.verda.config import Verda
 
     return {
         "aws": AWS,
+        "gcp": GCP,
         "vastai": VastAI,
         "runpod": RunPod,
         "verda": Verda,

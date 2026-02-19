@@ -39,8 +39,9 @@ verda = [
 ]
 vastai = []
 gcp = [
-    "google-cloud-run>=0.10",
-    "google-cloud-batch>=0.17",
+    "google-cloud-compute>=1.20.0",
+    "google-auth>=2.0.0",
+    "google-cloud-tpu>=1.25.0",
 ]
 azure = [
     "azure-mgmt-containerinstance>=10.0",
@@ -121,6 +122,7 @@ markers = [
     "runpod: RunPod provider tests",
     "vastai: VastAI provider tests",
     "verda: Verda provider tests",
+    "gcp: GCP provider tests",
 ]
 
 [dependency-groups]

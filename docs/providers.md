@@ -1,17 +1,17 @@
 # Cloud Providers
 
-Skyward supports five providers. Four are cloud services — AWS, RunPod, Verda, VastAI — and one is local containers for development and CI. All implement the same `CloudProvider` protocol, so the orchestration layer (actor system, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
+Skyward supports six providers. Five are cloud services — AWS, GCP, RunPod, Verda, VastAI — and one is local containers for development and CI. All implement the same `Provider` protocol, so the orchestration layer (actor system, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
 
 Provider configs are lightweight frozen dataclasses. They hold configuration — region, API keys, disk sizes — but don't import any cloud SDK at module level. The SDK is loaded lazily when the pool starts, so `import skyward` stays fast regardless of which providers are installed.
 
 ## Provider Comparison
 
-| Feature | AWS | RunPod | Verda | VastAI | Container |
-|---------|-----|--------|-------|--------|-----------|
-| **GPUs** | H100, A100, T4, L4, Trainium, Inferentia | H100, A100, A40, RTX series | H100, A100, H200, GB200 | Marketplace (varies) | None (CPU) |
-| **Spot Instances** | Yes (60-90% savings) | Yes | Yes | Yes (bid-based) | N/A |
-| **Regions** | 20+ | Global (Secure + Community) | FIN, ICL, ISR | Global marketplace | Local |
-| **Auth** | AWS credentials | API key | Client ID + Secret | API key | None |
+| Feature | AWS | GCP | RunPod | Verda | VastAI | Container |
+|---------|-----|-----|--------|-------|--------|-----------|
+| **GPUs** | H100, A100, T4, L4, Trainium, Inferentia | H100, A100, T4, L4, V100, H200 | H100, A100, A40, RTX series | H100, A100, H200, GB200 | Marketplace (varies) | None (CPU) |
+| **Spot Instances** | Yes (60-90% savings) | Yes (preemptible/spot) | Yes | Yes | Yes (bid-based) | N/A |
+| **Regions** | 20+ | 40+ zones | Global (Secure + Community) | FIN, ICL, ISR | Global marketplace | Local |
+| **Auth** | AWS credentials | Application Default Credentials | API key | Client ID + Secret | API key | None |
 
 ## AWS
 
@@ -92,6 +92,78 @@ with sky.ComputePool(
         }
     ]
 }
+```
+
+## GCP
+
+GCP uses Compute Engine with instance templates and `bulk_insert` for fleet-style provisioning. Skyward resolves the best machine type dynamically — for GPUs like T4 and V100, it uses N1 machines with guest accelerators; for A100 and H100, it picks the matching A2/A3 machine family with built-in GPUs. Spot instances use the `SPOT` provisioning model with automatic deletion on preemption.
+
+SSH keys are injected via instance metadata. The project is auto-detected from Application Default Credentials or `GOOGLE_CLOUD_PROJECT`. GCP API calls use sync clients dispatched to a dedicated thread pool (configurable via `thread_pool_size`).
+
+Skyward creates an instance template and a firewall rule per cluster, both cleaned up on teardown. Instances use Google's Deep Learning VM images (CUDA 12.x, NVIDIA 570 drivers) for GPU workloads.
+
+### Setup
+
+```bash
+gcloud auth application-default login
+```
+
+Or set the project explicitly:
+
+```bash
+export GOOGLE_CLOUD_PROJECT=your_project_id
+```
+
+!!! warning "GPU Quotas"
+    Listing available accelerator types does not mean you have quota. Check your quotas with:
+    ```bash
+    gcloud compute regions describe <region> --format="table(quotas.metric,quotas.limit,quotas.usage)" | grep GPU
+    ```
+    Request quota increases in the [Cloud Console](https://console.cloud.google.com/iam-admin/quotas).
+
+### Usage
+
+```python
+import skyward as sky
+
+with sky.ComputePool(
+    provider=sky.GCP(zone="us-central1-a"),
+    accelerator=sky.accelerators.T4(),
+    nodes=2,
+) as pool:
+    result = train(data) >> pool
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `project` | `str or None` | `None` | GCP project ID. Auto-detected from ADC or `GOOGLE_CLOUD_PROJECT`. |
+| `zone` | `str` | `"us-central1-a"` | Compute Engine zone |
+| `network` | `str` | `"default"` | VPC network name |
+| `subnet` | `str or None` | `None` | Specific subnet. Uses auto-mode subnet if not set. |
+| `disk_size_gb` | `int` | `200` | Boot disk size in GB |
+| `disk_type` | `str` | `"pd-balanced"` | Boot disk type |
+| `instance_timeout` | `int` | `300` | Safety timeout in seconds (self-destruction timer) |
+| `service_account` | `str or None` | `None` | GCE service account email |
+| `thread_pool_size` | `int` | `8` | Thread pool size for blocking GCP API calls |
+
+### Required Permissions
+
+The authenticated principal needs the following roles (or equivalent permissions):
+
+- `compute.instances.create`, `compute.instances.delete`, `compute.instances.list`, `compute.instances.get`
+- `compute.instanceTemplates.create`, `compute.instanceTemplates.delete`
+- `compute.firewalls.create`, `compute.firewalls.delete`, `compute.firewalls.get`
+- `compute.machineTypes.list`, `compute.acceleratorTypes.list`
+- `compute.images.getFromFamily`
+
+The simplest approach is the **Compute Admin** role (`roles/compute.admin`).
+
+### Install
+
+```bash
+uv add "skyward[gcp]"
 ```
 
 ## RunPod
@@ -255,6 +327,8 @@ with sky.ComputePool(
 
 **AWS** — When you need specific hardware (H100, Trainium, Inferentia), spot instance savings, or enterprise reliability. Best if you're already in the AWS ecosystem.
 
+**GCP** — Deep integration with Google Cloud. Deep Learning VM images with pre-installed CUDA drivers, dynamic machine type resolution, fleet-style provisioning via `bulk_insert`. Supports T4, L4, V100, A100, H100, H200.
+
 **RunPod** — Fast provisioning, competitive pricing, minimal setup. Both Secure Cloud (dedicated) and Community Cloud (cheaper) tiers. Good for A100/H100/RTX workloads.
 
 **Verda** — European data residency (Finland, Iceland, Israel). H100/A100/H200/GB200 availability with automatic region selection.
@@ -264,6 +338,18 @@ with sky.ComputePool(
 **Container** — Local development and CI. Zero cost, instant provisioning. Validates your code end-to-end before deploying to a real provider.
 
 ## Common Issues
+
+### GCP: "No GCP accelerator matches"
+
+1. Check available accelerators in your zone: `gcloud compute accelerator-types list --filter="zone:us-central1-a"`
+2. Try a different zone — GPU availability varies by zone
+3. Request GPU quota increases in the [Cloud Console](https://console.cloud.google.com/iam-admin/quotas)
+
+### GCP: "Quota exceeded"
+
+1. Check current quotas: `gcloud compute regions describe <region> | grep -A2 GPU`
+2. Request increases for the specific GPU type (e.g., `NVIDIA_T4_GPUS`, `NVIDIA_L4_GPUS`)
+3. Both on-demand and preemptible quotas are separate — check both
 
 ### AWS: "No instances available"
 

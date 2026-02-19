@@ -80,7 +80,7 @@ from .distributed import (
     queue,
     set,
 )
-from .providers import AWS, Container, RunPod, VastAI, Verda
+from .providers import AWS, GCP, Container, RunPod, VastAI, Verda
 
 __all__ = [
     "__version__",
@@ -103,6 +103,7 @@ __all__ = [
     "redirect_output",
     "AWS",
     "Container",
+    "GCP",
     "RunPod",
     "VastAI",
     "Verda",

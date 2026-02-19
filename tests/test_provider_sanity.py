@@ -5,6 +5,7 @@ Each test provisions 2 nodes with a cheap GPU, runs a simple ML workload
 
 Run individually:
     uv run pytest -m aws --no-header -q
+    uv run pytest -m gcp --no-header -q
     uv run pytest -m runpod --no-header -q
     uv run pytest -m vastai --no-header -q
     uv run pytest -m verda --no-header -q
@@ -76,6 +77,36 @@ class TestAWSSanity:
         with sky.App(console=False), sky.ComputePool(
             provider=sky.AWS(),
             accelerator=sky.accelerators.T4(),
+            nodes=NODES,
+            image=sky.Image(pip=["torch"]),
+            allocation="spot-if-available",
+        ) as p:
+            yield p
+
+    def test_single_dispatch(self, pool):
+        result = gpu_matmul() >> pool
+        _assert_single(result)
+
+    def test_broadcast(self, pool):
+        results = gpu_matmul() @ pool
+        _assert_broadcast(results)
+
+
+# ---------------------------------------------------------------------------
+# GCP
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.sanity
+@pytest.mark.gcp
+@pytest.mark.timeout(TIMEOUT)
+@pytest.mark.xdist_group("gcp")
+class TestGCPSanity:
+    @pytest.fixture(scope="class")
+    def pool(self):
+        with sky.App(console=False), sky.ComputePool(
+            provider=sky.GCP(),
+            accelerator=sky.accelerators.L4(),
             nodes=NODES,
             image=sky.Image(pip=["torch"]),
             allocation="spot-if-available",
