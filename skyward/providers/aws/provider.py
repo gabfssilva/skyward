@@ -89,6 +89,26 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
 
         candidates = await _select_instances(self._config, spec)
 
+        if spec.allocation in ("spot", "spot-if-available"):
+            scores = await _get_spot_capacity_scores(
+                self._ec2,
+                [itype for itype, _ in candidates],
+                self._config.region,
+                spec.nodes,
+            )
+            if scores is not None:
+                viable = {t for t, score in scores.items() if score >= 3}
+                excluded = [t for t, _ in candidates if t not in viable]
+                if excluded:
+                    log.info(
+                        "Excluded {n} types with low spot capacity: {types}",
+                        n=len(excluded), types=excluded,
+                    )
+                candidates = [(t, a) for t, a in candidates if t in viable]
+
+        if not candidates:
+            return
+
         ami_lookup = _get_dlami if spec.accelerator_name is not None else _get_ubuntu_ami
         if self._config.ami:
             ami_by_arch: dict[str, str] = {arch: self._config.ami for _, arch in candidates}
@@ -473,6 +493,19 @@ async def _select_instances(
         if not candidate_arch:
             return [_fallback_instance(spec)]
 
+        offered = await _get_offered_types(client, list(candidate_arch.keys()))
+        excluded = set(candidate_arch) - offered
+        if excluded:
+            log.debug(
+                "Excluded {n} types not offered in any AZ: {types}",
+                n=len(excluded), types=excluded,
+            )
+        candidate_arch = {t: a for t, a in candidate_arch.items() if t in offered}
+
+        if not candidate_arch:
+            log.warning("No instance types offered in any AZ for {region}", region=config.region)
+            return [_fallback_instance(spec)]
+
         all_types = list(candidate_arch.keys())
 
         async def _query_prices(batch: list[str]) -> dict[str, float]:
@@ -503,6 +536,53 @@ async def _select_instances(
             return [(t, candidate_arch[t]) for t in sorted_types]
 
         return [(t, candidate_arch[t]) for t in all_types[:max_candidates]]
+
+
+async def _get_offered_types(client: object, instance_types: list[str]) -> set[str]:
+    offered: set[str] = set()
+    batches = [instance_types[i:i + 100] for i in range(0, len(instance_types), 100)]
+    for batch in batches:
+        response = await client.describe_instance_type_offerings(  # type: ignore[union-attr]
+            LocationType="availability-zone",
+            Filters=[{"Name": "instance-type", "Values": batch}],
+        )
+        offered.update(o["InstanceType"] for o in response.get("InstanceTypeOfferings", []))
+    return offered
+
+
+async def _get_spot_capacity_scores(
+    ec2: EC2ClientFactory,
+    instance_types: list[str],
+    region: str,
+    target_capacity: int,
+) -> dict[str, int] | None:
+    """Query spot placement scores per instance type. Returns None if the API is unavailable."""
+    async def _score_type(client: object, itype: str) -> tuple[str, int]:
+        response = await client.get_spot_placement_scores(  # type: ignore[union-attr]
+            InstanceTypes=[itype],
+            TargetCapacity=target_capacity,
+            TargetCapacityUnitType="units",
+            SingleAvailabilityZone=True,
+            RegionNames=[region],
+        )
+        best = max(
+            (s["Score"] for s in response.get("SpotPlacementScores", [])),
+            default=0,
+        )
+        return itype, best
+
+    try:
+        async with ec2() as client:
+            results = await asyncio.gather(*(_score_type(client, t) for t in instance_types))
+            scores = dict(results)
+            log.info(
+                "Spot capacity scores: {scores}",
+                scores=", ".join(f"{t}={s}/10" for t, s in scores.items()),
+            )
+            return scores
+    except Exception as e:
+        log.debug("GetSpotPlacementScores unavailable: {err}", err=e)
+        return None
 
 
 def _fallback_instance(spec: PoolSpec) -> tuple[str, Architecture]:
