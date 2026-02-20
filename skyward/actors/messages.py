@@ -17,7 +17,7 @@ from uuid import uuid4
 from casty import ActorRef
 
 if TYPE_CHECKING:
-    from skyward.api.model import Cluster, Instance
+    from skyward.api.model import Cluster, Instance, Offer
     from skyward.api.provider import ProviderConfig
     from skyward.api.spec import PoolSpec
 
@@ -25,7 +25,7 @@ type RequestId = str
 type ClusterId = str
 type InstanceId = str
 type NodeId = int
-type ProviderName = Literal["aws", "vastai", "verda", "runpod"]
+type ProviderName = Literal["aws", "gcp", "vastai", "verda", "runpod", "container"]
 
 
 # =============================================================================
@@ -34,52 +34,38 @@ type ProviderName = Literal["aws", "vastai", "verda", "runpod"]
 
 
 @dataclass(frozen=True, slots=True)
-class InstanceMetadata:
-    """Immutable snapshot of an instance's infrastructure metadata."""
+class NodeInstance:
+    """Instance bound to a node — infrastructure context + offer."""
 
-    id: InstanceId
+    instance: Instance
     node: NodeId
     provider: ProviderName
-    ip: str
-    private_ip: str = ""
+    ssh_user: str
+    ssh_key_path: str
     network_interface: str = ""
-    spot: bool = False
-    ssh_port: int = 22
-    ssh_user: str = ""
-    ssh_key_path: str = ""
-    hourly_rate: float = 0.0
-    on_demand_rate: float = 0.0
-    billing_increment: int = 1
-    instance_type: str = ""
-    accelerator_count: int = 0
-    accelerator_model: str = ""
-    vcpus: float = 0
-    memory_gb: float = 0.0
-    accelerator_vram_gb: int = 0
-    region: str = ""
 
 
 @dataclass
 class InstanceRegistry:
     """Tracks active instances for monitoring."""
 
-    _instances: dict[InstanceId, InstanceMetadata] = field(default_factory=dict)
+    _instances: dict[InstanceId, NodeInstance] = field(default_factory=dict)
 
-    def register(self, info: InstanceMetadata) -> None:
-        self._instances[info.id] = info
+    def register(self, info: NodeInstance) -> None:
+        self._instances[info.instance.id] = info
 
     def unregister(self, instance_id: InstanceId) -> None:
         self._instances.pop(instance_id, None)
 
     @property
-    def instances(self) -> list[InstanceMetadata]:
+    def instances(self) -> list[NodeInstance]:
         return list(self._instances.values())
 
     @property
-    def spot_instances(self) -> list[InstanceMetadata]:
-        return [i for i in self._instances.values() if i.spot]
+    def spot_instances(self) -> list[NodeInstance]:
+        return [i for i in self._instances.values() if i.instance.spot]
 
-    def get(self, instance_id: InstanceId) -> InstanceMetadata | None:
+    def get(self, instance_id: InstanceId) -> NodeInstance | None:
         return self._instances.get(instance_id)
 
 
@@ -130,7 +116,7 @@ class BootstrapRequested:
     """Request bootstrap on a running instance."""
 
     request_id: RequestId
-    instance: InstanceMetadata
+    instance: NodeInstance
     cluster_id: ClusterId
     reply_to: ActorRef | None = None
 
@@ -168,24 +154,10 @@ class InstanceRunning:
     cluster_id: ClusterId
     node_id: NodeId
     provider: ProviderName
-    instance_id: str
-    ip: str
-    private_ip: str | None
-    ssh_port: int
-    spot: bool
-    network_interface: str = ""
-    hourly_rate: float = 0.0
-    on_demand_rate: float = 0.0
-    billing_increment: int = 1
-    instance_type: str = ""
-    accelerator_count: int = 0
-    accelerator_model: str = ""
-    vcpus: float = 0
-    memory_gb: float = 0.0
-    accelerator_vram_gb: int = 0
-    region: str = ""
+    instance: Instance
     ssh_user: str = ""
     ssh_key_path: str = ""
+    network_interface: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,21 +165,21 @@ class InstanceProvisioned:
     """Instance was created (not yet bootstrapped)."""
 
     request_id: RequestId
-    instance: InstanceMetadata
+    instance: NodeInstance
 
 
 @dataclass(frozen=True, slots=True)
 class InstanceBootstrapped:
     """Instance finished bootstrap, ready for work."""
 
-    instance: InstanceMetadata
+    instance: NodeInstance
 
 
 @dataclass(frozen=True, slots=True)
 class InstancePreempted:
     """Instance was preempted (spot interruption)."""
 
-    instance: InstanceMetadata
+    instance: NodeInstance
     reason: str
 
 
@@ -217,7 +189,7 @@ class InstanceReplaced:
 
     request_id: RequestId
     old_id: InstanceId
-    new: InstanceMetadata
+    new: NodeInstance
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,7 +211,7 @@ class TaskStarted:
     """Task execution started on an instance."""
 
     task_id: str
-    instance: InstanceMetadata
+    instance: NodeInstance
     function_name: str
 
 
@@ -248,7 +220,7 @@ class TaskCompleted:
     """Task execution completed."""
 
     task_id: str
-    instance: InstanceMetadata
+    instance: NodeInstance
     duration: float
     success: bool
     error: str | None = None
@@ -258,7 +230,7 @@ class TaskCompleted:
 class Metric:
     """Metric value from an instance."""
 
-    instance: InstanceMetadata
+    instance: NodeInstance
     name: str
     value: float
     timestamp: float
@@ -268,7 +240,7 @@ class Metric:
 class Log:
     """Log line from an instance."""
 
-    instance: InstanceMetadata
+    instance: NodeInstance
     line: str
     stream: Literal["stdout", "stderr"] = "stdout"
 
@@ -277,7 +249,7 @@ class Log:
 class BootstrapConsole:
     """Console output during bootstrap."""
 
-    instance: InstanceMetadata
+    instance: NodeInstance
     content: str
     stream: Literal["stdout", "stderr"] = "stdout"
 
@@ -286,7 +258,7 @@ class BootstrapConsole:
 class BootstrapPhase:
     """Phase event during bootstrap."""
 
-    instance: InstanceMetadata
+    instance: NodeInstance
     event: Literal["started", "completed", "failed"]
     phase: str
     elapsed: float | None = None
@@ -297,7 +269,7 @@ class BootstrapPhase:
 class BootstrapCommand:
     """Command being executed during bootstrap phase."""
 
-    instance: InstanceMetadata
+    instance: NodeInstance
     command: str
 
 
@@ -305,7 +277,7 @@ class BootstrapCommand:
 class BootstrapFailed:
     """Bootstrap failed on instance."""
 
-    instance: InstanceMetadata
+    instance: NodeInstance
     phase: str
     error: str
 
@@ -392,23 +364,23 @@ class _PollResult:
 
 @dataclass(frozen=True, slots=True)
 class _LocalInstallDone:
-    instance: InstanceMetadata
+    instance: NodeInstance
 
 
 @dataclass(frozen=True, slots=True)
 class _LocalInstallFailed:
-    instance: InstanceMetadata
+    instance: NodeInstance
     error: str
 
 
 @dataclass(frozen=True, slots=True)
 class _UserCodeSyncDone:
-    instance: InstanceMetadata
+    instance: NodeInstance
 
 
 @dataclass(frozen=True, slots=True)
 class _UserCodeSyncFailed:
-    instance: InstanceMetadata
+    instance: NodeInstance
     error: str
 
 
@@ -498,7 +470,7 @@ class Provision:
 class InstanceBecameReady:
     instance_id: InstanceId
     ip: str
-    metadata: InstanceMetadata | None = None
+    node_instance: NodeInstance | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -539,7 +511,7 @@ type NodeMsg = (
 @dataclass(frozen=True, slots=True)
 class NodeBecameReady:
     node_id: NodeId
-    instance: InstanceMetadata
+    instance: NodeInstance
 
 
 @dataclass(frozen=True, slots=True)
@@ -551,7 +523,7 @@ class NodeLost:
 @dataclass(frozen=True, slots=True)
 class PoolStarted:
     cluster_id: ClusterId
-    instances: tuple[InstanceMetadata, ...]
+    instances: tuple[NodeInstance, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -571,6 +543,7 @@ class StartPool:
     spec: PoolSpec
     provider_config: ProviderConfig
     provider: Any
+    offer: Offer
     reply_to: ActorRef[PoolStarted | ProvisionFailed]
 
 
@@ -695,7 +668,7 @@ class InstanceReady:
 class BootstrapDone:
     """Internal: bootstrap monitor signals completion."""
 
-    instance: InstanceMetadata
+    instance: NodeInstance
     success: bool
     error: str | None = None
 
@@ -777,55 +750,27 @@ type MonitorMsg = StopMonitor | _StreamedEvent | _StreamEnded
 # =============================================================================
 
 
-def _to_metadata(ev: InstanceRunning) -> InstanceMetadata:
-    return InstanceMetadata(
-        id=ev.instance_id,
+def _to_node_instance(ev: InstanceRunning) -> NodeInstance:
+    return NodeInstance(
+        instance=ev.instance,
         node=ev.node_id,
         provider=ev.provider,
-        ip=ev.ip,
-        private_ip=ev.private_ip or "",
-        network_interface=ev.network_interface,
-        spot=ev.spot,
-        ssh_port=ev.ssh_port,
-        hourly_rate=ev.hourly_rate,
-        on_demand_rate=ev.on_demand_rate,
-        billing_increment=ev.billing_increment,
-        instance_type=ev.instance_type,
-        accelerator_count=ev.accelerator_count,
-        accelerator_model=ev.accelerator_model,
-        vcpus=ev.vcpus,
-        memory_gb=ev.memory_gb,
-        accelerator_vram_gb=ev.accelerator_vram_gb,
-        region=ev.region,
         ssh_user=ev.ssh_user,
         ssh_key_path=ev.ssh_key_path,
+        network_interface=ev.network_interface,
     )
 
 
-def _instance_to_metadata(
+def _bind_to_node(
     inst: Instance,
     node_id: NodeId,
     provider: ProviderName,
     cluster: Cluster,  # type: ignore[type-arg]
-) -> InstanceMetadata:
-    return InstanceMetadata(
-        id=inst.id,
+) -> NodeInstance:
+    return NodeInstance(
+        instance=inst,
         node=node_id,
         provider=provider,
-        ip=inst.ip or "",
-        private_ip=inst.private_ip or "",
-        spot=inst.spot,
-        ssh_port=inst.ssh_port,
         ssh_user=cluster.ssh_user,
         ssh_key_path=cluster.ssh_key_path,
-        hourly_rate=inst.hourly_rate,
-        on_demand_rate=inst.on_demand_rate,
-        billing_increment=inst.billing_increment,
-        instance_type=inst.instance_type,
-        accelerator_count=inst.accelerator_count,
-        accelerator_model=inst.accelerator_model,
-        vcpus=inst.vcpus,
-        memory_gb=inst.memory_gb,
-        accelerator_vram_gb=inst.accelerator_vram_gb,
-        region=inst.region,
     )

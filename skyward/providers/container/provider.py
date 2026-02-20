@@ -4,12 +4,12 @@ import asyncio
 import hashlib
 import tempfile
 import uuid
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from skyward.api import PoolSpec
-from skyward.api.model import Cluster, Instance
+from skyward.api.model import Cluster, Instance, InstanceType, Offer
 from skyward.observability.logger import logger
 from skyward.providers.container.cli import run, run_json
 from skyward.providers.container.config import Container
@@ -65,6 +65,24 @@ class ContainerProvider(WarmableProvider[Container, ContainerSpecific]):
     async def create(cls, config: Container) -> ContainerProvider:
         return cls(config)
 
+    async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
+        it = InstanceType(
+            name="container",
+            accelerator=None,
+            vcpus=spec.vcpus or 0.5,
+            memory_gb=spec.memory_gb or 0.5,
+            architecture="x86_64",
+            specific=None,
+        )
+        yield Offer(
+            id="container-local",
+            instance_type=it,
+            spot_price=None,
+            on_demand_price=0.0,
+            billing_unit="second",
+            specific=None,
+        )
+
     async def _is_prebaked(self, pool: PoolSpec) -> bool:
         try:
             await run(self._bin, "image", "inspect", self._image_name(pool))
@@ -116,7 +134,7 @@ class ContainerProvider(WarmableProvider[Container, ContainerSpecific]):
         )
         return network_name
 
-    async def prepare(self, spec: PoolSpec) -> Cluster[ContainerSpecific]:
+    async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[ContainerSpecific]:
         cluster_id = f"skyward-{uuid.uuid4().hex[:8]}"
         ssh_key_path = get_ssh_key_path()
 
@@ -131,6 +149,7 @@ class ContainerProvider(WarmableProvider[Container, ContainerSpecific]):
             id=cluster_id,
             status="provisioning",
             spec=spec,
+            offer=offer,
             ssh_key_path=ssh_key_path,
             ssh_user=self._config.ssh_user,
             use_sudo=False,
@@ -191,9 +210,7 @@ class ContainerProvider(WarmableProvider[Container, ContainerSpecific]):
         return Instance(
             id=short_id,
             status="provisioning",
-            instance_type=cluster.specific.context,
-            vcpus=vcpus,
-            memory_gb=memory_gb,
+            offer=cluster.offer,
         )
 
     async def get_instance(
@@ -214,10 +231,10 @@ class ContainerProvider(WarmableProvider[Container, ContainerSpecific]):
         return cluster, Instance(
             id=instance_id,
             status="provisioned",
+            offer=cluster.offer,
             ip="127.0.0.1",
             private_ip=private_ip,
             ssh_port=ssh_port,
-            instance_type="container",
         )
 
     async def terminate(

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import re
 import uuid
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 
+from skyward.accelerators import Accelerator
 from skyward.api import PoolSpec
-from skyward.api.model import Cluster, Instance, InstanceStatus
+from skyward.api.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
 from skyward.observability.logger import logger
 from skyward.providers.provider import Provider
 from skyward.providers.ssh_keys import ensure_ssh_key_on_provider, get_ssh_key_path
@@ -69,7 +70,78 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
         client = VerdaClient(http_client)
         return cls(config, client)
 
-    async def prepare(self, spec: PoolSpec) -> Cluster[VerdaSpecific]:
+    async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
+        use_spot = spec.allocation in ("spot", "spot-if-available")
+
+        instance_types = await self._client.list_instance_types()
+        availability = await self._client.get_availability(is_spot=use_spot)
+        log.debug(
+            "Offers query: {n} regions, {t} instance types",
+            n=len(availability), t=len(instance_types),
+        )
+
+        available_types = {t for region_types in availability.values() for t in region_types}
+
+        def _matches(itype: InstanceTypeResponse) -> bool:
+            if itype["instance_type"] not in available_types:
+                return False
+            if not spec.accelerator_name:
+                return True
+            accel = get_accelerator(itype)
+            if not accel:
+                return False
+            return (
+                accel.upper() in spec.accelerator_name.upper()
+                or spec.accelerator_name.upper() in accel.upper()
+            )
+
+        candidates = [itype for itype in instance_types if _matches(itype)]
+
+        def sort_key(it: InstanceTypeResponse) -> float:
+            price = get_price_spot(it) if use_spot else get_price_on_demand(it)
+            return price if price is not None else float("inf")
+
+        candidates.sort(key=sort_key)
+
+        for itype_data in candidates:
+            itype_name = itype_data["instance_type"]
+            gpu_name = get_accelerator(itype_data)
+            gpu_count = get_accelerator_count(itype_data)
+            gpu_vram_gb = int(get_accelerator_memory_gb(itype_data))
+
+            accel = (
+                Accelerator(
+                    name=gpu_name,
+                    memory=f"{gpu_vram_gb}GB" if gpu_vram_gb else "",
+                    count=gpu_count,
+                )
+                if gpu_name and gpu_count > 0
+                else None
+            )
+
+            it = InstanceType(
+                name=itype_name,
+                accelerator=accel,
+                vcpus=float(get_vcpu(itype_data)),
+                memory_gb=get_memory_gb(itype_data),
+                architecture="x86_64",
+                specific=itype_data,
+            )
+
+            spot_price = get_price_spot(itype_data)
+            on_demand_price = get_price_on_demand(itype_data)
+            os_image = _select_os_image(spec, itype_data.get("supported_os", []))
+
+            yield Offer(
+                id=f"verda-{itype_name}",
+                instance_type=it,
+                spot_price=spot_price,
+                on_demand_price=on_demand_price,
+                billing_unit="hour",
+                specific=os_image,
+            )
+
+    async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[VerdaSpecific]:
         ssh_key_id = await ensure_ssh_key_on_provider(
             list_keys_fn=self._client.list_ssh_keys,  # type: ignore[reportArgumentType]
             create_key_fn=lambda name, key: self._client.create_ssh_key(name, key),  # type: ignore[reportArgumentType]
@@ -78,17 +150,20 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
         log.debug("SSH key ensured: id={kid}", kid=ssh_key_id)
         ssh_key_path = get_ssh_key_path()
 
-        instance_type, os_image, itype_data = await _resolve_instance_type(
-            self._client, spec,
-        )
+        instance_type = offer.instance_type.name
+        os_image = offer.specific if isinstance(offer.specific, str) else "ubuntu-22.04"
 
         use_spot = spec.allocation in ("spot", "spot-if-available")
-        spot_price = get_price_spot(itype_data)
-        on_demand_price = get_price_on_demand(itype_data)
-
         hourly_rate = (
-            spot_price if use_spot and spot_price else on_demand_price
+            offer.spot_price if use_spot and offer.spot_price else offer.on_demand_price
         ) or 0.0
+
+        gpu_count = offer.instance_type.accelerator.count if offer.instance_type.accelerator else 0
+        gpu_model = offer.instance_type.accelerator.name if offer.instance_type.accelerator else ""
+        gpu_vram_gb = 0
+        if offer.instance_type.accelerator and offer.instance_type.accelerator.memory:
+            mem = offer.instance_type.accelerator.memory
+            gpu_vram_gb = int(mem.replace("GB", "")) if mem.endswith("GB") else 0
 
         ttl = spec.ttl or self._config.instance_timeout
         startup_content = _self_destruction_script(ttl, "shutdown -h now")
@@ -99,11 +174,11 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
             id=f"verda-{uuid.uuid4().hex[:8]}",
             status="setting_up",
             spec=spec,
+            offer=offer,
             ssh_key_path=ssh_key_path,
             ssh_user="root",
             use_sudo=True,
             shutdown_command="shutdown -h now",
-            instances=(),
             specific=VerdaSpecific(
                 ssh_key_id=ssh_key_id,
                 startup_script_id=script["id"],
@@ -111,12 +186,12 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
                 os_image=os_image,
                 region=self._config.region,
                 hourly_rate=hourly_rate,
-                on_demand_rate=on_demand_price or 0.0,
-                gpu_count=get_accelerator_count(itype_data),
-                gpu_model=get_accelerator(itype_data) or "",
-                gpu_vram_gb=int(get_accelerator_memory_gb(itype_data)),
-                vcpus=get_vcpu(itype_data),
-                memory_gb=get_memory_gb(itype_data),
+                on_demand_rate=offer.on_demand_price or 0.0,
+                gpu_count=gpu_count,
+                gpu_model=gpu_model,
+                gpu_vram_gb=gpu_vram_gb,
+                vcpus=int(offer.instance_type.vcpus),
+                memory_gb=offer.instance_type.memory_gb,
             ),
         )
 
@@ -152,17 +227,9 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
             instances.append(Instance(
                 id=str(resp["id"]),
                 status="provisioning",
+                offer=cluster.offer,
                 spot=use_spot,
-                instance_type=specific.instance_type,
-                accelerator_count=specific.gpu_count,
-                accelerator_model=specific.gpu_model,
-                accelerator_vram_gb=specific.gpu_vram_gb,
-                vcpus=specific.vcpus,
-                memory_gb=specific.memory_gb,
                 region=region,
-                hourly_rate=specific.hourly_rate,
-                on_demand_rate=specific.on_demand_rate,
-                billing_increment=1,
             ))
 
         if not instances:
@@ -183,9 +250,9 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
             case "error" | "discontinued" | "deleted":
                 return cluster, None
             case "running" if info.get("ip"):
-                return cluster, _build_verda_instance(info, "provisioned", cluster.specific)
+                return cluster, _build_verda_instance(info, "provisioned", cluster)
             case _:
-                return cluster, _build_verda_instance(info, "provisioning", cluster.specific)
+                return cluster, _build_verda_instance(info, "provisioning", cluster)
 
     async def terminate(
         self, cluster: Cluster[VerdaSpecific], instance_ids: tuple[str, ...],
@@ -202,6 +269,7 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
             await self._client.delete_startup_script(cluster.specific.startup_script_id)
         except Exception as e:
             log.error("Failed to delete startup script: {err}", err=e)
+        await self._client.close()
         return cluster
 
 
@@ -216,24 +284,18 @@ def _self_destruction_script(ttl: int, shutdown_command: str) -> str:
 
 
 def _build_verda_instance(
-    info: InstanceResponse, status: InstanceStatus, specific: VerdaSpecific,
+    info: InstanceResponse,
+    status: InstanceStatus,
+    cluster: Cluster[VerdaSpecific],
 ) -> Instance:
     return Instance(
         id=str(info["id"]),
         status=status,
+        offer=cluster.offer,
         ip=str(info.get("ip", "")),
         ssh_port=22,
         spot=bool(info.get("is_spot", False)),
-        instance_type=specific.instance_type,
-        accelerator_count=specific.gpu_count,
-        accelerator_model=specific.gpu_model,
-        vcpus=specific.vcpus,
-        memory_gb=specific.memory_gb,
-        accelerator_vram_gb=specific.gpu_vram_gb,
-        region=specific.region,
-        hourly_rate=specific.hourly_rate,
-        on_demand_rate=specific.on_demand_rate,
-        billing_increment=1,
+        region=cluster.specific.region,
     )
 
 

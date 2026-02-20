@@ -32,7 +32,6 @@ from .actors.messages import (
     InstanceBootstrapped,
     InstanceDestroyed,
     InstanceId,
-    InstanceMetadata,
     InstancePreempted,
     InstanceProvisioned,
     InstanceReplaced,
@@ -40,6 +39,7 @@ from .actors.messages import (
     Log,
     Metric,
     NodeId,
+    NodeInstance,
     ProviderName,
     Request,
     RequestId,
@@ -71,6 +71,10 @@ from .api import (
     stderr,
     stdout,
 )
+from .api import InstanceType as InstanceType
+from .api import Offer as Offer
+from .api import SelectionStrategy as SelectionStrategy
+from .api import Spec as Spec
 from .app import App
 from .distributed import (
     barrier,
@@ -112,6 +116,10 @@ __all__ = [
     "PoolSpec",
     "AllocationStrategy",
     "InflightStrategy",
+    "InstanceType",
+    "Offer",
+    "SelectionStrategy",
+    "Spec",
     "dict",
     "set",
     "counter",
@@ -123,7 +131,7 @@ __all__ = [
     "InstanceId",
     "NodeId",
     "ProviderName",
-    "InstanceMetadata",
+    "NodeInstance",
     "ClusterRequested",
     "InstanceRequested",
     "ShutdownCompleted",

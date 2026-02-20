@@ -350,19 +350,20 @@ def _render_cluster_col(state: _State) -> Group:
     node_detail = f" ({', '.join(node_parts)})" if node_parts else ""
     lines.append(Text(f"  {len(insts)} nodes{node_detail}"))
 
-    if first.instance_type:
-        lines.append(Text(f"  {first.instance_type}", style="dim"))
+    it = first.offer.instance_type
+    if it.name:
+        lines.append(Text(f"  {it.name}", style="dim"))
 
-    if first.accelerator_model:
-        total_accel = sum(i.accelerator_count for i in insts)
-        vram_total = sum(i.accelerator_vram_gb * i.accelerator_count for i in insts)
-        accel_label = f"  {total_accel}× {first.accelerator_model}"
-        if vram_total:
-            accel_label += f" ({vram_total} GB)"
+    accel = it.accelerator
+    if accel:
+        total_accel = accel.count * len(insts)
+        accel_label = f"  {total_accel}× {accel.name}"
+        if accel.memory:
+            accel_label += f" ({accel.memory})"
         lines.append(Text(accel_label))
 
-    total_vcpus = sum(i.vcpus for i in insts)
-    total_ram = sum(i.memory_gb for i in insts)
+    total_vcpus = sum(i.offer.instance_type.vcpus for i in insts)
+    total_ram = sum(i.offer.instance_type.memory_gb for i in insts)
     if total_vcpus or total_ram:
         hw_parts: list[str] = []
         if total_vcpus:
@@ -371,7 +372,10 @@ def _render_cluster_col(state: _State) -> Group:
             hw_parts.append(f"{total_ram:.2f} GB RAM")
         lines.append(Text(f"  {' · '.join(hw_parts)}"))
 
-    hourly = sum(i.hourly_rate for i in insts)
+    def _hourly(i: Any) -> float:
+        return (i.offer.spot_price if i.spot else i.offer.on_demand_price) or 0.0
+
+    hourly = sum(_hourly(i) for i in insts)
     if hourly > 0:
         started = state.pool_started_at
         elapsed_h = (time.monotonic() - started) / 3600 if started else 0
@@ -799,7 +803,7 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
                     content = ev.content.strip()
                     if not content or content.startswith("#"):
                         return Behaviors.same()
-                    return _refresh(_inst(state, ev.instance.id, content[:120]))
+                    return _refresh(_inst(state, ev.instance.instance.id, content[:120]))
 
                 case SpyEvent(event=BootstrapPhase() as ev):
                     match ev.event:
@@ -816,20 +820,20 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
                             line = f"✗ {ev.phase}: {ev.error}"
                         case _:
                             return Behaviors.same()
-                    return _refresh(_inst(new_state, ev.instance.id, line))
+                    return _refresh(_inst(new_state, ev.instance.instance.id, line))
 
                 case SpyEvent(event=BootstrapCommand() as ev):
                     cmd = ev.command.strip()
                     if not cmd:
                         return Behaviors.same()
                     display = f"$ {cmd[:80]}..." if len(cmd) > 80 else f"$ {cmd}"
-                    return _refresh(_inst(state, ev.instance.id, display))
+                    return _refresh(_inst(state, ev.instance.instance.id, display))
 
                 case SpyEvent(event=BootstrapDone(instance=inst, success=ok, error=err)):
                     if ok:
                         tl = state.timeline.advance(Phase.BOOTSTRAP)
                         return _refresh(replace(state, timeline=tl))
-                    return _refresh(_inst(state, inst.id, f"Bootstrap failed: {err}"))
+                    return _refresh(_inst(state, inst.instance.id, f"Bootstrap failed: {err}"))
 
                 case SpyEvent(event=_LocalInstallDone() | _UserCodeSyncDone()):
                     return Behaviors.same()
@@ -849,7 +853,7 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
                     line = ev.line.strip()
                     if not line:
                         return Behaviors.same()
-                    return _refresh(_inst(state, ev.instance.id, line[:120]))
+                    return _refresh(_inst(state, ev.instance.instance.id, line[:120]))
 
                 case SpyEvent(event=SubmitTask(task_id=tid) as ev) if tid not in state.tasks:
                     entry = _TaskEntry(
@@ -921,7 +925,7 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
                     return _refresh(replace(state, tasks=new_tasks))
 
                 case SpyEvent(event=Metric() as ev):
-                    iid = ev.instance.id
+                    iid = ev.instance.instance.id
                     sample = _MetricSample(value=ev.value, timestamp=ev.timestamp)
                     inst_metrics = dict(state.metrics.get(iid, MappingProxyType({})))
                     inst_metrics[ev.name] = sample

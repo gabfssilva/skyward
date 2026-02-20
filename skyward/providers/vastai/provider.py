@@ -4,11 +4,12 @@ import asyncio
 import random
 import string
 import uuid
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 
+from skyward.accelerators import Accelerator
 from skyward.api import PoolSpec
-from skyward.api.model import Cluster, Instance, InstanceStatus
+from skyward.api.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
 from skyward.observability.logger import logger
 from skyward.providers.provider import Provider
 from skyward.providers.ssh_keys import get_ssh_key_path
@@ -56,7 +57,18 @@ class VastAIProvider(Provider[VastAI, VastAISpecific]):
     async def create(cls, config: VastAI) -> VastAIProvider:
         return cls(config)
 
-    async def prepare(self, spec: PoolSpec) -> Cluster[VastAISpecific]:
+    async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
+        api_key = get_api_key()
+
+        async with VastAIClient(api_key, config=self._config) as client:
+            raw_offers = await _search_offers(
+                client, self._config, spec, overlay_cluster_id=None,
+            )
+
+        for raw in raw_offers:
+            yield _to_offer(raw)
+
+    async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[VastAISpecific]:
         api_key = get_api_key()
         ssh_key_path = get_ssh_key_path()
 
@@ -91,11 +103,11 @@ class VastAIProvider(Provider[VastAI, VastAISpecific]):
             id=f"vastai-{uuid.uuid4().hex[:8]}",
             status="setting_up",
             spec=spec,
+            offer=offer,
             ssh_key_path=ssh_key_path,
             ssh_user="root",
             use_sudo=False,
             shutdown_command=shutdown_command,
-            instances=(),
             specific=VastAISpecific(
                 ssh_key_id=ssh_key_id,
                 ssh_public_key=ssh_public_key,
@@ -117,37 +129,24 @@ class VastAIProvider(Provider[VastAI, VastAISpecific]):
 
         async with VastAIClient(api_key, config=self._config) as client:
             for _ in range(count):
-                offers = await _search_offers(
-                    client, self._config, cluster.spec, specific,
+                raw_offers = await _search_offers(
+                    client, self._config, cluster.spec,
+                    overlay_cluster_id=specific.overlay_cluster_id,
                 )
 
-                if not offers:
+                if not raw_offers:
                     log.error("No offers found")
                     continue
 
-                result = await _try_create_from_offers(
-                    client, self._config, cluster, offers, reserved,
+                instance = await _try_create_from_offers(
+                    client, self._config, cluster, raw_offers, reserved,
                 )
 
-                if result is None:
+                if instance is None:
                     log.error("All offers failed")
                     continue
 
-                instances.append(Instance(
-                    id=str(result.instance_id),
-                    status="provisioning",
-                    spot=result.spot,
-                    instance_type=result.gpu_name,
-                    accelerator_count=result.gpu_count,
-                    accelerator_model=result.gpu_name,
-                    accelerator_vram_gb=result.gpu_vram_gb,
-                    vcpus=result.vcpus,
-                    memory_gb=result.memory_gb,
-                    region=specific.geolocation or "Global",
-                    hourly_rate=result.hourly_rate,
-                    on_demand_rate=result.on_demand_rate,
-                    billing_increment=1,
-                ))
+                instances.append(instance)
 
         return cluster, instances
 
@@ -165,9 +164,9 @@ class VastAIProvider(Provider[VastAI, VastAISpecific]):
             case "exited" | "error" | "destroyed":
                 return cluster, None
             case "running" if info.get("ssh_host") or info.get("public_ipaddr"):
-                return cluster, _build_vastai_instance(info, "provisioned", cluster.specific)
+                return cluster, _build_vastai_instance(info, "provisioned", cluster.offer)
             case _:
-                return cluster, _build_vastai_instance(info, "provisioning", cluster.specific)
+                return cluster, _build_vastai_instance(info, "provisioning", cluster.offer)
 
     async def terminate(
         self, cluster: Cluster[VastAISpecific], instance_ids: tuple[str, ...],
@@ -214,7 +213,7 @@ def _self_destruction_script(ttl: int, shutdown_command: str) -> str:
 
 
 def _build_vastai_instance(
-    info: InstanceResponse, status: InstanceStatus, specific: VastAISpecific,
+    info: InstanceResponse, status: InstanceStatus, offer: Offer,
 ) -> Instance:
     str_id = str(info["id"])
     direct_port = get_direct_ssh_port(info)
@@ -227,28 +226,14 @@ def _build_vastai_instance(
             ssh_host = info.get("ssh_host", "")
             ssh_port = info.get("ssh_port", 22)
 
-    hourly_rate = info.get("dph_total", 0.0)
-    gpu_name = info.get("gpu_name", "")
-    gpu_count = info.get("num_gpus", 0)
-    total_vram_mb: float = info.get("gpu_ram", 0)  # type: ignore[assignment]
-
     return Instance(
         id=str_id,
         status=status,
+        offer=offer,
         ip=ssh_host,
         private_ip=info.get("public_ipaddr") or ssh_host or None,
         ssh_port=ssh_port,
         spot=info.get("is_bid", False),
-        instance_type=gpu_name,
-        accelerator_count=gpu_count,
-        accelerator_model=gpu_name,
-        vcpus=int(info.get("cpu_cores_effective", 0)) if "cpu_cores_effective" in info else 0,  # type: ignore[operator]
-        memory_gb=info.get("cpu_ram", 0) / 1024,  # type: ignore[operator]
-        accelerator_vram_gb=int(total_vram_mb / 1024 / gpu_count) if gpu_count else 0,
-        region=specific.geolocation or "Global",
-        hourly_rate=hourly_rate,
-        on_demand_rate=hourly_rate,
-        billing_increment=1,
     )
 
 
@@ -256,7 +241,8 @@ async def _search_offers(
     client: VastAIClient,
     config: VastAI,
     spec: PoolSpec,
-    specific: VastAISpecific,
+    *,
+    overlay_cluster_id: int | None = None,
 ) -> list[OfferResponse]:
     use_interruptible = spec.allocation in ("spot", "spot-if-available")
     gpu_name = (
@@ -286,8 +272,8 @@ async def _search_offers(
             if req_norm in o["gpu_name"].replace(" ", "_").upper()
         ]
 
-    if specific.overlay_cluster_id is not None:
-        offers = [o for o in offers if o.get("cluster_id") == specific.overlay_cluster_id]
+    if overlay_cluster_id is not None:
+        offers = [o for o in offers if o.get("cluster_id") == overlay_cluster_id]
 
     price_key = "min_bid" if use_interruptible else "dph_total"
     offers.sort(key=lambda o: o.get(price_key, float("inf")))
@@ -305,49 +291,60 @@ async def _search_offers(
     return offers
 
 
-@dataclass(frozen=True, slots=True)
-class _ProvisionResult:
-    instance_id: int
-    hourly_rate: float
-    on_demand_rate: float
-    gpu_name: str
-    gpu_count: int
-    gpu_vram_gb: int
-    vcpus: int
-    memory_gb: float
-    spot: bool
+def _to_offer(raw: OfferResponse) -> Offer:
+    gpu_name = raw.get("gpu_name", "")
+    num_gpus = raw.get("num_gpus", 0)
+    accel = Accelerator(name=gpu_name, count=num_gpus) if gpu_name else None
+
+    it = InstanceType(
+        name=gpu_name or "unknown",
+        accelerator=accel,
+        vcpus=float(raw.get("cpu_cores", 0)),
+        memory_gb=raw.get("cpu_ram", 0) / 1024,
+        architecture="x86_64",
+        specific=None,
+    )
+
+    return Offer(
+        id=str(raw["id"]),
+        instance_type=it,
+        spot_price=raw.get("min_bid"),
+        on_demand_price=raw.get("dph_total"),
+        billing_unit="hour",
+        specific=raw["id"],
+    )
 
 
 async def _try_create_from_offers(
     client: VastAIClient,
     config: VastAI,
     cluster: Cluster[VastAISpecific],
-    offers: list[OfferResponse],
+    raw_offers: list[OfferResponse],
     reserved: set[int],
-) -> _ProvisionResult | None:
+) -> Instance | None:
     use_interruptible = cluster.spec.allocation in ("spot", "spot-if-available")
     docker_image = cluster.specific.docker_image
     label = f"skyward-{cluster.id}-{len(cluster.instances)}"
     ttl = cluster.spec.ttl or config.instance_timeout
     minimal_onstart = _self_destruction_script(ttl, cluster.shutdown_command)
 
-    for idx, offer in enumerate(offers):
-        offer_id = offer["id"]
+    for idx, raw in enumerate(raw_offers):
+        offer_id = raw["id"]
         if offer_id in reserved:
             continue
 
         reserved.add(offer_id)
 
         price = (
-            offer["min_bid"] * config.bid_multiplier
+            raw["min_bid"] * config.bid_multiplier
             if use_interruptible
             else None
         )
 
         log.debug(
             "Trying offer {i}/{total}: id={oid}, gpu={gpu}",
-            i=idx + 1, total=len(offers),
-            oid=offer_id, gpu=offer.get("gpu_name"),
+            i=idx + 1, total=len(raw_offers),
+            oid=offer_id, gpu=raw.get("gpu_name"),
         )
         try:
             instance_id = await client.create_instance(
@@ -370,27 +367,18 @@ async def _try_create_from_offers(
                     reserved.discard(offer_id)
                     continue
 
-            on_demand_rate = offer.get("dph_total", 0.0)
-            hourly_rate = price if price else on_demand_rate
-            gpu_count = offer.get("num_gpus", 0)
-            total_vram_mb = offer.get("gpu_ram", 0)
-
-            return _ProvisionResult(
-                instance_id=instance_id,
-                hourly_rate=hourly_rate,
-                on_demand_rate=on_demand_rate,
-                gpu_name=offer.get("gpu_name", ""),
-                gpu_count=gpu_count,
-                gpu_vram_gb=int(total_vram_mb / 1024 / gpu_count) if gpu_count else 0,
-                vcpus=int(offer.get("cpu_cores", 0)),
-                memory_gb=offer.get("cpu_ram", 0) / 1024,
+            return Instance(
+                id=str(instance_id),
+                status="provisioning",
+                offer=_to_offer(raw),
                 spot=use_interruptible,
+                region=cluster.specific.geolocation or "Global",
             )
         except VastAIError as e:
             reserved.discard(offer_id)
             log.warning(
                 "Offer {i}/{total} failed: {err}",
-                i=idx + 1, total=len(offers), err=e,
+                i=idx + 1, total=len(raw_offers), err=e,
             )
 
     return None

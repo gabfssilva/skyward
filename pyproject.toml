@@ -22,7 +22,7 @@ classifiers = [
 dependencies = [
     "cloudpickle>=3.1.2",
     "pydantic>=2.12.5",
-    "casty>=0.16.2",
+    "casty>=0.17.0",
     "rich>=14.3.2",
     "asyncssh>=2.22.0",
     "aiohttp>=3.13.3",
@@ -110,13 +110,12 @@ reportMissingImports = "warning"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-addopts = "--durations=0 --dist loadgroup -s --log-cli-level=INFO"
+addopts = "--durations=0 --dist loadgroup -s --log-cli-level=INFO -m 'not sanity and not integration'"
 timeout_func_only = true
 markers = [
     "e2e: end-to-end tests requiring container runtime",
     "slow: tests that take >10s",
     "integration: marks tests as integration tests (require Docker)",
-    "ec2: marks tests as EC2 integration tests (require AWS credentials)",
     "sanity: provider sanity tests (real cloud, real GPUs)",
     "aws: AWS provider tests",
     "runpod: RunPod provider tests",

@@ -109,12 +109,12 @@ def train_distributed() -> dict:
 
 if __name__ == "__main__":
     with sky.ComputePool(
-        provider=sky.VastAI(verified_only=False, min_reliability=0.98),
-        accelerator=sky.accelerators.RTX_4090(),
+        provider=sky.Container(),
+        # accelerator=sky.accelerators.RTX_4090(),
         nodes=2,
         image=sky.Image(
-            pip=["jax[cuda12]==0.8.2", "scikit-learn"],
-            skyward_source="local",
+            # pip=["jax[cuda12]==0.8.2", "scikit-learn"],
+            pip=["jax", "scikit-learn"],
         ),
     ) as pool:
         results = train_distributed() @ pool

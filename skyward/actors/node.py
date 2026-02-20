@@ -12,8 +12,8 @@ from skyward.actors.messages import (
     HeadAddressKnown,
     InstanceBecameReady,
     InstanceDied,
-    InstanceMetadata,
     NodeBecameReady,
+    NodeInstance,
     NodeLost,
     NodeMsg,
     Provision,
@@ -34,7 +34,7 @@ class ActiveState:
     pending_tasks: tuple[tuple[bytes, ActorRef], ...] = ()
     inflight: dict[str, ActorRef] = field(default_factory=dict)
     task_counter: int = 0
-    current_metadata: InstanceMetadata | None = None
+    current_node_instance: NodeInstance | None = None
 
 
 def node_actor(
@@ -86,20 +86,20 @@ def node_actor(
                         log.debug("Node {nid} received head address", nid=node_id)
                         instance_ref.tell(h)
                     return Behaviors.same()
-                case InstanceBecameReady(instance_id=iid, ip=ip, metadata=meta):
+                case InstanceBecameReady(instance_id=iid, ip=ip, node_instance=ni):
                     log.info(
                         "Node {nid} ready (instance={iid}, ip={ip})",
                         nid=node_id, iid=iid, ip=ip,
                     )
-                    meta = meta or InstanceMetadata(
-                        id=iid, node=node_id, provider=cluster.spec.provider or "aws", ip=ip,
-                        ssh_user=cluster.ssh_user, ssh_key_path=cluster.ssh_key_path,
-                    )
-                    pool.tell(NodeBecameReady(node_id=node_id, instance=meta))
+                    if ni is None:
+                        raise RuntimeError(
+                            f"InstanceBecameReady for {iid} has no NodeInstance"
+                        )
+                    pool.tell(NodeBecameReady(node_id=node_id, instance=ni))
                     return active(ActiveState(
                         cluster=cluster, provider=provider,
                         instance_ref=instance_ref, pending_tasks=pending_tasks,
-                        current_metadata=meta,
+                        current_node_instance=ni,
                     ))
                 case InstanceDied(instance_id=dead_id, reason=reason):
                     log.warning(
@@ -152,15 +152,17 @@ def node_actor(
                     elif s.instance_ref:
                         s.instance_ref.tell(h)
                     return Behaviors.same()
-                case InstanceBecameReady(instance_id=iid, ip=ip, metadata=meta):
+                case InstanceBecameReady(instance_id=iid, node_instance=ni):
                     log.info(
                         "Node {nid} replacement ready, replaying {n} pending tasks",
                         nid=node_id, n=len(s.pending_tasks),
                     )
-                    meta = meta or s.current_metadata or InstanceMetadata(
-                        id=iid, node=node_id, provider="aws", ip=ip,
-                    )
-                    pool.tell(NodeBecameReady(node_id=node_id, instance=meta))
+                    ni = ni or s.current_node_instance
+                    if ni is None:
+                        raise RuntimeError(
+                            f"InstanceBecameReady for {iid} has no NodeInstance"
+                        )
+                    pool.tell(NodeBecameReady(node_id=node_id, instance=ni))
                     new_inflight = dict(s.inflight)
                     new_counter = s.task_counter
                     if s.instance_ref:
@@ -173,7 +175,7 @@ def node_actor(
                             new_counter += 1
                     return active(replace(
                         s, pending_tasks=(), inflight=new_inflight,
-                        task_counter=new_counter, current_metadata=meta,
+                        task_counter=new_counter, current_node_instance=ni,
                     ))
                 case InstanceDied(instance_id=dead_id, reason=reason):
                     log.warning(

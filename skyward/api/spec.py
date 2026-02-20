@@ -33,6 +33,7 @@ from skyward.providers.bootstrap import (
 if TYPE_CHECKING:
     from skyward.accelerators import Accelerator
     from skyward.actors.messages import ProviderName
+    from skyward.api.provider import ProviderConfig
 
 
 type AllocationStrategy = Literal[
@@ -44,9 +45,26 @@ type AllocationStrategy = Literal[
 
 type Architecture = Literal["x86_64", "arm64"]
 
+type SelectionStrategy = Literal["first", "cheapest"]
+
 type SkywardSource = Literal["auto", "local", "github", "pypi"]
 
 type InflightStrategy = Callable[[int, int], int]
+
+
+@dataclass(frozen=True, slots=True)
+class Spec:
+    """User-facing hardware preference for ComputePool fallback chains."""
+    provider: ProviderConfig
+    accelerator: Accelerator | str | None = None
+    nodes: int = 1
+    vcpus: float | None = None
+    memory_gb: float | None = None
+    architecture: Architecture | None = None
+    allocation: AllocationStrategy = "spot-if-available"
+    region: str | None = None
+    max_hourly_cost: float | None = None
+    ttl: int = 600
 
 
 def _detect_skyward_source() -> SkywardSource:

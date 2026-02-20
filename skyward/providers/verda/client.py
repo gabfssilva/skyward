@@ -28,6 +28,9 @@ class VerdaClient:
         self._http = http_client
         self._log = logger.bind(provider="verda", component="client")
 
+    async def close(self) -> None:
+        await self._http.close()
+
     async def _request(
         self,
         method: str,

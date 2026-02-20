@@ -30,7 +30,7 @@ from collections.abc import Callable, Coroutine, Generator, Iterator, Sequence
 from concurrent.futures import Future
 from contextlib import suppress
 from contextvars import ContextVar, Token
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from types import TracebackType
 from typing import Any, Literal, overload
 
@@ -38,7 +38,7 @@ from casty import ActorRef, ActorSystem, Behaviors, CastyConfig
 
 from skyward.accelerators import Accelerator
 from skyward.actors.messages import (
-    InstanceMetadata,
+    NodeInstance,
     PoolMsg,
     ProvisionFailed,
     SubmitBroadcast,
@@ -60,7 +60,8 @@ from skyward.distributed.types import Consistency
 from skyward.observability.logger import logger
 from skyward.observability.logging import LogConfig, setup_logging, teardown_logging
 
-from .spec import DEFAULT_IMAGE, Image, InflightStrategy, PoolSpec
+from .model import Offer
+from .spec import DEFAULT_IMAGE, Image, InflightStrategy, PoolSpec, SelectionStrategy, Spec
 
 _active_pool: ContextVar[ComputePool | None] = ContextVar("active_pool", default=None)
 
@@ -108,7 +109,7 @@ class _Sky:
     def __repr__(self) -> str:
         pool = _active_pool.get()
         if pool:
-            return f"<sky: active pool with {pool.nodes} nodes>"
+            return f"<sky: active pool with {pool._specs[0].nodes} nodes>"
         return "<sky: no active pool>"
 
 
@@ -281,63 +282,139 @@ def compute[**P, T](
     return decorator
 
 
-@dataclass
 class ComputePool:
-    """
-    Args:
-        provider: Cloud provider configuration (AWS, etc.).
-        nodes: Number of nodes to provision.
-        accelerator: GPU/accelerator type.
-        image: Environment specification.
-        region: Cloud region.
-        allocation: Instance allocation strategy.
-        timeout: Provisioning timeout in seconds.
+    """Provision cloud compute and execute functions remotely.
 
-    Example:
-        with ComputePool(provider=AWS(), accelerator="A100") as pool:
+    Two usage modes:
+
+        # Single provider (legacy)
+        with ComputePool(provider=AWS(), accelerator="A100", nodes=4) as pool:
+            result = train(data) >> pool
+
+        # Multi-spec with fallback
+        with ComputePool(
+            Spec(provider=VastAI(), accelerator="A100"),
+            Spec(provider=AWS(), accelerator="A100"),
+            selection="cheapest",
+        ) as pool:
             result = train(data) >> pool
     """
 
-    provider: ProviderConfig
+    @overload
+    def __init__(
+        self, *,
+        provider: ProviderConfig,
+        nodes: int = ...,
+        accelerator: str | Accelerator | None = ...,
+        vcpus: float | None = ...,
+        memory_gb: float | None = ...,
+        architecture: Literal["x86_64", "arm64"] | None = ...,
+        allocation: Literal["spot", "on-demand", "spot-if-available"] = ...,
+        image: Image = ...,
+        ttl: int = ...,
+        concurrency: int = ...,
+        max_inflight: int | InflightStrategy | None = ...,
+        logging: LogConfig | bool = ...,
+        max_hourly_cost: float | None = ...,
+        default_compute_timeout: float = ...,
+        provision_timeout: int = ...,
+        ssh_timeout: int = ...,
+        ssh_retry_interval: int = ...,
+        provision_retry_delay: float = ...,
+        max_provision_attempts: int = ...,
+    ) -> None: ...
 
-    nodes: int = 1
-    accelerator: str | Accelerator | None = None
-    vcpus: float | None = None
-    memory_gb: float | None = None
-    architecture: Literal["x86_64", "arm64"] | None = None
-    allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available"
+    @overload
+    def __init__(
+        self,
+        *specs: Spec,
+        selection: SelectionStrategy = ...,
+        image: Image = ...,
+        concurrency: int = ...,
+        max_inflight: int | InflightStrategy | None = ...,
+        logging: LogConfig | bool = ...,
+        default_compute_timeout: float = ...,
+        provision_timeout: int = ...,
+        ssh_timeout: int = ...,
+        ssh_retry_interval: int = ...,
+        provision_retry_delay: float = ...,
+        max_provision_attempts: int = ...,
+    ) -> None: ...
 
-    image: Image = field(default_factory=lambda: DEFAULT_IMAGE)
-    ttl: int = 600
+    def __init__(
+        self,
+        *specs: Spec,
+        provider: ProviderConfig | None = None,
+        nodes: int = 1,
+        accelerator: str | Accelerator | None = None,
+        vcpus: float | None = None,
+        memory_gb: float | None = None,
+        architecture: Literal["x86_64", "arm64"] | None = None,
+        allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
+        selection: SelectionStrategy = "cheapest",
+        image: Image = DEFAULT_IMAGE,
+        ttl: int = 600,
+        concurrency: int = 1,
+        max_inflight: int | InflightStrategy | None = None,
+        logging: LogConfig | bool = True,
+        max_hourly_cost: float | None = None,
+        default_compute_timeout: float = 300.0,
+        provision_timeout: int = 300,
+        ssh_timeout: int = 300,
+        ssh_retry_interval: int = 2,
+        provision_retry_delay: float = 10.0,
+        max_provision_attempts: int = 10,
+    ) -> None:
+        if specs and provider is not None:
+            raise ValueError("Cannot specify both positional Spec args and 'provider'")
+        if not specs and provider is None:
+            raise ValueError("Either Spec args or 'provider' must be provided")
 
-    concurrency: int = 1
-    max_inflight: int | InflightStrategy | None = None
+        if specs:
+            self._specs = specs
+        else:
+            assert provider is not None
+            self._specs = (Spec(
+                provider=provider,
+                accelerator=accelerator,
+                nodes=nodes,
+                vcpus=vcpus,
+                memory_gb=memory_gb,
+                architecture=architecture,
+                allocation=allocation,
+                region=getattr(provider, "region", None),
+                max_hourly_cost=max_hourly_cost,
+                ttl=ttl,
+            ),)
 
-    logging: LogConfig | bool = True
+        self.selection = selection
+        self.image = image
+        self.concurrency = concurrency
+        self.max_inflight = max_inflight
+        self.logging = logging
+        self.default_compute_timeout = default_compute_timeout
+        self.provision_timeout = provision_timeout
+        self.ssh_timeout = ssh_timeout
+        self.ssh_retry_interval = ssh_retry_interval
+        self.provision_retry_delay = provision_retry_delay
+        self.max_provision_attempts = max_provision_attempts
 
-    max_hourly_cost: float | None = None
-    default_compute_timeout: float = 300.0
+        self._log_handler_ids: list[int] = []
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_thread: threading.Thread | None = None
+        self._active: bool = False
+        self._context_token: Token[ComputePool | None] | None = None
+        self._registry: DistributedRegistry | None = None
+        self._system: ActorSystem | None = None
+        self._pool_ref: ActorRef[PoolMsg] | None = None
+        self._cluster_id: str = ""
+        self._instances: dict[int, NodeInstance] = {}
+        self._spec: PoolSpec | None = None
+        self._app: Any = None
+        self._owns_app: bool = False
 
-    provision_timeout: int = 300
-    ssh_timeout: int = 300
-    ssh_retry_interval: int = 2
-    provision_retry_delay: float = 10.0
-    max_provision_attempts: int = 10
-
-    _log_handler_ids: list[int] = field(default_factory=list, init=False, repr=False)
-    _loop: asyncio.AbstractEventLoop | None = field(default=None, init=False, repr=False)
-    _loop_thread: threading.Thread | None = field(default=None, init=False, repr=False)
-
-    _active: bool = field(default=False, init=False, repr=False)
-    _context_token: Token[ComputePool | None] | None = field(default=None, init=False, repr=False)
-    _registry: DistributedRegistry | None = field(default=None, init=False, repr=False)
-    _system: ActorSystem | None = field(default=None, init=False, repr=False)
-    _pool_ref: ActorRef[PoolMsg] | None = field(default=None, init=False, repr=False)
-    _cluster_id: str = field(default="", init=False, repr=False)
-    _instances: dict[int, InstanceMetadata] = field(default_factory=dict, init=False, repr=False)
-    _spec: PoolSpec | None = field(default=None, init=False, repr=False)
-    _app: Any = field(default=None, init=False, repr=False)
-    _owns_app: bool = field(default=False, init=False, repr=False)
+    def _build_specs(self) -> list[Spec]:
+        return list(self._specs)
 
     def __enter__(self) -> ComputePool:
         """Start pool and provision resources."""
@@ -355,7 +432,11 @@ class ComputePool:
                     )
             self._log_handler_ids = setup_logging(log_config)
 
-        logger.info("Starting pool with {n} nodes ({accel})", n=self.nodes, accel=self.accelerator)
+        first = self._specs[0]
+        logger.info(
+            "Starting pool with {n} nodes ({accel})",
+            n=first.nodes, accel=first.accelerator,
+        )
 
         from skyward.app import App, get_app
 
@@ -486,7 +567,7 @@ class ComputePool:
 
         timeout = self._resolve_timeout(pending)
         fn_name = getattr(pending.fn, "__name__", repr(pending.fn))
-        logger.debug("Broadcasting task: {fn} to {n} nodes", fn=fn_name, n=self.nodes)
+        logger.debug("Broadcasting task: {fn} to {n} nodes", fn=fn_name, n=self._specs[0].nodes)
 
         async def _broadcast() -> list[T]:
             assert self._pool_ref is not None
@@ -627,36 +708,107 @@ class ComputePool:
         logger.debug("Creating distributed lock: {name}", name=name)
         return self._registry.lock(name)
 
+    async def _select_offer(self) -> tuple[Offer, ProviderConfig, Any, PoolSpec]:
+        """Select the best offer across all specs.
+
+        Returns (offer, provider_config, cloud_provider, pool_spec).
+        """
+        user_specs = self._build_specs()
+
+        best_offer: Offer | None = None
+        best_config: ProviderConfig | None = None
+        best_provider: Any = None
+        best_pool_spec: PoolSpec | None = None
+        best_price: float = float("inf")
+
+        for s in user_specs:
+            provider_config = s.provider
+            cloud_provider = await provider_config.create_provider()
+            provider_name = provider_config.type
+            region = s.region or getattr(provider_config, "region", "unknown")
+
+            pool_spec = PoolSpec(
+                nodes=s.nodes,
+                accelerator=s.accelerator,
+                region=region,
+                vcpus=s.vcpus,
+                memory_gb=s.memory_gb,
+                architecture=s.architecture,
+                allocation=s.allocation,
+                image=self.image,
+                ttl=s.ttl,
+                concurrency=self.concurrency,
+                max_inflight=self.max_inflight,
+                provider=provider_name,  # type: ignore[arg-type]
+                max_hourly_cost=s.max_hourly_cost,
+                ssh_timeout=float(self.ssh_timeout),
+                ssh_retry_interval=float(self.ssh_retry_interval),
+                provision_retry_delay=self.provision_retry_delay,
+                max_provision_attempts=self.max_provision_attempts,
+            )
+
+            logger.debug(
+                "Querying offers from {provider} (accelerator={acc})",
+                provider=provider_name, acc=pool_spec.accelerator_name,
+            )
+            offer_count = 0
+            try:
+                async for offer in cloud_provider.offers(pool_spec):
+                    offer_count += 1
+                    logger.debug(
+                        "Offer: {oid} ({name}) spot=${spot} od=${od}",
+                        oid=offer.id, name=offer.instance_type.name,
+                        spot=offer.spot_price, od=offer.on_demand_price,
+                    )
+                    match self.selection:
+                        case "first":
+                            return offer, provider_config, cloud_provider, pool_spec
+                        case "cheapest":
+                            use_spot = (
+                                s.allocation in ("spot", "spot-if-available")
+                                and offer.spot_price is not None
+                            )
+                            raw = (
+                                offer.spot_price if use_spot
+                                else offer.on_demand_price
+                            )
+                            price = raw if raw is not None else float("inf")
+                            if best_offer is None or price < best_price:
+                                best_offer = offer
+                                best_config = provider_config
+                                best_provider = cloud_provider
+                                best_pool_spec = pool_spec
+                                best_price = price
+            except Exception as exc:
+                logger.error(
+                    "Error querying offers from {provider}: {err}",
+                    provider=provider_name, err=exc,
+                )
+
+            if offer_count == 0:
+                logger.warning(
+                    "No offers from {provider} for accelerator={acc}",
+                    provider=provider_name, acc=pool_spec.accelerator_name,
+                )
+
+        if best_offer is None or best_config is None or best_pool_spec is None:
+            raise RuntimeError("No offers found across all specs")
+
+        return best_offer, best_config, best_provider, best_pool_spec
+
     async def _start_async(self) -> None:
         """Start pool asynchronously using actors (zero bus)."""
         from skyward.actors.messages import PoolStarted, StartPool
         from skyward.actors.pool import pool_actor
 
-        logger.info("Creating cloud provider ({type})", type=self.provider.type)
-        cloud_provider = await self.provider.create_provider()
-        provider_name = self.provider.type
+        offer, provider_config, cloud_provider, spec = await self._select_offer()
 
-        region = getattr(self.provider, "region", "unknown")
-
-        spec = PoolSpec(
-            nodes=self.nodes,
-            accelerator=self.accelerator,
-            region=region,
-            vcpus=self.vcpus,
-            memory_gb=self.memory_gb,
-            architecture=self.architecture,
-            allocation=self.allocation,
-            image=self.image,
-            ttl=self.ttl,
-            concurrency=self.concurrency,
-            max_inflight=self.max_inflight,
-            provider=provider_name,  # type: ignore[arg-type]
-            max_hourly_cost=self.max_hourly_cost,
-            ssh_timeout=float(self.ssh_timeout),
-            ssh_retry_interval=float(self.ssh_retry_interval),
-            provision_retry_delay=self.provision_retry_delay,
-            max_provision_attempts=self.max_provision_attempts,
+        logger.info(
+            "Selected offer: {offer_id} ({name}, ${price}/hr)",
+            offer_id=offer.id, name=offer.instance_type.name,
+            price=offer.spot_price or offer.on_demand_price or 0,
         )
+
         self._spec = spec
         logger.debug(
             "Built PoolSpec: {nodes} nodes, region={region}, allocation={alloc}",
@@ -693,8 +845,9 @@ class ComputePool:
             pool_ref,
             lambda reply_to: StartPool(
                 spec=spec,
-                provider_config=self.provider,
+                provider_config=provider_config,
                 provider=cloud_provider,
+                offer=offer,
                 reply_to=reply_to,
             ),
             timeout=float(self.provision_timeout),
@@ -777,7 +930,8 @@ class ComputePool:
 
     def __repr__(self) -> str:
         status = "active" if self._active else "inactive"
-        return f"ComputePool(nodes={self.nodes}, accelerator={self.accelerator}, {status})"
+        first = self._specs[0]
+        return f"ComputePool(nodes={first.nodes}, accelerator={first.accelerator}, {status})"
 
     @classmethod
     def Named(cls, name: str) -> ComputePool:

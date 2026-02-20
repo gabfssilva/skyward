@@ -11,7 +11,7 @@ are returned per provision() call.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 
 import pytest
@@ -41,8 +41,12 @@ class _PartialContainerProvider:
         self._limits = batch_limits
         self._call = 0
 
-    async def prepare(self, spec: PoolSpec) -> Cluster[ContainerSpecific]:
-        return await self._inner.prepare(spec)
+    async def offers(self, spec: PoolSpec) -> AsyncIterator[sky.Offer]:
+        async for offer in self._inner.offers(spec):
+            yield offer
+
+    async def prepare(self, spec: PoolSpec, offer: sky.Offer) -> Cluster[ContainerSpecific]:
+        return await self._inner.prepare(spec, offer)
 
     async def provision(
         self, cluster: Cluster[ContainerSpecific], count: int,

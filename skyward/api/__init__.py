@@ -1,6 +1,11 @@
 """User-facing API — pool, compute, runtime."""
 
-from .model import Cluster, ClusterStatus, Instance, InstanceStatus
+from .model import Cluster as Cluster
+from .model import ClusterStatus as ClusterStatus
+from .model import Instance as Instance
+from .model import InstanceStatus as InstanceStatus
+from .model import InstanceType as InstanceType
+from .model import Offer as Offer
 from .pool import (
     ComputePool,
     PendingCompute,
@@ -21,15 +26,15 @@ from .runtime import (
     stderr,
     stdout,
 )
-from .spec import (
-    DEFAULT_IMAGE,
-    AllocationStrategy,
-    Architecture,
-    Image,
-    InflightStrategy,
-    PoolSpec,
-    PoolState,
-)
+from .spec import DEFAULT_IMAGE as DEFAULT_IMAGE
+from .spec import AllocationStrategy as AllocationStrategy
+from .spec import Architecture as Architecture
+from .spec import Image as Image
+from .spec import InflightStrategy as InflightStrategy
+from .spec import PoolSpec as PoolSpec
+from .spec import PoolState as PoolState
+from .spec import SelectionStrategy as SelectionStrategy
+from .spec import Spec as Spec
 
 __all__ = [
     "PendingCompute",
@@ -56,7 +61,11 @@ __all__ = [
     "stdout",
     "Instance",
     "InstanceStatus",
+    "InstanceType",
+    "Offer",
     "Cluster",
     "ClusterStatus",
-    "ProviderConfig"
+    "ProviderConfig",
+    "SelectionStrategy",
+    "Spec",
 ]

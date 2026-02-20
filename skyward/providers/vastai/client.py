@@ -132,7 +132,7 @@ class VastAIClient:
         return self
 
     async def __aexit__(self, *_: Any) -> None:
-        pass
+        await self.close()
 
     async def close(self) -> None:
         await self._http.close()

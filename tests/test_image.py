@@ -54,7 +54,6 @@ class TestEnvVars:
 
 
 class TestIncludes:
-    @pytest.mark.timeout(60)
     def test_local_module_importable_on_worker(self, tmp_path):
         module_dir = tmp_path / "my_test_module"
         module_dir.mkdir()

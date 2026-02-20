@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import re
 import uuid
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 
+from skyward.accelerators import Accelerator
 from skyward.accelerators.catalog import SPECS
 from skyward.api import PoolSpec
-from skyward.api.model import Cluster, Instance, InstanceStatus
+from skyward.api.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
 from skyward.infra.http import HttpClient
 from skyward.observability.logger import logger
 from skyward.providers.provider import Provider
@@ -20,7 +21,6 @@ from .types import (
     ClusterCreateParams,
     CpuPodCreateParams,
     PodResponse,
-    get_gpu_model,
     get_ssh_port,
 )
 
@@ -189,7 +189,84 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
     async def create(cls, config: RunPod) -> RunPodProvider:
         return cls(config)
 
-    async def prepare(self, spec: PoolSpec) -> Cluster[RunPodSpecific]:
+    async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
+        api_key = get_api_key(self._config.api_key)
+        is_secure = self._config.cloud_type == CloudType.SECURE
+
+        if not spec.accelerator_name:
+            vcpus = spec.vcpus or 2
+            memory_gb = spec.memory_gb or 2
+            instance_id = f"cpu{self._config.cpu_clock}-{vcpus}-{memory_gb}"
+            it = InstanceType(
+                name=instance_id,
+                accelerator=None,
+                vcpus=float(vcpus),
+                memory_gb=float(memory_gb),
+                architecture="x86_64",
+                specific=None,
+            )
+            yield Offer(
+                id=f"runpod-cpu-{instance_id}",
+                instance_type=it,
+                spot_price=None,
+                on_demand_price=None,
+                billing_unit="hour",
+                specific=None,
+            )
+            return
+
+        async with RunPodClient(api_key, config=self._config) as client:
+            gpu_types = await client.get_gpu_types()
+
+        available = [
+            g for g in gpu_types
+            if (is_secure and g.get("secureCloud")) or (not is_secure and g.get("communityCloud"))
+        ]
+
+        log.debug(
+            "GPU types: {total} total, {avail} available (cloud_type={ct})",
+            total=len(gpu_types), avail=len(available),
+            ct="secure" if is_secure else "community",
+        )
+
+        requested = spec.accelerator_name.upper()
+        log.debug("Looking for accelerator: {req}", req=requested)
+        for gpu in available:
+            display = gpu.get("displayName", "")
+            gpu_id = gpu.get("id", "")
+            if requested not in display.upper() and requested not in gpu_id.upper():
+                continue
+
+            vram_gb = gpu.get("memoryInGb", 0)
+            gpu_count = spec.accelerator_count or 1
+            accel = Accelerator(
+                name=display or gpu_id,
+                memory=f"{vram_gb}GB" if vram_gb else "",
+                count=gpu_count,
+            )
+            it = InstanceType(
+                name=gpu_id,
+                accelerator=accel,
+                vcpus=0.0,
+                memory_gb=0.0,
+                architecture="x86_64",
+                specific=None,
+            )
+
+            lowest = gpu.get("lowestPrice") or {}
+            spot_price = lowest.get("minimumBidPrice")
+            on_demand_price = lowest.get("minPrice")
+
+            yield Offer(
+                id=f"runpod-{gpu_id}",
+                instance_type=it,
+                spot_price=spot_price,
+                on_demand_price=on_demand_price,
+                billing_unit="hour",
+                specific=gpu_id,
+            )
+
+    async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[RunPodSpecific]:
         api_key = get_api_key(self._config.api_key)
         ssh_key_path = get_ssh_key_path()
         _, ssh_public_key = get_local_ssh_key()
@@ -198,7 +275,12 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
             await client.ensure_ssh_key(ssh_public_key)
             log.debug("SSH key ensured on RunPod account")
 
-        gpu_type_id, gpu_vram_gb = await _resolve_gpu_type(self._config, spec)
+        gpu_type_id: str | None = offer.specific if isinstance(offer.specific, str) else None
+        gpu_vram_gb = 0
+        if offer.instance_type.accelerator:
+            mem = offer.instance_type.accelerator.memory
+            gpu_vram_gb = int(mem.replace("GB", "")) if mem else 0
+
         image_name = await _resolve_image(spec, self._config)
 
         runpod_cluster_id: str | None = None
@@ -220,11 +302,11 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
             id=f"runpod-{uuid.uuid4().hex[:8]}",
             status="setting_up",
             spec=spec,
+            offer=offer,
             ssh_key_path=ssh_key_path,
             ssh_user="root",
             use_sudo=False,
             shutdown_command=shutdown_command,
-            instances=(),
             specific=RunPodSpecific(
                 gpu_type_id=gpu_type_id,
                 cloud_type=self._config.cloud_type.value,
@@ -249,8 +331,8 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                     for _, pid in specific.pod_ids[:count]
                 ))
             return cluster, [
-                _build_runpod_instance(pod, "provisioning", specific)
-                if pod else Instance(id=pid, status="provisioning")
+                _build_runpod_instance(pod, "provisioning", cluster)
+                if pod else Instance(id=pid, status="provisioning", offer=cluster.offer)
                 for (_, pid), pod in zip(specific.pod_ids[:count], pods, strict=True)
             ]
 
@@ -266,7 +348,7 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                 except RunPodError as e:
                     log.error("Failed to create pod: {err}", err=e)
                     continue
-                instances.append(_build_runpod_instance(pod, "provisioning", specific))
+                instances.append(_build_runpod_instance(pod, "provisioning", cluster))
 
         return cluster, instances
 
@@ -289,9 +371,9 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
             case "TERMINATED":
                 return cluster, None
             case "RUNNING" if pod.get("publicIp"):
-                return cluster, _build_runpod_instance(pod, "provisioned", cluster.specific)
+                return cluster, _build_runpod_instance(pod, "provisioned", cluster)
             case _:
-                return cluster, _build_runpod_instance(pod, "provisioning", cluster.specific)
+                return cluster, _build_runpod_instance(pod, "provisioning", cluster)
 
     async def terminate(
         self, cluster: Cluster[RunPodSpecific], instance_ids: tuple[str, ...],
@@ -328,13 +410,13 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
 
 
 def _build_runpod_instance(
-    pod: PodResponse, status: InstanceStatus, specific: RunPodSpecific,
+    pod: PodResponse,
+    status: InstanceStatus,
+    cluster: Cluster[RunPodSpecific],
 ) -> Instance:
-    gpu = pod.get("gpu")
+    specific = cluster.specific
     machine = pod.get("machine") or {}
-    instance_type = gpu.get("id", "") if gpu else ""
     region = machine.get("dataCenterId") or machine.get("location") or ""
-    hourly_rate = pod.get("adjustedCostPerHr") or pod.get("costPerHr") or 0.0
 
     private_ip: str | None = None
     if specific.is_instant_cluster:
@@ -346,20 +428,12 @@ def _build_runpod_instance(
     return Instance(
         id=pod["id"],
         status=status,
+        offer=cluster.offer,
         ip=pod.get("publicIp") or "",
         private_ip=private_ip,
         ssh_port=get_ssh_port(pod),
         spot=pod.get("interruptible", False),
-        instance_type=instance_type,
-        accelerator_count=pod.get("gpuCount", 0),
-        accelerator_model=get_gpu_model(pod),
-        vcpus=pod.get("vcpuCount", 0),
-        memory_gb=pod.get("memoryInGb", 0.0),
         region=region,
-        accelerator_vram_gb=specific.gpu_vram_gb,
-        hourly_rate=hourly_rate,
-        on_demand_rate=pod.get("costPerHr", 0.0),
-        billing_increment=1,
     )
 
 

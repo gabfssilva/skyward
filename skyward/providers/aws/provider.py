@@ -3,13 +3,15 @@ from __future__ import annotations
 import asyncio
 import base64
 import uuid
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import cast
 
 from skyward.api import PoolSpec
-from skyward.api.model import Cluster, Instance, InstanceStatus
+from skyward.api.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
+from skyward.api.spec import Architecture as SpecArchitecture
 from skyward.infra.cache import cached
 from skyward.infra.retry import on_exception_message, retry
 from skyward.observability.logger import logger
@@ -22,6 +24,11 @@ from .instances import get_instance_spec
 type Architecture = str
 
 log = logger.bind(provider="aws")
+
+
+@dataclass(frozen=True, slots=True)
+class AWSOfferSpecific:
+    ami: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,7 +70,6 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
 
     @classmethod
     async def create(cls, config: AWS) -> AWSProvider:
-        from collections.abc import AsyncIterator
         from contextlib import asynccontextmanager
 
         import aioboto3  # type: ignore[reportMissingImports]
@@ -76,7 +82,59 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
 
         return cls(config, EC2ClientFactory(ec2_factory))
 
-    async def prepare(self, spec: PoolSpec) -> Cluster[AWSSpecific]:
+    async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
+        from skyward.accelerators import Accelerator
+
+        from .instances import get_instance_resources
+
+        candidates = await _select_instances(self._config, spec)
+
+        ami_lookup = _get_dlami if spec.accelerator_name is not None else _get_ubuntu_ami
+        if self._config.ami:
+            ami_by_arch: dict[str, str] = {arch: self._config.ami for _, arch in candidates}
+        else:
+            unique_archs: list[str] = list({arch for _, arch in candidates})
+            ami_results = await asyncio.gather(*(ami_lookup(self._config, a) for a in unique_archs))
+            ami_by_arch = dict(zip(unique_archs, ami_results, strict=True))
+
+        resource_specs = await asyncio.gather(*(
+            get_instance_resources(itype, self._config.region) for itype, _ in candidates
+        ))
+        price_specs = await asyncio.gather(*(
+            get_instance_spec(itype, self._config.region) for itype, _ in candidates
+        ))
+
+        for (itype, arch), resources, prices in zip(
+            candidates, resource_specs, price_specs, strict=True,
+        ):
+            ami = ami_by_arch[arch]
+
+            accelerator: Accelerator | None = None
+            if resources and resources.gpu_count > 0 and resources.gpu_model:
+                accelerator = Accelerator(
+                    name=resources.gpu_model,
+                    count=resources.gpu_count,
+                )
+
+            it = InstanceType(
+                name=itype,
+                accelerator=accelerator,
+                vcpus=float(resources.vcpus) if resources else 0.0,
+                memory_gb=resources.memory_gb if resources else 0.0,
+                architecture=cast(SpecArchitecture, arch),
+                specific=None,
+            )
+
+            yield Offer(
+                id=f"aws-{self._config.region}-{itype}",
+                instance_type=it,
+                spot_price=prices.spot_price if prices else None,
+                on_demand_price=prices.ondemand_price if prices else None,
+                billing_unit="second",
+                specific=AWSOfferSpecific(ami=ami),
+            )
+
+    async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[AWSSpecific]:
         log.info("Setting up AWS infrastructure")
         resources, (ssh_key_name, ssh_key_path) = await asyncio.gather(
             _ensure_infrastructure(self._config, self._ec2),
@@ -91,11 +149,11 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
             id=f"aws-{uuid.uuid4().hex[:8]}",
             status="setting_up",
             spec=spec,
+            offer=offer,
             ssh_key_path=ssh_key_path,
             ssh_user=self._config.username or "ubuntu",
             use_sudo=True,
             shutdown_command="shutdown -h now",
-            instances=(),
             specific=AWSSpecific(
                 resources=resources,
                 ssh_key_name=ssh_key_name,
@@ -105,9 +163,14 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
     async def provision(
         self, cluster: Cluster[AWSSpecific], count: int,
     ) -> tuple[Cluster[AWSSpecific], Sequence[Instance]]:
-        instance_configs = await _resolve_instance_configs(
-            self._config, self._ec2, cluster.spec,
-        )
+        offer = cluster.offer
+        spot = cluster.spec.allocation in ("spot", "spot-if-available")
+
+        instance_configs = (_InstanceConfig(
+            instance_type=offer.instance_type.name,
+            ami=offer.specific.ami,
+            spot=spot,
+        ),)
 
         ttl = cluster.spec.ttl or self._config.instance_timeout
         user_data = _self_destruction_script(ttl, cluster.shutdown_command)
@@ -118,7 +181,7 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
             resources=cluster.specific.resources,
             ssh_key_name=cluster.specific.ssh_key_name,
             cluster_id=cluster.id,
-            instances=tuple(instance_configs),
+            instances=instance_configs,
             user_data=user_data,
             n=count,
         )
@@ -129,27 +192,13 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
         instances: list[Instance] = []
         for iid in instance_ids:
             detail = detail_map.get(iid)
-            real_type = detail.instance_type if detail else instance_configs[0].instance_type
-            spot = detail.spot if detail else instance_configs[0].spot
-            ispec = await get_instance_spec(real_type, self._config.region)
+            spot_actual = detail.spot if detail else spot
             instances.append(Instance(
                 id=iid,
                 status="provisioning",
-                spot=spot,
-                instance_type=real_type,
-                accelerator_count=ispec.gpu_count if ispec else 0,
-                accelerator_model=ispec.gpu_model if ispec else "",
-                vcpus=ispec.vcpus if ispec else 0,
-                memory_gb=ispec.memory_gb if ispec else 0.0,
-                accelerator_vram_gb=int(ispec.gpu_vram_gb) if ispec else 0,
+                offer=offer,
+                spot=spot_actual,
                 region=self._config.region,
-                hourly_rate=(
-                    (ispec.spot_price if spot else ispec.ondemand_price) or 0.0
-                ) if ispec else 0.0,
-                on_demand_rate=(
-                    (ispec.ondemand_price or 0.0) if ispec else 0.0
-                ),
-                billing_increment=1,
             ))
         return cluster, instances
 
@@ -165,13 +214,15 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
             case "terminated" | "shutting-down":
                 return cluster, None
             case "running":
-                return cluster, await _build_instance(
+                return cluster, _build_instance(
                     detail, status="provisioned",
+                    offer=cluster.offer,
                     region=self._config.region,
                 )
             case _:
-                return cluster, await _build_instance(
+                return cluster, _build_instance(
                     detail, status="provisioning",
+                    offer=cluster.offer,
                     region=self._config.region,
                 )
 
@@ -361,29 +412,6 @@ async def _ensure_key_pair(config: AWS, ec2: EC2ClientFactory) -> tuple[str, str
         log.info("Imported SSH key pair {name}", name=key_name)
 
     return key_name, private_key_path
-
-
-async def _resolve_instance_configs(
-    config: AWS, ec2: EC2ClientFactory, spec: PoolSpec,
-) -> list[_InstanceConfig]:
-    spot = spec.allocation in ("spot", "spot-if-available")
-    candidates = await _select_instances(config, spec)
-
-    if config.ami:
-        return [
-            _InstanceConfig(instance_type=t, ami=config.ami, spot=spot)
-            for t, _ in candidates
-        ]
-
-    ami_lookup = _get_dlami if spec.accelerator_name is not None else _get_ubuntu_ami
-    unique_archs: list[Architecture] = list({arch for _, arch in candidates})
-    ami_results = await asyncio.gather(*(ami_lookup(config, a) for a in unique_archs))
-    ami_by_arch: dict[Architecture, str] = dict(zip(unique_archs, ami_results, strict=True))
-
-    return [
-        _InstanceConfig(instance_type=t, ami=ami_by_arch[arch], spot=spot)
-        for t, arch in candidates
-    ]
 
 
 def _select_instances_cache_key(config: AWS, spec: PoolSpec, max_candidates: int = 5) -> str:
@@ -718,30 +746,16 @@ async def _terminate_instances(ec2: EC2ClientFactory, instance_ids: list[str]) -
         await client.terminate_instances(InstanceIds=instance_ids)
 
 
-
-
-async def _build_instance(detail: _InstanceDetail, status: InstanceStatus, region: str) -> Instance:
-    ispec = await get_instance_spec(detail.instance_type, region)
-
+def _build_instance(
+    detail: _InstanceDetail, status: str, offer: Offer, region: str,
+) -> Instance:
     return Instance(
         id=detail.id,
-        status=status,
+        status=cast(InstanceStatus, status),
+        offer=offer,
         ip=detail.public_ip or detail.private_ip,
         private_ip=detail.private_ip,
         ssh_port=22,
         spot=detail.spot,
-        instance_type=detail.instance_type,
-        accelerator_count=ispec.gpu_count if ispec else 0,
-        accelerator_model=ispec.gpu_model if ispec else "",
-        vcpus=ispec.vcpus if ispec else 0,
-        memory_gb=ispec.memory_gb if ispec else 0.0,
-        accelerator_vram_gb=int(ispec.gpu_vram_gb) if ispec else 0,
         region=region,
-        hourly_rate=(
-            (ispec.spot_price if detail.spot else ispec.ondemand_price) or 0.0
-        ) if ispec else 0.0,
-        on_demand_rate=(
-            (ispec.ondemand_price or 0.0) if ispec else 0.0
-        ),
-        billing_increment=1,
     )

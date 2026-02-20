@@ -1,7 +1,8 @@
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from typing import Protocol, Self, runtime_checkable
 
 from skyward.api import Cluster, Instance, PoolSpec
+from skyward.api.model import Offer
 
 
 @runtime_checkable
@@ -17,7 +18,17 @@ class Provider[C, S](Protocol):
         """Create a new instance of the provider."""
         ...
 
-    async def prepare(self, spec: PoolSpec) -> Cluster[S]:
+    def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
+        """Query available offers matching the spec.
+
+        Yields
+        ------
+        Offer
+            Available machine offers with pricing.
+        """
+        ...
+
+    async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[S]:
         """Provision cluster-level infrastructure.
 
         Sets up everything needed before instances can be launched:

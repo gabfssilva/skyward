@@ -44,7 +44,7 @@
 
 ::: skyward.InstanceDestroyed
 
-::: skyward.InstanceMetadata
+::: skyward.NodeInstance
 
 ::: skyward.TaskStarted
 

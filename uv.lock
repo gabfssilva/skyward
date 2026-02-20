@@ -394,11 +394,11 @@ wheels = [
 
 [[package]]
 name = "casty"
-version = "0.16.2"
+version = "0.17.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/c9/0f/5362d8f54f6614da235904dd7e2666c521ba480b657fbb02729301fd0ea5/casty-0.16.2.tar.gz", hash = "sha256:426e70d4e3c01764437bbf98b51019fc88f99823510e9400d9cbee02f87c95fa", size = 1281779, upload-time = "2026-02-15T05:49:49.876Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b5/ac/d531eaef1862b9a99120657c11db7625c68bf642acabd5eada796d376cf2/casty-0.17.0.tar.gz", hash = "sha256:2370fa5ee57a4aef0123015fcbd8a3aa5f26b2864d67dd62e5594bd5f0733154", size = 1296360, upload-time = "2026-02-19T23:22:39.264Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a2/fd/7506b761b3e0c17dd48e04f37fbf44c318651560e7f6035c936e1088d30f/casty-0.16.2-py3-none-any.whl", hash = "sha256:36b397403515c90eb3de804d766d94cbf385a1f7c6d6b8f456b18efe27311d17", size = 111373, upload-time = "2026-02-15T05:49:48.137Z" },
+    { url = "https://files.pythonhosted.org/packages/38/98/af4caea9658916342105f615fcfbf9d09392ecb7d0b01aaadb02cf39b683/casty-0.17.0-py3-none-any.whl", hash = "sha256:165114dfe13662e9c8a3e709a5bf438c178aed1639bf319f5f77ebb03cf4976f", size = 115118, upload-time = "2026-02-19T23:22:37.525Z" },
 ]
 
 [[package]]
@@ -3208,7 +3208,7 @@ requires-dist = [
     { name = "boto3-stubs", extras = ["ec2", "ecr", "iam", "s3", "sts"], marker = "extra == 'all'", specifier = ">=1.35.0" },
     { name = "boto3-stubs", extras = ["ec2", "ecr", "iam", "s3", "sts"], marker = "extra == 'aws'", specifier = ">=1.35.0" },
     { name = "boto3-stubs", extras = ["ec2", "ecr", "iam", "s3", "sts"], marker = "extra == 'providers'", specifier = ">=1.35.0" },
-    { name = "casty", specifier = ">=0.16.2" },
+    { name = "casty", specifier = ">=0.17.0" },
     { name = "cloudpickle", specifier = ">=3.1.2" },
     { name = "datasets", marker = "extra == 'all'", specifier = ">=4.4.1" },
     { name = "datasets", marker = "extra == 'huggingface'", specifier = ">=4.4.1" },

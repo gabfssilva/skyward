@@ -83,17 +83,19 @@ def format_results(r: dict) -> None:
 
 if __name__ == "__main__":
     with sky.ComputePool(
-        # provider=sky.providers.GCP(),
-        # accelerator=sky.accelerators.T4(),
-        # provider=sky.VastAI(verified_only=False),
-        # accelerator=sky.accelerators.RTX_4090(),
-        # provider=sky.RunPod(),
-        # accelerator=sky.accelerators.RTX_4090(),
-        # provider=sky.Verda(),
-        # accelerator=sky.accelerators.A100(),
-        image=sky.Image(
-            pip=["jax[cuda12]"],
+        sky.Spec(
+            provider=sky.VastAI(min_reliability=0.99),
+            accelerator=sky.accelerators.RTX_4090(),
+            allocation='on-demand'
         ),
-        max_hourly_cost=0.5
+        sky.Spec(
+            provider=sky.AWS(),
+            accelerator=sky.accelerators.T4G(),
+        ),
+        sky.Spec(
+            provider=sky.GCP(),
+            accelerator=sky.accelerators.T4(),
+        ),
+        image=sky.Image(pip=['jax[cuda12]'])
     ) as pool:
         format_results(benchmark(matrix_size=4096, iterations=50) >> pool)

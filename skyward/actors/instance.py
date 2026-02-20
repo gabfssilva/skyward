@@ -14,18 +14,18 @@ from skyward.actors.messages import (
     HeadAddressKnown,
     InstanceBecameReady,
     InstanceDied,
-    InstanceMetadata,
     InstanceMsg,
     Log,
     Metric,
+    NodeInstance,
     Preempted,
     TaskResult,
+    _bind_to_node,
     _BootstrapUploaded,
     _BootstrapUploadFailed,
     _Connected,
     _ConnectionFailed,
     _CorrelatedTaskResult,
-    _instance_to_metadata,
     _LocalInstallDone,
     _PollResult,
     _PostBootstrapFailed,
@@ -96,9 +96,9 @@ def instance_actor(
                 case _PollResult(instance=inst) if (
                     inst and inst.status == "provisioned" and inst.ip
                 ):
-                    metadata = _instance_to_metadata(inst, node_id, provider_name, cluster)
+                    ni = _bind_to_node(inst, node_id, provider_name, cluster)
                     log.info("Instance ready at {ip}", ip=inst.ip)
-                    return connecting(inst.ip, metadata, head_info)
+                    return connecting(inst.ip, ni, head_info)
                 case _PollResult():
                     elapsed = asyncio.get_event_loop().time() - start_time
                     if elapsed > poll_timeout:
@@ -127,24 +127,24 @@ def instance_actor(
 
     def connecting(
         ip: str,
-        metadata: InstanceMetadata,
+        ni: NodeInstance,
         head_info: HeadAddressKnown | None,
     ) -> Behavior[InstanceMsg]:
         async def setup(ctx: ActorContext[InstanceMsg]) -> Behavior[InstanceMsg]:
             log.info("Opening SSH tunnel to {ip}", ip=ip)
             ctx.pipe_to_self(
-                _open_tunnel(metadata, cluster),
+                _open_tunnel(ni, cluster),
                 mapper=lambda result: _Connected(transport=result[0], listener=result[1]),
                 on_failure=lambda e: _ConnectionFailed(error=str(e)),
             )
-            return _connecting_receive(ctx, ip, metadata, head_info)
+            return _connecting_receive(ctx, ip, ni, head_info)
 
         return Behaviors.setup(setup)
 
     def _connecting_receive(
         ctx: ActorContext[InstanceMsg],
         ip: str,
-        metadata: InstanceMetadata,
+        ni: NodeInstance,
         head_info: HeadAddressKnown | None,
     ) -> Behavior[InstanceMsg]:
         async def receive(
@@ -153,13 +153,13 @@ def instance_actor(
             match msg:
                 case _Connected(transport=transport, listener=listener):
                     log.info("SSH tunnel established")
-                    return bootstrapping(ip, ctx, metadata, transport, listener, head_info)
+                    return bootstrapping(ip, ctx, ni, transport, listener, head_info)
                 case _ConnectionFailed(error=error):
                     log.error("SSH connection failed: {error}", error=error)
                     parent.tell(InstanceDied(instance_id=instance_id, reason=error))
                     return Behaviors.stopped()
                 case HeadAddressKnown() as h:
-                    return _connecting_receive(ctx, ip, metadata, h)
+                    return _connecting_receive(ctx, ip, ni, h)
                 case Preempted():
                     parent.tell(InstanceDied(instance_id=instance_id, reason="preempted"))
                     return Behaviors.stopped()
@@ -168,17 +168,17 @@ def instance_actor(
 
     def bootstrapping(
         ip: str, ctx: ActorContext[InstanceMsg],
-        metadata: InstanceMetadata,
+        ni: NodeInstance,
         transport: Any, listener: Any,
         head_info: HeadAddressKnown | None,
     ) -> Behavior[InstanceMsg]:
         log.info("Starting bootstrap")
-        if not _skip_monitor and metadata.ssh_user and metadata.ssh_key_path:
+        if not _skip_monitor and ni.ssh_user and ni.ssh_key_path:
             ctx.spawn(
                 instance_monitor(
-                    info=metadata,
-                    ssh_user=metadata.ssh_user,
-                    ssh_key_path=metadata.ssh_key_path,
+                    info=ni,
+                    ssh_user=ni.ssh_user,
+                    ssh_key_path=ni.ssh_key_path,
                     event_listener=parent,
                     reply_to=ctx.self,
                     ssh_timeout=ssh_timeout,
@@ -189,10 +189,10 @@ def instance_actor(
 
         if cluster.prebaked:
             log.info("Prebaked image detected, skipping bootstrap")
-            return _start_post_bootstrap(ip, ctx, transport, listener, metadata, head_info)
+            return _start_post_bootstrap(ip, ctx, transport, listener, ni, head_info)
 
         ctx.pipe_to_self(
-            _run_bootstrap(transport, metadata, cluster, spec),
+            _run_bootstrap(transport, ni, cluster, spec),
             mapper=lambda _: _BootstrapUploaded(),
             on_failure=lambda e: _BootstrapUploadFailed(error=str(e)),
         )
@@ -202,10 +202,10 @@ def instance_actor(
         ) -> Behavior[InstanceMsg]:
             match msg:
                 case HeadAddressKnown() as h:
-                    return bootstrapping(ip, ctx, metadata, transport, listener, h)
+                    return bootstrapping(ip, ctx, ni, transport, listener, h)
                 case BootstrapDone(success=True, instance=done_info):
                     log.info("Bootstrap completed successfully")
-                    final_metadata = done_info or metadata
+                    final_ni = done_info or ni
                     match provider:
                         case WarmableProvider() if node_id == 0:
                             log.info("Snapshotting provider image...")
@@ -215,7 +215,7 @@ def instance_actor(
                                 on_failure=lambda e: _SnapshotFailed(error=str(e)),
                             )
                     return _start_post_bootstrap(
-                        ip, ctx, transport, listener, final_metadata, head_info,
+                        ip, ctx, transport, listener, final_ni, head_info,
                     )
                 case BootstrapDone(success=False, error=error):
                     log.error("Bootstrap failed: {error}", error=error)
@@ -234,7 +234,7 @@ def instance_actor(
                 case Bootstrapping():
                     return Behaviors.same()
                 case Bootstrapped():
-                    return _start_post_bootstrap(ip, ctx, transport, listener, metadata, head_info)
+                    return _start_post_bootstrap(ip, ctx, transport, listener, ni, head_info)
                 case Preempted():
                     log.warning("Preempted during bootstrap")
                     await _cleanup_transport(transport, listener)
@@ -246,31 +246,31 @@ def instance_actor(
     def _start_post_bootstrap(
         ip: str, ctx: ActorContext[InstanceMsg],
         transport: Any, listener: Any,
-        metadata: InstanceMetadata,
+        ni: NodeInstance,
         head_info: HeadAddressKnown | None,
     ) -> Behavior[InstanceMsg]:
         if spec.image and getattr(spec.image, "skyward_source", None) == "local":
             ctx.pipe_to_self(
-                _install_local_skyward(metadata, cluster),
-                mapper=lambda _, m=metadata: _LocalInstallDone(instance=m),
+                _install_local_skyward(ni, cluster),
+                mapper=lambda _, m=ni: _LocalInstallDone(instance=m),
                 on_failure=lambda e: _PostBootstrapFailed(error=str(e)),
             )
-            return post_bootstrap(ip, transport, listener, metadata, head_info)
+            return post_bootstrap(ip, transport, listener, ni, head_info)
 
         if spec.image and getattr(spec.image, "includes", None):
             ctx.pipe_to_self(
-                _sync_user_code(metadata, spec, cluster),
-                mapper=lambda _, m=metadata: _UserCodeSyncDone(instance=m),
+                _sync_user_code(ni, spec, cluster),
+                mapper=lambda _, m=ni: _UserCodeSyncDone(instance=m),
                 on_failure=lambda e: _PostBootstrapFailed(error=str(e)),
             )
-            return post_bootstrap(ip, transport, listener, metadata, head_info)
+            return post_bootstrap(ip, transport, listener, ni, head_info)
 
-        return ready(ip, transport, listener, metadata, head_info)
+        return ready(ip, transport, listener, ni, head_info)
 
     def post_bootstrap(
         ip: str,
         transport: Any, listener: Any,
-        metadata: InstanceMetadata,
+        ni: NodeInstance,
         head_info: HeadAddressKnown | None,
     ) -> Behavior[InstanceMsg]:
         async def receive(
@@ -278,7 +278,7 @@ def instance_actor(
         ) -> Behavior[InstanceMsg]:
             match msg:
                 case HeadAddressKnown() as h:
-                    return post_bootstrap(ip, transport, listener, metadata, h)
+                    return post_bootstrap(ip, transport, listener, ni, h)
                 case _LocalInstallDone(instance=info):
                     if spec.image and getattr(spec.image, "includes", None):
                         ctx.pipe_to_self(
@@ -287,9 +287,9 @@ def instance_actor(
                             on_failure=lambda e: _PostBootstrapFailed(error=str(e)),
                         )
                         return Behaviors.same()
-                    return ready(ip, transport, listener, metadata, head_info)
+                    return ready(ip, transport, listener, ni, head_info)
                 case _UserCodeSyncDone():
-                    return ready(ip, transport, listener, metadata, head_info)
+                    return ready(ip, transport, listener, ni, head_info)
                 case _PostBootstrapFailed(error=err):
                     await _cleanup_transport(transport, listener)
                     parent.tell(InstanceDied(instance_id=instance_id, reason=err))
@@ -308,13 +308,13 @@ def instance_actor(
     def ready(
         ip: str,
         transport: Any, listener: Any,
-        metadata: InstanceMetadata,
+        ni: NodeInstance,
         head_info: HeadAddressKnown | None,
     ) -> Behavior[InstanceMsg]:
         is_head = node_id == 0
 
         if is_head:
-            head_private = metadata.private_ip or metadata.ip
+            head_private = ni.instance.private_ip or ni.instance.ip or ""
             parent.tell(HeadAddressKnown(
                 head_addr=head_private,
                 casty_port=25520,
@@ -322,19 +322,19 @@ def instance_actor(
                 concurrency=spec.concurrency,
             ))
             log.info("Starting worker (role=head)")
-            return _start_worker(ip, transport, listener, metadata, head_info)
+            return _start_worker(ip, transport, listener, ni, head_info)
 
         if head_info is not None:
             log.info("Starting worker (role=worker)")
-            return _start_worker(ip, transport, listener, metadata, head_info)
+            return _start_worker(ip, transport, listener, ni, head_info)
 
         log.info("Waiting for head address before starting worker")
-        return waiting_for_head(ip, transport, listener, metadata)
+        return waiting_for_head(ip, transport, listener, ni)
 
     def waiting_for_head(
         ip: str,
         transport: Any, listener: Any,
-        metadata: InstanceMetadata,
+        ni: NodeInstance,
     ) -> Behavior[InstanceMsg]:
         async def receive(
             ctx: ActorContext[InstanceMsg], msg: InstanceMsg,
@@ -342,7 +342,7 @@ def instance_actor(
             match msg:
                 case HeadAddressKnown() as h:
                     log.info("Head address received, starting worker")
-                    return _start_worker(ip, transport, listener, metadata, h)
+                    return _start_worker(ip, transport, listener, ni, h)
                 case _SnapshotSaved():
                     log.info("Snapshot saved")
                 case _SnapshotFailed(error=error):
@@ -358,16 +358,16 @@ def instance_actor(
     def _start_worker(
         ip: str,
         transport: Any, listener: Any,
-        metadata: InstanceMetadata,
+        ni: NodeInstance,
         head_info: HeadAddressKnown | None,
     ) -> Behavior[InstanceMsg]:
         async def setup(ctx: ActorContext[InstanceMsg]) -> Behavior[InstanceMsg]:
             ctx.pipe_to_self(
-                _do_start_worker(transport, listener, metadata, head_info, node_id, cluster, spec),
+                _do_start_worker(transport, listener, ni, head_info, node_id, cluster, spec),
                 mapper=lambda result: _WorkerStarted(client=result[0], worker_ref=result[1]),
                 on_failure=lambda e: _WorkerFailed(error=str(e)),
             )
-            return _starting_worker_receive(ctx, ip, transport, listener, metadata)
+            return _starting_worker_receive(ctx, ip, transport, listener, ni)
 
         return Behaviors.setup(setup)
 
@@ -375,7 +375,7 @@ def instance_actor(
         ctx: ActorContext[InstanceMsg],
         ip: str,
         transport: Any, listener: Any,
-        metadata: InstanceMetadata,
+        ni: NodeInstance,
     ) -> Behavior[InstanceMsg]:
         async def receive(
             ctx: ActorContext[InstanceMsg], msg: InstanceMsg,
@@ -384,7 +384,7 @@ def instance_actor(
                 case _WorkerStarted(client=client, worker_ref=wref):
                     log.info("Worker joined cluster successfully")
                     parent.tell(InstanceBecameReady(
-                        instance_id=instance_id, ip=ip, metadata=metadata,
+                        instance_id=instance_id, ip=ip, node_instance=ni,
                     ))
                     return joined(ip, client, wref, transport, listener)
                 case _WorkerFailed(error=error):
@@ -460,14 +460,14 @@ def instance_actor(
     return polling()
 
 
-async def _open_tunnel(metadata: InstanceMetadata, cluster: Any) -> tuple[Any, Any]:
+async def _open_tunnel(ni: NodeInstance, cluster: Any) -> tuple[Any, Any]:
     from skyward.infra.ssh import SSHTransport
 
     transport = SSHTransport(
-        host=metadata.ip,
-        user=metadata.ssh_user or cluster.ssh_user,
-        key_path=metadata.ssh_key_path or cluster.ssh_key_path,
-        port=metadata.ssh_port,
+        host=ni.instance.ip or "",
+        user=ni.ssh_user or cluster.ssh_user,
+        key_path=ni.ssh_key_path or cluster.ssh_key_path,
+        port=ni.instance.ssh_port,
     )
     await transport.connect()
     listener = await transport._conn.forward_local_port(  # type: ignore[union-attr]
@@ -479,7 +479,7 @@ async def _open_tunnel(metadata: InstanceMetadata, cluster: Any) -> tuple[Any, A
 async def _do_start_worker(
     transport: Any,
     listener: Any,
-    metadata: InstanceMetadata,
+    ni: NodeInstance,
     head_info: HeadAddressKnown | None,
     node_id: int,
     cluster: Any,
@@ -497,9 +497,9 @@ async def _do_start_worker(
 
     _logging.getLogger("casty").setLevel(_logging.ERROR)
 
-    log = logger.bind(actor="instance", instance_id=metadata.id)
+    log = logger.bind(actor="instance", instance_id=ni.instance.id)
 
-    private_ip = metadata.private_ip or metadata.ip
+    private_ip = ni.instance.private_ip or ni.instance.ip or ""
     casty_port = head_info.casty_port if head_info else 25520
     num_nodes = head_info.num_nodes if head_info else spec.nodes
     concurrency = head_info.concurrency if head_info else spec.concurrency
@@ -508,7 +508,7 @@ async def _do_start_worker(
 
     venv_dir = f"{SKYWARD_DIR}/.venv"
     python_bin = f"{venv_dir}/bin/python"
-    ssh_user = metadata.ssh_user or cluster.ssh_user
+    ssh_user = ni.ssh_user or cluster.ssh_user
     use_sudo = ssh_user != "root"
 
     host = private_ip if node_id != 0 else (head_info.head_addr if head_info else private_ip)
@@ -561,7 +561,8 @@ async def _do_start_worker(
     from skyward.providers.pool_info import build_pool_info
 
     all_nodes = spec.nodes
-    accelerator_count = metadata.accelerator_count or 1
+    accel = ni.instance.offer.instance_type.accelerator
+    accelerator_count = accel.count if accel else 1
     total_accelerators = accelerator_count * all_nodes
     head_addr = head_info.head_addr if head_info else private_ip
 
@@ -575,7 +576,7 @@ async def _do_start_worker(
         job_id=cluster.id,
         peers=[],
         accelerator_type=getattr(spec, "accelerator_name", None),
-        placement_group=network_iface or metadata.network_interface or None,
+        placement_group=network_iface or ni.network_interface or None,
         worker=0,
         workers_per_node=1,
     )
@@ -613,32 +614,32 @@ async def _cleanup_transport(transport: Any, listener: Any) -> None:
         await transport.close()
 
 
-async def _install_local_skyward(info: InstanceMetadata, cluster: Any) -> None:
+async def _install_local_skyward(ni: NodeInstance, cluster: Any) -> None:
     from skyward.providers._bootstrap_ssh import install_local_skyward, wait_for_ssh
 
     transport = await wait_for_ssh(
-        host=info.ip, user=cluster.ssh_user, key_path=cluster.ssh_key_path,
-        port=info.ssh_port,
+        host=ni.instance.ip or "", user=cluster.ssh_user, key_path=cluster.ssh_key_path,
+        port=ni.instance.ssh_port,
     )
     try:
         await install_local_skyward(
-            transport=transport, info=info, use_sudo=cluster.use_sudo,
+            transport=transport, ni=ni, use_sudo=cluster.use_sudo,
         )
     finally:
         await transport.close()
 
 
-async def _sync_user_code(info: InstanceMetadata, spec: Any, cluster: Any) -> None:
+async def _sync_user_code(ni: NodeInstance, spec: Any, cluster: Any) -> None:
     from skyward.providers._bootstrap_ssh import sync_user_code
 
     await sync_user_code(
-        host=info.ip, user=cluster.ssh_user, key_path=cluster.ssh_key_path,
-        port=info.ssh_port, image=spec.image, use_sudo=cluster.use_sudo,
+        host=ni.instance.ip or "", user=cluster.ssh_user, key_path=cluster.ssh_key_path,
+        port=ni.instance.ssh_port, image=spec.image, use_sudo=cluster.use_sudo,
     )
 
 
 async def _run_bootstrap(
-    transport: Any, metadata: InstanceMetadata, cluster: Any, spec: Any,
+    transport: Any, ni: NodeInstance, cluster: Any, spec: Any,
 ) -> None:
     from skyward.providers._bootstrap_ssh import run_bootstrap_via_ssh
 
@@ -646,14 +647,14 @@ async def _run_bootstrap(
     if not image:
         return
 
-    ssh_user = metadata.ssh_user or cluster.ssh_user
+    ssh_user = ni.ssh_user or cluster.ssh_user
     use_sudo = ssh_user != "root"
 
     bootstrap_script = image.generate_bootstrap(ttl=0)
 
     await run_bootstrap_via_ssh(
         transport=transport,
-        info=metadata,
+        ni=ni,
         bootstrap_script=bootstrap_script,
         use_sudo=use_sudo,
     )

@@ -7,10 +7,10 @@ from casty import ActorContext, ActorRef, Behavior, Behaviors
 from skyward.actors.messages import (
     ClusterReady,
     HeadAddressKnown,
-    InstanceMetadata,
     InstancesProvisioned,
     NodeAvailable,
     NodeBecameReady,
+    NodeInstance,
     NodeLost,
     NodeUnavailable,
     PoolMsg,
@@ -42,14 +42,15 @@ def pool_actor() -> Behavior[PoolMsg]:
         ) -> Behavior[PoolMsg]:
             match msg:
                 case StartPool(
-                    spec=spec, provider_config=_, provider=provider, reply_to=reply_to,
+                    spec=spec, provider_config=_, provider=provider,
+                    offer=offer, reply_to=reply_to,
                 ):
                     logger.bind(actor="pool").info(
                         "StartPool received: {nodes} nodes, accelerator={acc}",
                         nodes=spec.nodes, acc=getattr(spec, "accelerator", None),
                     )
                     ctx.pipe_to_self(
-                        provider.prepare(spec),
+                        provider.prepare(spec, offer),
                         mapper=lambda cluster: ClusterReady(cluster=cluster),
                     )
                     return requesting(spec, provider, reply_to)
@@ -220,7 +221,7 @@ def pool_actor() -> Behavior[PoolMsg]:
         cluster: Any,
         reply_to: ActorRef,
         cluster_id: ClusterId,
-        instances: dict[NodeId, InstanceMetadata],
+        instances: dict[NodeId, NodeInstance],
         node_refs: dict[NodeId, ActorRef],
         tm_ref: ActorRef,
         head_addr: str | None = None,
@@ -275,7 +276,7 @@ def pool_actor() -> Behavior[PoolMsg]:
         provider: Any,
         cluster: Any,
         cluster_id: ClusterId,
-        instances: dict[NodeId, InstanceMetadata],
+        instances: dict[NodeId, NodeInstance],
         reply_to: ActorRef,
         node_refs: dict[NodeId, ActorRef],
         tm_ref: ActorRef,
@@ -335,7 +336,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                         cid=cluster_id,
                     )
                     instance_ids = tuple(
-                        inst.id for inst in instances.values()
+                        ni.instance.id for ni in instances.values()
                     )
 
                     async def _shutdown() -> None:

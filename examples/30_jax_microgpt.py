@@ -1,31 +1,35 @@
-"""Distributed MicroGPT in JAX.
+"""Distributed MicroGPT in JAX — Shower Thoughts edition.
 
 Karpathy's MicroGPT (https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95)
 reimplemented in idiomatic JAX with distributed data parallelism via Skyward.
 
-The original gist trains a character-level GPT in pure Python (~200 lines, zero deps).
-This version replaces the custom autograd with JAX's jit + value_and_grad, processes
-full sequences with causal masks instead of one token at a time, and distributes
-training across multiple GPUs with automatic gradient all-reduce.
+Trains a character-level GPT on the top ~10k posts from r/Showerthoughts, then
+generates original pseudo-philosophical one-liners. The model learns punctuation,
+capitalization, and sentence structure from scratch — all at the character level.
+
+The original gist trains in pure Python (~200 lines, zero deps). This version
+replaces the custom autograd with JAX's jit + value_and_grad, processes full
+sequences with causal masks, and distributes training across multiple GPUs with
+automatic gradient all-reduce.
 """
 
 import skyward as sky
 
 
 @sky.compute
-@sky.integrations.jax()
-@sky.stdout(only="head")
+# @sky.integrations.jax()
+# @sky.stdout(only="head")
 def train_microgpt(
-    n_layer: int = 4,
-    n_embd: int = 64,
-    n_head: int = 4,
-    block_size: int = 32,
-    batch_size: int = 64,
-    num_steps: int = 2000,
+    n_layer: int = 6,
+    n_embd: int = 256,
+    n_head: int = 8,
+    block_size: int = 256,
+    batch_size: int = 32,
+    num_steps: int = 5000,
     lr: float = 3e-4,
-    temperature: float = 0.5,
+    temperature: float = 0.8,
     num_samples: int = 20,
-    data_url: str = "https://raw.githubusercontent.com/karpathy/makemore/988aa59/names.txt",
+    data_url: str = "https://skeeto.s3.amazonaws.com/share/showerthoughts",
 ) -> dict:
     import jax
     import jax.numpy as jnp
@@ -46,7 +50,22 @@ def train_microgpt(
         urllib.request.urlretrieve(data_url, data_path)
 
     with open(data_path) as f:
-        docs = [line.strip() for line in f if line.strip()]
+        raw = f.read()
+
+    # Fortune file format: entries separated by \n%\n, each entry has the
+    # thought text followed by an attribution line (— author, date).
+    entries = raw.split("\n%\n")
+    docs = []
+    for entry in entries:
+        lines = entry.strip().split("\n")
+        # Drop the attribution line (starts with —)
+        thought_lines = [
+            line for line in lines
+            if not line.startswith("—") and not line.startswith("\u2014")
+        ]
+        thought = " ".join(thought_lines).strip()
+        if thought:
+            docs.append(thought)
     np.random.RandomState(42).shuffle(docs)
 
     uchars = sorted(set("".join(docs)))
@@ -110,7 +129,7 @@ def train_microgpt(
 
     def rmsnorm(x):
         ms = jnp.mean(x ** 2, axis=-1, keepdims=True)
-        return x * jnp.rsqrt(ms + 1e-5)
+        return x / jnp.sqrt(ms + 1e-5)
 
     def attention(x, layer_params, mask):
         b, t, c = x.shape
@@ -140,7 +159,7 @@ def train_microgpt(
 
     def gpt(params, tokens):
         _, t = tokens.shape
-        tok_emb = params["wte"][tokens]
+        tok_emb = jax.nn.one_hot(tokens, vocab_size) @ params["wte"]
         pos_emb = params["wpe"][jnp.arange(t)]
         x = rmsnorm(tok_emb + pos_emb)
 
@@ -163,9 +182,9 @@ def train_microgpt(
     def loss_fn(params, inputs, targets):
         logits = gpt(params, inputs)                    # (B, T, vocab_size)
         log_probs = jax.nn.log_softmax(logits, axis=-1)
-        target_log_probs = jnp.take_along_axis(
-            log_probs, targets[:, :, None], axis=-1
-        ).squeeze(-1)                                    # (B, T)
+        target_log_probs = (
+            log_probs * jax.nn.one_hot(targets, vocab_size)
+        ).sum(axis=-1)                                   # (B, T)
         mask = targets != pad
         return -jnp.where(mask, target_log_probs, 0.0).sum() / jnp.maximum(mask.sum(), 1)
 
@@ -177,18 +196,15 @@ def train_microgpt(
         lr_t = lr * (1.0 - step / num_steps)
         beta1, beta2, eps = 0.85, 0.99, 1e-8
 
-        def adam_update(p, g, m, v):
-            m_new = beta1 * m + (1 - beta1) * g
-            v_new = beta2 * v + (1 - beta2) * g ** 2
-            m_hat = m_new / (1 - beta1 ** (step + 1))
-            v_hat = v_new / (1 - beta2 ** (step + 1))
-            p_new = p - lr_t * m_hat / (jnp.sqrt(v_hat) + eps)
-            return p_new, m_new, v_new
+        m_state = jax.tree.map(lambda m, g: beta1 * m + (1 - beta1) * g, m_state, grads)
+        v_state = jax.tree.map(lambda v, g: beta2 * v + (1 - beta2) * g ** 2, v_state, grads)
 
-        updates = jax.tree.map(adam_update, params, grads, m_state, v_state)
-        params = jax.tree.map(lambda u: u[0], updates)
-        m_state = jax.tree.map(lambda u: u[1], updates)
-        v_state = jax.tree.map(lambda u: u[2], updates)
+        def apply_adam(p, m, v):
+            m_hat = m / (1 - beta1 ** (step + 1))
+            v_hat = v / (1 - beta2 ** (step + 1))
+            return p - lr_t * m_hat / (jnp.sqrt(v_hat) + eps)
+
+        params = jax.tree.map(apply_adam, params, m_state, v_state)
 
         return params, m_state, v_state, loss
 
@@ -224,7 +240,7 @@ def train_microgpt(
     # --- Inference (head node only) ---
     samples = []
     if info.node == 0:
-        print(f"\n--- generating {num_samples} samples (temperature={temperature}) ---")
+        print(f"\n--- generating {num_samples} shower thoughts (temperature={temperature}) ---")
 
         @jit
         def get_logits(params, token_buf, length):
@@ -249,9 +265,9 @@ def train_microgpt(
                 token_buf = token_buf.at[length].set(token)
                 length += 1
 
-            name = decode(token_buf[1:length].tolist())
-            samples.append(name)
-            print(f"  {si+1:2d}. {name}")
+            thought = decode(token_buf[1:length].tolist())
+            samples.append(thought)
+            print(f"  {si+1:2d}. {thought}")
 
     return {
         "node": info.node,
@@ -270,16 +286,16 @@ def format_results(results: list[dict]) -> None:
 
     head = next(r for r in results if r["node"] == 0)
     if head.get("samples"):
-        print("\nGenerated samples:")
+        print("\nGenerated shower thoughts:")
         for i, s in enumerate(head["samples"], 1):
             print(f"  {i:2d}. {s}")
 
 
 if __name__ == "__main__":
     with sky.ComputePool(
-        provider=sky.VastAI(),
-        accelerator=sky.accelerators.RTX_4090(),
-        nodes=2,
+        provider=sky.AWS(),
+        accelerator=sky.accelerators.T4G(),
+        nodes=1,
         image=sky.Image(pip=["jax[cuda12]"]),
     ) as pool:
         results = train_microgpt() @ pool

@@ -35,10 +35,10 @@ from .messages import (
     BootstrapFailed,
     BootstrapPhase,
     Event,
-    InstanceMetadata,
     Log,
     Metric,
     MonitorMsg,
+    NodeInstance,
     StopMonitor,
     _StreamedEvent,
     _StreamEnded,
@@ -48,7 +48,7 @@ _MAX_RECONNECT_ATTEMPTS = 10
 _RECONNECT_BASE_DELAY = 2.0
 _RECONNECT_MAX_DELAY = 60.0
 
-async def _read_next(stream: AsyncIterator, info: InstanceMetadata) -> MonitorMsg:
+async def _read_next(stream: AsyncIterator, info: NodeInstance) -> MonitorMsg:
     try:
         lines_read, raw_event = await stream.__anext__()
         logger.trace("Read {lines_read}: {raw_event}", lines_read=lines_read, raw_event=raw_event)
@@ -61,12 +61,12 @@ async def _read_next(stream: AsyncIterator, info: InstanceMetadata) -> MonitorMs
     except StopAsyncIteration:
         return _StreamEnded()
     except Exception as e:
-        logger.warning("Instance monitor stream error on {iid}: {err}", iid=info.id, err=e)
+        logger.warning("Instance monitor stream error on {iid}: {err}", iid=info.instance.id, err=e)
         return _StreamEnded(error=str(e))
 
 
 async def _reconnect(
-    info: InstanceMetadata,
+    info: NodeInstance,
     ssh_user: str,
     ssh_key_path: str,
     lines_read: int,
@@ -74,7 +74,7 @@ async def _reconnect(
 ) -> tuple[SSHTransport, AsyncIterator] | None:
     from skyward.infra.ssh import SSHTransport
 
-    log = logger.bind(actor="monitor", instance_id=info.id)
+    log = logger.bind(actor="monitor", instance_id=info.instance.id)
 
     for attempt in range(1, _MAX_RECONNECT_ATTEMPTS + 1):
         delay = min(_RECONNECT_BASE_DELAY * (2 ** (attempt - 1)), _RECONNECT_MAX_DELAY)
@@ -86,10 +86,10 @@ async def _reconnect(
 
         try:
             transport = SSHTransport(
-                host=info.ip,
+                host=info.instance.ip or "",
                 user=ssh_user,
                 key_path=ssh_key_path,
-                port=info.ssh_port,
+                port=info.instance.ssh_port,
                 retry_max_attempts=10,
                 retry_delay=3.0,
             )
@@ -106,7 +106,7 @@ async def _reconnect(
 
 
 def instance_monitor(
-    info: InstanceMetadata,
+    info: NodeInstance,
     ssh_user: str,
     ssh_key_path: str,
     event_listener: ActorRef,
@@ -119,14 +119,14 @@ def instance_monitor(
     async def _setup(ctx: ActorContext[MonitorMsg]) -> Behavior[MonitorMsg]:
         from skyward.infra.ssh import SSHTransport
 
-        log = logger.bind(actor="monitor", instance_id=info.id)
-        log.info("Connecting to {ip}:{port}", ip=info.ip, port=info.ssh_port)
+        log = logger.bind(actor="monitor", instance_id=info.instance.id)
+        log.info("Connecting to {ip}:{port}", ip=info.instance.ip, port=info.instance.ssh_port)
 
         transport = SSHTransport(
-            host=info.ip,
+            host=info.instance.ip or "",
             user=ssh_user,
             key_path=ssh_key_path,
-            port=info.ssh_port,
+            port=info.instance.ssh_port,
             retry_max_attempts=int(ssh_timeout / ssh_retry_interval) + 1,
             retry_delay=ssh_retry_interval,
         )
@@ -152,7 +152,7 @@ def instance_monitor(
         async def receive(ctx: ActorContext[MonitorMsg], msg: MonitorMsg) -> Behavior[MonitorMsg]:
             match msg:
                 case _StreamedEvent(event=event, lines_read=new_lines_read):
-                    log = logger.bind(actor="monitor", instance_id=info.id)
+                    log = logger.bind(actor="monitor", instance_id=info.instance.id)
                     match event:
                         case Metric():
                             log.trace("metric: {name}={value}", name=event.name, value=event.value)
@@ -176,7 +176,7 @@ def instance_monitor(
                         match event:
                             case BootstrapPhase(phase="bootstrap", event="completed"):
                                 mon_log = logger.bind(
-                                    actor="monitor", instance_id=info.id,
+                                    actor="monitor", instance_id=info.instance.id,
                                 )
                                 mon_log.info("Bootstrap completion signal received")
                                 reply_to.tell(BootstrapDone(instance=info, success=True))
@@ -196,10 +196,10 @@ def instance_monitor(
                 case _StreamEnded(error=error):
                     if error is None:
                         logger.bind(
-                            actor="monitor", instance_id=info.id,
+                            actor="monitor", instance_id=info.instance.id,
                         ).info("Stream ended cleanly")
                     if error is not None:
-                        logger.bind(actor="monitor", instance_id=info.id).warning(
+                        logger.bind(actor="monitor", instance_id=info.instance.id).warning(
                             "Stream ended with error, attempting reconnect: {err}", err=error,
                         )
                         await transport.close()
@@ -231,7 +231,7 @@ def instance_monitor(
     return Behaviors.setup(_setup)
 
 
-def _convert(raw_event: object, info: InstanceMetadata) -> Event | None:
+def _convert(raw_event: object, info: NodeInstance) -> Event | None:
     from skyward.infra.ssh import (
         RawBootstrapCommand,
         RawBootstrapConsole,

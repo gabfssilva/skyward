@@ -6,7 +6,7 @@ via JSONL event streaming.
 
 from __future__ import annotations
 
-from skyward.actors.messages import InstanceMetadata
+from skyward.actors.messages import NodeInstance
 from skyward.infra import SSHTransport
 from skyward.observability.logger import logger
 from skyward.providers.bootstrap.compose import SKYWARD_DIR
@@ -55,7 +55,7 @@ async def wait_for_ssh(
 
 async def install_local_skyward(
     transport: SSHTransport,
-    info: InstanceMetadata,
+    ni: NodeInstance,
     log_prefix: str = "",
     use_sudo: bool = True,
     bootstrap_timeout: float = 180.0,
@@ -68,7 +68,7 @@ async def install_local_skyward(
 
     Args:
         transport: Connected SSH transport.
-        info: Instance info (for logging).
+        ni: NodeInstance (for logging).
         log_prefix: Prefix for log messages.
         use_sudo: Whether to use sudo (False for root containers like RunPod/VastAI).
 
@@ -96,7 +96,7 @@ async def install_local_skyward(
 
     # Execute install script
     sudo = "sudo " if use_sudo else ""
-    log.info("Running wheel install script on {iid}", iid=info.id)
+    log.info("Running wheel install script on {iid}", iid=ni.instance.id)
     exit_code, stdout, stderr = await transport.run(
         f"{sudo}bash /tmp/.install-wheel.sh",
         timeout=bootstrap_timeout,
@@ -106,7 +106,7 @@ async def install_local_skyward(
     if exit_code != 0:
         raise RuntimeError(f"Wheel install failed (exit {exit_code}): {stderr or stdout}")
 
-    log.info("Local skyward wheel installed on {iid}", iid=info.id)
+    log.info("Local skyward wheel installed on {iid}", iid=ni.instance.id)
 
 
 async def upload_user_code(
@@ -190,7 +190,7 @@ async def sync_user_code(
 
 async def run_bootstrap_via_ssh(
     transport: SSHTransport,
-    info: InstanceMetadata,
+    ni: NodeInstance,
     bootstrap_script: str,
     use_sudo: bool = False,
     log_prefix: str = "",
@@ -204,7 +204,7 @@ async def run_bootstrap_via_ssh(
 
     Args:
         transport: Connected SSH transport.
-        info: Instance info (for logging).
+        ni: NodeInstance (for logging).
         bootstrap_script: The complete bootstrap script content.
         log_prefix: Prefix for log messages.
     """
@@ -213,7 +213,7 @@ async def run_bootstrap_via_ssh(
     log = logger.bind(component="bootstrap_ssh")
     log.info(
         "Uploading bootstrap script to {iid} ({size:.1f} KB)",
-        iid=info.id, size=len(bootstrap_script) / 1024,
+        iid=ni.instance.id, size=len(bootstrap_script) / 1024,
     )
 
     encoded = base64.b64encode(bootstrap_script.encode()).decode()
@@ -227,9 +227,9 @@ async def run_bootstrap_via_ssh(
     if exit_code != 0:
         raise RuntimeError(f"Bootstrap upload failed: {stderr}")
 
-    log.info("Running bootstrap on {iid}", iid=info.id)
+    log.info("Running bootstrap on {iid}", iid=ni.instance.id)
     await transport.run(
         f"{sudo}bash -c 'nohup /opt/skyward/bootstrap.sh > /opt/skyward/bootstrap.log 2>&1 &'"
     )
 
-    log.info("Bootstrap started on {iid}", iid=info.id)
+    log.info("Bootstrap started on {iid}", iid=ni.instance.id)

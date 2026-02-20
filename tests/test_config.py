@@ -80,11 +80,12 @@ class TestResolvePool:
         )
         pool = resolve_pool("train", project_dir=tmp_path)
         assert isinstance(pool, ComputePool)
-        assert isinstance(pool.provider, AWS)
-        assert pool.provider.region == "us-west-2"
-        assert pool.nodes == 4
-        assert pool.accelerator == "A100"
-        assert pool.allocation == "spot"
+        spec = pool._specs[0]
+        assert isinstance(spec.provider, AWS)
+        assert spec.provider.region == "us-west-2"
+        assert spec.nodes == 4
+        assert spec.accelerator == "A100"
+        assert spec.allocation == "spot"
 
     def test_vastai_pool(self, tmp_path: Path):
         (tmp_path / "skyward.toml").write_text(
@@ -98,10 +99,11 @@ class TestResolvePool:
             'accelerator = "H100"\n'
         )
         pool = resolve_pool("infer", project_dir=tmp_path)
-        assert isinstance(pool.provider, VastAI)
-        assert pool.provider.geolocation == "US"
-        assert pool.nodes == 1
-        assert pool.accelerator == "H100"
+        spec = pool._specs[0]
+        assert isinstance(spec.provider, VastAI)
+        assert spec.provider.geolocation == "US"
+        assert spec.nodes == 1
+        assert spec.accelerator == "H100"
 
     def test_pool_with_image(self, tmp_path: Path):
         (tmp_path / "skyward.toml").write_text(
@@ -163,8 +165,9 @@ class TestResolvePool:
             '[pools.minimal]\nprovider = "a"\nnodes = 1\n'
         )
         pool = resolve_pool("minimal", project_dir=tmp_path)
-        assert pool.allocation == "spot-if-available"
-        assert pool.ttl == 600
+        spec = pool._specs[0]
+        assert spec.allocation == "spot-if-available"
+        assert spec.ttl == 600
 
     def test_runpod_pool(self, tmp_path: Path):
         (tmp_path / "skyward.toml").write_text(
@@ -175,8 +178,9 @@ class TestResolvePool:
             '[pools.gpu]\nprovider = "rp"\nnodes = 1\n'
         )
         pool = resolve_pool("gpu", project_dir=tmp_path)
-        assert isinstance(pool.provider, RunPod)
-        assert pool.provider.container_disk_gb == 100
+        spec = pool._specs[0]
+        assert isinstance(spec.provider, RunPod)
+        assert spec.provider.container_disk_gb == 100
 
     def test_verda_pool(self, tmp_path: Path):
         (tmp_path / "skyward.toml").write_text(
@@ -184,7 +188,7 @@ class TestResolvePool:
             '[pools.gpu]\nprovider = "v"\nnodes = 1\n'
         )
         pool = resolve_pool("gpu", project_dir=tmp_path)
-        assert isinstance(pool.provider, Verda)
+        assert isinstance(pool._specs[0].provider, Verda)
 
     def test_gcp_pool(self, tmp_path: Path):
         (tmp_path / "skyward.toml").write_text(
@@ -198,9 +202,10 @@ class TestResolvePool:
             'nodes = 1\n'
         )
         pool = resolve_pool("gpu", project_dir=tmp_path)
-        assert isinstance(pool.provider, GCP)
-        assert pool.provider.project == "my-project"
-        assert pool.provider.zone == "us-central1-a"
+        spec = pool._specs[0]
+        assert isinstance(spec.provider, GCP)
+        assert spec.provider.project == "my-project"
+        assert spec.provider.zone == "us-central1-a"
 
     def test_global_provider_project_pool(self, tmp_path: Path):
         global_toml = tmp_path / "defaults.toml"
@@ -211,9 +216,10 @@ class TestResolvePool:
             '[pools.train]\nprovider = "shared"\nnodes = 2\n'
         )
         pool = resolve_pool("train", project_dir=project_dir, global_path=global_toml)
-        assert isinstance(pool.provider, AWS)
-        assert pool.provider.region == "eu-west-1"
-        assert pool.nodes == 2
+        spec = pool._specs[0]
+        assert isinstance(spec.provider, AWS)
+        assert spec.provider.region == "eu-west-1"
+        assert spec.nodes == 2
 
 
 class TestComputePoolNamed:
@@ -225,5 +231,6 @@ class TestComputePoolNamed:
         monkeypatch.chdir(tmp_path)
         pool = ComputePool.Named("dev")
         assert isinstance(pool, ComputePool)
-        assert pool.nodes == 2
-        assert pool.accelerator == "T4"
+        spec = pool._specs[0]
+        assert spec.nodes == 2
+        assert spec.accelerator == "T4"

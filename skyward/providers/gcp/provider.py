@@ -11,13 +11,14 @@ import asyncio
 import os
 import re
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
+from skyward.accelerators import Accelerator
 from skyward.api import PoolSpec
-from skyward.api.model import Cluster, Instance, InstanceStatus
+from skyward.api.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
 from skyward.observability.logger import logger
 from skyward.providers.provider import Provider
 from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
@@ -126,24 +127,50 @@ class GCPProvider(Provider[GCP, GCPSpecific]):
             thread_pool=thread_pool,
         )
 
-    async def prepare(self, spec: PoolSpec) -> Cluster[GCPSpecific]:
-        log.info("Preparing GCP cluster infrastructure")
-        cluster_id = f"gcp-{uuid.uuid4().hex[:8]}"
-
-        _, public_key = get_local_ssh_key()
-        ssh_key_path = get_ssh_key_path()
-
+    async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
         if spec.accelerator_name and is_tpu_accelerator(spec.accelerator_name):
-            return await self._prepare_tpu(spec, cluster_id, ssh_key_path)
+            async for offer in self._tpu_offers(spec):
+                yield offer
+            return
 
-        return await self._prepare_gpu(spec, cluster_id, ssh_key_path, public_key)
+        resolved = await self._resolve_machine(spec)
+        log.info(
+            "Resolved machine: {mt} (gpu={gpu}x{model})",
+            mt=resolved.machine_type,
+            gpu=resolved.gpu_count,
+            model=resolved.gpu_model,
+        )
 
-    async def _prepare_tpu(
-        self,
-        spec: PoolSpec,
-        cluster_id: str,
-        ssh_key_path: str,
-    ) -> Cluster[GCPSpecific]:
+        accelerator = (
+            Accelerator(
+                name=resolved.gpu_model,
+                memory=f"{resolved.gpu_vram_gb}GB" if resolved.gpu_vram_gb else "",
+                count=resolved.gpu_count,
+            )
+            if resolved.gpu_count > 0
+            else None
+        )
+
+        it = InstanceType(
+            name=resolved.machine_type,
+            accelerator=accelerator,
+            vcpus=resolved.vcpus,
+            memory_gb=resolved.memory_gb,
+            architecture="x86_64",
+            specific=None,
+        )
+
+        zone = self._config.zone
+        yield Offer(
+            id=f"gcp-{zone}-{resolved.machine_type}",
+            instance_type=it,
+            spot_price=None,
+            on_demand_price=None,
+            billing_unit="second",
+            specific=resolved,
+        )
+
+    async def _tpu_offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
         if not self._tpu:
             raise RuntimeError(
                 "TPU support requires google-cloud-tpu. "
@@ -153,41 +180,89 @@ class GCPProvider(Provider[GCP, GCPSpecific]):
         tpu_type = resolve_tpu_type(spec.accelerator_name or "")
         log.info("Resolved TPU type: {tpu_type}", tpu_type=tpu_type)
 
+        resolved = ResolvedMachine(
+            machine_type=f"tpu-{tpu_type}",
+            uses_guest_accelerators=False,
+            accelerator_type=tpu_type,
+            gpu_count=0,
+            gpu_model=tpu_type,
+            gpu_vram_gb=0,
+            vcpus=0,
+            memory_gb=0.0,
+        )
+
+        it = InstanceType(
+            name=f"tpu-{tpu_type}",
+            accelerator=Accelerator(name=tpu_type, count=1),
+            vcpus=0,
+            memory_gb=0.0,
+            architecture="x86_64",
+            specific=None,
+        )
+
+        zone = self._config.zone
+        yield Offer(
+            id=f"gcp-{zone}-tpu-{tpu_type}",
+            instance_type=it,
+            spot_price=None,
+            on_demand_price=None,
+            billing_unit="second",
+            specific=resolved,
+        )
+
+    async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[GCPSpecific]:
+        log.info("Preparing GCP cluster infrastructure")
+        cluster_id = f"gcp-{uuid.uuid4().hex[:8]}"
+
+        _, public_key = get_local_ssh_key()
+        ssh_key_path = get_ssh_key_path()
+
+        resolved: ResolvedMachine = offer.specific
+
+        if resolved.machine_type.startswith("tpu-"):
+            return await self._prepare_tpu(spec, offer, cluster_id, ssh_key_path)
+
+        return await self._prepare_gpu(spec, offer, cluster_id, ssh_key_path, public_key)
+
+    async def _prepare_tpu(
+        self,
+        spec: PoolSpec,
+        offer: Offer,
+        cluster_id: str,
+        ssh_key_path: str,
+    ) -> Cluster[GCPSpecific]:
+        resolved: ResolvedMachine = offer.specific
+
         return Cluster(
             id=cluster_id,
             status="setting_up",
             spec=spec,
+            offer=offer,
             ssh_key_path=ssh_key_path,
             ssh_user="root",
             use_sudo=False,
             shutdown_command="shutdown -h now",
-            instances=(),
             specific=GCPSpecific(
                 project=self._project,
                 zone=self._config.zone,
                 template_name="",
                 firewall_rule=None,
-                machine_type=f"tpu-{tpu_type}",
+                machine_type=resolved.machine_type,
                 image="tpu-ubuntu2204-base",
                 uses_guest_accelerators=False,
-                accelerator_type=tpu_type,
+                accelerator_type=resolved.accelerator_type,
             ),
         )
 
     async def _prepare_gpu(
         self,
         spec: PoolSpec,
+        offer: Offer,
         cluster_id: str,
         ssh_key_path: str,
         public_key: str,
     ) -> Cluster[GCPSpecific]:
-        resolved = await self._resolve_machine(spec)
-        log.info(
-            "Resolved machine: {mt} (gpu={gpu}x{model})",
-            mt=resolved.machine_type,
-            gpu=resolved.gpu_count,
-            model=resolved.gpu_model,
-        )
+        resolved: ResolvedMachine = offer.specific
 
         has_gpu = resolved.gpu_count > 0
         image = select_image_family(has_gpu=has_gpu)
@@ -217,11 +292,11 @@ class GCPProvider(Provider[GCP, GCPSpecific]):
             id=cluster_id,
             status="setting_up",
             spec=spec,
+            offer=offer,
             ssh_key_path=ssh_key_path,
             ssh_user="skyward",
             use_sudo=True,
             shutdown_command="sudo shutdown -h now",
-            instances=(),
             specific=GCPSpecific(
                 project=self._project,
                 zone=self._config.zone,
@@ -306,14 +381,10 @@ class GCPProvider(Provider[GCP, GCPSpecific]):
             return Instance(
                 id=node_id,
                 status="provisioning" if not ip else "provisioned",
+                offer=cluster.offer,
                 ip=ip,
                 spot=use_spot,
-                instance_type=specific.machine_type,
-                accelerator_count=1,
-                accelerator_model=specific.accelerator_type,
-                accelerator_vram_gb=0,
                 region=_zone_to_region(specific.zone),
-                billing_increment=1,
             )
 
         instances = list(await asyncio.gather(
@@ -375,16 +446,10 @@ class GCPProvider(Provider[GCP, GCPSpecific]):
             Instance(
                 id=str(gce_inst.id),  # type: ignore[union-attr]
                 status="provisioning",
+                offer=cluster.offer,
                 ip=_extract_external_ip(gce_inst),
                 spot=use_spot,
-                instance_type=specific.machine_type,
-                accelerator_count=specific.gpu_count,
-                accelerator_model=specific.gpu_model,
-                accelerator_vram_gb=specific.gpu_vram_gb,
-                vcpus=specific.vcpus,
-                memory_gb=specific.memory_gb,
                 region=_zone_to_region(specific.zone),
-                billing_increment=1,
             )
             for gce_inst in gce_instances
         ]
@@ -432,27 +497,19 @@ class GCPProvider(Provider[GCP, GCPSpecific]):
                 return cluster, Instance(
                     id=instance_id,
                     status="provisioned",
+                    offer=cluster.offer,
                     ip=ip,
                     spot=use_spot,
-                    instance_type=specific.machine_type,
-                    accelerator_count=1,
-                    accelerator_model=specific.accelerator_type,
-                    accelerator_vram_gb=0,
                     region=_zone_to_region(specific.zone),
-                    billing_increment=1,
                 )
             case _:
                 return cluster, Instance(
                     id=instance_id,
                     status="provisioning",
+                    offer=cluster.offer,
                     ip=_extract_tpu_ip(node),
                     spot=use_spot,
-                    instance_type=specific.machine_type,
-                    accelerator_count=1,
-                    accelerator_model=specific.accelerator_type,
-                    accelerator_vram_gb=0,
                     region=_zone_to_region(specific.zone),
-                    billing_increment=1,
                 )
 
     async def _get_gpu_instance(
@@ -482,11 +539,11 @@ class GCPProvider(Provider[GCP, GCPSpecific]):
                 return cluster, None
             case "RUNNING" if _extract_external_ip(gce_inst):
                 return cluster, _build_gcp_instance(
-                    gce_inst, "provisioned", specific,
+                    gce_inst, "provisioned", cluster.offer,
                 )
             case _:
                 return cluster, _build_gcp_instance(
-                    gce_inst, "provisioning", specific,
+                    gce_inst, "provisioning", cluster.offer,
                 )
 
     async def terminate(
@@ -955,23 +1012,15 @@ def _extract_external_ip(instance: object) -> str | None:
 
 
 def _build_gcp_instance(
-    gce_inst: object, status: InstanceStatus, specific: GCPSpecific,
+    gce_inst: object, status: InstanceStatus, offer: Offer,
 ) -> Instance:
     """Build a Skyward Instance from a GCE instance."""
     return Instance(
         id=str(gce_inst.id),  # type: ignore[union-attr]
         status=status,
+        offer=offer,
         ip=_extract_external_ip(gce_inst),
-        ssh_port=22,
         spot=_is_spot_instance(gce_inst),
-        instance_type=specific.machine_type,
-        accelerator_count=specific.gpu_count,
-        accelerator_model=specific.gpu_model,
-        accelerator_vram_gb=specific.gpu_vram_gb,
-        vcpus=specific.vcpus,
-        memory_gb=specific.memory_gb,
-        region=_zone_to_region(specific.zone),
-        billing_increment=1,
     )
 
 
