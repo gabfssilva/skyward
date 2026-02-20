@@ -257,6 +257,45 @@ def train(x_full, y_full):
 
 The `shuffle` parameter randomizes the order before sharding, with a fixed `seed` ensuring all nodes agree on the same permutation. `drop_last=True` switches from striding to contiguous blocks and discards leftover elements, guaranteeing equal shard sizes — useful when your training loop requires fixed batch dimensions.
 
+## Streaming
+
+The patterns above — `>>`, `@`, `&`, `gather` — all follow the same shape: serialize the function and arguments, ship them to a worker, execute, serialize the result, ship it back. The full result materializes on the worker before anything crosses the network. For most workloads this is fine. But some computations produce results incrementally — a training loop that yields metrics every epoch, a data pipeline that emits rows one at a time, a search that finds matches progressively. Waiting for the entire result before returning anything wastes time and memory.
+
+Streaming changes this. If a `@sky.compute` function is a generator — it uses `yield` instead of `return` — Skyward streams the values back to the caller as they're produced. The dispatch expression `task() >> pool` returns a synchronous iterator instead of a single value, and each element arrives as soon as the worker yields it:
+
+```python
+@sky.compute
+def generate_samples(n: int):
+    for i in range(n):
+        yield expensive_sample(i)
+
+with sky.ComputePool(provider=sky.AWS(), nodes=1) as pool:
+    for sample in generate_samples(1000) >> pool:
+        save(sample)  # processes each sample as it arrives
+```
+
+The inverse also works: parameters annotated with `Iterator[T]` are streamed *to* the worker instead of being serialized as a single blob. This means a 10GB dataset doesn't need to fit in a single cloudpickle payload — it flows to the worker element by element, and the worker consumes it as a regular `for` loop:
+
+```python
+from collections.abc import Iterator
+
+@sky.compute
+def process(data: Iterator[dict]) -> int:
+    count = 0
+    for record in data:
+        transform(record)
+        count += 1
+    return count
+
+result = process(iter(huge_dataset)) >> pool
+```
+
+Both directions can be combined: a function that takes an `Iterator` input and yields results creates a bidirectional stream — data flows in, transformed results flow out, and neither side buffers the full dataset in memory.
+
+Under the hood, streaming is built on Casty's `stream_producer` and `stream_consumer` actors, which provide backpressure-aware message passing over the SSH-tunneled TCP connection. If the consumer falls behind, the producer pauses automatically. The detection is fully implicit: Skyward inspects the function at dispatch time — if it's a generator, it wraps the output in a stream; if a parameter has an `Iterator[T]` annotation, it wraps the argument in an input stream. No configuration, no special classes.
+
+For a practical walkthrough with code examples, see the [Streaming](guides/streaming.md) guide.
+
 ## Providers
 
 Throughout this page, the `provider` parameter has appeared in every `ComputePool` example — `sky.AWS()`, `sky.RunPod()`, `sky.VastAI()`, `sky.Verda()`, `sky.Container()`. The provider is the bridge between Skyward's orchestration model and a specific cloud's API. It knows how to translate abstract requests ("I need 4 machines with A100 GPUs") into the concrete API calls that each cloud requires.
@@ -405,5 +444,6 @@ For a practical walkthrough with code examples, see the [Multi-Provider Selectio
 - **[Distributed Training](distributed-training.md)** — Multi-node training with PyTorch, Keras, and JAX
 - **[Providers](providers.md)** — AWS, GCP, RunPod, VastAI, and Verda
 - **[Distributed Collections](distributed-collections.md)** — Shared state across nodes
+- **[Streaming](guides/streaming.md)** — Incremental input and output with generators
 - **[Multi-Provider Selection](guides/multi-provider.md)** — Cross-provider price comparison
 - **[API Reference](reference/pool.md)** — Complete API documentation
