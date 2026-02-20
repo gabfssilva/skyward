@@ -528,9 +528,10 @@ class ComputePool:
         return pending.timeout if pending.timeout is not None else self.default_compute_timeout
 
     def _submit(self, pending: PendingCompute[Any]) -> Callable[[ActorRef[Any]], SubmitTask]:
+        timeout = self._resolve_timeout(pending)
         return lambda reply_to: SubmitTask(
             fn=pending.fn, args=pending.args, kwargs=pending.kwargs,
-            reply_to=reply_to,
+            reply_to=reply_to, timeout=timeout,
         )
 
     def run[T](self, pending: PendingCompute[T]) -> T:
@@ -575,11 +576,11 @@ class ComputePool:
                 self._pool_ref,
                 lambda reply_to: SubmitBroadcast(
                     fn=pending.fn, args=pending.args, kwargs=pending.kwargs,
-                    reply_to=reply_to,
+                    reply_to=reply_to, timeout=timeout,
                 ),
                 timeout=timeout,
             )
-            return list(map(self._unwrap_broadcast_result, result))
+            return [self._unwrap_broadcast_result(v) for v in result]
 
         return self._run_sync(_broadcast())
 
@@ -588,7 +589,6 @@ class ComputePool:
     ) -> tuple[Any, ...] | Generator[Any, None, None]:
         if not self._active or self._pool_ref is None or self._system is None:
             raise RuntimeError("Pool is not active")
-
         logger.debug("Running {n} tasks in parallel", n=len(group.items))
         if group.stream:
             return self._run_parallel_stream(group)

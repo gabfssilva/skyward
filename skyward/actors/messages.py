@@ -347,9 +347,12 @@ class Preempted:
 
 @dataclass(frozen=True, slots=True)
 class Execute:
-    fn_bytes: bytes
+    fn: Any
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
     reply_to: ActorRef[Any]
     task_id: str = ""
+    timeout: float = 600.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -481,9 +484,12 @@ class InstanceDied:
 
 @dataclass(frozen=True, slots=True)
 class ExecuteOnNode:
-    fn_bytes: bytes
+    fn: Any
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
     reply_to: ActorRef[Any]
     task_id: str = ""
+    timeout: float = 600.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -604,6 +610,7 @@ class SubmitTask:
     kwargs: dict[str, Any]
     reply_to: ActorRef[Any]
     task_id: str = field(default_factory=lambda: uuid4().hex[:8])
+    timeout: float = 600.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -613,6 +620,7 @@ class SubmitBroadcast:
     kwargs: dict[str, Any]
     reply_to: ActorRef[Any]
     task_id: str = field(default_factory=lambda: uuid4().hex[:8])
+    timeout: float = 600.0
 
 
 @dataclass(frozen=True, slots=True)

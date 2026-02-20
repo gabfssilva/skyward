@@ -69,7 +69,9 @@ sequenceDiagram
     participant Instance
 
     User->>Pool: __enter__
-    Pool->>Provider: prepare(spec)
+    Pool->>Provider: offers(spec)
+    Provider-->>Pool: Offer (selected)
+    Pool->>Provider: prepare(spec, offer)
     Provider-->>Pool: Cluster
     Pool->>Provider: provision(cluster, N)
     Provider-->>Pool: Instances
@@ -259,15 +261,16 @@ The `shuffle` parameter randomizes the order before sharding, with a fixed `seed
 
 Throughout this page, the `provider` parameter has appeared in every `ComputePool` example — `sky.AWS()`, `sky.RunPod()`, `sky.VastAI()`, `sky.Verda()`, `sky.Container()`. The provider is the bridge between Skyward's orchestration model and a specific cloud's API. It knows how to translate abstract requests ("I need 4 machines with A100 GPUs") into the concrete API calls that each cloud requires.
 
-All providers implement the same protocol — `Provider[C, S]` — which defines five operations that map directly to the pool lifecycle discussed earlier:
+All providers implement the same protocol — `Provider[C, S]` — which defines six operations that map directly to the pool lifecycle discussed earlier:
 
-- `prepare(spec)` — Set up cluster-level infrastructure before any instance exists: register SSH keys, create VPCs and security groups (AWS), resolve GPU types, configure overlay networks. Returns an immutable `Cluster` context that flows through all subsequent calls.
+- `offers(spec)` — Query available machine types and pricing that match the spec. Returns an async iterator of `Offer` objects — normalized descriptions of hardware and pricing that can be compared across providers. This is what enables cross-provider selection.
+- `prepare(spec, offer)` — Set up cluster-level infrastructure for the selected offer: register SSH keys, create VPCs and security groups (AWS), resolve GPU types, configure overlay networks. Returns an immutable `Cluster` context that flows through all subsequent calls.
 - `provision(cluster, count)` — Launch the requested number of instances. Returns them in a "provisioning" state — the machines exist, but may not be running yet.
 - `get_instance(cluster, id)` — Poll the status of a single instance. The instance actor calls this repeatedly until the machine is running and has an IP address.
 - `terminate(cluster, ids)` — Destroy specific instances.
 - `teardown(cluster)` — Clean up everything `prepare` created: delete security groups, deregister keys, remove temporary infrastructure.
 
-This protocol is what makes the orchestration layer provider-agnostic. The pool actor, node actors, and instance actors don't know whether they're talking to AWS, RunPod, or a local Docker daemon — they only know the five methods above. Adding a new cloud provider means implementing this protocol; nothing else in the system needs to change.
+This protocol is what makes the orchestration layer provider-agnostic. The pool actor, node actors, and instance actors don't know whether they're talking to AWS, RunPod, or a local Docker daemon — they only know the six methods above. Adding a new cloud provider means implementing this protocol; nothing else in the system needs to change.
 
 Provider configs (`sky.AWS()`, `sky.RunPod()`, etc.) are deliberately lightweight. They're plain dataclasses that hold configuration — region, credentials path, API keys — but don't import any cloud SDK at module level. The actual SDK (`boto3`, `aioboto3`, RunPod's GraphQL client, etc.) is loaded lazily when `create_provider()` is called at pool start. This means `import skyward` stays fast regardless of which providers are installed, and you only pay the import cost for the provider you're actually using.
 
@@ -319,10 +322,88 @@ Spot instances are typically 60-90% cheaper than on-demand. The trade-off is tha
 
 The default `"spot-if-available"` tries to get the best of both: it requests spot capacity first and falls back to on-demand if none is available. This means your pool always starts, even during periods of high spot demand, without requiring you to handle the fallback logic yourself.
 
+## Resource Selection
+
+The previous sections described choosing a single provider and a single allocation strategy. But accelerator availability and pricing vary across providers and change constantly. An A100 on VastAI might cost $1.50/hr right now while the same accelerator on AWS is $3.00/hr — or VastAI might have no capacity at all. Skyward's resource selection system lets you describe multiple hardware preferences and let the system find the best option.
+
+### Spec
+
+A `Spec` is a frozen dataclass that bundles a provider with hardware preferences into a single, composable unit:
+
+```python
+sky.Spec(
+    provider=sky.VastAI(),
+    accelerator="A100",
+    nodes=4,
+    allocation="spot",
+    max_hourly_cost=2.50,
+)
+```
+
+It carries the same fields you'd normally pass to `ComputePool` — `accelerator`, `nodes`, `vcpus`, `memory_gb`, `architecture`, `allocation`, `region`, `max_hourly_cost`, `ttl` — but scoped to a specific provider. `ComputePool` accepts multiple `Spec` objects as positional arguments:
+
+```python
+with sky.ComputePool(
+    sky.Spec(provider=sky.VastAI(), accelerator="A100"),
+    sky.Spec(provider=sky.AWS(), accelerator="A100"),
+    selection="cheapest",
+) as pool:
+    result = train(data) >> pool
+```
+
+The single-provider form still works — `ComputePool(provider=sky.AWS(), accelerator="A100")` internally creates a single `Spec` and wraps it in a tuple.
+
+### Offers and Instance Types
+
+Cross-provider comparison requires a common representation of what each provider offers. Skyward models this with two types:
+
+- **`InstanceType`** — A normalized, cacheable hardware description: machine name, accelerator, vCPUs, memory, architecture. This is the same across spot and on-demand pricing for the same machine.
+- **`Offer`** — Ephemeral pricing and availability on top of an `InstanceType`: spot price, on-demand price, billing unit (second, minute, or hour). Each provider's `offers()` method yields `Offer` objects for a given spec.
+
+Because different providers produce structurally identical `Offer` objects, Skyward can compare an AWS `p4d.24xlarge` against a VastAI marketplace listing against a Verda H100 — all as normalized offers with comparable prices.
+
+### Selection Strategies
+
+The `selection` parameter on `ComputePool` controls how Skyward chooses among the offers from multiple specs:
+
+- **`"cheapest"`** (default) — Queries all specs, collects all available offers, and picks the one with the lowest price. Best when you want cost optimization and don't have a strong provider preference.
+- **`"first"`** — Tries specs in the order you listed them, and stops at the first provider with available offers. Best when you have a preferred provider and want deterministic fallback.
+
+### The Selection Flow
+
+Before provisioning anything, `ComputePool` runs a selection phase to determine where to provision:
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Pool
+    participant Provider A
+    participant Provider B
+
+    User->>Pool: __enter__
+
+    Pool->>Provider A: offers(spec_a)
+    Provider A-->>Pool: Offer[]
+    Pool->>Provider B: offers(spec_b)
+    Provider B-->>Pool: Offer[]
+
+    Pool->>Pool: select best offer
+
+    Pool->>Provider B: prepare(spec, offer)
+    Provider B-->>Pool: Cluster
+    Pool->>Provider B: provision(cluster, N)
+    Note over Pool,Provider B: (lifecycle continues as usual)
+```
+
+The key insight is that offer querying is fast (API calls to check availability and pricing) while provisioning is slow (launching machines). By querying all providers before committing to one, Skyward makes an informed decision without wasting time on failed provisioning attempts.
+
+For a practical walkthrough with code examples, see the [Multi-Provider Selection](guides/multi-provider.md) guide.
+
 ## Next Steps
 
 - **[Getting Started](getting-started.md)** — Installation, credentials, and first example
 - **[Distributed Training](distributed-training.md)** — Multi-node training with PyTorch, Keras, and JAX
-- **[Providers](providers.md)** — AWS, RunPod, VastAI, and Verda
+- **[Providers](providers.md)** — AWS, GCP, RunPod, VastAI, and Verda
 - **[Distributed Collections](distributed-collections.md)** — Shared state across nodes
+- **[Multi-Provider Selection](guides/multi-provider.md)** — Cross-provider price comparison
 - **[API Reference](reference/pool.md)** — Complete API documentation

@@ -40,7 +40,14 @@ from skyward.infra.worker import (
     ExecuteTask as WorkerExecuteTask,
 )
 from skyward.infra.worker import (
+    TaskFailed as WorkerTaskFailed,
+)
+from skyward.infra.worker import (
     TaskSucceeded as WorkerTaskSucceeded,
+)
+from skyward.infra.worker import (
+    _CompressedResult,
+    _decompress_result,
 )
 from skyward.observability.logger import logger
 from skyward.providers.provider import WarmableProvider
@@ -384,7 +391,8 @@ def instance_actor(
                 case _WorkerStarted(client=client, worker_ref=wref):
                     log.info("Worker joined cluster successfully")
                     parent.tell(InstanceBecameReady(
-                        instance_id=instance_id, ip=ip, node_instance=ni,
+                        instance_id=instance_id, ip=ip,
+                        node_instance=ni,
                     ))
                     return joined(ip, client, wref, transport, listener)
                 case _WorkerFailed(error=error):
@@ -413,14 +421,10 @@ def instance_actor(
             ctx: ActorContext[InstanceMsg], msg: InstanceMsg,
         ) -> Behavior[InstanceMsg]:
             match msg:
-                case Execute(fn_bytes=fn_bytes, task_id=tid):
+                case Execute(fn=fn, args=args, kwargs=kwargs, task_id=tid, timeout=timeout):
                     log.debug("Executing task {tid}", tid=tid)
                     ctx.pipe_to_self(
-                        client.ask(
-                            worker_ref,
-                            lambda rto: WorkerExecuteTask(fn_bytes=fn_bytes, reply_to=rto),  # type: ignore[arg-type]
-                            timeout=600.0,
-                        ),
+                        _execute_with_streaming(client, worker_ref, fn, args, kwargs, timeout),
                         mapper=lambda result, _tid=tid: _CorrelatedTaskResult(  # type: ignore[return-value]
                             task_id=_tid,
                             value=(
@@ -658,3 +662,105 @@ async def _run_bootstrap(
         bootstrap_script=bootstrap_script,
         use_sudo=use_sudo,
     )
+
+
+async def _execute_with_streaming(
+    client: Any,
+    worker_ref: Any,
+    fn: Any,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    timeout: float,
+) -> WorkerTaskSucceeded | WorkerTaskFailed:
+    from skyward.infra.serialization import serialize
+    from skyward.infra.streaming import _stream_param_indices, _StreamHandle, _SyncSource
+
+    indices = _stream_param_indices(fn)
+    pump_tasks: list[asyncio.Task[None]] = []
+    resolved_args = args
+    stream_refs: tuple[tuple[int, Any], ...] = ()
+
+    if indices:
+        resolved_args, pump_tasks, stream_refs = await _setup_input_streams(
+            client, args, indices,
+        )
+
+    fn_bytes = serialize({"fn": fn, "args": resolved_args, "kwargs": kwargs})
+    log = logger.bind(component="execute_streaming")
+    log.debug("Sending to worker, {n} bytes, streams={s}", n=len(fn_bytes), s=len(stream_refs))
+    result = await client.ask(
+        worker_ref,
+        lambda rto: WorkerExecuteTask(
+            fn_bytes=fn_bytes, reply_to=rto, input_streams=stream_refs,
+        ),
+        timeout=timeout,
+    )
+    log.debug("Worker replied: {t}", t=type(result).__name__)
+
+    for t in pump_tasks:
+        await t
+
+    match result:
+        case WorkerTaskSucceeded(result=_StreamHandle(producer_ref=pref)):
+            source = await _resolve_output_stream(client, pref)
+            loop = asyncio.get_running_loop()
+            return WorkerTaskSucceeded(result=_SyncSource(source, loop), node_id=result.node_id)
+        case WorkerTaskSucceeded(result=_CompressedResult() as compressed):
+            return WorkerTaskSucceeded(
+                result=_decompress_result(compressed), node_id=result.node_id,
+            )
+        case _:
+            return result
+
+
+async def _setup_input_streams(
+    client: Any,
+    args: tuple[Any, ...],
+    indices: tuple[int, ...],
+) -> tuple[tuple[Any, ...], list[asyncio.Task[None]], tuple[tuple[int, Any], ...]]:
+    from uuid import uuid4
+
+    from casty import GetSink, stream_producer
+
+    resolved = list(args)
+    pump_tasks: list[asyncio.Task[None]] = []
+    stream_refs: list[tuple[int, Any]] = []
+    loop = asyncio.get_running_loop()
+
+    for i in indices:
+        if i >= len(resolved):
+            continue
+        iterator = resolved[i]
+
+        producer_ref = client.spawn(
+            stream_producer(buffer_size=256),
+            f"input-{uuid4().hex[:8]}",
+        )
+        sink = await client.ask(producer_ref, lambda r: GetSink(reply_to=r), timeout=10.0)
+        resolved[i] = None
+        stream_refs.append((i, producer_ref))
+
+        async def _pump(_sink: Any = sink, _it: Any = iterator) -> None:
+            def _drain() -> None:
+                try:
+                    for elem in _it:
+                        asyncio.run_coroutine_threadsafe(_sink.put(elem), loop).result()
+                finally:
+                    asyncio.run_coroutine_threadsafe(_sink.complete(), loop).result()
+            await asyncio.to_thread(_drain)
+
+        pump_tasks.append(asyncio.create_task(_pump()))
+
+    return tuple(resolved), pump_tasks, tuple(stream_refs)
+
+
+async def _resolve_output_stream(client: Any, producer_ref: Any) -> Any:
+    from uuid import uuid4
+
+    from casty import GetSource, stream_consumer
+
+    consumer_ref = client.spawn(
+        stream_consumer(producer_ref, timeout=60.0, initial_demand=16),
+        f"out-consumer-{uuid4().hex[:8]}",
+    )
+    return await client.ask(consumer_ref, lambda r: GetSource(reply_to=r), timeout=10.0)

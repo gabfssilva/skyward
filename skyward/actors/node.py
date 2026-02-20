@@ -27,11 +27,20 @@ type NodeId = int
 
 
 @dataclass(frozen=True, slots=True)
+class _PendingTask:
+    fn: Any
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
+    reply_to: ActorRef[Any]
+    timeout: float
+
+
+@dataclass(frozen=True, slots=True)
 class ActiveState:
     cluster: Any
     provider: Any
     instance_ref: ActorRef | None
-    pending_tasks: tuple[tuple[bytes, ActorRef], ...] = ()
+    pending_tasks: tuple[_PendingTask, ...] = ()
     inflight: dict[str, ActorRef] = field(default_factory=dict)
     task_counter: int = 0
     current_node_instance: NodeInstance | None = None
@@ -74,7 +83,7 @@ def node_actor(
         cluster: Any,
         provider: Any,
         instance_ref: ActorRef,
-        pending_tasks: tuple[tuple[bytes, ActorRef], ...] = (),
+        pending_tasks: tuple[_PendingTask, ...] = (),
     ) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
             match msg:
@@ -114,11 +123,12 @@ def node_actor(
                         ),
                     )
                     return replacing(cluster, provider, pending_tasks)
-                case ExecuteOnNode(fn_bytes, reply_to):
+                case ExecuteOnNode() as ex:
                     log.debug("Node {nid} queuing task while waiting", nid=node_id)
+                    pt = _PendingTask(ex.fn, ex.args, ex.kwargs, ex.reply_to, ex.timeout)
                     return waiting(
                         cluster, provider, instance_ref,
-                        (*pending_tasks, (fn_bytes, reply_to)),
+                        (*pending_tasks, pt),
                     )
             return Behaviors.same()
         return Behaviors.receive(receive)
@@ -126,7 +136,7 @@ def node_actor(
     def replacing(
         cluster: Any,
         provider: Any,
-        pending_tasks: tuple[tuple[bytes, ActorRef], ...] = (),
+        pending_tasks: tuple[_PendingTask, ...] = (),
     ) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
             match msg:
@@ -135,10 +145,11 @@ def node_actor(
                 case Provision(instance=instance):
                     instance_ref = _spawn_instance(ctx, instance, provider, cluster)
                     return waiting(cluster, provider, instance_ref, pending_tasks)
-                case ExecuteOnNode(fn_bytes, reply_to):
+                case ExecuteOnNode() as ex:
+                    pt = _PendingTask(ex.fn, ex.args, ex.kwargs, ex.reply_to, ex.timeout)
                     return replacing(
                         cluster, provider,
-                        (*pending_tasks, (fn_bytes, reply_to)),
+                        (*pending_tasks, pt),
                     )
             return Behaviors.same()
         return Behaviors.receive(receive)
@@ -166,12 +177,14 @@ def node_actor(
                     new_inflight = dict(s.inflight)
                     new_counter = s.task_counter
                     if s.instance_ref:
-                        for fn_bytes, rto in s.pending_tasks:
+                        for pt in s.pending_tasks:
                             tid = str(new_counter)
                             s.instance_ref.tell(Execute(
-                                fn_bytes=fn_bytes, reply_to=ctx.self, task_id=tid,
+                                fn=pt.fn, args=pt.args, kwargs=pt.kwargs,
+                                reply_to=ctx.self, task_id=tid,
+                                timeout=pt.timeout,
                             ))
-                            new_inflight[tid] = rto
+                            new_inflight[tid] = pt.reply_to
                             new_counter += 1
                     return active(replace(
                         s, pending_tasks=(), inflight=new_inflight,
@@ -190,14 +203,16 @@ def node_actor(
                         ),
                     )
                     return replacing(s.cluster, s.provider, s.pending_tasks)
-                case ExecuteOnNode(fn_bytes, reply_to, task_id=tid):
-                    local_tid = tid or str(s.task_counter)
+                case ExecuteOnNode() as ex:
+                    local_tid = ex.task_id or str(s.task_counter)
                     log.debug("Node {nid} dispatching task {tid}", nid=node_id, tid=local_tid)
                     if s.instance_ref:
                         s.instance_ref.tell(Execute(
-                            fn_bytes=fn_bytes, reply_to=ctx.self, task_id=local_tid,
+                            fn=ex.fn, args=ex.args, kwargs=ex.kwargs,
+                            reply_to=ctx.self, task_id=local_tid,
+                            timeout=ex.timeout,
                         ))
-                        new_inflight = {**s.inflight, local_tid: reply_to}
+                        new_inflight = {**s.inflight, local_tid: ex.reply_to}
                         return active(replace(
                             s,
                             inflight=new_inflight,

@@ -14,7 +14,6 @@ from skyward.actors.messages import (
     TaskResult,
     TaskSubmitted,
 )
-from skyward.infra.serialization import serialize
 from skyward.observability.logger import logger
 
 log = logger.bind(actor="task_manager")
@@ -44,22 +43,24 @@ def _pick_with_free_slot(
     return None
 
 
-def _serialize_task(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> bytes:
-    return serialize({"fn": fn, "args": args, "kwargs": kwargs})
-
-
 def _dispatch(
     nid: NodeId,
     task_id: str,
-    fn_bytes: bytes,
+    fn: Any,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
     reply_to: ActorRef,
     nodes: dict[NodeId, NodeSlots],
     tm_ref: ActorRef,
     inflight: dict[str, ActorRef],
+    timeout: float = 600.0,
 ) -> dict[NodeId, NodeSlots]:
     slot = nodes[nid]
     tm_ref.tell(TaskSubmitted(task_id=task_id, node_id=nid))
-    slot.ref.tell(ExecuteOnNode(fn_bytes=fn_bytes, reply_to=tm_ref, task_id=task_id))
+    slot.ref.tell(ExecuteOnNode(
+        fn=fn, args=args, kwargs=kwargs,
+        reply_to=tm_ref, task_id=task_id, timeout=timeout,
+    ))
     inflight[task_id] = reply_to
     return {**nodes, nid: NodeSlots(slot.ref, slot.total, slot.used + 1)}
 
@@ -77,8 +78,10 @@ def _drain_queue(
         if nid is None:
             remaining.append(task)
             continue
-        fn_bytes = _serialize_task(task.fn, task.args, task.kwargs)
-        nodes = _dispatch(nid, task.task_id, fn_bytes, task.reply_to, nodes, tm_ref, inflight)
+        nodes = _dispatch(
+            nid, task.task_id, task.fn, task.args, task.kwargs,
+            task.reply_to, nodes, tm_ref, inflight, timeout=task.timeout,
+        )
         round_robin += 1
     return tuple(remaining), nodes, round_robin
 
@@ -166,21 +169,23 @@ def task_manager_actor(max_inflight: int) -> Behavior[TaskManagerMsg]:
                         )
                         return active(replace(s, queue=(*s.queue, task)))
                     log.debug("Dispatching task to node {nid}", nid=nid)
-                    fn_bytes = _serialize_task(task.fn, task.args, task.kwargs)
                     new_nodes = _dispatch(
-                        nid, task.task_id, fn_bytes, task.reply_to,
-                        s.nodes, ctx.self, s.inflight,
+                        nid, task.task_id, task.fn, task.args, task.kwargs,
+                        task.reply_to, s.nodes, ctx.self, s.inflight,
+                        timeout=task.timeout,
                     )
                     return active(replace(s, nodes=new_nodes, round_robin=s.round_robin + 1))
 
                 case SubmitBroadcast() as bcast:
                     n = len(s.nodes)
                     log.debug("Broadcasting task to {n} nodes", n=n)
-                    fn_bytes = _serialize_task(bcast.fn, bcast.args, bcast.kwargs)
                     pending_nodes: set[NodeId] = set()
                     new_nodes = dict(s.nodes)
                     for nid, slot in s.nodes.items():
-                        slot.ref.tell(ExecuteOnNode(fn_bytes=fn_bytes, reply_to=ctx.self))
+                        slot.ref.tell(ExecuteOnNode(
+                            fn=bcast.fn, args=bcast.args, kwargs=bcast.kwargs,
+                            reply_to=ctx.self, timeout=bcast.timeout,
+                        ))
                         new_nodes[nid] = NodeSlots(slot.ref, slot.total, slot.used + 1)
                         pending_nodes.add(nid)
                     s.broadcasts[bcast.task_id] = PendingBroadcast(

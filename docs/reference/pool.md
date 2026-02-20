@@ -2,6 +2,10 @@
 
 ::: skyward.ComputePool
 
+::: skyward.Spec
+
+::: skyward.SelectionStrategy
+
 ::: skyward.compute
 
 ::: skyward.sky
@@ -11,3 +15,7 @@
 ::: skyward.PendingCompute
 
 ::: skyward.PendingComputeGroup
+
+::: skyward.Offer
+
+::: skyward.InstanceType

@@ -394,11 +394,11 @@ wheels = [
 
 [[package]]
 name = "casty"
-version = "0.17.0"
+version = "0.18.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/b5/ac/d531eaef1862b9a99120657c11db7625c68bf642acabd5eada796d376cf2/casty-0.17.0.tar.gz", hash = "sha256:2370fa5ee57a4aef0123015fcbd8a3aa5f26b2864d67dd62e5594bd5f0733154", size = 1296360, upload-time = "2026-02-19T23:22:39.264Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/86/55/57f73d2aeb1edb872ea54991d515a5a9dce0b68ff0131db7ac6643eaa270/casty-0.18.0.tar.gz", hash = "sha256:27e578f84d6d1b3c6aca75f1ffe5b4a9c9ffc68457326a1bd35fedc89c8bd166", size = 1302677, upload-time = "2026-02-20T13:48:00.041Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/38/98/af4caea9658916342105f615fcfbf9d09392ecb7d0b01aaadb02cf39b683/casty-0.17.0-py3-none-any.whl", hash = "sha256:165114dfe13662e9c8a3e709a5bf438c178aed1639bf319f5f77ebb03cf4976f", size = 115118, upload-time = "2026-02-19T23:22:37.525Z" },
+    { url = "https://files.pythonhosted.org/packages/5c/66/b1c6a52f29bd7ab12c02bab45e7a95fc95380be343b77154ec3fa8c2123d/casty-0.18.0-py3-none-any.whl", hash = "sha256:a4e8bd0d789f8cfce10505bc1296ef6b0fabfe14363cf7d6721cfea30fb58bab", size = 115275, upload-time = "2026-02-20T13:47:58.371Z" },
 ]
 
 [[package]]
@@ -2294,6 +2294,15 @@ wheels = [
 ]
 
 [[package]]
+name = "plotext"
+version = "5.3.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c9/d7/f75f397af966fe252d0d34ffd3cae765317fce2134f925f95e7d6725d1ce/plotext-5.3.2.tar.gz", hash = "sha256:52d1e932e67c177bf357a3f0fe6ce14d1a96f7f7d5679d7b455b929df517068e", size = 61967, upload-time = "2024-09-24T15:13:37.728Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f6/1e/12fe7c40cd2099a1f454518754ed229b01beaf3bbb343127f0cc13ce6c22/plotext-5.3.2-py3-none-any.whl", hash = "sha256:394362349c1ddbf319548cfac17ca65e6d5dfc03200c40dfdc0503b3e95a2283", size = 64047, upload-time = "2024-09-24T15:13:36.296Z" },
+]
+
+[[package]]
 name = "pluggy"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3175,6 +3184,7 @@ dev = [
     { name = "mkdocs-material" },
     { name = "mkdocstrings" },
     { name = "mkdocstrings-python" },
+    { name = "plotext" },
     { name = "pymdown-extensions" },
     { name = "pyright" },
     { name = "pytest" },
@@ -3208,7 +3218,7 @@ requires-dist = [
     { name = "boto3-stubs", extras = ["ec2", "ecr", "iam", "s3", "sts"], marker = "extra == 'all'", specifier = ">=1.35.0" },
     { name = "boto3-stubs", extras = ["ec2", "ecr", "iam", "s3", "sts"], marker = "extra == 'aws'", specifier = ">=1.35.0" },
     { name = "boto3-stubs", extras = ["ec2", "ecr", "iam", "s3", "sts"], marker = "extra == 'providers'", specifier = ">=1.35.0" },
-    { name = "casty", specifier = ">=0.17.0" },
+    { name = "casty", specifier = ">=0.18.0" },
     { name = "cloudpickle", specifier = ">=3.1.2" },
     { name = "datasets", marker = "extra == 'all'", specifier = ">=4.4.1" },
     { name = "datasets", marker = "extra == 'huggingface'", specifier = ">=4.4.1" },
@@ -3250,6 +3260,7 @@ dev = [
     { name = "mkdocs-material", specifier = ">=9.7.1" },
     { name = "mkdocstrings", specifier = ">=1.0.3" },
     { name = "mkdocstrings-python", specifier = ">=2.0.2" },
+    { name = "plotext", specifier = ">=5.3.2" },
     { name = "pymdown-extensions", specifier = ">=10.20.1" },
     { name = "pyright", specifier = ">=1.1" },
     { name = "pytest", specifier = ">=8.0" },

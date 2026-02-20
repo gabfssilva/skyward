@@ -46,6 +46,8 @@ You describe hardware needs in logical terms — `"A100"`, `sky.accelerators.H10
 
 The `allocation` parameter is a simple form of economic optimization. `"spot-if-available"` (the default) requests discounted spot capacity first and falls back to on-demand if none is available. `"spot"` always uses spot instances for maximum savings. `"cheapest"` compares all options and picks the lowest-cost one. These aren't as sophisticated as a full intercloud broker optimizing across providers simultaneously, but they capture the core idea: let the system find the best price for the hardware you need, rather than manually comparing instance types and pricing pages.
 
+With multi-spec pools, Skyward takes this further. You can describe the same hardware need across multiple providers — `sky.Spec(provider=sky.VastAI(), accelerator="A100")` alongside `sky.Spec(provider=sky.AWS(), accelerator="A100")` — and Skyward queries all of them, compares the offers, and provisions from the cheapest. This is cross-provider price comparison at the API level, applied automatically at pool start. See [Resource Selection](concepts.md#resource-selection) for details.
+
 ## What Skyward Adds: Ephemeral Compute
 
 While the Berkeley paper focuses on interoperability, Skyward adds a specific philosophy: **ephemeral compute**. Accelerator infrastructure should exist only during your job — not before, not after. The `ComputePool` context manager guarantees this: provision on enter, destroy on exit, cleanup guaranteed even if your code throws an exception.

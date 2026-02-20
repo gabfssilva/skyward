@@ -52,6 +52,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                     ctx.pipe_to_self(
                         provider.prepare(spec, offer),
                         mapper=lambda cluster: ClusterReady(cluster=cluster),
+                        on_failure=lambda err: ProvisionFailed(reason=str(err)),
                     )
                     return requesting(spec, provider, reply_to)
             return Behaviors.same()
@@ -62,14 +63,23 @@ def pool_actor() -> Behavior[PoolMsg]:
     ) -> Behavior[PoolMsg]:
         async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
             match msg:
+                case ProvisionFailed() as pf:
+                    reply_to.tell(pf)
+                    return Behaviors.stopped()
                 case ClusterReady(cluster=cluster):
                     log = logger.bind(actor="pool")
                     log.info("Cluster ready, provisioning {n} instances", n=spec.nodes)
+
+                    def _on_provision_error(err: Exception) -> InstancesProvisioned:
+                        log.warning("Provision failed: {err}", err=err)
+                        return InstancesProvisioned(instances=(), cluster=cluster)
+
                     ctx.pipe_to_self(
                         provider.provision(cluster, spec.nodes),
                         mapper=lambda result: InstancesProvisioned(
                             instances=result[1], cluster=result[0],
                         ),
+                        on_failure=_on_provision_error,
                     )
                     return provisioning_instances(spec, provider, cluster, reply_to)
             return Behaviors.same()
@@ -186,11 +196,18 @@ def pool_actor() -> Behavior[PoolMsg]:
                                 updated_cluster, still_needed,
                             )
 
+                        def _on_retry_error(err: Exception) -> InstancesProvisioned:
+                            log.warning("Retry provision failed: {err}", err=err)
+                            return InstancesProvisioned(
+                                instances=(), cluster=updated_cluster,
+                            )
+
                         ctx.pipe_to_self(
                             _retry_provision(),
                             mapper=lambda result: InstancesProvisioned(
                                 instances=result[1], cluster=result[0],
                             ),
+                            on_failure=_on_retry_error,
                         )
                         return provisioning_instances(
                             spec, provider, updated_cluster, reply_to,
