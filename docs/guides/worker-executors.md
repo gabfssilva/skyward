@@ -12,25 +12,25 @@ Consider a tight numerical loop — pure Python, no C extensions, no I/O:
 
 This is the worst case for the GIL: the Python interpreter never releases the lock, so only one thread can make progress at a time. On a 2-vCPU machine with `concurrency=2`, a thread-based executor will show ~50% CPU utilization — one core active, one idle.
 
-## Process Executor (Default)
-
-The process executor runs each task in a separate OS process via `ProcessPoolExecutor`. Each process has its own Python interpreter and its own GIL, so CPU-bound work saturates all available cores:
-
-```python
---8<-- "examples/guides/14_worker_executors.py:28:38"
-```
-
-On a 2-vCPU instance with `concurrency=2`, this achieves ~100% CPU utilization — both cores fully active. The `executor="process"` is the default, so `Worker(concurrency=2)` is equivalent.
-
-## Thread Executor
+## Thread Executor (Default)
 
 The thread executor runs tasks as threads inside the worker process. All threads share the same memory space and the same GIL:
 
 ```python
---8<-- "examples/guides/14_worker_executors.py:41:51"
+--8<-- "examples/guides/14_worker_executors.py:28:40"
 ```
 
-For the same CPU-bound task on a 2-vCPU machine, this tops out at ~50% CPU — the GIL serializes execution. However, threads are the right choice for I/O-bound work (network calls, disk reads) where tasks spend most of their time waiting rather than computing.
+Threads are lightweight, support streaming (generator functions and iterator parameters), and work seamlessly with distributed collections. For most workloads — I/O-bound tasks, C extension heavy code (NumPy, PyTorch), and mixed workloads — the thread executor is the right choice. The `executor="thread"` is the default, so `Worker(concurrency=2)` is equivalent.
+
+## Process Executor
+
+The process executor runs each task in a separate OS process via `ProcessPoolExecutor`. Each process has its own Python interpreter and its own GIL, so CPU-bound work saturates all available cores:
+
+```python
+--8<-- "examples/guides/14_worker_executors.py:42:53"
+```
+
+On a 2-vCPU instance with `concurrency=2`, this achieves ~100% CPU utilization — both cores fully active. Use this explicitly for pure-Python CPU-bound workloads where bypassing the GIL matters.
 
 ## Trade-offs
 
@@ -45,16 +45,18 @@ For the same CPU-bound task on a 2-vCPU machine, this tops out at ~50% CPU — t
 
 ## When to Use Each
 
-**Use process (default)** for:
-
-- Numerical computation, data transformation, training loops
-- Any workload where Python code dominates CPU time
-- Tasks that benefit from crash isolation
-
-**Use thread** for:
+**Use thread (default)** for:
 
 - I/O-bound tasks (API calls, database queries, file processing)
 - C extension heavy workloads that release the GIL (NumPy, PyTorch inference)
+- Streaming tasks (generator functions, iterator parameters)
+- Most ML training workloads (PyTorch, JAX, Keras release the GIL)
+
+**Use process** for:
+
+- Pure-Python CPU-bound computation (tight loops, data transformation)
+- Any workload where Python code dominates CPU time
+- Tasks that benefit from crash isolation
 
 ## Run the Full Example
 
@@ -68,8 +70,8 @@ uv run python examples/guides/14_worker_executors.py
 
 **What you learned:**
 
-- **`Worker(executor="process")`** (default) runs tasks in separate OS processes — bypasses the GIL, full CPU utilization for compute-heavy work.
-- **`Worker(executor="thread")`** runs tasks as threads — lightweight, shares memory, but GIL-limited for CPU-bound code.
+- **`Worker(executor="thread")`** (default) runs tasks as threads — lightweight, supports streaming, shares memory, but GIL-limited for pure-Python CPU-bound code.
+- **`Worker(executor="process")`** runs tasks in separate OS processes — bypasses the GIL, full CPU utilization for compute-heavy work.
 - **`concurrency`** controls task slots per node — total parallelism = `nodes * concurrency`.
 - **Distributed collections** work with both executors — the process executor uses an IPC bridge to proxy operations to the parent worker.
 - **Choose based on workload**: process for CPU-bound, thread for I/O-bound.

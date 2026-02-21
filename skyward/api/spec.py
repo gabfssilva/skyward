@@ -60,11 +60,10 @@ class Worker:
 
     Args:
         concurrency: Number of concurrent task slots per node.
-        executor: Execution backend — "auto" (default) resolves to "thread" when
-            concurrency is 1 (no GIL contention, avoids subprocess overhead) and
-            "process" when concurrency > 1 (bypasses GIL for CPU-bound tasks).
-            Explicit values: "process" (ProcessPoolExecutor) or "thread"
-            (ThreadPoolExecutor, required for distributed collections).
+        executor: Execution backend — "auto" (default) resolves to "thread".
+            Use "process" (ProcessPoolExecutor) explicitly for CPU-bound pure-Python
+            workloads that benefit from bypassing the GIL. Thread executor supports
+            streaming, distributed collections without IPC, and has lower overhead.
     """
 
     concurrency: int = 1
@@ -72,10 +71,10 @@ class Worker:
 
     @property
     def resolved_executor(self) -> Literal["thread", "process"]:
-        """Resolve "auto" to a concrete executor based on concurrency."""
+        """Resolve "auto" to a concrete executor."""
         match self.executor:
             case "auto":
-                return "thread" if self.concurrency <= 1 else "process"
+                return "thread"
             case concrete:
                 return concrete
 

@@ -23,27 +23,12 @@ def cpu_burn(task_id: int) -> dict:
 if __name__ == "__main__":
     total = 20
 
-    # --8<-- [start:process_executor]
-    # Process executor (default) — each task runs in a separate OS process.
-    # Bypasses the GIL, so CPU-bound work uses all available cores.
-    with sky.ComputePool(
-        provider=sky.AWS(),
-        worker=sky.Worker(concurrency=2),  # executor="process" is the default
-        nodes=3,
-        max_inflight=total,
-    ) as pool:
-        results = sky.gather(*(cpu_burn(i) for i in range(total)), stream=True)
-        for r in (results >> pool):
-            print(f"[process] Task {r['task_id']}: {r['iterations']:,} iters in {r['elapsed']}s")
-    # --8<-- [end:process_executor]
-
     # --8<-- [start:thread_executor]
-    # Thread executor — tasks run as threads in the worker process.
-    # Shares memory with the worker, so distributed collections work.
-    # CPU-bound tasks are limited by the GIL.
+    # Thread executor (default) — tasks run as threads in the worker process.
+    # Supports streaming, low overhead, ideal for I/O-bound and GIL-releasing workloads.
     with sky.ComputePool(
         provider=sky.AWS(),
-        worker=sky.Worker(concurrency=2, executor="thread"),
+        worker=sky.Worker(concurrency=2),  # executor="thread" is the default
         nodes=3,
         max_inflight=total,
     ) as pool:
@@ -51,3 +36,17 @@ if __name__ == "__main__":
         for r in (results >> pool):
             print(f"[thread] Task {r['task_id']}: {r['iterations']:,} iters in {r['elapsed']}s")
     # --8<-- [end:thread_executor]
+
+    # --8<-- [start:process_executor]
+    # Process executor — each task runs in a separate OS process.
+    # Bypasses the GIL, so pure-Python CPU-bound work uses all available cores.
+    with sky.ComputePool(
+        provider=sky.AWS(),
+        worker=sky.Worker(concurrency=2, executor="process"),
+        nodes=3,
+        max_inflight=total,
+    ) as pool:
+        results = sky.gather(*(cpu_burn(i) for i in range(total)), stream=True)
+        for r in (results >> pool):
+            print(f"[process] Task {r['task_id']}: {r['iterations']:,} iters in {r['elapsed']}s")
+    # --8<-- [end:process_executor]
