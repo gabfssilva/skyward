@@ -51,7 +51,7 @@ type SkywardSource = Literal["auto", "local", "github", "pypi"]
 
 type InflightStrategy = Callable[[int, int], int]
 
-type WorkerExecutor = Literal["thread", "process"]
+type WorkerExecutor = Literal["auto", "thread", "process"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,12 +60,24 @@ class Worker:
 
     Args:
         concurrency: Number of concurrent task slots per node.
-        executor: Execution backend — "thread" (default, uses ThreadPoolExecutor)
-            or "process" (uses ProcessPoolExecutor, bypasses GIL for CPU-bound tasks).
+        executor: Execution backend — "auto" (default) resolves to "thread" when
+            concurrency is 1 (no GIL contention, avoids subprocess overhead) and
+            "process" when concurrency > 1 (bypasses GIL for CPU-bound tasks).
+            Explicit values: "process" (ProcessPoolExecutor) or "thread"
+            (ThreadPoolExecutor, required for distributed collections).
     """
 
     concurrency: int = 1
-    executor: WorkerExecutor = "thread"
+    executor: WorkerExecutor = "auto"
+
+    @property
+    def resolved_executor(self) -> Literal["thread", "process"]:
+        """Resolve "auto" to a concrete executor based on concurrency."""
+        match self.executor:
+            case "auto":
+                return "thread" if self.concurrency <= 1 else "process"
+            case concrete:
+                return concrete
 
 
 @dataclass(frozen=True, slots=True)

@@ -327,7 +327,7 @@ def instance_actor(
                 casty_port=25520,
                 num_nodes=spec.nodes,
                 worker_concurrency=spec.worker.concurrency,
-                worker_executor=spec.worker.executor,
+                worker_executor=spec.worker.resolved_executor,
             ))
             log.info("Starting worker (role=head)")
             return _start_worker(ip, transport, listener, ni, head_info)
@@ -508,7 +508,7 @@ async def _do_start_worker(
     casty_port = head_info.casty_port if head_info else 25520
     num_nodes = head_info.num_nodes if head_info else spec.nodes
     concurrency = head_info.worker_concurrency if head_info else spec.worker.concurrency
-    executor = head_info.worker_executor if head_info else spec.worker.executor
+    executor = head_info.worker_executor if head_info else spec.worker.resolved_executor
 
     seeds = f"{head_info.head_addr}:{casty_port}" if head_info and node_id != 0 else ""
 

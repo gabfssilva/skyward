@@ -28,7 +28,6 @@ if __name__ == "__main__":
         provider=sky.AWS(),
         worker=sky.Worker(concurrency=2, executor="process"),
         nodes=5,
-        max_inflight=total,
     ) as pool:
         tasks = sky.gather(*(cpu_burn(i) for i in range(total)), stream=True)
         results = tasks.with_timeout(60 * 10) >> pool

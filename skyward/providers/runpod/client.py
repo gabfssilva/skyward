@@ -116,6 +116,10 @@ MYSELF_QUERY = """
 query { myself { id pubKey } }
 """
 
+REGISTRY_AUTHS_QUERY = """
+query { myself { containerRegistryCreds { id name } } }
+"""
+
 UPDATE_USER_SETTINGS_MUTATION = """
 mutation Mutation($input: UpdateUserSettingsInput) {
   updateUserSettings(input: $input) {
@@ -203,6 +207,7 @@ class RunPodClient:
         deploy_cost: float | None = None,
         spot_price: float | None = None,
         allowed_cuda_versions: list[str] | None = None,
+        container_registry_auth_id: str | None = None,
     ) -> PodResponse:
         """Deploy a GPU pod via GraphQL."""
         input_vars: dict[str, Any] = {
@@ -222,6 +227,8 @@ class RunPodClient:
             input_vars["dataCenterId"] = data_center_id
         if allowed_cuda_versions:
             input_vars["allowedCudaVersions"] = allowed_cuda_versions
+        if container_registry_auth_id:
+            input_vars["containerRegistryAuthId"] = container_registry_auth_id
 
         if interruptible:
             input_vars["bidPerGpu"] = deploy_cost or spot_price or 0.0
@@ -322,6 +329,24 @@ class RunPodClient:
         updated = f"{existing}\n{key_content}" if existing else key_content
         await self._graphql(UPDATE_USER_SETTINGS_MUTATION, {"input": {"pubKey": updated}})
         self._log.debug("SSH key registered on RunPod")
+
+    # =========================================================================
+    # Container Registry Authentication (via GraphQL)
+    # =========================================================================
+
+    async def resolve_registry_auth(self, name: str) -> str | None:
+        """Resolve a container registry credential name to its ID.
+
+        Returns None if no credential matches the given name.
+        """
+        data = await self._graphql(REGISTRY_AUTHS_QUERY)
+        auths: list[dict[str, str]] = (
+            data.get("myself", {}).get("containerRegistryCreds") or []
+        )
+        return next(
+            (a["id"] for a in auths if a.get("name", "").lower() == name.lower()),
+            None,
+        )
 
     # =========================================================================
     # GPU Types (via GraphQL - no REST endpoint available)

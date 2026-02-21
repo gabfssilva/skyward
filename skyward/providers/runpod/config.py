@@ -57,6 +57,9 @@ class RunPod(ProviderConfig):
         provision_timeout: Instance provision timeout in seconds. Default: 300.
         bootstrap_timeout: Bootstrap timeout in seconds. Default: 600.
         instance_timeout: Auto-shutdown in seconds (safety timeout). Default: 300.
+        registry_auth: Name of the container registry credential registered in RunPod
+            account settings. Authenticates Docker Hub pulls to avoid rate limits.
+            Set to None to skip. Default: "docker hub".
     """
 
     api_key: str | None = None
@@ -73,6 +76,7 @@ class RunPod(ProviderConfig):
     request_timeout: int = 30
     cpu_clock: Literal["3c", "5c"] | str = "3c"
     bid_multiplier: float = 1
+    registry_auth: str | None = "docker hub"
 
     async def create_provider(self) -> RunPodProvider:
         from skyward.providers.runpod.provider import RunPodProvider

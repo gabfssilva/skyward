@@ -1,23 +1,16 @@
-"""Console actor — Rich Live display driven by spy events.
+"""Console actor — streaming log + adaptive footer driven by spy events.
 
 Console tells this story: idle → observing → stopped.
 
-The skyward badge renders a fixed-step timeline with progress counters.
-The cluster badge shows aggregated infrastructure info.
-The metrics badge shows live avg (min–max) for every metric.
-The tasks badge renders a structured table of submitted work.
-Instance badges render scrolling log output.
+Architecture (MVC in a single file):
+- Model:      frozen state types + pure transition functions
+- View:       badge styling, stream emitters, footer/summary renderers
+- Controller: Casty behavior that receives SpyEvents, updates model, calls view
 """
 
 from __future__ import annotations
 
-import math
-import os
-import select
-import sys
-import termios
 import time
-import tty
 from dataclasses import dataclass, replace
 from enum import Enum, auto
 from types import MappingProxyType
@@ -26,14 +19,13 @@ from typing import Any
 from casty import ActorContext, Behavior, Behaviors, SpyEvent, Terminated
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
-from rich.progress_bar import ProgressBar
 from rich.style import Style
 from rich.table import Table
 from rich.text import Text
+from rich.tree import Tree
 
 from skyward.api.model import Cluster, Instance
 from skyward.api.spec import PoolSpec
-from skyward.observability.logger import logger
 
 from .messages import (
     BootstrapCommand,
@@ -72,16 +64,211 @@ from .messages import (
     _WorkerStarted,
 )
 
+# =============================================================================
+# Model
+# =============================================================================
+
+
+class _Phase(Enum):
+    PROVISIONING = auto()
+    SSH = auto()
+    BOOTSTRAP = auto()
+    WORKERS = auto()
+    READY = auto()
+    STOPPING = auto()
+
+
+class _NodeStatus(Enum):
+    WAITING = auto()
+    SSH = auto()
+    BOOTSTRAPPING = auto()
+    READY = auto()
+
 
 @dataclass(frozen=True, slots=True)
-class LocalOutput:
-    line: str
-    stream: str = "stdout"
+class _TaskEntry:
+    task_id: str
+    name: str
+    kind: str
+    started_at: float
+    instance_id: str = ""
+    broadcast_total: int = 0
+    broadcast_done: int = 0
 
 
-type ConsoleInput = SpyEvent | LocalOutput
+@dataclass(frozen=True, slots=True)
+class _State:
+    total_nodes: int
+    phase: _Phase = _Phase.PROVISIONING
+    nodes: MappingProxyType[str, _NodeStatus] = MappingProxyType({})
+    tasks_running: int = 0
+    tasks_done: int = 0
+    tasks_failed: int = 0
+    first_task_at: float = 0.0
+    cluster: Cluster | None = None
+    instances: tuple[Instance, ...] = ()
+    metrics: MappingProxyType[str, MappingProxyType[str, float]] = MappingProxyType({})
+    pool_started_at: float = 0.0
+    task_latencies: tuple[float, ...] = ()
+    inflight: MappingProxyType[str, _TaskEntry] = MappingProxyType({})
+    task_fn_stats: MappingProxyType[str, tuple[float, ...]] = MappingProxyType({})
+    task_fn_failed: MappingProxyType[str, int] = MappingProxyType({})
+    ready_at: float = 0.0
+
+
+# --- State transitions (pure) ---
+
+
+def _on_start_pool(state: _State) -> _State:
+    return replace(state, phase=_Phase.PROVISIONING, pool_started_at=time.monotonic())
+
+
+def _on_cluster_ready(state: _State) -> _State:
+    return replace(state, phase=_Phase.SSH)
+
+
+def _on_instances_provisioned(
+    state: _State, cluster: Cluster, instances: tuple[Instance, ...],
+) -> _State:
+    return replace(state, cluster=cluster, instances=instances)
+
+
+def _on_ssh_connected(state: _State, instance_id: str) -> _State:
+    nodes = MappingProxyType({**state.nodes, instance_id: _NodeStatus.SSH})
+    ssh_count = sum(1 for s in nodes.values() if s.value >= _NodeStatus.SSH.value)
+    phase = _Phase.BOOTSTRAP if ssh_count >= state.total_nodes else state.phase
+    return replace(state, nodes=nodes, phase=phase)
+
+
+def _on_bootstrap_done(state: _State, instance_id: str) -> _State:
+    nodes = MappingProxyType({**state.nodes, instance_id: _NodeStatus.BOOTSTRAPPING})
+    done = sum(1 for s in nodes.values() if s.value >= _NodeStatus.BOOTSTRAPPING.value)
+    phase = _Phase.WORKERS if done >= state.total_nodes else state.phase
+    return replace(state, nodes=nodes, phase=phase)
+
+
+def _on_worker_started(state: _State, instance_id: str) -> _State:
+    nodes = MappingProxyType({**state.nodes, instance_id: _NodeStatus.READY})
+    ready = sum(1 for s in nodes.values() if s.value >= _NodeStatus.READY.value)
+    phase = _Phase.READY if ready >= state.total_nodes else state.phase
+    ready_at = time.monotonic() if phase == _Phase.READY and not state.ready_at else state.ready_at
+    return replace(state, nodes=nodes, phase=phase, ready_at=ready_at)
+
+
+def _on_task_submitted(
+    state: _State, task_id: str, name: str, kind: str,
+) -> _State:
+    entry = _TaskEntry(
+        task_id=task_id, name=name, kind=kind, started_at=time.monotonic(),
+        broadcast_total=len(state.instances) if kind == "broadcast" else 0,
+    )
+    first = state.first_task_at or time.monotonic()
+    inflight = MappingProxyType({**state.inflight, task_id: entry})
+    return replace(
+        state, tasks_running=state.tasks_running + 1,
+        first_task_at=first, inflight=inflight,
+    )
+
+
+def _on_task_assigned(state: _State, task_id: str, instance_id: str) -> _State:
+    if task_id not in state.inflight:
+        return state
+    entry = state.inflight[task_id]
+    started = time.monotonic() if not entry.instance_id else entry.started_at
+    updated = replace(entry, instance_id=instance_id, started_at=started)
+    return replace(state, inflight=MappingProxyType({**state.inflight, task_id: updated}))
+
+
+def _on_task_done(state: _State, task_id: str, elapsed: float) -> _State:
+    entry = state.inflight.get(task_id)
+    fn_name = entry.name.split("(")[0] if entry else "unknown"
+    fn_stats = {**state.task_fn_stats}
+    fn_stats[fn_name] = (*fn_stats.get(fn_name, ()), elapsed)
+    inflight = dict(state.inflight)
+    inflight.pop(task_id, None)
+    return replace(
+        state, tasks_running=max(0, state.tasks_running - 1),
+        tasks_done=state.tasks_done + 1,
+        task_latencies=(*state.task_latencies, elapsed),
+        inflight=MappingProxyType(inflight),
+        task_fn_stats=MappingProxyType(fn_stats),
+    )
+
+
+def _on_task_failed(state: _State, task_id: str) -> _State:
+    entry = state.inflight.get(task_id)
+    fn_name = entry.name.split("(")[0] if entry else "unknown"
+    fn_failed = {**state.task_fn_failed}
+    fn_failed[fn_name] = fn_failed.get(fn_name, 0) + 1
+    inflight = dict(state.inflight)
+    inflight.pop(task_id, None)
+    return replace(
+        state, tasks_running=max(0, state.tasks_running - 1),
+        tasks_failed=state.tasks_failed + 1,
+        inflight=MappingProxyType(inflight),
+        task_fn_failed=MappingProxyType(fn_failed),
+    )
+
+
+def _on_broadcast_partial(state: _State, task_id: str) -> _State:
+    if task_id not in state.inflight:
+        return state
+    entry = state.inflight[task_id]
+    updated = replace(entry, broadcast_done=entry.broadcast_done + 1)
+    return replace(state, inflight=MappingProxyType({**state.inflight, task_id: updated}))
+
+
+def _on_metric(state: _State, instance_id: str, name: str, value: float) -> _State:
+    inst_metrics = dict(state.metrics.get(instance_id, MappingProxyType({})))
+    inst_metrics[name] = value
+    new_metrics = MappingProxyType({
+        **state.metrics, instance_id: MappingProxyType(inst_metrics),
+    })
+    return replace(state, metrics=new_metrics)
+
+
+def _throughput(state: _State, now: float | None = None) -> float:
+    if not state.tasks_done:
+        return 0.0
+    ts = now if now is not None else time.monotonic()
+    elapsed_min = (ts - state.first_task_at) / 60
+    return state.tasks_done / elapsed_min if elapsed_min > 0 else 0.0
+
+
+# =============================================================================
+# View
+# =============================================================================
+
+_LOGO_LINES = (
+"   ▌           ▌",
+" ▛▘▙▘▌▌▌▌▌▀▌▛▘▛▌",
+" ▄▌▛▖▙▌▚▚▘█▌▌ ▙▌",
+"     ▄▌")
+
+# --- Styles ---
+
+DIM = Style(color="bright_black")
+MEDIUM = Style(color="white")
+BRIGHT = Style(bold=True)
+GREEN = Style(color="green", bold=True)
+YELLOW = Style(color="yellow", bold=True)
+CYAN = Style(color="cyan", bold=True)
+RED = Style(color="red", bold=True)
+VERY_DIM = Style(color="color(240)")
+COST_DIM = Style(color="color(245)")
+GUIDE = "color(242)"
+
+
+# --- Terminal theme detection ---
+
 
 def _detect_terminal_bg() -> tuple[int, int, int] | None:
+    import os
+    import select
+    import sys
+    import termios
+    import tty
+
     try:
         fd = sys.stdin.fileno()
         old = termios.tcgetattr(fd)
@@ -90,12 +277,12 @@ def _detect_terminal_bg() -> tuple[int, int, int] | None:
 
     try:
         tty.setraw(fd)
-        os.write(sys.stdout.fileno(), b'\033]11;?\033\\')
+        os.write(sys.stdout.fileno(), b"\033]11;?\033\\")
 
         if not select.select([fd], [], [], 0.5)[0]:
             return None
 
-        resp = b''
+        resp = b""
         while select.select([fd], [], [], 0.1)[0]:
             resp += os.read(fd, 1024)
 
@@ -127,577 +314,616 @@ def _is_dark_background() -> bool:
     return luminance < 128
 
 
-_DARK: bool = _is_dark_background()
-_WHITE = "rgb(255,255,255)"
-_BLACK = "rgb(0,0,0)"
+_DARK = _is_dark_background()
+_BADGE_L = 0.55 if _DARK else 0.35
+_BADGE_FG = "rgb(0,0,0)" if _DARK else "rgb(255,255,255)"
 
-_BADGE_FG = _BLACK if _DARK else _WHITE
-_BADGE_BG = _WHITE if _DARK else _BLACK
+
+# --- Badge styling ---
+
+_FIXED_BADGE_HUES: dict[str, tuple[float, float]] = {
+    "skyward": (255.0, 0.50),
+    "tasks": (210.0, 0.55),
+    "cluster": (150.0, 0.45),
+    "error": (0.0, 0.60),
+    "local": (0.0, 0.0),
+}
+
+
+def _hsl_to_rgb(h: float, s: float, lightness: float) -> tuple[int, int, int]:
+    c = (1 - abs(2 * lightness - 1)) * s
+    x = c * (1 - abs((h / 60) % 2 - 1))
+    m = lightness - c / 2
+    if h < 60:
+        r, g, b = c, x, 0.0
+    elif h < 120:
+        r, g, b = x, c, 0.0
+    elif h < 180:
+        r, g, b = 0.0, c, x
+    elif h < 240:
+        r, g, b = 0.0, x, c
+    elif h < 300:
+        r, g, b = x, 0.0, c
+    else:
+        r, g, b = c, 0.0, x
+    return (int((r + m) * 255), int((g + m) * 255), int((b + m) * 255))
+
+
+def _make_badge(hue: float, saturation: float) -> Style:
+    r, g, b = _hsl_to_rgb(hue % 360, saturation, _BADGE_L)
+    return Style(color=_BADGE_FG, bgcolor=f"rgb({r},{g},{b})", bold=True)
+
 
 _FIXED_BADGES: dict[str, Style] = {
-    "skyward": Style(color=_BADGE_FG, bgcolor=_BADGE_BG, bold=True),
-    "tasks": Style(color=_BADGE_FG, bgcolor=_BADGE_BG),
-    "cluster": Style(color=_BADGE_FG, bgcolor=_BADGE_BG),
-    "logs": Style(color=_BADGE_FG, bgcolor=_BADGE_BG),
-    "metrics": Style(color=_BADGE_FG, bgcolor=_BADGE_BG),
-    "local": Style(color=_BADGE_FG, bgcolor=_BADGE_BG),
-    "single": Style(color=_BADGE_FG, bgcolor=_BADGE_BG),
-    "broadcast": Style(color=_BADGE_FG, bgcolor=_BADGE_BG),
+    name: _make_badge(hue, sat) for name, (hue, sat) in _FIXED_BADGE_HUES.items()
 }
+_FIXED_BADGES["skyward"] = Style(
+    color="rgb(0,0,0)" if _DARK else "rgb(255,255,255)",
+    bgcolor="rgb(255,255,255)" if _DARK else "rgb(0,0,0)",
+    bold=True,
+)
 
-_badge_registry: dict[str, Style] = {}
-_badge_counter: int = 0
-_GOLDEN_ANGLE = 137.508
-
-
-def _badge_style(text: str) -> Style:
-    if text in _FIXED_BADGES:
-        return _FIXED_BADGES[text]
-
-    if text not in _badge_registry:
-        global _badge_counter
-        while True:
-            hue = (_badge_counter * _GOLDEN_ANGLE) % 360
-            _badge_counter += 1
-            if 30 < hue < 330:
-                break
-        r, g, b = _hsl_to_rgb(hue / 360, 0.65, 0.45)
-        _badge_registry[text] = Style(color=_WHITE, bgcolor=f"rgb({r},{g},{b})")
 
-    return _badge_registry[text]
+def _stable_hash(label: str) -> int:
+    import hashlib
 
+    return int.from_bytes(hashlib.md5(label.encode()).digest()[:4], "big")
 
-def _hsl_to_rgb(
-    h: float, s: float, lightness: float,
-) -> tuple[int, int, int]:
-    c = (1 - abs(2 * lightness - 1)) * s
-    x = c * (1 - abs((h * 6) % 2 - 1))
-    m = lightness - c / 2
-    h6 = int(h * 6) % 6
-    r, g, b = [(c, x, 0), (x, c, 0), (0, c, x), (0, x, c), (x, 0, c), (c, 0, x)][h6]
-    return int((r + m) * 255), int((g + m) * 255), int((b + m) * 255)
 
+def _badge_style(label: str) -> Style:
+    if label in _FIXED_BADGES:
+        return _FIXED_BADGES[label]
+    hue = (_stable_hash(label) * 137.508) % 360
+    return _make_badge(hue, 0.65)
 
-# ─── Timeline steps ──────────────────────────────────────────────
 
+# --- Stream emitters ---
 
-class Phase(Enum):
-    INFRA = auto()
-    PROVISIONED = auto()
-    SSH = auto()
-    BOOTSTRAP = auto()
-    WORKERS = auto()
-    READY = auto()
 
+def _badge_text(label: str) -> Text:
+    short = label[:8].center(8) if len(label) > 8 else label.center(8)
+    t = Text()
+    t.append(f" {short} ", style=_badge_style(label))
+    return t
 
-_LABELS: dict[Phase, str] = {
-    Phase.INFRA: "Compute pool initialized",
-    Phase.PROVISIONED: "Instances provisioned",
-    Phase.SSH: "SSH connected",
-    Phase.BOOTSTRAP: "Bootstrapped",
-    Phase.WORKERS: "Workers joined",
-    Phase.READY: "Pool ready",
-}
-
-_PHASES = tuple(Phase)
-
-
-@dataclass(frozen=True, slots=True)
-class _Timeline:
-    total: int = 1
-    done: MappingProxyType[Phase, int] = MappingProxyType({})
-    active: Phase | None = None
 
-    def advance(self, phase: Phase, count: int = 1) -> _Timeline:
-        current = self.done.get(phase, 0)
-        new_done = MappingProxyType({**self.done, phase: current + count})
-        new_active = phase if new_done[phase] < self.total else self.active
-        return replace(self, done=new_done, active=new_active)
+def _inline_badge(label: str) -> Text:
+    t = Text()
+    t.append(f" {label} ", style=_badge_style(label))
+    return t
 
-    def complete(self, phase: Phase) -> _Timeline:
-        new_done = MappingProxyType({**self.done, phase: self.total})
-        return replace(self, done=new_done)
 
-    def set_active(self, phase: Phase) -> _Timeline:
-        return replace(self, active=phase)
+def _emit(console: Console, badge: str, text: str, style: str = "") -> None:
+    line = _badge_text(badge)
+    line.append(f"  {text}", style=style or None)
+    console.print(line)
 
 
-def _glow_style() -> Style:
-    t = time.monotonic()
-    brightness = 0.5 + 0.5 * math.sin(t * 3.0)
-    if _DARK:
-        lo, hi = 100, 255
-    else:
-        lo, hi = 0, 140
-    v = int(lo + (hi - lo) * brightness)
-    return Style(color=f"rgb({v},{v},{v})", bold=True)
+# --- Tree footer helpers ---
 
 
-def _render_timeline(timeline: _Timeline) -> list[Text]:
-    lines: list[Text] = []
-    for phase in _PHASES:
-        count = timeline.done.get(phase, 0)
-        label = _LABELS[phase]
+def _badge_label() -> Text:
+    t = Text()
+    t.append(" skyward ", style=_FIXED_BADGES["skyward"])
+    return t
 
-        needs_counter = phase not in (Phase.INFRA, Phase.READY)
-        if needs_counter and timeline.total > 1:
-            label = f"{label} ({count}/{timeline.total})"
 
-        in_progress = 0 < count < timeline.total
-        if count >= timeline.total:
-            lines.append(Text(f"  ✓ {label}", style="green"))
-        elif in_progress or phase == timeline.active:
-            lines.append(Text(f"  ◆ {label}", style=_glow_style()))
-        else:
-            lines.append(Text(f"  ○ {label}", style="dim"))
+def _root(extra: Text | None = None) -> Text:
+    t = _badge_label()
+    if extra:
+        t.append("  ")
+        t.append_text(extra)
+    return t
 
-    return lines
 
-
-# ─── State ────────────────────────────────────────────────────────
+def _node_status_line(state: _State) -> Text:
+    t = Text()
+    symbols = {
+        _NodeStatus.READY: ("\u2713", GREEN),
+        _NodeStatus.BOOTSTRAPPING: ("\u25d0", YELLOW),
+        _NodeStatus.SSH: ("\u25d0", CYAN),
+        _NodeStatus.WAITING: ("\u25cb", VERY_DIM),
+    }
+    for i, (nid, status) in enumerate(sorted(state.nodes.items())):
+        if i > 0:
+            t.append("  ")
+        sym, sty = symbols.get(status, ("?", DIM))
+        short = nid[:8].center(8)
+        t.append(f" {short} ", style=_badge_style(nid))
+        t.append(" ")
+        t.append(sym, style=sty)
+    return t
 
 
-@dataclass(frozen=True, slots=True)
-class _LogEntry:
-    instance_id: str
-    line: str
-
-
-class _TaskStatus(Enum):
-    RUNNING = auto()
-    DONE = auto()
-
-
-@dataclass(frozen=True, slots=True)
-class _TaskEntry:
-    task_id: str
-    fn: object
-    args: tuple
-    kwargs: dict[str, object]
-    kind: str
-    status: _TaskStatus = _TaskStatus.RUNNING
-    started_at: float = 0.0
-    elapsed: float | None = None
-    broadcast_done: int = 0
-    instance_id: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class _MetricSample:
-    value: float
-    timestamp: float
-
+def _history(*phases: str) -> Text:
+    t = Text()
+    t.append("\u2713 ", style=GREEN)
+    for i, phase in enumerate(phases):
+        if i > 0:
+            t.append(" \u00b7 ", style=VERY_DIM)
+        t.append(phase, style=DIM)
+    return t
 
-@dataclass(frozen=True, slots=True)
-class _State:
-    timeline: _Timeline = _Timeline()
-    tasks: MappingProxyType[str, _TaskEntry] = MappingProxyType({})
-    task_order: tuple[str, ...] = ()
-    log: tuple[_LogEntry, ...] = ()
-    cluster: Cluster | None = None
-    instances: tuple[Instance, ...] = ()
-    metrics: MappingProxyType[str, MappingProxyType[str, _MetricSample]] = MappingProxyType({})
-    pool_started_at: float = 0.0
-    console: Console = Console(stderr=True)
-    live: Live | None = None
 
-
-_MAX_LOG_ENTRIES = 100
-
+def _wrap(tree: Tree) -> RenderableType:
+    return Group(Text(), tree)
 
-def _inst(state: _State, instance_id: str, line: str) -> _State:
-    entry = _LogEntry(instance_id=instance_id, line=line)
-    log = (*state.log, entry)
-    if len(log) > _MAX_LOG_ENTRIES:
-        log = log[-_MAX_LOG_ENTRIES:]
-    return replace(state, log=log)
-
-
-# ─── Rendering ────────────────────────────────────────────────────
-
-
-def _render_skyward_col(state: _State) -> Group:
-    lines: list[Text] = []
-    lines.append(Text(" skyward ", style=_badge_style("skyward")))
-    lines.extend(_render_timeline(state.timeline))
-    return Group(*lines)
-
-
-def _render_cluster_col(state: _State) -> Group:
-    lines: list[RenderableType] = []
-    lines.append(Text(" cluster ", style=_badge_style("cluster")))
-
-    insts = state.instances
-    if not insts:
-        lines.append(Text("  waiting for instances…", style="dim"))
-        return Group(*lines)
-
-    first = insts[0]
-    provider_name = (state.cluster.spec.provider or "").upper() if state.cluster else ""
-    region = first.region or ""
-    if provider_name and region:
-        lines.append(Text(f"  {provider_name} · {region}", style="dim"))
-    elif provider_name or region:
-        lines.append(Text(f"  {provider_name}{region}", style="dim"))
-
-    n_spot = sum(1 for i in insts if i.spot)
-    n_od = len(insts) - n_spot
-    node_parts: list[str] = []
-    if n_spot:
-        node_parts.append(f"{n_spot} spot")
-    if n_od:
-        node_parts.append(f"{n_od} OD")
-    node_detail = f" ({', '.join(node_parts)})" if node_parts else ""
-    lines.append(Text(f"  {len(insts)} nodes{node_detail}"))
-
-    it = first.offer.instance_type
-    if it.name:
-        lines.append(Text(f"  {it.name}", style="dim"))
-
-    accel = it.accelerator
-    if accel:
-        total_accel = accel.count * len(insts)
-        accel_label = f"  {total_accel}× {accel.name}"
-        if accel.memory:
-            accel_label += f" ({accel.memory})"
-        lines.append(Text(accel_label))
-
-    total_vcpus = sum(i.offer.instance_type.vcpus for i in insts)
-    total_ram = sum(i.offer.instance_type.memory_gb for i in insts)
-    if total_vcpus or total_ram:
-        hw_parts: list[str] = []
-        if total_vcpus:
-            hw_parts.append(f"{total_vcpus:.2f} vCPUs")
-        if total_ram:
-            hw_parts.append(f"{total_ram:.2f} GB RAM")
-        lines.append(Text(f"  {' · '.join(hw_parts)}"))
-
-    def _hourly(i: Any) -> float:
-        return (i.offer.spot_price if i.spot else i.offer.on_demand_price) or 0.0
-
-    hourly = sum(_hourly(i) for i in insts)
-    if hourly > 0:
-        started = state.pool_started_at
-        elapsed_h = (time.monotonic() - started) / 3600 if started else 0
-        total_cost = hourly * elapsed_h
-        lines.append(Text(f"  ${hourly:.2f}/hr · ${total_cost:.2f} total", style="dim"))
-
-    return Group(*lines)
-
-
-
-
-_TASK_RIGHT_W = 18  # 5 (time) + 3 (gap) + 10 (badge)
-
-
-def _render_tasks_col(state: _State, width: int) -> Group:
-    lines: list[RenderableType] = []
-    badge = Text(" tasks ", style=_badge_style("tasks"))
-    done = sum(1 for t in state.tasks.values() if t.status == _TaskStatus.DONE)
-    badge.append(f"  {done}/{len(state.tasks)}", style="dim")
-    lines.append(badge)
-
-    max_sig = int(width * 0.5)
-    running = [t for t in state.task_order if state.tasks[t].status == _TaskStatus.RUNNING]
-    done_ids = [t for t in state.task_order if state.tasks[t].status == _TaskStatus.DONE]
-    remaining = max(0, 8 - len(running[:8]))
-    visible = running[:8] + done_ids[-remaining:] if remaining else running[:8]
-    n_instances = len(state.instances)
-
-    for tid in visible:
-        entry = state.tasks[tid]
-        name = _format_task(entry.fn, entry.args, entry.kwargs, max_sig=max_sig)
-        left = Text("  ")
-        time_text = Text()
-        badge_text = Text()
-
-        match entry.status:
-            case _TaskStatus.RUNNING:
-                elapsed = time.monotonic() - entry.started_at
-                left.append("◆ ", style=_glow_style())
-                left.append(name)
-
-                if entry.kind == "broadcast" and n_instances > 0:
-                    time_text.append(f"({entry.broadcast_done}/{n_instances}) ", style="dim")
-                time_text.append(f"{elapsed:.1f}s", style=_glow_style())
-                if entry.instance_id:
-                    badge_text.append(
-                        f" {entry.instance_id[:8]} ",
-                        style=_badge_style(entry.instance_id),
-                    )
-
-                pct = 0.5 + 0.4 * math.sin(time.monotonic() * 2.0)
-                bar: RenderableType = ProgressBar(
-                    total=1.0, completed=pct,
-                    complete_style=_glow_style(),
-                )
-
-            case _TaskStatus.DONE:
-                left.append("✓ ", style="green")
-                left.append(name)
-
-                if entry.elapsed is not None:
-                    time_text.append(f"{entry.elapsed:.1f}s", style="green")
-                if entry.kind == "broadcast":
-                    badge_text.append(" broadcast ", style=_badge_style("broadcast"))
-                elif entry.instance_id:
-                    badge_text.append(
-                        f" {entry.instance_id[:8]} ",
-                        style=_badge_style(entry.instance_id),
-                    )
-
-                bar = ProgressBar(
-                    total=1.0, completed=1.0,
-                    finished_style="dim",
-                )
-
-            case _:
-                bar = Text()
-
-        right = Text()
-        right.append_text(time_text)
-        filler = _TASK_RIGHT_W - len(time_text.plain) - len(badge_text.plain)
-        if filler > 0:
-            right.append(" " * filler)
-        right.append_text(badge_text)
-
-        row = Table.grid(padding=(0, 1))
-        row.add_column(no_wrap=True)
-        row.add_column(ratio=1)
-        row.add_column(width=_TASK_RIGHT_W, no_wrap=True)
-        row.add_row(left, bar, right)
-        lines.append(row)
-
-    return Group(*lines)
-
-
-def _full_width_badge(label: str, width: int, suffix: str = "") -> Text:
-    badge = Text(f" {label} ", style=_badge_style(label))
-    if suffix:
-        badge.append(suffix, style=_badge_style(label))
-    used = len(label) + 2 + len(suffix)
-    remaining = width - used
-    if remaining > 0:
-        badge.append(" " * remaining, style=_badge_style(label))
-    return badge
-
-
-_BAR_WIDTH = 12
-_BAR_FILLED = "▓"
-_BAR_EMPTY = "░"
-_METRICS_PAGE_INTERVAL = 5.0
-_METRICS_MAX_INSTANCES = 6
-
-
-def _progress_bar(pct: float, width: int = _BAR_WIDTH) -> Text:
-    filled = int(round(pct / 100 * width))
-    filled = max(0, min(width, filled))
-    bar = Text(_BAR_FILLED * filled, style="bold")
-    bar.append(_BAR_EMPTY * (width - filled), style="dim")
-    return bar
-
-
-@dataclass(frozen=True, slots=True)
-class _InstanceMetrics:
-    instance_id: str
-    cpu: float | None = None
-    mem_pct: float | None = None
-    mem_used_mb: float | None = None
-    mem_total_mb: float | None = None
-    gpu_util: float | None = None
-    gpu_mem_used_mb: float | None = None
-    gpu_mem_total_mb: float | None = None
-    gpu_temp: float | None = None
-
-
-def _collect_instance_metrics(
-    instance_id: str, raw: MappingProxyType[str, _MetricSample],
-) -> _InstanceMetrics:
-    def _get(*names: str) -> float | None:
-        for name in names:
-            for key, sample in raw.items():
-                if key == name or key.startswith(f"{name}_"):
-                    return sample.value
+
+def _hw_text(state: _State) -> Text | None:
+    """Build narrative hardware description with inline badges.
+
+    Example: ``3× [spot] + 2× [on-demand] [t4g.micro] @ [us-east-1] on [AWS]``
+    """
+    if not state.instances:
         return None
+    first = state.instances[0]
+    itype = first.offer.instance_type
+    n = len(state.instances)
 
-    mem_used = _get("mem_used_mb")
-    mem_total = _get("mem_total_mb")
-    mem_pct = (mem_used / mem_total * 100) if mem_used is not None and mem_total else None
+    n_spot = sum(1 for i in state.instances if i.spot)
+    n_od = n - n_spot
 
-    return _InstanceMetrics(
-        instance_id=instance_id,
-        cpu=_get("cpu"),
-        mem_pct=mem_pct,
-        mem_used_mb=mem_used,
-        mem_total_mb=mem_total,
-        gpu_util=_get("gpu_util"),
-        gpu_mem_used_mb=_get("gpu_mem_mb"),
-        gpu_mem_total_mb=_get("gpu_mem_total_mb"),
-        gpu_temp=_get("gpu_temp"),
+    t = Text()
+    if n_spot:
+        t.append(f"{n_spot}\u00d7 ", style=MEDIUM)
+        t.append_text(_inline_badge("spot"))
+    if n_spot and n_od:
+        t.append(" + ", style=DIM)
+    if n_od:
+        t.append(f"{n_od}\u00d7 ", style=MEDIUM)
+        t.append_text(_inline_badge("on-demand"))
+    if not n_spot and not n_od:
+        t.append(f"{n} nodes", style=MEDIUM)
+
+    if itype.name:
+        t.append(" ")
+        t.append_text(_inline_badge(itype.name))
+
+    region = first.region or ""
+    provider = (state.cluster.spec.provider or "").upper() if state.cluster else ""
+    if region:
+        t.append(" @ ", style=DIM)
+        t.append_text(_inline_badge(region))
+    if provider:
+        t.append(" on ", style=DIM)
+        t.append_text(_inline_badge(provider))
+
+    resources: list[str] = []
+    vcpus = int(itype.vcpus * n)
+    mem_gb = int(itype.memory_gb * n)
+    if vcpus:
+        resources.append(f"{vcpus} vCPU")
+    if mem_gb:
+        resources.append(f"{mem_gb} GB")
+
+    accel = itype.accelerator
+    gpu_label = ""
+    if accel:
+        total = accel.count * n
+        mem = accel.memory
+        if not mem:
+            vram_vals = _collect_metric_vals(state, "gpu_mem_total_mb")
+            if vram_vals:
+                per_gpu = sum(vram_vals) / len(vram_vals)
+                mem = f"{per_gpu / 1024:.0f}GB" if per_gpu >= 1024 else f"{per_gpu:.0f}MB"
+        mem_str = f" {mem}" if mem else ""
+        gpu_label = f"{total}\u00d7 {accel.name}{mem_str}"
+
+    if resources or gpu_label:
+        t.append(" with ", style=DIM)
+        if resources:
+            t.append(", ".join(resources[:-1]), style=DIM)
+            if len(resources) > 1:
+                t.append(" and ", style=DIM)
+            t.append(resources[-1], style=DIM)
+        if gpu_label and resources:
+            t.append(" and ", style=DIM)
+        if gpu_label:
+            t.append_text(_inline_badge(gpu_label))
+
+    return t
+
+
+def _cost_text(state: _State) -> Text | None:
+    if not state.instances:
+        return None
+    hourly = sum(
+        (i.offer.spot_price if i.spot else i.offer.on_demand_price) or 0.0
+        for i in state.instances
     )
+    if hourly <= 0:
+        return None
+    elapsed_h = (time.monotonic() - state.pool_started_at) / 3600 if state.pool_started_at else 0
+    total = hourly * elapsed_h
+    t = Text()
+    t.append(f"${hourly:.2f}/hr", style=COST_DIM)
+    t.append(" \u00b7 ", style=VERY_DIM)
+    t.append(f"${total:.2f}", style=COST_DIM)
+    return t
 
 
-def _format_mem(used_mb: float | None, total_mb: float | None) -> str:
-    if used_mb is None or total_mb is None:
-        return ""
-    if total_mb >= 1024:
-        return f"({used_mb / 1024:.1f}/{total_mb / 1024:.1f} GB)"
-    return f"({used_mb:.0f}/{total_mb:.0f} MB)"
+# --- Metric helpers ---
 
 
-def _render_instance_metrics_line(m: _InstanceMetrics) -> Text:
-    line = Text()
-    short_id = m.instance_id[:8].center(8)
-    line.append(f" {short_id} ", style=_badge_style(m.instance_id))
-
-    parts: list[tuple[str, float | None, str]] = []
-
-    if m.cpu is not None:
-        mem_info = _format_mem(m.mem_used_mb, m.mem_total_mb)
-        parts.append(("cpu", m.cpu, ""))
-        parts.append(("memory", m.mem_pct, mem_info))
-
-    if m.gpu_util is not None:
-        gpu_mem_info = _format_mem(m.gpu_mem_used_mb, m.gpu_mem_total_mb)
-        parts.append(("gpu utilization", m.gpu_util, ""))
-        parts.append(("gpu memory", None, gpu_mem_info))
-
-    if m.gpu_temp is not None:
-        parts.append(("gpu temperature", None, f"{m.gpu_temp:.0f}°"))
-
-    for i, (label, pct, extra) in enumerate(parts):
-        sep = "   " if i > 0 else "  "
-        line.append(sep, style="dim")
-        line.append(f"{label} ", style="dim")
-        if pct is not None:
-            line.append_text(_progress_bar(pct))
-            line.append(f" {pct:.1f}%")
-        if extra:
-            line.append(f" {extra}", style="dim")
-
-    return line
+def _find_metric(
+    raw: MappingProxyType[str, float], *prefixes: str,
+) -> float | None:
+    for prefix in prefixes:
+        if prefix in raw:
+            return raw[prefix]
+        for key, val in raw.items():
+            if key.startswith(f"{prefix}_"):
+                return val
+    return None
 
 
-def _render_metrics_footer(state: _State, width: int) -> Group:
-    lines: list[RenderableType] = []
+def _collect_metric_vals(
+    state: _State, *prefixes: str,
+) -> list[float]:
+    vals: list[float] = []
+    for iid in state.metrics:
+        if (v := _find_metric(state.metrics[iid], *prefixes)) is not None:
+            vals.append(v)
+    return vals
 
+
+def _render_metrics_text(state: _State) -> Text | None:
     if not state.metrics:
-        return Group()
+        return None
+    gpu_vals = _collect_metric_vals(state, "gpu_util")
+    gpu_mem_vals = _collect_metric_vals(state, "gpu_mem_mb")
+    gpu_mem_total = _collect_metric_vals(state, "gpu_mem_total_mb")
+    cpu_vals = _collect_metric_vals(state, "cpu")
+    mem_vals = _collect_metric_vals(state, "mem")
+    if not gpu_vals and not cpu_vals and not mem_vals and not gpu_mem_vals:
+        return None
+    t = Text()
+    if gpu_vals:
+        avg_gpu = sum(gpu_vals) / len(gpu_vals)
+        t.append("gpu ", style=DIM)
+        t.append(f"{avg_gpu:.0f}%", style=MEDIUM)
+    if gpu_mem_vals:
+        if t.plain:
+            t.append("  ", style=DIM)
+        avg_vram = sum(gpu_mem_vals) / len(gpu_mem_vals)
+        t.append("vram ", style=DIM)
+        if gpu_mem_total:
+            total_vram = sum(gpu_mem_total) / len(gpu_mem_total)
+            t.append(f"{avg_vram:.0f}/{total_vram:.0f} MB", style=MEDIUM)
+        else:
+            t.append(f"{avg_vram:.0f} MB", style=MEDIUM)
+    if cpu_vals:
+        if t.plain:
+            t.append("  ", style=DIM)
+        avg_cpu = sum(cpu_vals) / len(cpu_vals)
+        t.append("cpu ", style=DIM)
+        t.append(f"{avg_cpu:.0f}%", style=MEDIUM)
+    if mem_vals:
+        if t.plain:
+            t.append("  ", style=DIM)
+        avg_mem = sum(mem_vals) / len(mem_vals)
+        t.append("mem ", style=DIM)
+        t.append(f"{avg_mem:.0f}%", style=MEDIUM)
+    cost = _cost_text(state)
+    if cost:
+        t.append("    ")
+        t.append_text(cost)
+    return t
 
-    instance_ids = sorted(state.metrics.keys())
-    total = len(instance_ids)
-    page_size = min(_METRICS_MAX_INSTANCES, total)
-    total_pages = math.ceil(total / page_size) if page_size else 1
 
-    if total_pages > 1:
-        page_idx = int(time.monotonic() / _METRICS_PAGE_INTERVAL) % total_pages
-        start = page_idx * page_size
-        visible_ids = instance_ids[start:start + page_size]
-        suffix = f"({page_idx + 1}/{total_pages})"
-    else:
-        visible_ids = instance_ids
-        suffix = ""
-
-    lines.append(_full_width_badge("metrics", width, f" {suffix}" if suffix else ""))
-
-    for iid in visible_ids:
-        raw = state.metrics[iid]
-        m = _collect_instance_metrics(iid, raw)
-        lines.append(_render_instance_metrics_line(m))
-
-    return Group(*lines)
+# --- Footer renderer ---
 
 
-def _measure_height(renderable: RenderableType, width: int) -> int:
-    measure_console = Console(width=width, file=open(os.devnull, "w"))  # noqa: SIM115
-    with measure_console.capture() as capture:
-        measure_console.print(renderable, end="")
-    return capture.get().count("\n") + 1
+def _render_footer(state: _State) -> RenderableType:
+    match state.phase:
+        case _Phase.PROVISIONING:
+            content = Text()
+            content.append("\u25d0 ", style=YELLOW)
+            content.append("provisioning", style=MEDIUM)
+            hw = _hw_text(state)
+            if hw:
+                content.append("  ")
+                content.append_text(hw)
+            tree = Tree(_root(), guide_style=GUIDE)
+            tree.add(content)
+            return _wrap(tree)
+
+        case _Phase.SSH:
+            hw = _hw_text(state)
+            count = sum(1 for s in state.nodes.values() if s.value >= _NodeStatus.SSH.value)
+            active = Text()
+            active.append("\u25d0 ", style=YELLOW)
+            active.append("connecting ", style=MEDIUM)
+            active.append(f"{count}/{state.total_nodes}", style=BRIGHT)
+            tree = Tree(_root(hw), guide_style=GUIDE)
+            tree.add(_history("provisioned"))
+            branch = tree.add(active)
+            if state.nodes:
+                branch.add(_node_status_line(state))
+            return _wrap(tree)
+
+        case _Phase.BOOTSTRAP | _Phase.WORKERS:
+            hw = _hw_text(state)
+            phase_name = "bootstrap" if state.phase == _Phase.BOOTSTRAP else "workers"
+            target = (
+                _NodeStatus.BOOTSTRAPPING if state.phase == _Phase.BOOTSTRAP
+                else _NodeStatus.READY
+            )
+            count = sum(1 for s in state.nodes.values() if s.value >= target.value)
+            active = Text()
+            active.append("\u25d0 ", style=YELLOW)
+            active.append(f"{phase_name} ", style=MEDIUM)
+            active.append(f"{count}/{state.total_nodes}", style=BRIGHT)
+            tree = Tree(_root(hw), guide_style=GUIDE)
+            tree.add(_history("provisioned", "connected"))
+            branch = tree.add(active)
+            if state.nodes:
+                branch.add(_node_status_line(state))
+            return _wrap(tree)
+
+        case _Phase.READY:
+            hw = _hw_text(state)
+            history = _history("provisioned", "connected", "bootstrapped")
+            if state.ready_at and state.pool_started_at:
+                elapsed = state.ready_at - state.pool_started_at
+                history.append(f" ({_format_duration(elapsed)})", style=VERY_DIM)
+
+            active = Text()
+            active.append("\u25cf ", style=CYAN)
+            active.append("ready", style=Style(color="cyan"))
+
+            tasks = Text()
+            tasks.append("\u25b8 ", style=YELLOW)
+            tasks.append(str(state.tasks_running), style=BRIGHT)
+            tasks.append(" running", style=DIM)
+            tasks.append("  ")
+            tasks.append("\u2713 ", style=GREEN)
+            tasks.append(str(state.tasks_done), style=BRIGHT)
+            tasks.append(" done", style=DIM)
+            if state.tasks_failed:
+                tasks.append("  ")
+                tasks.append("\u2717 ", style=RED)
+                tasks.append(str(state.tasks_failed), style=BRIGHT)
+                tasks.append(" failed", style=DIM)
+            rate = _throughput(state)
+            if rate > 0:
+                tasks.append("  ")
+                tasks.append(f"{rate:.1f}", style=MEDIUM)
+                tasks.append(" tasks/min", style=DIM)
+            if state.inflight:
+                latest = next(iter(reversed(list(state.inflight.values()))), None)
+                if latest:
+                    tasks.append("  ")
+                    tasks.append("\u203a ", style=VERY_DIM)
+                    tasks.append(latest.name, style=DIM)
+
+            metrics = _render_metrics_text(state)
+            tree = Tree(_root(hw), guide_style=GUIDE)
+            tree.add(history)
+            branch = tree.add(active)
+            branch.add(tasks)
+            if metrics:
+                branch.add(metrics)
+            return _wrap(tree)
+
+        case _Phase.STOPPING:
+            hw = _hw_text(state)
+            tasks_summary = Text()
+            tasks_summary.append("\u2713 ", style=GREEN)
+            tasks_summary.append(f"{state.tasks_done} tasks", style=DIM)
+            rate = _throughput(state)
+            if rate > 0:
+                tasks_summary.append(" \u00b7 ", style=VERY_DIM)
+                tasks_summary.append(f"{rate:.1f}/min", style=DIM)
+
+            stopping = Text()
+            stopping.append("\u25d0 ", style=YELLOW)
+            stopping.append("shutting down...", style=MEDIUM)
+            cost = _cost_text(state)
+            if cost:
+                stopping.append("    ")
+                stopping.append_text(cost)
+
+            tree = Tree(_root(hw), guide_style=GUIDE)
+            tree.add(tasks_summary)
+            tree.add(stopping)
+            return _wrap(tree)
 
 
-_SKYWARD_COL_WIDTH = 33
-_CLUSTER_COL_WIDTH = 38
+# --- Session summary ---
 
 
-def _render(state: _State) -> RenderableType:
-    parts: list[RenderableType] = []
-    term_w = state.console.size.width
-    left_width = _SKYWARD_COL_WIDTH + 2 + _CLUSTER_COL_WIDTH
-    tasks_width = max(20, term_w - left_width - 2)
+def _format_duration(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    minutes = int(seconds // 60)
+    secs = int(seconds % 60)
+    return f"{minutes}m {secs:02d}s" if minutes < 60 else f"{minutes // 60}h {minutes % 60:02d}m"
 
-    left_top = Table.grid(padding=(0, 2))
-    left_top.add_column(width=_SKYWARD_COL_WIDTH)
-    left_top.add_column(width=_CLUSTER_COL_WIDTH)
-    left_top.add_row(
-        _render_skyward_col(state),
-        _render_cluster_col(state),
+
+def _render_summary(state: _State, now: float | None = None) -> RenderableType:
+    now = now if now is not None else time.monotonic()
+    duration = now - state.pool_started_at if state.pool_started_at else 0
+
+    overview = Table(
+        title="Session Summary\n",
+        title_style="bold",
+        title_justify="center",
+        show_header=False,
+        show_edge=False,
+        box=None,
+        padding=(0, 2),
     )
+    overview.add_column("key", style="bright_black", min_width=12)
+    overview.add_column("value")
 
-    header = Table.grid(padding=(0, 2))
-    header.add_column(width=left_width)
-    header.add_column(width=tasks_width)
-    header.add_row(left_top, _render_tasks_col(state, tasks_width))
-    parts.append(header)
+    if state.cluster:
+        provider = (state.cluster.spec.provider or "").upper()
+        region = state.instances[0].region if state.instances else ""
+        itype = state.instances[0].offer.instance_type.name if state.instances else ""
+        parts = [p for p in (provider, region, itype) if p]
+        if parts:
+            overview.add_row("Provider", Text(" \u00b7 ".join(parts)))
 
-    parts.append(Text())
-    parts.append(_full_width_badge("logs", term_w))
+    if state.instances:
+        n_spot = sum(1 for i in state.instances if i.spot)
+        n_od = len(state.instances) - n_spot
+        alloc_parts = []
+        if n_spot:
+            alloc_parts.append(f"{n_spot} spot")
+        if n_od:
+            alloc_parts.append(f"{n_od} on-demand")
+        alloc = f" ({', '.join(alloc_parts)})" if alloc_parts else ""
+        overview.add_row("Cluster", Text(f"{len(state.instances)} nodes{alloc}"))
 
-    metrics_footer = _render_metrics_footer(state, term_w)
-    footer_height = _measure_height(metrics_footer, term_w) + 1  # +1 blank line
+        accel = state.instances[0].offer.instance_type.accelerator
+        if accel:
+            total = accel.count * len(state.instances)
+            mem = f" {accel.memory}" if accel.memory else ""
+            overview.add_row("Accelerator", Text(f"{total}\u00d7 {accel.name}{mem}"))
 
-    term_h = state.console.size.height
-    header_height = _measure_height(Group(*parts), term_w)
-    budget = max(1, term_h - header_height - footer_height)
-    visible = state.log[-budget:]
+    overview.add_row("Duration", Text(_format_duration(duration)))
 
-    for entry in visible:
-        line = Text()
-        short_id = entry.instance_id[:8].center(8)
-        line.append(f" {short_id} ", style=_badge_style(entry.instance_id))
-        line.append(f"  {entry.line}")
-        parts.append(line)
+    hourly = sum(
+        (i.offer.spot_price if i.spot else i.offer.on_demand_price) or 0.0
+        for i in state.instances
+    ) if state.instances else 0.0
+    if hourly > 0:
+        total_cost = hourly * (duration / 3600)
+        cost_text = Text()
+        cost_text.append(f"${total_cost:.2f}", style="green")
+        cost_text.append(f" (${hourly:.2f}/hr)", style="bright_black")
+        overview.add_row("Cost", cost_text)
 
-    used_log_lines = len(visible)
-    padding = budget - used_log_lines
-    for _ in range(padding):
-        parts.append(Text())
+    tasks_text = Text()
+    tasks_text.append(f"{state.tasks_done} completed", style="green bold")
+    tasks_text.append(" \u00b7 ", style="color(240)")
+    tasks_text.append(f"{state.tasks_failed} failed", style="red bold")
+    overview.add_row("Tasks", tasks_text)
 
-    parts.append(Text())
-    parts.append(metrics_footer)
+    rate = _throughput(state, now=now)
+    if rate > 0:
+        overview.add_row("Throughput", Text(f"{rate:.1f} tasks/min"))
 
-    return Group(*parts)
+    if state.task_latencies:
+        avg_lat = sum(state.task_latencies) / len(state.task_latencies)
+        lo = min(state.task_latencies)
+        hi = max(state.task_latencies)
+        latency_text = Text()
+        latency_text.append(f"{avg_lat:.1f}s")
+        latency_text.append(f" (min {lo:.1f}s, max {hi:.1f}s)", style="bright_black")
+        overview.add_row("Avg latency", latency_text)
+
+    gpu_vals = _collect_metric_vals(state, "gpu_util")
+    gpu_mem_vals = _collect_metric_vals(state, "gpu_mem_mb")
+    gpu_mem_total = _collect_metric_vals(state, "gpu_mem_total_mb")
+    cpu_vals = _collect_metric_vals(state, "cpu")
+    mem_vals = _collect_metric_vals(state, "mem")
+
+    if gpu_vals:
+        avg_gpu = sum(gpu_vals) / len(gpu_vals)
+        lo_g, hi_g = min(gpu_vals), max(gpu_vals)
+        overview.add_row("Avg GPU", Text(f"{avg_gpu:.0f}% ({lo_g:.0f}%\u2013{hi_g:.0f}%)"))
+    if gpu_mem_vals:
+        avg_vram = sum(gpu_mem_vals) / len(gpu_mem_vals)
+        if gpu_mem_total:
+            total_vram = sum(gpu_mem_total) / len(gpu_mem_total)
+            overview.add_row("Avg VRAM", Text(f"{avg_vram:.0f}/{total_vram:.0f} MB"))
+        else:
+            overview.add_row("Avg VRAM", Text(f"{avg_vram:.0f} MB"))
+    if cpu_vals:
+        avg_cpu = sum(cpu_vals) / len(cpu_vals)
+        overview.add_row("Avg CPU", Text(f"{avg_cpu:.0f}%"))
+    if mem_vals:
+        avg_mem = sum(mem_vals) / len(mem_vals)
+        overview.add_row("Avg Memory", Text(f"{avg_mem:.0f}%"))
+
+    breakdown = Table(
+        title="Task Execution Summary\n",
+        title_style="bold",
+        title_justify="center",
+        show_edge=False,
+        box=None,
+        padding=(0, 2),
+        header_style="bold bright_black",
+    )
+    breakdown.add_column("Task")
+    breakdown.add_column("Calls", justify="right")
+    breakdown.add_column("Avg", justify="right")
+    breakdown.add_column("Min", justify="right")
+    breakdown.add_column("Max", justify="right")
+    breakdown.add_column("Failed", justify="right")
+
+    all_fns = sorted(
+        set(list(state.task_fn_stats.keys()) + list(state.task_fn_failed.keys())),
+        key=lambda t: len(state.task_fn_stats.get(t, ())),
+        reverse=True,
+    )
+    for fn_name in all_fns:
+        latencies = state.task_fn_stats.get(fn_name, ())
+        fails = state.task_fn_failed.get(fn_name, 0)
+        calls = len(latencies) + fails
+        avg = f"{sum(latencies) / len(latencies):.1f}s" if latencies else "\u2013"
+        mn = f"{min(latencies):.1f}s" if latencies else "\u2013"
+        mx = f"{max(latencies):.1f}s" if latencies else "\u2013"
+        fail_text = Text(str(fails), style="red bold") if fails else Text("0", style="bright_black")
+        breakdown.add_row(
+            Text(fn_name), Text(str(calls)), Text(avg),
+            Text(mn, style="green"), Text(mx, style="yellow"), fail_text,
+        )
+
+    layout = Table.grid(padding=(0, 3), expand=True)
+    layout.add_column("left", ratio=2)
+    layout.add_column("right", ratio=3)
+    layout.add_row(overview, breakdown)
+
+    return Group(Text(""), layout, Text(""))
+
+
+# =============================================================================
+# Controller
+# =============================================================================
+
+
+@dataclass(frozen=True, slots=True)
+class LocalOutput:
+    line: str
+    stream: str = "stdout"
+
+
+type ConsoleInput = SpyEvent | LocalOutput
 
 
 def _format_task(fn: object, args: tuple, kwargs: dict, max_sig: int = 40) -> str:
     name = getattr(fn, "__name__", str(fn))
     parts = [repr(a) for a in args] + [f"{k}={v!r}" for k, v in kwargs.items()]
     sig = ", ".join(parts)
-    if len(sig) > max_sig:
-        return f"{name}(…)"
-    return f"{name}({sig})" if sig else name
+    return f"{name}(\u2026)" if len(sig) > max_sig else f"{name}({sig})" if sig else name
 
 
-# ─── Actor ────────────────────────────────────────────────────────
+def _resolve_instance_id(state: _State, node_id: int | None = None) -> str | None:
+    if node_id is not None and node_id < len(state.instances):
+        return state.instances[node_id].id
+    return None
 
 
 def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
-    """Console tells this story: idle → observing → stopped."""
+    """Console tells this story: idle -> observing -> stopped."""
 
+    console = Console(stderr=True)
     _original_stdout: list[Any] = []
 
     def _install_stdout_redirect(ctx: ActorContext[ConsoleInput]) -> None:
         ref = ctx.self
 
-        class _ConsoleWriter:
-            def __init__(self, original: Any, stream: str = "stdout") -> None:
+        class _Writer:
+            def __init__(self, original: Any) -> None:
                 self._original = original
-                self._stream = stream
 
             def write(self, s: str) -> int:
                 for line in s.splitlines(keepends=True):
-                    stripped = line.rstrip()
-                    if stripped:
-                        ref.tell(LocalOutput(line=stripped, stream=self._stream))
+                    if stripped := line.rstrip():
+                        ref.tell(LocalOutput(line=stripped))
                 return len(s)
 
             def flush(self) -> None:
@@ -717,19 +943,68 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
             def isatty(self) -> bool:
                 return False
 
-        _original_stdout.append(sys.stdout)
-        sys.stdout = _ConsoleWriter(sys.stdout, "stdout")  # type: ignore[assignment]
+        import sys
 
-    async def _uninstall_stdout_redirect(_ctx: ActorContext[ConsoleInput]) -> None:
+        _original_stdout.append(sys.stdout)
+        sys.stdout = _Writer(sys.stdout)  # type: ignore[assignment]
+
+    async def _restore_stdout(_ctx: ActorContext[ConsoleInput]) -> None:
+        import sys
+
         if _original_stdout:
             sys.stdout = _original_stdout.pop()
+
+    live: Live | None = None
+    live_stopped = False
+
+    def _update_footer(state: _State) -> None:
+        nonlocal live
+        if live_stopped:
+            return
+        renderable = _render_footer(state)
+        if live is None:
+            live = Live(
+                renderable, console=console,
+                refresh_per_second=8, screen=False,
+                redirect_stdout=False, redirect_stderr=False,
+            )
+            live.start()
+        else:
+            live.update(renderable)
+
+    def _stop_live() -> None:
+        nonlocal live, live_stopped
+        live_stopped = True
+        if live is not None:
+            live.stop()
+            live = None
 
     def idle() -> Behavior[ConsoleInput]:
         async def setup(ctx: ActorContext[ConsoleInput]) -> Behavior[ConsoleInput]:
             _install_stdout_redirect(ctx)
-            timeline = _Timeline(total=spec.nodes)
-            behavior = observing(_State(timeline=timeline))
-            return Behaviors.with_lifecycle(behavior, post_stop=_uninstall_stdout_redirect)
+            from skyward import __version__
+
+            line1 = Text()
+            line1.append(f" v{__version__} ", style=_make_badge(140, 0.6))
+            line1.append("  Cloud accelerators with a single decorator", style=DIM)
+
+            line2 = Text()
+            line2.append("https://gabfssilva.github.io/skyward/", style="underline dim")
+
+            right = [Text(), line1, line2, Text()]
+
+            banner = Table.grid(padding=(0, 2))
+            banner.add_column("logo")
+            banner.add_column("info")
+            for logo_line, info_line in zip(_LOGO_LINES, right, strict=True):
+                banner.add_row(logo_line, info_line)
+            console.print()
+            console.print(banner)
+            console.print()
+            state = _State(total_nodes=spec.nodes)
+            behavior = observing(state)
+            return Behaviors.with_lifecycle(behavior, post_stop=_restore_stdout)
+
         return Behaviors.setup(setup)
 
     def observing(state: _State) -> Behavior[ConsoleInput]:
@@ -740,244 +1015,216 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
                 case SpyEvent(event=Terminated()):
                     return Behaviors.same()
 
-                # ─── Pool lifecycle ───────────────────────────────
                 case SpyEvent(event=StartPool()):
-                    tl = state.timeline.set_active(Phase.INFRA)
-                    return _refresh(replace(state, timeline=tl, pool_started_at=time.monotonic()))
+                    new = _on_start_pool(state)
+                    _update_footer(new)
+                    return observing(new)
 
                 case SpyEvent(event=ClusterReady()):
-                    tl = state.timeline.complete(Phase.INFRA).set_active(Phase.PROVISIONED)
-                    return _refresh(replace(state, timeline=tl))
+                    new = _on_cluster_ready(state)
+                    _update_footer(new)
+                    return observing(new)
 
                 case SpyEvent(event=InstancesProvisioned(cluster=cluster, instances=raw)):
-                    tl = state.timeline.complete(Phase.PROVISIONED).set_active(Phase.SSH)
-                    return _refresh(replace(
-                        state, timeline=tl,
-                        cluster=cluster, instances=tuple(raw),
-                    ))
+                    new = _on_instances_provisioned(state, cluster, tuple(raw))
+                    _update_footer(new)
+                    return observing(new)
 
                 case SpyEvent(event=PoolStarted()):
-                    tl = state.timeline.complete(Phase.READY)
-                    return _refresh(replace(state, timeline=tl))
+                    _emit(console, "skyward", "\u2713 Pool ready", "green bold")
+                    new = replace(state, phase=_Phase.READY)
+                    _update_footer(new)
+                    return observing(new)
 
                 case SpyEvent(event=StopPool()):
-                    if state.live is not None:
-                        state.live.stop()
-                    return observing(replace(state, live=None))
+                    _stop_live()
+                    _emit(console, "skyward", "Shutting down...", "yellow")
+                    summary = _render_summary(state)
+                    console.print(summary)
+                    return observing(replace(state, phase=_Phase.STOPPING))
 
                 case SpyEvent(event=PoolStopped() | _ShutdownDone()):
                     return Behaviors.same()
 
-                # ─── Node lifecycle ───────────────────────────────
-                case SpyEvent(event=Provision()):
-                    return Behaviors.same()
-
-                case SpyEvent(event=NodeBecameReady()):
+                case SpyEvent(event=Provision() | NodeBecameReady() | _PollResult()):
                     return Behaviors.same()
 
                 case SpyEvent(event=NodeLost(node_id=nid, reason=reason)):
-                    return _refresh(_inst(state, "skyward", f"Node {nid} lost: {reason}"))
-
-                # ─── Instance lifecycle ───────────────────────────
-                case SpyEvent(event=_PollResult()):
+                    _emit(console, "error", f"Node {nid} lost: {reason}", "red")
                     return Behaviors.same()
 
                 case SpyEvent(event=_Connected()):
-                    tl = state.timeline.advance(Phase.SSH)
-                    return _refresh(replace(state, timeline=tl))
+                    iid = _resolve_instance_id(state, node_id=len(state.nodes))
+                    if iid:
+                        _emit(console, iid, "\u2713 SSH connected", "green")
+                        new = _on_ssh_connected(state, iid)
+                        _update_footer(new)
+                        return observing(new)
+                    return Behaviors.same()
 
                 case SpyEvent(event=_ConnectionFailed(error=error)):
-                    return _refresh(_inst(state, "skyward", f"SSH failed: {error}"))
+                    _emit(console, "error", f"SSH failed: {error}", "red")
+                    return Behaviors.same()
 
                 case SpyEvent(event=InstanceBecameReady()):
                     return Behaviors.same()
 
                 case SpyEvent(event=InstanceDied(instance_id=iid, reason=reason)):
-                    return _refresh(_inst(state, iid, f"Died: {reason}"))
+                    _emit(console, iid, f"Died: {reason}", "red")
+                    return Behaviors.same()
 
                 case SpyEvent(event=Preempted(reason=reason)):
-                    return _refresh(_inst(state, "skyward", f"Preempted: {reason}"))
+                    _emit(console, "error", f"Preempted: {reason}", "red")
+                    return Behaviors.same()
 
-                # ─── Bootstrap & post-bootstrap ───────────────────
                 case SpyEvent(event=BootstrapConsole() as ev):
                     content = ev.content.strip()
-                    if not content or content.startswith("#"):
-                        return Behaviors.same()
-                    return _refresh(_inst(state, ev.instance.instance.id, content[:120]))
+                    if content and not content.startswith("#"):
+                        _emit(console, ev.instance.instance.id, content[:120])
+                    return Behaviors.same()
 
                 case SpyEvent(event=BootstrapPhase() as ev):
+                    iid = ev.instance.instance.id
                     match ev.event:
                         case "started":
-                            tl = state.timeline.set_active(Phase.BOOTSTRAP)
-                            new_state = replace(state, timeline=tl)
-                            line = f"▸ {ev.phase}..."
+                            _emit(console, iid, f"\u25b8 {ev.phase}...")
                         case "completed":
-                            elapsed_str = f" ({ev.elapsed:.1f}s)" if ev.elapsed else ""
-                            new_state = state
-                            line = f"✓ {ev.phase}{elapsed_str}"
+                            elapsed = f" ({ev.elapsed:.1f}s)" if ev.elapsed else ""
+                            _emit(console, iid, f"\u2713 {ev.phase}{elapsed}", "green")
                         case "failed":
-                            new_state = state
-                            line = f"✗ {ev.phase}: {ev.error}"
-                        case _:
-                            return Behaviors.same()
-                    return _refresh(_inst(new_state, ev.instance.instance.id, line))
+                            _emit(console, iid, f"\u2717 {ev.phase}: {ev.error}", "red")
+                    return Behaviors.same()
 
                 case SpyEvent(event=BootstrapCommand() as ev):
                     cmd = ev.command.strip()
-                    if not cmd:
-                        return Behaviors.same()
-                    display = f"$ {cmd[:80]}..." if len(cmd) > 80 else f"$ {cmd}"
-                    return _refresh(_inst(state, ev.instance.instance.id, display))
+                    if cmd:
+                        display = f"$ {cmd[:80]}..." if len(cmd) > 80 else f"$ {cmd}"
+                        _emit(console, ev.instance.instance.id, display, "dim")
+                    return Behaviors.same()
 
                 case SpyEvent(event=BootstrapDone(instance=inst, success=ok, error=err)):
+                    iid = inst.instance.id
                     if ok:
-                        tl = state.timeline.advance(Phase.BOOTSTRAP)
-                        return _refresh(replace(state, timeline=tl))
-                    return _refresh(_inst(state, inst.instance.id, f"Bootstrap failed: {err}"))
+                        new = _on_bootstrap_done(state, iid)
+                        _update_footer(new)
+                        return observing(new)
+                    _emit(console, iid, f"\u2717 Bootstrap failed: {err}", "red")
+                    return Behaviors.same()
 
                 case SpyEvent(event=_LocalInstallDone() | _UserCodeSyncDone()):
                     return Behaviors.same()
 
                 case SpyEvent(event=_PostBootstrapFailed(error=err)):
-                    return _refresh(_inst(state, "skyward", f"Post-bootstrap failed: {err}"))
+                    _emit(console, "error", f"Post-bootstrap failed: {err}", "red")
+                    return Behaviors.same()
 
                 case SpyEvent(event=_WorkerStarted()):
-                    tl = state.timeline.advance(Phase.WORKERS)
-                    return _refresh(replace(state, timeline=tl))
+                    bootstrapped = sum(
+                        1 for s in state.nodes.values()
+                        if s.value >= _NodeStatus.BOOTSTRAPPING.value
+                    )
+                    iid = _resolve_instance_id(
+                        state, node_id=bootstrapped - 1,
+                    )
+                    if iid:
+                        _emit(console, iid, "\u2713 Worker joined", "green")
+                        new = _on_worker_started(state, iid)
+                        _update_footer(new)
+                        return observing(new)
+                    return Behaviors.same()
 
                 case SpyEvent(event=_WorkerFailed(error=error)):
-                    return _refresh(_inst(state, "skyward", f"Worker failed: {error}"))
+                    _emit(console, "error", f"Worker failed: {error}", "red")
+                    return Behaviors.same()
 
-                # ─── Runtime ──────────────────────────────────────
-                case SpyEvent(event=Log() as ev):
-                    line = ev.line.strip()
-                    if not line:
-                        return Behaviors.same()
-                    return _refresh(_inst(state, ev.instance.instance.id, line[:120]))
+                case SpyEvent(event=SubmitTask(task_id=tid) as ev) if tid not in state.inflight:
+                    name = _format_task(ev.fn, ev.args, ev.kwargs)
+                    _emit(console, "tasks", f"\u2192 {name} submitted")
+                    new = _on_task_submitted(state, tid, name, "single")
+                    _update_footer(new)
+                    return observing(new)
 
-                case SpyEvent(event=SubmitTask(task_id=tid) as ev) if tid not in state.tasks:
-                    entry = _TaskEntry(
-                        task_id=tid, fn=ev.fn, args=ev.args,
-                        kwargs=ev.kwargs, kind="single",
-                        started_at=time.monotonic(),
-                        instance_id='waiting ',
-                    )
-                    new_tasks = MappingProxyType({**state.tasks, tid: entry})
-                    new_order = (*state.task_order, tid)
-                    return _refresh(replace(state, tasks=new_tasks, task_order=new_order))
-
-                case SpyEvent(event=SubmitBroadcast(task_id=tid) as ev) if tid not in state.tasks:
-                    entry = _TaskEntry(
-                        task_id=tid, fn=ev.fn, args=ev.args,
-                        kwargs=ev.kwargs, kind="broadcast",
-                        started_at=time.monotonic(),
-                    )
-                    new_tasks = MappingProxyType({**state.tasks, tid: entry})
-                    new_order = (*state.task_order, tid)
-                    return _refresh(replace(state, tasks=new_tasks, task_order=new_order))
+                case SpyEvent(
+                    event=SubmitBroadcast(task_id=tid) as ev,
+                ) if tid not in state.inflight:
+                    name = _format_task(ev.fn, ev.args, ev.kwargs)
+                    n = len(state.instances)
+                    _emit(console, "tasks", f"\u2192 {name} broadcast to all {n} nodes")
+                    new = _on_task_submitted(state, tid, name, "broadcast")
+                    _update_footer(new)
+                    return observing(new)
 
                 case SpyEvent(event=SubmitTask() | SubmitBroadcast()):
                     return Behaviors.same()
 
                 case SpyEvent(event=TaskSubmitted(task_id=tid, node_id=nid)):
-                    logger.warning(
-                        "CONSOLE: TaskSubmitted tid={tid} nid={nid} known={known}",
-                        tid=tid, nid=nid, known=tid in state.tasks,
-                    )
-                    if tid in state.tasks:
-                        iid = state.instances[nid].id if nid < len(state.instances) else ""
-                        updated = replace(state.tasks[tid], instance_id=iid)
-                        new_tasks = MappingProxyType({**state.tasks, tid: updated})
-                        return _refresh(replace(state, tasks=new_tasks))
-                    return Behaviors.same()
+                    iid = _resolve_instance_id(state, node_id=nid) or ""
+                    if iid:
+                        entry = state.inflight.get(tid)
+                        if entry:
+                            _emit(console, "tasks", f"  {entry.name} \u2192 {iid[:8]}", "dim")
+                    new = _on_task_assigned(state, tid, iid)
+                    return observing(new)
 
-                case SpyEvent(event=TaskResult(node_id=nid, task_id=tid)):
-                    target = tid if tid in state.tasks else next(
-                        (
-                            t for t in state.task_order
-                            if state.tasks[t].status == _TaskStatus.RUNNING
-                        ),
-                        None,
-                    )
-                    if target is None:
+                case SpyEvent(event=TaskResult(task_id=tid, node_id=nid)):
+                    entry = state.inflight.get(tid)
+                    if entry is None:
                         return Behaviors.same()
-                    entry = state.tasks[target]
-                    elapsed = time.monotonic() - entry.started_at
-                    iid = entry.instance_id or (
-                        state.instances[nid].id if nid < len(state.instances) else ""
-                    )
                     match entry.kind:
                         case "broadcast":
-                            new_done = entry.broadcast_done + 1
-                            if new_done >= len(state.instances):
-                                updated = replace(
-                                    entry, status=_TaskStatus.DONE,
-                                    elapsed=elapsed, broadcast_done=new_done,
-                                )
-                            else:
-                                updated = replace(entry, broadcast_done=new_done)
+                            new = _on_broadcast_partial(state, tid)
+                            updated = new.inflight.get(tid)
+                            if updated and updated.broadcast_done >= updated.broadcast_total:
+                                elapsed = time.monotonic() - entry.started_at
+                                txt = f"\u2713 {entry.name} broadcast completed ({elapsed:.1f}s)"
+                                _emit(console, "tasks", txt, "green")
+                                new = _on_task_done(new, tid, elapsed)
+                            _update_footer(new)
+                            return observing(new)
                         case _:
-                            updated = replace(
-                                entry, status=_TaskStatus.DONE,
-                                elapsed=elapsed, instance_id=iid,
-                            )
-                    new_tasks = MappingProxyType({**state.tasks, target: updated})
-                    return _refresh(replace(state, tasks=new_tasks))
+                            elapsed = time.monotonic() - entry.started_at
+                            iid = _resolve_instance_id(state, node_id=nid) or ""
+                            suffix = f" \u2192 {iid[:8]}" if iid else ""
+                            txt = f"\u2713 {entry.name} completed ({elapsed:.1f}s){suffix}"
+                            _emit(console, "tasks", txt, "green")
+                            new = _on_task_done(state, tid, elapsed)
+                            _update_footer(new)
+                            return observing(new)
+
+                case SpyEvent(event=Log() as ev):
+                    line = ev.line.strip()
+                    if line:
+                        _emit(console, ev.instance.instance.id, line[:120])
+                    return Behaviors.same()
 
                 case SpyEvent(event=Metric() as ev):
-                    iid = ev.instance.instance.id
-                    sample = _MetricSample(value=ev.value, timestamp=ev.timestamp)
-                    inst_metrics = dict(state.metrics.get(iid, MappingProxyType({})))
-                    inst_metrics[ev.name] = sample
-                    new_metrics = MappingProxyType({
-                        **state.metrics,
-                        iid: MappingProxyType(inst_metrics),
-                    })
-                    return _refresh(replace(state, metrics=new_metrics))
+                    new = _on_metric(state, ev.instance.instance.id, ev.name, ev.value)
+                    _update_footer(new)
+                    return observing(new)
 
                 case SpyEvent(event=ExecuteOnNode()):
                     return Behaviors.same()
 
                 case SpyEvent(event=Error() as ev):
-                    return _refresh(_inst(state, "skyward", f"ERROR: {ev.message}"))
+                    style = "red bold" if ev.fatal else "red"
+                    _emit(console, "error", ev.message, style)
+                    return Behaviors.same()
 
                 case SpyEvent(event=ShutdownRequested()):
-                    if state.live is not None:
-                        state.live.stop()
-                    return observing(replace(state, live=None))
+                    _stop_live()
+                    _emit(console, "skyward", "Shutting down...", "yellow")
+                    summary = _render_summary(state)
+                    console.print(summary)
+                    return observing(replace(state, phase=_Phase.STOPPING))
 
                 case LocalOutput(line=line):
-                    stripped = line.rstrip()
-                    if not stripped:
-                        return Behaviors.same()
-                    return _refresh(_inst(state, "local", stripped))
+                    if stripped := line.rstrip():
+                        _emit(console, "local", stripped)
+                    return Behaviors.same()
 
                 case _:
                     return Behaviors.same()
 
         return Behaviors.receive(receive)
-
-    class _LiveRenderable:
-        def __init__(self, state: _State) -> None:
-            self.state = state
-
-        def __rich__(self) -> RenderableType:
-            return _render(self.state)
-
-    def _refresh(new_state: _State) -> Behavior[ConsoleInput]:
-        renderable = _LiveRenderable(new_state)
-        match new_state.live:
-            case None:
-                live = Live(
-                    renderable, console=new_state.console,
-                    refresh_per_second=60, screen=False,
-                    redirect_stdout=False,
-                    redirect_stderr=False,
-                )
-                live.start()
-                return observing(replace(new_state, live=live))
-            case live:
-                live.update(renderable)
-                return observing(new_state)
 
     return idle()

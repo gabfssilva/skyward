@@ -155,6 +155,7 @@ class ClusterCreateParams(TypedDict, total=False):
     templateId: str
     deployCost: float
     throughput: int
+    containerRegistryAuthId: str
 
 
 class CpuPodCreateParams(TypedDict, total=False):
@@ -173,6 +174,7 @@ class CpuPodCreateParams(TypedDict, total=False):
     dockerArgs: str  # Custom docker args
     volumeKey: str | None
     env: list[dict[str, str]]  # [{"key": "...", "value": "..."}]
+    containerRegistryAuthId: str
 
 
 # =============================================================================

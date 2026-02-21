@@ -22,14 +22,14 @@ from .proxies import (
     SetProxy,
 )
 from .registry import DistributedRegistry
-from .types import Consistency
+from .types import Consistency, Registry
 
-_active_registry: ContextVar[DistributedRegistry | None] = ContextVar(
+_active_registry: ContextVar[Registry | None] = ContextVar(
     "active_registry", default=None
 )
 
 
-def _get_active_registry() -> DistributedRegistry:
+def _get_active_registry() -> Registry:
     reg = _active_registry.get()
     if reg is not None:
         return reg
@@ -39,7 +39,7 @@ def _get_active_registry() -> DistributedRegistry:
     )
 
 
-def _set_active_registry(registry: DistributedRegistry | None) -> None:
+def _set_active_registry(registry: Registry | None) -> None:
     _active_registry.set(registry)
 
 
@@ -76,6 +76,7 @@ __all__ = [
     "BarrierProxy",
     "LockProxy",
     "DistributedRegistry",
+    "Registry",
     "dict",
     "set",
     "counter",

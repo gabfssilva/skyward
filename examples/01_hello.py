@@ -88,8 +88,8 @@ def format_results(r: dict) -> None:
 if __name__ == "__main__":
     with sky.ComputePool(
         sky.Spec(
-            provider=sky.AWS(),
-            accelerator=sky.accelerators.T4G(),
+            provider=sky.RunPod(),
+            accelerator=sky.accelerators.RTX_4090(),
         ),
         image=sky.Image(pip=['jax[cuda12]'])
     ) as pool:

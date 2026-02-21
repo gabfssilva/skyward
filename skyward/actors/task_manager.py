@@ -184,7 +184,8 @@ def task_manager_actor(max_inflight: int) -> Behavior[TaskManagerMsg]:
                     for nid, slot in s.nodes.items():
                         slot.ref.tell(ExecuteOnNode(
                             fn=bcast.fn, args=bcast.args, kwargs=bcast.kwargs,
-                            reply_to=ctx.self, timeout=bcast.timeout,
+                            reply_to=ctx.self, task_id=bcast.task_id,
+                            timeout=bcast.timeout,
                         ))
                         new_nodes[nid] = NodeSlots(slot.ref, slot.total, slot.used + 1)
                         pending_nodes.add(nid)

@@ -209,6 +209,7 @@ class RunPodSpecific:
     cloud_type: str
     gpu_vram_gb: int = 0
     image_name: str = _FALLBACK_IMAGE
+    registry_auth_id: str | None = None
     runpod_cluster_id: str | None = None
     pod_ids: tuple[tuple[int, str], ...] = ()
     cluster_ips: tuple[tuple[int, str], ...] = ()
@@ -330,9 +331,23 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
         ssh_key_path = get_ssh_key_path()
         _, ssh_public_key = get_local_ssh_key()
 
+        registry_auth_id: str | None = None
         async with RunPodClient(api_key, config=self._config) as client:
             await client.ensure_ssh_key(ssh_public_key)
             log.debug("SSH key ensured on RunPod account")
+
+            if self._config.registry_auth:
+                registry_auth_id = await client.resolve_registry_auth(self._config.registry_auth)
+                if registry_auth_id:
+                    log.info(
+                        "Using registry credential {name!r}",
+                        name=self._config.registry_auth,
+                    )
+                else:
+                    log.warning(
+                        "Registry credential {name!r} not found — pulls will be unauthenticated",
+                        name=self._config.registry_auth,
+                    )
 
         match offer.specific:
             case RunPodOfferData(gpu_type_id=gid, min_cuda=min_cuda):
@@ -355,6 +370,7 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
         if spec.nodes >= 2 and gpu_type_id:
             runpod_cluster_id, pod_ids, cluster_ips = await _create_instant_cluster(
                 self._config, spec, gpu_type_id, image_name,
+                registry_auth_id=registry_auth_id,
             )
 
         shutdown_command = (
@@ -377,6 +393,7 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                 cloud_type=self._config.cloud_type.value,
                 gpu_vram_gb=gpu_vram_gb,
                 image_name=image_name,
+                registry_auth_id=registry_auth_id,
                 runpod_cluster_id=runpod_cluster_id,
                 pod_ids=pod_ids,
                 cluster_ips=cluster_ips,
@@ -558,6 +575,8 @@ async def _create_instant_cluster(
     spec: PoolSpec,
     gpu_type_id: str,
     image_name: str,
+    *,
+    registry_auth_id: str | None = None,
 ) -> tuple[str, tuple[tuple[int, str], ...], tuple[tuple[int, str], ...]]:
     """Create a RunPod Instant Cluster.
 
@@ -587,6 +606,8 @@ async def _create_instant_cluster(
 
     if config.data_center_ids != "global":
         params["dataCenterId"] = config.data_center_ids[0]
+    if registry_auth_id:
+        params["containerRegistryAuthId"] = registry_auth_id
 
     async with RunPodClient(api_key, config=config) as client:
         cluster_resp = await client.create_cluster(params)
@@ -643,6 +664,7 @@ async def _create_gpu_pod(
         deploy_cost=cluster.spec.max_hourly_cost,
         spot_price=bid,
         allowed_cuda_versions=allowed_cuda,
+        container_registry_auth_id=cluster.specific.registry_auth_id,
     )
 
 
@@ -668,5 +690,7 @@ async def _create_cpu_pod(
 
     if config.data_center_ids != "global":
         params["dataCenterId"] = config.data_center_ids[0]
+    if cluster.specific.registry_auth_id:
+        params["containerRegistryAuthId"] = cluster.specific.registry_auth_id
 
     return await client.create_cpu_pod(params)

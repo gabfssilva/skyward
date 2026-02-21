@@ -22,7 +22,7 @@ import threading
 import traceback
 import types
 import zlib
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -139,7 +139,7 @@ def _run_in_process(fn_bytes: bytes) -> Any:
     """Execute a serialized task in a subprocess.
 
     Module-level function so it's picklable by ProcessPoolExecutor.
-    Distributed collections are not available in process mode.
+    Distributed collections are available via IPC bridge (set up by ipc_initializer).
     """
     from skyward.infra.serialization import deserialize
 
@@ -156,6 +156,7 @@ def worker_behavior(
     registry: Any = None,
     system: ClusteredActorSystem | None = None,
     executor: str = "thread",
+    executor_pool: Executor | None = None,
 ) -> Behavior[WorkerMsg]:
     log = logger.bind(component="worker", node_id=node_id)
     sem = asyncio.Semaphore(concurrency)
@@ -201,7 +202,9 @@ def worker_behavior(
                 match executor:
                     case "process":
                         loop = asyncio.get_running_loop()
-                        result = await loop.run_in_executor(None, _run_in_process, fn_bytes)
+                        result = await loop.run_in_executor(
+                            executor_pool, _run_in_process, fn_bytes,
+                        )
                     case _:
                         from skyward.infra.serialization import deserialize
 
@@ -306,22 +309,39 @@ async def main(
         from skyward.distributed.registry import DistributedRegistry
 
         loop = asyncio.get_running_loop()
+        ipc_parent_conns: list[Any] = []
         match worker_executor:
             case "process":
                 import multiprocessing
                 from concurrent.futures import ProcessPoolExecutor
 
-                default_executor = ProcessPoolExecutor(
+                from skyward.distributed.ipc import ipc_initializer
+
+                mp_ctx = multiprocessing.get_context("spawn")
+                conn_queue = mp_ctx.Queue()
+                for _ in range(workers_per_node):
+                    parent_conn, child_conn = mp_ctx.Pipe()
+                    ipc_parent_conns.append(parent_conn)
+                    conn_queue.put(child_conn)
+
+                task_executor: Executor = ProcessPoolExecutor(
                     max_workers=workers_per_node,
-                    mp_context=multiprocessing.get_context("spawn"),
+                    mp_context=mp_ctx,
+                    initializer=ipc_initializer,
+                    initargs=(conn_queue,),
                 )
             case _:
                 pool_size = max((os.cpu_count() or 1) + 4, workers_per_node)
-                default_executor = ThreadPoolExecutor(max_workers=pool_size)
-        loop.set_default_executor(default_executor)
+                task_executor = ThreadPoolExecutor(max_workers=pool_size)
+                loop.set_default_executor(task_executor)
         set_system_loop(loop)
         registry = DistributedRegistry(system, loop=loop)
         _set_active_registry(registry)
+
+        if ipc_parent_conns:
+            from skyward.distributed.ipc import start_bridge
+
+            start_bridge(ipc_parent_conns, registry)
 
         system.spawn(
             Behaviors.discoverable(
@@ -329,6 +349,7 @@ async def main(
                     node_id, concurrency=workers_per_node,
                     registry=registry, system=system,
                     executor=worker_executor,
+                    executor_pool=task_executor,
                 ),
                 key=WORKER_KEY,
             ),

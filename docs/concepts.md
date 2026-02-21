@@ -103,6 +103,27 @@ If a spot instance is preempted, the node detects the loss, notifies the pool, a
 
 The pool is also the dispatch target for computations. You don't configure job queues or submit YAML — you use Python operators to express how computations should be distributed across the pool's nodes.
 
+## Workers
+
+Each node in the pool runs a **worker** — a long-lived process that receives serialized tasks, executes them, and sends results back. The `Worker` dataclass controls two things: how many tasks a node handles concurrently, and which execution backend runs them.
+
+```python
+with sky.ComputePool(
+    provider=sky.AWS(),
+    nodes=4,
+    worker=sky.Worker(concurrency=2),
+) as pool:
+    result = train(10) >> pool
+```
+
+`concurrency` sets the number of task slots per node. Total parallelism across the cluster is `nodes * concurrency` — four nodes with `concurrency=2` means eight tasks running simultaneously.
+
+The `executor` field determines *how* those tasks run. The default is `"process"`: each task executes in a separate OS process via `ProcessPoolExecutor`, which means each has its own Python interpreter and its own GIL. CPU-bound Python code saturates all available cores — a 2-vCPU machine with two concurrent tasks reaches 100% utilization. This is the right choice for numerical computation, data transformation, and training loops.
+
+The alternative is `"thread"`, which runs tasks as threads inside the worker process. Threads share the GIL, so CPU-bound Python code is limited to one core regardless of concurrency. On the same 2-vCPU machine, you'd see ~50% CPU. Threads are the right choice for I/O-bound work (network calls, disk reads) and for C extensions that release the GIL (NumPy, PyTorch inference). Distributed collections (`sky.dict()`, `sky.counter()`, etc.) work with both executors.
+
+For a practical comparison with benchmarks, see the [Worker Executors](guides/worker-executors.md) guide.
+
 ## Operators
 
 Most distributed computing frameworks require you to express execution through configuration files, job submission APIs, or method calls like `pool.submit(fn, args)`. Skyward takes a different approach: it uses Python's operator overloading to create a small vocabulary where the syntax itself communicates intent. The expression `train(10) >> pool` reads as "send this computation to the pool" — and that's exactly what it does.

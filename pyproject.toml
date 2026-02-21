@@ -113,7 +113,7 @@ reportMissingImports = "warning"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-addopts = "--durations=0 --dist loadgroup -s --log-cli-level=INFO -m 'not sanity and not integration'"
+addopts = "--durations=0 --dist loadgroup -n 4 --log-cli-level=WARNING -m 'not sanity and not integration'"
 timeout_func_only = true
 markers = [
     "e2e: end-to-end tests requiring container runtime",

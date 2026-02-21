@@ -70,7 +70,7 @@ def CPU(interval: float = 2) -> Metric:
     """
     return Metric(
         name="cpu",
-        command="awk '/^cpu / {printf \"%.1f\", ($2+$4)*100/($2+$4+$5)}' /proc/stat",
+        command="top -bn2 -d0.1 | awk '/^%Cpu/{cpu=100-$8} END{printf \"%.1f\",cpu}'",
         interval=interval,
     )
 
