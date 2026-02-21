@@ -55,8 +55,12 @@ def benchmark(matrix_size: int, iterations: int) -> dict:
     cpu = jax.devices("cpu")[0]
     gpu = jax.devices("gpu")[0]
 
+    # print("running on cpu...")
     results["cpu_time"] = bench_on(cpu, a, b, iterations)
+    # print("done!")
+    # print("running on gpu...")
     results["gpu_time"] = bench_on(gpu, a, b, iterations)
+    # print("done!")
     results["speedup"] = results["cpu_time"] / results["gpu_time"]
     results["gpu_name"] = gpu.device_kind
 
@@ -84,18 +88,9 @@ def format_results(r: dict) -> None:
 if __name__ == "__main__":
     with sky.ComputePool(
         sky.Spec(
-            provider=sky.VastAI(min_reliability=0.99),
-            accelerator=sky.accelerators.RTX_4090(),
-            allocation='on-demand'
-        ),
-        sky.Spec(
             provider=sky.AWS(),
             accelerator=sky.accelerators.T4G(),
         ),
-        sky.Spec(
-            provider=sky.GCP(),
-            accelerator=sky.accelerators.T4(),
-        ),
         image=sky.Image(pip=['jax[cuda12]'])
     ) as pool:
-        format_results(benchmark(matrix_size=4096, iterations=50) >> pool)
+        format_results(benchmark(4096, iterations=50) >> pool)

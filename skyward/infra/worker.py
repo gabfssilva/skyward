@@ -59,10 +59,9 @@ class _CompressedResult:
     data: bytes
 
 
-COMPRESSION_LEVEL: int = 6
-
-
 def _compress_result(result: Any) -> _CompressedResult:
+    from skyward.infra.serialization import COMPRESSION_LEVEL
+
     raw = pickle.dumps(result, protocol=5)
     return _CompressedResult(data=zlib.compress(raw, COMPRESSION_LEVEL))
 

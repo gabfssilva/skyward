@@ -72,6 +72,7 @@ class RunPod(ProviderConfig):
     instance_timeout: int = 300
     request_timeout: int = 30
     cpu_clock: Literal["3c", "5c"] | str = "3c"
+    bid_multiplier: float = 1
 
     async def create_provider(self) -> RunPodProvider:
         from skyward.providers.runpod.provider import RunPodProvider

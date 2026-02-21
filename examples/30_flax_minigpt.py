@@ -1,20 +1,33 @@
-"""Distributed MicroGPT in JAX — Shower Thoughts edition.
+"""Distributed MicroGPT in JAX — Recipe edition.
 
-Karpathy's MicroGPT reimplemented with Flax NNX and modern transformer
-components: learnable LayerNorm, GeLU activation, weight tying, dropout,
-bfloat16 mixed precision, and Optax optimizer with warmup + cosine decay +
-gradient clipping.
+Small GPT trained from scratch with Flax NNX: pre-norm transformer blocks,
+GeLU, weight tying, dropout, bfloat16 mixed precision, and Optax optimizer
+with warmup + cosine decay + gradient clipping.
 
-Architecture based on the official JAX Stack miniGPT tutorial
-(https://docs.jaxstack.ai/en/latest/JAX_for_LLM_pretraining.html),
-adapted for character-level training on r/Showerthoughts with distributed
-data parallelism via Skyward.
+Trains on the RecipeNLG dataset (~248K recipes) with GPT-2's BPE tokenizer
+(tiktoken) and distributed data parallelism via Skyward. Tokens are
+concatenated into a single flat array on GPU, with random window sampling
+during training — zero padding waste.
 
-The model learns punctuation, capitalization, and sentence structure from
-scratch — all at the character level.
+The model learns recipe structure — titles, ingredient measurements, and
+cooking instructions — all from scratch.
 """
 
+from __future__ import annotations
+
+import ast
+import os
+import tempfile
+import urllib.request
+
+import pandas as pd
+
 import skyward as sky
+
+DATA_URL = (
+    "https://huggingface.co/datasets/Default-Box/recipe_nlg-trim"
+    "/resolve/main/train.csv"
+)
 
 
 @sky.compute
@@ -24,21 +37,24 @@ def train_microgpt(
     n_layer: int = 6,
     n_embd: int = 256,
     n_head: int = 8,
-    block_size: int = 256,
-    batch_size: int = 128,
-    num_steps: int = 5000,
+    block_size: int = 512,
+    batch_size: int = 64,
+    num_epochs: int = 2,
     lr: float = 3e-4,
     dropout_rate: float = 0.1,
     temperature: float = 0.8,
-    num_samples: int = 20,
-    data_url: str = "https://skeeto.s3.amazonaws.com/share/showerthoughts",
+    num_samples: int = 10,
 ) -> dict:
+    from functools import reduce
+
     import flax.nnx as nnx
     import jax
     import jax.numpy as jnp
-    import numpy as np
     import optax
+    import tiktoken
     from jax import random
+
+    recipes = load_recipes(DATA_URL)
 
     compute_dtype = jnp.bfloat16
     param_dtype = jnp.float32
@@ -47,63 +63,44 @@ def train_microgpt(
     assert info is not None
     print(f"node={info.node} devices={jax.devices()} local={jax.local_devices()}")
 
-    # --- Tokenizer ---
-    import os
-    import tempfile
-    import urllib.request
+    mesh = jax.make_mesh((jax.device_count(),), ("batch",))
+    data_sharding = jax.sharding.NamedSharding(
+        mesh, jax.sharding.PartitionSpec("batch"),
+    )
+    replicated = jax.sharding.NamedSharding(
+        mesh, jax.sharding.PartitionSpec(),
+    )
 
-    data_path = os.path.join(tempfile.gettempdir(), "microgpt_data.txt")
-    if not os.path.exists(data_path):
-        urllib.request.urlretrieve(data_url, data_path)
-
-    with open(data_path) as f:
-        raw = f.read()
-
-    entries = raw.split("\n%\n")
-    docs = []
-    for entry in entries:
-        lines = entry.strip().split("\n")
-        thought_lines = [
-            line for line in lines
-            if not line.startswith("—") and not line.startswith("\u2014")
-        ]
-        thought = " ".join(thought_lines).strip()
-        if thought:
-            docs.append(thought)
-    np.random.RandomState(42).shuffle(docs)
-
-    uchars = sorted(set("".join(docs)))
-    bos = len(uchars)
-    pad = len(uchars) + 1
-    vocab_size = len(uchars) + 2  # chars + bos + pad
-    char_to_id = {ch: i for i, ch in enumerate(uchars)}
-
-    def encode(doc: str) -> list[int]:
-        return [bos] + [char_to_id[ch] for ch in doc] + [bos]
-
-    def decode(token_ids: list[int]) -> str:
-        return "".join(uchars[t] for t in token_ids if t != bos)
-
-    # Shard documents across nodes
+    docs: list[str] = (
+        recipes["title"] + "\n" + recipes["ingredients"] + "\n" + recipes["directions"]
+    ).tolist()
     local_docs = sky.shard(docs)
+
+    enc = tiktoken.get_encoding("gpt2")
+    eot = enc.eot_token
+    vocab_size = enc.n_vocab
+
+    encoded = enc.encode_batch(local_docs)
+    flat_tokens = [t for doc_toks in encoded for t in (eot, *doc_toks)]
+    flat_tokens.append(eot)
+
+    tokens_gpu = jax.device_put(
+        jnp.array(flat_tokens, dtype=jnp.int32), replicated,
+    )
+    n_tokens = tokens_gpu.shape[0]
     print(
         f"node={info.node} vocab={vocab_size}"
         f" total_docs={len(docs)} local_docs={len(local_docs)}"
+        f" tokens={n_tokens:,}"
     )
 
-    def tokenize_all(documents: list[str]) -> np.ndarray:
-        seq_len = block_size + 1
-        sequences = []
-        for doc in documents:
-            toks = encode(doc)
-            toks = toks[:seq_len] if len(toks) > seq_len else toks + [pad] * (seq_len - len(toks))
-            sequences.append(toks)
-        return np.array(sequences, dtype=np.int32)
-
-    all_tokens = tokenize_all(local_docs)
-    print(f"node={info.node} token_matrix={all_tokens.shape}")
-
-    # --- Model (Flax NNX, bfloat16 mixed precision) ---
+    tokens_per_step = batch_size * block_size
+    steps_per_epoch = max(1, n_tokens // tokens_per_step)
+    num_steps = num_epochs * steps_per_epoch
+    print(
+        f"node={info.node} epochs={num_epochs}"
+        f" steps_per_epoch={steps_per_epoch} total_steps={num_steps}"
+    )
 
     class TransformerBlock(nnx.Module):
         def __init__(
@@ -143,13 +140,11 @@ def train_microgpt(
             self.dropout2 = nnx.Dropout(rate=dropout_rate, rngs=rngs)
 
         def __call__(self, x, mask, *, deterministic: bool = True):
-            # Pre-norm attention with residual
             h = self.norm1(x)
             h = self.attn(h, mask=mask, deterministic=deterministic)
             h = self.dropout1(h, deterministic=deterministic)
             x = x + h
 
-            # Pre-norm FFN with GeLU and residual
             h = self.norm2(x)
             h = nnx.gelu(self.fc1(h))
             h = self.fc2(h)
@@ -188,28 +183,23 @@ def train_microgpt(
 
         def __call__(self, tokens, *, deterministic: bool = True):
             _, t = tokens.shape
-            # one_hot @ embedding — sharding-safe, computed in bfloat16
-            emb_w = self.token_emb.embedding[...].astype(compute_dtype)
-            tok_emb = jax.nn.one_hot(tokens, vocab_size, dtype=compute_dtype) @ emb_w
-            pos_emb = self.pos_emb.embedding[...].astype(compute_dtype)[jnp.arange(t)]
-            x = tok_emb + pos_emb
+            emb_w = self.token_emb.embedding[...]
+            batch_spec = jax.sharding.NamedSharding(
+                mesh, jax.sharding.PartitionSpec("batch", None, None),
+            )
+            tok_emb = emb_w.astype(compute_dtype).at[tokens].get(
+                out_sharding=batch_spec,
+            )
+            pos_emb = self.pos_emb(jnp.arange(t))
 
             mask = jnp.tril(jnp.ones((t, t), dtype=bool))
-            for block in self.blocks:
-                x = block(x, mask, deterministic=deterministic)
-
+            x = reduce(
+                lambda h, block: block(h, mask, deterministic=deterministic),
+                self.blocks,
+                tok_emb + pos_emb,
+            )
             x = self.final_norm(x)
-            # weight tying — logits in float32 for numerical stability
-            return (x @ emb_w.T).astype(jnp.float32)
-
-    # --- Setup ---
-    mesh = jax.make_mesh((jax.device_count(),), ("batch",))
-    data_sharding = jax.sharding.NamedSharding(
-        mesh, jax.sharding.PartitionSpec("batch"),
-    )
-    replicated = jax.sharding.NamedSharding(
-        mesh, jax.sharding.PartitionSpec(),
-    )
+            return x.astype(jnp.float32) @ emb_w.astype(jnp.float32).T
 
     model = MicroGPT(
         vocab_size, block_size, n_embd, n_head, n_layer,
@@ -219,15 +209,10 @@ def train_microgpt(
     n_params = sum(p.size for p in jax.tree.leaves(nnx.state(model, nnx.Param)))
     print(f"node={info.node} params={n_params:,} dtype={compute_dtype}")
 
-    # Replicate model state across devices
     graphdef, state = nnx.split(model)
     state = jax.device_put(state, replicated)
     model = nnx.merge(graphdef, state)
 
-    # Pre-load token matrix on device (avoids per-step CPU→GPU transfer)
-    all_tokens_jnp = jax.device_put(jnp.array(all_tokens), replicated)
-
-    # Optax: warmup + cosine decay + gradient clipping + AdamW
     schedule = optax.warmup_cosine_decay_schedule(
         init_value=0.0,
         peak_value=lr,
@@ -241,37 +226,34 @@ def train_microgpt(
     )
     optimizer = nnx.Optimizer(model, tx, wrt=nnx.Param)
 
-    # Replicate optimizer state
     graphdef_opt, opt_state = nnx.split(optimizer)
     opt_state = jax.device_put(opt_state, replicated)
     optimizer = nnx.merge(graphdef_opt, opt_state)
 
-    # --- Training ---
+    def get_window(start: jax.Array) -> jax.Array:
+        return jax.lax.dynamic_slice(tokens_gpu, (start,), (block_size + 1,))
 
     @nnx.jit
     def train_step(model, optimizer, inputs, targets):
         def loss_fn(model):
-            logits = model(inputs, deterministic=False)  # float32 logits
-            loss = optax.softmax_cross_entropy_with_integer_labels(
+            logits = model(inputs, deterministic=False)
+            return optax.softmax_cross_entropy_with_integer_labels(
                 logits=logits, labels=targets,
-            )
-            mask = targets != pad
-            return jnp.where(mask, loss, 0.0).sum() / jnp.maximum(mask.sum(), 1)
+            ).mean()
 
         loss, grads = nnx.value_and_grad(loss_fn)(model)
         optimizer.update(model, grads)
         return loss
 
-    # Sample batches on-device via JAX RNG (avoids numpy → jax per step)
     sample_key = random.PRNGKey(42 + info.node)
-    n_docs = all_tokens_jnp.shape[0]
+    max_start = n_tokens - block_size - 1
     log_interval = max(1, num_steps // 20)
     final_loss = 0.0
 
     for step in range(num_steps):
         sample_key, subkey = random.split(sample_key)
-        idx = random.randint(subkey, (batch_size,), 0, n_docs)
-        batch = all_tokens_jnp[idx]
+        starts = random.randint(subkey, (batch_size,), 0, max_start)
+        batch = jax.vmap(get_window)(starts)
         inputs_local = batch[:, :-1]
         targets_local = batch[:, 1:]
 
@@ -284,11 +266,10 @@ def train_microgpt(
         if step % log_interval == 0 or step == num_steps - 1:
             print(f"step {step+1:5d}/{num_steps} | loss {final_loss:.4f}")
 
-    # --- Inference (head node only) ---
-    samples = []
+    samples: list[str] = []
     if info.node == 0:
         print(
-            f"\n--- generating {num_samples} shower thoughts"
+            f"\n--- generating {num_samples} recipes"
             f" (temperature={temperature}) ---"
         )
 
@@ -298,8 +279,7 @@ def train_microgpt(
 
         gen_key = random.PRNGKey(1337)
         for si in range(num_samples):
-            token_buf = jnp.full((block_size,), pad, dtype=jnp.int32)
-            token_buf = token_buf.at[0].set(bos)
+            token_buf = jnp.full((block_size,), eot, dtype=jnp.int32)
             length = 1
 
             gen_key, subkey = random.split(gen_key)
@@ -309,14 +289,16 @@ def train_microgpt(
                 next_logits = logits[0, length - 1] / temperature
                 subkey, step_key = random.split(subkey)
                 token = random.categorical(step_key, next_logits)
-                if int(token) == bos:
+                if int(token) == eot:
                     break
                 token_buf = token_buf.at[length].set(token)
                 length += 1
 
-            thought = decode(token_buf[1:length].tolist())
-            samples.append(thought)
-            print(f"  {si+1:2d}. {thought}")
+            recipe = enc.decode(token_buf[1:length].tolist())
+            samples.append(recipe)
+            lines = recipe.split("\n")
+            body = "\n".join(f"      {line}" for line in lines[1:])
+            print(f"\n  {si+1:2d}. {lines[0]}\n{body}")
 
     return {
         "node": info.node,
@@ -326,40 +308,63 @@ def train_microgpt(
     }
 
 
+def _parse_list_col(s: object) -> str:
+    try:
+        match ast.literal_eval(str(s)):
+            case list(items):
+                return "\n".join(items)
+            case other:
+                return str(other)
+    except (ValueError, SyntaxError):
+        return ""
+
+
+def load_recipes(url: str) -> pd.DataFrame:
+    path = os.path.join(tempfile.gettempdir(), "recipe_nlg.csv")
+    if not os.path.exists(path):
+        print(f"Downloading recipes from {url}...")
+        urllib.request.urlretrieve(url, path)
+
+    print("Parsing recipes...")
+    df: pd.DataFrame = pd.read_csv(path, on_bad_lines="skip", engine="python")
+    df["ingredients"] = df["ingredients"].apply(_parse_list_col)
+    df["directions"] = df["directions"].apply(_parse_list_col)
+    df = pd.DataFrame(df[["title", "ingredients", "directions"]].dropna())
+    df = pd.DataFrame(df[(df["ingredients"] != "") & (df["directions"] != "")])
+
+    print(f"Loaded {len(df):,} recipes")
+    return df.reset_index(drop=True)
+
+
+def _format_recipe(index: int, recipe: str) -> str:
+    lines = recipe.split("\n")
+    body = "\n".join(f"      {line}" for line in lines[1:])
+    return f"\n  {index:2d}. {lines[0]}\n{body}"
+
+
 def format_results(results: list[dict]) -> None:
-    for r in results:
-        node = r["node"]
-        loss = r["final_loss"]
-        docs = r["train_docs"]
-        print(f"  Node {node}: {docs} docs, final_loss={loss:.4f}")
+    summary = "\n".join(
+        f"  Node {r['node']}: {r['train_docs']:,} docs, final_loss={r['final_loss']:.4f}"
+        for r in results
+    )
+    print(summary)
 
     head = next(r for r in results if r["node"] == 0)
-    if head.get("samples"):
-        print("\nGenerated shower thoughts:")
-        for i, s in enumerate(head["samples"], 1):
-            print(f"  {i:2d}. {s}")
+    if samples := head.get("samples"):
+        print("\nGenerated recipes:")
+        print("\n".join(_format_recipe(i, r) for i, r in enumerate(samples, 1)))
 
 
 if __name__ == "__main__":
-    with  sky.ComputePool(
-        # sky.Spec(
-        #     provider=sky.AWS(),
-        #     accelerator=sky.accelerators.T4G(),
-        #     ttl=1200
-        # ),
+    with sky.ComputePool(
         sky.Spec(
-            provider=sky.AWS(),
-            accelerator=sky.accelerators.L4(),
-            ttl=1200
+            provider=sky.RunPod(),
+            accelerator=sky.accelerators.RTX_4090(),
+            ttl=2400
         ),
-        sky.Spec(
-            provider=sky.AWS(),
-            accelerator=sky.accelerators.L40S(),
-            ttl=1200
-        ),
-        image=sky.Image(pip=["jax[cuda12]", "flax"]),
+        image=sky.Image(pip=["jax[cuda12]", "flax", "pandas==2.3.3", "tiktoken"]),
     ) as pool:
-        results = train_microgpt().with_timeout(1130) @ pool
+        results = train_microgpt().with_timeout(2400) @ pool
 
         print("\nResults:")
         format_results(list(results))

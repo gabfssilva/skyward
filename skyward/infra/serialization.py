@@ -13,7 +13,7 @@ from skyward.observability.logger import logger
 log = logger.bind(component="serialization")
 
 COMPRESSED_MAGIC: Final = b"\x00CZ"
-COMPRESSION_LEVEL: Final = 6
+COMPRESSION_LEVEL: Final = 1
 
 PYTHON_VERSION: Final = f"{sys.version_info.major}.{sys.version_info.minor}"
 

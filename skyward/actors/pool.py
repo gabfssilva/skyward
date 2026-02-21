@@ -30,6 +30,7 @@ from skyward.observability.logger import logger
 
 if TYPE_CHECKING:
     from skyward.actors.messages import ClusterId, NodeId
+    from skyward.api.model import Offer
     from skyward.api.spec import PoolSpec
 
 
@@ -43,31 +44,52 @@ def pool_actor() -> Behavior[PoolMsg]:
             match msg:
                 case StartPool(
                     spec=spec, provider_config=_, provider=provider,
-                    offer=offer, reply_to=reply_to,
+                    offers=offers, reply_to=reply_to,
                 ):
+                    if not offers:
+                        reply_to.tell(ProvisionFailed(reason="No offers available"))
+                        return Behaviors.stopped()
+                    offer, *remaining = offers
                     logger.bind(actor="pool").info(
-                        "StartPool received: {nodes} nodes, accelerator={acc}",
-                        nodes=spec.nodes, acc=getattr(spec, "accelerator", None),
+                        "StartPool received: {nodes} nodes, accelerator={acc}, "
+                        "offers={n}",
+                        nodes=spec.nodes,
+                        acc=getattr(spec, "accelerator", None),
+                        n=len(offers),
                     )
                     ctx.pipe_to_self(
                         provider.prepare(spec, offer),
                         mapper=lambda cluster: ClusterReady(cluster=cluster),
                         on_failure=lambda err: ProvisionFailed(reason=str(err)),
                     )
-                    return requesting(spec, provider, reply_to)
+                    return requesting(spec, provider, tuple(remaining), reply_to)
             return Behaviors.same()
         return Behaviors.receive(receive)
 
     def requesting(
-        spec: PoolSpec, provider: Any, reply_to: ActorRef,
+        spec: PoolSpec, provider: Any,
+        remaining_offers: tuple[Offer, ...], reply_to: ActorRef,
     ) -> Behavior[PoolMsg]:
+        log = logger.bind(actor="pool", state="requesting")
+
         async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
             match msg:
                 case ProvisionFailed() as pf:
+                    if remaining_offers:
+                        offer, *rest = remaining_offers
+                        log.warning(
+                            "Prepare failed, trying next offer ({n} remaining)",
+                            n=len(remaining_offers),
+                        )
+                        ctx.pipe_to_self(
+                            provider.prepare(spec, offer),
+                            mapper=lambda cluster: ClusterReady(cluster=cluster),
+                            on_failure=lambda err: ProvisionFailed(reason=str(err)),
+                        )
+                        return requesting(spec, provider, tuple(rest), reply_to)
                     reply_to.tell(pf)
                     return Behaviors.stopped()
                 case ClusterReady(cluster=cluster):
-                    log = logger.bind(actor="pool")
                     log.info("Cluster ready, provisioning {n} instances", n=spec.nodes)
 
                     def _on_provision_error(err: Exception) -> InstancesProvisioned:
@@ -81,7 +103,10 @@ def pool_actor() -> Behavior[PoolMsg]:
                         ),
                         on_failure=_on_provision_error,
                     )
-                    return provisioning_instances(spec, provider, cluster, reply_to)
+                    return provisioning_instances(
+                        spec, provider, cluster, reply_to,
+                        remaining_offers=remaining_offers,
+                    )
             return Behaviors.same()
         return Behaviors.receive(receive)
 
@@ -93,6 +118,7 @@ def pool_actor() -> Behavior[PoolMsg]:
         spawned: dict[NodeId, ActorRef] | None = None,
         attempt: int = 1,
         early_ready: tuple[NodeBecameReady, ...] = (),
+        remaining_offers: tuple[Offer, ...] = (),
     ) -> Behavior[PoolMsg]:
         if spawned is None:
             spawned = {}
@@ -109,6 +135,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                         spec, provider, cluster, reply_to,
                         spawned=spawned, attempt=attempt,
                         early_ready=(*early_ready, nbr),
+                        remaining_offers=remaining_offers,
                     )
                 case InstancesProvisioned(
                     instances=instances, cluster=updated_cluster,
@@ -213,10 +240,30 @@ def pool_actor() -> Behavior[PoolMsg]:
                             spec, provider, updated_cluster, reply_to,
                             spawned=new_spawned, attempt=attempt + 1,
                             early_ready=early_ready,
+                            remaining_offers=remaining_offers,
+                        )
+
+                    if remaining_offers:
+                        offer, *rest = remaining_offers
+                        log.warning(
+                            "Exhausted {max} attempts, trying next offer "
+                            "({n} remaining)",
+                            max=spec.max_provision_attempts,
+                            n=len(remaining_offers),
+                        )
+                        ctx.pipe_to_self(
+                            provider.prepare(spec, offer),
+                            mapper=lambda c: ClusterReady(cluster=c),
+                            on_failure=lambda err: ProvisionFailed(
+                                reason=str(err),
+                            ),
+                        )
+                        return requesting(
+                            spec, provider, tuple(rest), reply_to,
                         )
 
                     log.error(
-                        "Exhausted {max} provision attempts, "
+                        "Exhausted {max} provision attempts and all offers, "
                         "only got {got}/{need} nodes",
                         max=spec.max_provision_attempts,
                         got=len(new_spawned), need=spec.nodes,
@@ -225,7 +272,8 @@ def pool_actor() -> Behavior[PoolMsg]:
                         reason=(
                             f"Only provisioned {len(new_spawned)}"
                             f"/{spec.nodes} nodes after "
-                            f"{spec.max_provision_attempts} attempts"
+                            f"{spec.max_provision_attempts} attempts "
+                            f"across all offers"
                         ),
                     ))
                     return Behaviors.stopped()

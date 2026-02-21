@@ -26,13 +26,21 @@ RUNPOD_GRAPHQL_URL = "https://api.runpod.io/graphql"
 
 # GraphQL query for GPU types (same as official SDK)
 GPU_TYPES_QUERY = """
-query GpuTypes {
+query GpuTypes($minCudaVersion: String, $secureCloud: Boolean) {
   gpuTypes {
     id
     displayName
     memoryInGb
     secureCloud
     communityCloud
+    lowestPrice(input: {
+      gpuCount: 1,
+      minCudaVersion: $minCudaVersion,
+      secureCloud: $secureCloud
+    }) {
+      minimumBidPrice
+      uninterruptablePrice
+    }
   }
 }
 """
@@ -193,9 +201,10 @@ class RunPodClient:
         interruptible: bool = False,
         data_center_id: str | None = None,
         deploy_cost: float | None = None,
+        spot_price: float | None = None,
         allowed_cuda_versions: list[str] | None = None,
     ) -> PodResponse:
-        """Deploy a GPU pod via GraphQL with allowedCudaVersions support."""
+        """Deploy a GPU pod via GraphQL."""
         input_vars: dict[str, Any] = {
             "name": name,
             "imageName": image_name,
@@ -215,8 +224,7 @@ class RunPodClient:
             input_vars["allowedCudaVersions"] = allowed_cuda_versions
 
         if interruptible:
-            if deploy_cost:
-                input_vars["bidPerGpu"] = deploy_cost
+            input_vars["bidPerGpu"] = deploy_cost or spot_price or 0.0
             mutation = DEPLOY_SPOT_MUTATION
             result_key = "podRentInterruptable"
         else:
@@ -227,6 +235,7 @@ class RunPodClient:
 
         self._log.debug("Deploying GPU pod via GraphQL ({key})", key=result_key)
         data = await self._graphql(mutation, {"input": input_vars})
+
         pod: PodResponse | None = data.get(result_key)
         if not pod:
             raise RunPodError(f"Failed to deploy pod: empty response from {result_key}")
@@ -319,9 +328,19 @@ class RunPodClient:
     # =========================================================================
 
     @retry(on=on_status_code(429, 503), max_attempts=3, base_delay=1.0)
-    async def get_gpu_types(self) -> list[GpuTypeResponse]:
+    async def get_gpu_types(
+        self,
+        *,
+        min_cuda_version: str | None = None,
+        secure_cloud: bool | None = None,
+    ) -> list[GpuTypeResponse]:
         """Get available GPU types via GraphQL API."""
-        data = await self._graphql(GPU_TYPES_QUERY)
+        variables: dict[str, Any] = {}
+        if min_cuda_version:
+            variables["minCudaVersion"] = min_cuda_version
+        if secure_cloud is not None:
+            variables["secureCloud"] = secure_cloud
+        data = await self._graphql(GPU_TYPES_QUERY, variables or None)
         gpu_types: list[GpuTypeResponse] = data.get("gpuTypes", [])
         return gpu_types
 

@@ -549,7 +549,7 @@ class StartPool:
     spec: PoolSpec
     provider_config: ProviderConfig
     provider: Any
-    offer: Offer
+    offers: tuple[Offer, ...]
     reply_to: ActorRef[PoolStarted | ProvisionFailed]
 
 

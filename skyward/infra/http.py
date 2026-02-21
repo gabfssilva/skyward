@@ -173,10 +173,10 @@ class HttpClient:
         if resp.status >= 400:
             body = await resp.text()
             self._log.warning(
-                "HTTP {status} from {url}",
-                status=resp.status, url=str(resp.url),
+                "HTTP {status} from {url}: {body}",
+                status=resp.status, url=str(resp.url), body=body[:500],
             )
-        resp.raise_for_status()
+            raise HttpError(status=resp.status, body=body)
         resp_headers = dict(resp.headers)
         match format:
             case "json":

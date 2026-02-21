@@ -708,18 +708,18 @@ class ComputePool:
         logger.debug("Creating distributed lock: {name}", name=name)
         return self._registry.lock(name)
 
-    async def _select_offer(self) -> tuple[Offer, ProviderConfig, Any, PoolSpec]:
-        """Select the best offer across all specs.
+    async def _select_offers(
+        self,
+    ) -> tuple[tuple[Offer, ...], ProviderConfig, Any, PoolSpec]:
+        """Rank all offers across specs by price.
 
-        Returns (offer, provider_config, cloud_provider, pool_spec).
+        Returns (offers_sorted, provider_config, cloud_provider, pool_spec)
+        where offers_sorted is ordered by preference (cheapest first for
+        the chosen allocation strategy).
         """
         user_specs = self._build_specs()
 
-        best_offer: Offer | None = None
-        best_config: ProviderConfig | None = None
-        best_provider: Any = None
-        best_pool_spec: PoolSpec | None = None
-        best_price: float = float("inf")
+        ranked: list[tuple[float, Offer, ProviderConfig, Any, PoolSpec]] = []
 
         for s in user_specs:
             provider_config = s.provider
@@ -760,25 +760,18 @@ class ComputePool:
                         oid=offer.id, name=offer.instance_type.name,
                         spot=offer.spot_price, od=offer.on_demand_price,
                     )
-                    match self.selection:
-                        case "first":
-                            return offer, provider_config, cloud_provider, pool_spec
-                        case "cheapest":
-                            use_spot = (
-                                s.allocation in ("spot", "spot-if-available")
-                                and offer.spot_price is not None
-                            )
-                            raw = (
-                                offer.spot_price if use_spot
-                                else offer.on_demand_price
-                            )
-                            price = raw if raw is not None else float("inf")
-                            if best_offer is None or price < best_price:
-                                best_offer = offer
-                                best_config = provider_config
-                                best_provider = cloud_provider
-                                best_pool_spec = pool_spec
-                                best_price = price
+                    use_spot = (
+                        s.allocation in ("spot", "spot-if-available")
+                        and offer.spot_price is not None
+                    )
+                    raw = (
+                        offer.spot_price if use_spot
+                        else offer.on_demand_price
+                    )
+                    price = raw if raw is not None else float("inf")
+                    ranked.append((
+                        price, offer, provider_config, cloud_provider, pool_spec,
+                    ))
             except Exception as exc:
                 logger.error(
                     "Error querying offers from {provider}: {err}",
@@ -791,22 +784,26 @@ class ComputePool:
                     provider=provider_name, acc=pool_spec.accelerator_name,
                 )
 
-        if best_offer is None or best_config is None or best_pool_spec is None:
+        if not ranked:
             raise RuntimeError("No offers found across all specs")
 
-        return best_offer, best_config, best_provider, best_pool_spec
+        ranked.sort(key=lambda x: x[0])
+        offers = tuple(r[1] for r in ranked)
+        _, _, best_config, best_provider, best_spec = ranked[0]
+        return offers, best_config, best_provider, best_spec
 
     async def _start_async(self) -> None:
         """Start pool asynchronously using actors (zero bus)."""
         from skyward.actors.messages import PoolStarted, StartPool
         from skyward.actors.pool import pool_actor
 
-        offer, provider_config, cloud_provider, spec = await self._select_offer()
+        offers, provider_config, cloud_provider, spec = await self._select_offers()
 
+        best = offers[0]
         logger.info(
-            "Selected offer: {offer_id} ({name}, ${price}/hr)",
-            offer_id=offer.id, name=offer.instance_type.name,
-            price=offer.spot_price or offer.on_demand_price or 0,
+            "Ranked {n} offers, best: {offer_id} ({name}, ${price}/hr)",
+            n=len(offers), offer_id=best.id, name=best.instance_type.name,
+            price=best.spot_price or best.on_demand_price or 0,
         )
 
         self._spec = spec
@@ -847,7 +844,7 @@ class ComputePool:
                 spec=spec,
                 provider_config=provider_config,
                 provider=cloud_provider,
-                offer=offer,
+                offers=offers,
                 reply_to=reply_to,
             ),
             timeout=float(self.provision_timeout),

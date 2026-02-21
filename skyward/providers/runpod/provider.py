@@ -40,6 +40,28 @@ def _parse_cuda_version(version: str) -> tuple[int, int]:
     return (int(major), int(minor))
 
 
+def _extract_image_cuda(image_name: str) -> str | None:
+    """Extract CUDA version string from a Docker image tag."""
+    m = _CUDA_DOTTED_RE.search(image_name) or _CUDA_COMPACT_RE.search(image_name)
+    return f"{m.group(1)}.{m.group(2)}" if m else None
+
+
+def _build_allowed_cuda_versions(
+    cuda_min: str, cuda_max: str | None,
+) -> list[str]:
+    """Expand a CUDA min/max range into an explicit version list for RunPod."""
+    min_major, min_minor = _parse_cuda_version(cuda_min)
+    max_major, max_minor = _parse_cuda_version(cuda_max) if cuda_max else (99, 9)
+    return [
+        f"{major}.{minor}"
+        for major in range(min_major, max_major + 1)
+        for minor in range(
+            min_minor if major == min_major else 0,
+            (max_minor if major == max_major else 9) + 1,
+        )
+    ]
+
+
 def _get_cuda_range(spec: PoolSpec) -> tuple[str | None, str | None]:
     """Extract CUDA min/max from the accelerator specification."""
     match spec.accelerator:
@@ -126,18 +148,33 @@ def _select_best_image(
     return f"{_DOCKER_HUB_REPO}:{candidates[0][3]}"
 
 
-async def _resolve_image(spec: PoolSpec, config: RunPod) -> str:
-    """Resolve the best RunPod container image for the given spec."""
+async def _resolve_image(
+    spec: PoolSpec, config: RunPod, *, min_cuda: str | None = None,
+) -> str:
+    """Resolve the best RunPod container image for the given spec.
+
+    Parameters
+    ----------
+    spec
+        Pool specification with accelerator CUDA range.
+    config
+        RunPod provider config (ubuntu preference).
+    min_cuda
+        Minimum CUDA version with confirmed stock on RunPod hosts.
+        When provided, overrides the catalog min so the image matches
+        what machines actually support.
+    """
     match getattr(spec.image, "container_image", None):
         case str() as img:
             return img
         case _:
             pass
 
-    cuda_min, cuda_max = _get_cuda_range(spec)
-    if cuda_min is None:
+    cuda_catalog_min, cuda_max = _get_cuda_range(spec)
+    if cuda_catalog_min is None:
         return _FALLBACK_IMAGE
 
+    cuda_min = min_cuda or cuda_catalog_min
     min_ver = _parse_cuda_version(cuda_min)
     max_ver = _parse_cuda_version(cuda_max) if cuda_max else (99, 99)
 
@@ -154,6 +191,14 @@ async def _resolve_image(spec: PoolSpec, config: RunPod) -> str:
         min=cuda_min, max=cuda_max,
     )
     return _FALLBACK_IMAGE
+
+
+@dataclass(frozen=True, slots=True)
+class RunPodOfferData:
+    """Carried in Offer.specific — includes probed CUDA availability."""
+
+    gpu_type_id: str
+    min_cuda: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,56 +260,70 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
             )
             return
 
+        cuda_min, cuda_max = _get_cuda_range(spec)
+        if cuda_min and cuda_max:
+            min_major = _parse_cuda_version(cuda_min)[0]
+            max_major = _parse_cuda_version(cuda_max)[0]
+            cuda_majors = [f"{m}.0" for m in range(max_major, min_major - 1, -1)]
+        else:
+            cuda_majors = [None]
+
         async with RunPodClient(api_key, config=self._config) as client:
-            gpu_types = await client.get_gpu_types()
-
-        available = [
-            g for g in gpu_types
-            if (is_secure and g.get("secureCloud")) or (not is_secure and g.get("communityCloud"))
-        ]
-
-        log.debug(
-            "GPU types: {total} total, {avail} available (cloud_type={ct})",
-            total=len(gpu_types), avail=len(available),
-            ct="secure" if is_secure else "community",
-        )
+            results = await asyncio.gather(*(
+                client.get_gpu_types(
+                    min_cuda_version=cv, secure_cloud=is_secure,
+                )
+                for cv in cuda_majors
+            ))
 
         requested = spec.accelerator_name.upper()
-        log.debug("Looking for accelerator: {req}", req=requested)
-        for gpu in available:
-            display = gpu.get("displayName", "")
-            gpu_id = gpu.get("id", "")
-            if requested not in display.upper() and requested not in gpu_id.upper():
-                continue
+        seen: set[str] = set()
 
-            vram_gb = gpu.get("memoryInGb", 0)
-            gpu_count = spec.accelerator_count or 1
-            accel = Accelerator(
-                name=display or gpu_id,
-                memory=f"{vram_gb}GB" if vram_gb else "",
-                count=gpu_count,
-            )
-            it = InstanceType(
-                name=gpu_id,
-                accelerator=accel,
-                vcpus=0.0,
-                memory_gb=0.0,
-                architecture="x86_64",
-                specific=None,
-            )
+        for cuda_ver, gpu_types in zip(cuda_majors, results, strict=True):
+            available = [
+                g for g in gpu_types
+                if (is_secure and g.get("secureCloud"))
+                or (not is_secure and g.get("communityCloud"))
+            ]
 
-            lowest = gpu.get("lowestPrice") or {}
-            spot_price = lowest.get("minimumBidPrice")
-            on_demand_price = lowest.get("minPrice")
+            for gpu in available:
+                display = gpu.get("displayName", "")
+                gpu_id = gpu.get("id", "")
+                if requested not in display.upper() and requested not in gpu_id.upper():
+                    continue
+                if gpu_id in seen:
+                    continue
 
-            yield Offer(
-                id=f"runpod-{gpu_id}",
-                instance_type=it,
-                spot_price=spot_price,
-                on_demand_price=on_demand_price,
-                billing_unit="hour",
-                specific=gpu_id,
-            )
+                lowest = gpu.get("lowestPrice") or {}
+                spot_price = lowest.get("minimumBidPrice")
+                on_demand_price = lowest.get("uninterruptablePrice")
+                if spot_price is None and on_demand_price is None:
+                    continue
+
+                seen.add(gpu_id)
+                vram_gb = gpu.get("memoryInGb", 0)
+                gpu_count = spec.accelerator_count or 1
+                accel = Accelerator(
+                    name=display or gpu_id,
+                    memory=f"{vram_gb}GB" if vram_gb else "",
+                    count=gpu_count,
+                )
+                it = InstanceType(
+                    name=gpu_id,
+                    accelerator=accel,
+                    vcpus=0.0,
+                    memory_gb=0.0,
+                    architecture="x86_64",
+                    specific=None,
+                )
+                yield Offer(
+                    id=f"runpod-{gpu_id}-cuda{cuda_ver or 'any'}",
+                    instance_type=it,
+                    spot_price=spot_price,
+                    on_demand_price=on_demand_price,
+                    billing_unit="hour",
+                    specific=RunPodOfferData(gpu_id, cuda_ver),
+                )
 
     async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[RunPodSpecific]:
         api_key = get_api_key(self._config.api_key)
@@ -275,13 +334,19 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
             await client.ensure_ssh_key(ssh_public_key)
             log.debug("SSH key ensured on RunPod account")
 
-        gpu_type_id: str | None = offer.specific if isinstance(offer.specific, str) else None
+        match offer.specific:
+            case RunPodOfferData(gpu_type_id=gid, min_cuda=min_cuda):
+                gpu_type_id: str | None = gid
+            case _:
+                gpu_type_id = None
+                min_cuda = None
+
         gpu_vram_gb = 0
         if offer.instance_type.accelerator:
             mem = offer.instance_type.accelerator.memory
             gpu_vram_gb = int(mem.replace("GB", "")) if mem else 0
 
-        image_name = await _resolve_image(spec, self._config)
+        image_name = await _resolve_image(spec, self._config, min_cuda=min_cuda)
 
         runpod_cluster_id: str | None = None
         pod_ids: tuple[tuple[int, str], ...] = ()
@@ -368,7 +433,7 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
             ip=pod.get("publicIp"),
         )
         match pod.get("desiredStatus"):
-            case "TERMINATED":
+            case "TERMINATED" | "EXITED":
                 return cluster, None
             case "RUNNING" if pod.get("publicIp"):
                 return cluster, _build_runpod_instance(pod, "provisioned", cluster)
@@ -409,6 +474,14 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
         return cluster
 
 
+def _is_spot(allocation: str, offer: Offer) -> bool:
+    match allocation:
+        case "spot" | "spot-if-available":
+            return offer.spot_price is not None
+        case _:
+            return False
+
+
 def _build_runpod_instance(
     pod: PodResponse,
     status: InstanceStatus,
@@ -432,7 +505,7 @@ def _build_runpod_instance(
         ip=pod.get("publicIp") or "",
         private_ip=private_ip,
         ssh_port=get_ssh_port(pod),
-        spot=pod.get("interruptible", False),
+        spot=_is_spot(cluster.spec.allocation, cluster.offer),
         region=region,
     )
 
@@ -531,30 +604,28 @@ async def _create_instant_cluster(
     return cluster_id, tuple(pod_ids), tuple(cluster_ips)
 
 
-def _extract_cuda_from_image(image_name: str) -> str | None:
-    """Extract CUDA version string from image name for allowedCudaVersions."""
-    tag = image_name.split(":")[-1] if ":" in image_name else image_name
-    if m := _CUDA_DOTTED_RE.search(tag):
-        return f"{m.group(1)}.{m.group(2)}"
-    if m := _CUDA_COMPACT_RE.search(tag):
-        return f"{m.group(1)}.{m.group(2)}"
-    return None
-
-
 async def _create_gpu_pod(
     client: RunPodClient,
     config: RunPod,
     cluster: Cluster[RunPodSpecific],
     node_index: int,
 ) -> PodResponse:
-    use_spot = cluster.spec.allocation in ("spot", "spot-if-available")
+    use_spot = _is_spot(cluster.spec.allocation, cluster.offer)
     image_name = cluster.specific.image_name
-    cuda_version = _extract_cuda_from_image(image_name)
+    image_cuda = _extract_image_cuda(image_name)
+    _, cuda_max = _get_cuda_range(cluster.spec)
+    allowed_cuda = (
+        _build_allowed_cuda_versions(image_cuda, cuda_max)
+        if image_cuda else None
+    )
+
+    min_bid = cluster.offer.spot_price or 0.0
+    bid = round(min_bid * config.bid_multiplier, 4) if use_spot else None
 
     log.debug(
-        "Creating GPU pod for node {idx}: gpu={gpu}, count={count}, cuda={cuda}",
+        "Creating GPU pod for node {idx}: gpu={gpu}, count={count}, spot={spot}",
         idx=node_index, gpu=cluster.specific.gpu_type_id,
-        count=cluster.spec.accelerator_count or 1, cuda=cuda_version,
+        count=cluster.spec.accelerator_count or 1, spot=use_spot,
     )
 
     return await client.deploy_gpu_pod(
@@ -570,7 +641,8 @@ async def _create_gpu_pod(
         interruptible=use_spot,
         data_center_id=config.data_center_ids[0] if config.data_center_ids != "global" else None,
         deploy_cost=cluster.spec.max_hourly_cost,
-        allowed_cuda_versions=[cuda_version] if cuda_version else None,
+        spot_price=bid,
+        allowed_cuda_versions=allowed_cuda,
     )
 
 
