@@ -178,11 +178,11 @@ def pool_actor() -> Behavior[PoolMsg]:
                                 resolved_inflight = n
                             case None:
                                 resolved_inflight = (
-                                    spec.nodes * spec.concurrency
+                                    spec.nodes * spec.worker.concurrency
                                 )
                             case strategy:
                                 resolved_inflight = strategy(
-                                    spec.nodes, spec.concurrency,
+                                    spec.nodes, spec.worker.concurrency,
                                 )
 
                         tm_ref = ctx.spawn(
@@ -313,7 +313,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                     tm_ref.tell(NodeAvailable(
                         node_id=nid,
                         node_ref=node_refs[nid],
-                        slots=spec.concurrency,
+                        slots=spec.worker.concurrency,
                     ))
                     if len(new_instances) == spec.nodes:
                         log.info("All {n} nodes ready, pool is operational", n=spec.nodes)
@@ -367,7 +367,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                     tm_ref.tell(NodeAvailable(
                         node_id=nid,
                         node_ref=node_refs[nid],
-                        slots=spec.concurrency,
+                        slots=spec.worker.concurrency,
                     ))
                     return ready(
                         spec, provider, cluster, cluster_id, instances,
@@ -386,7 +386,8 @@ def pool_actor() -> Behavior[PoolMsg]:
                             head_addr=head_addr,
                             casty_port=25520,
                             num_nodes=spec.nodes,
-                            concurrency=spec.concurrency,
+                            worker_concurrency=spec.worker.concurrency,
+                            worker_executor=spec.worker.executor,
                         )
                         node_refs[nid].tell(head_msg)
                     return ready(

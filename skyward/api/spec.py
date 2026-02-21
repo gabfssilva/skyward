@@ -51,6 +51,22 @@ type SkywardSource = Literal["auto", "local", "github", "pypi"]
 
 type InflightStrategy = Callable[[int, int], int]
 
+type WorkerExecutor = Literal["thread", "process"]
+
+
+@dataclass(frozen=True, slots=True)
+class Worker:
+    """Worker configuration per node.
+
+    Args:
+        concurrency: Number of concurrent task slots per node.
+        executor: Execution backend — "thread" (default, uses ThreadPoolExecutor)
+            or "process" (uses ProcessPoolExecutor, bypasses GIL for CPU-bound tasks).
+    """
+
+    concurrency: int = 1
+    executor: WorkerExecutor = "thread"
+
 
 @dataclass(frozen=True, slots=True)
 class Spec:
@@ -139,7 +155,7 @@ class PoolSpec:
     allocation: AllocationStrategy = "spot-if-available"
     image: Image = field(default_factory=lambda: Image())
     ttl: int = 600
-    concurrency: int = 1
+    worker: Worker = field(default_factory=Worker)
     max_inflight: int | InflightStrategy | None = None
     provider: ProviderName | None = None
     max_hourly_cost: float | None = None

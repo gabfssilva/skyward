@@ -75,6 +75,8 @@ from .api import InstanceType as InstanceType
 from .api import Offer as Offer
 from .api import SelectionStrategy as SelectionStrategy
 from .api import Spec as Spec
+from .api import Worker as Worker
+from .api import WorkerExecutor as WorkerExecutor
 from .app import App
 from .distributed import (
     barrier,
@@ -120,6 +122,8 @@ __all__ = [
     "Offer",
     "SelectionStrategy",
     "Spec",
+    "Worker",
+    "WorkerExecutor",
     "dict",
     "set",
     "counter",

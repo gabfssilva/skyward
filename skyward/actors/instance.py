@@ -326,7 +326,8 @@ def instance_actor(
                 head_addr=head_private,
                 casty_port=25520,
                 num_nodes=spec.nodes,
-                concurrency=spec.concurrency,
+                worker_concurrency=spec.worker.concurrency,
+                worker_executor=spec.worker.executor,
             ))
             log.info("Starting worker (role=head)")
             return _start_worker(ip, transport, listener, ni, head_info)
@@ -506,7 +507,8 @@ async def _do_start_worker(
     private_ip = ni.instance.private_ip or ni.instance.ip or ""
     casty_port = head_info.casty_port if head_info else 25520
     num_nodes = head_info.num_nodes if head_info else spec.nodes
-    concurrency = head_info.concurrency if head_info else spec.concurrency
+    concurrency = head_info.worker_concurrency if head_info else spec.worker.concurrency
+    executor = head_info.worker_executor if head_info else spec.worker.executor
 
     seeds = f"{head_info.head_addr}:{casty_port}" if head_info and node_id != 0 else ""
 
@@ -523,6 +525,7 @@ async def _do_start_worker(
         f"--node-id {node_id} --port {casty_port} "
         f"--num-nodes {num_nodes} --host {host} "
         f"--workers-per-node {concurrency} "
+        f"--worker-executor {executor} "
         f"{seeds_arg}"
         f"> /var/log/casty.log 2>&1 & echo $!"
     )

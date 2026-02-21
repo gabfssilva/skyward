@@ -61,7 +61,7 @@ from skyward.observability.logger import logger
 from skyward.observability.logging import LogConfig, setup_logging, teardown_logging
 
 from .model import Offer
-from .spec import DEFAULT_IMAGE, Image, InflightStrategy, PoolSpec, SelectionStrategy, Spec
+from .spec import DEFAULT_IMAGE, Image, InflightStrategy, PoolSpec, SelectionStrategy, Spec, Worker
 
 _active_pool: ContextVar[ComputePool | None] = ContextVar("active_pool", default=None)
 
@@ -312,7 +312,7 @@ class ComputePool:
         allocation: Literal["spot", "on-demand", "spot-if-available"] = ...,
         image: Image = ...,
         ttl: int = ...,
-        concurrency: int = ...,
+        worker: Worker | None = ...,
         max_inflight: int | InflightStrategy | None = ...,
         logging: LogConfig | bool = ...,
         max_hourly_cost: float | None = ...,
@@ -330,7 +330,7 @@ class ComputePool:
         *specs: Spec,
         selection: SelectionStrategy = ...,
         image: Image = ...,
-        concurrency: int = ...,
+        worker: Worker | None = ...,
         max_inflight: int | InflightStrategy | None = ...,
         logging: LogConfig | bool = ...,
         default_compute_timeout: float = ...,
@@ -354,7 +354,7 @@ class ComputePool:
         selection: SelectionStrategy = "cheapest",
         image: Image = DEFAULT_IMAGE,
         ttl: int = 600,
-        concurrency: int = 1,
+        worker: Worker | None = None,
         max_inflight: int | InflightStrategy | None = None,
         logging: LogConfig | bool = True,
         max_hourly_cost: float | None = None,
@@ -389,7 +389,7 @@ class ComputePool:
 
         self.selection = selection
         self.image = image
-        self.concurrency = concurrency
+        self.worker = worker or Worker()
         self.max_inflight = max_inflight
         self.logging = logging
         self.default_compute_timeout = default_compute_timeout
@@ -747,7 +747,7 @@ class ComputePool:
                 allocation=s.allocation,
                 image=self.image,
                 ttl=s.ttl,
-                concurrency=self.concurrency,
+                worker=self.worker,
                 max_inflight=self.max_inflight,
                 provider=provider_name,  # type: ignore[arg-type]
                 max_hourly_cost=s.max_hourly_cost,
@@ -938,6 +938,11 @@ class ComputePool:
 
         self._loop = None
         self._loop_thread = None
+
+    @property
+    def concurrency(self) -> int:
+        """Number of concurrent task slots per node."""
+        return self.worker.concurrency
 
     @property
     def is_active(self) -> bool:

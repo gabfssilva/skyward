@@ -20,7 +20,7 @@ Wrap your `Parallel` call inside a `JoblibPool` context manager:
 --8<-- "examples/guides/10_joblib_concurrency.py:17:27"
 ```
 
-When you enter the `JoblibPool` block, Skyward provisions the instances and registers a custom joblib backend. Every `Parallel(n_jobs=-1)` call inside the block distributes tasks across the cluster. The `concurrency` parameter controls how many tasks each node runs simultaneously — with 10 nodes and `concurrency=10`, you get 100 effective workers.
+When you enter the `JoblibPool` block, Skyward provisions the instances and registers a custom joblib backend. Every `Parallel(n_jobs=-1)` call inside the block distributes tasks across the cluster. The `worker` parameter accepts a `Worker` dataclass that controls per-node execution — `Worker(concurrency=10)` means each node runs 10 tasks simultaneously. With 10 nodes and `concurrency=10`, you get 100 effective workers.
 
 `JoblibPool` is a thin wrapper around `ComputePool` that manages backend registration. When you exit the block, the instances are terminated and the default joblib backend is restored.
 
@@ -65,6 +65,6 @@ uv run python examples/guides/10_joblib_concurrency.py
 
 - **`JoblibPool`** replaces joblib's backend with a distributed one — `n_jobs=-1` uses all cloud workers.
 - **No `@sky.compute` needed** — joblib handles serialization; `JoblibPool` wraps batches internally.
-- **Effective workers = nodes x concurrency** — both parameters multiply throughput.
+- **Effective workers = nodes x worker concurrency** — both parameters multiply throughput.
 - **Near-linear scaling** — 97.5% efficiency with minimal protocol overhead (SSH + Casty actors, raw TCP).
 - **Standard joblib API** — `Parallel`, `delayed` work unchanged inside the context manager.

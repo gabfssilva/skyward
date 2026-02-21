@@ -72,7 +72,7 @@ def main():
     with sky.integrations.ScikitLearnPool(
         provider=sky.AWS(),
         nodes=3,
-        concurrency=4,
+        worker=sky.Worker(concurrency=4),
         image=sky.Image(pip=["scikit-learn"]),
         allocation="spot",
     ):

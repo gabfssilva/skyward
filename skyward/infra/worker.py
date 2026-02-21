@@ -135,11 +135,27 @@ async def _wrap_generator(
     )
 
 
+def _run_in_process(fn_bytes: bytes) -> Any:
+    """Execute a serialized task in a subprocess.
+
+    Module-level function so it's picklable by ProcessPoolExecutor.
+    Distributed collections are not available in process mode.
+    """
+    from skyward.infra.serialization import deserialize
+
+    payload = deserialize(fn_bytes)
+    fn = payload["fn"]
+    args = payload.get("args", ())
+    kwargs = payload.get("kwargs", {})
+    return fn(*args, **kwargs)
+
+
 def worker_behavior(
     node_id: int,
     concurrency: int = 1,
     registry: Any = None,
     system: ClusteredActorSystem | None = None,
+    executor: str = "thread",
 ) -> Behavior[WorkerMsg]:
     log = logger.bind(component="worker", node_id=node_id)
     sem = asyncio.Semaphore(concurrency)
@@ -181,29 +197,34 @@ def worker_behavior(
         input_streams: tuple[tuple[int, Any], ...] = (),
     ) -> TaskResult:
         async with sem:
-            from skyward.infra.serialization import deserialize
-
-            payload = await asyncio.to_thread(deserialize, fn_bytes)
-            fn = payload["fn"]
-            args = payload.get("args", ())
-            kwargs = payload.get("kwargs", {})
-
-            args = await _resolve_input_streams(args, input_streams)
-
-            def _run() -> Any:
-                if registry is not None:
-                    from skyward.distributed import _set_active_registry
-
-                    _set_active_registry(registry)
-
-                fn_name = getattr(fn, "__name__", str(fn))
-                log.info("Executing {fn_name}", fn_name=fn_name)
-                result = fn(*args, **kwargs)
-                log.info("Task {fn_name} completed", fn_name=fn_name)
-                return result
-
             try:
-                result = await asyncio.to_thread(_run)
+                match executor:
+                    case "process":
+                        loop = asyncio.get_running_loop()
+                        result = await loop.run_in_executor(None, _run_in_process, fn_bytes)
+                    case _:
+                        from skyward.infra.serialization import deserialize
+
+                        payload = await asyncio.to_thread(deserialize, fn_bytes)
+                        fn = payload["fn"]
+                        args = payload.get("args", ())
+                        kwargs = payload.get("kwargs", {})
+
+                        args = await _resolve_input_streams(args, input_streams)
+
+                        def _run() -> Any:
+                            if registry is not None:
+                                from skyward.distributed import _set_active_registry
+
+                                _set_active_registry(registry)
+
+                            fn_name = getattr(fn, "__name__", str(fn))
+                            log.info("Executing {fn_name}", fn_name=fn_name)
+                            result = fn(*args, **kwargs)
+                            log.info("Task {fn_name} completed", fn_name=fn_name)
+                            return result
+
+                        result = await asyncio.to_thread(_run)
 
                 match result:
                     case types.GeneratorType() if system is not None:
@@ -212,8 +233,7 @@ def worker_behavior(
                         compressed = await asyncio.to_thread(_compress_result, result)
                         return TaskSucceeded(result=compressed, node_id=node_id)
             except Exception as e:
-                fn_name = getattr(fn, "__name__", "unknown")
-                log.error("Task {fn_name} failed: {err}", fn_name=fn_name, err=e)
+                log.error("Task failed: {err}", err=e)
                 return TaskFailed(
                     error=str(e),
                     traceback=traceback.format_exc(),
@@ -253,6 +273,7 @@ async def main(
     num_nodes: int = 1,
     host: str = "0.0.0.0",
     workers_per_node: int = 1,
+    worker_executor: str = "thread",
 ) -> None:
     config = CastyConfig(
         heartbeat=HeartbeatConfig(interval=2.0, availability_check_interval=5.0),
@@ -285,8 +306,19 @@ async def main(
         from skyward.distributed.registry import DistributedRegistry
 
         loop = asyncio.get_running_loop()
-        pool_size = max((os.cpu_count() or 1) + 4, workers_per_node)
-        loop.set_default_executor(ThreadPoolExecutor(max_workers=pool_size))
+        match worker_executor:
+            case "process":
+                import multiprocessing
+                from concurrent.futures import ProcessPoolExecutor
+
+                default_executor = ProcessPoolExecutor(
+                    max_workers=workers_per_node,
+                    mp_context=multiprocessing.get_context("spawn"),
+                )
+            case _:
+                pool_size = max((os.cpu_count() or 1) + 4, workers_per_node)
+                default_executor = ThreadPoolExecutor(max_workers=pool_size)
+        loop.set_default_executor(default_executor)
         set_system_loop(loop)
         registry = DistributedRegistry(system, loop=loop)
         _set_active_registry(registry)
@@ -296,6 +328,7 @@ async def main(
                 worker_behavior(
                     node_id, concurrency=workers_per_node,
                     registry=registry, system=system,
+                    executor=worker_executor,
                 ),
                 key=WORKER_KEY,
             ),
@@ -337,6 +370,11 @@ def cli() -> None:
     )
     parser.add_argument("--workers-per-node", type=int, default=1)
     parser.add_argument(
+        "--worker-executor", type=str, default="thread",
+        choices=["thread", "process"],
+        help="Execution backend: thread (default) or process (bypasses GIL)",
+    )
+    parser.add_argument(
         "--log-file", type=str, default="/var/log/casty.log",
         help="Redirect stdout/stderr to this file",
     )
@@ -348,6 +386,7 @@ def cli() -> None:
     asyncio.run(main(
         args.node_id, args.port, seeds, args.num_nodes, args.host,
         workers_per_node=args.workers_per_node,
+        worker_executor=args.worker_executor,
     ))
 
 

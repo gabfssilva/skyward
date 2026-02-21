@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 import skyward as sky
-from skyward import ComputePool, Image
+from skyward import ComputePool, Image, Worker
 
 
 @pytest.fixture(scope="session")
@@ -11,7 +11,7 @@ def pool():
     with sky.App(console=False), ComputePool(
         provider=sky.Container(network="skyward", container_prefix='skyward-default'),
         nodes=2,
-        concurrency=5,
+        worker=Worker(concurrency=5),
         vcpus=1,
         memory_gb=1,
     ) as p:
@@ -22,7 +22,7 @@ def pip_pool():
     with sky.App(console=False), ComputePool(
         provider=sky.Container(network="skyward", container_prefix='skyward-pip'),
         nodes=1,
-        concurrency=5,
+        worker=Worker(concurrency=5),
         image=Image(pip=["requests"]),
         vcpus=1,
         memory_gb=1,
@@ -35,7 +35,7 @@ def apt_pool():
     with sky.App(console=False), ComputePool(
         provider=sky.Container(network="skyward", container_prefix='skyward-apt'),
         nodes=1,
-        concurrency=2,
+        worker=Worker(concurrency=2),
         image=Image(apt=["jq"]),
         memory_gb=1,
         vcpus=1,
@@ -59,7 +59,7 @@ def env_pool():
 def torch_pool():
     with sky.App(console=False), ComputePool(
         provider=sky.Container(network="skyward", container_prefix='skyward-torch'),
-        concurrency=2,
+        worker=Worker(concurrency=2),
         nodes=2,
         vcpus=2,
         memory_gb=2,
@@ -106,7 +106,7 @@ def parallel_pool():
         nodes=2,
         vcpus=1,
         memory_gb=1,
-        concurrency=3,
+        worker=Worker(concurrency=3),
         image=Image(pip=["joblib", "scikit-learn"]),
     ) as p:
         yield p

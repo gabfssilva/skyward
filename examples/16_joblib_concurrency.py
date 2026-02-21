@@ -21,7 +21,7 @@ if __name__ == '__main__':
         provider=sky.AWS(),
         nodes=nodes,
         image=sky.Image(pip=["joblib"], skyward_source='local'),
-        concurrency=concurrency,
+        worker=sky.Worker(concurrency=concurrency),
         max_inflight=tasks
     ) as pool:
         # just to warm up

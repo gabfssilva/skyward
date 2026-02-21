@@ -25,7 +25,7 @@ def main():
     with sky.Executor(
         provider=sky.AWS(),
         nodes=4,
-        concurrency=4,  # 4 nodes x 4 concurrent = 16 parallel slots
+        worker=sky.Worker(concurrency=4),  # 4 nodes x 4 concurrent = 16 parallel slots
         cpu=2,
         memory="4GB",
         allocation="spot-if-available",

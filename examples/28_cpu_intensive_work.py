@@ -26,7 +26,7 @@ if __name__ == "__main__":
 
     with sky.ComputePool(
         provider=sky.AWS(),
-        concurrency=2,
+        worker=sky.Worker(concurrency=2, executor="process"),
         nodes=5,
         max_inflight=total,
     ) as pool:

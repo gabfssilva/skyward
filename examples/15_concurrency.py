@@ -17,7 +17,9 @@ def heavy_stuff(x: int, y: int) -> int:
 
 
 if __name__ == "__main__":
-    with sky.ComputePool(provider=sky.AWS(), cpu=4, concurrency=10, nodes=5) as pool:
+    with sky.ComputePool(
+        provider=sky.AWS(), cpu=4, worker=sky.Worker(concurrency=10), nodes=5,
+    ) as pool:
         # Process 100 tasks across 5 nodes with 10 concurrent slots each (50 total)
         results = sky.conc.map_async(lambda x: heavy_stuff(x, x) >> pool, list(range(100)))
         print(list(results))

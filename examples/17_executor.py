@@ -18,7 +18,7 @@ if __name__ == "__main__":
     with sky.Executor(
         provider=sky.AWS(),
         nodes=5,
-        concurrency=10,
+        worker=sky.Worker(concurrency=10),
         image=sky.Image(skyward_source="local"),
     ) as executor:
         do_work(5) # warm up

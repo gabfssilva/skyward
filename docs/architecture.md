@@ -41,7 +41,7 @@ The full hierarchy on your local machine consists of four layers, each with a we
 
 The **pool actor** is the state machine that orchestrates everything. It progresses through `idle → requesting → provisioning → ready → stopping`. It holds references to all node actors and the task manager, and it's the entry point for all task submissions.
 
-The **task manager** dispatches tasks to nodes using round-robin scheduling. It handles backpressure through `max_inflight` and `concurrency` parameters, preventing the workers from being overwhelmed. When you call `train(10) >> pool`, the task manager picks the next node in the rotation and forwards the task.
+The **task manager** dispatches tasks to nodes using round-robin scheduling. It handles backpressure through `max_inflight` and the `worker` configuration (which controls per-node concurrency), preventing the workers from being overwhelmed. When you call `train(10) >> pool`, the task manager picks the next node in the rotation and forwards the task.
 
 **Node actors** — one per instance — track each node's lifecycle: `idle → waiting → active`. If a spot instance is preempted, the node detects the loss, notifies the pool, and requests a replacement from the provider. Tasks that were in flight on the lost node are re-queued.
 

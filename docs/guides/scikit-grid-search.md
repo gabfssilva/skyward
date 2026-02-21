@@ -28,7 +28,7 @@ Each dict defines a grid for one estimator family. The `"clf"` key swaps the est
 --8<-- "examples/guides/09_scikit_grid_search.py:45:59"
 ```
 
-Inside the context manager, every joblib `Parallel` call is intercepted and routed to the Skyward cluster. Each fit is serialized with cloudpickle, sent to a worker, executed, and the result returned. The `concurrency` parameter controls how many fits run simultaneously on each node — with 3 nodes and `concurrency=4`, you get 12 parallel fits.
+Inside the context manager, every joblib `Parallel` call is intercepted and routed to the Skyward cluster. Each fit is serialized with cloudpickle, sent to a worker, executed, and the result returned. The `worker` parameter accepts a `Worker` dataclass that controls per-node execution — `Worker(concurrency=4)` means each node runs 4 fits simultaneously. With 3 nodes and `concurrency=4`, you get 12 parallel fits.
 
 `ScikitLearnPool` is a thin wrapper around `ComputePool` that registers the custom joblib backend on enter and restores the default on exit. The scikit-learn API is completely unchanged — `GridSearchCV`, `Pipeline`, `cross_val_score` all work as documented.
 
@@ -58,5 +58,5 @@ uv run python examples/guides/09_scikit_grid_search.py
 
 - **`ScikitLearnPool`** replaces joblib's backend with a distributed one — `n_jobs=-1` uses all cloud workers.
 - **Standard scikit-learn API** — `GridSearchCV`, `Pipeline`, `cross_val_score` work unchanged.
-- **`concurrency`** controls parallelism per node — total parallel fits = nodes x concurrency.
+- **`worker=Worker(concurrency=N)`** controls parallelism per node — total parallel fits = nodes x concurrency.
 - **Pipeline + param_grid** — search over different estimators and their hyperparameters in one run.

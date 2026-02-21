@@ -17,7 +17,7 @@ if __name__ == "__main__":
     with sky.integrations.JoblibPool(
         provider=sky.AWS(),
         nodes=10,
-        concurrency=10,
+        worker=sky.Worker(concurrency=10),
         image=sky.Image(pip=["joblib"]),
     ) as pool:
         t0 = perf_counter()

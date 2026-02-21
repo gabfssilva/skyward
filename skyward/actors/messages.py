@@ -563,7 +563,8 @@ class HeadAddressKnown:
     head_addr: str
     casty_port: int
     num_nodes: int
-    concurrency: int
+    worker_concurrency: int
+    worker_executor: str
 
 
 @dataclass(frozen=True, slots=True)

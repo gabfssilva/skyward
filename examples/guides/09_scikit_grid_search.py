@@ -45,7 +45,7 @@ if __name__ == "__main__":
     with sky.integrations.ScikitLearnPool(
         provider=sky.AWS(),
         nodes=3,
-        concurrency=4,
+        worker=sky.Worker(concurrency=4),
         image=sky.Image(pip=["scikit-learn"]),
     ):
         grid_search = GridSearchCV(

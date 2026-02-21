@@ -112,13 +112,13 @@ from joblib import Parallel, delayed
 def process(x):
     return x ** 2
 
-with sky.integrations.JoblibPool(provider=sky.AWS(), nodes=4, concurrency=4):
+with sky.integrations.JoblibPool(provider=sky.AWS(), nodes=4, worker=sky.Worker(concurrency=4)):
     results = Parallel(n_jobs=-1)(
         delayed(process)(x) for x in range(100)
     )
 ```
 
-The `concurrency` parameter controls how many tasks each node runs simultaneously. With 4 nodes and `concurrency=4`, you get 16 effective workers. The total parallelism is always `nodes * concurrency`, and `n_jobs=-1` tells joblib to use all available slots.
+The `worker` parameter accepts a `Worker` dataclass that controls per-node execution. `Worker(concurrency=4)` means each node runs 4 tasks simultaneously. With 4 nodes and `concurrency=4`, you get 16 effective workers. The total parallelism is always `nodes * concurrency`, and `n_jobs=-1` tells joblib to use all available slots.
 
 For a throughput analysis and real-world benchmarks, see the [Joblib Concurrency guide](guides/joblib-concurrency.md).
 
@@ -131,7 +131,7 @@ import skyward as sky
 from sklearn.model_selection import GridSearchCV
 from sklearn.svm import SVC
 
-with sky.integrations.ScikitLearnPool(provider=sky.AWS(), nodes=4, concurrency=4):
+with sky.integrations.ScikitLearnPool(provider=sky.AWS(), nodes=4, worker=sky.Worker(concurrency=4)):
     grid = GridSearchCV(SVC(), param_grid, cv=5, n_jobs=-1)
     grid.fit(X, y)
 ```
