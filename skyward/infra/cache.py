@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Callable
@@ -169,12 +170,12 @@ def cached[**P, R](
             @wraps(func)
             async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
                 key = _resolve_key(args, kwargs)
-                hit, value = cache.get(key, ttl)
+                hit, value = await asyncio.to_thread(cache.get, key, ttl)
                 if hit:
                     return value  # type: ignore[return-value]
                 result = await func(*args, **kwargs)  # type: ignore[misc]
                 if _should_cache(result):
-                    cache.set(key, result)
+                    await asyncio.to_thread(cache.set, key, result)
                 return result
 
             return async_wrapper  # type: ignore[return-value]

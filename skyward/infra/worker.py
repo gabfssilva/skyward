@@ -123,9 +123,9 @@ async def _wrap_generator(
     def _drain() -> None:
         try:
             for elem in gen:
-                asyncio.run_coroutine_threadsafe(sink.put(elem), loop).result()
+                asyncio.run_coroutine_threadsafe(sink.put(elem), loop).result(timeout=300.0)
         finally:
-            asyncio.run_coroutine_threadsafe(sink.complete(), loop).result()
+            asyncio.run_coroutine_threadsafe(sink.complete(), loop).result(timeout=60.0)
 
     threading.Thread(target=_drain, daemon=True).start()
 
@@ -183,7 +183,7 @@ def worker_behavior(
         async with sem:
             from skyward.infra.serialization import deserialize
 
-            payload = deserialize(fn_bytes)
+            payload = await asyncio.to_thread(deserialize, fn_bytes)
             fn = payload["fn"]
             args = payload.get("args", ())
             kwargs = payload.get("kwargs", {})
@@ -209,7 +209,8 @@ def worker_behavior(
                     case types.GeneratorType() if system is not None:
                         return await _wrap_generator(system, result, node_id)
                     case _:
-                        return TaskSucceeded(result=_compress_result(result), node_id=node_id)
+                        compressed = await asyncio.to_thread(_compress_result, result)
+                        return TaskSucceeded(result=compressed, node_id=node_id)
             except Exception as e:
                 fn_name = getattr(fn, "__name__", "unknown")
                 log.error("Task {fn_name} failed: {err}", fn_name=fn_name, err=e)

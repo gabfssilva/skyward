@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from contextlib import suppress
@@ -223,11 +224,13 @@ class VastAIClient:
             Path.home() / ".ssh" / "id_ecdsa.pub",
         ]
 
-        public_key = None
-        for path in key_paths:
-            if path.exists():
-                public_key = path.read_text().strip()
-                break
+        def _read_local_key(paths: list[Path]) -> str | None:
+            for path in paths:
+                if path.exists():
+                    return path.read_text().strip()
+            return None
+
+        public_key = await asyncio.to_thread(_read_local_key, key_paths)
 
         if not public_key:
             raise RuntimeError("No SSH key found. Create with: ssh-keygen -t ed25519")

@@ -192,15 +192,15 @@ class QueueProxy:
 
     def get(self, timeout: float | None = None) -> Any:
         start = time.monotonic()
+        delay = 0.01
         while True:
             result = _run_sync(self._queue.dequeue())
             if result is not None:
                 return result
-            if timeout is not None:
-                elapsed = time.monotonic() - start
-                if elapsed >= timeout:
-                    return None
-            time.sleep(0.01)
+            if timeout is not None and time.monotonic() - start >= timeout:
+                return None
+            time.sleep(delay)
+            delay = min(delay * 1.5, 0.5)
 
     def empty(self) -> bool:
         return _run_sync(self._queue.size()) == 0
@@ -210,15 +210,15 @@ class QueueProxy:
 
     async def get_async(self, timeout: float | None = None) -> Any:
         start = time.monotonic()
+        delay = 0.01
         while True:
             result = await self._queue.dequeue()
             if result is not None:
                 return result
-            if timeout is not None:
-                elapsed = time.monotonic() - start
-                if elapsed >= timeout:
-                    return None
-            await asyncio.sleep(0.01)
+            if timeout is not None and time.monotonic() - start >= timeout:
+                return None
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.5, 0.5)
 
 
 class BarrierProxy:

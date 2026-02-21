@@ -107,7 +107,7 @@ class ContainerProvider(WarmableProvider[Container, ContainerSpecific]):
         dockerfile = _DOCKERFILE.format(base=self._config.image)
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            Path(tmpdir, "Dockerfile").write_text(dockerfile)
+            await asyncio.to_thread(Path(tmpdir, "Dockerfile").write_text, dockerfile)
             await run(self._bin, "build", "-t", tag, tmpdir)
 
         log.info("Image {tag} built", tag=tag)

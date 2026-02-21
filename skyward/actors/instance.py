@@ -595,7 +595,8 @@ async def _do_start_worker(
         return "ok"
 
     pool_json = pool_info.model_dump_json()
-    fn_bytes = serialize({"fn": setup_env, "args": (pool_json, image_env), "kwargs": {}})
+    payload = {"fn": setup_env, "args": (pool_json, image_env), "kwargs": {}}
+    fn_bytes = await asyncio.to_thread(serialize, payload)
     await client.ask(
         worker_ref,
         lambda reply_to: WorkerExecuteTask(fn_bytes=fn_bytes, reply_to=reply_to),
@@ -685,7 +686,8 @@ async def _execute_with_streaming(
             client, args, indices,
         )
 
-    fn_bytes = serialize({"fn": fn, "args": resolved_args, "kwargs": kwargs})
+    payload = {"fn": fn, "args": resolved_args, "kwargs": kwargs}
+    fn_bytes = await asyncio.to_thread(serialize, payload)
     log = logger.bind(component="execute_streaming")
     log.debug("Sending to worker, {n} bytes, streams={s}", n=len(fn_bytes), s=len(stream_refs))
     result = await client.ask(
@@ -706,9 +708,8 @@ async def _execute_with_streaming(
             loop = asyncio.get_running_loop()
             return WorkerTaskSucceeded(result=_SyncSource(source, loop), node_id=result.node_id)
         case WorkerTaskSucceeded(result=_CompressedResult() as compressed):
-            return WorkerTaskSucceeded(
-                result=_decompress_result(compressed), node_id=result.node_id,
-            )
+            decompressed = await asyncio.to_thread(_decompress_result, compressed)
+            return WorkerTaskSucceeded(result=decompressed, node_id=result.node_id)
         case _:
             return result
 
@@ -744,9 +745,11 @@ async def _setup_input_streams(
             def _drain() -> None:
                 try:
                     for elem in _it:
-                        asyncio.run_coroutine_threadsafe(_sink.put(elem), loop).result()
+                        fut = asyncio.run_coroutine_threadsafe(_sink.put(elem), loop)
+                        fut.result(timeout=300.0)
                 finally:
-                    asyncio.run_coroutine_threadsafe(_sink.complete(), loop).result()
+                    fut = asyncio.run_coroutine_threadsafe(_sink.complete(), loop)
+                    fut.result(timeout=60.0)
             await asyncio.to_thread(_drain)
 
         pump_tasks.append(asyncio.create_task(_pump()))

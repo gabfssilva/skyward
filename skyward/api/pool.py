@@ -615,6 +615,10 @@ class ComputePool:
         q: queue.Queue[Any] = queue.Queue()
         sentinel = object()
 
+        @dataclass(frozen=True, slots=True)
+        class _StreamError:
+            exception: BaseException
+
         async def _feed_queue() -> None:
             assert self._pool_ref is not None
             tasks = [
@@ -625,14 +629,18 @@ class ComputePool:
                 )
                 for p in group.items
             ]
-            if group.ordered:
-                for task in tasks:
-                    result = await task
-                    q.put(self._unwrap_result(result))
-            else:
-                for coro in asyncio.as_completed(tasks):
-                    result = await coro
-                    q.put(self._unwrap_result(result))
+            try:
+                if group.ordered:
+                    for task in tasks:
+                        result = await task
+                        q.put(self._unwrap_result(result))
+                else:
+                    for coro in asyncio.as_completed(tasks):
+                        result = await coro
+                        q.put(self._unwrap_result(result))
+            except BaseException as exc:
+                q.put(_StreamError(exception=exc))
+                return
             q.put(sentinel)
 
         assert self._loop is not None
@@ -642,6 +650,8 @@ class ComputePool:
             item = q.get()
             if item is sentinel:
                 break
+            if isinstance(item, _StreamError):
+                raise item.exception
             yield item
 
     def map[T, R](
@@ -890,13 +900,13 @@ class ComputePool:
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()  # type: ignore
 
-    def _run_sync[T](self, coro: Coroutine[Any, Any, T]) -> T:
+    def _run_sync[T](self, coro: Coroutine[Any, Any, T], timeout: float = 3600.0) -> T:
         """Run coroutine synchronously."""
         if self._loop is None:
             raise RuntimeError("Event loop not running")
 
         future: Future[T] = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result()
+        return future.result(timeout=timeout)
 
     def _run_sync_with_timeout[T](self, coro: Coroutine[Any, Any, T], timeout: float) -> T:
         """Run coroutine synchronously with timeout."""
@@ -909,16 +919,25 @@ class ComputePool:
     def _cleanup(self) -> None:
         """Cleanup resources."""
         logger.debug("Cleaning up event loop and thread")
-        if self._loop:
-            self._loop.call_soon_threadsafe(self._loop.stop)
-            logger.debug("Stopping event loop")
-            if self._loop_thread:
-                self._loop_thread.join(timeout=5)
-                logger.debug("Event loop thread joined")
+        loop = self._loop
+        thread = self._loop_thread
+        if loop is None:
+            return
+
+        loop.call_soon_threadsafe(loop.stop)
+        logger.debug("Stopping event loop")
+
+        if thread is not None:
+            thread.join(timeout=10)
+            if thread.is_alive():
+                logger.warning("Event loop thread did not stop within 10s")
+
+        if not loop.is_running():
             with suppress(Exception):
-                self._loop.close()
-            self._loop = None
-            self._loop_thread = None
+                loop.close()
+
+        self._loop = None
+        self._loop_thread = None
 
     @property
     def is_active(self) -> bool:

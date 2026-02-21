@@ -6,6 +6,8 @@ via JSONL event streaming.
 
 from __future__ import annotations
 
+import asyncio
+
 from skyward.actors.messages import NodeInstance
 from skyward.infra import SSHTransport
 from skyward.observability.logger import logger
@@ -80,16 +82,19 @@ async def install_local_skyward(
     # Build wheel locally
     log = logger.bind(component="bootstrap_ssh")
     log.info("Building local skyward wheel")
-    wheel_path = build_wheel()
+    wheel_path = await asyncio.to_thread(build_wheel)
 
     # Build install script
     install_script = _build_wheel_install_script(wheel_name=wheel_path.name)
 
     # Upload wheel to /tmp (script will move it to SKYWARD_DIR)
-    wheel_size = wheel_path.stat().st_size
+    def _read_wheel() -> tuple[int, bytes]:
+        return wheel_path.stat().st_size, wheel_path.read_bytes()
+
+    wheel_size, wheel_data = await asyncio.to_thread(_read_wheel)
     log.debug("Wheel size: {size:.1f} KB", size=wheel_size / 1024)
     log.info("Uploading wheel {name}", name=wheel_path.name)
-    await transport.write_bytes(f"/tmp/{wheel_path.name}", wheel_path.read_bytes())
+    await transport.write_bytes(f"/tmp/{wheel_path.name}", wheel_data)
 
     # Upload install script
     await transport.write_file("/tmp/.install-wheel.sh", install_script)

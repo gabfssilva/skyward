@@ -37,9 +37,15 @@ class _SyncSource[T]:
     for use in the synchronous ComputePool API.
     """
 
-    def __init__(self, source: SourceRef[T], loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(
+        self,
+        source: SourceRef[T],
+        loop: asyncio.AbstractEventLoop,
+        timeout: float = 300.0,
+    ) -> None:
         self._source = source
         self._loop = loop
+        self._timeout = timeout
         self._aiter: Any = None
 
     def __iter__(self) -> _SyncSource[T]:
@@ -54,7 +60,7 @@ class _SyncSource[T]:
         try:
             return asyncio.run_coroutine_threadsafe(
                 aiter.__anext__(), self._loop,
-            ).result()
+            ).result(timeout=self._timeout)
         except StopAsyncIteration:
             raise StopIteration from None
 

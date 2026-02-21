@@ -406,12 +406,13 @@ async def _ensure_key_pair(config: AWS, ec2: EC2ClientFactory) -> tuple[str, str
         Path.home() / ".ssh" / "id_ecdsa.pub",
     )
 
-    pub_path = next((p for p in pub_key_paths if p.exists()), None)
-    if pub_path is None:
-        raise RuntimeError("No SSH public key found. Create with: ssh-keygen -t ed25519")
+    def _find_ssh_key(paths: tuple[Path, ...]) -> tuple[str, str]:
+        pub_path = next((p for p in paths if p.exists()), None)
+        if pub_path is None:
+            raise RuntimeError("No SSH public key found. Create with: ssh-keygen -t ed25519")
+        return pub_path.read_text().strip(), str(pub_path.with_suffix(""))
 
-    public_key = pub_path.read_text().strip()
-    private_key_path = str(pub_path.with_suffix(""))
+    public_key, private_key_path = await asyncio.to_thread(_find_ssh_key, pub_key_paths)
 
     fingerprint = hashlib.md5(public_key.encode()).hexdigest()[:12]
     key_name = f"skyward-{fingerprint}"
