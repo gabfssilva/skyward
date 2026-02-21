@@ -101,6 +101,7 @@ class _State:
     total_nodes: int
     phase: _Phase = _Phase.PROVISIONING
     nodes: MappingProxyType[str, _NodeStatus] = MappingProxyType({})
+    tasks_queued: int = 0
     tasks_running: int = 0
     tasks_done: int = 0
     tasks_failed: int = 0
@@ -165,7 +166,7 @@ def _on_task_submitted(
     first = state.first_task_at or time.monotonic()
     inflight = MappingProxyType({**state.inflight, task_id: entry})
     return replace(
-        state, tasks_running=state.tasks_running + 1,
+        state, tasks_queued=state.tasks_queued + 1,
         first_task_at=first, inflight=inflight,
     )
 
@@ -174,9 +175,15 @@ def _on_task_assigned(state: _State, task_id: str, instance_id: str) -> _State:
     if task_id not in state.inflight:
         return state
     entry = state.inflight[task_id]
+    already_assigned = bool(entry.instance_id)
     started = time.monotonic() if not entry.instance_id else entry.started_at
     updated = replace(entry, instance_id=instance_id, started_at=started)
-    return replace(state, inflight=MappingProxyType({**state.inflight, task_id: updated}))
+    return replace(
+        state,
+        tasks_queued=max(0, state.tasks_queued - 1) if not already_assigned else state.tasks_queued,
+        tasks_running=state.tasks_running + 1 if not already_assigned else state.tasks_running,
+        inflight=MappingProxyType({**state.inflight, task_id: updated}),
+    )
 
 
 def _on_task_done(state: _State, task_id: str, elapsed: float) -> _State:
@@ -673,6 +680,11 @@ def _render_footer(state: _State) -> RenderableType:
             active.append("ready", style=Style(color="cyan"))
 
             tasks = Text()
+            if state.tasks_queued:
+                tasks.append("\u231b ", style=YELLOW)
+                tasks.append(str(state.tasks_queued), style=BRIGHT)
+                tasks.append(" queued", style=DIM)
+                tasks.append("  ")
             tasks.append("\u25b8 ", style=YELLOW)
             tasks.append(str(state.tasks_running), style=BRIGHT)
             tasks.append(" running", style=DIM)

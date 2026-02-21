@@ -182,6 +182,7 @@ def task_manager_actor(max_inflight: int) -> Behavior[TaskManagerMsg]:
                     pending_nodes: set[NodeId] = set()
                     new_nodes = dict(s.nodes)
                     for nid, slot in s.nodes.items():
+                        ctx.self.tell(TaskSubmitted(task_id=bcast.task_id, node_id=nid))
                         slot.ref.tell(ExecuteOnNode(
                             fn=bcast.fn, args=bcast.args, kwargs=bcast.kwargs,
                             reply_to=ctx.self, task_id=bcast.task_id,

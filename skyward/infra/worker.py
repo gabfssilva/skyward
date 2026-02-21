@@ -199,35 +199,42 @@ def worker_behavior(
     ) -> TaskResult:
         async with sem:
             try:
-                match executor:
-                    case "process":
-                        loop = asyncio.get_running_loop()
-                        result = await loop.run_in_executor(
-                            executor_pool, _run_in_process, fn_bytes,
-                        )
-                    case _:
-                        from skyward.infra.serialization import deserialize
+                from skyward.infra.serialization import deserialize
 
-                        payload = await asyncio.to_thread(deserialize, fn_bytes)
-                        fn = payload["fn"]
-                        args = payload.get("args", ())
-                        kwargs = payload.get("kwargs", {})
+                payload = await asyncio.to_thread(deserialize, fn_bytes)
+                fn = payload["fn"]
+                args = payload.get("args", ())
+                kwargs = payload.get("kwargs", {})
 
-                        args = await _resolve_input_streams(args, input_streams)
+                from skyward.infra.streaming import is_generator_compute
 
-                        def _run() -> Any:
-                            if registry is not None:
-                                from skyward.distributed import _set_active_registry
+                use_process = (
+                    executor == "process"
+                    and not input_streams
+                    and not is_generator_compute(fn)
+                )
 
-                                _set_active_registry(registry)
+                if use_process:
+                    loop = asyncio.get_running_loop()
+                    result = await loop.run_in_executor(
+                        executor_pool, _run_in_process, fn_bytes,
+                    )
+                else:
+                    args = await _resolve_input_streams(args, input_streams)
 
-                            fn_name = getattr(fn, "__name__", str(fn))
-                            log.info("Executing {fn_name}", fn_name=fn_name)
-                            result = fn(*args, **kwargs)
-                            log.info("Task {fn_name} completed", fn_name=fn_name)
-                            return result
+                    def _run() -> Any:
+                        if registry is not None:
+                            from skyward.distributed import _set_active_registry
 
-                        result = await asyncio.to_thread(_run)
+                            _set_active_registry(registry)
+
+                        fn_name = getattr(fn, "__name__", str(fn))
+                        log.info("Executing {fn_name}", fn_name=fn_name)
+                        result = fn(*args, **kwargs)
+                        log.info("Task {fn_name} completed", fn_name=fn_name)
+                        return result
+
+                    result = await asyncio.to_thread(_run)
 
                 match result:
                     case types.GeneratorType() if system is not None:

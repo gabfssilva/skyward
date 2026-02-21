@@ -126,14 +126,34 @@ class TestStateTransitions:
 
         state = _State(total_nodes=1)
         new = _on_task_submitted(state, "t1", "train", "single")
-        assert new.tasks_running == 1
+        assert new.tasks_queued == 1
+        assert new.tasks_running == 0
         assert "t1" in new.inflight
 
-    def test_record_task_done(self) -> None:
-        from skyward.actors.console import _on_task_done, _on_task_submitted, _State
+    def test_record_task_assigned(self) -> None:
+        from skyward.actors.console import (
+            _on_task_assigned,
+            _on_task_submitted,
+            _State,
+        )
 
         state = _State(total_nodes=1)
         state = _on_task_submitted(state, "t1", "train", "single")
+        new = _on_task_assigned(state, "t1", "i-abc")
+        assert new.tasks_queued == 0
+        assert new.tasks_running == 1
+
+    def test_record_task_done(self) -> None:
+        from skyward.actors.console import (
+            _on_task_assigned,
+            _on_task_done,
+            _on_task_submitted,
+            _State,
+        )
+
+        state = _State(total_nodes=1)
+        state = _on_task_submitted(state, "t1", "train", "single")
+        state = _on_task_assigned(state, "t1", "i-abc")
         new = _on_task_done(state, "t1", elapsed=2.5)
         assert new.tasks_running == 0
         assert new.tasks_done == 1
