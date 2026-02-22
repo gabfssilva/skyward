@@ -298,7 +298,6 @@ async def main(
         seed_nodes=tuple(seeds) if seeds else None,
         bind_host="0.0.0.0",
         config=config,
-        required_quorum=quorum,
         serializer=skyward_serializer(),
     ) as system:
         from skyward.distributed import _set_active_registry
