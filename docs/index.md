@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://pypi.org/project/skyward/"><img src="https://img.shields.io/pypi/v/skyward.svg" alt="PyPI"></a>
   <a href="https://pypi.org/project/skyward/"><img src="https://img.shields.io/pypi/pyversions/skyward.svg" alt="Python"></a>
-  <a href="https://github.com/gabfssilva/skyward/actions"><img src="https://img.shields.io/github/actions/workflow/status/gabfssilva/skyward/ci.yml" alt="Tests"></a>
+  <a href="https://github.com/gabfssilva/skyward/actions"><img src="https://img.shields.io/github/actions/workflow/status/gabfssilva/skyward/tests.yml" alt="Tests"></a>
   <a href="https://github.com/gabfssilva/skyward/blob/main/LICENSE"><img src="https://img.shields.io/github/license/gabfssilva/skyward.svg" alt="License"></a>
 </p>
 
