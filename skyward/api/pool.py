@@ -61,7 +61,7 @@ from skyward.observability.logger import logger
 from skyward.observability.logging import LogConfig, setup_logging, teardown_logging
 
 from .model import Offer
-from .spec import DEFAULT_IMAGE, Image, InflightStrategy, PoolSpec, SelectionStrategy, Spec, Worker
+from .spec import DEFAULT_IMAGE, Image, PoolSpec, SelectionStrategy, Spec, Worker
 
 _active_pool: ContextVar[ComputePool | None] = ContextVar("active_pool", default=None)
 
@@ -313,7 +313,6 @@ class ComputePool:
         image: Image = ...,
         ttl: int = ...,
         worker: Worker | None = ...,
-        max_inflight: int | InflightStrategy | None = ...,
         logging: LogConfig | bool = ...,
         max_hourly_cost: float | None = ...,
         default_compute_timeout: float = ...,
@@ -331,7 +330,6 @@ class ComputePool:
         selection: SelectionStrategy = ...,
         image: Image = ...,
         worker: Worker | None = ...,
-        max_inflight: int | InflightStrategy | None = ...,
         logging: LogConfig | bool = ...,
         default_compute_timeout: float = ...,
         provision_timeout: int = ...,
@@ -355,7 +353,6 @@ class ComputePool:
         image: Image = DEFAULT_IMAGE,
         ttl: int = 600,
         worker: Worker | None = None,
-        max_inflight: int | InflightStrategy | None = None,
         logging: LogConfig | bool = True,
         max_hourly_cost: float | None = None,
         default_compute_timeout: float = 300.0,
@@ -390,7 +387,6 @@ class ComputePool:
         self.selection = selection
         self.image = image
         self.worker = worker or Worker()
-        self.max_inflight = max_inflight
         self.logging = logging
         self.default_compute_timeout = default_compute_timeout
         self.provision_timeout = provision_timeout
@@ -748,7 +744,6 @@ class ComputePool:
                 image=self.image,
                 ttl=s.ttl,
                 worker=self.worker,
-                max_inflight=self.max_inflight,
                 provider=provider_name,  # type: ignore[arg-type]
                 max_hourly_cost=s.max_hourly_cost,
                 ssh_timeout=float(self.ssh_timeout),

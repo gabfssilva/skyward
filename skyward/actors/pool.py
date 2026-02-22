@@ -173,22 +173,8 @@ def pool_actor() -> Behavior[PoolMsg]:
                             "spawning task manager",
                             n=spec.nodes,
                         )
-                        match spec.max_inflight:
-                            case int(n):
-                                resolved_inflight = n
-                            case None:
-                                resolved_inflight = (
-                                    spec.nodes * spec.worker.concurrency
-                                )
-                            case strategy:
-                                resolved_inflight = strategy(
-                                    spec.nodes, spec.worker.concurrency,
-                                )
-
                         tm_ref = ctx.spawn(
-                            task_manager_actor(
-                                max_inflight=resolved_inflight,
-                            ),
+                            task_manager_actor(),
                             "task-manager",
                         )
                         for nbr in early_ready:

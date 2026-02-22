@@ -55,12 +55,12 @@ def benchmark(matrix_size: int, iterations: int) -> dict:
     cpu = jax.devices("cpu")[0]
     gpu = jax.devices("gpu")[0]
 
-    # print("running on cpu...")
+    print("running on cpu...")
     results["cpu_time"] = bench_on(cpu, a, b, iterations)
-    # print("done!")
-    # print("running on gpu...")
+    print("done!")
+    print("running on gpu...")
     results["gpu_time"] = bench_on(gpu, a, b, iterations)
-    # print("done!")
+    print("done!")
     results["speedup"] = results["cpu_time"] / results["gpu_time"]
     results["gpu_name"] = gpu.device_kind
 

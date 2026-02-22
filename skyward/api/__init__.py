@@ -30,7 +30,6 @@ from .spec import DEFAULT_IMAGE as DEFAULT_IMAGE
 from .spec import AllocationStrategy as AllocationStrategy
 from .spec import Architecture as Architecture
 from .spec import Image as Image
-from .spec import InflightStrategy as InflightStrategy
 from .spec import PoolSpec as PoolSpec
 from .spec import PoolState as PoolState
 from .spec import SelectionStrategy as SelectionStrategy
@@ -47,7 +46,6 @@ __all__ = [
     "sky",
     "AllocationStrategy",
     "Architecture",
-    "InflightStrategy",
     "DEFAULT_IMAGE",
     "Image",
     "PoolSpec",

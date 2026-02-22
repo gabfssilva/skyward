@@ -93,11 +93,10 @@ class _State:
     round_robin: int
     inflight: dict[str, ActorRef]
     broadcasts: dict[str, PendingBroadcast]
-    max_inflight: int
 
 
 
-def task_manager_actor(max_inflight: int) -> Behavior[TaskManagerMsg]:
+def task_manager_actor() -> Behavior[TaskManagerMsg]:
 
     def active(s: _State) -> Behavior[TaskManagerMsg]:
 
@@ -106,15 +105,14 @@ def task_manager_actor(max_inflight: int) -> Behavior[TaskManagerMsg]:
         ) -> Behavior[TaskManagerMsg]:
             match msg:
                 case NodeAvailable(node_id, node_ref, slots):
-                    num_nodes = len(s.nodes) + (1 if node_id not in s.nodes else 0)
-                    effective_slots = max(slots, s.max_inflight // num_nodes)
+                    buffered = slots + 1
                     log.info(
-                        "Node {nid} available ({slots} slots, effective={eff})",
-                        nid=node_id, slots=slots, eff=effective_slots,
+                        "Node {nid} available ({slots} slots, buffered={buf})",
+                        nid=node_id, slots=slots, buf=buffered,
                     )
                     new_nodes = {
                         **s.nodes,
-                        node_id: NodeSlots(ref=node_ref, total=effective_slots, used=0),
+                        node_id: NodeSlots(ref=node_ref, total=buffered, used=0),
                     }
                     remaining, new_nodes, rr = _drain_queue(
                         s.queue, new_nodes, s.round_robin, ctx.self, s.inflight,
@@ -209,8 +207,7 @@ def task_manager_actor(max_inflight: int) -> Behavior[TaskManagerMsg]:
             del s.broadcasts[bid]
         return active(s)
 
-    log.info("Task manager started (max_inflight={mi})", mi=max_inflight)
+    log.info("Task manager started")
     return active(_State(
         nodes={}, queue=(), round_robin=0, inflight={}, broadcasts={},
-        max_inflight=max_inflight,
     ))

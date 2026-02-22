@@ -35,7 +35,7 @@ from joblib.parallel import ParallelBackendBase, register_parallel_backend
 
 from skyward.accelerators import Accelerator
 from skyward.api.pool import ComputePool
-from skyward.api.spec import DEFAULT_IMAGE, Image, InflightStrategy, Worker
+from skyward.api.spec import DEFAULT_IMAGE, Image, Worker
 from skyward.observability.logger import logger
 
 if TYPE_CHECKING:
@@ -190,7 +190,6 @@ def JoblibPool(
     *,
     nodes: int = 1,
     worker: Worker | None = None,
-    max_inflight: int | InflightStrategy | None = None,
     image: Image | None = None,
     accelerator: str | Accelerator | None = None,
     vcpus: int | None = None,
@@ -230,7 +229,6 @@ def JoblibPool(
         provider=provider,
         nodes=nodes,
         worker=worker,
-        max_inflight=max_inflight,
         image=merged,
         accelerator=accelerator,
         vcpus=vcpus,
@@ -251,7 +249,6 @@ def ScikitLearnPool(
     *,
     nodes: int = 1,
     worker: Worker | None = None,
-    max_inflight: int | InflightStrategy | None = None,
     image: Image | None = None,
     accelerator: str | Accelerator | None = None,
     vcpus: int | None = None,
@@ -292,7 +289,6 @@ def ScikitLearnPool(
         provider=provider,
         nodes=nodes,
         worker=worker,
-        max_inflight=max_inflight,
         image=merged,
         accelerator=accelerator,
         vcpus=vcpus,

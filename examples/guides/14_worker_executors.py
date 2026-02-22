@@ -30,7 +30,6 @@ if __name__ == "__main__":
         provider=sky.AWS(),
         worker=sky.Worker(concurrency=2),  # executor="thread" is the default
         nodes=3,
-        max_inflight=total,
     ) as pool:
         results = sky.gather(*(cpu_burn(i) for i in range(total)), stream=True)
         for r in (results >> pool):
@@ -44,7 +43,6 @@ if __name__ == "__main__":
         provider=sky.AWS(),
         worker=sky.Worker(concurrency=2, executor="process"),
         nodes=3,
-        max_inflight=total,
     ) as pool:
         results = sky.gather(*(cpu_burn(i) for i in range(total)), stream=True)
         for r in (results >> pool):
