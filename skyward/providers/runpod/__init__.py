@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .client import RunPodClient, RunPodError
 
-from .config import CloudType, RunPod
+from .config import CloudType, ClusterMode, RunPod
 
 
 def __getattr__(name: str) -> Any:
@@ -27,6 +27,7 @@ def __getattr__(name: str) -> Any:
 
 __all__ = [
     "CloudType",
+    "ClusterMode",
     "RunPod",
     "RunPodClient",
     "RunPodError",

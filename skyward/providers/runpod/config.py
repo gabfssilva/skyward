@@ -12,6 +12,8 @@ from typing import Literal
 
 from skyward.api.provider import ProviderConfig
 
+type ClusterMode = Literal["instant", "individual"]
+
 if typing.TYPE_CHECKING:
     from skyward.providers.runpod.provider import RunPodProvider
 
@@ -62,6 +64,7 @@ class RunPod(ProviderConfig):
             Set to None to skip. Default: "docker hub".
     """
 
+    cluster_mode: ClusterMode = "individual"
     api_key: str | None = None
     cloud_type: CloudType = CloudType.SECURE
     ubuntu: Literal["20.04", "22.04", "24.04", "newest"] | str = "newest"

@@ -5,6 +5,7 @@ import re
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 
 from skyward.accelerators import Accelerator
 from skyward.accelerators.catalog import SPECS
@@ -31,6 +32,39 @@ _CUDA_COMPACT_RE = re.compile(r"cu(?:da)?(\d{2})(\d)\d")
 _UBUNTU_RE = re.compile(r"ubuntu(\d{2})\.?(\d{2})")
 _TAG_VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
 _FALLBACK_IMAGE = "runpod/base:1.0.3-cuda1290-ubuntu2204"
+_TOKEN_SPLIT = re.compile(r"[\s\-/]+")
+_MIN_GPU_MATCH = 0.5
+
+
+def _gpu_match_score(requested: str, display: str, gpu_id: str) -> float:
+    """Score how well a GPU matches the requested name (0.0–1.0).
+
+    Tokenizes both the query and each GPU name, then for every query token
+    finds the best-matching GPU token via SequenceMatcher. The final score
+    is the *minimum* best-token-match, so every part of the query must
+    match well.
+
+    "A40"  vs "NVIDIA A40"       → SM("A40","A40")=1.0   → score 1.0
+    "A40"  vs "NVIDIA RTX A4000" → SM("A40","A4000")=0.75 → score 0.75
+    """
+    req_tokens = [t for t in _TOKEN_SPLIT.split(requested.upper()) if t]
+    if not req_tokens:
+        return 0.0
+
+    best = 0.0
+    for name in (display, gpu_id):
+        if not name:
+            continue
+        name_tokens = [t for t in _TOKEN_SPLIT.split(name.upper()) if t]
+        if not name_tokens:
+            continue
+        token_scores = [
+            max(SequenceMatcher(None, rt, nt).ratio() for nt in name_tokens)
+            for rt in req_tokens
+        ]
+        best = max(best, min(token_scores))
+
+    return best
 _DOCKER_HUB_URL = "https://hub.docker.com"
 _DOCKER_HUB_REPO = "runpod/base"
 
@@ -241,7 +275,7 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
 
         if not spec.accelerator_name:
             vcpus = spec.vcpus or 2
-            memory_gb = spec.memory_gb or 2
+            memory_gb = spec.memory_gb or 4
             instance_id = f"cpu{self._config.cpu_clock}-{vcpus}-{memory_gb}"
             it = InstanceType(
                 name=instance_id,
@@ -277,8 +311,9 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                 for cv in cuda_majors
             ))
 
-        requested = spec.accelerator_name.upper()
+        requested = spec.accelerator_name
         seen: set[str] = set()
+        candidates: list[tuple[float, Offer]] = []
 
         for cuda_ver, gpu_types in zip(cuda_majors, results, strict=True):
             available = [
@@ -290,7 +325,8 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
             for gpu in available:
                 display = gpu.get("displayName", "")
                 gpu_id = gpu.get("id", "")
-                if requested not in display.upper() and requested not in gpu_id.upper():
+                score = _gpu_match_score(requested, display, gpu_id)
+                if score < _MIN_GPU_MATCH:
                     continue
                 if gpu_id in seen:
                     continue
@@ -317,14 +353,22 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                     architecture="x86_64",
                     specific=None,
                 )
-                yield Offer(
+                candidates.append((score, Offer(
                     id=f"runpod-{gpu_id}-cuda{cuda_ver or 'any'}",
                     instance_type=it,
                     spot_price=spot_price,
                     on_demand_price=on_demand_price,
                     billing_unit="hour",
                     specific=RunPodOfferData(gpu_id, cuda_ver),
-                )
+                )))
+
+        if not candidates:
+            return
+
+        best = max(s for s, _ in candidates)
+        for score, offer in candidates:
+            if score >= best - 1e-9:
+                yield offer
 
     async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[RunPodSpecific]:
         api_key = get_api_key(self._config.api_key)
@@ -367,7 +411,7 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
         pod_ids: tuple[tuple[int, str], ...] = ()
         cluster_ips: tuple[tuple[int, str], ...] = ()
 
-        if spec.nodes >= 2 and gpu_type_id:
+        if self._config.cluster_mode == "instant" and spec.nodes >= 2 and gpu_type_id:
             runpod_cluster_id, pod_ids, cluster_ips = await _create_instant_cluster(
                 self._config, spec, gpu_type_id, image_name,
                 registry_auth_id=registry_auth_id,
@@ -546,28 +590,27 @@ async def _resolve_gpu_type(config: RunPod, spec: PoolSpec) -> tuple[str | None,
         cloud=config.cloud_type.value,
     )
 
-    requested = spec.accelerator_name.upper()
-    gpu = next(
-        (
-            g for g in available
-            if requested in g.get("displayName", "").upper()
-            or requested in g.get("id", "").upper()
-        ),
-        None,
-    )
+    requested = spec.accelerator_name
+    scored = [
+        (_gpu_match_score(requested, g.get("displayName", ""), g.get("id", "")), g)
+        for g in available
+    ]
+    scored = [(s, g) for s, g in scored if s >= _MIN_GPU_MATCH]
 
-    if gpu is not None:
-        log.info(
-            "Selected GPU type {gpu_id} ({name})",
-            gpu_id=gpu["id"], name=gpu.get("displayName"),
+    if not scored:
+        available_names = [g.get("displayName", g["id"]) for g in available]
+        raise RuntimeError(
+            f"No GPU type matches '{spec.accelerator_name}'. "
+            f"Available: {', '.join(available_names)}"
         )
-        return gpu["id"], gpu.get("memoryInGb", 0)
 
-    available_names = [g.get("displayName", g["id"]) for g in available]
-    raise RuntimeError(
-        f"No GPU type matches '{spec.accelerator_name}'. "
-        f"Available: {', '.join(available_names)}"
+    scored.sort(key=lambda x: x[0], reverse=True)
+    gpu = scored[0][1]
+    log.info(
+        "Selected GPU type {gpu_id} ({name})",
+        gpu_id=gpu["id"], name=gpu.get("displayName"),
     )
+    return gpu["id"], gpu.get("memoryInGb", 0)
 
 
 async def _create_instant_cluster(
@@ -674,7 +717,7 @@ async def _create_cpu_pod(
     cluster: Cluster[RunPodSpecific],
 ) -> PodResponse:
     vcpus = cluster.spec.vcpus or 2
-    memory_gb = cluster.spec.memory_gb or 2
+    memory_gb = cluster.spec.memory_gb or 4
     disk_gb = min(config.container_disk_gb, 20)
     instance_id = f"cpu{config.cpu_clock}-{vcpus}-{memory_gb}"
 
