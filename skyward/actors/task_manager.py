@@ -133,7 +133,7 @@ def task_manager_actor() -> Behavior[TaskManagerMsg]:
                     new_s = replace(s, nodes=new_nodes)
                     return _check_broadcasts(new_s)
 
-                case TaskResult(value, node_id, task_id=tid):
+                case TaskResult(value, node_id, task_id=tid, error=err):
                     broadcast_hit = False
                     for bc in s.broadcasts.values():
                         if node_id in bc.pending:
@@ -145,7 +145,9 @@ def task_manager_actor() -> Behavior[TaskManagerMsg]:
                     if not broadcast_hit:
                         caller = s.inflight.pop(tid, None)
                         if caller:
-                            caller.tell(TaskResult(value=value, node_id=node_id, task_id=tid))
+                            caller.tell(TaskResult(
+                                value=value, node_id=node_id, task_id=tid, error=err,
+                            ))
 
                     if node_id not in s.nodes:
                         return _check_broadcasts(s) if broadcast_hit else Behaviors.same()

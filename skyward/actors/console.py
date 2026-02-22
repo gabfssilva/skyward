@@ -17,8 +17,10 @@ from types import MappingProxyType
 from typing import Any
 
 from casty import ActorContext, Behavior, Behaviors, SpyEvent, Terminated
+from rich.columns import Columns
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
+from rich.spinner import Spinner
 from rich.style import Style
 from rich.table import Table
 from rich.text import Text
@@ -330,10 +332,13 @@ _BADGE_FG = "rgb(0,0,0)" if _DARK else "rgb(255,255,255)"
 
 _FIXED_BADGE_HUES: dict[str, tuple[float, float]] = {
     "skyward": (255.0, 0.50),
-    "tasks": (210.0, 0.55),
     "cluster": (150.0, 0.45),
     "error": (0.0, 0.60),
     "local": (0.0, 0.0),
+    "queued": (45.0, 0.45),
+    "running": (210.0, 0.60),
+    "done": (120.0, 0.50),
+    "failed": (0.0, 0.60),
 }
 
 
@@ -406,6 +411,14 @@ def _emit(console: Console, badge: str, text: str, style: str = "") -> None:
     console.print(line)
 
 
+def _emit_task(console: Console, badge: str, status: str, text: str) -> None:
+    line = _badge_text(badge)
+    line.append(" ")
+    line.append_text(_inline_badge(status))
+    line.append(f" {text}")
+    console.print(line)
+
+
 # --- Tree footer helpers ---
 
 
@@ -423,23 +436,15 @@ def _root(extra: Text | None = None) -> Text:
     return t
 
 
-def _node_status_line(state: _State) -> Text:
-    t = Text()
-    symbols = {
-        _NodeStatus.READY: ("\u2713", GREEN),
-        _NodeStatus.BOOTSTRAPPING: ("\u25d0", YELLOW),
-        _NodeStatus.SSH: ("\u25d0", CYAN),
-        _NodeStatus.WAITING: ("\u25cb", VERY_DIM),
-    }
-    for i, (nid, status) in enumerate(sorted(state.nodes.items())):
-        if i > 0:
-            t.append("  ")
-        sym, sty = symbols.get(status, ("?", DIM))
-        short = nid[:8].center(8)
-        t.append(f" {short} ", style=_badge_style(nid))
-        t.append(" ")
-        t.append(sym, style=sty)
-    return t
+def _node_status_line(state: _State, target: _NodeStatus) -> Columns:
+    items: list[RenderableType] = []
+    for nid, status in sorted(state.nodes.items()):
+        badge = _badge_text(nid)
+        if status.value >= target.value:
+            items.extend((Text("\u2713", style=GREEN), badge))
+        else:
+            items.extend((Spinner("dots", style=YELLOW), badge))
+    return Columns(items, padding=(0, 1))
 
 
 def _history(*phases: str) -> Text:
@@ -624,29 +629,26 @@ def _render_metrics_text(state: _State) -> Text | None:
 def _render_footer(state: _State) -> RenderableType:
     match state.phase:
         case _Phase.PROVISIONING:
-            content = Text()
-            content.append("\u25d0 ", style=YELLOW)
-            content.append("provisioning", style=MEDIUM)
+            label = Text("provisioning", style=MEDIUM)
             hw = _hw_text(state)
             if hw:
-                content.append("  ")
-                content.append_text(hw)
+                label.append("  ")
+                label.append_text(hw)
             tree = Tree(_root(), guide_style=GUIDE)
-            tree.add(content)
+            tree.add(Spinner("dots", text=label, style=YELLOW))
             return _wrap(tree)
 
         case _Phase.SSH:
             hw = _hw_text(state)
             count = sum(1 for s in state.nodes.values() if s.value >= _NodeStatus.SSH.value)
-            active = Text()
-            active.append("\u25d0 ", style=YELLOW)
-            active.append("connecting ", style=MEDIUM)
-            active.append(f"{count}/{state.total_nodes}", style=BRIGHT)
+            label = Text()
+            label.append("connecting ", style=MEDIUM)
+            label.append(f"{count}/{state.total_nodes}", style=BRIGHT)
             tree = Tree(_root(hw), guide_style=GUIDE)
             tree.add(_history("provisioned"))
-            branch = tree.add(active)
+            branch = tree.add(Spinner("dots", text=label, style=YELLOW))
             if state.nodes:
-                branch.add(_node_status_line(state))
+                branch.add(_node_status_line(state, _NodeStatus.SSH))
             return _wrap(tree)
 
         case _Phase.BOOTSTRAP | _Phase.WORKERS:
@@ -657,15 +659,14 @@ def _render_footer(state: _State) -> RenderableType:
                 else _NodeStatus.READY
             )
             count = sum(1 for s in state.nodes.values() if s.value >= target.value)
-            active = Text()
-            active.append("\u25d0 ", style=YELLOW)
-            active.append(f"{phase_name} ", style=MEDIUM)
-            active.append(f"{count}/{state.total_nodes}", style=BRIGHT)
+            label = Text()
+            label.append(f"{phase_name} ", style=MEDIUM)
+            label.append(f"{count}/{state.total_nodes}", style=BRIGHT)
             tree = Tree(_root(hw), guide_style=GUIDE)
             tree.add(_history("provisioned", "connected"))
-            branch = tree.add(active)
+            branch = tree.add(Spinner("dots", text=label, style=YELLOW))
             if state.nodes:
-                branch.add(_node_status_line(state))
+                branch.add(_node_status_line(state, target))
             return _wrap(tree)
 
         case _Phase.READY:
@@ -728,17 +729,15 @@ def _render_footer(state: _State) -> RenderableType:
                 tasks_summary.append(" \u00b7 ", style=VERY_DIM)
                 tasks_summary.append(f"{rate:.1f}/min", style=DIM)
 
-            stopping = Text()
-            stopping.append("\u25d0 ", style=YELLOW)
-            stopping.append("shutting down...", style=MEDIUM)
+            stop_label = Text("shutting down...", style=MEDIUM)
             cost = _cost_text(state)
             if cost:
-                stopping.append("    ")
-                stopping.append_text(cost)
+                stop_label.append("    ")
+                stop_label.append_text(cost)
 
             tree = Tree(_root(hw), guide_style=GUIDE)
             tree.add(tasks_summary)
-            tree.add(stopping)
+            tree.add(Spinner("dots", text=stop_label, style=YELLOW))
             return _wrap(tree)
 
 
@@ -1151,7 +1150,7 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
 
                 case SpyEvent(event=SubmitTask(task_id=tid) as ev) if tid not in state.inflight:
                     name = _format_task(ev.fn, ev.args, ev.kwargs)
-                    _emit(console, "tasks", f"\u2192 {name} submitted")
+                    _emit_task(console, "skyward", "queued", name)
                     new = _on_task_submitted(state, tid, name, "single")
                     _update_footer(new)
                     return observing(new)
@@ -1161,7 +1160,7 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
                 ) if tid not in state.inflight:
                     name = _format_task(ev.fn, ev.args, ev.kwargs)
                     n = len(state.instances)
-                    _emit(console, "tasks", f"\u2192 {name} broadcast to all {n} nodes")
+                    _emit_task(console, "skyward", "queued", f"{name} \u2192 all {n} nodes")
                     new = _on_task_submitted(state, tid, name, "broadcast")
                     _update_footer(new)
                     return observing(new)
@@ -1174,32 +1173,33 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
                     if iid:
                         entry = state.inflight.get(tid)
                         if entry:
-                            _emit(console, "tasks", f"  {entry.name} \u2192 {iid[:8]}", "dim")
+                            _emit_task(console, iid, "running", entry.name)
                     new = _on_task_assigned(state, tid, iid)
                     return observing(new)
 
-                case SpyEvent(event=TaskResult(task_id=tid, node_id=nid)):
+                case SpyEvent(event=TaskResult(task_id=tid, node_id=nid, error=is_err)):
                     entry = state.inflight.get(tid)
                     if entry is None:
                         return Behaviors.same()
+                    iid = entry.instance_id or _resolve_instance_id(state, node_id=nid) or "skyward"
                     match entry.kind:
                         case "broadcast":
                             new = _on_broadcast_partial(state, tid)
                             updated = new.inflight.get(tid)
                             if updated and updated.broadcast_done >= updated.broadcast_total:
                                 elapsed = time.monotonic() - entry.started_at
-                                txt = f"\u2713 {entry.name} broadcast completed ({elapsed:.1f}s)"
-                                _emit(console, "tasks", txt, "green")
+                                _emit_task(console, iid, "done", f"{entry.name} in {elapsed:.1f}s")
                                 new = _on_task_done(new, tid, elapsed)
                             _update_footer(new)
                             return observing(new)
                         case _:
                             elapsed = time.monotonic() - entry.started_at
-                            iid = _resolve_instance_id(state, node_id=nid) or ""
-                            suffix = f" \u2192 {iid[:8]}" if iid else ""
-                            txt = f"\u2713 {entry.name} completed ({elapsed:.1f}s){suffix}"
-                            _emit(console, "tasks", txt, "green")
-                            new = _on_task_done(state, tid, elapsed)
+                            if is_err:
+                                _emit_task(console, iid, "failed", entry.name)
+                                new = _on_task_failed(state, tid)
+                            else:
+                                _emit_task(console, iid, "done", f"{entry.name} in {elapsed:.1f}s")
+                                new = _on_task_done(state, tid, elapsed)
                             _update_footer(new)
                             return observing(new)
 

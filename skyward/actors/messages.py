@@ -497,6 +497,7 @@ class TaskResult:
     value: Any
     node_id: NodeId
     task_id: str = ""
+    error: bool = False
 
 
 type NodeMsg = (

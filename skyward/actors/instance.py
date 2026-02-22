@@ -466,7 +466,7 @@ def instance_actor(
                         log.warning("Task {tid} failed: {error}", tid=tid, error=value)
                     else:
                         log.debug("Task {tid} succeeded", tid=tid)
-                    parent.tell(TaskResult(value=value, node_id=nid, task_id=tid))
+                    parent.tell(TaskResult(value=value, node_id=nid, task_id=tid, error=is_err))
                     return Behaviors.same()
                 case Log() | Metric():
                     pass

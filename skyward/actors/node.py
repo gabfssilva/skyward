@@ -219,11 +219,13 @@ def node_actor(
                             task_counter=s.task_counter + 1,
                         ))
                     return Behaviors.same()
-                case TaskResult(value, _, task_id=tid):
+                case TaskResult(value, _, task_id=tid, error=err):
                     log.debug("Node {nid} received task result (tid={tid})", nid=node_id, tid=tid)
                     caller = s.inflight.get(tid)
                     if caller:
-                        caller.tell(TaskResult(value=value, node_id=node_id, task_id=tid))
+                        caller.tell(TaskResult(
+                            value=value, node_id=node_id, task_id=tid, error=err,
+                        ))
                         new_inflight = {k: v for k, v in s.inflight.items() if k != tid}
                         return active(replace(s, inflight=new_inflight))
             return Behaviors.same()
