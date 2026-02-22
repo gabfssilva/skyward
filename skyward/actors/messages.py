@@ -319,45 +319,13 @@ type Event = Request | Fact
 
 
 # =============================================================================
-# Instance Actor Messages (internal to instance lifecycle)
+# Node Actor Messages (internal to node lifecycle — merged node + instance)
 # =============================================================================
-
-
-@dataclass(frozen=True, slots=True)
-class Running:
-    ip: str
-
-
-@dataclass(frozen=True, slots=True)
-class Bootstrapping:
-    phase: str
-    status: str
-    elapsed: float | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class Bootstrapped:
-    pass
 
 
 @dataclass(frozen=True, slots=True)
 class Preempted:
     reason: str = "preempted"
-
-
-@dataclass(frozen=True, slots=True)
-class Execute:
-    fn: Any
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
-    reply_to: ActorRef[Any]
-    task_id: str = ""
-    timeout: float = 600.0
-
-
-@dataclass(frozen=True, slots=True)
-class _PollTick:
-    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -371,25 +339,13 @@ class _LocalInstallDone:
 
 
 @dataclass(frozen=True, slots=True)
-class _LocalInstallFailed:
-    instance: NodeInstance
+class _PostBootstrapFailed:
     error: str
 
 
 @dataclass(frozen=True, slots=True)
 class _UserCodeSyncDone:
     instance: NodeInstance
-
-
-@dataclass(frozen=True, slots=True)
-class _UserCodeSyncFailed:
-    instance: NodeInstance
-    error: str
-
-
-@dataclass(frozen=True, slots=True)
-class _PostBootstrapFailed:
-    error: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -405,8 +361,8 @@ class _ConnectionFailed:
 
 @dataclass(frozen=True, slots=True)
 class _WorkerStarted:
-    client: Any
-    worker_ref: Any
+    local_port: int
+    private_ip: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -435,26 +391,39 @@ class _SnapshotFailed:
 
 
 @dataclass(frozen=True, slots=True)
-class _CorrelatedTaskResult:
+class _RemoteTaskDone:
     task_id: str
     value: Any
     node_id: int
+    reply_to: ActorRef[Any]
     error: bool = False
 
 
-type InstanceMsg = (
-    Running | Bootstrapping | Bootstrapped | BootstrapDone
-    | Log | Metric | Preempted | Execute | HeadAddressKnown
-    | _PollTick | _PollResult
-    | _LocalInstallDone | _LocalInstallFailed
-    | _UserCodeSyncDone | _UserCodeSyncFailed
-    | _PostBootstrapFailed
-    | _Connected | _ConnectionFailed
-    | _WorkerStarted | _WorkerFailed
-    | _BootstrapUploaded | _BootstrapUploadFailed
-    | _SnapshotSaved | _SnapshotFailed
-    | _CorrelatedTaskResult
-)
+@dataclass(frozen=True, slots=True)
+class JoinCluster:
+    client: Any
+    pool_info_json: str
+    env_vars: dict[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkerDiscovered:
+    worker_ref: Any
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkerDiscoveryFailed:
+    error: str
+
+
+@dataclass(frozen=True, slots=True)
+class _EnvSetupDone:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class _EnvSetupFailed:
+    error: str
 
 
 # =============================================================================
@@ -467,19 +436,6 @@ class Provision:
     cluster: Any
     provider: Any
     instance: Any
-
-
-@dataclass(frozen=True, slots=True)
-class InstanceBecameReady:
-    instance_id: InstanceId
-    ip: str
-    node_instance: NodeInstance | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class InstanceDied:
-    instance_id: InstanceId
-    reason: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -502,11 +458,23 @@ class TaskResult:
 
 type NodeMsg = (
     Provision
-    | InstanceBecameReady
-    | InstanceDied
     | ExecuteOnNode
     | TaskResult
     | HeadAddressKnown
+    | JoinCluster
+    | Preempted
+    | BootstrapDone
+    | _PollResult
+    | _LocalInstallDone
+    | _PostBootstrapFailed
+    | _UserCodeSyncDone
+    | _Connected | _ConnectionFailed
+    | _WorkerStarted | _WorkerFailed
+    | _BootstrapUploaded | _BootstrapUploadFailed
+    | _SnapshotSaved | _SnapshotFailed
+    | _RemoteTaskDone
+    | _WorkerDiscovered | _WorkerDiscoveryFailed
+    | _EnvSetupDone | _EnvSetupFailed
 )
 
 
@@ -519,6 +487,9 @@ type NodeMsg = (
 class NodeBecameReady:
     node_id: NodeId
     instance: NodeInstance
+    local_port: int = 0
+    private_ip: str = ""
+    casty_port: int = 25520
 
 
 @dataclass(frozen=True, slots=True)
@@ -725,9 +696,7 @@ type ProviderMsg = (
     | _BootstrapScriptDone
     | _BootstrapScriptFailed
     | _LocalInstallDone
-    | _LocalInstallFailed
     | _UserCodeSyncDone
-    | _UserCodeSyncFailed
 )
 
 

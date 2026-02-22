@@ -37,8 +37,6 @@ from .messages import (
     ClusterReady,
     Error,
     ExecuteOnNode,
-    InstanceBecameReady,
-    InstanceDied,
     InstancesProvisioned,
     Log,
     Metric,
@@ -1101,13 +1099,6 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
 
                 case SpyEvent(event=_ConnectionFailed(error=error)):
                     _emit(console, "error", f"SSH failed: {error}", "red")
-                    return Behaviors.same()
-
-                case SpyEvent(event=InstanceBecameReady()):
-                    return Behaviors.same()
-
-                case SpyEvent(event=InstanceDied(instance_id=iid, reason=reason)):
-                    _emit(console, iid, f"Died: {reason}", "red")
                     return Behaviors.same()
 
                 case SpyEvent(event=Preempted(reason=reason)):

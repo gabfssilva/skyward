@@ -22,7 +22,7 @@ Skyward is a Python library for ephemeral accelerator compute. Spin up cloud acc
 - **Ephemeral by default.** Instances provision on demand and terminate automatically. Context managers guarantee cleanup.
 - **Multi-accelerator out of the box.** GPUs, TPUs, Trainium — with PyTorch DDP, Keras 3, JAX, TensorFlow, and HuggingFace integration decorators.
 - **Spot-aware.** Automatic spot instance selection, preemption detection, and replacement. Save 60-90% on compute costs.
-- **Python 3.12+.** PEP 695 generics, pattern matching, and modern async throughout.
+- **Built on Casty.** Powered by a distributed, asyncio-based actor model for non-blocking orchestration.
 
 ## Quick Example
 

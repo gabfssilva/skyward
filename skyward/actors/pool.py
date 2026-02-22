@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import logging as _logging
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
-from casty import ActorContext, ActorRef, Behavior, Behaviors
+from casty import ActorContext, ActorRef, Behavior, Behaviors, ClusterClient
 
 from skyward.actors.messages import (
     ClusterReady,
     HeadAddressKnown,
     InstancesProvisioned,
+    JoinCluster,
     NodeAvailable,
     NodeBecameReady,
     NodeInstance,
@@ -33,9 +36,43 @@ if TYPE_CHECKING:
     from skyward.api.model import Offer
     from skyward.api.spec import PoolSpec
 
+_logging.getLogger("casty").setLevel(_logging.ERROR)
+
+
+def _build_pool_info_json(
+    node_id: int, spec: Any, cluster: Any, ni: NodeInstance,
+    head_addr: str,
+) -> str:
+    from skyward.providers.pool_info import build_pool_info
+
+    accel = ni.instance.offer.instance_type.accelerator
+    accelerator_count = accel.count if accel else 1
+    total_accelerators = accelerator_count * spec.nodes
+
+    pool_info = build_pool_info(
+        node=node_id,
+        total_nodes=spec.nodes,
+        accelerator_count=accelerator_count,
+        total_accelerators=total_accelerators,
+        head_addr=head_addr,
+        head_port=29500,
+        job_id=cluster.id,
+        peers=[],
+        accelerator_type=getattr(spec, "accelerator_name", None),
+        placement_group=ni.network_interface or None,
+        worker=0,
+        workers_per_node=1,
+    )
+    return pool_info.model_dump_json()
+
 
 def pool_actor() -> Behavior[PoolMsg]:
     """idle → requesting → provisioning → ready → stopping."""
+
+    tunnel_map: dict[tuple[str, int], tuple[str, int]] = {}
+
+    def address_resolver(addr: tuple[str, int]) -> tuple[str, int]:
+        return tunnel_map.get(addr, addr)
 
     def idle() -> Behavior[PoolMsg]:
         async def receive(
@@ -146,6 +183,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                         n=len(instances), attempt=attempt,
                         max=spec.max_provision_attempts,
                     )
+
                     new_spawned = dict(spawned)
                     remaining = spec.nodes - len(new_spawned)
                     to_spawn = instances[:remaining]
@@ -266,6 +304,44 @@ def pool_actor() -> Behavior[PoolMsg]:
             return Behaviors.same()
         return Behaviors.receive(receive)
 
+    async def _create_client(
+        private_ip: str, casty_port: int, local_port: int,
+    ) -> ClusterClient:
+        from skyward.infra.worker import skyward_serializer
+
+        tunnel_map[(private_ip, casty_port)] = ("127.0.0.1", local_port)
+        client = ClusterClient(
+            contact_points=[(private_ip, casty_port)],
+            system_name="skyward",
+            address_map=address_resolver,
+            serializer=skyward_serializer(),
+        )
+        await client.__aenter__()
+        return client
+
+    def _update_tunnel(
+        nbr: NodeBecameReady,
+    ) -> None:
+        tunnel_map[(nbr.private_ip, nbr.casty_port)] = ("127.0.0.1", nbr.local_port)
+
+    def _send_join_cluster(
+        client: ClusterClient,
+        nbr: NodeBecameReady,
+        node_ref: ActorRef,
+        spec: Any,
+        cluster: Any,
+        head_addr: str,
+    ) -> None:
+        pool_json = _build_pool_info_json(
+            nbr.node_id, spec, cluster, nbr.instance, head_addr,
+        )
+        image_env = dict(spec.image.env) if spec.image and spec.image.env else {}
+        node_ref.tell(JoinCluster(
+            client=client,
+            pool_info_json=pool_json,
+            env_vars=image_env,
+        ))
+
     def provisioning(
         spec: PoolSpec,
         provider: Any,
@@ -276,6 +352,7 @@ def pool_actor() -> Behavior[PoolMsg]:
         node_refs: dict[NodeId, ActorRef],
         tm_ref: ActorRef,
         head_addr: str | None = None,
+        client: ClusterClient | None = None,
     ) -> Behavior[PoolMsg]:
         log = logger.bind(actor="pool", state="provisioning")
 
@@ -288,13 +365,29 @@ def pool_actor() -> Behavior[PoolMsg]:
                             node_ref.tell(h)
                     return provisioning(
                         spec, provider, cluster, reply_to, cluster_id,
-                        instances, node_refs, tm_ref, head_addr=h.head_addr,
+                        instances, node_refs, tm_ref,
+                        head_addr=h.head_addr, client=client,
                     )
                 case NodeBecameReady(node_id=nid, instance=meta):
                     new_instances = {**instances, nid: meta}
                     log.info(
                         "Node {nid} ready ({n}/{total})",
                         nid=nid, n=len(new_instances), total=spec.nodes,
+                    )
+                    effective_head = head_addr or msg.private_ip or ""
+
+                    if client is None:
+                        new_client = await _create_client(
+                            msg.private_ip, msg.casty_port, msg.local_port,
+                        )
+                        log.info("ClusterClient created")
+                    else:
+                        _update_tunnel(msg)
+                        new_client = client
+
+                    _send_join_cluster(
+                        new_client, msg, node_refs[nid],
+                        spec, cluster, effective_head,
                     )
                     tm_ref.tell(NodeAvailable(
                         node_id=nid,
@@ -310,17 +403,26 @@ def pool_actor() -> Behavior[PoolMsg]:
                         return ready(
                             spec, provider, cluster, cluster_id, new_instances,
                             reply_to, node_refs, tm_ref,
+                            client=new_client,
                             ready_nodes=frozenset(new_instances.keys()),
-                            head_addr=head_addr or "",
+                            head_addr=effective_head,
                         )
                     return provisioning(
                         spec, provider, cluster, reply_to, cluster_id,
-                        new_instances, node_refs, tm_ref, head_addr=head_addr,
+                        new_instances, node_refs, tm_ref,
+                        head_addr=head_addr, client=new_client,
                     )
                 case StopPool():
                     log.debug("StopPool received while provisioning")
             return Behaviors.same()
-        return Behaviors.receive(receive)
+
+        behavior: Behavior[PoolMsg] = Behaviors.receive(receive)
+        if client is not None:
+            async def _close(_ctx: ActorContext[PoolMsg]) -> None:
+                with suppress(Exception):
+                    await client.__aexit__(None, None, None)
+            behavior = Behaviors.with_lifecycle(behavior, post_stop=_close)
+        return behavior
 
     def ready(
         spec: PoolSpec,
@@ -331,6 +433,7 @@ def pool_actor() -> Behavior[PoolMsg]:
         reply_to: ActorRef,
         node_refs: dict[NodeId, ActorRef],
         tm_ref: ActorRef,
+        client: ClusterClient,
         ready_nodes: frozenset[int],
         head_addr: str,
     ) -> Behavior[PoolMsg]:
@@ -349,7 +452,13 @@ def pool_actor() -> Behavior[PoolMsg]:
                     log.debug("Broadcast submitted to {n} nodes", n=len(ready_nodes))
                     tm_ref.tell(bcast)
                     return Behaviors.same()
-                case NodeBecameReady(node_id=nid):
+                case NodeBecameReady(node_id=nid) as nbr:
+                    _update_tunnel(nbr)
+                    effective_head = head_addr or nbr.private_ip or ""
+                    _send_join_cluster(
+                        client, nbr, node_refs[nid],
+                        spec, cluster, effective_head,
+                    )
                     tm_ref.tell(NodeAvailable(
                         node_id=nid,
                         node_ref=node_refs[nid],
@@ -358,6 +467,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                     return ready(
                         spec, provider, cluster, cluster_id, instances,
                         reply_to, node_refs, tm_ref,
+                        client=client,
                         ready_nodes=ready_nodes | {nid},
                         head_addr=head_addr,
                     )
@@ -379,6 +489,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                     return ready(
                         spec, provider, cluster, cluster_id, instances,
                         reply_to, node_refs, tm_ref,
+                        client=client,
                         ready_nodes=ready_nodes - {nid},
                         head_addr=head_addr,
                     )
@@ -401,7 +512,15 @@ def pool_actor() -> Behavior[PoolMsg]:
                     )
                     return stopping(stop_reply, cluster_id)
             return Behaviors.same()
-        return Behaviors.receive(receive)
+
+        async def _close_client(_ctx: ActorContext[PoolMsg]) -> None:
+            with suppress(Exception):
+                await client.__aexit__(None, None, None)
+
+        return Behaviors.with_lifecycle(
+            Behaviors.receive(receive),
+            post_stop=_close_client,
+        )
 
     def stopping(stop_reply: ActorRef, cluster_id: str) -> Behavior[PoolMsg]:
         log = logger.bind(actor="pool", state="stopping")
