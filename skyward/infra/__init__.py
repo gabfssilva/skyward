@@ -23,7 +23,6 @@ from .retry import (
     on_status_code,
     retry,
 )
-from .serialization import deserialize, serialize
 from .ssh import SSHTransport
 from .throttle import (
     Limiter,
@@ -51,8 +50,6 @@ __all__ = [
     "Transport",
     "TransportFactory",
     "SSHTransport",
-    "deserialize",
-    "serialize",
     "DiskCache",
     "cached",
     "get_cache",

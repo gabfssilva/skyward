@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from contextlib import suppress
-from typing import Any
+from typing import Any, Final
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 
@@ -46,11 +47,30 @@ from skyward.infra.worker import (
     TaskSucceeded as WorkerTaskSucceeded,
 )
 from skyward.infra.worker import (
-    _CompressedResult,
-    _decompress_result,
+    skyward_serializer,
 )
 from skyward.observability.logger import logger
 from skyward.providers.provider import WarmableProvider
+
+_PYTHON_VERSION: Final = f"{sys.version_info.major}.{sys.version_info.minor}"
+
+
+class PythonVersionMismatchError(RuntimeError):
+    """Raised when local and remote Python versions don't match."""
+
+    def __init__(self, local: str, remote: str) -> None:
+        self.local = local
+        self.remote = remote
+        super().__init__(
+            f"Python version mismatch: local={local}, remote={remote}. "
+            f"Cloudpickle cannot safely serialize bytecode across versions. "
+            f"Set Image(python='{local}') or use Image(python='auto')."
+        )
+
+
+def _check_python_version(remote_version: str) -> None:
+    if remote_version != _PYTHON_VERSION:
+        raise PythonVersionMismatchError(local=_PYTHON_VERSION, remote=remote_version)
 
 
 def instance_actor(
@@ -495,7 +515,6 @@ async def _do_start_worker(
     from casty import ClusterClient
 
     from skyward.infra.executor import _wait_for_workers
-    from skyward.infra.serialization import check_python_version, serialize
     from skyward.infra.worker import ExecuteTask as WorkerExecuteTask
     from skyward.providers.bootstrap.compose import EMIT_SH_PATH, SKYWARD_DIR
     from skyward.providers.common import detect_network_interface
@@ -554,6 +573,7 @@ async def _do_start_worker(
         contact_points=[(private_ip, casty_port)],
         system_name="skyward",
         address_map=address_map,
+        serializer=skyward_serializer(),
     )
     await client.__aenter__()
 
@@ -563,7 +583,7 @@ async def _do_start_worker(
     network_iface = await detect_network_interface(transport)
 
     if spec.image:
-        check_python_version(spec.image.python)
+        _check_python_version(spec.image.python)
 
     from skyward.providers.pool_info import build_pool_info
 
@@ -598,11 +618,11 @@ async def _do_start_worker(
         return "ok"
 
     pool_json = pool_info.model_dump_json()
-    payload = {"fn": setup_env, "args": (pool_json, image_env), "kwargs": {}}
-    fn_bytes = await asyncio.to_thread(serialize, payload)
     await client.ask(
         worker_ref,
-        lambda reply_to: WorkerExecuteTask(fn_bytes=fn_bytes, reply_to=reply_to),
+        lambda reply_to: WorkerExecuteTask(
+            fn=setup_env, args=(pool_json, image_env), kwargs={}, reply_to=reply_to,
+        ),
         timeout=60.0,
     )
 
@@ -676,7 +696,6 @@ async def _execute_with_streaming(
     kwargs: dict[str, Any],
     timeout: float,
 ) -> WorkerTaskSucceeded | WorkerTaskFailed:
-    from skyward.infra.serialization import serialize
     from skyward.infra.streaming import _stream_param_indices, _StreamHandle, _SyncSource
 
     indices = _stream_param_indices(fn)
@@ -689,14 +708,14 @@ async def _execute_with_streaming(
             client, args, indices,
         )
 
-    payload = {"fn": fn, "args": resolved_args, "kwargs": kwargs}
-    fn_bytes = await asyncio.to_thread(serialize, payload)
     log = logger.bind(component="execute_streaming")
-    log.debug("Sending to worker, {n} bytes, streams={s}", n=len(fn_bytes), s=len(stream_refs))
+    fn_name = getattr(fn, "__name__", str(fn))
+    log.debug("Sending to worker, fn={fn}, streams={s}", fn=fn_name, s=len(stream_refs))
     result = await client.ask(
         worker_ref,
         lambda rto: WorkerExecuteTask(
-            fn_bytes=fn_bytes, reply_to=rto, input_streams=stream_refs,
+            fn=fn, args=resolved_args, kwargs=kwargs,
+            reply_to=rto, input_streams=stream_refs,
         ),
         timeout=timeout,
     )
@@ -710,9 +729,6 @@ async def _execute_with_streaming(
             source = await _resolve_output_stream(client, pref)
             loop = asyncio.get_running_loop()
             return WorkerTaskSucceeded(result=_SyncSource(source, loop), node_id=result.node_id)
-        case WorkerTaskSucceeded(result=_CompressedResult() as compressed):
-            decompressed = await asyncio.to_thread(_decompress_result, compressed)
-            return WorkerTaskSucceeded(result=decompressed, node_id=result.node_id)
         case _:
             return result
 

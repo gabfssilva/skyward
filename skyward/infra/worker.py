@@ -16,12 +16,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-import pickle
 import sys
 import threading
 import traceback
 import types
-import zlib
 from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
@@ -32,9 +30,11 @@ from casty import (
     Behavior,
     Behaviors,
     CastyConfig,
+    CloudPickleSerializer,
     ClusteredActorSystem,
     FailureDetectorConfig,
     HeartbeatConfig,
+    Lz4CompressedSerializer,
     ServiceKey,
 )
 
@@ -54,28 +54,19 @@ class TaskFailed:
     node_id: int
 
 
-@dataclass(frozen=True, slots=True)
-class _CompressedResult:
-    data: bytes
-
-
-def _compress_result(result: Any) -> _CompressedResult:
-    from skyward.infra.serialization import COMPRESSION_LEVEL
-
-    raw = pickle.dumps(result, protocol=5)
-    return _CompressedResult(data=zlib.compress(raw, COMPRESSION_LEVEL))
-
-
-def _decompress_result(compressed: _CompressedResult) -> Any:
-    return pickle.loads(zlib.decompress(compressed.data))  # noqa: S301
-
-
 type TaskResult = TaskSucceeded | TaskFailed
+
+
+def skyward_serializer() -> Lz4CompressedSerializer:
+    """Shared wire serializer for all Casty endpoints (worker, executor, instance)."""
+    return Lz4CompressedSerializer(CloudPickleSerializer())
 
 
 @dataclass(frozen=True, slots=True)
 class ExecuteTask:
-    fn_bytes: bytes
+    fn: Any
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
     reply_to: ActorRef[TaskResult]
     input_streams: tuple[tuple[int, Any], ...] = ()
 
@@ -141,12 +132,9 @@ def _run_in_process(fn_bytes: bytes) -> Any:
     Module-level function so it's picklable by ProcessPoolExecutor.
     Distributed collections are available via IPC bridge (set up by ipc_initializer).
     """
-    from skyward.infra.serialization import deserialize
+    import cloudpickle
 
-    payload = deserialize(fn_bytes)
-    fn = payload["fn"]
-    args = payload.get("args", ())
-    kwargs = payload.get("kwargs", {})
+    fn, args, kwargs = cloudpickle.loads(fn_bytes)
     return fn(*args, **kwargs)
 
 
@@ -194,18 +182,13 @@ def worker_behavior(
         return tuple(resolved)
 
     async def _execute(
-        fn_bytes: bytes,
+        fn: Any,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
         input_streams: tuple[tuple[int, Any], ...] = (),
     ) -> TaskResult:
         async with sem:
             try:
-                from skyward.infra.serialization import deserialize
-
-                payload = await asyncio.to_thread(deserialize, fn_bytes)
-                fn = payload["fn"]
-                args = payload.get("args", ())
-                kwargs = payload.get("kwargs", {})
-
                 from skyward.infra.streaming import is_generator_compute
 
                 use_process = (
@@ -215,6 +198,9 @@ def worker_behavior(
                 )
 
                 if use_process:
+                    import cloudpickle
+
+                    fn_bytes = cloudpickle.dumps((fn, args, kwargs))
                     loop = asyncio.get_running_loop()
                     result = await loop.run_in_executor(
                         executor_pool, _run_in_process, fn_bytes,
@@ -240,8 +226,7 @@ def worker_behavior(
                     case types.GeneratorType() if system is not None:
                         return await _wrap_generator(system, result, node_id)
                     case _:
-                        compressed = await asyncio.to_thread(_compress_result, result)
-                        return TaskSucceeded(result=compressed, node_id=node_id)
+                        return TaskSucceeded(result=result, node_id=node_id)
             except Exception as e:
                 log.error("Task failed: {err}", err=e)
                 return TaskFailed(
@@ -252,10 +237,14 @@ def worker_behavior(
 
     async def receive(ctx: ActorContext[WorkerMsg], msg: WorkerMsg) -> Behavior[WorkerMsg]:
         match msg:
-            case ExecuteTask(fn_bytes=fn_bytes, reply_to=reply_to, input_streams=streams):
-                log.debug("ExecuteTask received, payload={size} bytes", size=len(fn_bytes))
+            case ExecuteTask(
+                fn=fn, args=args, kwargs=kwargs,
+                reply_to=reply_to, input_streams=streams,
+            ):
+                fn_name = getattr(fn, "__name__", str(fn))
+                log.debug("ExecuteTask received, fn={fn_name}", fn_name=fn_name)
                 ctx.pipe_to_self(
-                    coro=_execute(fn_bytes, streams),
+                    coro=_execute(fn, args, kwargs, streams),
                     mapper=lambda result: _TaskDone(result=result, reply_to=reply_to),
                     on_failure=lambda e: _TaskErrored(error=e, reply_to=reply_to),
                 )
@@ -310,6 +299,7 @@ async def main(
         bind_host="0.0.0.0",
         config=config,
         required_quorum=quorum,
+        serializer=skyward_serializer(),
     ) as system:
         from skyward.distributed import _set_active_registry
         from skyward.distributed.proxies import set_system_loop

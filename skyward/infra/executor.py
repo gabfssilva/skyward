@@ -26,8 +26,14 @@ from casty import ActorContext, ActorRef, ActorSystem, Behavior, Behaviors, Clus
 
 from skyward.observability.logger import logger
 
-from .serialization import serialize
-from .worker import WORKER_KEY, ExecuteTask, TaskFailed, TaskResult, TaskSucceeded
+from .worker import (
+    WORKER_KEY,
+    ExecuteTask,
+    TaskFailed,
+    TaskResult,
+    TaskSucceeded,
+    skyward_serializer,
+)
 
 _logging.getLogger("casty").setLevel(_logging.DEBUG)
 
@@ -246,6 +252,7 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
                         contact_points=list(cfg.contact_points),
                         system_name=cfg.system_name,
                         address_map=cfg.address_map,
+                        serializer=skyward_serializer(),
                     )
                     log.debug("ClusterClient created, entering async context...")
                     await client.__aenter__()
@@ -282,12 +289,15 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
         client: ClusterClient,
         sem: asyncio.Semaphore,
         worker_ref: ActorRef[ExecuteTask],
-        fn_bytes: bytes,
+        fn: Any,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
         timeout: float,
     ) -> Executed | ExecutionFailed:
+        fn_name = getattr(fn, "__name__", str(fn))
         log.debug(
-            "_do_execute: acquiring semaphore, ref={ref}, payload={sz} bytes, timeout={t}",
-            ref=worker_ref, sz=len(fn_bytes), t=timeout,
+            "_do_execute: acquiring semaphore, ref={ref}, fn={fn}, timeout={t}",
+            ref=worker_ref, fn=fn_name, t=timeout,
         )
         async with sem:
             try:
@@ -297,7 +307,9 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
                 )
                 result: TaskResult = await client.ask(
                     worker_ref,
-                    lambda reply_to: ExecuteTask(fn_bytes=fn_bytes, reply_to=reply_to),
+                    lambda reply_to: ExecuteTask(
+                        fn=fn, args=args, kwargs=kwargs, reply_to=reply_to,
+                    ),
                     timeout=timeout,
                 )
                 log.debug(
@@ -322,19 +334,24 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
         client: ClusterClient,
         sem: asyncio.Semaphore,
         worker_refs: dict[int, ActorRef[ExecuteTask]],
-        fn_bytes: bytes,
+        fn: Any,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
         timeout: float,
     ) -> Broadcasted | ExecutionFailed:
+        fn_name = getattr(fn, "__name__", str(fn))
         log.debug(
-            "_do_broadcast: {n} workers, payload={sz} bytes",
-            n=len(worker_refs), sz=len(fn_bytes),
+            "_do_broadcast: {n} workers, fn={fn}",
+            n=len(worker_refs), fn=fn_name,
         )
         async with sem:
             try:
                 tasks = [
                     client.ask(
                         ref,
-                        lambda reply_to: ExecuteTask(fn_bytes=fn_bytes, reply_to=reply_to),
+                        lambda reply_to: ExecuteTask(
+                            fn=fn, args=args, kwargs=kwargs, reply_to=reply_to,
+                        ),
                         timeout=timeout,
                     )
                     for _nid, ref in sorted(worker_refs.items())
@@ -386,12 +403,8 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
                 os.environ[k] = v
             return "ok"
 
-        fn_bytes = serialize({
-            "fn": setup_env,
-            "args": (list(pool_infos), env_vars),
-            "kwargs": {},
-        })
-        log.debug("_do_setup: serialized payload={sz} bytes", sz=len(fn_bytes))
+        setup_args = (list(pool_infos), env_vars)
+        setup_kwargs: dict[str, Any] = {}
 
         for nid, ref in sorted(worker_refs.items()):
             log.debug(
@@ -404,7 +417,9 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
             log.debug("_do_setup: creating ask task for node {nid}...", nid=nid)
             task = client.ask(
                 ref,
-                lambda reply_to: ExecuteTask(fn_bytes=fn_bytes, reply_to=reply_to),
+                lambda reply_to: ExecuteTask(
+                    fn=setup_env, args=setup_args, kwargs=setup_kwargs, reply_to=reply_to,
+                ),
                 timeout=timeout,
             )
             tasks.append(task)
@@ -448,13 +463,8 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
                         ))
                         return Behaviors.same()
 
-                    fn_bytes = serialize({"fn": fn, "args": args, "kwargs": kwargs})
-                    log.debug(
-                        "ready._Execute: serialized {sz} bytes, piping to self...",
-                        sz=len(fn_bytes),
-                    )
                     ctx.pipe_to_self(
-                        coro=_do_execute(client, sem, ref, fn_bytes, job_timeout),
+                        coro=_do_execute(client, sem, ref, fn, args, kwargs, job_timeout),
                         mapper=lambda result: _ExecuteDone(result=result, reply_to=reply_to),
                         on_failure=lambda e: _ExecuteDone(
                             result=ExecutionFailed(error=str(e)), reply_to=reply_to,
@@ -474,13 +484,10 @@ def _executor_behavior() -> Behavior[ExecutorMsg]:
                     return Behaviors.same()
 
                 case _Broadcast(fn=fn, args=args, kwargs=kwargs, reply_to=reply_to):
-                    fn_bytes = serialize({"fn": fn, "args": args, "kwargs": kwargs})
-                    log.debug(
-                        "ready._Broadcast: {sz} bytes, piping to self...",
-                        sz=len(fn_bytes),
-                    )
                     ctx.pipe_to_self(
-                        coro=_do_broadcast(client, sem, worker_refs, fn_bytes, job_timeout),
+                        coro=_do_broadcast(
+                            client, sem, worker_refs, fn, args, kwargs, job_timeout,
+                        ),
                         mapper=lambda result: _BroadcastDone(result=result, reply_to=reply_to),
                         on_failure=lambda e: _BroadcastDone(
                             result=ExecutionFailed(error=str(e)), reply_to=reply_to,

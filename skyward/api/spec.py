@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
@@ -49,7 +48,6 @@ type SelectionStrategy = Literal["first", "cheapest"]
 
 type SkywardSource = Literal["auto", "local", "github", "pypi"]
 
-type InflightStrategy = Callable[[int, int], int]
 
 type WorkerExecutor = Literal["auto", "thread", "process"]
 
@@ -167,7 +165,6 @@ class PoolSpec:
     image: Image = field(default_factory=lambda: Image())
     ttl: int = 600
     worker: Worker = field(default_factory=Worker)
-    max_inflight: int | InflightStrategy | None = None
     provider: ProviderName | None = None
     max_hourly_cost: float | None = None
     ssh_timeout: float = 300.0
@@ -339,6 +336,7 @@ class Image:
                 "deps",
                 uv_add(
                     "cloudpickle",
+                    "lz4",
                     *self.pip,
                     extra_index=self.pip_extra_index_url,
                 ),
