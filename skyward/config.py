@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from skyward.api.pool import ComputePool
-    from skyward.api.spec import Image
+    from skyward.api.spec import Image, Worker
     from skyward.providers.aws.config import AWS
     from skyward.providers.gcp.config import GCP
     from skyward.providers.runpod.config import RunPod
@@ -97,6 +97,12 @@ def _build_image(raw: RawConfig) -> Image:
     return Image(**raw)
 
 
+def _build_worker(raw: RawConfig) -> Worker:
+    from skyward.api.spec import Worker
+
+    return Worker(**raw)
+
+
 def resolve_pool(
     name: str,
     *,
@@ -104,7 +110,7 @@ def resolve_pool(
     global_path: Path | None = None,
 ) -> ComputePool:
     from skyward.api.pool import ComputePool
-    from skyward.api.spec import Image
+    from skyward.api.spec import Image, Worker
 
     config = load_config(project_dir=project_dir, global_path=global_path)
 
@@ -129,4 +135,7 @@ def resolve_pool(
     raw_image = raw_pool.pop("image", None)
     image = _build_image(raw_image) if raw_image else Image()
 
-    return ComputePool(provider=provider, image=image, **raw_pool)
+    raw_worker = raw_pool.pop("worker", None)
+    worker = _build_worker(raw_worker) if raw_worker else Worker()
+
+    return ComputePool(provider=provider, image=image, worker=worker, **raw_pool)
