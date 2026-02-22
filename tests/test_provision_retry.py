@@ -22,7 +22,12 @@ from skyward.api.spec import PoolSpec
 from skyward.providers.container.config import Container
 from skyward.providers.container.provider import ContainerProvider, ContainerSpecific
 
-pytestmark = [pytest.mark.integration, pytest.mark.timeout(120)]
+pytestmark = [
+    pytest.mark.e2e,
+    pytest.mark.integration,
+    pytest.mark.timeout(120),
+    pytest.mark.xdist_group("pool"),
+]
 
 
 class _PartialContainerProvider:

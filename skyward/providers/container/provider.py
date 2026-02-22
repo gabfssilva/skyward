@@ -61,6 +61,9 @@ class ContainerProvider(WarmableProvider[Container, ContainerSpecific]):
         self._container_prefix = config.container_prefix or _CONTAINER_PREFIX
         self._shared_network = config.network
 
+    def _resolve_image(self, python_version: str) -> str:
+        return self._config.image.format(python_version=python_version)
+
     @classmethod
     async def create(cls, config: Container) -> ContainerProvider:
         return cls(config)
@@ -92,10 +95,19 @@ class ContainerProvider(WarmableProvider[Container, ContainerSpecific]):
             return False
 
     def _image_name(self, pool: PoolSpec) -> str:
-        return f"{self._config.image}-{pool.image.content_hash()}"
+        image = self._resolve_image(pool.image.python)
+        return f"{image}-{pool.image.content_hash()}"
 
-    async def _ensure_base_image(self) -> str:
-        tag = f"skyward-ssh:{hashlib.md5(self._config.image.encode()).hexdigest()[:12]}"
+    async def _ensure_base_image(self, image: str) -> str:
+        if image.startswith("ghcr.io/gabfssilva/skyward:"):
+            try:
+                await run(self._bin, "image", "inspect", image)
+            except RuntimeError:
+                log.info("Pulling {image}", image=image)
+                await run(self._bin, "pull", image)
+            return image
+
+        tag = f"skyward-ssh:{hashlib.md5(image.encode()).hexdigest()[:12]}"
         try:
             await run(self._bin, "image", "inspect", tag)
             log.debug("Image {tag} already exists", tag=tag)
@@ -103,8 +115,8 @@ class ContainerProvider(WarmableProvider[Container, ContainerSpecific]):
         except RuntimeError:
             pass
 
-        log.info("Building SSH image from {base}", base=self._config.image)
-        dockerfile = _DOCKERFILE.format(base=self._config.image)
+        log.info("Building SSH image from {base}", base=image)
+        dockerfile = _DOCKERFILE.format(base=image)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             await asyncio.to_thread(Path(tmpdir, "Dockerfile").write_text, dockerfile)
@@ -138,7 +150,8 @@ class ContainerProvider(WarmableProvider[Container, ContainerSpecific]):
         cluster_id = f"skyward-{uuid.uuid4().hex[:8]}"
         ssh_key_path = get_ssh_key_path()
 
-        base_image = await self._ensure_base_image()
+        image = self._resolve_image(spec.image.python)
+        base_image = await self._ensure_base_image(image)
         network_name = await self._ensure_network(cluster_id)
         prebaked = await self._is_prebaked(spec)
 

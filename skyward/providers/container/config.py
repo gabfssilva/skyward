@@ -8,7 +8,7 @@ from skyward.api.provider import ProviderConfig
 if TYPE_CHECKING:
     from skyward.providers.container.provider import ContainerProvider
 
-_DEFAULT_IMAGE = "ubuntu:24.04"
+_DEFAULT_IMAGE = "ghcr.io/gabfssilva/skyward:py{python_version}"
 
 
 @dataclass(frozen=True, slots=True)

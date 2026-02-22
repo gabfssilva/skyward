@@ -905,11 +905,37 @@ class LocalOutput:
 type ConsoleInput = SpyEvent | LocalOutput
 
 
-def _format_task(fn: object, args: tuple, kwargs: dict, max_sig: int = 40) -> str:
+def _format_task(
+    fn: object, args: tuple, kwargs: dict, max_sig: int = 80, max_arg: int = 12
+) -> str:
     name = getattr(fn, "__name__", str(fn))
     parts = [repr(a) for a in args] + [f"{k}={v!r}" for k, v in kwargs.items()]
+
+    if not parts:
+        return name
+
     sig = ", ".join(parts)
-    return f"{name}(\u2026)" if len(sig) > max_sig else f"{name}({sig})" if sig else name
+    if len(sig) <= max_sig:
+        return f"{name}({sig})"
+
+    truncated = [p if len(p) <= max_arg else p[:max_arg] + "\u2026" for p in parts]
+    included: list[str] = []
+    length = 0
+
+    for part in truncated:
+        extra = len(", ") if included else 0
+        if length + extra + len(part) + len(", \u2026") > max_sig:
+            break
+        length += extra + len(part)
+        included.append(part)
+
+    match included:
+        case []:
+            return f"{name}(\u2026)"
+        case _ if len(included) < len(parts):
+            return f"{name}({', '.join(included)}, \u2026)"
+        case _:
+            return f"{name}({', '.join(included)})"
 
 
 def _resolve_instance_id(state: _State, node_id: int | None = None) -> str | None:

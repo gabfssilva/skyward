@@ -27,7 +27,7 @@ jobs:
     - name: Type check with pyright
       run: uv run pyright skyward/
     - name: Unit tests
-      run: uv run pytest tests/test_http.py tests/test_serialization.py tests/test_config.py
+      run: uv run pytest -m unit
 
   e2e:
     needs: [check]
@@ -39,7 +39,7 @@ jobs:
         test-group: [pool, distributed, image, torch, jax, keras, parallel]
         include:
           - test-group: pool
-            test-filter: tests/test_compute.py tests/test_broadcast.py tests/test_output_control.py tests/test_runtime.py tests/test_async.py tests/test_parallel.py
+            test-filter: tests/test_compute.py tests/test_broadcast.py tests/test_output_control.py tests/test_runtime.py tests/test_async.py tests/test_parallel.py tests/test_streaming.py tests/test_provision_retry.py
           - test-group: distributed
             test-filter: tests/test_distributed.py
           - test-group: image

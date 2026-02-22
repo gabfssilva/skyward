@@ -110,6 +110,7 @@ testpaths = ["tests"]
 addopts = "--durations=0 --dist loadgroup -n 4 --log-cli-level=WARNING -m 'not sanity and not integration'"
 timeout_func_only = true
 markers = [
+    "unit: fast unit tests with no external dependencies",
     "e2e: end-to-end tests requiring container runtime",
     "slow: tests that take >10s",
     "integration: marks tests as integration tests (require Docker)",

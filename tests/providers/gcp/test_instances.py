@@ -11,6 +11,8 @@ from skyward.providers.gcp.instances import (
     select_image_family,
 )
 
+pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
+
 ZONE_ACCELS = [
     "nvidia-tesla-t4",
     "nvidia-tesla-v100",

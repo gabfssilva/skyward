@@ -1,0 +1,22 @@
+FROM ubuntu:24.04
+
+RUN apt-get update -qq && \
+    apt-get install -y -qq openssh-server curl git jq > /dev/null 2>&1 && \
+    mkdir -p /run/sshd /root/.ssh && \
+    chmod 700 /root/.ssh && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /root/.local/bin/
+
+ENV PATH="/root/.local/bin:$PATH"
+
+ARG PYTHON_VERSION=3.13
+
+RUN uv venv /opt/skyward/.venv --python $PYTHON_VERSION && \
+    uv pip install --python /opt/skyward/.venv/bin/python \
+        cloudpickle lz4 requests joblib scikit-learn \
+        torch --extra-index-url https://download.pytorch.org/whl/cpu && \
+    uv pip install --python /opt/skyward/.venv/bin/python \
+        jax keras
+
+EXPOSE 22

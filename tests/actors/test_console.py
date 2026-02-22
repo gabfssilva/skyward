@@ -8,6 +8,8 @@ from types import MappingProxyType
 import pytest
 from rich.console import Console
 
+pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
+
 # --- Model tests ---
 
 
@@ -427,7 +429,7 @@ class TestFormatTask:
         def train() -> None:
             pass
 
-        result = _format_task(train, ("a" * 50,), {})
+        result = _format_task(train, ("a" * 50,), {"b": "c" * 50})
         assert "\u2026" in result
 
 
