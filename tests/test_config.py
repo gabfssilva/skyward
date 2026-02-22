@@ -169,6 +169,55 @@ class TestResolvePool:
         assert spec.allocation == "spot-if-available"
         assert spec.ttl == 600
 
+    def test_pool_with_worker(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            '[providers.a]\ntype = "aws"\n\n'
+            '[pools.train]\nprovider = "a"\nnodes = 2\n\n'
+            '[pools.train.worker]\nconcurrency = 4\nexecutor = "process"\n'
+        )
+        pool = resolve_pool("train", project_dir=tmp_path)
+        assert pool.worker.concurrency == 4
+        assert pool.worker.executor == "process"
+
+    def test_pool_with_worker_concurrency_only(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            '[providers.a]\ntype = "aws"\n\n'
+            '[pools.train]\nprovider = "a"\nnodes = 1\n\n'
+            '[pools.train.worker]\nconcurrency = 8\n'
+        )
+        pool = resolve_pool("train", project_dir=tmp_path)
+        assert pool.worker.concurrency == 8
+        assert pool.worker.executor == "auto"
+
+    def test_pool_with_timeouts(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            '[providers.a]\ntype = "aws"\n\n'
+            '[pools.train]\n'
+            'provider = "a"\n'
+            'nodes = 1\n'
+            'default_compute_timeout = 600.0\n'
+            'provision_timeout = 900\n'
+            'ssh_timeout = 120\n'
+            'ssh_retry_interval = 5\n'
+            'provision_retry_delay = 15.0\n'
+            'max_provision_attempts = 5\n'
+        )
+        pool = resolve_pool("train", project_dir=tmp_path)
+        assert pool.default_compute_timeout == 600.0
+        assert pool.provision_timeout == 900
+        assert pool.ssh_timeout == 120
+        assert pool.ssh_retry_interval == 5
+        assert pool.provision_retry_delay == 15.0
+        assert pool.max_provision_attempts == 5
+
+    def test_pool_with_selection(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            '[providers.a]\ntype = "aws"\n\n'
+            '[pools.train]\nprovider = "a"\nnodes = 1\nselection = "first"\n'
+        )
+        pool = resolve_pool("train", project_dir=tmp_path)
+        assert pool.selection == "first"
+
     def test_runpod_pool(self, tmp_path: Path):
         (tmp_path / "skyward.toml").write_text(
             '[providers.rp]\n'
