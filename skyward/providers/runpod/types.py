@@ -83,7 +83,7 @@ class PodResponse(TypedDict):
 
 
 class PodCreateParams(TypedDict, total=False):
-    """Parameters for creating a pod."""
+    """Parameters for creating a pod via REST API."""
 
     name: str
     imageName: str
@@ -99,6 +99,7 @@ class PodCreateParams(TypedDict, total=False):
     dataCenterIds: list[str]
     minVCPUPerGPU: int
     minRAMPerGPU: int
+    globalNetworking: bool
 
 
 class GpuTypeResponse(TypedDict):

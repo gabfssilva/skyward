@@ -65,6 +65,7 @@ class RunPod(ProviderConfig):
     """
 
     cluster_mode: ClusterMode = "individual"
+    global_networking: bool | None = None
     api_key: str | None = None
     cloud_type: CloudType = CloudType.SECURE
     ubuntu: Literal["20.04", "22.04", "24.04", "newest"] | str = "newest"

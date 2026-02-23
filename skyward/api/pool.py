@@ -754,6 +754,7 @@ class ComputePool:
                 ssh_retry_interval=float(self.ssh_retry_interval),
                 provision_retry_delay=self.provision_retry_delay,
                 max_provision_attempts=self.max_provision_attempts,
+                volumes=self.volumes,
             )
 
             logger.debug(

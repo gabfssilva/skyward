@@ -99,8 +99,8 @@ class TestMountVolumes:
         assert "AKIA123:secret456" in script
         assert "/etc/s3fs-passwd" in script
         assert "chmod 600" in script
-        assert "mkdir -p /data" in script
-        assert "s3fs my-bucket" in script
+        assert "s3fs my-bucket /mnt/s3fs/my-bucket" in script
+        assert "ln -sfn /mnt/s3fs/my-bucket /data" in script
         assert "url=https://storage.googleapis.com" in script
         assert "-o ro" in script
 
@@ -124,7 +124,8 @@ class TestMountVolumes:
             endpoint="https://s3.amazonaws.com", access_key="a", secret_key="s",
         )
         script = resolve(mount_volumes(volumes, endpoint))
-        assert "b:/datasets/" in script
+        assert "s3fs b /mnt/s3fs/b" in script
+        assert "ln -sfn /mnt/s3fs/b/datasets/ /data" in script
 
     def test_iam_role_when_no_credentials(self):
         from skyward.providers.bootstrap.compose import resolve
@@ -136,7 +137,7 @@ class TestMountVolumes:
         assert "iam_role=auto" in script
         assert "/etc/s3fs-passwd" not in script
 
-    def test_multiple_volumes(self):
+    def test_multiple_volumes_different_buckets(self):
         from skyward.providers.bootstrap.compose import resolve
         from skyward.providers.bootstrap.ops import mount_volumes
 
@@ -150,10 +151,26 @@ class TestMountVolumes:
             secret_key="sk",
         )
         script = resolve(mount_volumes(volumes, endpoint))
-        assert "mkdir -p /data" in script
-        assert "mkdir -p /checkpoints" in script
-        assert "s3fs data-bucket" in script
-        assert "s3fs ckpt-bucket" in script
+        assert "s3fs data-bucket /mnt/s3fs/data-bucket" in script
+        assert "s3fs ckpt-bucket /mnt/s3fs/ckpt-bucket" in script
+        assert "ln -sfn /mnt/s3fs/data-bucket /data" in script
+        assert "ln -sfn /mnt/s3fs/ckpt-bucket /checkpoints" in script
+
+    def test_same_bucket_different_prefixes_mounted_once(self):
+        from skyward.providers.bootstrap.compose import resolve
+        from skyward.providers.bootstrap.ops import mount_volumes
+
+        volumes = (
+            Volume(bucket="shared", mount="/data", prefix="datasets/", read_only=True),
+            Volume(bucket="shared", mount="/checkpoints", prefix="ckpt/", read_only=False),
+        )
+        endpoint = MountEndpoint(endpoint="https://s3.amazonaws.com")
+        script = resolve(mount_volumes(volumes, endpoint))
+        # Bucket mounted only once, rw because one volume needs writes
+        assert script.count("s3fs shared /mnt/s3fs/shared") == 1
+        assert "-o ro" not in script
+        assert "ln -sfn /mnt/s3fs/shared/datasets/ /data" in script
+        assert "ln -sfn /mnt/s3fs/shared/ckpt/ /checkpoints" in script
 
 
 class TestComputePoolVolumes:
@@ -188,8 +205,8 @@ class TestBootstrapWithVolumes:
         script = image.generate_bootstrap(ttl=0, postamble=postamble)
 
         assert "s3fs" in script
-        assert "mkdir -p /data" in script
-        assert "s3fs my-data" in script
+        assert "s3fs my-data /mnt/s3fs/my-data" in script
+        assert "ln -sfn /mnt/s3fs/my-data /data" in script
         assert "iam_role=auto" in script
 
 

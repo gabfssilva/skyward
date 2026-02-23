@@ -40,7 +40,9 @@ class AWS(ProviderConfig):
         ubuntu_version: Ubuntu LTS version for auto-resolved AMIs.
         subnet_id: Specific subnet. If None, uses default VPC subnets.
         security_group_id: Specific SG. If None, creates one.
-        instance_profile_arn: IAM instance profile. If None, creates one.
+        instance_profile_arn: IAM instance profile ARN. ``"auto"`` creates
+            a scoped role with S3 permissions for the configured volumes
+            (cleaned up on teardown). ``None`` means no instance profile.
         username: SSH username. Auto-detected from AMI if None.
         instance_timeout: Safety timeout in seconds. Default: 300.
         allocation_strategy: EC2 Fleet allocation strategy.
@@ -52,7 +54,7 @@ class AWS(ProviderConfig):
     ubuntu_version: UbuntuVersion = "24.04"
     subnet_id: str | None = None
     security_group_id: str | None = None
-    instance_profile_arn: str | None = None
+    instance_profile_arn: str | Literal["auto"] | None = None
     username: str | None = None
     instance_timeout: int = 300
     request_timeout: int = 30

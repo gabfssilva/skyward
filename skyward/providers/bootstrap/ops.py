@@ -507,24 +507,50 @@ def mount_volumes(
             )
             lines.append("chmod 600 /etc/s3fs-passwd")
 
-        # 3. Mount each volume
+        # 3. Deduplicate buckets — mount each once, rw if any volume needs writes
+        bucket_rw: dict[str, bool] = {}
         for v in volumes:
-            lines.append(f"mkdir -p {v.mount}")
+            needs_write = not v.read_only
+            bucket_rw[v.bucket] = bucket_rw.get(v.bucket, False) or needs_write
 
-            bucket_ref = f"{v.bucket}:/{v.prefix}" if v.prefix else v.bucket
+        # 4. Mount each unique bucket at /mnt/s3fs/<bucket>
+        mounted: set[str] = set()
+        for bucket, writable in bucket_rw.items():
+            fuse_mount = f"/mnt/s3fs/{bucket}"
+            mount_log = f"/tmp/s3fs_{bucket}.log"
+
             opts = [f"url={endpoint.endpoint}"]
-
             if endpoint.access_key is not None:
                 opts.append("passwd_file=/etc/s3fs-passwd")
             else:
                 opts.append("iam_role=auto")
-
-            if v.read_only:
+            if not writable:
                 opts.append("ro")
-
             opts.append("allow_other")
+            opts.append("dbglevel=warn")
+            opts.append(f"logfile={mount_log}")
             opts_str = " -o ".join(opts)
-            lines.append(f"s3fs {bucket_ref} {v.mount} -o {opts_str}")
+
+            lines.append(f"mkdir -p {fuse_mount}")
+            lines.append(f"s3fs {bucket} {fuse_mount} -o {opts_str}")
+            lines.append("sleep 1")
+            lines.append(f"cat {mount_log} 2>/dev/null || true")
+            lines.append(
+                f"if mountpoint -q {fuse_mount}; then "
+                f"echo 's3fs: mounted {fuse_mount}'; "
+                f"else echo 's3fs: FAILED to mount {fuse_mount}'; "
+                f"exit 1; fi"
+            )
+            mounted.add(bucket)
+
+        # 5. Create user mount points — symlink to prefix subdir or bucket root
+        for v in volumes:
+            fuse_mount = f"/mnt/s3fs/{v.bucket}"
+            if v.prefix:
+                lines.append(f"mkdir -p {fuse_mount}/{v.prefix}")
+                lines.append(f"ln -sfn {fuse_mount}/{v.prefix} {v.mount}")
+            else:
+                lines.append(f"ln -sfn {fuse_mount} {v.mount}")
 
         return "\n".join(lines)
 

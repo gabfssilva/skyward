@@ -1,0 +1,210 @@
+version: "3"
+
+vars:
+  SRC: skyward
+  TESTS: tests
+  PYTHON_VERSION: "3.13"
+  PYTHON_VERSIONS: "3.12 3.13 3.14"
+  BASE_IMAGE: "ghcr.io/gabfssilva/skyward"
+  PLATFORM: '{{.PLATFORM | default ""}}'
+
+tasks:
+  # ── Quality ──────────────────────────────────────────────
+
+  lint:
+    desc: Run ruff linter
+    cmds:
+      - uv run ruff check {{.SRC}}/ {{.TESTS}}/
+
+  lint:fix:
+    desc: Auto-fix lint issues
+    cmds:
+      - uv run ruff check --fix {{.SRC}}/ {{.TESTS}}/
+
+  typecheck:
+    desc: Run pyright type checker
+    cmds:
+      - uv run pyright {{.SRC}}/
+
+  check:
+    desc: Run lint + typecheck
+    cmds:
+      - task: lint
+      - task: typecheck
+
+  # ── Testing ──────────────────────────────────────────────
+
+  test:
+    desc: Run unit tests (default, parallel)
+    cmds:
+      - uv run pytest {{.CLI_ARGS}}
+
+  test:unit:
+    desc: Run unit tests only
+    cmds:
+      - uv run pytest -m unit {{.CLI_ARGS}}
+
+  test:e2e:
+    desc: Run all e2e tests (requires Docker)
+    cmds:
+      - uv run pytest -m e2e {{.CLI_ARGS}}
+
+  test:e2e:pool:
+    desc: "E2E: compute, broadcast, runtime, output control, async, parallel, streaming"
+    cmds:
+      - uv run pytest -m e2e -k "not (Integration or distributed or image or provision_retry or node_recovery)" {{.CLI_ARGS}}
+
+  test:e2e:distributed:
+    desc: "E2E: distributed collections (dict, set, counter, queue, barrier, lock)"
+    cmds:
+      - uv run pytest tests/test_distributed.py {{.CLI_ARGS}}
+
+  test:e2e:image:
+    desc: "E2E: image and bootstrap validation"
+    cmds:
+      - uv run pytest tests/test_image.py {{.CLI_ARGS}}
+
+  test:e2e:integrations:
+    desc: "E2E: all framework integrations (torch, jax, keras, joblib, sklearn)"
+    cmds:
+      - uv run pytest tests/test_integrations.py {{.CLI_ARGS}}
+
+  test:e2e:torch:
+    desc: "E2E: PyTorch + Transformers integrations"
+    cmds:
+      - uv run pytest tests/test_integrations.py -k "TestTorchIntegration or TestTransformersIntegration" {{.CLI_ARGS}}
+
+  test:e2e:jax:
+    desc: "E2E: JAX integration"
+    cmds:
+      - uv run pytest tests/test_integrations.py -k "TestJaxIntegration" {{.CLI_ARGS}}
+
+  test:e2e:keras:
+    desc: "E2E: Keras integration"
+    cmds:
+      - uv run pytest tests/test_integrations.py -k "TestKerasIntegration" {{.CLI_ARGS}}
+
+  test:e2e:joblib:
+    desc: "E2E: Joblib + Scikit-learn integrations"
+    cmds:
+      - uv run pytest tests/test_integrations.py -k "TestJoblibIntegration or TestScikitLearnIntegration" {{.CLI_ARGS}}
+
+  test:sanity:
+    desc: Run sanity tests against real cloud providers
+    cmds:
+      - uv run pytest -m sanity {{.CLI_ARGS}}
+
+  test:sanity:aws:
+    desc: Run AWS sanity tests
+    cmds:
+      - uv run pytest -m "sanity and aws" {{.CLI_ARGS}}
+
+  test:sanity:gcp:
+    desc: Run GCP sanity tests
+    cmds:
+      - uv run pytest -m "sanity and gcp" {{.CLI_ARGS}}
+
+  test:sanity:runpod:
+    desc: Run RunPod sanity tests
+    cmds:
+      - uv run pytest -m "sanity and runpod" {{.CLI_ARGS}}
+
+  test:sanity:vastai:
+    desc: Run VastAI sanity tests
+    cmds:
+      - uv run pytest -m "sanity and vastai" {{.CLI_ARGS}}
+
+  test:sanity:verda:
+    desc: Run Verda sanity tests
+    cmds:
+      - uv run pytest -m "sanity and verda" {{.CLI_ARGS}}
+
+  test:all:
+    desc: Run unit + e2e tests
+    cmds:
+      - uv run pytest -m "unit or e2e" {{.CLI_ARGS}}
+
+  # ── Docs ─────────────────────────────────────────────────
+
+  docs:
+    desc: Serve docs locally
+    cmds:
+      - uv run mkdocs serve
+
+  docs:build:
+    desc: Build static docs site
+    cmds:
+      - uv run mkdocs build
+
+  docs:deploy:
+    desc: Deploy docs to GitHub Pages
+    cmds:
+      - uv run mkdocs gh-deploy --force
+
+  # ── Docker ───────────────────────────────────────────────
+
+  docker:build:
+    desc: Build base image for one Python version (default 3.13)
+    cmds:
+      - docker build -f docker/Dockerfile.base {{if .PLATFORM}}--platform {{.PLATFORM}}{{end}} --build-arg PYTHON_VERSION={{.PYTHON_VERSION}} -t {{.BASE_IMAGE}}:py{{.PYTHON_VERSION}} docker/
+
+  docker:build:all:
+    desc: Build base images for Python 3.12, 3.13, and 3.14
+    cmds:
+      - for:
+          var: PYTHON_VERSIONS
+        cmd: docker build -f docker/Dockerfile.base {{if .PLATFORM}}--platform {{.PLATFORM}}{{end}} --build-arg PYTHON_VERSION={{.ITEM}} -t {{.BASE_IMAGE}}:py{{.ITEM}} docker/
+
+  docker:push:
+    desc: Push base image for one Python version (default 3.13)
+    cmds:
+      - docker push {{.BASE_IMAGE}}:py{{.PYTHON_VERSION}}
+
+  docker:push:all:
+    desc: Push base images for Python 3.12, 3.13, and 3.14
+    cmds:
+      - for:
+          var: PYTHON_VERSIONS
+        cmd: docker push {{.BASE_IMAGE}}:py{{.ITEM}}
+
+  docker:release:
+    desc: Build + push base images for all Python versions
+    cmds:
+      - task: docker:build:all
+      - task: docker:push:all
+
+  docker:pull:
+    desc: Pull pre-built base image from GHCR
+    cmds:
+      - docker pull {{if .PLATFORM}}--platform {{.PLATFORM}} {{end}}{{.BASE_IMAGE}}:py{{.PYTHON_VERSION}}
+
+  docker:clean:
+    desc: Remove all skyward Docker images (base + prebaked)
+    cmds:
+      - docker images --format '{{"{{"}}.Repository{{"}}"}}:{{"{{"}}.Tag{{"}}"}}' | grep 'ghcr.io/gabfssilva/skyward:' | xargs -r docker rmi 2>/dev/null || true
+
+  # ── Build ────────────────────────────────────────────────
+
+  build:
+    desc: Build wheel + sdist
+    cmds:
+      - uv build
+
+  # ── Dev ──────────────────────────────────────────────────
+
+  setup:
+    desc: Install all dev dependencies
+    cmds:
+      - uv sync --dev
+
+  setup:docs:
+    desc: Install docs dependencies only
+    cmds:
+      - uv sync --group docs
+
+  clean:
+    desc: Remove build artifacts and caches
+    cmds:
+      - rm -rf dist/ site/ .pytest_cache/ .ruff_cache/
+      - find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+      - find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true

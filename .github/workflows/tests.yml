@@ -16,18 +16,19 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - uses: arduino/setup-task@v2
     - name: Install uv
       uses: astral-sh/setup-uv@v5
       with:
         python-version: ${{ matrix.python-version }}
     - name: Install dependencies
-      run: uv sync --dev
-    - name: Lint with ruff
-      run: uv run ruff check skyward/ tests/
-    - name: Type check with pyright
-      run: uv run pyright skyward/
+      run: task setup
+    - name: Lint
+      run: task lint
+    - name: Type check
+      run: task typecheck
     - name: Unit tests
-      run: uv run pytest -m unit
+      run: task test:unit
 
   e2e:
     needs: [check]
@@ -38,27 +39,13 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
-        test-group: [pool, distributed, image, torch, jax, keras, parallel]
-        include:
-          - test-group: pool
-            test-filter: tests/test_compute.py tests/test_broadcast.py tests/test_output_control.py tests/test_runtime.py tests/test_async.py tests/test_parallel.py tests/test_streaming.py tests/test_provision_retry.py
-          - test-group: distributed
-            test-filter: tests/test_distributed.py
-          - test-group: image
-            test-filter: tests/test_image.py
-          - test-group: torch
-            test-filter: "tests/test_integrations.py -k 'TestTorchIntegration or TestTransformersIntegration'"
-          - test-group: jax
-            test-filter: "tests/test_integrations.py -k TestJaxIntegration"
-          - test-group: keras
-            test-filter: "tests/test_integrations.py -k TestKerasIntegration"
-          - test-group: parallel
-            test-filter: "tests/test_integrations.py -k 'TestJoblibIntegration or TestScikitLearnIntegration'"
+        test-group: [pool, distributed, image, torch, jax, keras, joblib]
 
     name: e2e / ${{ matrix.test-group }} / ${{ matrix.python-version }}
 
     steps:
     - uses: actions/checkout@v4
+    - uses: arduino/setup-task@v2
     - name: Login to GHCR
       uses: docker/login-action@v3
       with:
@@ -70,8 +57,8 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
     - name: Install dependencies
-      run: uv sync --dev
+      run: task setup
     - name: Generate SSH key
       run: ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
     - name: Run ${{ matrix.test-group }} tests
-      run: uv run pytest ${{ matrix.test-filter }}
+      run: task test:e2e:${{ matrix.test-group }}

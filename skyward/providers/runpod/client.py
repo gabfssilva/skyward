@@ -411,12 +411,6 @@ class RunPodClient:
 
         The REST API doesn't support gpuCount=0, so we use the
         deployCpuPod GraphQL mutation instead.
-
-        Args:
-            params: CPU pod creation parameters.
-
-        Returns:
-            PodResponse with pod id and status.
         """
         data = await self._graphql(DEPLOY_CPU_POD_MUTATION, {"input": dict(params)})
         pod: PodResponse = data["deployCpuPod"]

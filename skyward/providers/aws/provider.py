@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from contextlib import suppress
@@ -12,6 +13,7 @@ from typing import cast
 from skyward.api import PoolSpec
 from skyward.api.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
 from skyward.api.spec import Architecture as SpecArchitecture
+from skyward.api.spec import Volume
 from skyward.infra.cache import cached
 from skyward.infra.retry import on_exception_message, retry
 from skyward.observability.logger import logger
@@ -67,6 +69,7 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
     def __init__(self, config: AWS, ec2: EC2ClientFactory) -> None:
         self._config = config
         self._ec2 = ec2
+        self._auto_profile_prefix: str | None = None
 
     @classmethod
     async def create(cls, config: AWS) -> AWSProvider:
@@ -156,10 +159,21 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
 
     async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[AWSSpecific]:
         log.info("Setting up AWS infrastructure")
+
+        auto_profile_arn: str | None = None
+        if self._config.instance_profile_arn == "auto" and spec.volumes:
+            prefix = f"skyward-{uuid.uuid4().hex[:8]}"
+            statements = _s3_statements_for_volumes(spec.volumes)
+            auto_profile_arn = await _ensure_instance_profile(
+                self._config.region, statements, prefix,
+            )
+            self._auto_profile_prefix = prefix
+
         resources, (ssh_key_name, ssh_key_path) = await asyncio.gather(
-            _ensure_infrastructure(self._config, self._ec2),
+            _ensure_infrastructure(self._config, self._ec2, profile_arn=auto_profile_arn),
             _ensure_key_pair(self._config, self._ec2),
         )
+
         log.info(
             "Infrastructure ready: sg={sg}, subnets={n}",
             sg=resources.security_group_id, n=len(resources.subnet_ids),
@@ -260,6 +274,9 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
         )
 
     async def teardown(self, cluster: Cluster[AWSSpecific]) -> Cluster[AWSSpecific]:
+        if self._auto_profile_prefix:
+            await _delete_instance_profile(self._config.region, self._auto_profile_prefix)
+            self._auto_profile_prefix = None
         return cluster
 
 
@@ -274,7 +291,10 @@ def _self_destruction_script(ttl: int, shutdown_command: str) -> str:
 
 
 async def _ensure_infrastructure(
-    config: AWS, ec2: EC2ClientFactory, prefix: str = "skyward",
+    config: AWS,
+    ec2: EC2ClientFactory,
+    prefix: str = "skyward",
+    profile_arn: str | None = None,
 ) -> AWSResources:
     if config.security_group_id:
         subnet_ids = await _get_default_subnets(ec2)
@@ -285,8 +305,16 @@ async def _ensure_infrastructure(
             _ensure_security_group(ec2, prefix),
         )
 
+    match config.instance_profile_arn:
+        case "auto":
+            arn = profile_arn or ""
+        case str() as explicit:
+            arn = explicit
+        case None:
+            arn = ""
+
     return AWSResources(
-        instance_profile_arn=config.instance_profile_arn or "",
+        instance_profile_arn=arn,
         security_group_id=security_group_id,
         subnet_ids=subnet_ids,
     )
@@ -438,6 +466,178 @@ async def _ensure_key_pair(config: AWS, ec2: EC2ClientFactory) -> tuple[str, str
         log.info("Imported SSH key pair {name}", name=key_name)
 
     return key_name, private_key_path
+
+
+@dataclass(frozen=True, slots=True)
+class IAMStatement:
+    """Single IAM policy statement."""
+
+    actions: tuple[str, ...]
+    resources: tuple[str, ...]
+
+
+_EC2_TRUST_POLICY = json.dumps({
+    "Version": "2012-10-17",
+    "Statement": [{
+        "Effect": "Allow",
+        "Principal": {"Service": "ec2.amazonaws.com"},
+        "Action": "sts:AssumeRole",
+    }],
+})
+
+
+async def _ensure_instance_profile(
+    region: str,
+    statements: tuple[IAMStatement, ...],
+    prefix: str = "skyward",
+) -> str:
+    """Create an IAM role + instance profile with the given permissions.
+
+    Idempotent: reuses existing role/profile if they already exist.
+    Returns the instance profile ARN.
+    """
+    import aioboto3
+
+    role_name = f"{prefix}-role"
+    profile_name = f"{prefix}-instance-profile"
+    policy_name = f"{prefix}-policy"
+
+    policy_document = json.dumps({
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": list(s.actions),
+                "Resource": list(s.resources),
+            }
+            for s in statements
+        ],
+    })
+
+    session = aioboto3.Session()
+    async with session.client("iam", region_name=region) as iam:  # type: ignore[reportGeneralTypeIssues]
+        # --- Role ---
+        try:
+            await iam.create_role(
+                RoleName=role_name,
+                AssumeRolePolicyDocument=_EC2_TRUST_POLICY,
+                Tags=[{"Key": "skyward:managed", "Value": "true"}],
+            )
+            log.info("Created IAM role {role}", role=role_name)
+        except iam.exceptions.EntityAlreadyExistsException:
+            log.info("Found existing IAM role {role}", role=role_name)
+
+        await iam.put_role_policy(
+            RoleName=role_name,
+            PolicyName=policy_name,
+            PolicyDocument=policy_document,
+        )
+
+        # --- Instance Profile ---
+        try:
+            await iam.create_instance_profile(
+                InstanceProfileName=profile_name,
+                Tags=[{"Key": "skyward:managed", "Value": "true"}],
+            )
+            log.info("Created instance profile {profile}", profile=profile_name)
+        except iam.exceptions.EntityAlreadyExistsException:
+            log.info("Found existing instance profile {profile}", profile=profile_name)
+
+        with suppress(Exception):
+            await iam.add_role_to_instance_profile(
+                InstanceProfileName=profile_name,
+                RoleName=role_name,
+            )
+
+        response = await iam.get_instance_profile(InstanceProfileName=profile_name)
+        arn = response["InstanceProfile"]["Arn"]
+
+        # Instance profiles need a few seconds to propagate through AWS
+        await asyncio.sleep(10)
+
+        log.info("Instance profile ready: {arn}", arn=arn)
+        return arn
+
+
+_S3_READ_ACTIONS = (
+    "s3:GetObject",
+    "s3:GetBucketLocation",
+    "s3:ListBucket",
+)
+
+_S3_WRITE_ACTIONS = (
+    *_S3_READ_ACTIONS,
+    "s3:PutObject",
+    "s3:DeleteObject",
+    "s3:ListBucketMultipartUploads",
+    "s3:ListMultipartUploadParts",
+    "s3:AbortMultipartUpload",
+)
+
+
+def _s3_statements_for_volumes(volumes: tuple[Volume, ...]) -> tuple[IAMStatement, ...]:
+    """Build least-privilege IAM statements for S3 volume access."""
+    writable_buckets: set[str] = set()
+    all_buckets: set[str] = set()
+
+    for v in volumes:
+        all_buckets.add(v.bucket)
+        if not v.read_only:
+            writable_buckets.add(v.bucket)
+
+    read_only_buckets = all_buckets - writable_buckets
+
+    statements: list[IAMStatement] = []
+
+    if read_only_buckets:
+        statements.append(IAMStatement(
+            actions=_S3_READ_ACTIONS,
+            resources=tuple(
+                arn
+                for b in sorted(read_only_buckets)
+                for arn in (f"arn:aws:s3:::{b}", f"arn:aws:s3:::{b}/*")
+            ),
+        ))
+
+    if writable_buckets:
+        statements.append(IAMStatement(
+            actions=_S3_WRITE_ACTIONS,
+            resources=tuple(
+                arn
+                for b in sorted(writable_buckets)
+                for arn in (f"arn:aws:s3:::{b}", f"arn:aws:s3:::{b}/*")
+            ),
+        ))
+
+    return tuple(statements)
+
+
+async def _delete_instance_profile(
+    region: str,
+    prefix: str = "skyward",
+) -> None:
+    """Delete IAM role + instance profile created by _ensure_instance_profile."""
+    import aioboto3
+
+    role_name = f"{prefix}-role"
+    profile_name = f"{prefix}-instance-profile"
+    policy_name = f"{prefix}-policy"
+
+    session = aioboto3.Session()
+    async with session.client("iam", region_name=region) as iam:  # type: ignore[reportGeneralTypeIssues]
+        with suppress(Exception):
+            await iam.remove_role_from_instance_profile(
+                InstanceProfileName=profile_name,
+                RoleName=role_name,
+            )
+        with suppress(Exception):
+            await iam.delete_instance_profile(InstanceProfileName=profile_name)
+        with suppress(Exception):
+            await iam.delete_role_policy(RoleName=role_name, PolicyName=policy_name)
+        with suppress(Exception):
+            await iam.delete_role(RoleName=role_name)
+
+        log.info("Cleaned up IAM resources for {prefix}", prefix=prefix)
 
 
 def _select_instances_cache_key(config: AWS, spec: PoolSpec, max_candidates: int = 5) -> str:

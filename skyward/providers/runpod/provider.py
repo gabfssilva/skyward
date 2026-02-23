@@ -21,6 +21,7 @@ from .config import CloudType, RunPod
 from .types import (
     ClusterCreateParams,
     CpuPodCreateParams,
+    PodCreateParams,
     PodResponse,
     get_ssh_port,
 )
@@ -249,6 +250,7 @@ class RunPodSpecific:
     gpu_vram_gb: int = 0
     image_name: str = _FALLBACK_IMAGE
     registry_auth_id: str | None = None
+    global_networking: bool = False
     runpod_cluster_id: str | None = None
     pod_ids: tuple[tuple[int, str], ...] = ()
     cluster_ips: tuple[tuple[int, str], ...] = ()
@@ -412,6 +414,18 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
 
         image_name = await _resolve_image(spec, self._config, min_cuda=min_cuda)
 
+        match self._config.global_networking:
+            case True:
+                effective_global_networking = True
+            case False:
+                effective_global_networking = False
+            case None:
+                effective_global_networking = (
+                    self._config.cluster_mode == "individual"
+                    and spec.nodes >= 2
+                    and gpu_type_id is not None
+                )
+
         runpod_cluster_id: str | None = None
         pod_ids: tuple[tuple[int, str], ...] = ()
         cluster_ips: tuple[tuple[int, str], ...] = ()
@@ -443,6 +457,7 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                 gpu_vram_gb=gpu_vram_gb,
                 image_name=image_name,
                 registry_auth_id=registry_auth_id,
+                global_networking=effective_global_networking,
                 runpod_cluster_id=runpod_cluster_id,
                 pod_ids=pod_ids,
                 cluster_ips=cluster_ips,
@@ -588,6 +603,8 @@ def _build_runpod_instance(
         node_id = next((nid for nid, pid in specific.pod_ids if pid == pod_id), None)
         if node_id is not None:
             private_ip = specific.cluster_ip_for(node_id)
+    elif specific.global_networking:
+        private_ip = f"{pod['id']}.runpod.internal"
 
     return Instance(
         id=pod["id"],
@@ -721,6 +738,24 @@ async def _create_gpu_pod(
         idx=node_index, gpu=cluster.specific.gpu_type_id,
         count=cluster.spec.accelerator_count or 1, spot=use_spot,
     )
+
+    if cluster.specific.global_networking:
+        params: PodCreateParams = {
+            "name": f"skyward-{cluster.id}-{node_index}",
+            "imageName": image_name,
+            "gpuTypeIds": [cluster.specific.gpu_type_id or ""],
+            "gpuCount": cluster.spec.accelerator_count or 1,
+            "cloudType": config.cloud_type.value.upper(),
+            "containerDiskInGb": config.container_disk_gb,
+            "volumeInGb": config.volume_gb,
+            "volumeMountPath": config.volume_mount_path,
+            "ports": list(config.ports),
+            "interruptible": use_spot,
+            "globalNetworking": True,
+        }
+        if config.data_center_ids != "global":
+            params["dataCenterIds"] = list(config.data_center_ids)
+        return await client.create_pod(params)
 
     return await client.deploy_gpu_pod(
         name=f"skyward-{cluster.id}-{node_index}",

@@ -10,6 +10,7 @@ Uses s3fs-fuse under the hood for FUSE-based mounting.
 Works with AWS (native S3), GCP (S3-compatible via HMAC), and RunPod (S3 API).
 """
 
+import time
 from pathlib import Path
 
 import skyward as sky
@@ -24,68 +25,50 @@ def list_files(data_dir: str, pattern: str = "*") -> list[str]:
         return [f"Directory {data_dir} does not exist"]
 
     files = list(path.glob(pattern))
-    return [f.name for f in sorted(files)[:20]]  # Limit to first 20
+    return [f.name for f in sorted(files)[:20]]
 
 
 @sky.compute
-def read_file_sample(data_dir: str, filename: str, lines: int = 5) -> dict:
-    """Read first N lines of a file from S3."""
-    path = Path(data_dir) / filename
-
-    if not path.exists():
-        return {"error": f"File {filename} not found"}
-
-    with open(path) as f:
-        content = [f.readline().strip() for _ in range(lines)]
-
-    return {
-        "filename": filename,
-        "size_bytes": path.stat().st_size,
-        "first_lines": content,
-    }
-
-
-@sky.compute
-def save_checkpoint(checkpoint_dir: str, epoch: int, metrics: dict) -> str:
-    """Save a training checkpoint to S3."""
+def save_checkpoint(checkpoint_dir: str, epoch: int, metrics: dict) -> dict:
+    """Save a training checkpoint to S3 and verify it was written."""
     import json
 
-    pool = sky.instance_info()
+    info = sky.instance_info()
 
-    # Create checkpoint data
     checkpoint = {
         "epoch": epoch,
-        "node": pool.node,
+        "node": info.node,
         "metrics": metrics,
     }
 
-    # Save to the mounted S3 volume
-    path = Path(checkpoint_dir) / f"checkpoint_node{pool.node}_epoch{epoch}.json"
+    path = Path(checkpoint_dir) / f"checkpoint_node{info.node}_epoch{epoch}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
 
     with open(path, "w") as f:
         json.dump(checkpoint, f, indent=2)
 
-    return str(path)
+    return {
+        "node": info.node,
+        "path": str(path),
+        "size": path.stat().st_size,
+    }
 
 
 @sky.compute
 def process_dataset(data_dir: str) -> dict:
     """Process files from S3 and return statistics."""
-
     path = Path(data_dir)
-    pool = sky.instance_info()
+    info = sky.instance_info()
 
     if not path.exists():
-        return {"node": pool.node, "error": "Data directory not found"}
+        return {"node": info.node, "error": "Data directory not found"}
 
-    # Count files and total size
     files = list(path.rglob("*"))
     file_count = sum(1 for f in files if f.is_file())
     total_size = sum(f.stat().st_size for f in files if f.is_file())
 
     return {
-        "node": pool.node,
+        "node": info.node,
         "file_count": file_count,
         "total_size_mb": round(total_size / (1024 * 1024), 2),
         "sample_files": [f.name for f in files[:5] if f.is_file()],
@@ -97,26 +80,22 @@ if __name__ == "__main__":
     # Configure S3 Volumes
     # =================================================================
     # Replace with your actual bucket names
-    DATA_BUCKET = "my-ml-bucket"
+    DATA_BUCKET = "skyward-example"
     DATA_PREFIX = "datasets/imagenet/"
 
-    CHECKPOINT_BUCKET = "my-ml-bucket"
+    CHECKPOINT_BUCKET = "skyward-example"
     CHECKPOINT_PREFIX = "checkpoints/experiment-001/"
 
     with sky.ComputePool(
-        provider=sky.AWS(),
+        provider=sky.AWS(instance_profile_arn="auto"),
         nodes=2,
-        accelerator=sky.NVIDIA.A100,
-        allocation="spot-if-available",
         volumes=[
-            # Read-only volume for input data
             sky.Volume(
                 bucket=DATA_BUCKET,
                 mount="/data",
                 prefix=DATA_PREFIX,
                 read_only=True,
             ),
-            # Read-write volume for checkpoints
             sky.Volume(
                 bucket=CHECKPOINT_BUCKET,
                 mount="/checkpoints",
@@ -126,17 +105,9 @@ if __name__ == "__main__":
         ],
     ) as pool:
         # =================================================================
-        # List files from S3
-        # =================================================================
-        print("Files in /data:")
-        files = list_files("/data", "*.jpg") >> pool
-        for f in files[:10]:
-            print(f"  {f}")
-
-        # =================================================================
         # Process dataset across nodes
         # =================================================================
-        print("\nProcessing dataset:")
+        print("Processing dataset from /data:")
         stats = process_dataset("/data") @ pool
         for s in stats:
             if "error" in s:
@@ -148,16 +119,18 @@ if __name__ == "__main__":
         # Save checkpoints from each node
         # =================================================================
         print("\nSaving checkpoints:")
-
-        # Simulate training metrics
         metrics = {"loss": 0.5, "accuracy": 0.85}
 
-        checkpoint_paths = save_checkpoint("/checkpoints", epoch=1, metrics=metrics) @ pool
-        for path in checkpoint_paths:
-            print(f"  Saved: {path}")
+        results = save_checkpoint("/checkpoints", epoch=1, metrics=metrics) @ pool
+        for r in results:
+            print(f"  Node {r['node']}: {r['path']} ({r['size']} bytes)")
 
-        # Verify checkpoints were saved
-        print("\nCheckpoints in /checkpoints:")
-        checkpoints = list_files("/checkpoints", "*.json") >> pool
-        for f in checkpoints:
-            print(f"  {f}")
+        # s3fs syncs writes to S3 asynchronously — wait for propagation
+        print("\nWaiting for S3 sync...")
+        time.sleep(10)
+
+        # Each node lists its own view of /checkpoints
+        print("\nCheckpoints visible per node:")
+        all_views = list_files("/checkpoints", "*.json") @ pool
+        for i, files in enumerate(all_views):
+            print(f"  Node {i}: {files}")
