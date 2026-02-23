@@ -102,6 +102,16 @@ class PodCreateParams(TypedDict, total=False):
     globalNetworking: bool
 
 
+class LowestPriceResponse(TypedDict):
+    """Lowest price + availability from RunPod API."""
+
+    minimumBidPrice: NotRequired[float]
+    uninterruptablePrice: NotRequired[float]
+    stockStatus: NotRequired[str | None]
+    totalCount: NotRequired[int]
+    rentedCount: NotRequired[int]
+
+
 class GpuTypeResponse(TypedDict):
     """GPU type from RunPod API."""
 
@@ -110,7 +120,7 @@ class GpuTypeResponse(TypedDict):
     memoryInGb: int
     secureCloud: bool
     communityCloud: bool
-    lowestPrice: NotRequired[dict[str, float]]
+    lowestPrice: NotRequired[LowestPriceResponse]
 
 
 # =============================================================================

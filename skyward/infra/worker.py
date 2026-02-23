@@ -99,6 +99,8 @@ async def _wrap_generator(
 
     from skyward.infra.streaming import _StreamHandle
 
+    slog = logger.bind(component="wrap-generator", node_id=node_id)
+
     producer_ref = system.spawn(
         stream_producer(buffer_size=256),
         f"out-producer-{uuid4().hex[:8]}",
@@ -108,15 +110,24 @@ async def _wrap_generator(
         lambda r: GetSink(reply_to=r),
         timeout=10.0,
     )
+    slog.info("producer spawned, ref={ref}", ref=producer_ref)
 
     loop = asyncio.get_running_loop()
 
     def _drain() -> None:
+        count = 0
         try:
             for elem in gen:
                 asyncio.run_coroutine_threadsafe(sink.put(elem), loop).result(timeout=300.0)
+                count += 1
+            slog.info("drain finished, {n} elements", n=count)
+        except Exception as e:
+            slog.error("drain error after {n} elements: {e}", n=count, e=e)
+            raise
         finally:
+            slog.info("sink.complete()")
             asyncio.run_coroutine_threadsafe(sink.complete(), loop).result(timeout=60.0)
+            slog.info("sink.complete() done")
 
     threading.Thread(target=_drain, daemon=True).start()
 

@@ -53,27 +53,35 @@ def moving_average(data: Iterator[float], window: int = 3):
 
 if __name__ == "__main__":
     with sky.ComputePool(
-        provider=sky.AWS(),
+        provider=sky.Container(),
         nodes=1,
         vcpus=1,
         memory_gb=1,
+        logging=True
     ) as pool:
-        # --- Output streaming ---
-        print("Fibonacci (first 10):")
-        for val in fibonacci(50000) >> pool:
-            print(f"  {val}")
+        #warm up
+        # for val in fibonacci(5) >> pool:
+        #     pass
+        #
+        # print("warm up done")
+        # print("Fibonacci (first 10):")
 
-        print("done! ;)")
+        for t in range(100):
+            for val in fibonacci(100) >> pool:
+                print(f"#{t}: {val}")
 
-        # --- Input streaming ---
-        print("\nRunning mean of 1..5:")
-        data = iter([1.0, 2.0, 3.0, 4.0, 5.0])
-        means = running_mean(data) >> pool
-        for i, m in enumerate(means, 1):
-            print(f"  after {i} values: {m:.2f}")
-
-        # --- Bidirectional ---
-        print("\nMoving average (window=3) of 1..6:")
-        data = iter([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
-        for avg in moving_average(data, window=3) >> pool:
-            print(f"  {avg:.2f}")
+        #
+        # print("done! ;)")
+        #
+        # # --- Input streaming ---
+        # print("\nRunning mean of 1..5:")
+        # data = iter([1.0, 2.0, 3.0, 4.0, 5.0])
+        # means = running_mean(data) >> pool
+        # for i, m in enumerate(means, 1):
+        #     print(f"  after {i} values: {m:.2f}")
+        #
+        # # --- Bidirectional ---
+        # print("\nMoving average (window=3) of 1..6:")
+        # data = iter([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+        # for avg in moving_average(data, window=3) >> pool:
+        #     print(f"  {avg:.2f}")

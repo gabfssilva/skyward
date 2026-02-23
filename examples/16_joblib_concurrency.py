@@ -11,9 +11,9 @@ def slow_task(x):
 
 
 if __name__ == '__main__':
-    nodes = 10
+    nodes = 60
     concurrency = 10
-    tasks = 2000
+    tasks = 10000
 
     effective_workers = nodes * concurrency
 

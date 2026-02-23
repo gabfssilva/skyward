@@ -18,6 +18,10 @@ from typing import Any, get_type_hints
 
 from casty import ActorRef, SourceRef
 
+from skyward.observability.logger import logger
+
+_log = logger.bind(component="streaming")
+
 
 @dataclass(frozen=True, slots=True)
 class _StreamHandle:
@@ -47,22 +51,41 @@ class _SyncSource[T]:
         self._loop = loop
         self._timeout = timeout
         self._aiter: Any = None
+        _log.info(
+            "SyncSource created, source={s}, loop_running={r}",
+            s=source, r=loop.is_running(),
+        )
 
     def __iter__(self) -> _SyncSource[T]:
+        _log.info("SyncSource.__iter__ called")
         return self
 
     def __next__(self) -> T:
         aiter = self._aiter
         if aiter is None:
+            _log.info("SyncSource: initializing async iterator")
             aiter = self._source.__aiter__()  # type: ignore[assignment]
             self._aiter = aiter
+            _log.info("SyncSource: aiter={a}", a=aiter)
 
+        _log.info(
+            "SyncSource: scheduling __anext__, loop_running={r}",
+            r=self._loop.is_running(),
+        )
         try:
-            return asyncio.run_coroutine_threadsafe(
+            fut = asyncio.run_coroutine_threadsafe(
                 aiter.__anext__(), self._loop,
-            ).result(timeout=self._timeout)
+            )
+            _log.info("SyncSource: waiting on future, timeout={t}", t=self._timeout)
+            result = fut.result(timeout=self._timeout)
+            _log.info("SyncSource: got element: {e}", e=result)
+            return result
         except StopAsyncIteration:
+            _log.info("SyncSource: StopAsyncIteration → StopIteration")
             raise StopIteration from None
+        except Exception as e:
+            _log.error("SyncSource: error in __next__: {e}", e=e)
+            raise
 
 
 def _unwrap(fn: Callable) -> Callable:  # type: ignore[type-arg]

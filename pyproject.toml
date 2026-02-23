@@ -81,7 +81,7 @@ packages = ["skyward"]
 
 [tool.ruff]
 target-version = "py312"
-line-length = 100
+line-length = 120
 exclude = ["skyward/_version.py", "metrics_prototype.py"]
 
 [tool.ruff.lint]

@@ -1256,6 +1256,9 @@ async def _execute_with_streaming(
             indices,
         )
 
+    from skyward.observability.logger import logger as _log
+    slog = _log.bind(component="exec-streaming")
+
     result = await client.ask(
         worker_ref,
         lambda rto: ExecuteTask(
@@ -1267,13 +1270,16 @@ async def _execute_with_streaming(
         ),
         timeout=timeout,
     )
+    slog.info("ask returned: {t}", t=type(result).__name__)
 
     for t in pump_tasks:
         await t
 
     match result:
         case WorkerTaskSucceeded(result=_StreamHandle(producer_ref=pref)):
+            slog.info("StreamHandle received, producer_ref={ref}, node_id={nid}", ref=pref, nid=result.node_id)
             source = await _resolve_output_stream(client, pref)
+            slog.info("source resolved: {s}", s=source)
             loop = asyncio.get_running_loop()
             return WorkerTaskSucceeded(result=_SyncSource(source, loop), node_id=result.node_id)
         case _:
@@ -1329,8 +1335,16 @@ async def _resolve_output_stream(client: Any, producer_ref: Any) -> Any:
 
     from casty import GetSource, stream_consumer
 
+    from skyward.observability.logger import logger as _log
+    slog = _log.bind(component="resolve-stream")
+
+    name = f"out-consumer-{uuid4().hex[:8]}"
+    slog.info("spawning consumer {name}, producer_ref={ref}", name=name, ref=producer_ref)
     consumer_ref = client.spawn(
         stream_consumer(producer_ref, timeout=60.0, initial_demand=16),
-        f"out-consumer-{uuid4().hex[:8]}",
+        name,
     )
-    return await client.ask(consumer_ref, lambda r: GetSource(reply_to=r), timeout=10.0)
+    slog.info("consumer spawned, asking GetSource")
+    source = await client.ask(consumer_ref, lambda r: GetSource(reply_to=r), timeout=10.0)
+    slog.info("GetSource returned: {s}", s=source)
+    return source

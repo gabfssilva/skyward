@@ -40,6 +40,9 @@ query GpuTypes($minCudaVersion: String, $secureCloud: Boolean) {
     }) {
       minimumBidPrice
       uninterruptablePrice
+      stockStatus
+      totalCount
+      rentedCount
     }
   }
 }

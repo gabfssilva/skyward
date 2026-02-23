@@ -344,9 +344,24 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                 if spot_price is None and on_demand_price is None:
                     continue
 
+                gpu_count = spec.accelerator_count or 1
+                total = lowest.get("totalCount", 0)
+                rented = lowest.get("rentedCount", 0)
+                available_gpus = total - rented
+                if available_gpus < spec.nodes * gpu_count:
+                    log.debug(
+                        "Skipping {gpu}: {available} GPUs available, "
+                        "need {need} ({nodes} nodes x {gpus} GPUs)",
+                        gpu=display or gpu_id,
+                        available=available_gpus,
+                        need=spec.nodes * gpu_count,
+                        nodes=spec.nodes,
+                        gpus=gpu_count,
+                    )
+                    continue
+
                 seen.add(gpu_id)
                 vram_gb = gpu.get("memoryInGb", 0)
-                gpu_count = spec.accelerator_count or 1
                 accel = Accelerator(
                     name=display or gpu_id,
                     memory=f"{vram_gb}GB" if vram_gb else "",
