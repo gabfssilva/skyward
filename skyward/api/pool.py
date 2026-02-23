@@ -282,6 +282,33 @@ def compute[**P, T](
     return decorator
 
 
+_FDS_PER_NODE: int = 10
+_FD_BASE_OVERHEAD: int = 50
+
+
+def _check_fd_budget(nodes: int) -> None:
+    import resource
+
+    estimated = nodes * _FDS_PER_NODE + _FD_BASE_OVERHEAD
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft >= estimated:
+        return
+
+    target = min(int(estimated * 1.5), hard)
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+        logger.info(
+            "Raised file descriptor limit from {old} to {new}",
+            old=soft, new=target,
+        )
+    except (ValueError, OSError):
+        logger.warning(
+            "File descriptor limit ({soft}) may be insufficient for {nodes} nodes "
+            "(estimated need: {estimated}). Consider running: ulimit -n {target}",
+            soft=soft, nodes=nodes, estimated=estimated, target=target,
+        )
+
+
 class ComputePool:
     """Provision cloud compute and execute functions remotely.
 
@@ -454,6 +481,8 @@ class ComputePool:
             name="skyward-event-loop",
         )
         self._loop_thread.start()
+
+        _check_fd_budget(first.nodes)
 
         try:
             self._run_sync(self._start_async())

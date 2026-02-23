@@ -1,24 +1,23 @@
-"""Instance monitor actor - streams JSONL events from instances.
+"""Instance monitor actor — streams JSONL events from instances.
 
-An instance monitor tells this story: connecting → streaming → stopped.
+An instance monitor tells this story: streaming → stopped.
 
-The monitor SSHes into an instance, reads the events.jsonl file
+The monitor receives a shared SSHTransport, reads the events.jsonl file
 (tail -F with offset tracking), converts raw events to typed messages,
-and sends them to pool_ref for observability. It runs for the entire
-instance lifetime — not just bootstrap.
+and sends them to event_listener for observability. It runs for the
+entire instance lifetime — not just bootstrap.
 
-On SSH disconnection, the monitor reconnects from the last known line
-offset, ensuring no events are lost between reconnections.
+The monitor does NOT own the transport. On stream failure, the monitor
+dies — the parent is responsible for supervision and recovery.
 
 Bootstrap completion is detected as a side effect: when the monitor
 sees BootstrapPhase(phase="bootstrap", event="completed"), it signals
-the provider via reply_to. Streaming continues after that for metrics,
-logs, and other runtime events.
+via reply_to. Streaming continues after that for metrics, logs, and
+other runtime events.
 """
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
@@ -44,9 +43,6 @@ from .messages import (
     _StreamEnded,
 )
 
-_MAX_RECONNECT_ATTEMPTS = 10
-_RECONNECT_BASE_DELAY = 2.0
-_RECONNECT_MAX_DELAY = 60.0
 
 async def _read_next(stream: AsyncIterator, info: NodeInstance) -> MonitorMsg:
     try:
@@ -65,86 +61,22 @@ async def _read_next(stream: AsyncIterator, info: NodeInstance) -> MonitorMsg:
         return _StreamEnded(error=str(e))
 
 
-async def _reconnect(
-    info: NodeInstance,
-    ssh_user: str,
-    ssh_key_path: str,
-    lines_read: int,
-    ctx: ActorContext[MonitorMsg],
-) -> tuple[SSHTransport, AsyncIterator] | None:
-    from skyward.infra.ssh import SSHTransport
-
-    log = logger.bind(actor="monitor", instance_id=info.instance.id)
-
-    for attempt in range(1, _MAX_RECONNECT_ATTEMPTS + 1):
-        delay = min(_RECONNECT_BASE_DELAY * (2 ** (attempt - 1)), _RECONNECT_MAX_DELAY)
-        log.info(
-            "Reconnecting (attempt {attempt}/{max}, offset={offset}, delay={delay:.1f}s)",
-            attempt=attempt, max=_MAX_RECONNECT_ATTEMPTS, offset=lines_read, delay=delay,
-        )
-        await asyncio.sleep(delay)
-
-        try:
-            transport = SSHTransport(
-                host=info.instance.ip or "",
-                user=ssh_user,
-                key_path=ssh_key_path,
-                port=info.instance.ssh_port,
-                retry_max_attempts=10,
-                retry_delay=3.0,
-            )
-            await transport.connect()
-            log.info("Reconnected at line offset {offset}", offset=lines_read)
-            stream = transport.stream_events(timeout=600.0, start_line=lines_read).__aiter__()
-            ctx.pipe_to_self(_read_next(stream, info), mapper=lambda msg: msg)
-            return transport, stream
-        except Exception as e:
-            log.warning("Reconnect attempt {attempt} failed: {err}", attempt=attempt, err=e)
-
-    log.error("Exhausted reconnection attempts")
-    return None
-
-
 def instance_monitor(
     info: NodeInstance,
-    ssh_user: str,
-    ssh_key_path: str,
+    transport: SSHTransport,
     event_listener: ActorRef,
     reply_to: ActorRef[BootstrapDone],
-    ssh_timeout: float = 300.0,
-    ssh_retry_interval: float = 5.0,
 ) -> Behavior[MonitorMsg]:
-    """An instance monitor tells this story: connecting → streaming → stopped."""
+    """An instance monitor tells this story: streaming → stopped."""
 
     async def _setup(ctx: ActorContext[MonitorMsg]) -> Behavior[MonitorMsg]:
-        from skyward.infra.ssh import SSHTransport
-
         log = logger.bind(actor="monitor", instance_id=info.instance.id)
-        log.info("Connecting to {ip}:{port}", ip=info.instance.ip, port=info.instance.ssh_port)
-
-        transport = SSHTransport(
-            host=info.instance.ip or "",
-            user=ssh_user,
-            key_path=ssh_key_path,
-            port=info.instance.ssh_port,
-            retry_max_attempts=int(ssh_timeout / ssh_retry_interval) + 1,
-            retry_delay=ssh_retry_interval,
-        )
-        await transport.connect()
-
-        log.info("Connected")
-
+        log.info("Starting event stream on shared transport")
         stream = transport.stream_events(timeout=600.0, start_line=0).__aiter__()
-
         ctx.pipe_to_self(_read_next(stream, info), mapper=lambda msg: msg)
-
-        return Behaviors.with_lifecycle(
-            streaming(transport, stream, bootstrap_signaled=False, lines_read=0),
-            post_stop=lambda _: transport.close(),
-        )
+        return streaming(stream, bootstrap_signaled=False, lines_read=0)
 
     def streaming(
-        transport: SSHTransport,
         stream: AsyncIterator,
         bootstrap_signaled: bool,
         lines_read: int,
@@ -190,30 +122,15 @@ def instance_monitor(
                                 signaled = True
 
                     if new_lines_read != lines_read or signaled != bootstrap_signaled:
-                        return streaming(transport, stream, signaled, new_lines_read)
+                        return streaming(stream, signaled, new_lines_read)
                     return Behaviors.same()
 
                 case _StreamEnded(error=error):
+                    log = logger.bind(actor="monitor", instance_id=info.instance.id)
                     if error is None:
-                        logger.bind(
-                            actor="monitor", instance_id=info.instance.id,
-                        ).info("Stream ended cleanly")
-                    if error is not None:
-                        logger.bind(actor="monitor", instance_id=info.instance.id).warning(
-                            "Stream ended with error, attempting reconnect: {err}", err=error,
-                        )
-                        await transport.close()
-                        result = await _reconnect(
-                            info, ssh_user, ssh_key_path, lines_read, ctx,
-                        )
-                        if result is not None:
-                            new_transport, new_stream = result
-                            return Behaviors.with_lifecycle(
-                                streaming(
-                                    new_transport, new_stream, bootstrap_signaled, lines_read,
-                                ),
-                                post_stop=lambda _: new_transport.close(),
-                            )
+                        log.info("Stream ended cleanly")
+                    else:
+                        log.warning("Stream ended with error: {err}", err=error)
 
                     if not bootstrap_signaled:
                         reply_to.tell(BootstrapDone(

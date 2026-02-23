@@ -222,7 +222,7 @@ def node_actor(
     ) -> Behavior[NodeMsg]:
         log.info("Opening SSH tunnel to {ip}", ip=ni.instance.ip)
         ctx.pipe_to_self(
-            _open_tunnel(ni, cluster),
+            _open_tunnel(ni, cluster, ssh_timeout, ssh_retry_interval),
             mapper=lambda result: _Connected(transport=result[0], listener=result[1]),
             on_failure=lambda e: _ConnectionFailed(error=str(e)),
         )
@@ -286,16 +286,13 @@ def node_actor(
         spec = cluster.spec
         log.info("Starting bootstrap")
 
-        if not _skip_monitor and ni.ssh_user and ni.ssh_key_path:
+        if not _skip_monitor:
             ctx.spawn(
                 instance_monitor(
                     info=ni,
-                    ssh_user=ni.ssh_user,
-                    ssh_key_path=ni.ssh_key_path,
+                    transport=transport,
                     event_listener=pool,
                     reply_to=ctx.self,
-                    ssh_timeout=ssh_timeout,
-                    ssh_retry_interval=ssh_retry_interval,
                 ),
                 f"monitor-{ni.instance.id}",
             )
@@ -413,7 +410,7 @@ def node_actor(
         spec = cluster.spec
         if spec.image and getattr(spec.image, "skyward_source", None) == "local":
             ctx.pipe_to_self(
-                _install_local_skyward(ni, cluster),
+                _install_local_skyward(transport, ni, cluster),
                 mapper=lambda _, m=ni: _LocalInstallDone(instance=m),
                 on_failure=lambda e: _PostBootstrapFailed(error=str(e)),
             )
@@ -423,7 +420,7 @@ def node_actor(
 
         if spec.image and getattr(spec.image, "includes", None):
             ctx.pipe_to_self(
-                _sync_user_code(ni, spec, cluster),
+                _sync_user_code(transport, ni, spec, cluster),
                 mapper=lambda _, m=ni: _UserCodeSyncDone(instance=m),
                 on_failure=lambda e: _PostBootstrapFailed(error=str(e)),
             )
@@ -454,7 +451,7 @@ def node_actor(
                     s = cluster.spec
                     if s.image and getattr(s.image, "includes", None):
                         ctx.pipe_to_self(
-                            _sync_user_code(info, s, cluster),
+                            _sync_user_code(transport, info, s, cluster),
                             mapper=lambda _, m=info: _UserCodeSyncDone(instance=m),
                             on_failure=lambda e: _PostBootstrapFailed(error=str(e)),
                         )
@@ -1026,7 +1023,12 @@ def node_actor(
 # ─── Helpers (module-level, shared with old instance.py) ──────────────
 
 
-async def _open_tunnel(ni: NodeInstance, cluster: Any) -> tuple[Any, Any]:
+async def _open_tunnel(
+    ni: NodeInstance,
+    cluster: Any,
+    ssh_timeout: float = 300.0,
+    ssh_retry_interval: float = 5.0,
+) -> tuple[Any, Any]:
     from skyward.infra.ssh import SSHTransport
 
     transport = SSHTransport(
@@ -1034,6 +1036,8 @@ async def _open_tunnel(ni: NodeInstance, cluster: Any) -> tuple[Any, Any]:
         user=ni.ssh_user or cluster.ssh_user,
         key_path=ni.ssh_key_path or cluster.ssh_key_path,
         port=ni.instance.ssh_port,
+        retry_max_attempts=int(ssh_timeout / ssh_retry_interval) + 1,
+        retry_delay=ssh_retry_interval,
     )
     await transport.connect()
     listener = await transport._conn.forward_local_port(  # type: ignore[union-attr]
@@ -1118,36 +1122,27 @@ async def _cleanup_transport(transport: Any, listener: Any) -> None:
         await transport.close()
 
 
-async def _install_local_skyward(ni: NodeInstance, cluster: Any) -> None:
-    from skyward.providers._bootstrap_ssh import install_local_skyward, wait_for_ssh
+async def _install_local_skyward(transport: Any, ni: NodeInstance, cluster: Any) -> None:
+    from skyward.providers._bootstrap_ssh import install_local_skyward
 
-    transport = await wait_for_ssh(
-        host=ni.instance.ip or "",
-        user=cluster.ssh_user,
-        key_path=cluster.ssh_key_path,
-        port=ni.instance.ssh_port,
-    )
-    try:
-        await install_local_skyward(
-            transport=transport,
-            ni=ni,
-            use_sudo=cluster.use_sudo,
-        )
-    finally:
-        await transport.close()
+    await install_local_skyward(transport=transport, ni=ni, use_sudo=cluster.use_sudo)
 
 
-async def _sync_user_code(ni: NodeInstance, spec: Any, cluster: Any) -> None:
-    from skyward.providers._bootstrap_ssh import sync_user_code
+async def _sync_user_code(transport: Any, ni: NodeInstance, spec: Any, cluster: Any) -> None:
+    from skyward.providers._bootstrap_ssh import upload_user_code
+    from skyward.providers.common import build_user_code_tarball
 
-    await sync_user_code(
-        host=ni.instance.ip or "",
-        user=cluster.ssh_user,
-        key_path=cluster.ssh_key_path,
-        port=ni.instance.ssh_port,
-        image=spec.image,
-        use_sudo=cluster.use_sudo,
-    )
+    image = spec.image
+    includes = getattr(image, "includes", ())
+    if not includes:
+        return
+
+    excludes = getattr(image, "excludes", ())
+    tarball = build_user_code_tarball(includes=includes, excludes=excludes)
+
+    ssh_user = ni.ssh_user or cluster.ssh_user
+    use_sudo = ssh_user != "root"
+    await upload_user_code(transport=transport, tarball=tarball, use_sudo=use_sudo)
 
 
 async def _run_bootstrap(
