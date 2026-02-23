@@ -1165,7 +1165,13 @@ async def _run_bootstrap(
     ssh_user = ni.ssh_user or cluster.ssh_user
     use_sudo = ssh_user != "root"
 
-    bootstrap_script = image.generate_bootstrap(ttl=0)
+    postamble = None
+    if spec.volumes and cluster.mount_endpoint:
+        from skyward.providers.bootstrap import mount_volumes, phase
+
+        postamble = phase("volumes", mount_volumes(spec.volumes, cluster.mount_endpoint))
+
+    bootstrap_script = image.generate_bootstrap(ttl=0, postamble=postamble)
 
     await run_bootstrap_via_ssh(
         transport=transport,

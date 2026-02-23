@@ -61,7 +61,7 @@ from skyward.observability.logger import logger
 from skyward.observability.logging import LogConfig, setup_logging, teardown_logging
 
 from .model import Offer
-from .spec import DEFAULT_IMAGE, Image, PoolSpec, SelectionStrategy, Spec, Worker
+from .spec import DEFAULT_IMAGE, Image, PoolSpec, SelectionStrategy, Spec, Volume, Worker
 
 _active_pool: ContextVar[ComputePool | None] = ContextVar("active_pool", default=None)
 
@@ -321,6 +321,7 @@ class ComputePool:
         ssh_retry_interval: int = ...,
         provision_retry_delay: float = ...,
         max_provision_attempts: int = ...,
+        volumes: list[Volume] | tuple[Volume, ...] = ...,
     ) -> None: ...
 
     @overload
@@ -337,6 +338,7 @@ class ComputePool:
         ssh_retry_interval: int = ...,
         provision_retry_delay: float = ...,
         max_provision_attempts: int = ...,
+        volumes: list[Volume] | tuple[Volume, ...] = ...,
     ) -> None: ...
 
     def __init__(
@@ -361,6 +363,7 @@ class ComputePool:
         ssh_retry_interval: int = 2,
         provision_retry_delay: float = 10.0,
         max_provision_attempts: int = 10,
+        volumes: list[Volume] | tuple[Volume, ...] = (),
     ) -> None:
         if specs and provider is not None:
             raise ValueError("Cannot specify both positional Spec args and 'provider'")
@@ -394,6 +397,7 @@ class ComputePool:
         self.ssh_retry_interval = ssh_retry_interval
         self.provision_retry_delay = provision_retry_delay
         self.max_provision_attempts = max_provision_attempts
+        self.volumes = tuple(volumes)
 
         self._log_handler_ids: list[int] = []
         self._loop: asyncio.AbstractEventLoop | None = None

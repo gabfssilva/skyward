@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass
 from typing import Protocol, Self, runtime_checkable
 
 from skyward.api import Cluster, Instance, PoolSpec
@@ -80,3 +81,19 @@ class WarmableProvider[C, S](Provider[C, S], Protocol):
     async def save(self, cluster: Cluster[S]) -> Cluster[S]:
         """Save a prebaked image from the current cluster state."""
         ...
+
+
+@dataclass(frozen=True, slots=True)
+class MountEndpoint:
+    """S3-compatible endpoint for volume mounting."""
+
+    endpoint: str
+    access_key: str | None = None
+    secret_key: str | None = None
+
+
+@runtime_checkable
+class Mountable[S](Protocol):
+    """Protocol for providers that support volume mounting."""
+
+    async def mount_endpoint(self, cluster: Cluster[S]) -> MountEndpoint: ...

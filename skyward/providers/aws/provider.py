@@ -15,7 +15,7 @@ from skyward.api.spec import Architecture as SpecArchitecture
 from skyward.infra.cache import cached
 from skyward.infra.retry import on_exception_message, retry
 from skyward.observability.logger import logger
-from skyward.providers.provider import Provider
+from skyward.providers.provider import MountEndpoint, Provider
 
 from .clients import EC2ClientFactory
 from .config import AWS, AllocationStrategy
@@ -253,6 +253,11 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
             return cluster
         await _terminate_instances(self._ec2, list(instance_ids))
         return cluster
+
+    async def mount_endpoint(self, cluster: Cluster[AWSSpecific]) -> MountEndpoint:
+        return MountEndpoint(
+            endpoint=f"https://s3.{self._config.region}.amazonaws.com",
+        )
 
     async def teardown(self, cluster: Cluster[AWSSpecific]) -> Cluster[AWSSpecific]:
         return cluster

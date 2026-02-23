@@ -6,7 +6,11 @@ Each operation is a function returning an Op (string or callable).
 
 from __future__ import annotations
 
-from typing import Final
+from typing import TYPE_CHECKING, Final
+
+if TYPE_CHECKING:
+    from skyward.api.spec import Volume
+    from skyward.providers.provider import MountEndpoint
 
 from skyward.providers.bootstrap.compose import SKYWARD_DIR
 
@@ -459,3 +463,69 @@ def stop_metrics() -> Op:
     Kills the background process that emits metrics.
     """
     return lambda: "stop_metrics_daemon"
+
+
+# =============================================================================
+# Volume Operations
+# =============================================================================
+
+
+def mount_volumes(
+    volumes: tuple[Volume, ...],
+    endpoint: MountEndpoint,
+) -> Op:
+    """Install s3fs-fuse and mount all volumes as local filesystem paths.
+
+    Generates a bootstrap op that:
+    1. Installs s3fs via apt (lock-wait safe)
+    2. Writes credential file if access_key is provided
+    3. Creates mount points and mounts each volume via s3fs
+
+    When no credentials are provided (AWS IAM role), uses iam_role=auto.
+
+    Parameters
+    ----------
+    volumes : tuple[Volume, ...]
+        Volumes to mount.
+    endpoint : MountEndpoint
+        S3-compatible endpoint with optional credentials.
+    """
+
+    def generate() -> str:
+        lines: list[str] = []
+
+        # 1. Install s3fs
+        lines.append(
+            "apt-get -o DPkg::Lock::Timeout=-1 install -y -qq s3fs"
+        )
+
+        # 2. Write credentials if provided
+        if endpoint.access_key is not None:
+            lines.append(
+                f'echo "{endpoint.access_key}:{endpoint.secret_key}" '
+                f"> /etc/s3fs-passwd"
+            )
+            lines.append("chmod 600 /etc/s3fs-passwd")
+
+        # 3. Mount each volume
+        for v in volumes:
+            lines.append(f"mkdir -p {v.mount}")
+
+            bucket_ref = f"{v.bucket}:/{v.prefix}" if v.prefix else v.bucket
+            opts = [f"url={endpoint.endpoint}"]
+
+            if endpoint.access_key is not None:
+                opts.append("passwd_file=/etc/s3fs-passwd")
+            else:
+                opts.append("iam_role=auto")
+
+            if v.read_only:
+                opts.append("ro")
+
+            opts.append("allow_other")
+            opts_str = " -o ".join(opts)
+            lines.append(f"s3fs {bucket_ref} {v.mount} -o {opts_str}")
+
+        return "\n".join(lines)
+
+    return generate

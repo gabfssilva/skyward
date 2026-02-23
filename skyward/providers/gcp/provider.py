@@ -20,7 +20,7 @@ from skyward.accelerators import Accelerator
 from skyward.api import PoolSpec
 from skyward.api.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
 from skyward.observability.logger import logger
-from skyward.providers.provider import Provider
+from skyward.providers.provider import MountEndpoint, Provider
 from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
 
 from .config import GCP
@@ -84,6 +84,9 @@ class GCPProvider(Provider[GCP, GCPSpecific]):
         self._tpu = tpu_client
         self._project = project
         self._pool = thread_pool
+        self._hmac_access_key: str | None = None
+        self._hmac_secret_key: str | None = None
+        self._hmac_key_access_id: str | None = None
 
     async def _run[T](self, fn: Callable[..., T], *args: object, **kwargs: object) -> T:
         loop = asyncio.get_running_loop()
@@ -218,6 +221,30 @@ class GCPProvider(Provider[GCP, GCPSpecific]):
         ssh_key_path = get_ssh_key_path()
 
         resolved: ResolvedMachine = offer.specific
+
+        if spec.volumes:
+            from google.cloud import storage as gcs_storage  # type: ignore[reportMissingImports]
+            storage_client = gcs_storage.Client(project=self._project)
+
+            sa_email = self._config.service_account
+            if not sa_email:
+                import google.auth  # type: ignore[reportMissingImports]
+                credentials, _ = google.auth.default()
+                sa_email = getattr(credentials, 'service_account_email', None)
+                if not sa_email:
+                    raise RuntimeError(
+                        "Cannot create HMAC keys: no service account configured. "
+                        "Set service_account in GCP() config."
+                    )
+
+            hmac_key, key_metadata = await self._run(
+                storage_client.create_hmac_key,
+                service_account_email=sa_email,
+            )
+            self._hmac_access_key = key_metadata.access_id
+            self._hmac_secret_key = hmac_key
+            self._hmac_key_access_id = key_metadata.access_id
+            log.info("Created HMAC key for S3-compatible volume access")
 
         if resolved.machine_type.startswith("tpu-"):
             return await self._prepare_tpu(spec, offer, cluster_id, ssh_key_path)
@@ -611,9 +638,36 @@ class GCPProvider(Provider[GCP, GCPSpecific]):
         await asyncio.gather(*(_delete_one(n) for n in names))
         return cluster
 
+    async def mount_endpoint(self, cluster: Cluster[GCPSpecific]) -> MountEndpoint:
+        if self._hmac_access_key is None or self._hmac_secret_key is None:
+            raise RuntimeError("HMAC keys not generated — call prepare() with volumes first")
+        return MountEndpoint(
+            endpoint="https://storage.googleapis.com",
+            access_key=self._hmac_access_key,
+            secret_key=self._hmac_secret_key,
+        )
+
     async def teardown(self, cluster: Cluster[GCPSpecific]) -> Cluster[GCPSpecific]:
         specific = cluster.specific
         log.info("GCP teardown starting for cluster {cid}", cid=cluster.id)
+
+        if self._hmac_key_access_id:
+            try:
+                from google.cloud import (
+                    storage as gcs_storage,  # type: ignore[reportMissingImports]
+                )
+                storage_client = gcs_storage.Client(project=self._project)
+                key_metadata = await self._run(
+                    storage_client.get_hmac_key_metadata,
+                    self._hmac_key_access_id,
+                    project_id=self._project,
+                )
+                key_metadata.state = "INACTIVE"
+                await self._run(key_metadata.update)
+                await self._run(key_metadata.delete)
+                log.info("Deleted HMAC key {key}", key=self._hmac_key_access_id)
+            except Exception as e:
+                log.warning("Failed to delete HMAC key: {err}", err=e)
 
         if not _is_tpu_cluster(cluster):
             await self._teardown_gpu(specific)

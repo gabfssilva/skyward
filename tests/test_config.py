@@ -222,6 +222,42 @@ class TestResolvePool:
         assert spec.nodes == 2
 
 
+class TestResolvePoolWithVolumes:
+    def test_pool_with_volumes(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            '[providers.a]\ntype = "aws"\n\n'
+            '[pools.ml]\n'
+            'provider = "a"\n'
+            'nodes = 1\n'
+            '\n'
+            '[[pools.ml.volumes]]\n'
+            'bucket = "my-data"\n'
+            'mount = "/data"\n'
+            'read_only = true\n'
+            '\n'
+            '[[pools.ml.volumes]]\n'
+            'bucket = "my-ckpts"\n'
+            'mount = "/checkpoints"\n'
+            'prefix = "exp-1/"\n'
+            'read_only = false\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        assert len(pool.volumes) == 2
+        assert pool.volumes[0].bucket == "my-data"
+        assert pool.volumes[0].mount == "/data"
+        assert pool.volumes[0].read_only is True
+        assert pool.volumes[1].prefix == "exp-1/"
+        assert pool.volumes[1].read_only is False
+
+    def test_pool_without_volumes_has_empty_tuple(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            '[providers.a]\ntype = "aws"\n\n'
+            '[pools.ml]\nprovider = "a"\nnodes = 1\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        assert pool.volumes == ()
+
+
 class TestComputePoolNamed:
     def test_named_returns_pool(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         (tmp_path / "skyward.toml").write_text(

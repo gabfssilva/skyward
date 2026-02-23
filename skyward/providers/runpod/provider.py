@@ -13,7 +13,7 @@ from skyward.api import PoolSpec
 from skyward.api.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
 from skyward.infra.http import HttpClient
 from skyward.observability.logger import logger
-from skyward.providers.provider import Provider
+from skyward.providers.provider import MountEndpoint, Provider
 from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
 
 from .client import RunPodClient, RunPodError, get_api_key
@@ -32,6 +32,11 @@ _CUDA_COMPACT_RE = re.compile(r"cu(?:da)?(\d{2})(\d)\d")
 _UBUNTU_RE = re.compile(r"ubuntu(\d{2})\.?(\d{2})")
 _TAG_VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
 _FALLBACK_IMAGE = "runpod/base:1.0.3-cuda1290-ubuntu2204"
+_RUNPOD_S3_DATACENTERS = frozenset({
+    "EUR-IS-1", "EUR-NO-1", "EU-RO-1", "EU-CZ-1",
+    "US-CA-2", "US-GA-2", "US-KS-2", "US-MD-1",
+    "US-MO-2", "US-NC-1", "US-NC-2",
+})
 _TOKEN_SPLIT = re.compile(r"[\s\-/]+")
 _MIN_GPU_MATCH = 0.5
 
@@ -517,6 +522,31 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
 
             await asyncio.gather(*(_terminate(pid) for pid in instance_ids))
         return cluster
+
+    async def mount_endpoint(self, cluster: Cluster[RunPodSpecific]) -> MountEndpoint:
+        from .client import get_api_key
+
+        api_key = get_api_key(self._config.api_key)
+
+        if self._config.data_center_ids == "global":
+            raise ValueError(
+                "RunPod volumes require an explicit data_center_ids setting. "
+                f"S3-supported datacenters: {', '.join(sorted(_RUNPOD_S3_DATACENTERS))}"
+            )
+
+        dc = self._config.data_center_ids[0]
+        if dc not in _RUNPOD_S3_DATACENTERS:
+            raise ValueError(
+                f"RunPod datacenter '{dc}' does not support S3 API. "
+                f"Supported: {', '.join(sorted(_RUNPOD_S3_DATACENTERS))}"
+            )
+
+        dc_lower = dc.lower()
+        return MountEndpoint(
+            endpoint=f"https://s3api-{dc_lower}.runpod.io",
+            access_key=api_key,
+            secret_key=api_key,
+        )
 
     async def teardown(self, cluster: Cluster[RunPodSpecific]) -> Cluster[RunPodSpecific]:
         specific = cluster.specific

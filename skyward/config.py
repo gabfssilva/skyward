@@ -129,4 +129,11 @@ def resolve_pool(
     raw_image = raw_pool.pop("image", None)
     image = _build_image(raw_image) if raw_image else Image()
 
-    return ComputePool(provider=provider, image=image, **raw_pool)
+    raw_volumes = raw_pool.pop("volumes", None)
+    volumes: tuple = ()
+    if raw_volumes:
+        from skyward.api.spec import Volume
+
+        volumes = tuple(Volume(**v) for v in raw_volumes)
+
+    return ComputePool(provider=provider, image=image, volumes=volumes, **raw_pool)

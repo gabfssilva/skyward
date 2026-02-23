@@ -1,12 +1,13 @@
 """S3 Volumes Example.
 
-Demonstrates how to mount S3 buckets as local filesystems using S3Volume.
+Demonstrates how to mount S3-compatible buckets as local filesystems using Volume.
 This enables:
-- Reading datasets directly from S3
-- Saving checkpoints/artifacts to S3
-- Sharing data between nodes via S3
+- Reading datasets directly from cloud storage
+- Saving checkpoints/artifacts to persistent storage
+- Sharing data between nodes via mounted volumes
 
-Uses AWS Mountpoint for Amazon S3 under the hood.
+Uses s3fs-fuse under the hood for FUSE-based mounting.
+Works with AWS (native S3), GCP (S3-compatible via HMAC), and RunPod (S3 API).
 """
 
 from pathlib import Path
@@ -109,16 +110,16 @@ if __name__ == "__main__":
         allocation="spot-if-available",
         volumes=[
             # Read-only volume for input data
-            sky.S3Volume(
-                mount_path="/data",
+            sky.Volume(
                 bucket=DATA_BUCKET,
+                mount="/data",
                 prefix=DATA_PREFIX,
                 read_only=True,
             ),
             # Read-write volume for checkpoints
-            sky.S3Volume(
-                mount_path="/checkpoints",
+            sky.Volume(
                 bucket=CHECKPOINT_BUCKET,
+                mount="/checkpoints",
                 prefix=CHECKPOINT_PREFIX,
                 read_only=False,
             ),

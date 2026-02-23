@@ -53,6 +53,7 @@ from .ops import (
     install_uv,
     instance_timeout,
     mkdir,
+    mount_volumes,
     phase,
     phase_simple,
     pip,
@@ -93,6 +94,8 @@ __all__ = [
     "shell_vars",
     "start_metrics",
     "stop_metrics",
+    # Volume operations
+    "mount_volumes",
     # AWS operations
     "grid_driver",
     # Casty operations

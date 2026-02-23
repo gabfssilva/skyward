@@ -119,6 +119,35 @@ def _detect_skyward_source() -> SkywardSource:
 
 
 @dataclass(frozen=True, slots=True)
+class Volume:
+    """S3-backed volume mounted as local filesystem via FUSE.
+
+    Parameters
+    ----------
+    bucket : str
+        S3 bucket name (AWS), GCS bucket name (GCP),
+        or network volume ID (RunPod).
+    mount : str
+        Absolute path where the volume appears on workers.
+    prefix : str
+        Object key prefix (subfolder within bucket).
+    read_only : bool
+        Mount as read-only. Default True.
+    """
+
+    bucket: str
+    mount: str
+    prefix: str = ""
+    read_only: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.mount.startswith("/"):
+            raise ValueError(f"mount must be absolute path, got '{self.mount}'")
+        if self.mount in ("/", "/opt", "/opt/skyward", "/root", "/tmp"):
+            raise ValueError(f"mount cannot be a system path: '{self.mount}'")
+
+
+@dataclass(frozen=True, slots=True)
 class PoolSpec:
     """Pool specification - what the user wants.
 
@@ -171,6 +200,7 @@ class PoolSpec:
     ssh_retry_interval: float = 5.0
     provision_retry_delay: float = 10.0
     max_provision_attempts: int = 10
+    volumes: tuple[Volume, ...] = ()
 
     def __post_init__(self) -> None:
         if self.nodes < 1:

@@ -34,6 +34,7 @@ from .spec import PoolSpec as PoolSpec
 from .spec import PoolState as PoolState
 from .spec import SelectionStrategy as SelectionStrategy
 from .spec import Spec as Spec
+from .spec import Volume as Volume
 from .spec import Worker as Worker
 from .spec import WorkerExecutor as WorkerExecutor
 
@@ -68,6 +69,7 @@ __all__ = [
     "ProviderConfig",
     "SelectionStrategy",
     "Spec",
+    "Volume",
     "Worker",
     "WorkerExecutor",
 ]

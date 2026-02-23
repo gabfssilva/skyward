@@ -129,6 +129,30 @@ def pool_actor() -> Behavior[PoolMsg]:
                 case ClusterReady(cluster=cluster):
                     log.info("Cluster ready, provisioning {n} instances", n=spec.nodes)
 
+                    if spec.volumes and cluster.mount_endpoint is None:
+                        from skyward.providers.provider import Mountable
+
+                        if not isinstance(provider, Mountable):
+                            reply_to.tell(ProvisionFailed(
+                                reason="Provider does not support volumes. "
+                                       "Supported providers: AWS, GCP, RunPod.",
+                            ))
+                            return Behaviors.stopped()
+
+                        async def _resolve_mount() -> Any:
+                            endpoint = await provider.mount_endpoint(cluster)
+                            from dataclasses import replace
+                            return replace(cluster, mount_endpoint=endpoint)
+
+                        ctx.pipe_to_self(
+                            _resolve_mount(),
+                            mapper=lambda c: ClusterReady(cluster=c),
+                            on_failure=lambda err: ProvisionFailed(
+                                reason=f"Volume mount setup failed: {err}",
+                            ),
+                        )
+                        return requesting(spec, provider, remaining_offers, reply_to)
+
                     def _on_provision_error(err: Exception) -> InstancesProvisioned:
                         log.warning("Provision failed: {err}", err=err)
                         return InstancesProvisioned(instances=(), cluster=cluster)
