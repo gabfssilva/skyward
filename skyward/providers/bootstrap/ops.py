@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
-    from skyward.api.spec import Volume
+    from skyward.api.spec import PipIndex, Volume
     from skyward.providers.provider import MountEndpoint
 
 from skyward.providers.bootstrap.compose import SKYWARD_DIR
@@ -55,12 +55,11 @@ def apt(*packages: str, quiet: bool = True, update: bool = True) -> Op:
     return generate
 
 
-def pip(*packages: str, extra_index: str | None = None) -> Op:
+def pip(*packages: str) -> Op:
     """Install pip packages using uv.
 
     Args:
         *packages: Package names to install.
-        extra_index: Extra PyPI index URL.
 
     Example:
         >>> pip("torch", "transformers")()
@@ -70,13 +69,8 @@ def pip(*packages: str, extra_index: str | None = None) -> Op:
         return lambda: "# No pip packages to install"
 
     pkg_list = " ".join(packages)
-    extra = (
-        f" --extra-index-url {extra_index} --index-strategy unsafe-best-match"
-        if extra_index
-        else ""
-    )
 
-    return lambda: f"uv pip install {pkg_list}{extra}"
+    return lambda: f"uv pip install {pkg_list}"
 
 
 def uv(python: str = "3.12", venv_path: str | None = None) -> Op:
@@ -106,12 +100,11 @@ def install_uv() -> Op:
 fi"""
 
 
-def uv_add(*packages: str, extra_index: str | None = None) -> Op:
+def uv_add(*packages: str) -> Op:
     """Add packages to the uv project in SKYWARD_DIR.
 
     Args:
         *packages: Package names to install.
-        extra_index: Extra PyPI index URL.
 
     Example:
         >>> uv_add("torch", "transformers")()
@@ -121,13 +114,8 @@ def uv_add(*packages: str, extra_index: str | None = None) -> Op:
         return lambda: "# No pip packages to install"
 
     pkg_list = " ".join(packages)
-    extra = (
-        f" --extra-index-url {extra_index} --index-strategy unsafe-best-match"
-        if extra_index
-        else ""
-    )
 
-    return lambda: f"cd {SKYWARD_DIR} && uv add {pkg_list}{extra}"
+    return lambda: f"cd {SKYWARD_DIR} && uv add {pkg_list}"
 
 
 def uv_init(python: str = "3.12", name: str | None = None) -> Op:
@@ -144,6 +132,53 @@ def uv_init(python: str = "3.12", name: str | None = None) -> Op:
     """
     name_flag = f"--name {name} " if name else ""
     return lambda: f"cd {SKYWARD_DIR} && uv init {name_flag}--python {python} --no-readme"
+
+
+def _extract_package_name(spec: str) -> str:
+    """Strip version/extras from a pip specifier to get the bare package name."""
+    import re
+
+    return re.split(r"[><=!~\[;@\s]", spec, maxsplit=1)[0]
+
+
+def uv_configure_indexes(indexes: tuple[PipIndex, ...] | list[PipIndex]) -> Op:
+    """Append ``[[tool.uv.index]]`` and ``[tool.uv.sources]`` to pyproject.toml.
+
+    Generates explicit indexes so that only the listed packages resolve
+    from each custom index URL, preventing transitive deps from leaking.
+
+    Parameters
+    ----------
+    indexes : tuple[PipIndex, ...]
+        Scoped indexes to configure.
+    """
+    if not indexes:
+        return lambda: "# No pip indexes to configure"
+
+    def generate() -> str:
+        toml_lines: list[str] = []
+        sources: dict[str, str] = {}
+
+        for i, idx in enumerate(indexes):
+            name = f"index-{i}"
+            toml_lines.extend([
+                "[[tool.uv.index]]",
+                f'name = "{name}"',
+                f'url = "{idx.url}"',
+                "explicit = true",
+                "",
+            ])
+            for pkg in idx.packages:
+                sources[_extract_package_name(pkg)] = name
+
+        toml_lines.append("[tool.uv.sources]")
+        for pkg, idx_name in sources.items():
+            toml_lines.append(f'{pkg} = {{ index = "{idx_name}" }}')
+
+        content = "\n".join(toml_lines)
+        return f"cd {SKYWARD_DIR} && cat >> pyproject.toml << 'EOF'\n\n{content}\nEOF"
+
+    return generate
 
 
 # =============================================================================

@@ -30,6 +30,7 @@ from .spec import DEFAULT_IMAGE as DEFAULT_IMAGE
 from .spec import AllocationStrategy as AllocationStrategy
 from .spec import Architecture as Architecture
 from .spec import Image as Image
+from .spec import PipIndex as PipIndex
 from .spec import PoolSpec as PoolSpec
 from .spec import PoolState as PoolState
 from .spec import SelectionStrategy as SelectionStrategy
@@ -69,6 +70,7 @@ __all__ = [
     "ProviderConfig",
     "SelectionStrategy",
     "Spec",
+    "PipIndex",
     "Volume",
     "Worker",
     "WorkerExecutor",

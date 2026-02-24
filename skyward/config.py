@@ -92,8 +92,11 @@ def _build_provider(name: str, raw: RawConfig) -> ProviderConfig:
 
 
 def _build_image(raw: RawConfig) -> Image:
-    from skyward.api.spec import Image
+    from skyward.api.spec import Image, PipIndex
 
+    raw = dict(raw)
+    if raw_indexes := raw.get("pip_indexes"):
+        raw["pip_indexes"] = [PipIndex(**idx) for idx in raw_indexes]
     return Image(**raw)
 
 

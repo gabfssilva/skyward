@@ -63,6 +63,7 @@ from .ops import (
     stop_metrics,
     uv,
     uv_add,
+    uv_configure_indexes,
     uv_init,
     wait_for_port,
 )
@@ -79,6 +80,7 @@ __all__ = [
     "uv",
     "install_uv",
     "uv_add",
+    "uv_configure_indexes",
     "uv_init",
     "checkpoint",
     "emit_bootstrap_complete",

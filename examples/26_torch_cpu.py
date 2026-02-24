@@ -1,10 +1,10 @@
-"""Torch CPU with Extra Index URL.
+"""Torch CPU with Scoped Index.
 
 Validates that bootstrap correctly resolves PyTorch from the CPU index
 without breaking transitive dependencies like markupsafe.
 
-Uses --index-strategy unsafe-best-match to prevent uv from pulling
-incompatible wheels from the PyTorch index for non-torch packages.
+Uses uv's explicit index support (``[[tool.uv.index]]`` + ``[tool.uv.sources]``)
+to scope the PyTorch index to torch/torchvision only.
 """
 
 import skyward as sky
@@ -25,7 +25,12 @@ if __name__ == "__main__":
         provider=sky.AWS(),
         image=sky.Image(
             pip=["torch", "torchvision"],
-            pip_extra_index_url="https://download.pytorch.org/whl/cpu",
+            pip_indexes=[
+                sky.PipIndex(
+                    url="https://download.pytorch.org/whl/cpu",
+                    packages=["torch", "torchvision"],
+                ),
+            ],
         ),
     ) as pool:
         result = matrix_multiply(512) >> pool

@@ -177,7 +177,7 @@ def _merge_pip(base: Image, *packages: str) -> Image:
     return Image(
         python=base.python,
         pip=[*base.pip, *packages],
-        pip_extra_index_url=base.pip_extra_index_url,
+        pip_indexes=base.pip_indexes,
         apt=base.apt,
         env=base.env,
         skyward_source=base.skyward_source,

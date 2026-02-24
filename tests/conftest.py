@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 import skyward as sky
-from skyward import ComputePool, Image, Worker
+from skyward import ComputePool, Image, PipIndex, Worker
 
 
 @pytest.fixture(scope="session")
@@ -65,7 +65,7 @@ def torch_pool():
         memory_gb=2,
         image=Image(
             pip=["torch"],
-            pip_extra_index_url='https://download.pytorch.org/whl/cpu'
+            pip_indexes=[PipIndex(url="https://download.pytorch.org/whl/cpu", packages=["torch"])],
         ),
     ) as p:
         yield p
@@ -92,7 +92,7 @@ def keras_pool():
         memory_gb=2,
         image=Image(
             pip=["keras", "torch"],
-            pip_extra_index_url='https://download.pytorch.org/whl/cpu',
+            pip_indexes=[PipIndex(url="https://download.pytorch.org/whl/cpu", packages=["torch"])],
             env={"KERAS_BACKEND": "torch"},
         ),
     ) as p:
