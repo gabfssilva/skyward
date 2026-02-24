@@ -80,9 +80,10 @@ nav:
       - Infrastructure:
           - Providers: providers.md
           - Accelerators: accelerators.md
+          - Provision Controllers: provision-controllers.md
+          - Why Asyncio: why-asyncio.md
       - Clustering:
           - Architecture: architecture.md
-          - Why Asyncio: why-asyncio.md
           - Distributed Training: distributed-training.md
           - Distributed Collections: distributed-collections.md
       - Misc:

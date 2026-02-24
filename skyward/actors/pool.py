@@ -492,6 +492,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                             initial_node_ids=frozenset(ready_nodes),
                             initial_instance_map=inst_map,
                             next_node_id=max(ready_nodes) + 1 if ready_nodes else spec.nodes,
+                            tick_interval=spec.reconcile_tick_interval,
                         ),
                         "reconciler",
                     )

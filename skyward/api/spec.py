@@ -229,6 +229,7 @@ class PoolSpec:
     max_nodes: int | None = None
     autoscale_cooldown: float = 30.0
     autoscale_idle_timeout: float = 60.0
+    reconcile_tick_interval: float = 15.0
 
     def __post_init__(self) -> None:
         if self.nodes < 1:

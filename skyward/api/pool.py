@@ -353,6 +353,7 @@ class ComputePool:
         volumes: list[Volume] | tuple[Volume, ...] = ...,
         autoscale_cooldown: float = ...,
         autoscale_idle_timeout: float = ...,
+        reconcile_tick_interval: float = ...,
     ) -> None: ...
 
     @overload
@@ -372,6 +373,7 @@ class ComputePool:
         volumes: list[Volume] | tuple[Volume, ...] = ...,
         autoscale_cooldown: float = ...,
         autoscale_idle_timeout: float = ...,
+        reconcile_tick_interval: float = ...,
     ) -> None: ...
 
     def __init__(
@@ -399,6 +401,7 @@ class ComputePool:
         volumes: list[Volume] | tuple[Volume, ...] = (),
         autoscale_cooldown: float = 30.0,
         autoscale_idle_timeout: float = 60.0,
+        reconcile_tick_interval: float = 15.0,
     ) -> None:
         if specs and provider is not None:
             raise ValueError("Cannot specify both positional Spec args and 'provider'")
@@ -443,6 +446,7 @@ class ComputePool:
         self.volumes = tuple(volumes)
         self.autoscale_cooldown = autoscale_cooldown
         self.autoscale_idle_timeout = autoscale_idle_timeout
+        self.reconcile_tick_interval = reconcile_tick_interval
 
         self._log_handler_ids: list[int] = []
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -826,6 +830,7 @@ class ComputePool:
                 max_nodes=self._scaling[1] if self._scaling else None,
                 autoscale_cooldown=self.autoscale_cooldown,
                 autoscale_idle_timeout=self.autoscale_idle_timeout,
+                reconcile_tick_interval=self.reconcile_tick_interval,
             )
 
             logger.debug(
