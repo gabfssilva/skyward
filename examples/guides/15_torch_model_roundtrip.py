@@ -3,14 +3,8 @@
 Demonstrates that PyTorch nn.Module instances serialize seamlessly
 through cloudpickle — both as arguments and return values.
 
-    ┌────────┐  cloudpickle   ┌────────┐  pickle         ┌────────┐
-    │ Local  │ ── model() ──▶ │ Worker │ ── trained ──▶  │ Local  │
-    │  build model            │  train on cloud           │  evaluate
-    └────────┘                └────────┘                  └────────┘
-
 The entire nn.Module (architecture + weights) travels through the wire.
 No manual state_dict save/load, no checkpoint files — just pickle.
-
 """
 
 import torch
@@ -115,13 +109,11 @@ def evaluate(model: nn.Module, x: torch.Tensor, y: torch.Tensor) -> None:
 if __name__ == "__main__":
     x_train, y_train, x_test, y_test = load_mnist()
 
-    # Build an untrained model locally
     model = MNISTClassifier()
     print(f"Model: {sum(p.numel() for p in model.parameters()):,} parameters")
     print("Before training:")
     evaluate(model, x_test, y_test)
 
-    # Ship the model to the cloud, train, get it back
     with sky.ComputePool(
         provider=sky.Container(),
         vcpus=4,

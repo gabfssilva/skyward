@@ -98,6 +98,7 @@ nav:
           - Using Accelerators: guides/using-accelerators.md
           - Data Sharding: guides/data-sharding.md
           - Streaming: guides/streaming.md
+          - PyTorch Model Roundtrip: guides/torch-model-roundtrip.md
       - Distributed Training:
           - PyTorch Distributed: guides/pytorch-distributed.md
           - Keras Training: guides/keras-training.md
