@@ -8,6 +8,8 @@ from skyward.actors.messages import (
     NodeAvailable,
     NodeSlots,
     NodeUnavailable,
+    PressureReport,
+    RegisterPressureObserver,
     SubmitBroadcast,
     SubmitTask,
     TaskManagerMsg,
@@ -93,7 +95,19 @@ class _State:
     round_robin: int
     inflight: dict[str, ActorRef]
     broadcasts: dict[str, PendingBroadcast]
+    pressure_observer: ActorRef | None = None
 
+
+
+def _emit_pressure(s: _State) -> None:
+    if s.pressure_observer is None:
+        return
+    s.pressure_observer.tell(PressureReport(
+        queued=len(s.queue),
+        inflight=sum(slot.used for slot in s.nodes.values()),
+        total_capacity=sum(slot.total for slot in s.nodes.values()),
+        node_count=len(s.nodes),
+    ))
 
 
 def task_manager_actor() -> Behavior[TaskManagerMsg]:
@@ -119,7 +133,9 @@ def task_manager_actor() -> Behavior[TaskManagerMsg]:
                     )
                     if len(remaining) < len(s.queue):
                         log.debug("Drained {n} queued tasks", n=len(s.queue) - len(remaining))
-                    return active(replace(s, nodes=new_nodes, queue=remaining, round_robin=rr))
+                    new_s = replace(s, nodes=new_nodes, queue=remaining, round_robin=rr)
+                    _emit_pressure(new_s)
+                    return active(new_s)
 
                 case NodeUnavailable(node_id):
                     log.info("Node {nid} unavailable", nid=node_id)
@@ -131,6 +147,7 @@ def task_manager_actor() -> Behavior[TaskManagerMsg]:
                                 f"Node {node_id} lost during broadcast",
                             )
                     new_s = replace(s, nodes=new_nodes)
+                    _emit_pressure(new_s)
                     return _check_broadcasts(new_s)
 
                 case TaskResult(value, node_id, task_id=tid, error=err):
@@ -158,6 +175,7 @@ def task_manager_actor() -> Behavior[TaskManagerMsg]:
                         s.queue, new_nodes, s.round_robin, ctx.self, s.inflight,
                     )
                     new_s = replace(s, nodes=new_nodes, queue=remaining, round_robin=rr)
+                    _emit_pressure(new_s)
                     return _check_broadcasts(new_s) if broadcast_hit else active(new_s)
 
                 case SubmitTask() as task:
@@ -167,7 +185,9 @@ def task_manager_actor() -> Behavior[TaskManagerMsg]:
                             "No available nodes, queuing task (queue_size={qs})",
                             qs=len(s.queue) + 1,
                         )
-                        return active(replace(s, queue=(*s.queue, task)))
+                        new_s = replace(s, queue=(*s.queue, task))
+                        _emit_pressure(new_s)
+                        return active(new_s)
                     log.debug("Dispatching task to node {nid}", nid=nid)
                     new_nodes = _dispatch(
                         nid, task.task_id, task.fn, task.args, task.kwargs,
@@ -194,6 +214,12 @@ def task_manager_actor() -> Behavior[TaskManagerMsg]:
                         caller=bcast.reply_to, pending=pending_nodes,
                     )
                     return active(replace(s, nodes=new_nodes))
+
+                case RegisterPressureObserver(observer=observer):
+                    log.info("Pressure observer registered")
+                    new_s = replace(s, pressure_observer=observer)
+                    _emit_pressure(new_s)
+                    return active(new_s)
 
             return Behaviors.same()
         return Behaviors.receive(receive)

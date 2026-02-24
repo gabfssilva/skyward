@@ -38,6 +38,8 @@ from casty import ActorRef, ActorSystem, Behaviors, CastyConfig
 
 from skyward.accelerators import Accelerator
 from skyward.actors.messages import (
+    CurrentNodeCount,
+    GetCurrentNodes,
     NodeInstance,
     PoolMsg,
     ProvisionFailed,
@@ -331,7 +333,7 @@ class ComputePool:
     def __init__(
         self, *,
         provider: ProviderConfig,
-        nodes: int = ...,
+        nodes: int | tuple[int, int] = ...,
         accelerator: str | Accelerator | None = ...,
         vcpus: float | None = ...,
         memory_gb: float | None = ...,
@@ -372,7 +374,7 @@ class ComputePool:
         self,
         *specs: Spec,
         provider: ProviderConfig | None = None,
-        nodes: int = 1,
+        nodes: int | tuple[int, int] = 1,
         accelerator: str | Accelerator | None = None,
         vcpus: float | None = None,
         memory_gb: float | None = None,
@@ -399,12 +401,20 @@ class ComputePool:
 
         if specs:
             self._specs = specs
+            self._scaling: tuple[int, int] | None = None
         else:
             assert provider is not None
+            match nodes:
+                case (min_n, max_n):
+                    spec_nodes = min_n
+                    self._scaling = (min_n, max_n)
+                case int(n):
+                    spec_nodes = n
+                    self._scaling = None
             self._specs = (Spec(
                 provider=provider,
                 accelerator=accelerator,
-                nodes=nodes,
+                nodes=spec_nodes,
                 vcpus=vcpus,
                 memory_gb=memory_gb,
                 architecture=architecture,
@@ -460,10 +470,16 @@ class ComputePool:
             self._log_handler_ids = setup_logging(log_config)
 
         first = self._specs[0]
-        logger.info(
-            "Starting pool with {n} nodes ({accel})",
-            n=first.nodes, accel=first.accelerator,
-        )
+        if self._scaling:
+            logger.info(
+                "Starting pool with {min}-{max} nodes ({accel})",
+                min=self._scaling[0], max=self._scaling[1], accel=first.accelerator,
+            )
+        else:
+            logger.info(
+                "Starting pool with {n} nodes ({accel})",
+                n=first.nodes, accel=first.accelerator,
+            )
 
         from skyward.app import App, get_app
 
@@ -482,7 +498,8 @@ class ComputePool:
         )
         self._loop_thread.start()
 
-        _check_fd_budget(first.nodes)
+        fd_nodes = self._scaling[1] if self._scaling else first.nodes
+        _check_fd_budget(fd_nodes)
 
         try:
             self._run_sync(self._start_async())
@@ -747,6 +764,19 @@ class ComputePool:
         logger.debug("Creating distributed lock: {name}", name=name)
         return self._registry.lock(name)
 
+    def current_nodes(self) -> int:
+        """Return the number of ready nodes in the pool."""
+        if not self._active or self._pool_ref is None or self._system is None:
+            raise RuntimeError("Pool is not active")
+        result: CurrentNodeCount = self._run_sync(
+            self._system.ask(
+                self._pool_ref,
+                lambda reply_to: GetCurrentNodes(reply_to=reply_to),
+                timeout=5.0,
+            ),
+        )
+        return result.ready
+
     async def _select_offers(
         self,
     ) -> tuple[tuple[Offer, ...], ProviderConfig, Any, PoolSpec]:
@@ -784,6 +814,8 @@ class ComputePool:
                 provision_retry_delay=self.provision_retry_delay,
                 max_provision_attempts=self.max_provision_attempts,
                 volumes=self.volumes,
+                min_nodes=self._scaling[0] if self._scaling else None,
+                max_nodes=self._scaling[1] if self._scaling else None,
             )
 
             logger.debug(

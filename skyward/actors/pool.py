@@ -8,12 +8,17 @@ from casty import ActorContext, ActorRef, Behavior, Behaviors, ClusterClient
 
 from skyward.actors.messages import (
     ClusterReady,
+    CurrentNodeCount,
+    DrainComplete,
+    DrainNode,
+    GetCurrentNodes,
     HeadAddressKnown,
     InstancesProvisioned,
     JoinCluster,
     NodeAvailable,
     NodeBecameReady,
     NodeInstance,
+    NodeJoined,
     NodeLost,
     NodeUnavailable,
     PoolMsg,
@@ -21,6 +26,9 @@ from skyward.actors.messages import (
     PoolStopped,
     Provision,
     ProvisionFailed,
+    ReconcilerNodeLost,
+    RegisterPressureObserver,
+    SpawnNodes,
     StartPool,
     StopPool,
     SubmitBroadcast,
@@ -460,6 +468,8 @@ def pool_actor() -> Behavior[PoolMsg]:
         client: ClusterClient,
         ready_nodes: frozenset[int],
         head_addr: str,
+        reconciler_ref: ActorRef | None = None,
+        instance_map: dict[NodeId, str] | None = None,
     ) -> Behavior[PoolMsg]:
         log = logger.bind(actor="pool", state="ready")
 
@@ -467,7 +477,45 @@ def pool_actor() -> Behavior[PoolMsg]:
             match msg:
                 case PoolStarted() as started:
                     reply_to.tell(started)
-                    return Behaviors.same()
+                    rec_ref = None
+                    inst_map = None
+                    if spec.auto_scaling:
+                        from skyward.actors.autoscaler import autoscaler_actor
+                        from skyward.actors.reconciler import reconciler_actor
+
+                        assert spec.min_nodes is not None
+                        assert spec.max_nodes is not None
+                        inst_map = {nid: ni.instance.id for nid, ni in instances.items()}
+                        rec_ref = ctx.spawn(
+                            reconciler_actor(
+                                pool=ctx.self,
+                                provider=provider,
+                                cluster=cluster,
+                                min_nodes=spec.min_nodes,
+                                max_nodes=spec.max_nodes,
+                                initial_node_ids=frozenset(ready_nodes),
+                                initial_instance_map=inst_map,
+                                next_node_id=max(ready_nodes) + 1 if ready_nodes else spec.nodes,
+                            ),
+                            "reconciler",
+                        )
+                        as_ref = ctx.spawn(
+                            autoscaler_actor(
+                                min_nodes=spec.min_nodes,
+                                max_nodes=spec.max_nodes,
+                                reconciler=rec_ref,
+                                slots_per_node=spec.worker.concurrency + 1,
+                                initial_count=spec.nodes,
+                            ),
+                            "autoscaler",
+                        )
+                        tm_ref.tell(RegisterPressureObserver(observer=as_ref))
+                    return ready(
+                        spec, provider, cluster, cluster_id, instances,
+                        reply_to, node_refs, tm_ref, client=client,
+                        ready_nodes=ready_nodes, head_addr=head_addr,
+                        reconciler_ref=rec_ref, instance_map=inst_map,
+                    )
                 case SubmitTask() as task:
                     log.debug("Task submitted")
                     tm_ref.tell(task)
@@ -488,12 +536,16 @@ def pool_actor() -> Behavior[PoolMsg]:
                         node_ref=node_refs[nid],
                         slots=spec.worker.concurrency,
                     ))
+                    if reconciler_ref is not None:
+                        reconciler_ref.tell(NodeJoined(node_id=nid))
                     return ready(
                         spec, provider, cluster, cluster_id, instances,
                         reply_to, node_refs, tm_ref,
                         client=client,
                         ready_nodes=ready_nodes | {nid},
                         head_addr=head_addr,
+                        reconciler_ref=reconciler_ref,
+                        instance_map=instance_map,
                     )
                 case NodeLost(node_id=nid):
                     log.warning(
@@ -501,11 +553,15 @@ def pool_actor() -> Behavior[PoolMsg]:
                         nid=nid, remaining=len(ready_nodes) - 1,
                     )
                     tm_ref.tell(NodeUnavailable(node_id=nid))
+                    if reconciler_ref is not None:
+                        reconciler_ref.tell(ReconcilerNodeLost(
+                            node_id=nid, reason="node lost",
+                        ))
                     if head_addr:
                         head_msg = HeadAddressKnown(
                             head_addr=head_addr,
                             casty_port=25520,
-                            num_nodes=spec.nodes,
+                            num_nodes=spec.max_nodes or spec.nodes,
                             worker_concurrency=spec.worker.concurrency,
                             worker_executor=spec.worker.executor,
                         )
@@ -516,7 +572,71 @@ def pool_actor() -> Behavior[PoolMsg]:
                         client=client,
                         ready_nodes=ready_nodes - {nid},
                         head_addr=head_addr,
+                        reconciler_ref=reconciler_ref,
+                        instance_map=instance_map,
                     )
+                case SpawnNodes(
+                    instances=new_instances, cluster=upd_cluster,
+                    start_node_id=start_id,
+                ):
+                    log.info(
+                        "Spawning {n} dynamic nodes from id {sid}",
+                        n=len(new_instances), sid=start_id,
+                    )
+                    new_node_refs = dict(node_refs)
+                    new_inst_map = dict(instance_map or {})
+                    for i, inst in enumerate(new_instances):
+                        nid = start_id + i
+                        ref = ctx.spawn(
+                            node_actor(
+                                node_id=nid, pool=ctx.self,
+                                ssh_timeout=spec.ssh_timeout,
+                                ssh_retry_interval=spec.ssh_retry_interval,
+                            ),
+                            f"node-{nid}",
+                        )
+                        ref.tell(Provision(
+                            cluster=upd_cluster, provider=provider,
+                            instance=inst,
+                        ))
+                        if head_addr:
+                            ref.tell(HeadAddressKnown(
+                                head_addr=head_addr, casty_port=25520,
+                                num_nodes=spec.max_nodes or spec.nodes,
+                                worker_concurrency=spec.worker.concurrency,
+                                worker_executor=spec.worker.resolved_executor,
+                            ))
+                        new_node_refs[nid] = ref
+                        new_inst_map[nid] = inst.id
+                    return ready(
+                        spec, provider, cluster, cluster_id, instances,
+                        reply_to, new_node_refs, tm_ref, client=client,
+                        ready_nodes=ready_nodes, head_addr=head_addr,
+                        reconciler_ref=reconciler_ref,
+                        instance_map=new_inst_map,
+                    )
+
+                case DrainNode(node_id=nid, reply_to=drain_reply):
+                    log.info("Draining node {nid}", nid=nid)
+                    tm_ref.tell(NodeUnavailable(node_id=nid))
+                    iid = (instance_map or {}).get(nid, "")
+                    drain_reply.tell(DrainComplete(node_id=nid, instance_id=iid))
+                    new_node_refs = {k: v for k, v in node_refs.items() if k != nid}
+                    new_ready = ready_nodes - {nid}
+                    return ready(
+                        spec, provider, cluster, cluster_id, instances,
+                        reply_to, new_node_refs, tm_ref, client=client,
+                        ready_nodes=new_ready, head_addr=head_addr,
+                        reconciler_ref=reconciler_ref,
+                        instance_map=instance_map,
+                    )
+
+                case GetCurrentNodes(reply_to=query_reply):
+                    query_reply.tell(CurrentNodeCount(
+                        count=len(node_refs), ready=len(ready_nodes),
+                    ))
+                    return Behaviors.same()
+
                 case StopPool(reply_to=stop_reply):
                     log.debug(
                         "StopPool, shutting down cluster {cid}",

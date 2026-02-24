@@ -568,6 +568,9 @@ type PoolMsg = (
     | ClusterReady
     | InstancesProvisioned
     | _ShutdownDone
+    | SpawnNodes
+    | DrainNode
+    | GetCurrentNodes
 )
 
 
@@ -621,9 +624,130 @@ class TaskSubmitted:
     node_id: NodeId
 
 
+# ── Autoscaler ────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class PressureReport:
+    queued: int
+    inflight: int
+    total_capacity: int
+    node_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ScaleTick:
+    pass
+
+
+type AutoscalerMsg = PressureReport | _ScaleTick
+
+
+# ── Reconciler ────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class DesiredCountChanged:
+    desired: int
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReconcilerNodeLost:
+    node_id: NodeId
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class NodeJoined:
+    node_id: NodeId
+
+
+@dataclass(frozen=True, slots=True)
+class _ReconcileTick:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class _ProvisionResult:
+    instances: tuple[Any, ...]
+    cluster: Any
+
+
+@dataclass(frozen=True, slots=True)
+class _ProvisionError:
+    error: str
+
+
+@dataclass(frozen=True, slots=True)
+class _TerminateResult:
+    node_ids: tuple[NodeId, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _TerminateError:
+    node_ids: tuple[NodeId, ...]
+    error: str
+
+
+type ReconcilerMsg = (
+    DesiredCountChanged
+    | ReconcilerNodeLost
+    | NodeJoined
+    | DrainComplete
+    | _ReconcileTick
+    | _ProvisionResult
+    | _ProvisionError
+    | _TerminateResult
+    | _TerminateError
+)
+
+
+# ── Pool ↔ Reconciler ────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class SpawnNodes:
+    instances: tuple[Any, ...]
+    cluster: Any
+    start_node_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class DrainNode:
+    node_id: NodeId
+    reply_to: ActorRef[DrainComplete]
+
+
+@dataclass(frozen=True, slots=True)
+class DrainComplete:
+    node_id: NodeId
+    instance_id: str
+
+
+# ── Pool Query ────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class GetCurrentNodes:
+    reply_to: ActorRef[CurrentNodeCount]
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentNodeCount:
+    count: int
+    ready: int
+
+
+@dataclass(frozen=True, slots=True)
+class RegisterPressureObserver:
+    observer: ActorRef[PressureReport]
+
+
 type TaskManagerMsg = (
     NodeAvailable | NodeUnavailable | TaskResult
     | SubmitTask | SubmitBroadcast | TaskSubmitted
+    | RegisterPressureObserver
 )
 
 

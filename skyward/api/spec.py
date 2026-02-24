@@ -26,6 +26,7 @@ from skyward.providers.bootstrap import (
     shell_vars,
     start_metrics,
     uv_add,
+    uv_configure_indexes,
     uv_init,
 )
 
@@ -119,6 +120,29 @@ def _detect_skyward_source() -> SkywardSource:
 
 
 @dataclass(frozen=True, slots=True)
+class PipIndex:
+    """Scoped package index for uv.
+
+    Maps specific packages to a custom index URL, generating
+    ``[[tool.uv.index]]`` entries with ``explicit = true`` so that
+    only the listed packages resolve from that index.
+
+    Parameters
+    ----------
+    url : str
+        Index URL (e.g. ``https://download.pytorch.org/whl/cpu``).
+    packages : tuple[str, ...]
+        Package names that should resolve from this index.
+    """
+
+    url: str
+    packages: list[str] | tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "packages", tuple(self.packages) if self.packages else ())
+
+
+@dataclass(frozen=True, slots=True)
 class Volume:
     """S3-backed volume mounted as local filesystem via FUSE.
 
@@ -201,10 +225,19 @@ class PoolSpec:
     provision_retry_delay: float = 10.0
     max_provision_attempts: int = 10
     volumes: tuple[Volume, ...] = ()
+    min_nodes: int | None = None
+    max_nodes: int | None = None
 
     def __post_init__(self) -> None:
         if self.nodes < 1:
             raise ValueError(f"nodes must be >= 1, got {self.nodes}")
+        if self.min_nodes is not None and self.max_nodes is not None:
+            if self.min_nodes < 1:
+                raise ValueError(f"min_nodes must be >= 1, got {self.min_nodes}")
+            if self.max_nodes < self.min_nodes:
+                raise ValueError(
+                    f"max_nodes ({self.max_nodes}) must be >= min_nodes ({self.min_nodes})"
+                )
 
     @property
     def accelerator_name(self) -> str | None:
@@ -228,6 +261,10 @@ class PoolSpec:
             case accel:
                 return accel.count
 
+    @property
+    def auto_scaling(self) -> bool:
+        return self.min_nodes is not None and self.max_nodes is not None
+
 
 @dataclass(frozen=True, slots=True)
 class Image:
@@ -240,7 +277,8 @@ class Image:
     Args:
         python: Python version to use.
         pip: List of pip packages to install.
-        pip_extra_index_url: Extra PyPI index URL.
+        pip_indexes: Scoped package indexes. Each PipIndex maps specific
+            packages to a custom index URL via uv's explicit index support.
         apt: List of apt packages to install.
         env: Environment variables to export.
         shell_vars: Shell commands for dynamic variable capture.
@@ -274,7 +312,7 @@ class Image:
 
     python: str | Literal["auto"] = "auto"
     pip: list[str] | tuple[str, ...] = ()
-    pip_extra_index_url: str | None = None
+    pip_indexes: list[PipIndex] | tuple[PipIndex, ...] = ()
     apt: list[str] | tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
     shell_vars: dict[str, str] = field(default_factory=dict)
@@ -291,6 +329,7 @@ class Image:
             object.__setattr__(self, "python", f"{sys.version_info.major}.{sys.version_info.minor}")
 
         object.__setattr__(self, "pip", tuple(self.pip) if self.pip else ())
+        object.__setattr__(self, "pip_indexes", tuple(self.pip_indexes) if self.pip_indexes else ())
         object.__setattr__(self, "apt", tuple(self.apt) if self.apt else ())
         object.__setattr__(self, "includes", tuple(self.includes) if self.includes else ())
         object.__setattr__(self, "excludes", tuple(self.excludes) if self.excludes else ())
@@ -324,7 +363,10 @@ class Image:
             {
                 "python": self.python,
                 "pip": sorted(self.pip),
-                "pip_extra_index_url": self.pip_extra_index_url,
+                "pip_indexes": [
+                    {"url": idx.url, "packages": sorted(idx.packages)}
+                    for idx in self.pip_indexes
+                ],
                 "apt": sorted(self.apt),
                 "env": dict(sorted(self.env.items())),
                 "shell_vars": dict(sorted(self.shell_vars.items())),
@@ -361,16 +403,13 @@ class Image:
 
         ops.extend([
             phase("apt", apt("curl", "git", *self.apt)),
-            phase_simple("uv", install_uv(), uv_init(self.python, name="skyward-bootstrap")),
-            phase(
-                "deps",
-                uv_add(
-                    "cloudpickle",
-                    "lz4",
-                    *self.pip,
-                    extra_index=self.pip_extra_index_url,
-                ),
+            phase_simple(
+                "uv",
+                install_uv(),
+                uv_init(self.python, name="skyward-bootstrap"),
+                uv_configure_indexes(self.pip_indexes),
             ),
+            phase("deps", uv_add("cloudpickle", "lz4", *self.pip)),
         ])
 
         match self.skyward_source:
