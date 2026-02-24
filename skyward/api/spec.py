@@ -227,6 +227,8 @@ class PoolSpec:
     volumes: tuple[Volume, ...] = ()
     min_nodes: int | None = None
     max_nodes: int | None = None
+    autoscale_cooldown: float = 30.0
+    autoscale_idle_timeout: float = 60.0
 
     def __post_init__(self) -> None:
         if self.nodes < 1:

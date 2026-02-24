@@ -15,17 +15,19 @@ def heavy_work(seconds: int) -> str:
 
 if __name__ == "__main__":
     with sky.ComputePool(
-        provider=sky.Container(),
+        provider=sky.AWS(),
         nodes=(1, 4),
         worker=Worker(concurrency=2),
         vcpus=1,
         memory_gb=1,
+        autoscale_idle_timeout=10,
+        autoscale_cooldown=20
     ) as pool:
         print(f"initial: {pool.current_nodes()} node(s)")
 
-        futures = [heavy_work(30) > pool for _ in range(12)]
+        futures = [heavy_work(30) > pool for _ in range(50)]
 
-        sleep(30)
+        sleep(120)
         print(f"under load: {pool.current_nodes()} node(s)")
 
         nodes_used = {f.result() for f in futures}

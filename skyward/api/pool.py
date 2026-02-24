@@ -351,6 +351,8 @@ class ComputePool:
         provision_retry_delay: float = ...,
         max_provision_attempts: int = ...,
         volumes: list[Volume] | tuple[Volume, ...] = ...,
+        autoscale_cooldown: float = ...,
+        autoscale_idle_timeout: float = ...,
     ) -> None: ...
 
     @overload
@@ -368,6 +370,8 @@ class ComputePool:
         provision_retry_delay: float = ...,
         max_provision_attempts: int = ...,
         volumes: list[Volume] | tuple[Volume, ...] = ...,
+        autoscale_cooldown: float = ...,
+        autoscale_idle_timeout: float = ...,
     ) -> None: ...
 
     def __init__(
@@ -393,6 +397,8 @@ class ComputePool:
         provision_retry_delay: float = 10.0,
         max_provision_attempts: int = 10,
         volumes: list[Volume] | tuple[Volume, ...] = (),
+        autoscale_cooldown: float = 30.0,
+        autoscale_idle_timeout: float = 60.0,
     ) -> None:
         if specs and provider is not None:
             raise ValueError("Cannot specify both positional Spec args and 'provider'")
@@ -435,6 +441,8 @@ class ComputePool:
         self.provision_retry_delay = provision_retry_delay
         self.max_provision_attempts = max_provision_attempts
         self.volumes = tuple(volumes)
+        self.autoscale_cooldown = autoscale_cooldown
+        self.autoscale_idle_timeout = autoscale_idle_timeout
 
         self._log_handler_ids: list[int] = []
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -816,6 +824,8 @@ class ComputePool:
                 volumes=self.volumes,
                 min_nodes=self._scaling[0] if self._scaling else None,
                 max_nodes=self._scaling[1] if self._scaling else None,
+                autoscale_cooldown=self.autoscale_cooldown,
+                autoscale_idle_timeout=self.autoscale_idle_timeout,
             )
 
             logger.debug(

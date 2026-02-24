@@ -6,7 +6,7 @@ import json
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import cast
 
@@ -37,6 +37,7 @@ class AWSOfferSpecific:
 class AWSSpecific:
     resources: AWSResources
     ssh_key_name: str
+    pinned_az: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +62,7 @@ class _InstanceDetail:
     spot: bool
     instance_type: str
     state: str
+    az: str = ""
 
 
 class AWSProvider(Provider[AWS, AWSSpecific]):
@@ -218,10 +220,21 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
             instances=instance_configs,
             user_data=user_data,
             n=count,
+            pinned_az=cluster.specific.pinned_az,
         )
 
         details = await _get_instance_details(self._ec2, instance_ids)
         detail_map = {d.id: d for d in details}
+
+        updated_cluster = cluster
+        if not cluster.specific.pinned_az and details:
+            az = details[0].az
+            if az:
+                log.info("Pinning cluster to AZ {az}", az=az)
+                updated_cluster = replace(
+                    cluster,
+                    specific=replace(cluster.specific, pinned_az=az),
+                )
 
         instances: list[Instance] = []
         for iid in instance_ids:
@@ -234,7 +247,7 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
                 spot=spot_actual,
                 region=self._config.region,
             ))
-        return cluster, instances
+        return updated_cluster, instances
 
     async def get_instance(
         self, cluster: Cluster[AWSSpecific], instance_id: str,
@@ -868,6 +881,7 @@ async def _launch_fleet(
     user_data: str,
     n: int,
     allocation_strategy: AllocationStrategy | None = None,
+    pinned_az: str | None = None,
 ) -> list[str]:
     strategy = allocation_strategy or config.allocation_strategy
     spot = instances[0].spot if instances else False
@@ -877,6 +891,7 @@ async def _launch_fleet(
             client,
             tuple(i.instance_type for i in instances),
             resources.subnet_ids,
+            pinned_az=pinned_az,
         )
 
         template_name = f"skyward-{uuid.uuid4().hex[:8]}"
@@ -982,6 +997,7 @@ async def _get_valid_subnets(
     client: object,
     instance_types: tuple[str, ...],
     subnet_ids: tuple[str, ...],
+    pinned_az: str | None = None,
 ) -> tuple[str, ...]:
     response = await client.describe_instance_type_offerings(  # type: ignore[union-attr]
         LocationType="availability-zone",
@@ -989,11 +1005,17 @@ async def _get_valid_subnets(
     )
     valid_azs = {o["Location"] for o in response.get("InstanceTypeOfferings", [])}
 
+    if pinned_az:
+        valid_azs &= {pinned_az}
+
     subnets = await client.describe_subnets(SubnetIds=list(subnet_ids))  # type: ignore[union-attr]
     valid = [s["SubnetId"] for s in subnets["Subnets"] if s["AvailabilityZone"] in valid_azs]
 
     if not valid:
-        raise RuntimeError(f"No AZs support {instance_types}")
+        msg = f"No AZs support {instance_types}"
+        if pinned_az:
+            msg += f" in pinned AZ {pinned_az}"
+        raise RuntimeError(msg)
 
     return tuple(valid)
 
@@ -1017,6 +1039,7 @@ async def _get_instance_details(
                     spot=i.get("InstanceLifecycle") == "spot",
                     instance_type=i.get("InstanceType", ""),
                     state=i["State"]["Name"],
+                    az=i.get("Placement", {}).get("AvailabilityZone", ""),
                 )
                 for r in response["Reservations"]
                 for i in r["Instances"]

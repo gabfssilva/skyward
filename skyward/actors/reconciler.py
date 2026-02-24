@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
+
+if TYPE_CHECKING:
+    from skyward.api.model import Cluster
 
 from skyward.actors.messages import (
     DesiredCountChanged,
@@ -35,12 +38,13 @@ class _State:
     draining: frozenset[NodeId]
     next_node_id: int
     instance_map: dict[NodeId, str]
+    cluster: Cluster
 
 
 def reconciler_actor(
     pool: ActorRef[PoolMsg],
     provider: Any,
-    cluster: Any,
+    cluster: Cluster,
     min_nodes: int,
     max_nodes: int,
     initial_node_ids: frozenset[NodeId],
@@ -72,6 +76,7 @@ def reconciler_actor(
             draining=frozenset(),
             next_node_id=next_node_id,
             instance_map=dict(initial_instance_map),
+            cluster=cluster,
         )
         log.info(
             "Reconciler started: desired={d}, current={c}, next_id={nid}",
@@ -89,7 +94,7 @@ def reconciler_actor(
         log.info("Scaling up: provisioning {n} instances", n=needed)
 
         ctx.pipe_to_self(
-            provider.provision(cluster, needed),
+            provider.provision(s.cluster, needed),
             mapper=lambda result: _ProvisionResult(
                 instances=tuple(result[1]), cluster=result[0],
             ),
@@ -200,6 +205,7 @@ def reconciler_actor(
                         pending=s.pending | frozenset(new_pending_ids),
                         next_node_id=start_id + len(instances),
                         instance_map=new_map,
+                        cluster=upd_cluster,
                     )
                     if new_s.desired <= _effective(new_s):
                         return watching(new_s)
@@ -255,7 +261,7 @@ def reconciler_actor(
                     log.info("Node {nid} drained, terminating instance {iid}", nid=nid, iid=iid)
                     if iid:
                         ctx.pipe_to_self(
-                            provider.terminate(cluster, (iid,)),
+                            provider.terminate(s.cluster, (iid,)),
                             mapper=lambda _: _TerminateResult(node_ids=(nid,)),
                             on_failure=lambda err: _TerminateError(
                                 node_ids=(nid,), error=str(err),

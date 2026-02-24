@@ -2,6 +2,8 @@ from dataclasses import replace
 
 from skyward.actors.reconciler import _State
 
+_FAKE_CLUSTER: object = object()
+
 
 def _make_state(
     desired: int = 2,
@@ -18,6 +20,7 @@ def _make_state(
         draining=draining or frozenset(),
         next_node_id=next_node_id,
         instance_map=instance_map or {0: "i-0", 1: "i-1"},
+        cluster=_FAKE_CLUSTER,  # type: ignore[arg-type]
     )
 
 

@@ -477,28 +477,29 @@ def pool_actor() -> Behavior[PoolMsg]:
             match msg:
                 case PoolStarted() as started:
                     reply_to.tell(started)
-                    rec_ref = None
-                    inst_map = None
+                    from skyward.actors.reconciler import reconciler_actor
+
+                    min_n = spec.min_nodes or spec.nodes
+                    max_n = spec.max_nodes or spec.nodes
+                    inst_map = {nid: ni.instance.id for nid, ni in instances.items()}
+                    rec_ref = ctx.spawn(
+                        reconciler_actor(
+                            pool=ctx.self,
+                            provider=provider,
+                            cluster=cluster,
+                            min_nodes=min_n,
+                            max_nodes=max_n,
+                            initial_node_ids=frozenset(ready_nodes),
+                            initial_instance_map=inst_map,
+                            next_node_id=max(ready_nodes) + 1 if ready_nodes else spec.nodes,
+                        ),
+                        "reconciler",
+                    )
                     if spec.auto_scaling:
                         from skyward.actors.autoscaler import autoscaler_actor
-                        from skyward.actors.reconciler import reconciler_actor
 
                         assert spec.min_nodes is not None
                         assert spec.max_nodes is not None
-                        inst_map = {nid: ni.instance.id for nid, ni in instances.items()}
-                        rec_ref = ctx.spawn(
-                            reconciler_actor(
-                                pool=ctx.self,
-                                provider=provider,
-                                cluster=cluster,
-                                min_nodes=spec.min_nodes,
-                                max_nodes=spec.max_nodes,
-                                initial_node_ids=frozenset(ready_nodes),
-                                initial_instance_map=inst_map,
-                                next_node_id=max(ready_nodes) + 1 if ready_nodes else spec.nodes,
-                            ),
-                            "reconciler",
-                        )
                         as_ref = ctx.spawn(
                             autoscaler_actor(
                                 min_nodes=spec.min_nodes,
@@ -506,6 +507,8 @@ def pool_actor() -> Behavior[PoolMsg]:
                                 reconciler=rec_ref,
                                 slots_per_node=spec.worker.concurrency + 1,
                                 initial_count=spec.nodes,
+                                cooldown=spec.autoscale_cooldown,
+                                scale_down_idle_seconds=spec.autoscale_idle_timeout,
                             ),
                             "autoscaler",
                         )

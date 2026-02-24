@@ -17,14 +17,12 @@ from types import MappingProxyType
 from typing import Any
 
 from casty import ActorContext, Behavior, Behaviors, SpyEvent, Terminated
-from rich.columns import Columns
+from rich.align import Align
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
-from rich.spinner import Spinner
 from rich.style import Style
 from rich.table import Table
 from rich.text import Text
-from rich.tree import Tree
 
 from skyward.api.model import Cluster, Instance
 from skyward.api.spec import PoolSpec
@@ -35,18 +33,24 @@ from .messages import (
     BootstrapDone,
     BootstrapPhase,
     ClusterReady,
+    DesiredCountChanged,
+    DrainComplete,
+    DrainNode,
     Error,
     ExecuteOnNode,
     InstancesProvisioned,
     Log,
     Metric,
     NodeBecameReady,
+    NodeJoined,
     NodeLost,
     PoolStarted,
     PoolStopped,
     Preempted,
     Provision,
+    ReconcilerNodeLost,
     ShutdownRequested,
+    SpawnNodes,
     StartPool,
     StopPool,
     SubmitBroadcast,
@@ -115,6 +119,15 @@ class _State:
     task_fn_stats: MappingProxyType[str, tuple[float, ...]] = MappingProxyType({})
     task_fn_failed: MappingProxyType[str, int] = MappingProxyType({})
     ready_at: float = 0.0
+    desired_nodes: int = 0
+    pending_nodes: int = 0
+    draining_nodes: int = 0
+    reconciler_state: str = "watching"
+    min_nodes: int | None = None
+    max_nodes: int | None = None
+    is_elastic: bool = False
+    spec_accelerator_memory: str = ""
+    tasks_per_instance: MappingProxyType[str, int] = MappingProxyType({})
 
 
 # --- State transitions (pure) ---
@@ -134,24 +147,28 @@ def _on_instances_provisioned(
     return replace(state, cluster=cluster, instances=instances)
 
 
+def _advance(current: _Phase, candidate: _Phase) -> _Phase:
+    return candidate if candidate.value > current.value else current
+
+
 def _on_ssh_connected(state: _State, instance_id: str) -> _State:
     nodes = MappingProxyType({**state.nodes, instance_id: _NodeStatus.SSH})
     ssh_count = sum(1 for s in nodes.values() if s.value >= _NodeStatus.SSH.value)
-    phase = _Phase.BOOTSTRAP if ssh_count >= state.total_nodes else state.phase
+    phase = _advance(state.phase, _Phase.BOOTSTRAP) if ssh_count >= state.total_nodes else state.phase
     return replace(state, nodes=nodes, phase=phase)
 
 
 def _on_bootstrap_done(state: _State, instance_id: str) -> _State:
     nodes = MappingProxyType({**state.nodes, instance_id: _NodeStatus.BOOTSTRAPPING})
     done = sum(1 for s in nodes.values() if s.value >= _NodeStatus.BOOTSTRAPPING.value)
-    phase = _Phase.WORKERS if done >= state.total_nodes else state.phase
+    phase = _advance(state.phase, _Phase.WORKERS) if done >= state.total_nodes else state.phase
     return replace(state, nodes=nodes, phase=phase)
 
 
 def _on_worker_started(state: _State, instance_id: str) -> _State:
     nodes = MappingProxyType({**state.nodes, instance_id: _NodeStatus.READY})
     ready = sum(1 for s in nodes.values() if s.value >= _NodeStatus.READY.value)
-    phase = _Phase.READY if ready >= state.total_nodes else state.phase
+    phase = _advance(state.phase, _Phase.READY) if ready >= state.total_nodes else state.phase
     ready_at = time.monotonic() if phase == _Phase.READY and not state.ready_at else state.ready_at
     return replace(state, nodes=nodes, phase=phase, ready_at=ready_at)
 
@@ -193,12 +210,16 @@ def _on_task_done(state: _State, task_id: str, elapsed: float) -> _State:
     fn_stats[fn_name] = (*fn_stats.get(fn_name, ()), elapsed)
     inflight = dict(state.inflight)
     inflight.pop(task_id, None)
+    per_inst = dict(state.tasks_per_instance)
+    if entry and entry.instance_id:
+        per_inst[entry.instance_id] = per_inst.get(entry.instance_id, 0) + 1
     return replace(
         state, tasks_running=max(0, state.tasks_running - 1),
         tasks_done=state.tasks_done + 1,
         task_latencies=(*state.task_latencies, elapsed),
         inflight=MappingProxyType(inflight),
         task_fn_stats=MappingProxyType(fn_stats),
+        tasks_per_instance=MappingProxyType(per_inst),
     )
 
 
@@ -234,6 +255,59 @@ def _on_metric(state: _State, instance_id: str, name: str, value: float) -> _Sta
     return replace(state, metrics=new_metrics)
 
 
+def _on_desired_changed(state: _State, desired: int) -> _State:
+    match desired:
+        case d if d > state.desired_nodes:
+            reconciler = "scaling_up"
+        case d if d < len(state.nodes):
+            reconciler = "draining"
+        case _:
+            reconciler = "watching"
+    return replace(state, desired_nodes=desired, reconciler_state=reconciler)
+
+
+def _on_spawn_nodes(
+    state: _State, instances: tuple[Instance, ...], cluster: Cluster | None = None,
+) -> _State:
+    return replace(
+        state,
+        pending_nodes=state.pending_nodes + len(instances),
+        instances=(*state.instances, *instances),
+        total_nodes=state.total_nodes + len(instances),
+        cluster=cluster or state.cluster,
+    )
+
+
+def _on_node_joined(state: _State) -> _State:
+    pending = max(0, state.pending_nodes - 1)
+    reconciler = "watching" if pending == 0 and state.draining_nodes == 0 else state.reconciler_state
+    return replace(state, pending_nodes=pending, reconciler_state=reconciler)
+
+
+def _on_drain_node(state: _State) -> _State:
+    return replace(state, draining_nodes=state.draining_nodes + 1, reconciler_state="draining")
+
+
+def _on_drain_complete(state: _State, instance_id: str = "") -> _State:
+    draining = max(0, state.draining_nodes - 1)
+    reconciler = "watching" if draining == 0 else state.reconciler_state
+    nodes = state.nodes
+    if instance_id and instance_id in nodes:
+        nodes = MappingProxyType({k: v for k, v in nodes.items() if k != instance_id})
+    return replace(
+        state,
+        draining_nodes=draining,
+        reconciler_state=reconciler,
+        nodes=nodes,
+        total_nodes=max(0, state.total_nodes - 1),
+    )
+
+
+def _on_reconciler_node_lost(state: _State) -> _State:
+    pending = max(0, state.pending_nodes - 1)
+    return replace(state, pending_nodes=pending)
+
+
 def _throughput(state: _State, now: float | None = None) -> float:
     if not state.tasks_done:
         return 0.0
@@ -263,7 +337,6 @@ CYAN = Style(color="cyan", bold=True)
 RED = Style(color="red", bold=True)
 VERY_DIM = Style(color="color(240)")
 COST_DIM = Style(color="color(245)")
-GUIDE = "color(242)"
 
 
 # --- Terminal theme detection ---
@@ -333,10 +406,19 @@ _FIXED_BADGE_HUES: dict[str, tuple[float, float]] = {
     "cluster": (150.0, 0.45),
     "error": (0.0, 0.60),
     "local": (0.0, 0.0),
-    "queued": (45.0, 0.45),
+    "queued": (30.0, 0.50),
     "running": (210.0, 0.60),
     "done": (120.0, 0.50),
     "failed": (0.0, 0.60),
+    "connecting": (45.0, 0.45),
+    "bootstrap": (45.0, 0.45),
+    "provisioning": (45.0, 0.45),
+    "ready": (120.0, 0.50),
+    "scaling": (45.0, 0.45),
+    "in sync": (120.0, 0.50),
+    "drifted": (0.0, 0.60),
+    "shutting down": (0.0, 0.0),
+    "cost": (0.0, 0.0),
 }
 
 
@@ -387,6 +469,11 @@ def _badge_style(label: str) -> Style:
     return _make_badge(hue, 0.65)
 
 
+def _gauge_badge(_label: str, pct: float) -> Style:
+    hue = 120.0 * (1 - min(pct, 100.0) / 100.0)
+    return _make_badge(hue, 0.55)
+
+
 # --- Stream emitters ---
 
 
@@ -417,141 +504,6 @@ def _emit_task(console: Console, badge: str, status: str, text: str) -> None:
     console.print(line)
 
 
-# --- Tree footer helpers ---
-
-
-def _badge_label() -> Text:
-    t = Text()
-    t.append(" skyward ", style=_FIXED_BADGES["skyward"])
-    return t
-
-
-def _root(extra: Text | None = None) -> Text:
-    t = _badge_label()
-    if extra:
-        t.append("  ")
-        t.append_text(extra)
-    return t
-
-
-def _node_status_line(state: _State, target: _NodeStatus) -> Columns:
-    items: list[RenderableType] = []
-    for nid, status in sorted(state.nodes.items()):
-        badge = _badge_text(nid)
-        if status.value >= target.value:
-            items.extend((Text("\u2713", style=GREEN), badge))
-        else:
-            items.extend((Spinner("dots", style=YELLOW), badge))
-    return Columns(items, padding=(0, 1))
-
-
-def _history(*phases: str) -> Text:
-    t = Text()
-    t.append("\u2713 ", style=GREEN)
-    for i, phase in enumerate(phases):
-        if i > 0:
-            t.append(" \u00b7 ", style=VERY_DIM)
-        t.append(phase, style=DIM)
-    return t
-
-
-def _wrap(tree: Tree) -> RenderableType:
-    return Group(Text(), tree)
-
-
-def _hw_text(state: _State) -> Text | None:
-    """Build narrative hardware description with inline badges.
-
-    Example: ``3× [spot] + 2× [on-demand] [t4g.micro] @ [us-east-1] on [AWS]``
-    """
-    if not state.instances:
-        return None
-    first = state.instances[0]
-    itype = first.offer.instance_type
-    n = len(state.instances)
-
-    n_spot = sum(1 for i in state.instances if i.spot)
-    n_od = n - n_spot
-
-    t = Text()
-    if n_spot:
-        t.append(f"{n_spot}\u00d7 ", style=MEDIUM)
-        t.append_text(_inline_badge("spot"))
-    if n_spot and n_od:
-        t.append(" + ", style=DIM)
-    if n_od:
-        t.append(f"{n_od}\u00d7 ", style=MEDIUM)
-        t.append_text(_inline_badge("on-demand"))
-    if not n_spot and not n_od:
-        t.append(f"{n} nodes", style=MEDIUM)
-
-    if itype.name:
-        t.append(" ")
-        t.append_text(_inline_badge(itype.name))
-
-    region = first.region or ""
-    provider = (state.cluster.spec.provider or "").upper() if state.cluster else ""
-    if region:
-        t.append(" @ ", style=DIM)
-        t.append_text(_inline_badge(region))
-    if provider:
-        t.append(" on ", style=DIM)
-        t.append_text(_inline_badge(provider))
-
-    resources: list[str] = []
-    vcpus = int(itype.vcpus * n)
-    mem_gb = int(itype.memory_gb * n)
-    if vcpus:
-        resources.append(f"{vcpus} vCPU")
-    if mem_gb:
-        resources.append(f"{mem_gb} GB")
-
-    accel = itype.accelerator
-    gpu_label = ""
-    if accel:
-        total = accel.count * n
-        mem = accel.memory
-        if not mem:
-            vram_vals = _collect_metric_vals(state, "gpu_mem_total_mb")
-            if vram_vals:
-                per_gpu = sum(vram_vals) / len(vram_vals)
-                mem = f"{per_gpu / 1024:.0f}GB" if per_gpu >= 1024 else f"{per_gpu:.0f}MB"
-        mem_str = f" {mem}" if mem else ""
-        gpu_label = f"{total}\u00d7 {accel.name}{mem_str}"
-
-    if resources or gpu_label:
-        t.append(" with ", style=DIM)
-        if resources:
-            t.append(", ".join(resources[:-1]), style=DIM)
-            if len(resources) > 1:
-                t.append(" and ", style=DIM)
-            t.append(resources[-1], style=DIM)
-        if gpu_label and resources:
-            t.append(" and ", style=DIM)
-        if gpu_label:
-            t.append_text(_inline_badge(gpu_label))
-
-    return t
-
-
-def _cost_text(state: _State) -> Text | None:
-    if not state.instances:
-        return None
-    hourly = sum(
-        (i.offer.spot_price if i.spot else i.offer.on_demand_price) or 0.0
-        for i in state.instances
-    )
-    if hourly <= 0:
-        return None
-    elapsed_h = (time.monotonic() - state.pool_started_at) / 3600 if state.pool_started_at else 0
-    total = hourly * elapsed_h
-    t = Text()
-    t.append(f"${hourly:.2f}/hr", style=COST_DIM)
-    t.append(" \u00b7 ", style=VERY_DIM)
-    t.append(f"${total:.2f}", style=COST_DIM)
-    return t
-
-
 # --- Metric helpers ---
 
 
@@ -577,166 +529,219 @@ def _collect_metric_vals(
     return vals
 
 
-def _render_metrics_text(state: _State) -> Text | None:
-    if not state.metrics:
+def _cost_badges(state: _State) -> tuple[Text, Text] | None:
+    if not state.instances:
         return None
-    gpu_vals = _collect_metric_vals(state, "gpu_util")
-    gpu_mem_vals = _collect_metric_vals(state, "gpu_mem_mb")
-    gpu_mem_total = _collect_metric_vals(state, "gpu_mem_total_mb")
-    cpu_vals = _collect_metric_vals(state, "cpu")
-    mem_vals = _collect_metric_vals(state, "mem")
-    if not gpu_vals and not cpu_vals and not mem_vals and not gpu_mem_vals:
+    hourly = sum(
+        (i.offer.spot_price if i.spot else i.offer.on_demand_price) or 0.0
+        for i in state.instances
+    )
+    if hourly <= 0:
         return None
+    elapsed_h = (time.monotonic() - state.pool_started_at) / 3600 if state.pool_started_at else 0
+    total = hourly * elapsed_h
+    rate = Text()
+    rate.append(f" ${hourly:.2f}/hr ", style=_badge_style("cost"))
+    cumul = Text()
+    cumul.append(f" \u03a3 ${total:.2f} ", style=_badge_style("cost"))
+    return rate, cumul
+
+
+def _gauge_inline(label: str, pct: float) -> Text:
     t = Text()
-    if gpu_vals:
-        avg_gpu = sum(gpu_vals) / len(gpu_vals)
-        t.append("gpu ", style=DIM)
-        t.append(f"{avg_gpu:.0f}%", style=MEDIUM)
-    if gpu_mem_vals:
-        if t.plain:
-            t.append("  ", style=DIM)
-        avg_vram = sum(gpu_mem_vals) / len(gpu_mem_vals)
-        t.append("vram ", style=DIM)
-        if gpu_mem_total:
-            total_vram = sum(gpu_mem_total) / len(gpu_mem_total)
-            t.append(f"{avg_vram:.0f}/{total_vram:.0f} MB", style=MEDIUM)
-        else:
-            t.append(f"{avg_vram:.0f} MB", style=MEDIUM)
-    if cpu_vals:
-        if t.plain:
-            t.append("  ", style=DIM)
-        avg_cpu = sum(cpu_vals) / len(cpu_vals)
-        t.append("cpu ", style=DIM)
-        t.append(f"{avg_cpu:.0f}%", style=MEDIUM)
-    if mem_vals:
-        if t.plain:
-            t.append("  ", style=DIM)
-        avg_mem = sum(mem_vals) / len(mem_vals)
-        t.append("mem ", style=DIM)
-        t.append(f"{avg_mem:.0f}%", style=MEDIUM)
-    cost = _cost_text(state)
-    if cost:
-        t.append("    ")
-        t.append_text(cost)
+    t.append(f" {label} {pct:.0f}% ", style=_gauge_badge(label, pct))
     return t
 
 
-# --- Footer renderer ---
+# --- Badge builders ---
 
 
-def _render_footer(state: _State) -> RenderableType:
+def _styled_badge(label: str, style_key: str) -> Text:
+    t = Text()
+    t.append(f" {label} ", style=_badge_style(style_key))
+    return t
+
+
+def _workers_badge(ready: int, desired: int) -> Text:
+    label = f"workers {ready}/{desired}"
+    if ready >= desired:
+        style = _make_badge(120, 0.50)
+    elif ready == 0:
+        style = _make_badge(0, 0.60)
+    else:
+        style = _make_badge(45, 0.45)
+    t = Text()
+    t.append(f" {label} ", style=style)
+    return t
+
+
+def _collect_badges(state: _State) -> tuple[list[Text], list[Text], list[Text]]:
+    infra: list[Text] = []
+    status: list[Text] = []
+    tasks: list[Text] = []
+
+    # --- Line 1: Infra ---
+    infra.append(_inline_badge("skyward"))
+
+    if state.instances:
+        first = state.instances[0]
+        itype = first.offer.instance_type
+        n = len(state.instances)
+
+        n_spot = sum(1 for i in state.instances if i.spot)
+        n_od = n - n_spot
+
+        infra.append(_styled_badge(f"{n}\u00d7", "cluster"))
+        if n_spot:
+            infra.append(_inline_badge("spot"))
+        if n_od:
+            infra.append(_inline_badge("on-demand"))
+        if itype.name:
+            infra.append(_inline_badge(itype.name))
+
+        region = first.region or ""
+        provider = (state.cluster.spec.provider or "").upper() if state.cluster else ""
+        if region:
+            infra.append(_inline_badge(region))
+        if provider:
+            infra.append(_inline_badge(f"☁️ {provider}"))
+
+        vcpus = int(itype.vcpus * n)
+        mem_gb = int(itype.memory_gb * n)
+        if vcpus:
+            infra.append(_inline_badge(f"{vcpus} vCPU"))
+        if mem_gb:
+            infra.append(_inline_badge(f"{mem_gb} GB"))
+
+        accel = itype.accelerator
+        if accel:
+            total = accel.count * n
+            mem = accel.memory or state.spec_accelerator_memory
+            if not mem:
+                vram_vals = _collect_metric_vals(state, "gpu_mem_total_mb")
+                if vram_vals:
+                    per_gpu = sum(vram_vals) / len(vram_vals)
+                    mem = f"{per_gpu / 1024:.0f}GB" if per_gpu >= 1024 else f"{per_gpu:.0f}MB"
+            mem_str = f" {mem}" if mem else ""
+            infra.append(_inline_badge(f"\u26a1 {total}\u00d7 {accel.name}{mem_str}"))
+
+    # --- Line 2: Status (phase + workers + metrics + reconciler + cost) ---
     match state.phase:
         case _Phase.PROVISIONING:
-            label = Text("provisioning", style=MEDIUM)
-            hw = _hw_text(state)
-            if hw:
-                label.append("  ")
-                label.append_text(hw)
-            tree = Tree(_root(), guide_style=GUIDE)
-            tree.add(Spinner("dots", text=label, style=YELLOW))
-            return _wrap(tree)
-
+            status.append(_inline_badge("provisioning"))
         case _Phase.SSH:
-            hw = _hw_text(state)
             count = sum(1 for s in state.nodes.values() if s.value >= _NodeStatus.SSH.value)
-            label = Text()
-            label.append("connecting ", style=MEDIUM)
-            label.append(f"{count}/{state.total_nodes}", style=BRIGHT)
-            tree = Tree(_root(hw), guide_style=GUIDE)
-            tree.add(_history("provisioned"))
-            branch = tree.add(Spinner("dots", text=label, style=YELLOW))
-            if state.nodes:
-                branch.add(_node_status_line(state, _NodeStatus.SSH))
-            return _wrap(tree)
-
+            status.append(_inline_badge("connecting"))
+            status.append(_styled_badge(f"ssh {count}/{state.total_nodes}", "connecting"))
         case _Phase.BOOTSTRAP | _Phase.WORKERS:
-            hw = _hw_text(state)
             phase_name = "bootstrap" if state.phase == _Phase.BOOTSTRAP else "workers"
             target = (
                 _NodeStatus.BOOTSTRAPPING if state.phase == _Phase.BOOTSTRAP
                 else _NodeStatus.READY
             )
             count = sum(1 for s in state.nodes.values() if s.value >= target.value)
-            label = Text()
-            label.append(f"{phase_name} ", style=MEDIUM)
-            label.append(f"{count}/{state.total_nodes}", style=BRIGHT)
-            tree = Tree(_root(hw), guide_style=GUIDE)
-            tree.add(_history("provisioned", "connected"))
-            branch = tree.add(Spinner("dots", text=label, style=YELLOW))
-            if state.nodes:
-                branch.add(_node_status_line(state, target))
-            return _wrap(tree)
-
+            status.append(_inline_badge(phase_name))
+            status.append(_styled_badge(f"{count}/{state.total_nodes} ready", phase_name))
         case _Phase.READY:
-            hw = _hw_text(state)
-            history = _history("provisioned", "connected", "bootstrapped")
-            if state.ready_at and state.pool_started_at:
-                elapsed = state.ready_at - state.pool_started_at
-                history.append(f" ({_format_duration(elapsed)})", style=VERY_DIM)
+            status.append(_inline_badge("ready"))
+            ready_count = sum(1 for s in state.nodes.values() if s == _NodeStatus.READY)
+            desired = state.desired_nodes or state.total_nodes
+            status.append(_workers_badge(ready_count, desired))
 
-            active = Text()
-            active.append("\u25cf ", style=CYAN)
-            active.append("ready", style=Style(color="cyan"))
+            # Metrics
+            cpu_vals = _collect_metric_vals(state, "cpu")
+            mem_vals = _collect_metric_vals(state, "mem")
+            gpu_vals = _collect_metric_vals(state, "gpu_util")
+            gpu_mem_vals = _collect_metric_vals(state, "gpu_mem_mb")
+            gpu_mem_total = _collect_metric_vals(state, "gpu_mem_total_mb")
+            if cpu_vals:
+                status.append(_gauge_inline("cpu", sum(cpu_vals) / len(cpu_vals)))
+            if mem_vals:
+                status.append(_gauge_inline("mem", sum(mem_vals) / len(mem_vals)))
+            if gpu_vals:
+                status.append(_gauge_inline("gpu", sum(gpu_vals) / len(gpu_vals)))
+            if gpu_mem_vals and gpu_mem_total:
+                avg_used = sum(gpu_mem_vals) / len(gpu_mem_vals)
+                avg_total = sum(gpu_mem_total) / len(gpu_mem_total)
+                pct = (avg_used / avg_total * 100) if avg_total > 0 else 0
+                status.append(_gauge_inline("vram", pct))
 
-            tasks = Text()
+            # Reconciler
+            match state.reconciler_state:
+                case "scaling_up":
+                    status.append(_styled_badge(
+                        f"\u25cf scaling \u2192 {state.desired_nodes}", "scaling",
+                    ))
+                    if state.pending_nodes:
+                        status.append(_styled_badge(f"pending {state.pending_nodes}", "scaling"))
+                case "draining":
+                    status.append(_styled_badge(
+                        f"\u25cf draining {state.draining_nodes}", "drifted",
+                    ))
+                case _:
+                    status.append(_inline_badge("in sync"))
+            if state.is_elastic:
+                if state.min_nodes is not None:
+                    status.append(_inline_badge(f"min {state.min_nodes}"))
+                status.append(_styled_badge(f"cur {len(state.nodes)}", "cluster"))
+                if state.max_nodes is not None:
+                    status.append(_inline_badge(f"max {state.max_nodes}"))
+
+            # Cost
+            cost = _cost_badges(state)
+            if cost:
+                status.extend(cost)
+
+            # --- Line 3: Tasks ---
             if state.tasks_queued:
-                tasks.append("\u231b ", style=YELLOW)
-                tasks.append(str(state.tasks_queued), style=BRIGHT)
-                tasks.append(" queued", style=DIM)
-                tasks.append("  ")
-            tasks.append("\u25b8 ", style=YELLOW)
-            tasks.append(str(state.tasks_running), style=BRIGHT)
-            tasks.append(" running", style=DIM)
-            tasks.append("  ")
-            tasks.append("\u2713 ", style=GREEN)
-            tasks.append(str(state.tasks_done), style=BRIGHT)
-            tasks.append(" done", style=DIM)
+                tasks.append(_styled_badge(f"{state.tasks_queued} queued", "queued"))
+            tasks.append(_styled_badge(f"\u25cf {state.tasks_running} running", "running"))
+            tasks.append(_styled_badge(f"\u2714 {state.tasks_done} done", "done"))
             if state.tasks_failed:
-                tasks.append("  ")
-                tasks.append("\u2717 ", style=RED)
-                tasks.append(str(state.tasks_failed), style=BRIGHT)
-                tasks.append(" failed", style=DIM)
+                tasks.append(_styled_badge(f"\u2717 {state.tasks_failed} failed", "failed"))
             rate = _throughput(state)
             if rate > 0:
-                tasks.append("  ")
-                tasks.append(f"{rate:.1f}", style=MEDIUM)
-                tasks.append(" tasks/min", style=DIM)
-            if state.inflight:
-                latest = next(iter(reversed(list(state.inflight.values()))), None)
-                if latest:
-                    tasks.append("  ")
-                    tasks.append("\u203a ", style=VERY_DIM)
-                    tasks.append(latest.name, style=DIM)
-
-            metrics = _render_metrics_text(state)
-            tree = Tree(_root(hw), guide_style=GUIDE)
-            tree.add(history)
-            branch = tree.add(active)
-            branch.add(tasks)
-            if metrics:
-                branch.add(metrics)
-            return _wrap(tree)
+                tasks.append(_styled_badge(f"{rate:.1f} tasks/min", "running"))
+                remaining = state.tasks_queued + state.tasks_running
+                if remaining > 0:
+                    eta_min = remaining / rate
+                    tasks.append(_styled_badge(f"est. {_format_duration(eta_min * 60)}", "cost"))
 
         case _Phase.STOPPING:
-            hw = _hw_text(state)
-            tasks_summary = Text()
-            tasks_summary.append("\u2713 ", style=GREEN)
-            tasks_summary.append(f"{state.tasks_done} tasks", style=DIM)
+            status.append(_inline_badge("shutting down"))
+            if state.tasks_done:
+                status.append(_styled_badge(f"\u2714 {state.tasks_done} done", "done"))
             rate = _throughput(state)
             if rate > 0:
-                tasks_summary.append(" \u00b7 ", style=VERY_DIM)
-                tasks_summary.append(f"{rate:.1f}/min", style=DIM)
-
-            stop_label = Text("shutting down...", style=MEDIUM)
-            cost = _cost_text(state)
+                status.append(_styled_badge(f"{rate:.1f}/min", "running"))
+            cost = _cost_badges(state)
             if cost:
-                stop_label.append("    ")
-                stop_label.append_text(cost)
+                status.extend(cost)
 
-            tree = Tree(_root(hw), guide_style=GUIDE)
-            tree.add(tasks_summary)
-            tree.add(Spinner("dots", text=stop_label, style=YELLOW))
-            return _wrap(tree)
+    return infra, status, tasks
+
+
+# --- Footer renderer ---
+
+
+def _join_badges(badges: list[Text]) -> Text:
+    combined = Text()
+    for badge in badges:
+        combined.append_text(badge)
+    return combined
+
+
+def _render_footer(state: _State) -> RenderableType:
+    infra, status, tasks = _collect_badges(state)
+    if not infra and not status and not tasks:
+        return Text()
+
+    lines: list[Align] = []
+    for group in (infra, status, tasks):
+        if group:
+            lines.append(Align.center(_join_badges(group)))
+
+    return Group(Text(), *lines)
 
 
 # --- Session summary ---
@@ -779,9 +784,9 @@ def _render_summary(state: _State, now: float | None = None) -> RenderableType:
         n_od = len(state.instances) - n_spot
         alloc_parts = []
         if n_spot:
-            alloc_parts.append(f"{n_spot} spot")
+            alloc_parts.append(f"$ {n_spot} spot")
         if n_od:
-            alloc_parts.append(f"{n_od} on-demand")
+            alloc_parts.append(f"$$$ {n_od} on-demand")
         alloc = f" ({', '.join(alloc_parts)})" if alloc_parts else ""
         overview.add_row("Cluster", Text(f"{len(state.instances)} nodes{alloc}"))
 
@@ -881,6 +886,15 @@ def _render_summary(state: _State, now: float | None = None) -> RenderableType:
             Text(mn, style="green"), Text(mx, style="yellow"), fail_text,
         )
 
+    if state.tasks_per_instance:
+        counts = list(state.tasks_per_instance.values())
+        lo, hi = min(counts), max(counts)
+        avg_n = sum(counts) / len(counts)
+        dist_text = Text()
+        dist_text.append(f"avg {avg_n:.0f}")
+        dist_text.append(f" (min {lo}, max {hi})", style="bright_black")
+        overview.add_row("Distribution", dist_text)
+
     layout = Table.grid(padding=(0, 3), expand=True)
     layout.add_column("left", ratio=2)
     layout.add_column("right", ratio=3)
@@ -934,6 +948,12 @@ def _format_task(
             return f"{name}({', '.join(included)}, \u2026)"
         case _:
             return f"{name}({', '.join(included)})"
+
+
+def _node_id_from_path(actor_path: str) -> int | None:
+    import re
+    m = re.search(r"node-(\d+)", actor_path)
+    return int(m.group(1)) if m else None
 
 
 def _resolve_instance_id(state: _State, node_id: int | None = None) -> str | None:
@@ -1036,7 +1056,24 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
             console.print()
             console.print(banner)
             console.print()
-            state = _State(total_nodes=spec.nodes)
+            accel_mem = ""
+            match spec.accelerator:
+                case str(name):
+                    import contextlib
+
+                    from skyward.accelerators import Accelerator
+                    with contextlib.suppress(ValueError):
+                        accel_mem = Accelerator.from_name(name).memory
+                case accel if accel is not None:
+                    accel_mem = accel.memory
+            state = _State(
+                total_nodes=spec.nodes,
+                desired_nodes=spec.nodes,
+                min_nodes=spec.min_nodes,
+                max_nodes=spec.max_nodes,
+                is_elastic=spec.auto_scaling,
+                spec_accelerator_memory=accel_mem,
+            )
             behavior = observing(state)
             return Behaviors.with_lifecycle(behavior, post_stop=_restore_stdout)
 
@@ -1088,8 +1125,39 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
                     _emit(console, "error", f"Node {nid} lost: {reason}", "red")
                     return Behaviors.same()
 
-                case SpyEvent(event=_Connected()):
-                    iid = _resolve_instance_id(state, node_id=len(state.nodes))
+                case SpyEvent(event=DesiredCountChanged(desired=desired)):
+                    new = _on_desired_changed(state, desired)
+                    _update_footer(new)
+                    return observing(new)
+
+                case SpyEvent(event=SpawnNodes(instances=insts, cluster=cl)):
+                    new = _on_spawn_nodes(state, tuple(insts), cl)
+                    _update_footer(new)
+                    return observing(new)
+
+                case SpyEvent(event=NodeJoined()):
+                    new = _on_node_joined(state)
+                    _update_footer(new)
+                    return observing(new)
+
+                case SpyEvent(event=DrainNode()):
+                    new = _on_drain_node(state)
+                    _update_footer(new)
+                    return observing(new)
+
+                case SpyEvent(event=DrainComplete(instance_id=iid)):
+                    new = _on_drain_complete(state, iid)
+                    _update_footer(new)
+                    return observing(new)
+
+                case SpyEvent(event=ReconcilerNodeLost()):
+                    new = _on_reconciler_node_lost(state)
+                    _update_footer(new)
+                    return observing(new)
+
+                case SpyEvent(actor_path=path, event=_Connected()):
+                    nid = _node_id_from_path(path)
+                    iid = _resolve_instance_id(state, node_id=nid)
                     if iid:
                         _emit(console, iid, "\u2713 SSH connected", "green")
                         new = _on_ssh_connected(state, iid)
@@ -1146,14 +1214,9 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
                     _emit(console, "error", f"Post-bootstrap failed: {err}", "red")
                     return Behaviors.same()
 
-                case SpyEvent(event=_WorkerStarted()):
-                    bootstrapped = sum(
-                        1 for s in state.nodes.values()
-                        if s.value >= _NodeStatus.BOOTSTRAPPING.value
-                    )
-                    iid = _resolve_instance_id(
-                        state, node_id=bootstrapped - 1,
-                    )
+                case SpyEvent(actor_path=path, event=_WorkerStarted()):
+                    nid = _node_id_from_path(path)
+                    iid = _resolve_instance_id(state, node_id=nid)
                     if iid:
                         _emit(console, iid, "\u2713 Worker joined", "green")
                         new = _on_worker_started(state, iid)
