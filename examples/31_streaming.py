@@ -57,7 +57,6 @@ if __name__ == "__main__":
         nodes=1,
         vcpus=1,
         memory_gb=1,
-        logging=True
     ) as pool:
         #warm up
         # for val in fibonacci(5) >> pool:

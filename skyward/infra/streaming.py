@@ -12,15 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import queue as _queue_mod
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Any, get_type_hints
+from typing import get_type_hints
 
 from casty import ActorRef, SourceRef
 
-from skyward.observability.logger import logger
-
-_log = logger.bind(component="streaming")
+_SENTINEL = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,8 +36,10 @@ class _InputStreamRef:
 class _SyncSource[T]:
     """Wraps async SourceRef[T] as a synchronous iterator.
 
-    Bridges the async Casty stream protocol to Python's __iter__/__next__
-    for use in the synchronous ComputePool API.
+    Runs a single drain task on the event loop that consumes the full
+    async stream and feeds elements into a thread-safe queue.  The
+    calling (main) thread reads from that queue — no cross-thread
+    async-generator interaction.
     """
 
     def __init__(
@@ -47,45 +48,32 @@ class _SyncSource[T]:
         loop: asyncio.AbstractEventLoop,
         timeout: float = 300.0,
     ) -> None:
-        self._source = source
-        self._loop = loop
+        self._q: _queue_mod.Queue[T | BaseException | object] = _queue_mod.Queue()
         self._timeout = timeout
-        self._aiter: Any = None
-        _log.info(
-            "SyncSource created, source={s}, loop_running={r}",
-            s=source, r=loop.is_running(),
-        )
+        self._task = loop.create_task(self._drain(source))
+
+    async def _drain(self, source: SourceRef[T]) -> None:
+        try:
+            async for elem in source:
+                self._q.put(elem)
+        except BaseException as exc:
+            self._q.put(exc)
+        finally:
+            self._q.put(_SENTINEL)
 
     def __iter__(self) -> _SyncSource[T]:
-        _log.info("SyncSource.__iter__ called")
         return self
 
     def __next__(self) -> T:
-        aiter = self._aiter
-        if aiter is None:
-            _log.info("SyncSource: initializing async iterator")
-            aiter = self._source.__aiter__()  # type: ignore[assignment]
-            self._aiter = aiter
-            _log.info("SyncSource: aiter={a}", a=aiter)
-
-        _log.info(
-            "SyncSource: scheduling __anext__, loop_running={r}",
-            r=self._loop.is_running(),
-        )
         try:
-            fut = asyncio.run_coroutine_threadsafe(
-                aiter.__anext__(), self._loop,
-            )
-            _log.info("SyncSource: waiting on future, timeout={t}", t=self._timeout)
-            result = fut.result(timeout=self._timeout)
-            _log.info("SyncSource: got element: {e}", e=result)
-            return result
-        except StopAsyncIteration:
-            _log.info("SyncSource: StopAsyncIteration → StopIteration")
+            item = self._q.get(timeout=self._timeout)
+        except _queue_mod.Empty:
             raise StopIteration from None
-        except Exception as e:
-            _log.error("SyncSource: error in __next__: {e}", e=e)
-            raise
+        if item is _SENTINEL:
+            raise StopIteration
+        if isinstance(item, BaseException):
+            raise item
+        return item  # type: ignore[return-value]
 
 
 def _unwrap(fn: Callable) -> Callable:  # type: ignore[type-arg]

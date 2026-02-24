@@ -17,7 +17,6 @@ import argparse
 import asyncio
 import os
 import sys
-import threading
 import traceback
 import types
 from concurrent.futures import Executor, ThreadPoolExecutor
@@ -39,6 +38,8 @@ from casty import (
 )
 
 from skyward.observability.logger import logger
+
+_background_tasks: set[asyncio.Task[None]] = set()
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +98,7 @@ async def _wrap_generator(
 
     from casty import GetSink, stream_producer
 
+    from skyward.infra.stream import sync_to_async
     from skyward.infra.streaming import _StreamHandle
 
     slog = logger.bind(component="wrap-generator", node_id=node_id)
@@ -110,26 +112,27 @@ async def _wrap_generator(
         lambda r: GetSink(reply_to=r),
         timeout=10.0,
     )
-    slog.info("producer spawned, ref={ref}", ref=producer_ref)
 
-    loop = asyncio.get_running_loop()
-
-    def _drain() -> None:
+    async def _drain() -> None:
         count = 0
         try:
-            for elem in gen:
-                asyncio.run_coroutine_threadsafe(sink.put(elem), loop).result(timeout=300.0)
+            async for elem in sync_to_async(gen):
+                await sink.put(elem)
                 count += 1
             slog.info("drain finished, {n} elements", n=count)
         except Exception as e:
             slog.error("drain error after {n} elements: {e}", n=count, e=e)
-            raise
         finally:
-            slog.info("sink.complete()")
-            asyncio.run_coroutine_threadsafe(sink.complete(), loop).result(timeout=60.0)
-            slog.info("sink.complete() done")
+            await sink.complete()
 
-    threading.Thread(target=_drain, daemon=True).start()
+    loop = asyncio.get_running_loop()
+    drain_task = loop.create_task(_drain(), name=f"stream-drain-{node_id}")
+    _background_tasks.add(drain_task)
+    drain_task.add_done_callback(_background_tasks.discard)
+    drain_task.add_done_callback(
+        lambda t: slog.error("drain task failed: {e}", e=t.exception())
+        if t.exception() else None
+    )
 
     return TaskSucceeded(
         result=_StreamHandle(producer_ref=producer_ref, node_id=node_id),
