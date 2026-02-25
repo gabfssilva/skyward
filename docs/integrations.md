@@ -20,11 +20,11 @@ with sky.ComputePool(
 
 Each plugin can contribute up to five capabilities:
 
-- **Image transform** — Modifies the `Image` to add pip packages, environment variables, and pip indexes. This happens at pool construction time, before any instances are provisioned.
-- **Bootstrap operations** — Shell commands that run during instance bootstrap, after the base environment is set up.
+- **Image transform** — Modifies the `Image` to add pip packages, environment variables, and pip indexes. This runs after `provider.prepare()` and receives the `Cluster` object, so plugins can inspect infrastructure metadata (SSH credentials, provider-specific state, offer details) when configuring the image.
+- **Bootstrap operations** — A factory that receives the `Cluster` and returns shell commands to run during instance bootstrap, after the base environment is set up. Because it receives the cluster, plugins can generate bootstrap ops dynamically based on the provisioned infrastructure.
 - **Task decorator** — Wraps each `@sky.compute` function at execution time on the worker, configuring the framework's distributed runtime before your code runs.
 - **Worker lifecycle (`around_app`)** — A context manager that runs once when the worker starts and tears down when it stops. Used for persistent state like process groups.
-- **Client lifecycle (`around_client`)** — A context manager that runs on the client side when the pool is entered. Used for registering custom backends (like joblib).
+- **Client lifecycle (`around_client`)** — A context manager that runs on the client side when the pool is entered. Receives the `ComputePool` and `Cluster` objects. Used for registering custom backends (like joblib).
 
 Plugins compose naturally — you can stack multiple plugins, and their transforms are applied in order:
 
