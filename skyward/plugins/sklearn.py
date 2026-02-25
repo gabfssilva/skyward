@@ -32,7 +32,7 @@ def sklearn(version: str | None = None) -> Plugin:
     def around_client(pool: ComputePool, cluster: Cluster[Any]) -> Iterator[None]:
         from joblib import parallel_backend
 
-        from skyward.integrations.joblib import _setup_backend, _strip_local_warning_filters
+        from skyward.plugins.joblib import _setup_backend, _strip_local_warning_filters
 
         _setup_backend(pool)
         _strip_local_warning_filters()

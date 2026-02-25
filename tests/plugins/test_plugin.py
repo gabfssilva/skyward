@@ -42,7 +42,7 @@ class TestPluginCreation:
 
         transform = lambda img, cluster: img  # noqa: E731
         bootstrap_factory = lambda cluster: ("echo hello",)  # noqa: E731
-        decorate = lambda fn, args, kwargs: fn(*args, **kwargs)  # noqa: E731
+        decorate = lambda fn: fn  # noqa: E731
         around_app = MagicMock()
         around_client = MagicMock()
 
@@ -93,7 +93,7 @@ class TestBuilderChain:
     def test_with_decorator(self) -> None:
         from skyward.plugins.plugin import Plugin
 
-        dec = lambda fn, args, kwargs: fn(*args, **kwargs)  # noqa: E731
+        dec = lambda fn: fn  # noqa: E731
         p = Plugin.create("d").with_decorator(dec)
         assert p.decorate is dec
 
@@ -117,7 +117,7 @@ class TestBuilderChain:
         original = Plugin.create("immutable")
         with_transform = original.with_image_transform(lambda img, cluster: img)
         with_bootstrap = original.with_bootstrap(lambda cluster: ("echo x",))
-        with_decorator = original.with_decorator(lambda fn, a, kw: fn(*a, **kw))
+        with_decorator = original.with_decorator(lambda fn: fn)
 
         assert original.transform is None
         assert original.bootstrap is None
@@ -131,7 +131,7 @@ class TestBuilderChain:
 
         transform = lambda img, cluster: img  # noqa: E731
         bootstrap_factory = lambda cluster: ("echo setup",)  # noqa: E731
-        dec = lambda fn, args, kwargs: fn(*args, **kwargs)  # noqa: E731
+        dec = lambda fn: fn  # noqa: E731
         app_hook = MagicMock()
         client_hook = MagicMock()
 
@@ -243,9 +243,11 @@ class TestChainDecorators:
             calls.append("original")
             return x * 2
 
-        def dec(fn: Any, args: tuple, kwargs: dict) -> Any:
-            calls.append("decorator")
-            return fn(*args, **kwargs)
+        def dec(fn: Any) -> Any:
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                calls.append("decorator")
+                return fn(*args, **kwargs)
+            return wrapper
 
         wrapped = chain_decorators(original, [dec])
         result = wrapped(5)
@@ -261,17 +263,21 @@ class TestChainDecorators:
             calls.append("original")
             return "done"
 
-        def dec_a(fn: Any, args: tuple, kwargs: dict) -> Any:
-            calls.append("a-before")
-            result = fn(*args, **kwargs)
-            calls.append("a-after")
-            return result
+        def dec_a(fn: Any) -> Any:
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                calls.append("a-before")
+                result = fn(*args, **kwargs)
+                calls.append("a-after")
+                return result
+            return wrapper
 
-        def dec_b(fn: Any, args: tuple, kwargs: dict) -> Any:
-            calls.append("b-before")
-            result = fn(*args, **kwargs)
-            calls.append("b-after")
-            return result
+        def dec_b(fn: Any) -> Any:
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                calls.append("b-before")
+                result = fn(*args, **kwargs)
+                calls.append("b-after")
+                return result
+            return wrapper
 
         wrapped = chain_decorators(original, [dec_a, dec_b])
         result = wrapped()
@@ -284,8 +290,10 @@ class TestChainDecorators:
         def original(x: int) -> int:
             return x
 
-        def double_arg(fn: Any, args: tuple, kwargs: dict) -> Any:
-            return fn(args[0] * 2, **kwargs)
+        def double_arg(fn: Any) -> Any:
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                return fn(args[0] * 2, **kwargs)
+            return wrapper
 
         wrapped = chain_decorators(original, [double_arg])
         assert wrapped(5) == 10
@@ -296,8 +304,10 @@ class TestChainDecorators:
         def original(x: int = 0) -> int:
             return x
 
-        def set_kwarg(fn: Any, args: tuple, kwargs: dict) -> Any:
-            return fn(*args, x=42)
+        def set_kwarg(fn: Any) -> Any:
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                return fn(*args, x=42)
+            return wrapper
 
         wrapped = chain_decorators(original, [set_kwarg])
         assert wrapped() == 42
@@ -311,8 +321,10 @@ class TestChainDecorators:
             calls.append("original")
             return "original"
 
-        def shortcircuit(fn: Any, args: tuple, kwargs: dict) -> Any:
-            return "intercepted"
+        def shortcircuit(fn: Any) -> Any:
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                return "intercepted"
+            return wrapper
 
         wrapped = chain_decorators(original, [shortcircuit])
         assert wrapped() == "intercepted"
@@ -326,17 +338,23 @@ class TestChainDecorators:
         def original(x: int) -> int:
             return x
 
-        def dec1(fn: Any, args: tuple, kwargs: dict) -> Any:
-            calls.append(1)
-            return fn(*args, **kwargs)
+        def dec1(fn: Any) -> Any:
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                calls.append(1)
+                return fn(*args, **kwargs)
+            return wrapper
 
-        def dec2(fn: Any, args: tuple, kwargs: dict) -> Any:
-            calls.append(2)
-            return fn(*args, **kwargs)
+        def dec2(fn: Any) -> Any:
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                calls.append(2)
+                return fn(*args, **kwargs)
+            return wrapper
 
-        def dec3(fn: Any, args: tuple, kwargs: dict) -> Any:
-            calls.append(3)
-            return fn(*args, **kwargs)
+        def dec3(fn: Any) -> Any:
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                calls.append(3)
+                return fn(*args, **kwargs)
+            return wrapper
 
         wrapped = chain_decorators(original, [dec1, dec2, dec3])
         assert wrapped(7) == 7
@@ -348,8 +366,10 @@ class TestChainDecorators:
         def original() -> dict:
             return {"key": "value"}
 
-        def passthrough(fn: Any, args: tuple, kwargs: dict) -> Any:
-            return fn(*args, **kwargs)
+        def passthrough(fn: Any) -> Any:
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                return fn(*args, **kwargs)
+            return wrapper
 
         wrapped = chain_decorators(original, [passthrough, passthrough])
         assert wrapped() == {"key": "value"}
@@ -380,7 +400,8 @@ class TestMakeAroundAppDecorator:
             patch("skyward.plugins.plugin.instance_info", return_value=MagicMock()),
             patch("skyward.plugins.plugin.ensure_around_app") as mock_ensure,
         ):
-            result = decorator(fn, (1, 2), {})
+            wrapped = decorator(fn)
+            result = wrapped(1, 2)
 
         assert result == 3
         assert calls == [(1, 2)]
@@ -400,7 +421,8 @@ class TestMakeAroundAppDecorator:
             patch("skyward.plugins.plugin.instance_info", return_value=fake_info),
             patch("skyward.plugins.plugin.ensure_around_app") as mock_ensure,
         ):
-            decorator(lambda: None, (), {})
+            wrapped = decorator(lambda: None)
+            wrapped()
 
         mock_ensure.assert_called_once_with("my-plugin", lifecycle, fake_info)
 
@@ -418,7 +440,8 @@ class TestMakeAroundAppDecorator:
             patch("skyward.plugins.plugin.ensure_around_app"),
         ):
             mock_info.return_value = MagicMock()
-            decorator(lambda: "ok", (), {})
+            wrapped = decorator(lambda: "ok")
+            wrapped()
 
         mock_info.assert_called_once()
 

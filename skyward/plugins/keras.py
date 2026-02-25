@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import replace
+from functools import wraps
 from typing import TYPE_CHECKING, Any, Literal
 
 from skyward.plugins.plugin import Plugin
@@ -39,34 +40,40 @@ def keras(
             env={**image.env, "KERAS_BACKEND": backend},
         )
 
-    def decorate(fn: Callable[..., Any], args: tuple, kwargs: dict) -> Any:
-        os.environ["KERAS_BACKEND"] = backend
+    def decorate[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
+        @wraps(fn)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            os.environ["KERAS_BACKEND"] = backend
 
-        from skyward.api.runtime import instance_info
-        from skyward.observability.logger import logger
+            from skyward.api.runtime import instance_info
+            from skyward.observability.logger import logger
 
-        log = logger.bind(plugin="keras", backend=backend)
-        info = instance_info()
+            log = logger.bind(plugin="keras", backend=backend)
+            info = instance_info()
 
-        if info and info.total_nodes > 1 and backend == "jax":
-            import keras as _keras  # type: ignore[reportMissingImports]
+            if info and info.total_nodes > 1 and backend == "jax":
+                import keras as _keras  # type: ignore[reportMissingImports]
 
-            devices = _keras.distribution.list_devices()
-            log.debug("Available devices: {devices}", devices=devices)
+                devices = _keras.distribution.list_devices()
+                log.debug("Available devices: {devices}", devices=devices)
 
-            if devices:
-                _keras.distribution.set_distribution(
-                    _keras.distribution.DataParallel(
-                        devices=devices,
-                        auto_shard_dataset=False,
+                if devices:
+                    _keras.distribution.set_distribution(
+                        _keras.distribution.DataParallel(
+                            devices=devices,
+                            auto_shard_dataset=False,
+                        )
                     )
-                )
 
-                from keras.src.backend.jax.distribution_lib import initialize_rng  # type: ignore[reportMissingImports]
-                initialize_rng()
-                log.debug("Keras DataParallel distribution set, RNG synchronized")
+                    from keras.src.backend.jax.distribution_lib import (
+                        initialize_rng,  # type: ignore[reportMissingImports]
+                    )
+                    initialize_rng()
+                    log.debug("Keras DataParallel distribution set, RNG synchronized")
 
-        return fn(*args, **kwargs)
+            return fn(*args, **kwargs)
+
+        return wrapper
 
     return (
         Plugin.create("keras")

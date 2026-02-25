@@ -26,6 +26,11 @@ tasks:
     cmds:
       - uv run pyright {{.SRC}}/
 
+  typecheck:fix:
+    desc: Run pyright type checker
+    cmds:
+      - uv run pyright --fix {{.SRC}}/
+
   check:
     desc: Run lint + typecheck
     cmds:
@@ -63,31 +68,6 @@ tasks:
     desc: "E2E: image and bootstrap validation"
     cmds:
       - uv run pytest tests/test_image.py {{.CLI_ARGS}}
-
-  test:e2e:integrations:
-    desc: "E2E: all framework integrations (torch, jax, keras, joblib, sklearn)"
-    cmds:
-      - uv run pytest tests/test_integrations.py {{.CLI_ARGS}}
-
-  test:e2e:torch:
-    desc: "E2E: PyTorch + Transformers integrations"
-    cmds:
-      - uv run pytest tests/test_integrations.py -k "TestTorchIntegration or TestTransformersIntegration" {{.CLI_ARGS}}
-
-  test:e2e:jax:
-    desc: "E2E: JAX integration"
-    cmds:
-      - uv run pytest tests/test_integrations.py -k "TestJaxIntegration" {{.CLI_ARGS}}
-
-  test:e2e:keras:
-    desc: "E2E: Keras integration"
-    cmds:
-      - uv run pytest tests/test_integrations.py -k "TestKerasIntegration" {{.CLI_ARGS}}
-
-  test:e2e:joblib:
-    desc: "E2E: Joblib + Scikit-learn integrations"
-    cmds:
-      - uv run pytest tests/test_integrations.py -k "TestJoblibIntegration or TestScikitLearnIntegration" {{.CLI_ARGS}}
 
   test:sanity:
     desc: Run sanity tests against real cloud providers

@@ -16,7 +16,6 @@ except ModuleNotFoundError:
     __version__: str = "0.0.0+unknown"
 
 from skyward import accelerators as accelerators
-from skyward import integrations as integrations
 from skyward import plugins as plugins
 from skyward.observability import LogConfig
 from skyward.observability import metrics as metrics
@@ -162,6 +161,5 @@ __all__ = [
     "metrics",
     "LogConfig",
     "accelerators",
-    "integrations",
     "plugins",
 ]

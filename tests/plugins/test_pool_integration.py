@@ -214,9 +214,11 @@ class TestDecorateFn:
     def test_decorate_wraps_fn(self) -> None:
         calls: list[str] = []
 
-        def my_decorator(fn: Any, args: tuple, kwargs: dict) -> Any:
-            calls.append("decorated")
-            return fn(*args, **kwargs)
+        def my_decorator(fn: Any) -> Any:
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                calls.append("decorated")
+                return fn(*args, **kwargs)
+            return wrapper
 
         p = Plugin(name="dec", decorate=my_decorator)
         pool = _make_pool(plugins=[p])
@@ -234,13 +236,17 @@ class TestDecorateFn:
     def test_multiple_decorators_applied_in_order(self) -> None:
         calls: list[str] = []
 
-        def dec_a(fn: Any, args: tuple, kwargs: dict) -> Any:
-            calls.append("a")
-            return fn(*args, **kwargs)
+        def dec_a(fn: Any) -> Any:
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                calls.append("a")
+                return fn(*args, **kwargs)
+            return wrapper
 
-        def dec_b(fn: Any, args: tuple, kwargs: dict) -> Any:
-            calls.append("b")
-            return fn(*args, **kwargs)
+        def dec_b(fn: Any) -> Any:
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                calls.append("b")
+                return fn(*args, **kwargs)
+            return wrapper
 
         p1 = Plugin(name="pa", decorate=dec_a)
         p2 = Plugin(name="pb", decorate=dec_b)
@@ -263,9 +269,11 @@ class TestDecorateFn:
         def lifecycle(info: Any):  # noqa: ANN201
             yield
 
-        def my_decorate(fn: Any, args: tuple, kwargs: dict) -> Any:
-            calls.append("decorate")
-            return fn(*args, **kwargs)
+        def my_decorate(fn: Any) -> Any:
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                calls.append("decorate")
+                return fn(*args, **kwargs)
+            return wrapper
 
         p = Plugin(
             name="both",

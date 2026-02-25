@@ -85,6 +85,10 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
         def _matches(itype: InstanceTypeResponse) -> bool:
             if itype["instance_type"] not in available_types:
                 return False
+            if spec.vcpus and get_vcpu(itype) < spec.vcpus:
+                return False
+            if spec.memory_gb and get_memory_gb(itype) < spec.memory_gb:
+                return False
             if not spec.accelerator_name:
                 return True
             accel = get_accelerator(itype)
@@ -315,6 +319,10 @@ async def _resolve_instance_type(
 
     def _matches(itype: InstanceTypeResponse) -> bool:
         if itype["instance_type"] not in available_types:
+            return False
+        if spec.vcpus and get_vcpu(itype) < spec.vcpus:
+            return False
+        if spec.memory_gb and get_memory_gb(itype) < spec.memory_gb:
             return False
         if not spec.accelerator_name:
             return True

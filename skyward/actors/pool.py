@@ -135,9 +135,23 @@ def pool_actor() -> Behavior[PoolMsg]:
                     reply_to.tell(pf)
                     return Behaviors.stopped()
                 case ClusterReady(cluster=cluster):
-                    log.info("Cluster ready, provisioning {n} instances", n=spec.nodes)
+                    from dataclasses import replace as _replace
 
-                    if spec.volumes and cluster.mount_endpoint is None:
+                    transformed_image = spec.image
+                    for plugin in spec.plugins:
+                        if plugin.transform is not None:
+                            transformed_image = plugin.transform(
+                                transformed_image, cluster,
+                            )
+                    effective_spec = _replace(spec, image=transformed_image)
+                    cluster = _replace(cluster, spec=effective_spec)
+
+                    log.info(
+                        "Cluster ready, provisioning {n} instances",
+                        n=effective_spec.nodes,
+                    )
+
+                    if effective_spec.volumes and cluster.mount_endpoint is None:
                         from skyward.providers.provider import Mountable
 
                         if not isinstance(provider, Mountable):
@@ -159,21 +173,24 @@ def pool_actor() -> Behavior[PoolMsg]:
                                 reason=f"Volume mount setup failed: {err}",
                             ),
                         )
-                        return requesting(spec, provider, remaining_offers, reply_to)
+                        return requesting(
+                            effective_spec, provider, remaining_offers,
+                            reply_to,
+                        )
 
                     def _on_provision_error(err: Exception) -> InstancesProvisioned:
                         log.warning("Provision failed: {err}", err=err)
                         return InstancesProvisioned(instances=(), cluster=cluster)
 
                     ctx.pipe_to_self(
-                        provider.provision(cluster, spec.nodes),
+                        provider.provision(cluster, effective_spec.nodes),
                         mapper=lambda result: InstancesProvisioned(
                             instances=result[1], cluster=result[0],
                         ),
                         on_failure=_on_provision_error,
                     )
                     return provisioning_instances(
-                        spec, provider, cluster, reply_to,
+                        effective_spec, provider, cluster, reply_to,
                         remaining_offers=remaining_offers,
                     )
             return Behaviors.same()
