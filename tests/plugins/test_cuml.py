@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from skyward.api.spec import Image
@@ -18,7 +20,7 @@ class TestCuMLPlugin:
         p = cuml(cuda="cu12")
         image = Image(python="3.13")
         assert p.transform is not None
-        result = p.transform(image)
+        result = p.transform(image, MagicMock())
         assert "cuml-cu12" in result.pip
 
     def test_transform_adds_nvidia_index(self):
@@ -26,7 +28,7 @@ class TestCuMLPlugin:
         p = cuml()
         image = Image(python="3.13")
         assert p.transform is not None
-        result = p.transform(image)
+        result = p.transform(image, MagicMock())
         assert any("pypi.nvidia.com" in idx.url for idx in result.pip_indexes)
 
     def test_has_around_app(self):
@@ -44,7 +46,7 @@ class TestCuMLPlugin:
         p = cuml(cuda="cu11")
         image = Image(python="3.13")
         assert p.transform is not None
-        result = p.transform(image)
+        result = p.transform(image, MagicMock())
         assert "cuml-cu11" in result.pip
 
     def test_lazy_import(self):

@@ -8,15 +8,17 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from skyward.api.model import Cluster
     from skyward.api.pool import ComputePool
     from skyward.api.runtime import InstanceInfo
     from skyward.api.spec import Image
     from skyward.providers.bootstrap import Op
 
-type ImageTransform = Callable[["Image"], "Image"]
+type ImageTransform[S] = Callable[["Image", "Cluster[S]"], "Image"]
+type BootstrapFactory[S] = Callable[["Cluster[S]"], tuple["Op", ...]]
 type TaskDecorator = Callable[[Callable[..., Any], tuple, dict], Any]
 type AppLifecycle = Callable[["InstanceInfo"], AbstractContextManager[None]]
-type ClientLifecycle = Callable[["ComputePool"], AbstractContextManager[None]]
+type ClientLifecycle[S] = Callable[["ComputePool", "Cluster[S]"], AbstractContextManager[None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,33 +33,35 @@ class Plugin:
     name
         Plugin identifier.
     transform
-        Image -> Image transformer. Receives current Image, returns modified copy.
+        (Image, Cluster[S]) -> Image transformer. Receives current Image and
+        cluster metadata, returns modified copy.
     bootstrap
-        Extra shell ops appended after Image-driven bootstrap phases.
+        Factory that receives Cluster[S] and returns extra shell ops appended
+        after Image-driven bootstrap phases.
     decorate
         Per-task wrapper on remote worker: (fn, args, kwargs) -> T.
     around_app
         Worker lifecycle context manager: InstanceInfo -> ContextManager[None].
     around_client
-        Client lifecycle context manager: ComputePool -> ContextManager[None].
+        Client lifecycle context manager: (ComputePool, Cluster[S]) -> ContextManager[None].
     """
 
     name: str
-    transform: ImageTransform | None = None
-    bootstrap: tuple[Op, ...] = ()
+    transform: ImageTransform[Any] | None = None
+    bootstrap: BootstrapFactory[Any] | None = None
     decorate: TaskDecorator | None = None
     around_app: AppLifecycle | None = None
-    around_client: ClientLifecycle | None = None
+    around_client: ClientLifecycle[Any] | None = None
 
     @staticmethod
     def create(name: str) -> Plugin:
         return Plugin(name=name)
 
-    def with_image_transform(self, transform: ImageTransform) -> Plugin:
+    def with_image_transform(self, transform: ImageTransform[Any]) -> Plugin:
         return replace(self, transform=transform)
 
-    def with_bootstrap(self, *ops: Op) -> Plugin:
-        return replace(self, bootstrap=(*self.bootstrap, *ops))
+    def with_bootstrap(self, factory: BootstrapFactory[Any]) -> Plugin:
+        return replace(self, bootstrap=factory)
 
     def with_decorator(self, decorate: TaskDecorator) -> Plugin:
         return replace(self, decorate=decorate)
@@ -65,7 +69,7 @@ class Plugin:
     def with_around_app(self, around: AppLifecycle) -> Plugin:
         return replace(self, around_app=around)
 
-    def with_around_client(self, around: ClientLifecycle) -> Plugin:
+    def with_around_client(self, around: ClientLifecycle[Any]) -> Plugin:
         return replace(self, around_client=around)
 
 

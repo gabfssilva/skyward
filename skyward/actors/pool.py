@@ -431,6 +431,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                         ctx.self.tell(PoolStarted(
                             cluster_id=cluster_id,
                             instances=tuple(new_instances[i] for i in range(spec.nodes)),
+                            cluster=cluster,
                         ))
                         return ready(
                             spec, provider, cluster, cluster_id, new_instances,

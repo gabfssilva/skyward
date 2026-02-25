@@ -5,12 +5,13 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from skyward.api.spec import PipIndex
 from skyward.plugins.plugin import Plugin
 
 if TYPE_CHECKING:
+    from skyward.api.model import Cluster
     from skyward.api.runtime import InstanceInfo
     from skyward.api.spec import Image
 
@@ -24,7 +25,7 @@ def cuml(cuda: str = "cu12") -> Plugin:
         CUDA version suffix.
     """
 
-    def transform(image: Image) -> Image:
+    def transform(image: Image, cluster: Cluster[Any]) -> Image:
         return replace(
             image,
             pip=(*image.pip, f"cuml-{cuda}"),

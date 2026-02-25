@@ -24,7 +24,7 @@ class TestPluginCreation:
         p = Plugin(name="test")
         assert p.name == "test"
         assert p.transform is None
-        assert p.bootstrap == ()
+        assert p.bootstrap is None
         assert p.decorate is None
         assert p.around_app is None
         assert p.around_client is None
@@ -35,12 +35,13 @@ class TestPluginCreation:
         p = Plugin.create("my-plugin")
         assert p.name == "my-plugin"
         assert p.transform is None
-        assert p.bootstrap == ()
+        assert p.bootstrap is None
 
     def test_direct_construction_with_all_fields(self) -> None:
         from skyward.plugins.plugin import Plugin
 
-        transform = lambda img: img  # noqa: E731
+        transform = lambda img, cluster: img  # noqa: E731
+        bootstrap_factory = lambda cluster: ("echo hello",)  # noqa: E731
         decorate = lambda fn, args, kwargs: fn(*args, **kwargs)  # noqa: E731
         around_app = MagicMock()
         around_client = MagicMock()
@@ -48,14 +49,14 @@ class TestPluginCreation:
         p = Plugin(
             name="full",
             transform=transform,
-            bootstrap=("echo hello",),
+            bootstrap=bootstrap_factory,
             decorate=decorate,
             around_app=around_app,
             around_client=around_client,
         )
         assert p.name == "full"
         assert p.transform is transform
-        assert p.bootstrap == ("echo hello",)
+        assert p.bootstrap is bootstrap_factory
         assert p.decorate is decorate
         assert p.around_app is around_app
         assert p.around_client is around_client
@@ -77,33 +78,17 @@ class TestBuilderChain:
     def test_with_image_transform(self) -> None:
         from skyward.plugins.plugin import Plugin
 
-        transform = lambda img: img  # noqa: E731
+        transform = lambda img, cluster: img  # noqa: E731
         p = Plugin.create("t").with_image_transform(transform)
         assert p.transform is transform
         assert p.name == "t"
 
-    def test_with_bootstrap_single(self) -> None:
+    def test_with_bootstrap(self) -> None:
         from skyward.plugins.plugin import Plugin
 
-        p = Plugin.create("b").with_bootstrap("echo 1")
-        assert p.bootstrap == ("echo 1",)
-
-    def test_with_bootstrap_multiple(self) -> None:
-        from skyward.plugins.plugin import Plugin
-
-        p = Plugin.create("b").with_bootstrap("echo 1", "echo 2")
-        assert p.bootstrap == ("echo 1", "echo 2")
-
-    def test_with_bootstrap_accumulates(self) -> None:
-        from skyward.plugins.plugin import Plugin
-
-        p = (
-            Plugin.create("b")
-            .with_bootstrap("echo 1")
-            .with_bootstrap("echo 2")
-            .with_bootstrap("echo 3")
-        )
-        assert p.bootstrap == ("echo 1", "echo 2", "echo 3")
+        factory = lambda cluster: ("echo 1",)  # noqa: E731
+        p = Plugin.create("b").with_bootstrap(factory)
+        assert p.bootstrap is factory
 
     def test_with_decorator(self) -> None:
         from skyward.plugins.plugin import Plugin
@@ -130,12 +115,12 @@ class TestBuilderChain:
         from skyward.plugins.plugin import Plugin
 
         original = Plugin.create("immutable")
-        with_transform = original.with_image_transform(lambda img: img)
-        with_bootstrap = original.with_bootstrap("echo x")
+        with_transform = original.with_image_transform(lambda img, cluster: img)
+        with_bootstrap = original.with_bootstrap(lambda cluster: ("echo x",))
         with_decorator = original.with_decorator(lambda fn, a, kw: fn(*a, **kw))
 
         assert original.transform is None
-        assert original.bootstrap == ()
+        assert original.bootstrap is None
         assert original.decorate is None
         assert with_transform is not original
         assert with_bootstrap is not original
@@ -144,7 +129,8 @@ class TestBuilderChain:
     def test_full_builder_chain(self) -> None:
         from skyward.plugins.plugin import Plugin
 
-        transform = lambda img: img  # noqa: E731
+        transform = lambda img, cluster: img  # noqa: E731
+        bootstrap_factory = lambda cluster: ("echo setup",)  # noqa: E731
         dec = lambda fn, args, kwargs: fn(*args, **kwargs)  # noqa: E731
         app_hook = MagicMock()
         client_hook = MagicMock()
@@ -152,14 +138,14 @@ class TestBuilderChain:
         p = (
             Plugin.create("chained")
             .with_image_transform(transform)
-            .with_bootstrap("echo setup")
+            .with_bootstrap(bootstrap_factory)
             .with_decorator(dec)
             .with_around_app(app_hook)
             .with_around_client(client_hook)
         )
         assert p.name == "chained"
         assert p.transform is transform
-        assert p.bootstrap == ("echo setup",)
+        assert p.bootstrap is bootstrap_factory
         assert p.decorate is dec
         assert p.around_app is app_hook
         assert p.around_client is client_hook
@@ -176,14 +162,14 @@ class TestTransformComposition:
 
         calls: list[str] = []
 
-        def transform(img: Any) -> Any:
+        def transform(img: Any, cluster: Any) -> Any:
             calls.append("transformed")
             return img
 
         p = Plugin.create("t").with_image_transform(transform)
         assert p.transform is not None
 
-        result = p.transform("image-stub")  # type: ignore[arg-type]
+        result = p.transform("image-stub", MagicMock())  # type: ignore[arg-type]
         assert calls == ["transformed"]
         assert result == "image-stub"
 
@@ -196,13 +182,13 @@ class TestTransformComposition:
         class FakeImage:
             pip: tuple[str, ...] = ()
 
-        def add_torch(img: FakeImage) -> FakeImage:
+        def add_torch(img: FakeImage, cluster: Any) -> FakeImage:
             return replace(img, pip=(*img.pip, "torch"))
 
         p = Plugin.create("torch").with_image_transform(add_torch)  # type: ignore[arg-type]
         original = FakeImage(pip=("numpy",))
         assert p.transform is not None
-        result = p.transform(original)  # type: ignore[arg-type]
+        result = p.transform(original, MagicMock())  # type: ignore[arg-type]
         assert result.pip == ("numpy", "torch")
         assert original.pip == ("numpy",)
 
@@ -215,19 +201,20 @@ class TestTransformComposition:
         class FakeImage:
             pip: tuple[str, ...] = ()
 
-        def add_a(img: FakeImage) -> FakeImage:
+        def add_a(img: FakeImage, cluster: Any) -> FakeImage:
             return replace(img, pip=(*img.pip, "a"))
 
-        def add_b(img: FakeImage) -> FakeImage:
+        def add_b(img: FakeImage, cluster: Any) -> FakeImage:
             return replace(img, pip=(*img.pip, "b"))
 
         p1 = Plugin.create("p1").with_image_transform(add_a)  # type: ignore[arg-type]
         p2 = Plugin.create("p2").with_image_transform(add_b)  # type: ignore[arg-type]
 
+        cluster = MagicMock()
         img: Any = FakeImage()
         for plugin in [p1, p2]:
             if plugin.transform:
-                img = plugin.transform(img)
+                img = plugin.transform(img, cluster)
 
         assert img.pip == ("a", "b")
 

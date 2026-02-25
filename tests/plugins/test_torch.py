@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from skyward.api.spec import Image
@@ -18,7 +20,7 @@ class TestTorchPlugin:
         p = torch()
         image = Image(python="3.13")
         assert p.transform is not None
-        result = p.transform(image)
+        result = p.transform(image, MagicMock())
         assert "torch" in result.pip
         assert "torchvision" in result.pip
         assert "torchaudio" in result.pip
@@ -28,7 +30,7 @@ class TestTorchPlugin:
         p = torch(cuda="cu124")
         image = Image(python="3.13")
         assert p.transform is not None
-        result = p.transform(image)
+        result = p.transform(image, MagicMock())
         assert any("cu124" in idx.url for idx in result.pip_indexes)
 
     def test_custom_cuda_version(self):
@@ -36,7 +38,7 @@ class TestTorchPlugin:
         p = torch(cuda="cu118")
         image = Image(python="3.13")
         assert p.transform is not None
-        result = p.transform(image)
+        result = p.transform(image, MagicMock())
         assert any("cu118" in idx.url for idx in result.pip_indexes)
 
     def test_transform_preserves_existing_pip(self):
@@ -44,7 +46,7 @@ class TestTorchPlugin:
         p = torch()
         image = Image(python="3.13", pip=["numpy", "pandas"])
         assert p.transform is not None
-        result = p.transform(image)
+        result = p.transform(image, MagicMock())
         assert "numpy" in result.pip
         assert "pandas" in result.pip
         assert "torch" in result.pip

@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import replace
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -70,45 +71,45 @@ class TestApplyPluginTransforms:
     def test_no_plugins_returns_image_unchanged(self) -> None:
         pool = _make_pool()
         img = Image(pip=["numpy"])
-        result = pool._apply_plugin_transforms(img)
+        result = pool._apply_plugin_transforms(img, MagicMock())
         assert result is img
 
     def test_single_transform_applied(self) -> None:
-        def add_torch(img: Image) -> Image:
+        def add_torch(img: Image, cluster: Any) -> Image:
             return replace(img, pip=(*img.pip, "torch"))
 
         p = Plugin(name="torch", transform=add_torch)
         pool = _make_pool(plugins=[p])
-        result = pool._apply_plugin_transforms(Image(pip=["numpy"]))
+        result = pool._apply_plugin_transforms(Image(pip=["numpy"]), MagicMock())
         assert "torch" in result.pip
         assert "numpy" in result.pip
 
     def test_transforms_applied_in_order(self) -> None:
-        def add_a(img: Image) -> Image:
+        def add_a(img: Image, cluster: Any) -> Image:
             return replace(img, pip=(*img.pip, "a"))
 
-        def add_b(img: Image) -> Image:
+        def add_b(img: Image, cluster: Any) -> Image:
             return replace(img, pip=(*img.pip, "b"))
 
         p1 = Plugin(name="first", transform=add_a)
         p2 = Plugin(name="second", transform=add_b)
         pool = _make_pool(plugins=[p1, p2])
-        result = pool._apply_plugin_transforms(Image())
+        result = pool._apply_plugin_transforms(Image(), MagicMock())
         assert tuple(result.pip) == ("a", "b")
 
     def test_skips_plugins_without_transform(self) -> None:
-        def add_x(img: Image) -> Image:
+        def add_x(img: Image, cluster: Any) -> Image:
             return replace(img, pip=(*img.pip, "x"))
 
         p1 = Plugin(name="no-transform")
         p2 = Plugin(name="has-transform", transform=add_x)
         p3 = Plugin(name="also-no-transform")
         pool = _make_pool(plugins=[p1, p2, p3])
-        result = pool._apply_plugin_transforms(Image())
+        result = pool._apply_plugin_transforms(Image(), MagicMock())
         assert tuple(result.pip) == ("x",)
 
     def test_preserves_existing_image_fields(self) -> None:
-        def add_pkg(img: Image) -> Image:
+        def add_pkg(img: Image, cluster: Any) -> Image:
             return replace(img, pip=(*img.pip, "new-pkg"))
 
         p = Plugin(name="preserver", transform=add_pkg)
@@ -119,7 +120,7 @@ class TestApplyPluginTransforms:
             apt=["git"],
             env={"KEY": "val"},
         )
-        result = pool._apply_plugin_transforms(original)
+        result = pool._apply_plugin_transforms(original, MagicMock())
         assert result.python == "3.13"
         assert "existing" in result.pip
         assert "new-pkg" in result.pip
@@ -129,21 +130,22 @@ class TestApplyPluginTransforms:
     def test_transform_receives_previous_result(self) -> None:
         received: list[Image] = []
 
-        def capture(img: Image) -> Image:
+        def capture(img: Image, cluster: Any) -> Image:
             received.append(img)
             return replace(img, pip=(*img.pip, "captured"))
 
-        def verify(img: Image) -> Image:
+        def verify(img: Image, cluster: Any) -> Image:
             received.append(img)
             return img
 
         p1 = Plugin(name="capture", transform=capture)
         p2 = Plugin(name="verify", transform=verify)
         pool = _make_pool(plugins=[p1, p2])
-        # Transforms are applied during __init__, so pool.image has results
+        cluster = MagicMock()
+        result = pool._apply_plugin_transforms(Image(), cluster)
         assert len(received) == 2
         assert "captured" in received[1].pip
-        assert "captured" in pool.image.pip
+        assert "captured" in result.pip
 
 
 # ---------------------------------------------------------------------------
@@ -154,33 +156,33 @@ class TestApplyPluginTransforms:
 class TestCollectPluginBootstrap:
     def test_no_plugins_returns_empty(self) -> None:
         pool = _make_pool()
-        assert pool._collect_plugin_bootstrap() == ()
+        assert pool._collect_plugin_bootstrap(MagicMock()) == ()
 
     def test_single_plugin_ops(self) -> None:
-        p = Plugin(name="ops", bootstrap=("echo hello", "echo world"))
+        p = Plugin(name="ops", bootstrap=lambda c: ("echo hello", "echo world"))
         pool = _make_pool(plugins=[p])
-        result = pool._collect_plugin_bootstrap()
+        result = pool._collect_plugin_bootstrap(MagicMock())
         assert result == ("echo hello", "echo world")
 
     def test_multiple_plugins_concatenated(self) -> None:
-        p1 = Plugin(name="a", bootstrap=("op1",))
-        p2 = Plugin(name="b", bootstrap=("op2", "op3"))
-        p3 = Plugin(name="c", bootstrap=("op4",))
+        p1 = Plugin(name="a", bootstrap=lambda c: ("op1",))
+        p2 = Plugin(name="b", bootstrap=lambda c: ("op2", "op3"))
+        p3 = Plugin(name="c", bootstrap=lambda c: ("op4",))
         pool = _make_pool(plugins=[p1, p2, p3])
-        result = pool._collect_plugin_bootstrap()
+        result = pool._collect_plugin_bootstrap(MagicMock())
         assert result == ("op1", "op2", "op3", "op4")
 
     def test_skips_plugins_with_empty_bootstrap(self) -> None:
         p1 = Plugin(name="empty")
-        p2 = Plugin(name="has-ops", bootstrap=("echo x",))
+        p2 = Plugin(name="has-ops", bootstrap=lambda c: ("echo x",))
         pool = _make_pool(plugins=[p1, p2])
-        result = pool._collect_plugin_bootstrap()
+        result = pool._collect_plugin_bootstrap(MagicMock())
         assert result == ("echo x",)
 
     def test_returns_tuple(self) -> None:
-        p = Plugin(name="t", bootstrap=("op",))
+        p = Plugin(name="t", bootstrap=lambda c: ("op",))
         pool = _make_pool(plugins=[p])
-        result = pool._collect_plugin_bootstrap()
+        result = pool._collect_plugin_bootstrap(MagicMock())
         assert isinstance(result, tuple)
 
 

@@ -11,6 +11,7 @@ from skyward.plugins.plugin import Plugin
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from skyward.api.model import Cluster
     from skyward.api.spec import Image
 
 type Backend = Literal["jax", "torch", "tensorflow"]
@@ -31,7 +32,7 @@ def keras(
         Keras backend ("jax", "torch", or "tensorflow").
     """
 
-    def transform(image: Image) -> Image:
+    def transform(image: Image, cluster: Cluster[Any]) -> Image:
         return replace(
             image,
             pip=(*image.pip, "keras"),

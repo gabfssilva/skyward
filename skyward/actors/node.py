@@ -1166,7 +1166,8 @@ async def _run_bootstrap(
 
         postamble_ops.append(phase("volumes", mount_volumes(spec.volumes, cluster.mount_endpoint)))
     for plugin in spec.plugins:
-        postamble_ops.extend(plugin.bootstrap)
+        if plugin.bootstrap is not None:
+            postamble_ops.extend(plugin.bootstrap(cluster))
 
     postamble = postamble_ops if postamble_ops else None
     bootstrap_script = image.generate_bootstrap(ttl=0, postamble=postamble)

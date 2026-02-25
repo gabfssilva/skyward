@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from skyward.api.spec import Image
@@ -22,7 +24,7 @@ class TestHuggingFacePlugin:
         p = huggingface(token="hf_xxx")
         image = Image(python="3.13")
         assert p.transform is not None
-        result = p.transform(image)
+        result = p.transform(image, MagicMock())
         assert "transformers" in result.pip
         assert "datasets" in result.pip
         assert "tokenizers" in result.pip
@@ -33,14 +35,16 @@ class TestHuggingFacePlugin:
         p = huggingface(token="hf_test123")
         image = Image(python="3.13")
         assert p.transform is not None
-        result = p.transform(image)
+        result = p.transform(image, MagicMock())
         assert result.env["HF_TOKEN"] == "hf_test123"
 
     def test_has_bootstrap_ops(self) -> None:
         from skyward.plugins.huggingface import huggingface
 
         p = huggingface(token="hf_xxx")
-        assert len(p.bootstrap) > 0
+        assert p.bootstrap is not None
+        result = p.bootstrap(MagicMock())
+        assert len(result) > 0
 
     def test_no_decorator(self) -> None:
         from skyward.plugins.huggingface import huggingface
@@ -54,7 +58,7 @@ class TestHuggingFacePlugin:
         p = huggingface(token="hf_xxx")
         image = Image(python="3.13", env={"EXISTING": "val"})
         assert p.transform is not None
-        result = p.transform(image)
+        result = p.transform(image, MagicMock())
         assert result.env["EXISTING"] == "val"
         assert result.env["HF_TOKEN"] == "hf_xxx"
 
@@ -64,7 +68,7 @@ class TestHuggingFacePlugin:
         p = huggingface(token="hf_xxx")
         image = Image(python="3.13", pip=["numpy"])
         assert p.transform is not None
-        result = p.transform(image)
+        result = p.transform(image, MagicMock())
         assert "numpy" in result.pip
         assert "transformers" in result.pip
 

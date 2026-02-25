@@ -32,7 +32,7 @@ from contextlib import suppress
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from types import TracebackType
-from typing import Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from casty import ActorRef, ActorSystem, Behaviors, CastyConfig
 
@@ -65,6 +65,9 @@ from skyward.plugins.plugin import Plugin
 
 from .model import Offer
 from .spec import DEFAULT_IMAGE, Image, PoolSpec, SelectionStrategy, Spec, Volume, Worker
+
+if TYPE_CHECKING:
+    from skyward.api.model import Cluster
 
 _active_pool: ContextVar[ComputePool | None] = ContextVar("active_pool", default=None)
 
@@ -449,7 +452,6 @@ class ComputePool:
         self.max_provision_attempts = max_provision_attempts
         self.volumes = tuple(volumes)
         self._plugins = tuple(plugins)
-        self.image = self._apply_plugin_transforms(self.image)
         self.autoscale_cooldown = autoscale_cooldown
         self.autoscale_idle_timeout = autoscale_idle_timeout
         self.reconcile_tick_interval = reconcile_tick_interval
@@ -463,6 +465,7 @@ class ComputePool:
         self._system: ActorSystem | None = None
         self._pool_ref: ActorRef[PoolMsg] | None = None
         self._cluster_id: str = ""
+        self._cluster: Cluster[Any] | None = None
         self._instances: dict[int, NodeInstance] = {}
         self._spec: PoolSpec | None = None
         self._plugin_client_contexts: list[Any] = []
@@ -472,18 +475,19 @@ class ComputePool:
     def _build_specs(self) -> list[Spec]:
         return list(self._specs)
 
-    def _apply_plugin_transforms(self, image: Image) -> Image:
+    def _apply_plugin_transforms(self, image: Image, cluster: Cluster[Any]) -> Image:
         """Apply plugin Image transforms sequentially."""
         for plugin in self._plugins:
             if plugin.transform is not None:
-                image = plugin.transform(image)
+                image = plugin.transform(image, cluster)
         return image
 
-    def _collect_plugin_bootstrap(self) -> tuple:
+    def _collect_plugin_bootstrap(self, cluster: Cluster[Any]) -> tuple:
         """Collect bootstrap ops from all plugins."""
         ops: list[Any] = []
         for plugin in self._plugins:
-            ops.extend(plugin.bootstrap)
+            if plugin.bootstrap is not None:
+                ops.extend(plugin.bootstrap(cluster))
         return tuple(ops)
 
     def _decorate_fn(self, fn: Any) -> Any:
@@ -554,9 +558,10 @@ class ComputePool:
             self._context_token = _active_pool.set(self)
 
             # Enter plugin around_client contexts
+            assert self._cluster is not None
             for plugin in self._plugins:
                 if plugin.around_client is not None:
-                    ctx = plugin.around_client(self)
+                    ctx = plugin.around_client(self, self._cluster)
                     ctx.__enter__()
                     self._plugin_client_contexts.append(ctx)
 
@@ -994,13 +999,15 @@ class ComputePool:
                     f"Pool provisioning failed: {reason}"
                 )
             case PoolStarted(
-                cluster_id=cluster_id, instances=instances,
+                cluster_id=cluster_id, instances=instances, cluster=cluster,
             ):
                 logger.info(
                     "Pool started, cluster_id={cid}, instances={n}",
                     cid=cluster_id, n=len(instances),
                 )
                 self._cluster_id = cluster_id
+                self._cluster = cluster
+                self.image = self._apply_plugin_transforms(self.image, cluster)
                 self._instances = {
                     info.node: info
                     for info in instances

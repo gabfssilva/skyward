@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from skyward.api.spec import Image
@@ -22,7 +24,7 @@ class TestSklearnPlugin:
         p = sklearn()
         image = Image(python="3.13")
         assert p.transform is not None
-        result = p.transform(image)
+        result = p.transform(image, MagicMock())
         assert "scikit-learn" in result.pip
         assert "joblib" in result.pip
 
@@ -32,7 +34,7 @@ class TestSklearnPlugin:
         p = sklearn(version="1.4.0")
         image = Image(python="3.13")
         assert p.transform is not None
-        result = p.transform(image)
+        result = p.transform(image, MagicMock())
         assert "scikit-learn==1.4.0" in result.pip
 
     def test_has_around_client(self) -> None:
@@ -59,7 +61,7 @@ class TestSklearnPlugin:
         p = sklearn()
         image = Image(python="3.13", pip=["numpy"])
         assert p.transform is not None
-        result = p.transform(image)
+        result = p.transform(image, MagicMock())
         assert "numpy" in result.pip
         assert "scikit-learn" in result.pip
 
@@ -67,4 +69,4 @@ class TestSklearnPlugin:
         from skyward.plugins.sklearn import sklearn
 
         p = sklearn()
-        assert p.bootstrap == ()
+        assert p.bootstrap is None

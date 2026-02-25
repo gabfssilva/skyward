@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from skyward.api.spec import Image
@@ -22,7 +24,7 @@ class TestKerasPlugin:
         p = keras()
         image = Image(python="3.13")
         assert p.transform is not None
-        result = p.transform(image)
+        result = p.transform(image, MagicMock())
         assert "keras" in result.pip
 
     def test_transform_sets_backend_env(self) -> None:
@@ -31,7 +33,7 @@ class TestKerasPlugin:
         p = keras(backend="jax")
         image = Image(python="3.13")
         assert p.transform is not None
-        result = p.transform(image)
+        result = p.transform(image, MagicMock())
         assert result.env["KERAS_BACKEND"] == "jax"
 
     def test_transform_torch_backend(self) -> None:
@@ -40,7 +42,7 @@ class TestKerasPlugin:
         p = keras(backend="torch")
         image = Image(python="3.13")
         assert p.transform is not None
-        result = p.transform(image)
+        result = p.transform(image, MagicMock())
         assert result.env["KERAS_BACKEND"] == "torch"
 
     def test_has_decorator(self) -> None:
@@ -67,7 +69,7 @@ class TestKerasPlugin:
         p = keras()
         image = Image(python="3.13", pip=["numpy"], env={"KEY": "val"})
         assert p.transform is not None
-        result = p.transform(image)
+        result = p.transform(image, MagicMock())
         assert "numpy" in result.pip
         assert "keras" in result.pip
         assert result.env["KEY"] == "val"
@@ -78,5 +80,5 @@ class TestKerasPlugin:
         p = keras()
         image = Image(python="3.13")
         assert p.transform is not None
-        result = p.transform(image)
+        result = p.transform(image, MagicMock())
         assert result.env["KERAS_BACKEND"] == "jax"

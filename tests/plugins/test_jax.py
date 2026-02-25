@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from skyward.api.spec import Image
@@ -18,7 +20,7 @@ class TestJAXPlugin:
         p = jax()
         image = Image(python="3.13")
         assert p.transform is not None
-        result = p.transform(image)
+        result = p.transform(image, MagicMock())
         assert any("jax" in pkg for pkg in result.pip)
 
     def test_transform_adds_cuda_index(self):
@@ -26,7 +28,7 @@ class TestJAXPlugin:
         p = jax(cuda="cu124")
         image = Image(python="3.13")
         assert p.transform is not None
-        result = p.transform(image)
+        result = p.transform(image, MagicMock())
         assert len(result.pip_indexes) > 0
 
     def test_has_around_app(self):

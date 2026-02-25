@@ -502,6 +502,7 @@ class NodeLost:
 class PoolStarted:
     cluster_id: ClusterId
     instances: tuple[NodeInstance, ...]
+    cluster: Cluster[Any]
 
 
 @dataclass(frozen=True, slots=True)
