@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
-from functools import wraps
 from typing import TYPE_CHECKING, Any, Literal
 
 from skyward.accelerators import Accelerator
@@ -12,9 +13,8 @@ from skyward.api.spec import PipIndex
 from skyward.plugins.plugin import Plugin
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from skyward.api.model import Cluster
+    from skyward.api.runtime import InstanceInfo
     from skyward.api.spec import Image
 
 
@@ -79,46 +79,46 @@ def torch(
             pip_indexes=(*image.pip_indexes, *pipindex),
         )
 
-    def decorate[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
-        @wraps(fn)
-        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-            import torch as _torch  # type: ignore[reportMissingImports]
-            import torch.distributed as dist  # type: ignore[reportMissingImports]
+    @contextmanager
+    def around(info: InstanceInfo) -> Iterator[None]:
+        import torch as _torch  # type: ignore[reportMissingImports]
+        import torch.distributed as dist  # type: ignore[reportMissingImports]
 
-            from skyward.api.runtime import instance_info
-            from skyward.observability.logger import logger
+        from skyward.observability.logger import logger
 
-            log = logger.bind(plugin="torch")
-            info = instance_info()
+        log = logger.bind(plugin="torch")
 
-            if not info or info.total_nodes < 2 or dist.is_initialized():
-                return fn(*args, **kwargs)
+        if info.total_nodes < 2:
+            yield
+            return
 
-            env = {
-                "MASTER_ADDR": info.head_addr,
-                "MASTER_PORT": str(info.head_port),
-                "WORLD_SIZE": str(info.total_nodes),
-                "RANK": str(info.node),
-                "LOCAL_RANK": "0",
-                "LOCAL_WORLD_SIZE": "1",
-                "NODE_RANK": str(info.node),
-            }
-            for key, value in env.items():
-                if value:
-                    os.environ[key] = value
+        env = {
+            "MASTER_ADDR": info.head_addr,
+            "MASTER_PORT": str(info.head_port),
+            "WORLD_SIZE": str(info.total_nodes),
+            "RANK": str(info.node),
+            "LOCAL_RANK": "0",
+            "LOCAL_WORLD_SIZE": "1",
+            "NODE_RANK": str(info.node),
+        }
+        for key, value in env.items():
+            if value:
+                os.environ[key] = value
 
-            be = backend or ("nccl" if _torch.cuda.is_available() else "gloo")
-            log.debug(
-                "Initializing process group: backend={be}, rank={rank}, world_size={ws}",
-                be=be, rank=info.node, ws=info.total_nodes,
-            )
-            dist.init_process_group(backend=be, init_method="env://")
-            return fn(*args, **kwargs)
-
-        return wrapper
+        be = backend or ("nccl" if _torch.cuda.is_available() else "gloo")
+        log.debug(
+            "Initializing process group: backend={be}, rank={rank}, world_size={ws}",
+            be=be, rank=info.node, ws=info.total_nodes,
+        )
+        dist.init_process_group(backend=be, init_method="env://")
+        try:
+            yield
+        finally:
+            if dist.is_initialized():
+                dist.destroy_process_group()
 
     return (
         Plugin.create("torch")
         .with_image_transform(transform)
-        .with_decorator(decorate)
+        .with_around_app(around)
     )

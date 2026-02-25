@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
-from functools import wraps
 from typing import TYPE_CHECKING, Any, Literal
 
 from skyward.plugins.plugin import Plugin
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from skyward.api.model import Cluster
+    from skyward.api.runtime import InstanceInfo
     from skyward.api.spec import Image
 
 type Backend = Literal["jax", "torch", "tensorflow"]
@@ -40,43 +40,38 @@ def keras(
             env={**image.env, "KERAS_BACKEND": backend},
         )
 
-    def decorate[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
-        @wraps(fn)
-        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-            os.environ["KERAS_BACKEND"] = backend
+    @contextmanager
+    def around(info: InstanceInfo) -> Iterator[None]:
+        os.environ["KERAS_BACKEND"] = backend
 
-            from skyward.api.runtime import instance_info
-            from skyward.observability.logger import logger
+        from skyward.observability.logger import logger
 
-            log = logger.bind(plugin="keras", backend=backend)
-            info = instance_info()
+        log = logger.bind(plugin="keras", backend=backend)
 
-            if info and info.total_nodes > 1 and backend == "jax":
-                import keras as _keras  # type: ignore[reportMissingImports]
+        if info.total_nodes > 1 and backend == "jax":
+            import keras as _keras  # type: ignore[reportMissingImports]
 
-                devices = _keras.distribution.list_devices()
-                log.debug("Available devices: {devices}", devices=devices)
+            devices = _keras.distribution.list_devices()
+            log.debug("Available devices: {devices}", devices=devices)
 
-                if devices:
-                    _keras.distribution.set_distribution(
-                        _keras.distribution.DataParallel(
-                            devices=devices,
-                            auto_shard_dataset=False,
-                        )
+            if devices:
+                _keras.distribution.set_distribution(
+                    _keras.distribution.DataParallel(
+                        devices=devices,
+                        auto_shard_dataset=False,
                     )
+                )
 
-                    from keras.src.backend.jax.distribution_lib import (
-                        initialize_rng,  # type: ignore[reportMissingImports]
-                    )
-                    initialize_rng()
-                    log.debug("Keras DataParallel distribution set, RNG synchronized")
+                from keras.src.backend.jax.distribution_lib import (
+                    initialize_rng,  # type: ignore[reportMissingImports]
+                )
+                initialize_rng()
+                log.debug("Keras DataParallel distribution set, RNG synchronized")
 
-            return fn(*args, **kwargs)
-
-        return wrapper
+        yield
 
     return (
         Plugin.create("keras")
         .with_image_transform(transform)
-        .with_decorator(decorate)
+        .with_around_app(around)
     )

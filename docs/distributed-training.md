@@ -132,4 +132,4 @@ def train():
 - **[Keras Training](guides/keras-training.md)** — MNIST across multiple GPUs with JAX backend
 - **[HuggingFace Fine-tuning](guides/huggingface-finetuning.md)** — Transformer fine-tuning on cloud GPUs
 - **[Data Sharding](guides/data-sharding.md)** — How `shard()` partitions data across nodes
-- **[Plugins](integrations.md)** — Full plugin reference including joblib and scikit-learn
+- **[Plugins](plugins/index.md)** — Full plugin reference including joblib and scikit-learn

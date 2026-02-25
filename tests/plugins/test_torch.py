@@ -80,15 +80,15 @@ class TestTorchPlugin:
         assert "pandas" in result.pip
         assert "torch" in result.pip
 
-    def test_has_decorator(self) -> None:
+    def test_has_around_app(self) -> None:
         from skyward.plugins.torch import torch
         p = torch(backend="nccl")
-        assert p.decorate is not None
+        assert p.around_app is not None
 
-    def test_no_around_app(self) -> None:
+    def test_no_decorator(self) -> None:
         from skyward.plugins.torch import torch
         p = torch()
-        assert p.around_app is None
+        assert p.decorate is None
 
     def test_lazy_import(self) -> None:
         from skyward.plugins.torch import torch

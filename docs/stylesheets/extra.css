@@ -52,8 +52,12 @@ body {
 [data-md-color-scheme="slate"] .md-typeset a {
   color: #ffffff;
   text-decoration: underline;
-  text-decoration-color: #555555;
+  text-decoration-color: #888888;
   text-underline-offset: 2px;
+}
+
+[data-md-color-scheme="slate"] .md-typeset a code {
+  color: inherit;
 }
 
 [data-md-color-scheme="slate"] .md-typeset a:hover {
@@ -63,8 +67,12 @@ body {
 [data-md-color-scheme="default"] .md-typeset a {
   color: #000000;
   text-decoration: underline;
-  text-decoration-color: #aaaaaa;
+  text-decoration-color: #777777;
   text-underline-offset: 2px;
+}
+
+[data-md-color-scheme="default"] .md-typeset a code {
+  color: inherit;
 }
 
 [data-md-color-scheme="default"] .md-typeset a:hover {

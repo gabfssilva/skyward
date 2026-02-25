@@ -45,17 +45,17 @@ class TestKerasPlugin:
         result = p.transform(image, MagicMock())
         assert result.env["KERAS_BACKEND"] == "torch"
 
-    def test_has_decorator(self) -> None:
+    def test_has_around_app(self) -> None:
         from skyward.plugins.keras import keras
 
         p = keras()
-        assert p.decorate is not None
+        assert p.around_app is not None
 
-    def test_no_around_app(self) -> None:
+    def test_no_decorator(self) -> None:
         from skyward.plugins.keras import keras
 
         p = keras()
-        assert p.around_app is None
+        assert p.decorate is None
 
     def test_no_around_client(self) -> None:
         from skyward.plugins.keras import keras

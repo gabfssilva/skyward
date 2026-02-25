@@ -88,9 +88,18 @@ nav:
           - Distributed Training: distributed-training.md
           - Distributed Collections: distributed-collections.md
       - Misc:
-          - Plugins: integrations.md
           - Sky Computing: sky-computing.md
           - For HPC Users: hpc.md
+  - Plugins:
+      - What are Plugins?: plugins/index.md
+      - PyTorch: plugins/torch.md
+      - JAX: plugins/jax.md
+      - Keras: plugins/keras.md
+      - HuggingFace: plugins/huggingface.md
+      - Joblib: plugins/joblib.md
+      - Scikit-learn: plugins/sklearn.md
+      - cuML: plugins/cuml.md
+      - NVIDIA MPS: plugins/mps.md
   - Guides:
       - Getting Started:
           - "Hello, Skyward!": guides/hello-skyward.md
@@ -127,5 +136,5 @@ nav:
           - Verda: reference/providers/verda.md
       - Distributed Collections: reference/distributed.md
       - Events: reference/events.md
-      - Plugins: reference/integrations.md
+      - Plugins: reference/plugins.md
       - Accelerators: reference/accelerators.md
