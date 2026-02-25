@@ -148,8 +148,8 @@ with sky.ComputePool(
 
 ## Next Steps
 
-- [PyTorch](torch.md) -- DDP initialization and CUDA wheel management
-- [JAX](jax.md) -- Distributed initialization with `around_app`
-- [Keras](keras.md) -- Backend-agnostic training with DataParallel
-- [Distributed Training](../distributed-training.md) -- How plugins fit into multi-node training
-- [Getting Started](../getting-started.md) -- First steps with Skyward
+- [PyTorch](torch.md) — DDP initialization and CUDA wheel management
+- [JAX](jax.md) — Distributed initialization with `around_app`
+- [Keras](keras.md) — Backend-agnostic training with DataParallel
+- [Distributed Training](../distributed-training.md) — How plugins fit into multi-node training
+- [Getting Started](../getting-started.md) — First steps with Skyward

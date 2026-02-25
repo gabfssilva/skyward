@@ -163,6 +163,6 @@ The plugin does not use `bootstrap`, `decorate`, or `around_client` hooks.
 
 ## Further reading
 
-- [Keras Training guide](../guides/keras-training.md) -- step-by-step MNIST training with Keras and JAX on multiple nodes.
-- [What are Plugins?](index.md) -- How the plugin system works
-- [PyTorch Distributed guide](../guides/pytorch-distributed.md) -- relevant if using `backend="torch"` with DDP.
+- [Keras Training guide](../guides/keras-training.md) — step-by-step MNIST training with Keras and JAX on multiple nodes.
+- [What are Plugins?](index.md) — How the plugin system works
+- [PyTorch Distributed guide](../guides/pytorch-distributed.md) — relevant if using `backend="torch"` with DDP.

@@ -664,7 +664,10 @@ def node_actor(
     ) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
             match msg:
-                case JoinCluster(client=client, pool_info_json=pij, env_vars=ev):
+                case JoinCluster(
+                    client=client, pool_info_json=pij,
+                    env_vars=ev, around_app_hooks=hooks,
+                ):
                     log.info("JoinCluster received, discovering worker")
                     ctx.pipe_to_self(
                         _discover_own_worker(client, ni),
@@ -682,6 +685,7 @@ def node_actor(
                         client=client,
                         pool_info_json=pij,
                         env_vars=ev,
+                        around_app_hooks=hooks,
                     )
                 case HeadAddressKnown() as h:
                     return ready(cluster, provider, ni, transport, listener, h, pending_tasks)
@@ -719,13 +723,17 @@ def node_actor(
         client: Any,
         pool_info_json: str,
         env_vars: dict[str, str],
+        around_app_hooks: tuple[tuple[str, Any], ...] = (),
     ) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
             match msg:
                 case _WorkerDiscovered(worker_ref=worker_ref):
                     log.info("Worker discovered, setting up env")
                     ctx.pipe_to_self(
-                        _setup_worker_env(client, worker_ref, pool_info_json, env_vars),
+                        _setup_worker_env(
+                            client, worker_ref, pool_info_json, env_vars,
+                            around_app_hooks,
+                        ),
                         mapper=lambda _: _EnvSetupDone(),
                         on_failure=lambda e: _EnvSetupFailed(error=str(e)),
                     )
@@ -768,6 +776,7 @@ def node_actor(
                         client=client,
                         pool_info_json=pool_info_json,
                         env_vars=env_vars,
+                        around_app_hooks=around_app_hooks,
                     )
             return Behaviors.same()
 
@@ -1213,22 +1222,36 @@ async def _setup_worker_env(
     worker_ref: Any,
     pool_info_json: str,
     env_vars: dict[str, str],
+    around_app_hooks: tuple[tuple[str, Any], ...] = (),
 ) -> None:
     from skyward.infra.worker import ExecuteTask
 
-    def setup_env(info_json: str, extra: dict[str, str]) -> str:
+    def setup_env(
+        info_json: str,
+        extra: dict[str, str],
+        hooks: tuple[tuple[str, Any], ...],
+    ) -> str:
         import os
 
         os.environ["COMPUTE_POOL"] = info_json
         for k, v in extra.items():
             os.environ[k] = v
+
+        if hooks:
+            from skyward.api.runtime import instance_info
+            from skyward.plugins.state import ensure_around_app
+
+            info = instance_info()
+            for name, factory in hooks:
+                ensure_around_app(name, factory, info)
+
         return "ok"
 
     await client.ask(
         worker_ref,
         lambda rto: ExecuteTask(
             fn=setup_env,
-            args=(pool_info_json, env_vars),
+            args=(pool_info_json, env_vars, around_app_hooks),
             kwargs={},
             reply_to=rto,
         ),

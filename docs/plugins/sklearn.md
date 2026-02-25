@@ -1,16 +1,16 @@
 # Scikit-learn
 
-scikit-learn is built on joblib for parallelism. Every estimator and utility that accepts `n_jobs` -- `GridSearchCV`, `RandomizedSearchCV`, `cross_val_score`, `RFECV`, `BaggingClassifier`, `VotingClassifier`, and many others -- delegates to `joblib.Parallel` internally. This means the parallelism strategy is pluggable: replace the joblib backend, and every scikit-learn operation that uses `n_jobs` distributes automatically.
+scikit-learn is built on joblib for parallelism. Every estimator and utility that accepts `n_jobs` — `GridSearchCV`, `RandomizedSearchCV`, `cross_val_score`, `RFECV`, `BaggingClassifier`, `VotingClassifier`, and many others — delegates to `joblib.Parallel` internally. This means the parallelism strategy is pluggable: replace the joblib backend, and every scikit-learn operation that uses `n_jobs` distributes automatically.
 
-Skyward's `sklearn` plugin does exactly this. It installs scikit-learn and joblib on the worker, registers the same `SkywardBackend` that the [joblib plugin](joblib.md) uses, and enters the `parallel_backend("skyward")` context for the duration of the pool. Inside the pool block, `n_jobs=-1` means "all workers in the cluster." No code changes are needed beyond the pool configuration -- your existing scikit-learn code works as-is.
+Skyward's `sklearn` plugin does exactly this. It installs scikit-learn and joblib on the worker, registers the same `SkywardBackend` that the [joblib plugin](joblib.md) uses, and enters the `parallel_backend("skyward")` context for the duration of the pool. Inside the pool block, `n_jobs=-1` means "all workers in the cluster." No code changes are needed beyond the pool configuration — your existing scikit-learn code works as-is.
 
 ## What It Does
 
 The plugin contributes two hooks:
 
-**Image transform** -- Appends `scikit-learn` (optionally at a pinned version) and `joblib` to the worker's pip dependencies. Both are needed on the worker because scikit-learn imports joblib internally, and the `SkywardBackend` dispatches tasks that need to be deserialized in an environment where both packages are available.
+**Image transform** — Appends `scikit-learn` (optionally at a pinned version) and `joblib` to the worker's pip dependencies. Both are needed on the worker because scikit-learn imports joblib internally, and the `SkywardBackend` dispatches tasks that need to be deserialized in an environment where both packages are available.
 
-**Client lifecycle (`around_client`)** -- Reuses the joblib plugin's infrastructure: it calls `_setup_backend(pool)` to register `SkywardBackend`, calls `_strip_local_warning_filters()` to sanitize warning filters (see the [joblib plugin documentation](joblib.md) for why this matters), and enters `parallel_backend("skyward")`. This is the same machinery as the joblib plugin -- the sklearn plugin is effectively the joblib plugin plus scikit-learn installation.
+**Client lifecycle (`around_client`)** — Reuses the joblib plugin's infrastructure: it calls `_setup_backend(pool)` to register `SkywardBackend`, calls `_strip_local_warning_filters()` to sanitize warning filters (see the [joblib plugin documentation](joblib.md) for why this matters), and enters `parallel_backend("skyward")`. This is the same machinery as the joblib plugin — the sklearn plugin is effectively the joblib plugin plus scikit-learn installation.
 
 ## Relationship with the Joblib Plugin
 
@@ -19,9 +19,9 @@ The `sklearn` plugin and the `joblib` plugin share the same backend. Under the h
 - `sky.plugins.joblib()` installs only `joblib`.
 - `sky.plugins.sklearn()` installs `scikit-learn` and `joblib`.
 
-If your workload is scikit-learn-based, use the `sklearn` plugin alone -- it includes everything the `joblib` plugin provides. You do not need to stack both plugins. If your workload is pure joblib without scikit-learn, use the `joblib` plugin.
+If your workload is scikit-learn-based, use the `sklearn` plugin alone — it includes everything the `joblib` plugin provides. You do not need to stack both plugins. If your workload is pure joblib without scikit-learn, use the `joblib` plugin.
 
-If you happen to specify both, nothing breaks -- the backend registration is idempotent, and duplicate pip packages are harmless. But it is unnecessary.
+If you happen to specify both, nothing breaks — the backend registration is idempotent, and duplicate pip packages are harmless. But it is unnecessary.
 
 ## Parameters
 
@@ -35,14 +35,14 @@ Version pinning is important when your local code depends on specific scikit-lea
 
 Everything in scikit-learn that accepts `n_jobs` distributes across the cluster without modification:
 
-- **`GridSearchCV`** -- Each combination of hyperparameters and cross-validation fold is a separate task. A grid with 20 candidates and 5-fold CV produces 100 fits, all distributed.
-- **`RandomizedSearchCV`** -- Same as `GridSearchCV` but with random sampling. `n_iter=50` with 5-fold CV produces 250 fits.
-- **`cross_val_score`** / **`cross_validate`** -- Each fold is an independent fit+evaluate. 10-fold CV distributes 10 tasks.
-- **`RFECV`** (Recursive Feature Elimination with CV) -- Each elimination step and fold is distributed.
-- **`BaggingClassifier`** / **`BaggingRegressor`** -- Each base estimator is fit independently when `n_jobs=-1`.
-- **`VotingClassifier`** / **`VotingRegressor`** -- Each constituent estimator is fit independently.
-- **`MultiOutputClassifier`** / **`MultiOutputRegressor`** -- Each target's estimator is fit independently.
-- **`Pipeline` with parallel steps** -- When combined with `GridSearchCV`, the full pipeline (preprocessing + estimator) is replicated per task.
+- **`GridSearchCV`** — Each combination of hyperparameters and cross-validation fold is a separate task. A grid with 20 candidates and 5-fold CV produces 100 fits, all distributed.
+- **`RandomizedSearchCV`** — Same as `GridSearchCV` but with random sampling. `n_iter=50` with 5-fold CV produces 250 fits.
+- **`cross_val_score`** / **`cross_validate`** — Each fold is an independent fit+evaluate. 10-fold CV distributes 10 tasks.
+- **`RFECV`** (Recursive Feature Elimination with CV) — Each elimination step and fold is distributed.
+- **`BaggingClassifier`** / **`BaggingRegressor`** — Each base estimator is fit independently when `n_jobs=-1`.
+- **`VotingClassifier`** / **`VotingRegressor`** — Each constituent estimator is fit independently.
+- **`MultiOutputClassifier`** / **`MultiOutputRegressor`** — Each target's estimator is fit independently.
+- **`Pipeline` with parallel steps** — When combined with `GridSearchCV`, the full pipeline (preprocessing + estimator) is replicated per task.
 
 The pattern is consistent: scikit-learn calls `joblib.Parallel(n_jobs=self.n_jobs)` internally, the Skyward backend intercepts it, and each unit of work is dispatched to a remote worker.
 
@@ -99,7 +99,7 @@ with sky.ComputePool(
 
 This grid has 32 candidates and 5-fold CV, producing 160 fits. With 4 nodes and `concurrency=4`, 16 fits run in parallel. The `n_jobs=-1` inside `GridSearchCV` tells joblib to use all available workers, which the Skyward backend reports as 16.
 
-Note that the `GridSearchCV` call happens inside a `@sky.compute` function. The grid search itself runs on a remote worker -- it is the grid search's internal `Parallel` calls that distribute across the cluster. The outer `>> pool` dispatches the function to one node; that node's joblib backend then fans out the 160 individual fits across all nodes.
+Note that the `GridSearchCV` call happens inside a `@sky.compute` function. The grid search itself runs on a remote worker — it is the grid search's internal `Parallel` calls that distribute across the cluster. The outer `>> pool` dispatches the function to one node; that node's joblib backend then fans out the 160 individual fits across all nodes.
 
 ### Cross-Validation
 
@@ -151,7 +151,7 @@ The `cuml` plugin intercepts sklearn calls and routes them to GPU. The `sklearn`
 
 ## Next Steps
 
-- [Scikit Grid Search guide](../guides/scikit-grid-search.md) -- Complete example with multiple estimator families and pipeline search
-- [joblib plugin](joblib.md) -- How `SkywardBackend` works, warning filter sanitization, and tuning concurrency
-- [cuML plugin](cuml.md) -- GPU-accelerated scikit-learn with NVIDIA RAPIDS
-- [What are Plugins?](index.md) -- How the plugin system works
+- [Scikit Grid Search guide](../guides/scikit-grid-search.md) — Complete example with multiple estimator families and pipeline search
+- [joblib plugin](joblib.md) — How `SkywardBackend` works, warning filter sanitization, and tuning concurrency
+- [cuML plugin](cuml.md) — GPU-accelerated scikit-learn with NVIDIA RAPIDS
+- [What are Plugins?](index.md) — How the plugin system works

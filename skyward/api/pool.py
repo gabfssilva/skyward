@@ -491,17 +491,10 @@ class ComputePool:
         return tuple(ops)
 
     def _decorate_fn(self, fn: Any) -> Any:
-        """Wrap fn with plugin around_app + decorate chains."""
-        from skyward.plugins.plugin import chain_decorators, make_around_app_decorator
+        """Wrap fn with plugin decorate chains."""
+        from skyward.plugins.plugin import chain_decorators
 
-        decorators: list[Any] = []
-        for plugin in self._plugins:
-            if plugin.around_app is not None:
-                decorators.append(make_around_app_decorator(plugin.name, plugin.around_app))
-        for plugin in self._plugins:
-            if plugin.decorate is not None:
-                decorators.append(plugin.decorate)
-
+        decorators: list[Any] = [p.decorate for p in self._plugins if p.decorate is not None]
         return chain_decorators(fn, decorators)
 
     def __enter__(self) -> ComputePool:
@@ -682,6 +675,7 @@ class ComputePool:
             raise RuntimeError("Pool is not active")
 
         timeout = self._resolve_timeout(pending)
+        fn = self._decorate_fn(pending.fn)
         fn_name = getattr(pending.fn, "__name__", repr(pending.fn))
         logger.debug("Broadcasting task: {fn} to {n} nodes", fn=fn_name, n=self._specs[0].nodes)
 
@@ -690,7 +684,7 @@ class ComputePool:
             result = await self._system.ask(  # type: ignore[union-attr]
                 self._pool_ref,
                 lambda reply_to: SubmitBroadcast(
-                    fn=pending.fn, args=pending.args, kwargs=pending.kwargs,
+                    fn=fn, args=pending.args, kwargs=pending.kwargs,
                     reply_to=reply_to, timeout=timeout,
                 ),
                 timeout=timeout,

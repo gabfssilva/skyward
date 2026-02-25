@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import FrozenInstanceError
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -376,74 +376,60 @@ class TestChainDecorators:
 
 
 # ---------------------------------------------------------------------------
-# make_around_app_decorator
+# around_app lifecycle (ensure_around_app integration)
 # ---------------------------------------------------------------------------
 
 
-class TestMakeAroundAppDecorator:
-    def test_calls_fn_with_args(self) -> None:
-        from skyward.plugins.plugin import make_around_app_decorator
+class TestAroundAppLifecycle:
+    def test_ensure_around_app_enters_context(self) -> None:
+        from skyward.plugins.state import ensure_around_app, reset
+
+        entered = False
 
         @contextmanager
         def lifecycle(info: Any):  # noqa: ANN201
+            nonlocal entered
+            entered = True
             yield
 
-        calls: list[tuple] = []
+        reset()
+        ensure_around_app("test", lifecycle, MagicMock())
+        assert entered
 
-        def fn(x: int, y: int) -> int:
-            calls.append((x, y))
-            return x + y
+    def test_ensure_around_app_is_idempotent(self) -> None:
+        from skyward.plugins.state import ensure_around_app, reset
 
-        decorator = make_around_app_decorator("test", lifecycle)
-
-        with (
-            patch("skyward.plugins.plugin.instance_info", return_value=MagicMock()),
-            patch("skyward.plugins.plugin.ensure_around_app") as mock_ensure,
-        ):
-            wrapped = decorator(fn)
-            result = wrapped(1, 2)
-
-        assert result == 3
-        assert calls == [(1, 2)]
-        mock_ensure.assert_called_once()
-
-    def test_passes_name_and_factory_to_ensure(self) -> None:
-        from skyward.plugins.plugin import make_around_app_decorator
+        call_count = 0
 
         @contextmanager
         def lifecycle(info: Any):  # noqa: ANN201
+            nonlocal call_count
+            call_count += 1
             yield
 
-        fake_info = MagicMock()
-        decorator = make_around_app_decorator("my-plugin", lifecycle)
+        reset()
+        info = MagicMock()
+        ensure_around_app("test", lifecycle, info)
+        ensure_around_app("test", lifecycle, info)
+        assert call_count == 1
 
-        with (
-            patch("skyward.plugins.plugin.instance_info", return_value=fake_info),
-            patch("skyward.plugins.plugin.ensure_around_app") as mock_ensure,
-        ):
-            wrapped = decorator(lambda: None)
-            wrapped()
-
-        mock_ensure.assert_called_once_with("my-plugin", lifecycle, fake_info)
-
-    def test_calls_instance_info(self) -> None:
-        from skyward.plugins.plugin import make_around_app_decorator
+    def test_multiple_plugins_all_entered(self) -> None:
+        from skyward.plugins.state import ensure_around_app, is_setup, reset
 
         @contextmanager
-        def lifecycle(info: Any):  # noqa: ANN201
+        def lifecycle_a(info: Any):  # noqa: ANN201
             yield
 
-        decorator = make_around_app_decorator("test", lifecycle)
+        @contextmanager
+        def lifecycle_b(info: Any):  # noqa: ANN201
+            yield
 
-        with (
-            patch("skyward.plugins.plugin.instance_info") as mock_info,
-            patch("skyward.plugins.plugin.ensure_around_app"),
-        ):
-            mock_info.return_value = MagicMock()
-            wrapped = decorator(lambda: "ok")
-            wrapped()
-
-        mock_info.assert_called_once()
+        reset()
+        info = MagicMock()
+        ensure_around_app("plugin-a", lifecycle_a, info)
+        ensure_around_app("plugin-b", lifecycle_b, info)
+        assert is_setup("plugin-a")
+        assert is_setup("plugin-b")
 
 
 # ---------------------------------------------------------------------------

@@ -385,10 +385,14 @@ def pool_actor() -> Behavior[PoolMsg]:
             nbr.node_id, spec, cluster, nbr.instance, head_addr,
         )
         image_env = dict(spec.image.env) if spec.image and spec.image.env else {}
+        hooks = tuple(
+            (p.name, p.around_app) for p in spec.plugins if p.around_app is not None
+        )
         node_ref.tell(JoinCluster(
             client=client,
             pool_info_json=pool_json,
             env_vars=image_env,
+            around_app_hooks=hooks,
         ))
 
     def provisioning(

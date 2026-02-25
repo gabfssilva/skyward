@@ -106,6 +106,6 @@ The [Keras Training guide](../guides/keras-training.md) walks through a complete
 
 ## Next Steps
 
-- [Keras Training](../guides/keras-training.md) -- JAX + Keras on multiple GPUs
-- [What are Plugins?](index.md) -- How the plugin system works
-- [PyTorch Distributed](../guides/pytorch-distributed.md) -- The PyTorch equivalent for comparison
+- [Keras Training](../guides/keras-training.md) — JAX + Keras on multiple GPUs
+- [What are Plugins?](index.md) — How the plugin system works
+- [PyTorch Distributed](../guides/pytorch-distributed.md) — The PyTorch equivalent for comparison

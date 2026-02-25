@@ -160,8 +160,8 @@ The `torch` plugin handles DDP initialization, and the `huggingface` plugin hand
 
 ## Next Steps
 
-- [PyTorch Distributed guide](../guides/pytorch-distributed.md) -- Step-by-step DDP training walkthrough
-- [PyTorch Model Roundtrip guide](../guides/torch-model-roundtrip.md) -- Sending models to and from the cloud
-- [HuggingFace plugin](huggingface.md) -- Fine-tuning Transformers on multiple nodes
-- [What are Plugins?](index.md) -- How the plugin system works
-- [JAX plugin](jax.md) -- The JAX equivalent for comparison
+- [PyTorch Distributed guide](../guides/pytorch-distributed.md) — Step-by-step DDP training walkthrough
+- [PyTorch Model Roundtrip guide](../guides/torch-model-roundtrip.md) — Sending models to and from the cloud
+- [HuggingFace plugin](huggingface.md) — Fine-tuning Transformers on multiple nodes
+- [What are Plugins?](index.md) — How the plugin system works
+- [JAX plugin](jax.md) — The JAX equivalent for comparison

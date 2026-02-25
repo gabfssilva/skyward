@@ -261,33 +261,21 @@ class TestDecorateFn:
         assert result == "done"
         assert calls == ["a", "b", "fn"]
 
-    def test_around_app_comes_before_decorate(self) -> None:
-        """around_app decorators are placed before decorate decorators."""
-        calls: list[str] = []
+    def test_around_app_not_included_in_decorate_fn(self) -> None:
+        """around_app hooks are not applied as task decorators (they run at worker startup)."""
 
         @contextmanager
         def lifecycle(info: Any):  # noqa: ANN201
             yield
 
-        def my_decorate(fn: Any) -> Any:
-            def wrapper(*args: Any, **kwargs: Any) -> Any:
-                calls.append("decorate")
-                return fn(*args, **kwargs)
-            return wrapper
-
-        p = Plugin(
-            name="both",
-            around_app=lifecycle,
-            decorate=my_decorate,
-        )
+        p = Plugin(name="lifecycle-only", around_app=lifecycle)
         pool = _make_pool(plugins=[p])
 
         def original() -> str:
-            calls.append("fn")
             return "ok"
 
-        wrapped = pool._decorate_fn(original)
-        assert wrapped is not original
+        result = pool._decorate_fn(original)
+        assert result is original
 
 
 # ---------------------------------------------------------------------------

@@ -1,16 +1,16 @@
 # HuggingFace
 
-The HuggingFace ecosystem -- transformers, datasets, tokenizers -- is the dominant interface for working with pre-trained language models. Fine-tuning a model from the Hub is a well-understood workflow: download a checkpoint, tokenize a dataset, configure the Trainer, and run. The friction is not the code but the environment. You need a GPU, you need the right CUDA version, you need the HuggingFace libraries installed, and if the model is gated, you need to authenticate before anything downloads.
+The HuggingFace ecosystem — transformers, datasets, tokenizers — is the dominant interface for working with pre-trained language models. Fine-tuning a model from the Hub is a well-understood workflow: download a checkpoint, tokenize a dataset, configure the Trainer, and run. The friction is not the code but the environment. You need a GPU, you need the right CUDA version, you need the HuggingFace libraries installed, and if the model is gated, you need to authenticate before anything downloads.
 
-Skyward's `huggingface` plugin handles all of this at the pool level. It installs the core HuggingFace libraries on the worker, sets the `HF_TOKEN` environment variable, and runs `huggingface-cli login` during bootstrap so that gated model downloads work without any manual intervention inside your compute function. Your function just calls `from_pretrained()` and it works -- even for gated models like Llama or Mistral.
+Skyward's `huggingface` plugin handles all of this at the pool level. It installs the core HuggingFace libraries on the worker, sets the `HF_TOKEN` environment variable, and runs `huggingface-cli login` during bootstrap so that gated model downloads work without any manual intervention inside your compute function. Your function just calls `from_pretrained()` and it works — even for gated models like Llama or Mistral.
 
 ## What It Does
 
 The plugin contributes two hooks:
 
-**Image transform** -- Appends `transformers`, `datasets`, and `tokenizers` to the worker's pip dependencies and sets `HF_TOKEN` in the environment. This means the libraries are installed during bootstrap and the token is available to every process on the worker. You do not need to specify these packages in the `Image` yourself, and you do not need to call `huggingface_hub.login()` inside your function.
+**Image transform** — Appends `transformers`, `datasets`, and `tokenizers` to the worker's pip dependencies and sets `HF_TOKEN` in the environment. This means the libraries are installed during bootstrap and the token is available to every process on the worker. You do not need to specify these packages in the `Image` yourself, and you do not need to call `huggingface_hub.login()` inside your function.
 
-**Bootstrap** -- After the base environment is set up, the plugin runs `huggingface-cli login --token $HF_TOKEN`. This writes the token to the Hub's local credential store (`~/.cache/huggingface/token`), which is where `from_pretrained()` looks when downloading gated models. The login happens once during instance bootstrap, not on every task.
+**Bootstrap** — After the base environment is set up, the plugin runs `huggingface-cli login --token $HF_TOKEN`. This writes the token to the Hub's local credential store (`~/.cache/huggingface/token`), which is where `from_pretrained()` looks when downloading gated models. The login happens once during instance bootstrap, not on every task.
 
 Together, these two hooks mean that by the time your `@sky.compute` function runs, the worker has the HuggingFace libraries installed, the CLI authenticated, and the token in the environment. Your function can focus on the actual ML work.
 
@@ -39,7 +39,7 @@ The bootstrap script generator then picks up these additions: `uv` installs the 
 huggingface-cli login --token $HF_TOKEN
 ```
 
-This writes the token to disk. From that point on, any HuggingFace library call that needs authentication -- `AutoModel.from_pretrained("meta-llama/...")`, `load_dataset("private/dataset")` -- can find the credentials without any explicit login call in your code.
+This writes the token to disk. From that point on, any HuggingFace library call that needs authentication — `AutoModel.from_pretrained("meta-llama/...")`, `load_dataset("private/dataset")` — can find the credentials without any explicit login call in your code.
 
 ## Usage
 
@@ -99,7 +99,7 @@ with sky.ComputePool(
 
 Notice that the function imports `transformers` and `datasets` inside the function body. This is deliberate: the function is serialized with cloudpickle and sent to the remote worker, where the imports resolve against the worker's environment. You do not need `transformers` installed locally.
 
-The Trainer handles device placement internally -- it detects the GPU and moves the model there, enables fp16 when appropriate, and manages the training loop. For a single node, no distributed coordination is needed.
+The Trainer handles device placement internally — it detects the GPU and moves the model there, enables fp16 when appropriate, and manages the training loop. For a single node, no distributed coordination is needed.
 
 ### Multi-Node Distributed Training
 
@@ -152,11 +152,11 @@ with sky.ComputePool(
     results = distributed_finetune("gpt2") @ pool
 ```
 
-The `torch` plugin initializes the process group before your function runs -- it sets `MASTER_ADDR`, `WORLD_SIZE`, `RANK`, and calls `init_process_group()`. The Trainer detects the initialized process group and automatically wraps the model with `DistributedDataParallel`, shards the data across ranks, and synchronizes gradients. The `huggingface` plugin contributes the libraries and authentication. Plugin order in the list does not affect behavior -- each plugin's hooks run at their respective lifecycle points.
+The `torch` plugin initializes the process group before your function runs — it sets `MASTER_ADDR`, `WORLD_SIZE`, `RANK`, and calls `init_process_group()`. The Trainer detects the initialized process group and automatically wraps the model with `DistributedDataParallel`, shards the data across ranks, and synchronizes gradients. The `huggingface` plugin contributes the libraries and authentication. Plugin order in the list does not affect behavior — each plugin's hooks run at their respective lifecycle points.
 
 ### Inference with Pipelines
 
-For lighter workloads like batch inference, the plugin is equally useful -- it ensures the libraries and authentication are in place:
+For lighter workloads like batch inference, the plugin is equally useful — it ensures the libraries and authentication are in place:
 
 ```python
 @sky.compute
@@ -182,6 +182,6 @@ with sky.ComputePool(
 
 ## Next Steps
 
-- [HuggingFace Fine-tuning guide](../guides/huggingface-finetuning.md) -- Complete fine-tuning walkthrough with dataset preparation, training, and evaluation
-- [PyTorch Distributed](../guides/pytorch-distributed.md) -- How DDP works under the hood with the `torch` plugin
-- [What are Plugins?](index.md) -- How the plugin system works
+- [HuggingFace Fine-tuning guide](../guides/huggingface-finetuning.md) — Complete fine-tuning walkthrough with dataset preparation, training, and evaluation
+- [PyTorch Distributed](../guides/pytorch-distributed.md) — How DDP works under the hood with the `torch` plugin
+- [What are Plugins?](index.md) — How the plugin system works

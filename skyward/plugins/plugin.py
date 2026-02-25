@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
-from functools import reduce, wraps
+from functools import reduce
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -87,30 +87,3 @@ def chain_decorators[**P, R](
     return reduce(lambda f, d: d(f), reversed(decorators), fn)
 
 
-def make_around_app_decorator(name: str, factory: AppLifecycle) -> TaskDecorator:
-    """Create a task decorator that enters around_app once per worker."""
-
-    def decorator[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
-        @wraps(fn)
-        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-            info = instance_info()
-            ensure_around_app(name, factory, info)
-            return fn(*args, **kwargs)
-
-        return wrapper
-
-    return decorator
-
-
-def instance_info() -> Any:
-    """Lazy import of instance_info to avoid circular imports."""
-    from skyward.api.runtime import instance_info as _instance_info
-
-    return _instance_info()
-
-
-def ensure_around_app(name: str, factory: AppLifecycle, info: object) -> None:
-    """Lazy import of ensure_around_app to avoid circular imports."""
-    from skyward.plugins.state import ensure_around_app as _ensure
-
-    _ensure(name, factory, info)

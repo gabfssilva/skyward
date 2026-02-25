@@ -404,6 +404,7 @@ class JoinCluster:
     client: Any
     pool_info_json: str
     env_vars: dict[str, str]
+    around_app_hooks: tuple[tuple[str, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
