@@ -1,3 +1,3 @@
-# Integrations
+# Plugins
 
-::: skyward.integrations
+::: skyward.plugins

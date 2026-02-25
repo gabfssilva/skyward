@@ -11,7 +11,6 @@ import skyward as sky
 
 
 @sky.compute
-@sky.integrations.jax()
 def train_distributed() -> dict:
     import jax
     import jax.numpy as jnp
@@ -112,9 +111,8 @@ if __name__ == "__main__":
         provider=sky.AWS(),
         accelerator=sky.accelerators.T4G(),
         nodes=2,
-        image=sky.Image(
-            pip=["jax[cuda12]==0.8.2", "scikit-learn"],
-        ),
+        image=sky.Image(pip=["scikit-learn"]),
+        plugins=[sky.plugins.jax()],
     ) as pool:
         results = train_distributed() @ pool
 

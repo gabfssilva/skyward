@@ -99,7 +99,7 @@ sequenceDiagram
 
 The provider is only involved at the boundaries: preparing infrastructure, launching instances, polling status, and tearing down. Everything in between — SSH, bootstrap, worker startup, cluster formation — is handled by the instance actor, which means the same orchestration logic works identically across all providers.
 
-Node 0 plays a special role: it's the **head node**. Once its instance is ready, it broadcasts its address to all other nodes so they can form a cluster. This is how distributed training frameworks (PyTorch DDP, JAX, etc.) discover each other.
+Node 0 plays a special role: it's the **head node**. Once its instance is ready, it broadcasts its address to all other nodes so they can form a cluster. This is how distributed training frameworks (PyTorch DDP, JAX, etc.) discover each other — and Skyward's plugins (`sky.plugins.torch()`, `sky.plugins.jax()`) configure these frameworks using the head node's address automatically.
 
 If a spot instance is preempted, the node detects the loss, notifies the pool, and requests a replacement from the provider. Tasks that were in flight are re-queued. From the user's perspective, the pool self-heals — though of course repeated preemptions will slow things down.
 
@@ -247,7 +247,7 @@ def distributed_task(data):
 
 `InstanceInfo` is populated from a `COMPUTE_POOL` environment variable that Skyward injects before starting the worker process. It contains the node's index (`node`), the total cluster size (`total_nodes`), whether this is the head node (`is_head`), the head node's address and port (for coordination protocols), the number of accelerators on this node, and a list of all peers with their private IPs.
 
-This is the same mechanism that Skyward's framework integrations use internally. The PyTorch integration, for example, reads `instance_info()` to configure `MASTER_ADDR`, `WORLD_SIZE`, and `RANK` before calling `init_process_group`. You don't need to use the integration decorators to access this information — `instance_info()` is always available inside any `@sky.compute` function, whether you're using a framework integration or writing raw distributed logic.
+This is the same mechanism that Skyward's plugins use internally. The `torch` plugin, for example, reads `instance_info()` to configure `MASTER_ADDR`, `WORLD_SIZE`, and `RANK` before calling `init_process_group`. You don't need plugins to access this information — `instance_info()` is always available inside any `@sky.compute` function, whether you're using a plugin or writing raw distributed logic.
 
 ### Data Sharding
 

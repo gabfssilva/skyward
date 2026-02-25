@@ -1,28 +1,28 @@
 # Joblib Concurrency
 
-joblib's `Parallel` is the standard way to parallelize work in Python — scikit-learn, NLTK, and many other libraries use it internally. By default, it runs tasks across local threads or processes. Skyward's `JoblibPool` replaces the backend with a distributed one: `n_jobs=-1` sends tasks to cloud instances instead of local cores. No code changes needed beyond the context manager — existing `Parallel(n_jobs=-1)(delayed(fn)(x) for x in data)` patterns work as-is.
+joblib's `Parallel` is the standard way to parallelize work in Python — scikit-learn, NLTK, and many other libraries use it internally. By default, it runs tasks across local threads or processes. Skyward's `joblib` plugin replaces the backend with a distributed one: `n_jobs=-1` sends tasks to cloud instances instead of local cores. No code changes needed beyond the pool configuration — existing `Parallel(n_jobs=-1)(delayed(fn)(x) for x in data)` patterns work as-is.
 
 ## Defining Tasks
 
-Any regular Python function works with joblib — no `@sky.compute` decorator needed:
+Any regular Python function works with joblib — the plugin handles serialization and dispatch internally:
 
 ```python
 --8<-- "examples/guides/10_joblib_concurrency.py:10:13"
 ```
 
-The function doesn't need to be decorated because joblib handles its own serialization. `JoblibPool` intercepts joblib's task batches, wraps them as `@compute` calls internally, and dispatches them to the cluster.
+joblib handles its own serialization. The `joblib` plugin intercepts joblib's task batches, wraps them internally, and dispatches them to the cluster.
 
-## Distributed Execution with `JoblibPool`
+## Distributed Execution with the Joblib Plugin
 
-Wrap your `Parallel` call inside a `JoblibPool` context manager:
+Wrap your `Parallel` call inside a `ComputePool` with the `joblib` plugin:
 
 ```python
 --8<-- "examples/guides/10_joblib_concurrency.py:17:27"
 ```
 
-When you enter the `JoblibPool` block, Skyward provisions the instances and registers a custom joblib backend. Every `Parallel(n_jobs=-1)` call inside the block distributes tasks across the cluster. The `worker` parameter accepts a `Worker` dataclass that controls per-node execution — `Worker(concurrency=10)` means each node runs 10 tasks simultaneously. With 10 nodes and `concurrency=10`, you get 100 effective workers.
+When you enter the pool block, Skyward provisions the instances and the `joblib` plugin registers a custom joblib backend. Every `Parallel(n_jobs=-1)` call inside the block distributes tasks across the cluster. The `worker` parameter accepts a `Worker` dataclass that controls per-node execution — `Worker(concurrency=10)` means each node runs 10 tasks simultaneously. With 10 nodes and `concurrency=10`, you get 100 effective workers.
 
-`JoblibPool` is a thin wrapper around `ComputePool` that manages backend registration. When you exit the block, the instances are terminated and the default joblib backend is restored.
+When you exit the block, the instances are terminated and the default joblib backend is restored.
 
 ## Measuring Throughput
 
@@ -63,8 +63,8 @@ uv run python examples/guides/10_joblib_concurrency.py
 
 **What you learned:**
 
-- **`JoblibPool`** replaces joblib's backend with a distributed one — `n_jobs=-1` uses all cloud workers.
-- **No `@sky.compute` needed** — joblib handles serialization; `JoblibPool` wraps batches internally.
+- **`plugins=[sky.plugins.joblib()]`** replaces joblib's backend with a distributed one — `n_jobs=-1` uses all cloud workers.
+- **Plain functions** — joblib handles serialization; the plugin wraps batches internally.
 - **Effective workers = nodes x worker concurrency** — both parameters multiply throughput.
 - **Near-linear scaling** — 97.5% efficiency with minimal protocol overhead (SSH + Casty actors, raw TCP).
 - **Standard joblib API** — `Parallel`, `delayed` work unchanged inside the context manager.

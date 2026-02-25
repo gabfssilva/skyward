@@ -34,7 +34,7 @@ Each node returns a partial result. Since broadcast returns a list, you combine 
 --8<-- "examples/guides/03_broadcast.py:28:33"
 ```
 
-This map-reduce pattern — broadcast a function, shard the data inside, aggregate the results — is the simplest form of distributed computation in Skyward. More complex patterns (distributed training with gradient synchronization, for example) build on the same foundation but use framework integrations to handle the inter-node communication.
+This map-reduce pattern — broadcast a function, shard the data inside, aggregate the results — is the simplest form of distributed computation in Skyward. More complex patterns (distributed training with gradient synchronization, for example) build on the same foundation but use framework plugins to handle the inter-node communication.
 
 ## Run the Full Example
 

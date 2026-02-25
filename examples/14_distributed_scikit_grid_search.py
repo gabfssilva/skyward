@@ -69,12 +69,14 @@ def main():
     print(f"  Total fits: {n_candidates * cv_folds}")
     print("=" * 60)
 
-    with sky.integrations.ScikitLearnPool(
+    with sky.ComputePool(
         provider=sky.AWS(),
         nodes=3,
         worker=sky.Worker(concurrency=4),
-        image=sky.Image(pip=["scikit-learn"]),
         allocation="spot",
+        plugins=[
+            sky.plugins.sklearn()
+        ]
     ):
         grid_search = GridSearchCV(
             estimator=pipe,

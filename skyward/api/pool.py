@@ -61,6 +61,7 @@ from skyward.distributed import (
 from skyward.distributed.types import Consistency
 from skyward.observability.logger import logger
 from skyward.observability.logging import LogConfig, setup_logging, teardown_logging
+from skyward.plugins.plugin import Plugin
 
 from .model import Offer
 from .spec import DEFAULT_IMAGE, Image, PoolSpec, SelectionStrategy, Spec, Volume, Worker
@@ -354,6 +355,7 @@ class ComputePool:
         autoscale_cooldown: float = ...,
         autoscale_idle_timeout: float = ...,
         reconcile_tick_interval: float = ...,
+        plugins: list[Plugin] | tuple[Plugin, ...] = ...,
     ) -> None: ...
 
     @overload
@@ -374,6 +376,7 @@ class ComputePool:
         autoscale_cooldown: float = ...,
         autoscale_idle_timeout: float = ...,
         reconcile_tick_interval: float = ...,
+        plugins: list[Plugin] | tuple[Plugin, ...] = ...,
     ) -> None: ...
 
     def __init__(
@@ -402,6 +405,7 @@ class ComputePool:
         autoscale_cooldown: float = 30.0,
         autoscale_idle_timeout: float = 60.0,
         reconcile_tick_interval: float = 15.0,
+        plugins: list[Plugin] | tuple[Plugin, ...] = (),
     ) -> None:
         if specs and provider is not None:
             raise ValueError("Cannot specify both positional Spec args and 'provider'")
@@ -444,6 +448,8 @@ class ComputePool:
         self.provision_retry_delay = provision_retry_delay
         self.max_provision_attempts = max_provision_attempts
         self.volumes = tuple(volumes)
+        self._plugins = tuple(plugins)
+        self.image = self._apply_plugin_transforms(self.image)
         self.autoscale_cooldown = autoscale_cooldown
         self.autoscale_idle_timeout = autoscale_idle_timeout
         self.reconcile_tick_interval = reconcile_tick_interval
@@ -459,11 +465,40 @@ class ComputePool:
         self._cluster_id: str = ""
         self._instances: dict[int, NodeInstance] = {}
         self._spec: PoolSpec | None = None
+        self._plugin_client_contexts: list[Any] = []
         self._app: Any = None
         self._owns_app: bool = False
 
     def _build_specs(self) -> list[Spec]:
         return list(self._specs)
+
+    def _apply_plugin_transforms(self, image: Image) -> Image:
+        """Apply plugin Image transforms sequentially."""
+        for plugin in self._plugins:
+            if plugin.transform is not None:
+                image = plugin.transform(image)
+        return image
+
+    def _collect_plugin_bootstrap(self) -> tuple:
+        """Collect bootstrap ops from all plugins."""
+        ops: list[Any] = []
+        for plugin in self._plugins:
+            ops.extend(plugin.bootstrap)
+        return tuple(ops)
+
+    def _decorate_fn(self, fn: Any) -> Any:
+        """Wrap fn with plugin around_app + decorate chains."""
+        from skyward.plugins.plugin import chain_decorators, make_around_app_decorator
+
+        decorators: list[Any] = []
+        for plugin in self._plugins:
+            if plugin.around_app is not None:
+                decorators.append(make_around_app_decorator(plugin.name, plugin.around_app))
+        for plugin in self._plugins:
+            if plugin.decorate is not None:
+                decorators.append(plugin.decorate)
+
+        return chain_decorators(fn, decorators)
 
     def __enter__(self) -> ComputePool:
         """Start pool and provision resources."""
@@ -517,6 +552,14 @@ class ComputePool:
             self._run_sync(self._start_async())
             self._active = True
             self._context_token = _active_pool.set(self)
+
+            # Enter plugin around_client contexts
+            for plugin in self._plugins:
+                if plugin.around_client is not None:
+                    ctx = plugin.around_client(self)
+                    ctx.__enter__()
+                    self._plugin_client_contexts.append(ctx)
+
             logger.info("Pool ready")
         except Exception as e:
             logger.exception("Error starting pool: {err}", err=e)
@@ -532,6 +575,14 @@ class ComputePool:
         exc_tb: TracebackType | None,
     ) -> None:
         """Stop pool and release resources."""
+        # Exit plugin around_client contexts (reverse order)
+        for ctx in reversed(self._plugin_client_contexts):
+            try:
+                ctx.__exit__(exc_type, exc_val, exc_tb)
+            except Exception as e:
+                logger.warning("Plugin around_client exit error: {err}", err=e)
+        self._plugin_client_contexts.clear()
+
         logger.info("Stopping pool...")
         logger.debug(
             "ComputePool.__exit__: _active={active}, _pool_ref={ref}, _system={sys}",
@@ -587,8 +638,9 @@ class ComputePool:
 
     def _submit(self, pending: PendingCompute[Any]) -> Callable[[ActorRef[Any]], SubmitTask]:
         timeout = self._resolve_timeout(pending)
+        fn = self._decorate_fn(pending.fn)
         return lambda reply_to: SubmitTask(
-            fn=pending.fn, args=pending.args, kwargs=pending.kwargs,
+            fn=fn, args=pending.args, kwargs=pending.kwargs,
             reply_to=reply_to, timeout=timeout,
         )
 
@@ -831,6 +883,7 @@ class ComputePool:
                 autoscale_cooldown=self.autoscale_cooldown,
                 autoscale_idle_timeout=self.autoscale_idle_timeout,
                 reconcile_tick_interval=self.reconcile_tick_interval,
+                plugins=self._plugins,
             )
 
             logger.debug(

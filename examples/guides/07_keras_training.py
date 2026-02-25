@@ -9,7 +9,6 @@ import skyward as sky
 
 
 @sky.compute
-@sky.integrations.keras(backend="jax", seed=42)
 def train_mnist(epochs: int = 5, batch_size: int = 128) -> dict:
     """Train an MLP on this node's shard of MNIST."""
     info = sky.instance_info()
@@ -51,10 +50,7 @@ if __name__ == "__main__":
         provider=sky.AWS(),
         accelerator="T4",
         nodes=2,
-        image=sky.Image(
-            pip=["keras==3.13.2", "jax[cuda12]==0.9.0.1"],
-            env={"KERAS_BACKEND": "jax"},
-        ),
+        plugins=[sky.plugins.jax(), sky.plugins.keras(backend="jax")],
     ) as pool:
         results = train_mnist() @ pool
 

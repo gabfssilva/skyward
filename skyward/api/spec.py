@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from skyward.accelerators import Accelerator
     from skyward.actors.messages import ProviderName
     from skyward.api.provider import ProviderConfig
+    from skyward.plugins.plugin import Plugin
 
 
 type AllocationStrategy = Literal[
@@ -230,6 +231,7 @@ class PoolSpec:
     autoscale_cooldown: float = 30.0
     autoscale_idle_timeout: float = 60.0
     reconcile_tick_interval: float = 15.0
+    plugins: tuple[Plugin, ...] = ()
 
     def __post_init__(self) -> None:
         if self.nodes < 1:

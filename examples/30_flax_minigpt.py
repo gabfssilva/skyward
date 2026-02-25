@@ -31,7 +31,6 @@ DATA_URL = (
 
 
 @sky.compute
-@sky.integrations.jax()
 @sky.stdout(only="head")
 def train_microgpt(
     n_layer: int = 6,
@@ -362,7 +361,8 @@ if __name__ == "__main__":
             accelerator=sky.accelerators.RTX_4090(),
             ttl=2400
         ),
-        image=sky.Image(pip=["jax[cuda12]", "flax", "pandas==2.3.3", "tiktoken"]),
+        image=sky.Image(pip=["flax", "pandas==2.3.3", "tiktoken"]),
+        plugins=[sky.plugins.jax()],
     ) as pool:
         results = train_microgpt().with_timeout(2400) @ pool
 

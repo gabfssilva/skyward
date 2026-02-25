@@ -14,7 +14,6 @@ import skyward as sky
 
 
 @sky.compute
-@sky.integrations.torch
 def train_model(epochs: int, batch_size: int, learning_rate: float) -> dict:
     """Train a neural network with distributed data parallelism."""
     import torch
@@ -186,9 +185,7 @@ if __name__ == "__main__":
         provider=sky.AWS(),
         nodes=2,
         accelerator=sky.accelerators.T4(),
-        image=sky.Image(
-            pip=["torch"],
-        )
+        plugins=[sky.plugins.torch()],
     ) as pool:
         print("=" * 60)
         print("Starting Distributed Training")

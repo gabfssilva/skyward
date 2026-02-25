@@ -10,7 +10,6 @@ import skyward as sky
 
 
 @sky.compute
-@sky.integrations.torch()
 def distributed_train(batch_data: list) -> dict:
     """Distributed training with NCCL via overlay network."""
     import torch
@@ -77,10 +76,8 @@ def main():
         provider=provider,
         accelerator="RTX 4090",
         nodes=4,  # Multi-node automatically creates overlay
-        image=sky.Image(
-            pip=["torch"],
-            env={"NCCL_DEBUG": "INFO"},  # Debug NCCL communication
-        ),
+        image=sky.Image(env={"NCCL_DEBUG": "INFO"}),
+        plugins=[sky.plugins.torch()],
         allocation="spot-if-available",
     ) as pool:
         # First, verify overlay network is working

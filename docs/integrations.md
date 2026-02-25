@@ -1,41 +1,47 @@
-# Framework Integrations
+# Plugins
 
-Skyward's integration system connects the compute model — lazy functions, pools, operators — with the distributed training runtimes that ML frameworks provide. Each integration is a decorator that runs on the remote worker, between `@sky.compute` (which handles serialization and dispatch) and your function body (which does the actual work). The decorator configures the distributed environment that the framework expects — environment variables, process groups, device meshes — so that by the time your code runs, the framework is ready for distributed execution.
+Skyward's plugin system connects the compute model — lazy functions, pools, operators — with the distributed training runtimes that ML frameworks provide. Each plugin is a declarative unit that bundles environment setup (pip packages, environment variables), bootstrap operations, and per-task configuration into a single composable object. Plugins are specified on the pool, not on individual functions — they configure the *cluster*, not the *task*.
 
-Integrations are lazy-loaded. `import skyward` doesn't import torch, keras, jax, or any framework SDK. The import happens on the remote worker, when the integration decorator executes. This means you only pay the import cost for the framework you're actually using, and you don't need any framework installed locally — only on the workers, via the Image's `pip` field.
+Plugins are lazy-loaded. `import skyward` doesn't import torch, keras, jax, or any framework SDK. The SDK is installed on the remote worker via the plugin's image transform, and any runtime configuration happens when tasks execute. This means you only pay the import cost for the framework you're actually using, and you don't need any framework installed locally — the plugin handles adding it to the worker's environment.
 
-## How Decorators Work
+## How Plugins Work
 
-Integration decorators follow a simple pattern: they wrap your function, read the cluster topology from `instance_info()`, configure the framework, and then call your original function. The key detail is **decorator order** — `@sky.compute` must be outermost, and the integration decorator goes below it:
-
-```python
-@sky.compute                   # outer: serializes and sends to remote
-@sky.integrations.torch        # inner: runs on the remote machine
-def train(data):
-    ...
-```
-
-Decorators apply bottom-up. `@sky.integrations.torch` wraps your function first, producing a new function that initializes the distributed environment before calling your code. Then `@sky.compute` wraps that, creating a `PendingCompute` that, when dispatched, sends the entire bundle — your function plus the integration wrapper — to the remote worker. When it executes on the remote side, the integration runs first, then your code.
-
-You can stack multiple decorators. Output control decorators (`@sky.stdout`, `@sky.stderr`, `@sky.silent`) combine naturally with integration decorators:
+Plugins are specified as a list on `ComputePool`:
 
 ```python
-@sky.compute
-@sky.stdout(only="head")       # suppress stdout on non-head nodes
-@sky.integrations.torch        # initialize distributed PyTorch
-def train():
-    print(f"Training...")      # only head node prints
+with sky.ComputePool(
+    provider=sky.AWS(),
+    nodes=4,
+    accelerator="A100",
+    plugins=[sky.plugins.torch()],
+) as pool:
+    results = train() @ pool
 ```
+
+Each plugin can contribute up to five capabilities:
+
+- **Image transform** — Modifies the `Image` to add pip packages, environment variables, and pip indexes. This happens at pool construction time, before any instances are provisioned.
+- **Bootstrap operations** — Shell commands that run during instance bootstrap, after the base environment is set up.
+- **Task decorator** — Wraps each `@sky.compute` function at execution time on the worker, configuring the framework's distributed runtime before your code runs.
+- **Worker lifecycle (`around_app`)** — A context manager that runs once when the worker starts and tears down when it stops. Used for persistent state like process groups.
+- **Client lifecycle (`around_client`)** — A context manager that runs on the client side when the pool is entered. Used for registering custom backends (like joblib).
+
+Plugins compose naturally — you can stack multiple plugins, and their transforms are applied in order:
+
+```python
+plugins=[sky.plugins.jax(), sky.plugins.keras(backend="jax")]
+```
+
+This first configures the JAX distributed runtime, then sets up Keras with the JAX backend. The JAX plugin adds `jax[cuda12]` to pip and configures distributed initialization; the Keras plugin adds `keras` and sets `KERAS_BACKEND=jax`.
 
 ## Deep Learning Frameworks
 
 ### PyTorch
 
-`@sky.integrations.torch` initializes PyTorch's distributed process group. It sets `MASTER_ADDR` to the head node's private IP, `MASTER_PORT` to the coordination port, `WORLD_SIZE` to the total number of nodes, `RANK` to this node's index, and calls `torch.distributed.init_process_group()`. The backend defaults to `nccl` for GPU nodes and `gloo` for CPU. After initialization, you wrap your model with `DistributedDataParallel` and PyTorch handles gradient synchronization — each node computes gradients on its own data, and DDP averages them across all nodes before each optimizer step.
+`sky.plugins.torch()` configures PyTorch's distributed process group. It adds `torch` to the worker's pip dependencies and sets up `MASTER_ADDR`, `MASTER_PORT`, `WORLD_SIZE`, `RANK`, and calls `torch.distributed.init_process_group()` on each worker. The backend defaults to `nccl` for GPU nodes and `gloo` for CPU. After initialization, you wrap your model with `DistributedDataParallel` and PyTorch handles gradient synchronization — each node computes gradients on its own data, and DDP averages them across all nodes before each optimizer step.
 
 ```python
 @sky.compute
-@sky.integrations.torch
 def train():
     import torch.distributed as dist
     from torch.nn.parallel import DistributedDataParallel as DDP
@@ -43,67 +49,97 @@ def train():
     model = DDP(MyModel().cuda())
     # gradients are averaged across all nodes during backward()
     ...
+
+with sky.ComputePool(
+    provider=sky.AWS(),
+    nodes=4,
+    accelerator="A100",
+    plugins=[sky.plugins.torch()],
+) as pool:
+    results = train() @ pool
 ```
 
 For a complete training example with DDP, `DistributedSampler`, and metric aggregation, see the [PyTorch Distributed guide](guides/pytorch-distributed.md).
 
 ### Keras 3
 
-`@sky.integrations.keras(backend="jax")` sets the `KERAS_BACKEND` environment variable before Keras is imported. This must happen before import because Keras reads the backend at import time — setting it after `import keras` has no effect. The optional `seed` parameter configures random seeds for reproducibility across all backends.
+`sky.plugins.keras(backend="jax")` sets the `KERAS_BACKEND` environment variable on the worker before Keras is imported. This must happen before import because Keras reads the backend at import time — setting it after `import keras` has no effect.
 
-Keras 3 is backend-agnostic — the same model code runs on JAX, TensorFlow, or PyTorch. Skyward's distribution integration (automatic device discovery and `DataParallel`) is currently JAX-only. For the `torch` and `tensorflow` backends, the decorator delegates to those frameworks' native distributed init. For data-parallel training where each node trains independently on its shard (the most common pattern with Skyward), no extra distribution configuration is needed regardless of backend.
+Keras 3 is backend-agnostic — the same model code runs on JAX, TensorFlow, or PyTorch. Skyward's automatic distribution (`DataParallel` with device discovery) is currently JAX-only. For the `torch` and `tensorflow` backends, the plugin delegates to those frameworks' native distributed init. For data-parallel training where each node trains independently on its shard (the most common pattern with Skyward), the `keras` plugin alone is sufficient regardless of backend.
+
+When using the JAX backend, combine the Keras and JAX plugins:
 
 ```python
 @sky.compute
-@sky.integrations.keras(backend="jax", seed=42)
 def train():
     import keras
     model = keras.Sequential([...])
     model.compile(optimizer="adam", loss="sparse_categorical_crossentropy")
     model.fit(x, y)
+
+with sky.ComputePool(
+    provider=sky.AWS(),
+    nodes=2,
+    accelerator="T4",
+    plugins=[sky.plugins.jax(), sky.plugins.keras(backend="jax")],
+) as pool:
+    results = train() @ pool
 ```
 
 For a complete MNIST training example, see the [Keras Training guide](guides/keras-training.md).
 
 ### JAX
 
-`@sky.integrations.jax()` configures JAX's distributed runtime: `JAX_COORDINATOR_ADDRESS`, `JAX_NUM_PROCESSES`, `JAX_PROCESS_ID`, and `JAX_LOCAL_DEVICE_COUNT`. It then calls `jax.distributed.initialize()`. After initialization, JAX sees all devices across all nodes as a single device mesh, and operations like `pmap` and `pjit` distribute computation automatically.
+`sky.plugins.jax()` configures JAX's distributed runtime: `JAX_COORDINATOR_ADDRESS`, `JAX_NUM_PROCESSES`, `JAX_PROCESS_ID`, and `JAX_LOCAL_DEVICE_COUNT`. It then calls `jax.distributed.initialize()`. After initialization, JAX sees all devices across all nodes as a single device mesh, and operations like `pmap` and `pjit` distribute computation automatically.
 
 ```python
 @sky.compute
-@sky.integrations.jax()
 def train():
     import jax
     # jax.distributed already initialized
     # all devices across all nodes are visible
     ...
+
+with sky.ComputePool(
+    provider=sky.AWS(),
+    nodes=2,
+    plugins=[sky.plugins.jax()],
+) as pool:
+    results = train() @ pool
 ```
 
 ### HuggingFace Transformers
 
-`@sky.integrations.transformers(backend="nccl")` sets up the PyTorch distributed environment for the HuggingFace `Trainer`. The `Trainer` auto-detects the distributed setup and handles gradient synchronization, mixed-precision, and distributed evaluation internally.
+`sky.plugins.huggingface(token="...")` adds `transformers`, `datasets`, and `tokenizers` to the worker's pip dependencies, sets the `HF_TOKEN` environment variable, and runs `huggingface-cli login` during bootstrap.
 
-For single-node fine-tuning, you don't need an integration decorator — the `Trainer` manages device placement on its own. The integration is only needed when training across multiple nodes, where each node needs to know its rank and the master address.
+For single-node fine-tuning, the HuggingFace `Trainer` manages device placement on its own — you just need the packages installed. For multi-node distributed training, combine with the `torch` plugin:
 
 ```python
 @sky.compute
-@sky.integrations.transformers(backend="nccl")
 def fine_tune():
     from transformers import Trainer, TrainingArguments
     trainer = Trainer(...)
     trainer.train()
     return trainer.evaluate()
+
+with sky.ComputePool(
+    provider=sky.AWS(),
+    nodes=2,
+    accelerator="A100",
+    plugins=[sky.plugins.torch(), sky.plugins.huggingface(token="hf_...")],
+) as pool:
+    results = fine_tune() @ pool
 ```
 
 For a complete fine-tuning example, see the [HuggingFace Fine-tuning guide](guides/huggingface-finetuning.md).
 
 ## Joblib & Scikit-learn
 
-Not all distributed workloads are deep learning. Hyperparameter search, cross-validation, and embarrassingly parallel batch processing are common in ML, and they typically use joblib's `Parallel` for local parallelism. Skyward replaces joblib's backend with a distributed one, so `n_jobs=-1` sends work to cloud instances instead of local cores. No `@sky.compute` decorator is needed — the pool intercepts joblib's task batches, wraps them internally, and dispatches them to the cluster.
+Not all distributed workloads are deep learning. Hyperparameter search, cross-validation, and embarrassingly parallel batch processing are common in ML, and they typically use joblib's `Parallel` for local parallelism. Skyward's joblib and sklearn plugins replace joblib's backend with a distributed one, so `n_jobs=-1` sends work to cloud instances instead of local cores. The plugins intercept joblib's task batches, wrap them internally, and dispatch them to the cluster.
 
-### JoblibPool
+### Joblib Plugin
 
-`JoblibPool` is a context manager that provisions cloud instances and registers a custom joblib backend. Inside the block, every `Parallel(n_jobs=-1)` call distributes tasks across the cluster. When you exit, instances are terminated and the default backend is restored.
+`sky.plugins.joblib()` adds `joblib` to the worker's pip dependencies and registers a custom joblib backend on the client side. Inside the pool block, every `Parallel(n_jobs=-1)` call distributes tasks across the cluster.
 
 ```python
 import skyward as sky
@@ -112,7 +148,12 @@ from joblib import Parallel, delayed
 def process(x):
     return x ** 2
 
-with sky.integrations.JoblibPool(provider=sky.AWS(), nodes=4, worker=sky.Worker(concurrency=4)):
+with sky.ComputePool(
+    provider=sky.AWS(),
+    nodes=4,
+    worker=sky.Worker(concurrency=4),
+    plugins=[sky.plugins.joblib()],
+) as pool:
     results = Parallel(n_jobs=-1)(
         delayed(process)(x) for x in range(100)
     )
@@ -122,16 +163,21 @@ The `worker` parameter accepts a `Worker` dataclass that controls per-node execu
 
 For a throughput analysis and real-world benchmarks, see the [Joblib Concurrency guide](guides/joblib-concurrency.md).
 
-### ScikitLearnPool
+### Scikit-learn Plugin
 
-`ScikitLearnPool` is a specialized `JoblibPool` for scikit-learn workloads. It automatically adds sklearn to the worker's dependencies and provides a cleaner interface for common patterns like `GridSearchCV`:
+`sky.plugins.sklearn()` extends the joblib plugin by also adding `scikit-learn` to the worker's pip dependencies. It provides a cleaner interface for common patterns like `GridSearchCV`:
 
 ```python
 import skyward as sky
 from sklearn.model_selection import GridSearchCV
 from sklearn.svm import SVC
 
-with sky.integrations.ScikitLearnPool(provider=sky.AWS(), nodes=4, worker=sky.Worker(concurrency=4)):
+with sky.ComputePool(
+    provider=sky.AWS(),
+    nodes=4,
+    worker=sky.Worker(concurrency=4),
+    plugins=[sky.plugins.sklearn()],
+):
     grid = GridSearchCV(SVC(), param_grid, cv=5, n_jobs=-1)
     grid.fit(X, y)
 ```
@@ -140,20 +186,20 @@ Everything in scikit-learn that accepts `n_jobs` works unchanged: `GridSearchCV`
 
 For a complete grid search example with multiple estimator families, see the [Scikit Grid Search guide](guides/scikit-grid-search.md).
 
-### Manual Backend Activation
+### cuML Plugin
 
-If you already have a `ComputePool` and want to use it with joblib, use `sklearn_backend` as a context manager:
+`sky.plugins.cuml()` adds `cuml-cu12` to pip and configures RAPIDS indexes. It enables GPU-accelerated scikit-learn estimators via NVIDIA's cuML library — same API, but running on GPU instead of CPU:
 
 ```python
-import skyward as sky
-
-with sky.ComputePool(provider=sky.AWS(), nodes=4) as pool:
-    with sky.integrations.sklearn_backend(pool):
-        grid = GridSearchCV(model, params, n_jobs=-1)
-        grid.fit(X, y)
+with sky.ComputePool(
+    provider=sky.AWS(),
+    accelerator=sky.accelerators.L4(),
+    plugins=[sky.plugins.cuml(), sky.plugins.sklearn()],
+) as pool:
+    result = train_on_gpu(data) >> pool
 ```
 
-This gives you full control over the pool configuration — accelerators, image, allocation strategy — while still routing joblib tasks through the cluster.
+For a CPU vs GPU comparison, see the [cuML GPU Acceleration guide](guides/cuml-acceleration.md).
 
 ## Next Steps
 
@@ -163,3 +209,4 @@ This gives you full control over the pool configuration — accelerators, image,
 - [HuggingFace Fine-tuning](guides/huggingface-finetuning.md) — Transformer fine-tuning on cloud GPUs
 - [Joblib Concurrency](guides/joblib-concurrency.md) — Throughput analysis and benchmarks
 - [Scikit Grid Search](guides/scikit-grid-search.md) — Distributed hyperparameter search
+- [cuML GPU Acceleration](guides/cuml-acceleration.md) — GPU-backed scikit-learn with RAPIDS

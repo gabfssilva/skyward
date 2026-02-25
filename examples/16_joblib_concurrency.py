@@ -17,11 +17,14 @@ if __name__ == '__main__':
 
     effective_workers = nodes * concurrency
 
-    with sky.integrations.JoblibPool(
+    with sky.ComputePool(
         provider=sky.AWS(),
         nodes=nodes,
-        image=sky.Image(pip=["joblib"], skyward_source='local'),
-        worker=sky.Worker(concurrency=concurrency, executor='thread'),
+        worker=sky.Worker(concurrency=concurrency),
+        allocation="spot",
+        plugins=[
+            sky.plugins.joblib()
+        ]
     ) as pool:
         # just to warm up
         for _ in range(10):

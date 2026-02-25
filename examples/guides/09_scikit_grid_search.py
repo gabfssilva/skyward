@@ -42,11 +42,11 @@ if __name__ == "__main__":
     print(f"Dataset: {X_train.shape[0]} train, {X_test.shape[0]} test")
     print(f"Total candidates: {n_candidates}, fits: {n_candidates * 5}")
 
-    with sky.integrations.ScikitLearnPool(
+    with sky.ComputePool(
         provider=sky.AWS(),
         nodes=3,
         worker=sky.Worker(concurrency=4),
-        image=sky.Image(pip=["scikit-learn"]),
+        plugins=[sky.plugins.sklearn()],
     ):
         grid_search = GridSearchCV(
             estimator=pipe,

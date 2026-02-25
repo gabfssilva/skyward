@@ -2,7 +2,7 @@
 
 Distributed training across multiple machines requires solving two problems simultaneously. First, the environment: every node needs to know the cluster topology — who the master is, how many peers exist, what rank each process holds. Second, the data: each node should train on a different subset, but the model parameters need to stay synchronized across all of them.
 
-Skyward handles the first problem automatically. When you provision a multi-node pool and broadcast a function with `@`, every worker receives the same function and arguments, but each one sees a different `instance_info()` — its own position in the cluster. Integration decorators like `@sky.integrations.torch` read this topology and configure the framework's distributed environment before your function runs. The second problem — data partitioning — is handled either by `sky.shard()` or by the framework's own distributed sampler.
+Skyward handles the first problem automatically. When you provision a multi-node pool and broadcast a function with `@`, every worker receives the same function and arguments, but each one sees a different `instance_info()` — its own position in the cluster. Plugins like `sky.plugins.torch()` and `sky.plugins.jax()` read this topology and configure the framework's distributed environment before your function runs. The second problem — data partitioning — is handled either by `sky.shard()` or by the framework's own distributed sampler.
 
 This page explains the concepts. For step-by-step tutorials with runnable code, see the guides: [PyTorch Distributed](guides/pytorch-distributed.md), [Keras Training](guides/keras-training.md), and [HuggingFace Fine-tuning](guides/huggingface-finetuning.md).
 
@@ -10,51 +10,59 @@ This page explains the concepts. For step-by-step tutorials with runnable code, 
 
 When a function is broadcast to a pool with `@`, Skyward sends the same serialized payload to every node. Each node deserializes and executes the function independently. From the framework's perspective, this looks like `N` separate processes running the same script — exactly what tools like `torchrun` or `jax.distributed.initialize()` expect.
 
-The difference is how the environment gets configured. In a traditional setup, you'd write a launch script that sets `MASTER_ADDR`, `WORLD_SIZE`, and `RANK` on each machine, then starts the training process. With Skyward, the integration decorators do this for you. They read the cluster topology from `instance_info()` — which is populated from a `COMPUTE_POOL` environment variable that Skyward injects on each worker — and set the appropriate variables before your function body runs.
+The difference is how the environment gets configured. In a traditional setup, you'd write a launch script that sets `MASTER_ADDR`, `WORLD_SIZE`, and `RANK` on each machine, then starts the training process. With Skyward, plugins do this for you. They read the cluster topology from `instance_info()` — which is populated from a `COMPUTE_POOL` environment variable that Skyward injects on each worker — and set the appropriate variables before your function body runs.
 
 ```python
 @sky.compute
-@sky.integrations.torch
 def train():
     import torch.distributed as dist
     # dist.is_initialized() is True — process group already configured
     ...
 
-with sky.ComputePool(provider=sky.AWS(), nodes=4, accelerator="A100") as pool:
+with sky.ComputePool(
+    provider=sky.AWS(),
+    nodes=4,
+    accelerator="A100",
+    plugins=[sky.plugins.torch()],
+) as pool:
     results = train() @ pool  # runs on all 4 nodes
 ```
 
 This is roughly equivalent to running `torchrun --nnodes=4 --nproc_per_node=1 train.py` on a pre-configured cluster — except there's no cluster to pre-configure. Skyward provisions the machines, installs dependencies, configures the distributed environment, runs your function, collects the results, and tears everything down when the `with` block exits.
 
-## Integration Decorators
+## Plugins
 
-Each supported framework has its own integration decorator. They all follow the same pattern: read `instance_info()`, set environment variables, and initialize the framework's distributed runtime. The decorator goes below `@sky.compute` (which must be outermost), and it runs on the remote worker — not on your local machine.
+Each supported framework has its own plugin. They all follow the same pattern: transform the worker image to install dependencies, then configure the distributed runtime at task execution time by reading `instance_info()` and setting environment variables. Plugins are specified on the pool, not on individual functions.
 
 ### PyTorch
 
-`@sky.integrations.torch` configures `MASTER_ADDR`, `MASTER_PORT`, `WORLD_SIZE`, `RANK`, `LOCAL_RANK`, and calls `torch.distributed.init_process_group()`. The backend defaults to `nccl` for GPU nodes and `gloo` for CPU. Once initialized, you wrap your model with `DistributedDataParallel` and PyTorch handles gradient synchronization automatically — each node computes gradients on its own data, and DDP averages them across all nodes before each optimizer step.
+`sky.plugins.torch()` adds `torch` to the worker's pip dependencies and configures `MASTER_ADDR`, `MASTER_PORT`, `WORLD_SIZE`, `RANK`, `LOCAL_RANK`, and calls `torch.distributed.init_process_group()`. The backend defaults to `nccl` for GPU nodes and `gloo` for CPU. Once initialized, you wrap your model with `DistributedDataParallel` and PyTorch handles gradient synchronization automatically — each node computes gradients on its own data, and DDP averages them across all nodes before each optimizer step.
 
-The integration also configures `LOCAL_WORLD_SIZE` and `NODE_RANK` for multi-GPU-per-node setups, though the most common Skyward pattern is one process per node.
+The plugin also configures `LOCAL_WORLD_SIZE` and `NODE_RANK` for multi-GPU-per-node setups, though the most common Skyward pattern is one process per node.
 
 See the [PyTorch Distributed guide](guides/pytorch-distributed.md) for a complete training example with DDP, `DistributedSampler`, and metric aggregation.
 
 ### Keras 3
 
-`@sky.integrations.keras(backend="jax")` sets the `KERAS_BACKEND` environment variable before Keras is imported — this is critical because Keras reads the backend at import time. The optional `seed` parameter configures random seeds across backends for reproducibility.
+`sky.plugins.keras(backend="jax")` sets the `KERAS_BACKEND` environment variable on the worker before Keras is imported — this is critical because Keras reads the backend at import time. When using the JAX backend, combine with `sky.plugins.jax()`:
 
-Keras 3 is backend-agnostic, but Skyward's distribution integration — `DataParallel` with automatic device discovery — is currently JAX-only. For the `torch` and `tensorflow` backends, the decorator delegates to those frameworks' native distributed init. For data-parallel training where each node trains independently on its shard (the most common pattern), no extra configuration is needed regardless of backend.
+```python
+plugins=[sky.plugins.jax(), sky.plugins.keras(backend="jax")]
+```
+
+Keras 3 is backend-agnostic, but Skyward's automatic distribution (`DataParallel` with device discovery) is currently JAX-only. For the `torch` and `tensorflow` backends, the plugin delegates to those frameworks' native distributed init. For data-parallel training where each node trains independently on its shard (the most common pattern), the `keras` plugin alone is sufficient regardless of backend.
 
 See the [Keras Training guide](guides/keras-training.md) for a complete MNIST example with data sharding.
 
 ### JAX
 
-`@sky.integrations.jax()` configures `JAX_COORDINATOR_ADDRESS`, `JAX_NUM_PROCESSES`, `JAX_PROCESS_ID`, and `JAX_LOCAL_DEVICE_COUNT`, then calls `jax.distributed.initialize()`. After initialization, JAX sees all devices across all nodes as a single device mesh, and operations like `pmap` and `pjit` distribute computation automatically.
+`sky.plugins.jax()` adds `jax[cuda12]` to pip and configures `JAX_COORDINATOR_ADDRESS`, `JAX_NUM_PROCESSES`, `JAX_PROCESS_ID`, and `JAX_LOCAL_DEVICE_COUNT`, then calls `jax.distributed.initialize()`. After initialization, JAX sees all devices across all nodes as a single device mesh, and operations like `pmap` and `pjit` distribute computation automatically.
 
 ### HuggingFace Transformers
 
-`@sky.integrations.transformers(backend="nccl")` sets up the PyTorch distributed environment and configures the `Trainer` for multi-node training. The HuggingFace `Trainer` auto-detects the distributed setup and handles gradient synchronization, mixed-precision training, and distributed evaluation internally.
+`sky.plugins.huggingface(token="...")` adds `transformers`, `datasets`, and `tokenizers` to pip, sets `HF_TOKEN`, and runs `huggingface-cli login` during bootstrap. For multi-node training, combine with `sky.plugins.torch()`. The HuggingFace `Trainer` auto-detects the distributed setup and handles gradient synchronization, mixed-precision training, and distributed evaluation internally.
 
-For single-node fine-tuning, you don't need an integration decorator at all — the `Trainer` manages device placement on its own. The integration is only needed for multi-node distributed training.
+For single-node fine-tuning, the `Trainer` manages device placement on its own — the `huggingface` plugin handles authentication and dependencies. For multi-node, combine with `sky.plugins.torch()`.
 
 See the [HuggingFace Fine-tuning guide](guides/huggingface-finetuning.md) for a complete example.
 
@@ -78,7 +86,7 @@ Both approaches achieve the same goal: each node trains on different data. The c
 
 ## Runtime Context
 
-Inside a `@sky.compute` function, `sky.instance_info()` returns an `InstanceInfo` describing this node's position in the cluster. Integration decorators use this internally, but you can also use it directly for custom distributed logic — coordinating checkpoints, conditional logging, role-based execution.
+Inside a `@sky.compute` function, `sky.instance_info()` returns an `InstanceInfo` describing this node's position in the cluster. Plugins use this internally, but you can also use it directly for custom distributed logic — coordinating checkpoints, conditional logging, role-based execution.
 
 ```python
 @sky.compute
@@ -92,7 +100,7 @@ def distributed_task(data):
     return process(data)
 ```
 
-The key fields are `node` (0 to N-1), `total_nodes`, `is_head` (true for node 0), `head_addr` (private IP of the head node), `head_port` (coordination port), `accelerators` (GPU count on this node), and `peers` (list of all nodes with their addresses). This is the same information that integration decorators use to set `MASTER_ADDR`, `WORLD_SIZE`, and `RANK` — you can read it directly when building custom coordination logic or when using a framework that Skyward doesn't have a built-in integration for.
+The key fields are `node` (0 to N-1), `total_nodes`, `is_head` (true for node 0), `head_addr` (private IP of the head node), `head_port` (coordination port), `accelerators` (GPU count on this node), and `peers` (list of all nodes with their addresses). This is the same information that plugins use to set `MASTER_ADDR`, `WORLD_SIZE`, and `RANK` — you can read it directly when building custom coordination logic or when using a framework that Skyward doesn't have a built-in plugin for.
 
 The head node pattern is especially common in distributed training: only the head node saves checkpoints, logs to experiment trackers, or prints progress. Other nodes do the same computation but stay silent. This avoids duplicate writes and noisy output.
 
@@ -109,12 +117,11 @@ def train():
 
 `only="head"` silences all non-head nodes. You can also pass a predicate — `only=lambda info: info.node < 2` — for finer control (for example, printing from only the first two nodes for debugging). `@sky.silent` suppresses both stdout and stderr on all nodes entirely. These decorators are implemented by redirecting output streams to `StringIO()` based on `instance_info()` at function entry.
 
-Output control decorators stack with integration decorators in any order below `@sky.compute`:
+Output control decorators go below `@sky.compute`:
 
 ```python
 @sky.compute
 @sky.stdout(only="head")
-@sky.integrations.torch
 def train():
     ...
 ```
@@ -125,4 +132,4 @@ def train():
 - **[Keras Training](guides/keras-training.md)** — MNIST across multiple GPUs with JAX backend
 - **[HuggingFace Fine-tuning](guides/huggingface-finetuning.md)** — Transformer fine-tuning on cloud GPUs
 - **[Data Sharding](guides/data-sharding.md)** — How `shard()` partitions data across nodes
-- **[Integrations](integrations.md)** — Full integration reference including joblib and scikit-learn
+- **[Plugins](integrations.md)** — Full plugin reference including joblib and scikit-learn

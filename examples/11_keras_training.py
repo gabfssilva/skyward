@@ -20,7 +20,6 @@ import skyward as sky
 
 
 @sky.compute
-@sky.integrations.keras(backend="jax", seed=42)
 @sky.stdout(only=lambda i: i.node == 0)
 def train_vit(
     vit_config: ViTConfig | None = None,
@@ -279,11 +278,7 @@ if __name__ == "__main__":
         provider=sky.AWS(),
         accelerator=sky.accelerators.T4G(),
         nodes=2,
-        image=sky.Image(
-            pip=[ "keras==3.13.2", "jax[cuda12]==0.9.0.1" ],
-            env={ "KERAS_BACKEND": "jax" },
-            skyward_source='local'
-        ),
+        plugins=[sky.plugins.jax(), sky.plugins.keras(backend="jax")],
     ) as pool:
         results = train_vit() @ pool
 

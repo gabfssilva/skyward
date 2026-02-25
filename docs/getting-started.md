@@ -242,4 +242,4 @@ If bootstrap takes too long or **times out**, the most common cause is a large `
 - **[Core Concepts](concepts.md)** — The programming model: lazy computation, operators, ephemeral pools
 - **[Providers](providers.md)** — Detailed configuration for AWS, RunPod, VastAI, Verda, and Container
 - **[Distributed Training](distributed-training.md)** — Multi-node training with PyTorch, Keras, JAX
-- **[Integrations](integrations.md)** — Framework integrations and joblib/scikit-learn support
+- **[Plugins](integrations.md)** — Framework plugins for PyTorch, JAX, Keras, joblib, and scikit-learn

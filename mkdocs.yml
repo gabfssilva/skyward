@@ -80,6 +80,7 @@ nav:
       - Infrastructure:
           - Providers: providers.md
           - Accelerators: accelerators.md
+          - Volumes: volumes.md
           - Provision Controllers: provision-controllers.md
           - Why Asyncio: why-asyncio.md
       - Clustering:
@@ -87,7 +88,7 @@ nav:
           - Distributed Training: distributed-training.md
           - Distributed Collections: distributed-collections.md
       - Misc:
-          - Integrations: integrations.md
+          - Plugins: integrations.md
           - Sky Computing: sky-computing.md
           - For HPC Users: hpc.md
   - Guides:
@@ -105,12 +106,14 @@ nav:
           - MicroGPT Distributed: guides/microgpt-distributed.md
           - HuggingFace Fine-tuning: guides/huggingface-finetuning.md
       - Infrastructure:
+          - S3 Volumes: guides/s3-volumes.md
           - Multi-Provider Selection: guides/multi-provider.md
       - Testing:
           - Local Containers: guides/local-containers.md
       - Misc:
           - Joblib Concurrency: guides/joblib-concurrency.md
           - Scikit Grid Search: guides/scikit-grid-search.md
+          - cuML GPU Acceleration: guides/cuml-acceleration.md
   - API Reference:
       - Core:
           - Pool & Compute: reference/pool.md
@@ -124,5 +127,5 @@ nav:
           - Verda: reference/providers/verda.md
       - Distributed Collections: reference/distributed.md
       - Events: reference/events.md
-      - Integrations: reference/integrations.md
+      - Plugins: reference/integrations.md
       - Accelerators: reference/accelerators.md

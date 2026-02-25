@@ -6,7 +6,7 @@ The concepts map directly. What SLURM calls a "rank" is `instance_info().node`. 
 
 ## Environment Setup
 
-In a traditional HPC environment, you'd configure the compute environment through module loads, environment variables in your batch script, and MPI launch commands. Skyward replaces all of this with the `Image` and integration decorators.
+In a traditional HPC environment, you'd configure the compute environment through module loads, environment variables in your batch script, and MPI launch commands. Skyward replaces all of this with the `Image` and plugins.
 
 ```python
 import skyward as sky

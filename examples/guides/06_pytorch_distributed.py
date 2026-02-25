@@ -4,7 +4,6 @@ import skyward as sky
 
 
 @sky.compute
-@sky.integrations.torch
 def train(epochs: int, batch_size: int, lr: float) -> dict:
     """Train a neural network with DistributedDataParallel."""
     import torch
@@ -79,7 +78,7 @@ if __name__ == "__main__":
         provider=sky.AWS(),
         nodes=2,
         accelerator="T4",
-        image=sky.Image(pip=["torch"]),
+        plugins=[sky.plugins.torch()],
     ) as pool:
         results = train(epochs=5, batch_size=64, lr=0.001) @ pool
 

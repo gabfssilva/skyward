@@ -14,11 +14,11 @@ def slow_task(x):
 
 
 if __name__ == "__main__":
-    with sky.integrations.JoblibPool(
+    with sky.ComputePool(
         provider=sky.AWS(),
         nodes=10,
         worker=sky.Worker(concurrency=10),
-        image=sky.Image(pip=["joblib"]),
+        plugins=[sky.plugins.joblib()],
     ) as pool:
         t0 = perf_counter()
 

@@ -1160,12 +1160,15 @@ async def _run_bootstrap(
     ssh_user = ni.ssh_user or cluster.ssh_user
     use_sudo = ssh_user != "root"
 
-    postamble = None
+    postamble_ops: list = []
     if spec.volumes and cluster.mount_endpoint:
         from skyward.providers.bootstrap import mount_volumes, phase
 
-        postamble = phase("volumes", mount_volumes(spec.volumes, cluster.mount_endpoint))
+        postamble_ops.append(phase("volumes", mount_volumes(spec.volumes, cluster.mount_endpoint)))
+    for plugin in spec.plugins:
+        postamble_ops.extend(plugin.bootstrap)
 
+    postamble = postamble_ops if postamble_ops else None
     bootstrap_script = image.generate_bootstrap(ttl=0, postamble=postamble)
 
     await run_bootstrap_via_ssh(

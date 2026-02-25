@@ -48,7 +48,7 @@ result = finetune(
 ) >> pool
 ```
 
-No `@sky.integrations.torch` decorator is needed — the HuggingFace Trainer handles device placement and mixed-precision internally. Skyward's job is to provision the GPU instance, run the function, and return the result. The Trainer API does the rest.
+The HuggingFace Trainer handles device placement and mixed-precision internally. Skyward provisions the GPU instance, runs the function, and returns the result. The `Image(pip=[...])` in the pool configuration installs the required dependencies on the worker.
 
 ## Run the Full Example
 
@@ -66,4 +66,4 @@ uv run python examples/guides/08_huggingface_finetuning.py
 - **No Skyward-specific APIs inside the function** — standard HuggingFace `Trainer`, `AutoModel`, `load_dataset`.
 - **Remote imports** — `transformers` and `datasets` only need to be installed on the worker (via the Image's `pip` field), not locally.
 - **Ephemeral instances** — checkpoints are lost on teardown; save to persistent storage for production runs.
-- **No integration decorator needed** — the HuggingFace Trainer manages device placement and distributed setup internally.
+- **Single-node fine-tuning** — the HuggingFace Trainer manages device placement internally; add `sky.plugins.torch()` for multi-node.
