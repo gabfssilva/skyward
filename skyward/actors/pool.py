@@ -589,7 +589,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                             casty_port=25520,
                             num_nodes=spec.max_nodes or spec.nodes,
                             worker_concurrency=spec.worker.concurrency,
-                            worker_executor=spec.worker.executor,
+                            worker_executor=spec.worker.resolved_executor,
                         )
                         node_refs[nid].tell(head_msg)
                     return ready(

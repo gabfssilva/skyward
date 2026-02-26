@@ -134,6 +134,8 @@ def node_actor(
         cluster: Any,
         provider: Any,
         instance: Any,
+        head_info: HeadAddressKnown | None = None,
+        pending_tasks: tuple[_PendingTask, ...] = (),
     ) -> Behavior[NodeMsg]:
         instance_id = instance.id
         start_time = asyncio.get_event_loop().time()
@@ -146,7 +148,7 @@ def node_actor(
             _do_poll(),
             on_failure=lambda e: _PollResult(instance=None),
         )
-        return polling(cluster, provider, instance_id, start_time, head_info=None)
+        return polling(cluster, provider, instance_id, start_time, head_info=head_info, pending_tasks=pending_tasks)
 
     def polling(
         cluster: Any,
@@ -1041,7 +1043,10 @@ def node_actor(
                     return replacing(cluster, provider, pending_tasks, head_info=h)
                 case Provision(instance=instance):
                     log.info("Replacement provisioned, re-entering polling")
-                    return _start_polling(ctx, cluster, provider, instance)
+                    return _start_polling(
+                        ctx, cluster, provider, instance,
+                        head_info=head_info, pending_tasks=pending_tasks,
+                    )
                 case ExecuteOnNode() as ex:
                     pt = _PendingTask(
                         ex.fn, ex.args, ex.kwargs, ex.reply_to, ex.task_id, ex.timeout
