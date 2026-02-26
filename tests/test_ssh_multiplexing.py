@@ -9,7 +9,7 @@ import pytest
 import skyward as sky
 from skyward import ComputePool, Worker
 
-pytestmark = [pytest.mark.e2e, pytest.mark.timeout(180)]
+pytestmark = [pytest.mark.e2e, pytest.mark.timeout(180), pytest.mark.xdist_group("pool")]
 
 
 def test_single_ssh_connection_per_node():

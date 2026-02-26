@@ -425,6 +425,7 @@ def ipc_initializer(registration_queue: Any) -> None:
     and keeps the child end for IPC.
     """
     import multiprocessing
+    import sys
 
     global _subprocess_conn
 
@@ -434,3 +435,10 @@ def ipc_initializer(registration_queue: Any) -> None:
     registration_queue.put(parent_conn)
     _subprocess_conn = child_conn
     _set_active_registry(IPCRegistry(child_conn))
+
+    # Loky subprocesses inherit fd 1/2 pointing to casty.log (via shell redirect),
+    # but Python defaults to block buffering for non-TTY fds (~8KB buffer).
+    # Without line buffering, print() output stays in the buffer and never reaches
+    # casty.log → tail → events.jsonl. Reconfigure to match the parent's behavior.
+    sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+    sys.stderr.reconfigure(line_buffering=True)  # type: ignore[attr-defined]

@@ -132,10 +132,14 @@ class ContainerProvider(WarmableProvider[Container, ContainerSpecific]):
                     self._bin, "network", "inspect", self._shared_network,
                 )
             except RuntimeError:
-                await run(
-                    self._bin, "network", "create", self._shared_network,
-                )
-                log.info("Shared network created: {net}", net=self._shared_network)
+                try:
+                    await run(
+                        self._bin, "network", "create", self._shared_network,
+                    )
+                    log.info("Shared network created: {net}", net=self._shared_network)
+                except RuntimeError as exc:
+                    if "already exists" not in str(exc):
+                        raise
             return self._shared_network
 
         network_name = f"{_NETWORK_PREFIX}-{cluster_id}"

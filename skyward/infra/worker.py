@@ -156,7 +156,11 @@ def _run_in_process(
     set in the parent process after subprocess spawn.
     """
     os.environ.update(env)
-    return fn(*args, **kwargs)
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
 
 
 def worker_behavior(

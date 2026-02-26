@@ -116,9 +116,10 @@ def parallel_pool():
 
 @pytest.fixture(scope="session")
 def torch_plugin_pool():
+    # Thread executor: dist.init_process_group is per-process state.
     with sky.App(console=False), ComputePool(
         provider=sky.Container(network="skyward", container_prefix='skyward-torch-plugin'),
-        worker=Worker(concurrency=2),
+        worker=Worker(concurrency=2, executor="thread"),
         nodes=2,
         vcpus=2,
         memory_gb=2,
@@ -131,9 +132,11 @@ def torch_plugin_pool():
 def jax_plugin_pool():
     # Strip image transform (adds CUDA deps) — containers are CPU-only.
     # Keep around_app which initializes jax.distributed.
+    # Thread executor: jax.distributed.initialize() is per-process state.
     jax_plugin = replace(sky.plugins.jax(), transform=None)
     with sky.App(console=False), ComputePool(
         provider=sky.Container(network="skyward", container_prefix='skyward-jax-plugin'),
+        worker=Worker(executor="thread"),
         nodes=2,
         vcpus=2,
         memory_gb=2,
