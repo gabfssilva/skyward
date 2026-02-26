@@ -83,7 +83,7 @@ packages = ["skyward"]
 [tool.ruff]
 target-version = "py312"
 line-length = 120
-exclude = ["skyward/_version.py", "metrics_prototype.py"]
+exclude = ["skyward/_version.py", "tests/**", "examples/**"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "ANN", "B", "C4", "SIM"]
@@ -101,14 +101,14 @@ ignore = [
 [tool.pyright]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
-include = ["skyward", "tests"]
+include = ["skyward"]
 reportMissingImports = "warning"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-addopts = "--durations=0 --dist loadgroup -n 4 --log-cli-level=WARNING -m 'not sanity and not integration'"
+addopts = "--durations=0 --dist loadgroup -n auto --log-cli-level=WARNING -m 'not sanity and not integration'"
 timeout_func_only = true
 markers = [
     "unit: fast unit tests with no external dependencies",

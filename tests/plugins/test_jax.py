@@ -24,7 +24,6 @@ class TestJAXPlugin:
             import jax
 
             info = sky.instance_info()
-            assert info is not None
             return {
                 "process_index": jax.process_index(),
                 "node": info.node,

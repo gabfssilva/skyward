@@ -20,6 +20,7 @@ import sys
 import traceback
 import types
 from concurrent.futures import Executor, ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
@@ -73,6 +74,12 @@ class ExecuteTask:
 
 
 @dataclass(frozen=True, slots=True)
+class EnterContext:
+    factory: Any
+    reply_to: ActorRef[TaskResult]
+
+
+@dataclass(frozen=True, slots=True)
 class _TaskDone:
     result: TaskResult
     reply_to: ActorRef[TaskResult]
@@ -84,7 +91,19 @@ class _TaskErrored:
     reply_to: ActorRef[TaskResult]
 
 
-type WorkerMsg = ExecuteTask | _TaskDone | _TaskErrored
+@dataclass(frozen=True, slots=True)
+class _ContextEntered:
+    cm: Any
+    reply_to: ActorRef[TaskResult]
+
+
+@dataclass(frozen=True, slots=True)
+class _ContextFailed:
+    error: Exception
+    reply_to: ActorRef[TaskResult]
+
+
+type WorkerMsg = ExecuteTask | EnterContext | _TaskDone | _TaskErrored | _ContextEntered | _ContextFailed
 
 WORKER_KEY: ServiceKey[WorkerMsg] = ServiceKey("skyward-worker")
 
@@ -258,8 +277,39 @@ def worker_behavior(
                     node_id=node_id,
                 )
 
+    active_contexts: list[Any] = []
+
     async def receive(ctx: ActorContext[WorkerMsg], msg: WorkerMsg) -> Behavior[WorkerMsg]:
         match msg:
+            case EnterContext(factory=factory, reply_to=reply_to):
+                log.debug("EnterContext received")
+
+                async def _enter() -> Any:
+                    def _do() -> Any:
+                        cm = factory()
+                        cm.__enter__()
+                        return cm
+                    return await asyncio.to_thread(_do)
+
+                ctx.pipe_to_self(
+                    coro=_enter(),
+                    mapper=lambda cm: _ContextEntered(cm=cm, reply_to=reply_to),
+                    on_failure=lambda e: _ContextFailed(error=e, reply_to=reply_to),
+                )
+                return Behaviors.same()
+            case _ContextEntered(cm=cm, reply_to=reply_to):
+                active_contexts.append(cm)
+                log.debug("Context entered successfully")
+                reply_to.tell(TaskSucceeded(result="ok", node_id=node_id))
+                return Behaviors.same()
+            case _ContextFailed(error=error, reply_to=reply_to):
+                log.error("Context entry failed: {error}", error=error)
+                reply_to.tell(TaskFailed(
+                    error=str(error),
+                    traceback=traceback.format_exc(),
+                    node_id=node_id,
+                ))
+                return Behaviors.same()
             case ExecuteTask(
                 fn=fn, args=args, kwargs=kwargs,
                 reply_to=reply_to, input_streams=streams,
@@ -285,7 +335,16 @@ def worker_behavior(
                 ))
                 return Behaviors.same()
 
-    return Behaviors.receive(receive)
+    async def _post_stop(_ctx: ActorContext[WorkerMsg]) -> None:
+        for cm in reversed(active_contexts):
+            with suppress(Exception):
+                cm.__exit__(None, None, None)
+        active_contexts.clear()
+
+    return Behaviors.with_lifecycle(
+        Behaviors.receive(receive),
+        post_stop=_post_stop,
+    )
 
 
 async def main(

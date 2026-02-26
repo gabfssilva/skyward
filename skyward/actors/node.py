@@ -1249,12 +1249,11 @@ async def _setup_worker_env(
     env_vars: dict[str, str],
     around_app_hooks: tuple[tuple[str, Any], ...] = (),
 ) -> None:
-    from skyward.infra.worker import ExecuteTask
+    from skyward.infra.worker import EnterContext, ExecuteTask
 
     def setup_env(
         info_json: str,
         extra: dict[str, str],
-        hooks: tuple[tuple[str, Any], ...],
     ) -> str:
         import os
 
@@ -1262,26 +1261,46 @@ async def _setup_worker_env(
         for k, v in extra.items():
             os.environ[k] = v
 
-        if hooks:
-            from skyward.api.runtime import instance_info
-            from skyward.plugins.state import ensure_around_app
-
-            info = instance_info()
-            for name, factory in hooks:
-                ensure_around_app(name, factory, info)
-
         return "ok"
 
     await client.ask(
         worker_ref,
         lambda rto: ExecuteTask(
             fn=setup_env,
-            args=(pool_info_json, env_vars, around_app_hooks),
+            args=(pool_info_json, env_vars),
             kwargs={},
             reply_to=rto,
         ),
         timeout=60.0,
     )
+
+    if around_app_hooks:
+
+        def make_hooks_cm(
+            hooks: tuple[tuple[str, Any], ...] = around_app_hooks,
+        ) -> Any:
+            from contextlib import contextmanager
+
+            @contextmanager
+            def lifecycle() -> Any:
+                from skyward.api.runtime import instance_info
+                from skyward.plugins.state import cleanup, ensure_around_app
+
+                info = instance_info()
+                for name, factory in hooks:
+                    ensure_around_app(name, factory, info)
+                try:
+                    yield
+                finally:
+                    cleanup()
+
+            return lifecycle()
+
+        await client.ask(
+            worker_ref,
+            lambda rto: EnterContext(factory=make_hooks_cm, reply_to=rto),
+            timeout=60.0,
+        )
 
 
 async def _execute_with_streaming(

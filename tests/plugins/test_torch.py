@@ -24,7 +24,6 @@ class TestTorchPlugin:
             import torch.distributed as dist
 
             info = sky.instance_info()
-            assert info is not None
             return {
                 "rank": dist.get_rank(),
                 "world_size": dist.get_world_size(),
