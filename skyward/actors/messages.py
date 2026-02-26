@@ -397,6 +397,7 @@ class _RemoteTaskDone:
     node_id: int
     reply_to: ActorRef[Any]
     error: bool = False
+    connection_error: bool = False
 
 
 @dataclass(frozen=True, slots=True)

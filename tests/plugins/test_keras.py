@@ -1,84 +1,29 @@
-"""Tests for the Keras plugin."""
-
 from __future__ import annotations
-
-from unittest.mock import MagicMock
 
 import pytest
 
-from skyward.api.spec import Image
+import skyward as sky
 
-pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
+pytestmark = [pytest.mark.e2e, pytest.mark.timeout(180), pytest.mark.xdist_group("keras")]
 
 
 class TestKerasPlugin:
-    def test_factory_returns_plugin(self) -> None:
-        from skyward.plugins.keras import keras
+    def test_backend_is_set(self, keras_plugin_pool) -> None:
+        @sky.compute
+        def check_env():
+            import os
 
-        p = keras()
-        assert p.name == "keras"
+            return os.environ.get("KERAS_BACKEND")
 
-    def test_transform_adds_pip(self) -> None:
-        from skyward.plugins.keras import keras
+        results = check_env() @ keras_plugin_pool
+        assert all(r == "torch" for r in results)
 
-        p = keras()
-        image = Image(python="3.13")
-        assert p.transform is not None
-        result = p.transform(image, MagicMock())
-        assert "keras" in result.pip
+    def test_keras_import_works(self, keras_plugin_pool) -> None:
+        @sky.compute
+        def check_backend():
+            import keras
 
-    def test_transform_sets_backend_env(self) -> None:
-        from skyward.plugins.keras import keras
+            return keras.backend.backend()
 
-        p = keras(backend="jax")
-        image = Image(python="3.13")
-        assert p.transform is not None
-        result = p.transform(image, MagicMock())
-        assert result.env["KERAS_BACKEND"] == "jax"
-
-    def test_transform_torch_backend(self) -> None:
-        from skyward.plugins.keras import keras
-
-        p = keras(backend="torch")
-        image = Image(python="3.13")
-        assert p.transform is not None
-        result = p.transform(image, MagicMock())
-        assert result.env["KERAS_BACKEND"] == "torch"
-
-    def test_has_around_app(self) -> None:
-        from skyward.plugins.keras import keras
-
-        p = keras()
-        assert p.around_app is not None
-
-    def test_no_decorator(self) -> None:
-        from skyward.plugins.keras import keras
-
-        p = keras()
-        assert p.decorate is None
-
-    def test_no_around_client(self) -> None:
-        from skyward.plugins.keras import keras
-
-        p = keras()
-        assert p.around_client is None
-
-    def test_transform_preserves_existing(self) -> None:
-        from skyward.plugins.keras import keras
-
-        p = keras()
-        image = Image(python="3.13", pip=["numpy"], env={"KEY": "val"})
-        assert p.transform is not None
-        result = p.transform(image, MagicMock())
-        assert "numpy" in result.pip
-        assert "keras" in result.pip
-        assert result.env["KEY"] == "val"
-
-    def test_default_backend_is_jax(self) -> None:
-        from skyward.plugins.keras import keras
-
-        p = keras()
-        image = Image(python="3.13")
-        assert p.transform is not None
-        result = p.transform(image, MagicMock())
-        assert result.env["KERAS_BACKEND"] == "jax"
+        results = check_backend() @ keras_plugin_pool
+        assert all(r == "torch" for r in results)

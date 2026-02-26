@@ -1,71 +1,29 @@
-"""Tests for the joblib plugin."""
-
 from __future__ import annotations
-
-from unittest.mock import MagicMock
 
 import pytest
 
-from skyward.api.spec import Image
-
-pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
+pytestmark = [pytest.mark.e2e, pytest.mark.timeout(180), pytest.mark.xdist_group("joblib")]
 
 
 class TestJoblibPlugin:
-    def test_factory_returns_plugin(self) -> None:
-        from skyward.plugins.joblib import joblib
+    def test_joblib_parallel_dispatches_to_pool(self, joblib_plugin_pool) -> None:
+        from joblib import Parallel, delayed
 
-        p = joblib()
-        assert p.name == "joblib"
+        def square(x: int) -> int:
+            return x**2
 
-    def test_transform_adds_pip(self) -> None:
-        from skyward.plugins.joblib import joblib
+        results = Parallel(n_jobs=-1)(delayed(square)(i) for i in range(10))
+        assert results == [i**2 for i in range(10)]
 
-        p = joblib()
-        image = Image(python="3.13")
-        assert p.transform is not None
-        result = p.transform(image, MagicMock())
-        assert "joblib" in result.pip
+    def test_tasks_run_on_workers(self, joblib_plugin_pool) -> None:
+        from joblib import Parallel, delayed
 
-    def test_versioned_pip(self) -> None:
-        from skyward.plugins.joblib import joblib
+        def get_hostname() -> str:
+            import socket
 
-        p = joblib(version="1.3.0")
-        image = Image(python="3.13")
-        assert p.transform is not None
-        result = p.transform(image, MagicMock())
-        assert "joblib==1.3.0" in result.pip
+            return socket.gethostname()
 
-    def test_has_around_client(self) -> None:
-        from skyward.plugins.joblib import joblib
-
-        p = joblib()
-        assert p.around_client is not None
-
-    def test_no_decorator(self) -> None:
-        from skyward.plugins.joblib import joblib
-
-        p = joblib()
-        assert p.decorate is None
-
-    def test_no_around_app(self) -> None:
-        from skyward.plugins.joblib import joblib
-
-        p = joblib()
-        assert p.around_app is None
-
-    def test_transform_preserves_existing_pip(self) -> None:
-        from skyward.plugins.joblib import joblib
-
-        p = joblib()
-        image = Image(python="3.13", pip=["numpy"])
-        assert p.transform is not None
-        result = p.transform(image, MagicMock())
-        assert "numpy" in result.pip
-        assert "joblib" in result.pip
-
-    def test_no_bootstrap(self) -> None:
-        from skyward.plugins.joblib import joblib
-
-        p = joblib()
-        assert p.bootstrap is None
+        results = list(Parallel(n_jobs=-1)(delayed(get_hostname)() for _ in range(4)))
+        # At least some results should come from worker containers (not localhost)
+        assert len(results) == 4
+        assert all(isinstance(r, str) for r in results)

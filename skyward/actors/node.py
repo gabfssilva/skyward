@@ -906,6 +906,7 @@ def node_actor(
                 node_id=node_id,
                 reply_to=ctx.self,
                 error=True,
+                connection_error=True,
             ),
         )
 
@@ -949,7 +950,7 @@ def node_actor(
                             task_counter=s.task_counter + 1,
                         )
                     )
-                case _RemoteTaskDone(task_id=tid, value=value, error=is_err):
+                case _RemoteTaskDone(task_id=tid, value=value, error=is_err, connection_error=conn_err):
                     log.debug("Node {nid} received task result (tid={tid})", nid=node_id, tid=tid)
                     caller = s.inflight.get(tid)
                     if caller:
@@ -961,6 +962,30 @@ def node_actor(
                                 error=is_err,
                             )
                         )
+                    if conn_err:
+                        log.warning("Connection lost on node {nid}, failing inflight tasks and replacing", nid=node_id)
+                        conn_error = RuntimeError(f"Node {node_id} connection lost")
+                        for other_tid, other_caller in s.inflight.items():
+                            if other_tid != tid:
+                                other_caller.tell(
+                                    TaskResult(
+                                        value=conn_error,
+                                        node_id=node_id,
+                                        task_id=other_tid,
+                                        error=True,
+                                    )
+                                )
+                        await _cleanup_transport(s.transport, s.listener)
+                        pool.tell(NodeLost(node_id=node_id, reason="connection lost"))
+                        return _start_replacing(
+                            ctx,
+                            s.cluster,
+                            s.provider,
+                            s.current_node_instance.instance.id if s.current_node_instance else "",
+                            s.pending_tasks,
+                            s.head_info,
+                        )
+                    if caller:
                         new_inflight = {k: v for k, v in s.inflight.items() if k != tid}
                         return active(replace(s, inflight=new_inflight))
                     return Behaviors.same()
@@ -1283,14 +1308,17 @@ async def _execute_with_streaming(
             indices,
         )
 
-    result = await client.ask(
-        worker_ref,
-        lambda rto: ExecuteTask(
-            fn=fn,
-            args=resolved_args,
-            kwargs=kwargs,
-            reply_to=rto,
-            input_streams=stream_refs,
+    result = await asyncio.wait_for(
+        client.ask(
+            worker_ref,
+            lambda rto: ExecuteTask(
+                fn=fn,
+                args=resolved_args,
+                kwargs=kwargs,
+                reply_to=rto,
+                input_streams=stream_refs,
+            ),
+            timeout=timeout,
         ),
         timeout=timeout,
     )

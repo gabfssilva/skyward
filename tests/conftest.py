@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 import skyward as sky
@@ -108,5 +110,64 @@ def parallel_pool():
         memory_gb=1,
         worker=Worker(concurrency=3),
         image=Image(pip=["joblib", "scikit-learn"]),
+    ) as p:
+        yield p
+
+
+@pytest.fixture(scope="session")
+def torch_plugin_pool():
+    with sky.App(console=False), ComputePool(
+        provider=sky.Container(network="skyward", container_prefix='skyward-torch-plugin'),
+        worker=Worker(concurrency=2),
+        nodes=2,
+        vcpus=2,
+        memory_gb=2,
+        plugins=[sky.plugins.torch(backend="gloo")],
+    ) as p:
+        yield p
+
+
+@pytest.fixture(scope="session")
+def jax_plugin_pool():
+    # Strip image transform (adds CUDA deps) — containers are CPU-only.
+    # Keep around_app which initializes jax.distributed.
+    jax_plugin = replace(sky.plugins.jax(), transform=None)
+    with sky.App(console=False), ComputePool(
+        provider=sky.Container(network="skyward", container_prefix='skyward-jax-plugin'),
+        nodes=2,
+        vcpus=2,
+        memory_gb=2,
+        image=Image(pip=["jax"]),
+        plugins=[jax_plugin],
+    ) as p:
+        yield p
+
+
+@pytest.fixture(scope="session")
+def keras_plugin_pool():
+    with sky.App(console=False), ComputePool(
+        provider=sky.Container(network="skyward", container_prefix='skyward-keras-plugin'),
+        nodes=2,
+        vcpus=2,
+        memory_gb=2,
+        image=Image(
+            pip=["torch"],
+            pip_indexes=[PipIndex(url="https://download.pytorch.org/whl/cpu", packages=["torch"])],
+        ),
+        plugins=[sky.plugins.keras(backend="torch")],
+    ) as p:
+        yield p
+
+
+@pytest.fixture(scope="session")
+def joblib_plugin_pool():
+    with sky.App(console=False), ComputePool(
+        provider=sky.Container(network="skyward", container_prefix='skyward-joblib-plugin'),
+        nodes=2,
+        vcpus=1,
+        memory_gb=1,
+        worker=Worker(concurrency=3),
+        image=Image(pip=["scikit-learn"]),
+        plugins=[sky.plugins.joblib()],
     ) as p:
         yield p

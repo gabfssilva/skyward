@@ -687,7 +687,7 @@ class ComputePool:
                     fn=fn, args=pending.args, kwargs=pending.kwargs,
                     reply_to=reply_to, timeout=timeout,
                 ),
-                timeout=timeout,
+                timeout=timeout + 30,
             )
             return [self._unwrap_broadcast_result(v) for v in result]
 

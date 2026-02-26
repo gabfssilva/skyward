@@ -57,7 +57,7 @@ tasks:
   test:e2e:pool:
     desc: "E2E: compute, broadcast, runtime, output control, async, parallel, streaming"
     cmds:
-      - uv run pytest -m e2e -k "not (Integration or distributed or image or provision_retry or node_recovery)" {{.CLI_ARGS}}
+      - uv run pytest -m e2e -k "not (Integration or distributed or image or provision_retry or node_recovery or plugins)" {{.CLI_ARGS}}
 
   test:e2e:distributed:
     desc: "E2E: distributed collections (dict, set, counter, queue, barrier, lock)"
@@ -68,6 +68,26 @@ tasks:
     desc: "E2E: image and bootstrap validation"
     cmds:
       - uv run pytest tests/test_image.py {{.CLI_ARGS}}
+
+  test:e2e:torch:
+    desc: "E2E: PyTorch distributed training plugin"
+    cmds:
+      - uv run pytest tests/plugins/test_torch.py {{.CLI_ARGS}}
+
+  test:e2e:jax:
+    desc: "E2E: JAX distributed plugin"
+    cmds:
+      - uv run pytest tests/plugins/test_jax.py {{.CLI_ARGS}}
+
+  test:e2e:keras:
+    desc: "E2E: Keras plugin"
+    cmds:
+      - uv run pytest tests/plugins/test_keras.py {{.CLI_ARGS}}
+
+  test:e2e:joblib:
+    desc: "E2E: Joblib parallel backend plugin"
+    cmds:
+      - uv run pytest tests/plugins/test_joblib.py {{.CLI_ARGS}}
 
   test:sanity:
     desc: Run sanity tests against real cloud providers

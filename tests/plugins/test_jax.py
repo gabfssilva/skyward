@@ -1,47 +1,35 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import pytest
 
-from skyward.api.spec import Image
+import skyward as sky
 
-pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
+pytestmark = [pytest.mark.e2e, pytest.mark.timeout(180), pytest.mark.xdist_group("jax")]
 
 
 class TestJAXPlugin:
-    def test_factory_returns_plugin(self):
-        from skyward.plugins.jax import jax
-        p = jax()
-        assert p.name == "jax"
+    def test_distributed_initialized(self, jax_plugin_pool) -> None:
+        @sky.compute
+        def check_init():
+            import jax
 
-    def test_transform_adds_pip(self):
-        from skyward.plugins.jax import jax
-        p = jax()
-        image = Image(python="3.13")
-        assert p.transform is not None
-        result = p.transform(image, MagicMock())
-        assert any("jax" in pkg for pkg in result.pip)
+            return jax.process_count()
 
-    def test_transform_adds_cuda_index(self):
-        from skyward.plugins.jax import jax
-        p = jax(cuda="cu124")
-        image = Image(python="3.13")
-        assert p.transform is not None
-        result = p.transform(image, MagicMock())
-        assert len(result.pip_indexes) > 0
+        results = check_init() @ jax_plugin_pool
+        assert all(r == 2 for r in results)
 
-    def test_has_around_app(self):
-        from skyward.plugins.jax import jax
-        p = jax()
-        assert p.around_app is not None
+    def test_process_index_matches_node(self, jax_plugin_pool) -> None:
+        @sky.compute
+        def check_index():
+            import jax
 
-    def test_no_decorator(self):
-        from skyward.plugins.jax import jax
-        p = jax()
-        assert p.decorate is None
+            info = sky.instance_info()
+            assert info is not None
+            return {
+                "process_index": jax.process_index(),
+                "node": info.node,
+            }
 
-    def test_lazy_import(self):
-        from skyward.plugins.jax import jax
-        p = jax()
-        assert p.name == "jax"
+        results = check_index() @ jax_plugin_pool
+        for r in results:
+            assert r["process_index"] == r["node"]

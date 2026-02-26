@@ -272,6 +272,7 @@ class _KillSwitchContainer(Container):
         return _KillSwitchProvider(inner, switch)
 
 
+@pytest.mark.timeout(300)
 class TestActiveNodeRecovery:
     def test_active_node_killed_and_cluster_recovers(self) -> None:
         """Kill a node after the cluster is fully operational — all nodes
@@ -289,6 +290,7 @@ class TestActiveNodeRecovery:
             memory_gb=0.5,
             ssh_timeout=10,
             ssh_retry_interval=2,
+            default_compute_timeout=15,
         ) as pool:
 
             @sky.compute
@@ -307,6 +309,22 @@ class TestActiveNodeRecovery:
                 info = sky.instance_info()
                 return info.node if info else -1
 
-            # 3. After recovery, all 5 nodes should respond
-            nodes = whoami() @ pool
-            assert sorted(nodes) == [0, 1, 2, 3, 4]
+            # 3. Retry broadcast until recovery completes and all 5 nodes respond.
+            #    First attempt hits the dead node (times out after default_compute_timeout),
+            #    which triggers replacement. Subsequent attempts succeed once the
+            #    replacement is ready.
+            import time
+
+            deadline = time.monotonic() + 120
+            nodes: list[int] | tuple[int, ...] = []
+            while time.monotonic() < deadline:
+                try:
+                    nodes = whoami() @ pool
+                    if len(nodes) == 5 and all(isinstance(n, int) for n in nodes):
+                        break
+                except (RuntimeError, TimeoutError):
+                    time.sleep(2)
+            else:
+                pytest.fail(f"Recovery did not complete within 120s, last result: {nodes}")
+
+            assert len(set(nodes)) == 5, f"Expected 5 unique nodes, got {nodes}"

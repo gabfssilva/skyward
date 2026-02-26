@@ -1,96 +1,53 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import pytest
 
-from skyward.accelerators import Accelerator
-from skyward.api.spec import Image
+import skyward as sky
 
-pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
-
-
-@dataclass(frozen=True)
-class _FakeSpec:
-    accelerator: Accelerator | str | None = None
-
-
-@dataclass(frozen=True)
-class _FakeCluster:
-    spec: _FakeSpec = _FakeSpec()
-
-
-def _gpu_cluster() -> _FakeCluster:
-    return _FakeCluster(spec=_FakeSpec(
-        accelerator=Accelerator.from_name("A100"),
-    ))
-
-
-def _cpu_cluster() -> _FakeCluster:
-    return _FakeCluster(spec=_FakeSpec(accelerator=None))
+pytestmark = [pytest.mark.e2e, pytest.mark.timeout(180), pytest.mark.xdist_group("torch")]
 
 
 class TestTorchPlugin:
-    def test_factory_returns_plugin(self) -> None:
-        from skyward.plugins.torch import torch
-        p = torch()
-        assert p.name == "torch"
+    def test_process_group_initialized(self, torch_plugin_pool) -> None:
+        @sky.compute
+        def check_init():
+            import torch.distributed as dist
 
-    def test_transform_adds_pip_packages(self) -> None:
-        from skyward.plugins.torch import torch
-        p = torch(vision='latest', audio='latest')
-        image = Image(python="3.13")
-        assert p.transform is not None
-        result = p.transform(image, _gpu_cluster())  # type: ignore[arg-type]
-        assert "torch" in result.pip
-        assert "torchvision" in result.pip
-        assert "torchaudio" in result.pip
+            return dist.is_initialized()
 
-    def test_transform_adds_cuda_index(self) -> None:
-        from skyward.plugins.torch import torch
-        p = torch(cuda="cu124")
-        image = Image(python="3.13")
-        assert p.transform is not None
-        result = p.transform(image, _gpu_cluster())  # type: ignore[arg-type]
-        assert any("cu124" in idx.url for idx in result.pip_indexes)
+        results = check_init() @ torch_plugin_pool
+        assert all(results)
 
-    def test_transform_adds_cpu_index_without_gpu(self) -> None:
-        from skyward.plugins.torch import torch
-        p = torch()
-        image = Image(python="3.13")
-        assert p.transform is not None
-        result = p.transform(image, _cpu_cluster())  # type: ignore[arg-type]
-        assert any("cpu" in idx.url for idx in result.pip_indexes)
+    def test_correct_rank_and_world_size(self, torch_plugin_pool) -> None:
+        @sky.compute
+        def check_rank():
+            import torch.distributed as dist
 
-    def test_custom_cuda_version(self) -> None:
-        from skyward.plugins.torch import torch
-        p = torch(cuda="cu118")
-        image = Image(python="3.13")
-        assert p.transform is not None
-        result = p.transform(image, _gpu_cluster())  # type: ignore[arg-type]
-        assert any("cu118" in idx.url for idx in result.pip_indexes)
+            info = sky.instance_info()
+            assert info is not None
+            return {
+                "rank": dist.get_rank(),
+                "world_size": dist.get_world_size(),
+                "node": info.node,
+                "total_nodes": info.total_nodes,
+            }
 
-    def test_transform_preserves_existing_pip(self) -> None:
-        from skyward.plugins.torch import torch
-        p = torch()
-        image = Image(python="3.13", pip=["numpy", "pandas"])
-        assert p.transform is not None
-        result = p.transform(image, _gpu_cluster())  # type: ignore[arg-type]
-        assert "numpy" in result.pip
-        assert "pandas" in result.pip
-        assert "torch" in result.pip
+        results = check_rank() @ torch_plugin_pool
+        for r in results:
+            assert r["rank"] == r["node"]
+            assert r["world_size"] == r["total_nodes"] == 2
 
-    def test_has_around_app(self) -> None:
-        from skyward.plugins.torch import torch
-        p = torch(backend="nccl")
-        assert p.around_app is not None
+    def test_allreduce(self, torch_plugin_pool) -> None:
+        @sky.compute
+        def allreduce():
+            import torch
+            import torch.distributed as dist
 
-    def test_no_decorator(self) -> None:
-        from skyward.plugins.torch import torch
-        p = torch()
-        assert p.decorate is None
+            rank = dist.get_rank()
+            tensor = torch.tensor([rank + 1.0])
+            dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+            return tensor.item()
 
-    def test_lazy_import(self) -> None:
-        from skyward.plugins.torch import torch
-        p = torch()
-        assert p.name == "torch"
+        results = allreduce() @ torch_plugin_pool
+        # sum of (rank+1) for ranks 0,1 → 1 + 2 = 3
+        assert all(r == 3.0 for r in results)
