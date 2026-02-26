@@ -1262,6 +1262,18 @@ wheels = [
 ]
 
 [[package]]
+name = "loky"
+version = "3.5.6"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cloudpickle" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/76/61/690a4503ede61d36cc7fa2d5fa11fe02d94f030bd82155cd8935b2694580/loky-3.5.6.tar.gz", hash = "sha256:d96935ed689aa53eeb7b329769544950fa10a52706968f5d0af3d9c33a761e77", size = 102275, upload-time = "2025-08-27T09:53:52.4Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ce/80/7f1f1bf8c2d5dfd8e9c0e1191aa355ff8b80b5619f84d6dcc2703fa7fd5a/loky-3.5.6-py3-none-any.whl", hash = "sha256:6d5300ac68cbd5084e89a6a0a187785d6a79950d461c80223d2c9a41d672b3d4", size = 56515, upload-time = "2025-08-27T09:53:51.145Z" },
+]
+
+[[package]]
 name = "lz4"
 version = "4.4.5"
 source = { registry = "https://pypi.org/simple" }
@@ -3039,6 +3051,7 @@ dependencies = [
     { name = "asyncssh" },
     { name = "casty" },
     { name = "cloudpickle" },
+    { name = "loky" },
     { name = "lz4" },
     { name = "pydantic" },
     { name = "rich" },
@@ -3148,6 +3161,7 @@ requires-dist = [
     { name = "google-cloud-tpu", marker = "extra == 'providers'", specifier = ">=1.25.0" },
     { name = "jax", marker = "extra == 'dev'", specifier = ">=0.8.1" },
     { name = "keras", marker = "extra == 'dev'", specifier = ">=3.12.0" },
+    { name = "loky", specifier = ">=3.5" },
     { name = "lz4", specifier = ">=4.4.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13" },
     { name = "pandas", marker = "extra == 'pandas'", specifier = "==2.3.3" },

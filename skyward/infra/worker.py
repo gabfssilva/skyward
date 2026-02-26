@@ -140,15 +140,22 @@ async def _wrap_generator(
     )
 
 
-def _run_in_process(fn_bytes: bytes) -> Any:
-    """Execute a serialized task in a subprocess.
+def _run_in_process(
+    fn: Any,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    env: dict[str, str],
+) -> Any:
+    """Execute a task in a subprocess.
 
-    Module-level function so it's picklable by ProcessPoolExecutor.
+    Module-level function so it's picklable by loky.
+    Serialization is handled by loky's built-in cloudpickle integration.
     Distributed collections are available via IPC bridge (set up by ipc_initializer).
-    """
-    import cloudpickle
 
-    fn, args, kwargs = cloudpickle.loads(fn_bytes)
+    The env dict propagates environment variables (e.g. COMPUTE_POOL) that were
+    set in the parent process after subprocess spawn.
+    """
+    os.environ.update(env)
     return fn(*args, **kwargs)
 
 
@@ -212,12 +219,10 @@ def worker_behavior(
                 )
 
                 if use_process:
-                    import cloudpickle
-
-                    fn_bytes = cloudpickle.dumps((fn, args, kwargs))
                     loop = asyncio.get_running_loop()
                     result = await loop.run_in_executor(
-                        executor_pool, _run_in_process, fn_bytes,
+                        executor_pool, _run_in_process, fn, args, kwargs,
+                        dict(os.environ),
                     )
                 else:
                     args = await _resolve_input_streams(args, input_streams)
@@ -319,26 +324,21 @@ async def main(
         from skyward.distributed.registry import DistributedRegistry
 
         loop = asyncio.get_running_loop()
-        ipc_parent_conns: list[Any] = []
+        ipc_queue: Any = None
         match worker_executor:
             case "process":
                 import multiprocessing
-                from concurrent.futures import ProcessPoolExecutor
+
+                from loky import ProcessPoolExecutor as LokyProcessPoolExecutor
 
                 from skyward.distributed.ipc import ipc_initializer
 
                 mp_ctx = multiprocessing.get_context("spawn")
-                conn_queue = mp_ctx.Queue()
-                for _ in range(workers_per_node):
-                    parent_conn, child_conn = mp_ctx.Pipe()
-                    ipc_parent_conns.append(parent_conn)
-                    conn_queue.put(child_conn)
-
-                task_executor: Executor = ProcessPoolExecutor(
+                ipc_queue = mp_ctx.Queue()
+                task_executor: Executor = LokyProcessPoolExecutor(
                     max_workers=workers_per_node,
-                    mp_context=mp_ctx,
                     initializer=ipc_initializer,
-                    initargs=(conn_queue,),
+                    initargs=(ipc_queue,),
                 )
             case _:
                 pool_size = max((os.cpu_count() or 1) + 4, workers_per_node)
@@ -348,10 +348,10 @@ async def main(
         registry = DistributedRegistry(system, loop=loop)
         _set_active_registry(registry)
 
-        if ipc_parent_conns:
+        if ipc_queue is not None:
             from skyward.distributed.ipc import start_bridge
 
-            start_bridge(ipc_parent_conns, registry)
+            start_bridge(ipc_queue, registry)
 
         system.spawn(
             Behaviors.discoverable(

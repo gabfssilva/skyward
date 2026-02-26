@@ -337,14 +337,14 @@ def _dispatch(
 
 
 def _bridge_loop(
-    parent_conns: list[Connection],
+    registration_queue: Any,
     registry: Any,
     stop_event: threading.Event,
 ) -> None:
     proxy_cache: dict[tuple[str, str], Any] = {}
     cache_lock = threading.Lock()
-    dispatch_pool = ThreadPoolExecutor(max_workers=max(len(parent_conns), 1))
-    alive = set(parent_conns)
+    dispatch_pool = ThreadPoolExecutor(max_workers=4)
+    alive: set[Connection] = set()
 
     def _handle(conn: Connection, request: IPCRequest) -> None:
         with cache_lock:
@@ -355,7 +355,19 @@ def _bridge_loop(
             alive.discard(conn)
 
     try:
-        while not stop_event.is_set() and alive:
+        while not stop_event.is_set():
+            while not registration_queue.empty():
+                try:
+                    parent_conn: Connection = registration_queue.get_nowait()
+                    alive.add(parent_conn)
+                    log.debug("Registered new IPC pipe (total={n})", n=len(alive))
+                except Exception:
+                    break
+
+            if not alive:
+                stop_event.wait(timeout=0.5)
+                continue
+
             ready = wait(list(alive), timeout=1.0)
             for obj in ready:
                 c = cast(Connection, obj)
@@ -369,15 +381,17 @@ def _bridge_loop(
 
 
 def start_bridge(
-    parent_conns: list[Connection],
+    registration_queue: Any,
     registry: Any,
 ) -> threading.Event:
     """Start the IPC bridge daemon thread.
 
     Parameters
     ----------
-    parent_conns
-        Parent-side ends of the Pipes (one per subprocess slot).
+    registration_queue
+        Queue where subprocess initializers register parent-side Pipe connections.
+        Each new worker (including loky respawns) creates a Pipe and puts the
+        parent end here for the bridge to monitor.
     registry
         The real DistributedRegistry backed by Casty.
 
@@ -389,12 +403,12 @@ def start_bridge(
     stop_event = threading.Event()
     thread = threading.Thread(
         target=_bridge_loop,
-        args=(parent_conns, registry, stop_event),
+        args=(registration_queue, registry, stop_event),
         daemon=True,
         name="ipc-bridge",
     )
     thread.start()
-    log.info("IPC bridge started with {n} pipe(s)", n=len(parent_conns))
+    log.info("IPC bridge started")
     return stop_event
 
 
@@ -403,12 +417,20 @@ def start_bridge(
 _subprocess_conn: Connection | None = None
 
 
-def ipc_initializer(conn_queue: Any) -> None:
-    """ProcessPoolExecutor initializer — sets up IPCRegistry in each subprocess."""
+def ipc_initializer(registration_queue: Any) -> None:
+    """Loky worker initializer — creates a Pipe and registers with the bridge.
+
+    Called once per worker process (including respawns). Each worker creates
+    its own Pipe, sends the parent end to the bridge via the registration queue,
+    and keeps the child end for IPC.
+    """
+    import multiprocessing
+
     global _subprocess_conn
 
     from skyward.distributed import _set_active_registry
 
-    conn: Connection = conn_queue.get()
-    _subprocess_conn = conn
-    _set_active_registry(IPCRegistry(conn))
+    parent_conn, child_conn = multiprocessing.Pipe()
+    registration_queue.put(parent_conn)
+    _subprocess_conn = child_conn
+    _set_active_registry(IPCRegistry(child_conn))
