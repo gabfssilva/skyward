@@ -1,4 +1,4 @@
-"""E2E test for plugin hooks (transform, decorate, around_app) via Container provider."""
+"""E2E test for plugin hooks (transform, decorate, around_app, around_process) via Container provider."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 
 import skyward as sky
 from skyward.api.pool import ComputePool
-from skyward.api.spec import Image
+from skyward.api.spec import Worker
 from skyward.plugins.plugin import Plugin
 
 pytestmark = [pytest.mark.e2e, pytest.mark.timeout(180), pytest.mark.xdist_group("plugin-e2e")]
@@ -99,3 +99,76 @@ class TestPluginHooksE2E:
             "decorate": "applied",
             "around_app": "entered",
         }
+
+
+# ---------------------------------------------------------------------------
+# around_process e2e (requires executor="process")
+# ---------------------------------------------------------------------------
+
+
+def process_plugin():
+    def _around_process_lifecycle(info: Any) -> Any:
+        @contextmanager
+        def cm():
+            import os
+
+            os.environ["AROUND_PROCESS_MARKER"] = f"pid-{os.getpid()}"
+            try:
+                yield
+            finally:
+                os.environ.pop("AROUND_PROCESS_MARKER", None)
+
+        return cm()
+
+    return Plugin(
+        name="test-process-hooks",
+        around_process=_around_process_lifecycle,
+    )
+
+
+@pytest.fixture(scope="module")
+def process_pool():
+    with sky.App(console=False), ComputePool(
+        provider=sky.Container(container_prefix="skyward-process-e2e"),
+        nodes=1,
+        worker=Worker(executor="process"),
+        plugins=[process_plugin()],
+    ) as p:
+        yield p
+
+
+class TestAroundProcessE2E:
+    def test_around_process_context_entered(self, process_pool: ComputePool) -> None:
+        @sky.compute
+        def check():
+            import os
+
+            return os.environ.get("AROUND_PROCESS_MARKER")
+
+        result = check() >> process_pool
+        assert result is not None
+        assert result.startswith("pid-")
+
+    def test_around_process_idempotent(self, process_pool: ComputePool) -> None:
+        @sky.compute
+        def check():
+            import os
+
+            return os.environ.get("AROUND_PROCESS_MARKER")
+
+        r1 = check() >> process_pool
+        r2 = check() >> process_pool
+        assert r1 == r2
+
+    def test_around_process_runs_in_subprocess(self, process_pool: ComputePool) -> None:
+        @sky.compute
+        def get_pids():
+            import os
+
+            marker = os.environ.get("AROUND_PROCESS_MARKER", "")
+            marker_pid = marker.replace("pid-", "") if marker else None
+            return {"current_pid": os.getpid(), "marker_pid": marker_pid}
+
+        result = get_pids() >> process_pool
+        assert result["marker_pid"] is not None
+        assert result["current_pid"] == int(result["marker_pid"])

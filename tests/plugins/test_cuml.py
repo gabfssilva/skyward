@@ -31,10 +31,10 @@ class TestCuMLPlugin:
         result = p.transform(image, MagicMock())
         assert any("pypi.nvidia.com" in idx.url for idx in result.pip_indexes)
 
-    def test_has_around_app(self):
+    def test_has_around_process(self):
         from skyward.plugins.cuml import cuml
         p = cuml()
-        assert p.around_app is not None
+        assert p.around_process is not None
 
     def test_no_decorator(self):
         from skyward.plugins.cuml import cuml

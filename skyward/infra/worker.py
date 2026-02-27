@@ -92,6 +92,12 @@ class _TaskErrored:
 
 
 @dataclass(frozen=True, slots=True)
+class SetProcessHooks:
+    hooks: tuple[tuple[str, Any], ...]
+    reply_to: ActorRef[TaskResult]
+
+
+@dataclass(frozen=True, slots=True)
 class _ContextEntered:
     cm: Any
     reply_to: ActorRef[TaskResult]
@@ -103,7 +109,10 @@ class _ContextFailed:
     reply_to: ActorRef[TaskResult]
 
 
-type WorkerMsg = ExecuteTask | EnterContext | _TaskDone | _TaskErrored | _ContextEntered | _ContextFailed
+type WorkerMsg = (
+    ExecuteTask | EnterContext | SetProcessHooks
+    | _TaskDone | _TaskErrored | _ContextEntered | _ContextFailed
+)
 
 WORKER_KEY: ServiceKey[WorkerMsg] = ServiceKey("skyward-worker")
 
@@ -164,6 +173,7 @@ def _run_in_process(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
     env: dict[str, str],
+    around_process_hooks: tuple[tuple[str, Any], ...] = (),
 ) -> Any:
     """Execute a task in a subprocess.
 
@@ -173,8 +183,18 @@ def _run_in_process(
 
     The env dict propagates environment variables (e.g. COMPUTE_POOL) that were
     set in the parent process after subprocess spawn.
+
+    around_process_hooks are entered lazily on the first task execution per
+    subprocess (idempotent via ensure_around_process).
     """
     os.environ.update(env)
+    if around_process_hooks:
+        from skyward.api.runtime import instance_info
+        from skyward.plugins.process_state import ensure_around_process
+
+        info = instance_info()
+        for name, factory in around_process_hooks:
+            ensure_around_process(name, factory, info)
     try:
         return fn(*args, **kwargs)
     finally:
@@ -245,7 +265,7 @@ def worker_behavior(
                     loop = asyncio.get_running_loop()
                     result = await loop.run_in_executor(
                         executor_pool, _run_in_process, fn, args, kwargs,
-                        dict(os.environ),
+                        dict(os.environ), tuple(process_hooks),
                     )
                 else:
                     args = await _resolve_input_streams(args, input_streams)
@@ -255,6 +275,14 @@ def worker_behavior(
                             from skyward.distributed import _set_active_registry
 
                             _set_active_registry(registry)
+
+                        if process_hooks:
+                            from skyward.api.runtime import instance_info
+                            from skyward.plugins.process_state import ensure_around_process
+
+                            info = instance_info()
+                            for name, factory in process_hooks:
+                                ensure_around_process(name, factory, info)
 
                         fn_name = getattr(fn, "__name__", str(fn))
                         log.info("Executing {fn_name}", fn_name=fn_name)
@@ -278,9 +306,16 @@ def worker_behavior(
                 )
 
     active_contexts: list[Any] = []
+    process_hooks: list[tuple[str, Any]] = []
 
     async def receive(ctx: ActorContext[WorkerMsg], msg: WorkerMsg) -> Behavior[WorkerMsg]:
         match msg:
+            case SetProcessHooks(hooks=hooks, reply_to=reply_to):
+                process_hooks.clear()
+                process_hooks.extend(hooks)
+                log.debug("Process hooks set ({n} hooks)", n=len(hooks))
+                reply_to.tell(TaskSucceeded(result="ok", node_id=node_id))
+                return Behaviors.same()
             case EnterContext(factory=factory, reply_to=reply_to):
                 log.debug("EnterContext received")
 

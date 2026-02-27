@@ -388,11 +388,15 @@ def pool_actor() -> Behavior[PoolMsg]:
         hooks = tuple(
             (p.name, p.around_app) for p in spec.plugins if p.around_app is not None
         )
+        process_hooks = tuple(
+            (p.name, p.around_process) for p in spec.plugins if p.around_process is not None
+        )
         node_ref.tell(JoinCluster(
             client=client,
             pool_info_json=pool_json,
             env_vars=image_env,
             around_app_hooks=hooks,
+            around_process_hooks=process_hooks,
         ))
 
     def provisioning(

@@ -27,6 +27,7 @@ class TestPluginCreation:
         assert p.bootstrap is None
         assert p.decorate is None
         assert p.around_app is None
+        assert p.around_process is None
         assert p.around_client is None
 
     def test_create_factory(self) -> None:
@@ -44,6 +45,7 @@ class TestPluginCreation:
         bootstrap_factory = lambda cluster: ("echo hello",)  # noqa: E731
         decorate = lambda fn: fn  # noqa: E731
         around_app = MagicMock()
+        around_process = MagicMock()
         around_client = MagicMock()
 
         p = Plugin(
@@ -52,6 +54,7 @@ class TestPluginCreation:
             bootstrap=bootstrap_factory,
             decorate=decorate,
             around_app=around_app,
+            around_process=around_process,
             around_client=around_client,
         )
         assert p.name == "full"
@@ -59,6 +62,7 @@ class TestPluginCreation:
         assert p.bootstrap is bootstrap_factory
         assert p.decorate is decorate
         assert p.around_app is around_app
+        assert p.around_process is around_process
         assert p.around_client is around_client
 
     def test_frozen(self) -> None:
@@ -104,6 +108,13 @@ class TestBuilderChain:
         p = Plugin.create("a").with_around_app(hook)
         assert p.around_app is hook
 
+    def test_with_around_process(self) -> None:
+        from skyward.plugins.plugin import Plugin
+
+        hook = MagicMock()
+        p = Plugin.create("p").with_around_process(hook)
+        assert p.around_process is hook
+
     def test_with_around_client(self) -> None:
         from skyward.plugins.plugin import Plugin
 
@@ -133,6 +144,7 @@ class TestBuilderChain:
         bootstrap_factory = lambda cluster: ("echo setup",)  # noqa: E731
         dec = lambda fn: fn  # noqa: E731
         app_hook = MagicMock()
+        process_hook = MagicMock()
         client_hook = MagicMock()
 
         p = (
@@ -141,6 +153,7 @@ class TestBuilderChain:
             .with_bootstrap(bootstrap_factory)
             .with_decorator(dec)
             .with_around_app(app_hook)
+            .with_around_process(process_hook)
             .with_around_client(client_hook)
         )
         assert p.name == "chained"
@@ -148,6 +161,7 @@ class TestBuilderChain:
         assert p.bootstrap is bootstrap_factory
         assert p.decorate is dec
         assert p.around_app is app_hook
+        assert p.around_process is process_hook
         assert p.around_client is client_hook
 
 
@@ -433,6 +447,180 @@ class TestAroundAppLifecycle:
 
 
 # ---------------------------------------------------------------------------
+# around_process lifecycle (ensure_around_process integration)
+# ---------------------------------------------------------------------------
+
+
+class TestAroundProcessLifecycle:
+    def test_ensure_around_process_enters_context(self) -> None:
+        from skyward.plugins.process_state import ensure_around_process, reset
+
+        entered = False
+
+        @contextmanager
+        def lifecycle(info: Any):  # noqa: ANN201
+            nonlocal entered
+            entered = True
+            yield
+
+        reset()
+        ensure_around_process("test", lifecycle, MagicMock())
+        assert entered
+
+    def test_ensure_around_process_is_idempotent(self) -> None:
+        from skyward.plugins.process_state import ensure_around_process, reset
+
+        call_count = 0
+
+        @contextmanager
+        def lifecycle(info: Any):  # noqa: ANN201
+            nonlocal call_count
+            call_count += 1
+            yield
+
+        reset()
+        info = MagicMock()
+        ensure_around_process("test", lifecycle, info)
+        ensure_around_process("test", lifecycle, info)
+        assert call_count == 1
+
+    def test_multiple_plugins_all_entered(self) -> None:
+        from skyward.plugins.process_state import ensure_around_process, is_setup, reset
+
+        @contextmanager
+        def lifecycle_a(info: Any):  # noqa: ANN201
+            yield
+
+        @contextmanager
+        def lifecycle_b(info: Any):  # noqa: ANN201
+            yield
+
+        reset()
+        info = MagicMock()
+        ensure_around_process("plugin-a", lifecycle_a, info)
+        ensure_around_process("plugin-b", lifecycle_b, info)
+        assert is_setup("plugin-a")
+        assert is_setup("plugin-b")
+
+    def test_cleanup_exits_in_reverse_order(self) -> None:
+        from skyward.plugins.process_state import cleanup, ensure_around_process, reset
+
+        exits: list[str] = []
+
+        @contextmanager
+        def lifecycle_a(info: Any):  # noqa: ANN201
+            yield
+            exits.append("a")
+
+        @contextmanager
+        def lifecycle_b(info: Any):  # noqa: ANN201
+            yield
+            exits.append("b")
+
+        reset()
+        info = MagicMock()
+        ensure_around_process("a", lifecycle_a, info)
+        ensure_around_process("b", lifecycle_b, info)
+        cleanup()
+        assert exits == ["b", "a"]
+
+    def test_reset_clears_without_exit(self) -> None:
+        from skyward.plugins.process_state import ensure_around_process, is_setup, reset
+
+        @contextmanager
+        def lifecycle(info: Any):  # noqa: ANN201
+            yield
+
+        reset()
+        ensure_around_process("test", lifecycle, MagicMock())
+        assert is_setup("test")
+        reset()
+        assert not is_setup("test")
+
+
+# ---------------------------------------------------------------------------
+# _run_in_process with around_process hooks
+# ---------------------------------------------------------------------------
+
+
+class TestRunInProcessWithHooks:
+    def test_hooks_entered_on_execution(self) -> None:
+        import json
+        import os
+
+        from skyward.plugins.process_state import reset
+
+        reset()
+        entered = []
+
+        @contextmanager
+        def lifecycle(info: Any):  # noqa: ANN201
+            entered.append(info.node)
+            yield
+
+        pool_info = {
+            "node": 0, "worker": 0, "total_nodes": 1,
+            "workers_per_node": 1, "head_addr": "127.0.0.1",
+            "head_port": 25520, "job_id": "test",
+            "accelerators": 0, "total_accelerators": 0,
+            "peers": [], "network": {},
+        }
+        os.environ["COMPUTE_POOL"] = json.dumps(pool_info)
+        try:
+            from skyward.infra.worker import _run_in_process
+
+            result = _run_in_process(
+                lambda: 42, (), {}, dict(os.environ),
+                around_process_hooks=(("test-plugin", lifecycle),),
+            )
+            assert result == 42
+            assert entered == [0]
+        finally:
+            os.environ.pop("COMPUTE_POOL", None)
+            reset()
+
+    def test_hooks_idempotent_across_calls(self) -> None:
+        import json
+        import os
+
+        from skyward.plugins.process_state import reset
+
+        reset()
+        call_count = 0
+
+        @contextmanager
+        def lifecycle(info: Any):  # noqa: ANN201
+            nonlocal call_count
+            call_count += 1
+            yield
+
+        pool_info = {
+            "node": 0, "worker": 0, "total_nodes": 1,
+            "workers_per_node": 1, "head_addr": "127.0.0.1",
+            "head_port": 25520, "job_id": "test",
+            "accelerators": 0, "total_accelerators": 0,
+            "peers": [], "network": {},
+        }
+        os.environ["COMPUTE_POOL"] = json.dumps(pool_info)
+        try:
+            from skyward.infra.worker import _run_in_process
+
+            hooks: tuple[tuple[str, Any], ...] = (("test-plugin", lifecycle),)
+            _run_in_process(lambda: 1, (), {}, dict(os.environ), hooks)
+            _run_in_process(lambda: 2, (), {}, dict(os.environ), hooks)
+            assert call_count == 1
+        finally:
+            os.environ.pop("COMPUTE_POOL", None)
+            reset()
+
+    def test_no_hooks_runs_normally(self) -> None:
+        from skyward.infra.worker import _run_in_process
+
+        result = _run_in_process(lambda: "ok", (), {}, {})
+        assert result == "ok"
+
+
+# ---------------------------------------------------------------------------
 # Type alias accessibility
 # ---------------------------------------------------------------------------
 
@@ -452,6 +640,11 @@ class TestTypeAliases:
         from skyward.plugins import plugin
 
         assert hasattr(plugin, "AppLifecycle")
+
+    def test_process_lifecycle_alias_exists(self) -> None:
+        from skyward.plugins import plugin
+
+        assert hasattr(plugin, "ProcessLifecycle")
 
     def test_client_lifecycle_alias_exists(self) -> None:
         from skyward.plugins import plugin

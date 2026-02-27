@@ -73,5 +73,5 @@ def keras(
     return (
         Plugin.create("keras")
         .with_image_transform(transform)
-        .with_around_app(around)
+        .with_around_process(around)
     )

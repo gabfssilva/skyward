@@ -19,6 +19,7 @@ type ImageTransform[S] = Callable[[Image, Cluster[S]], Image]
 type BootstrapFactory[S] = Callable[[Cluster[S]], tuple[Op, ...]]
 type TaskDecorator[**P, R] = Callable[[Callable[P, R]], Callable[P, R]]
 type AppLifecycle = Callable[[InstanceInfo], AbstractContextManager[None]]
+type ProcessLifecycle = Callable[[InstanceInfo], AbstractContextManager[None]]
 type ClientLifecycle[S] = Callable[[ComputePool, Cluster[S]], AbstractContextManager[None]]
 
 
@@ -44,6 +45,11 @@ class Plugin:
         function at execution time on the remote worker.
     around_app
         Worker lifecycle context manager: InstanceInfo -> ContextManager[None].
+        Entered once in the main worker process.
+    around_process
+        Subprocess lifecycle context manager: InstanceInfo -> ContextManager[None].
+        Entered once per subprocess when executor="process". Lazy — enters on
+        the first task execution in each subprocess, after env vars are propagated.
     around_client
         Client lifecycle context manager: (ComputePool, Cluster[S]) -> ContextManager[None].
     """
@@ -53,6 +59,7 @@ class Plugin:
     bootstrap: BootstrapFactory[Any] | None = None
     decorate: TaskDecorator | None = None
     around_app: AppLifecycle | None = None
+    around_process: ProcessLifecycle | None = None
     around_client: ClientLifecycle[Any] | None = None
 
     @staticmethod
@@ -70,6 +77,9 @@ class Plugin:
 
     def with_around_app(self, around: AppLifecycle) -> Plugin:
         return replace(self, around_app=around)
+
+    def with_around_process(self, around: ProcessLifecycle) -> Plugin:
+        return replace(self, around_process=around)
 
     def with_around_client[S](self, around: ClientLifecycle[S]) -> Plugin:
         return replace(self, around_client=around)

@@ -669,6 +669,7 @@ def node_actor(
                 case JoinCluster(
                     client=client, pool_info_json=pij,
                     env_vars=ev, around_app_hooks=hooks,
+                    around_process_hooks=phooks,
                 ):
                     log.info("JoinCluster received, discovering worker")
                     ctx.pipe_to_self(
@@ -688,6 +689,7 @@ def node_actor(
                         pool_info_json=pij,
                         env_vars=ev,
                         around_app_hooks=hooks,
+                        around_process_hooks=phooks,
                     )
                 case HeadAddressKnown() as h:
                     return ready(cluster, provider, ni, transport, listener, h, pending_tasks)
@@ -726,6 +728,7 @@ def node_actor(
         pool_info_json: str,
         env_vars: dict[str, str],
         around_app_hooks: tuple[tuple[str, Any], ...] = (),
+        around_process_hooks: tuple[tuple[str, Any], ...] = (),
     ) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
             match msg:
@@ -734,7 +737,7 @@ def node_actor(
                     ctx.pipe_to_self(
                         _setup_worker_env(
                             client, worker_ref, pool_info_json, env_vars,
-                            around_app_hooks,
+                            around_app_hooks, around_process_hooks,
                         ),
                         mapper=lambda _: _EnvSetupDone(),
                         on_failure=lambda e: _EnvSetupFailed(error=str(e)),
@@ -779,6 +782,7 @@ def node_actor(
                         pool_info_json=pool_info_json,
                         env_vars=env_vars,
                         around_app_hooks=around_app_hooks,
+                        around_process_hooks=around_process_hooks,
                     )
             return Behaviors.same()
 
@@ -917,7 +921,10 @@ def node_actor(
             match msg:
                 case HeadAddressKnown() as h:
                     return active(replace(s, head_info=h))
-                case JoinCluster(client=client, pool_info_json=pij, env_vars=ev):
+                case JoinCluster(
+                    client=client, pool_info_json=pij, env_vars=ev,
+                    around_app_hooks=hooks, around_process_hooks=phooks,
+                ):
                     log.info("Re-joining cluster after replacement")
                     ni = s.current_node_instance
                     if ni is None:
@@ -939,6 +946,8 @@ def node_actor(
                         client=client,
                         pool_info_json=pij,
                         env_vars=ev,
+                        around_app_hooks=hooks,
+                        around_process_hooks=phooks,
                     )
                 case ExecuteOnNode() as ex:
                     local_tid = ex.task_id or str(s.task_counter)
@@ -1253,8 +1262,9 @@ async def _setup_worker_env(
     pool_info_json: str,
     env_vars: dict[str, str],
     around_app_hooks: tuple[tuple[str, Any], ...] = (),
+    around_process_hooks: tuple[tuple[str, Any], ...] = (),
 ) -> None:
-    from skyward.infra.worker import EnterContext, ExecuteTask
+    from skyward.infra.worker import EnterContext, ExecuteTask, SetProcessHooks
 
     def setup_env(
         info_json: str,
@@ -1304,6 +1314,13 @@ async def _setup_worker_env(
         await client.ask(
             worker_ref,
             lambda rto: EnterContext(factory=make_hooks_cm, reply_to=rto),
+            timeout=60.0,
+        )
+
+    if around_process_hooks:
+        await client.ask(
+            worker_ref,
+            lambda rto: SetProcessHooks(hooks=around_process_hooks, reply_to=rto),
             timeout=60.0,
         )
 

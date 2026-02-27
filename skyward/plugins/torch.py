@@ -120,5 +120,5 @@ def torch(
     return (
         Plugin.create("torch")
         .with_image_transform(transform)
-        .with_around_app(around)
+        .with_around_process(around)
     )

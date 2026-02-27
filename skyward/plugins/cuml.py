@@ -45,5 +45,5 @@ def cuml(cuda: str = "cu12") -> Plugin:
     return (
         Plugin.create("cuml")
         .with_image_transform(transform)
-        .with_around_app(around)
+        .with_around_process(around)
     )

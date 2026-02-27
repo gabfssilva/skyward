@@ -49,5 +49,5 @@ def jax(cuda: str = "cu124") -> Plugin:
     return (
         Plugin.create("jax")
         .with_image_transform(transform)
-        .with_around_app(around)
+        .with_around_process(around)
     )
