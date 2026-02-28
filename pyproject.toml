@@ -123,6 +123,7 @@ markers = [
     "gcp: GCP provider tests",
     "hyperstack: Hyperstack provider tests",
     "lambda_cloud: Lambda Cloud provider tests",
+    "thunder: Thunder Compute provider tests",
 ]
 
 [dependency-groups]

@@ -13,6 +13,7 @@ Available providers:
 - Lambda: Lambda Cloud (bare-metal GPUs, on-demand)
 - RunPod: GPU cloud (pods, serverless endpoints)
 - VastAI: GPU marketplace (Docker containers, spot/bid pricing)
+- Thunder: Thunder Compute (GPU cloud, Quebec, per-minute billing)
 - Verda: GPU cloud (dedicated instances, spot pricing)
 - Hyperstack: GPU cloud (bare-metal, environment-scoped resources)
 
@@ -28,6 +29,7 @@ from .gcp.config import GCP
 from .hyperstack.config import Hyperstack
 from .lambda_cloud.config import Lambda
 from .runpod.config import RunPod
+from .thunder.config import ThunderCompute
 from .vastai.config import VastAI
 from .verda.config import Verda
 
@@ -39,6 +41,7 @@ __all__ = [
     "Hyperstack",
     "Lambda",
     "RunPod",
+    "ThunderCompute",
     "VastAI",
     "Verda",
 ]

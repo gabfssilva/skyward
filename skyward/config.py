@@ -18,10 +18,11 @@ if TYPE_CHECKING:
     from skyward.providers.hyperstack.config import Hyperstack
     from skyward.providers.lambda_cloud.config import Lambda
     from skyward.providers.runpod.config import RunPod
+    from skyward.providers.thunder.config import ThunderCompute
     from skyward.providers.vastai.config import VastAI
     from skyward.providers.verda.config import Verda
 
-    type ProviderConfig = AWS | GCP | Hyperstack | Lambda | RunPod | VastAI | Verda
+    type ProviderConfig = AWS | GCP | Hyperstack | Lambda | RunPod | ThunderCompute | VastAI | Verda
 
 type RawConfig = dict[str, Any]
 
@@ -67,6 +68,7 @@ def _get_provider_map() -> dict[str, type]:
     from skyward.providers.hyperstack.config import Hyperstack
     from skyward.providers.lambda_cloud.config import Lambda
     from skyward.providers.runpod.config import RunPod
+    from skyward.providers.thunder.config import ThunderCompute
     from skyward.providers.vastai.config import VastAI
     from skyward.providers.verda.config import Verda
 
@@ -75,6 +77,7 @@ def _get_provider_map() -> dict[str, type]:
         "gcp": GCP,
         "hyperstack": Hyperstack,
         "lambda": Lambda,
+        "thunder": ThunderCompute,
         "vastai": VastAI,
         "runpod": RunPod,
         "verda": Verda,
