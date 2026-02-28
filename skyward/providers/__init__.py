@@ -10,6 +10,7 @@ Each provider implements the Provider[C, S] protocol:
 Available providers:
 - AWS: Amazon Web Services (EC2 Fleet, spot instances)
 - GCP: Google Cloud Platform (Compute Engine, instance templates, bulk_insert)
+- Lambda: Lambda Cloud (bare-metal GPUs, on-demand)
 - RunPod: GPU cloud (pods, serverless endpoints)
 - VastAI: GPU marketplace (Docker containers, spot/bid pricing)
 - Verda: GPU cloud (dedicated instances, spot pricing)
@@ -23,6 +24,7 @@ SDK dependencies (aioboto3, google-cloud-compute, etc.).
 from .aws.config import AWS
 from .container.config import Container
 from .gcp.config import GCP
+from .lambda_cloud.config import Lambda
 from .runpod.config import RunPod
 from .vastai.config import VastAI
 from .verda.config import Verda
@@ -32,6 +34,7 @@ __all__ = [
     "AWS",
     "Container",
     "GCP",
+    "Lambda",
     "RunPod",
     "VastAI",
     "Verda",

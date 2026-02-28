@@ -119,6 +119,11 @@ tasks:
     cmds:
       - uv run pytest -m "sanity and verda" {{.CLI_ARGS}}
 
+  test:sanity:lambda:
+    desc: Run Lambda Cloud sanity tests
+    cmds:
+      - uv run pytest -m "sanity and lambda_cloud" {{.CLI_ARGS}}
+
   test:all:
     desc: Run unit + e2e tests
     cmds:
