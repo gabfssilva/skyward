@@ -6,6 +6,7 @@ from skyward.api.pool import ComputePool
 from skyward.config import _deep_merge, load_config, resolve_pool
 from skyward.providers.aws.config import AWS
 from skyward.providers.gcp.config import GCP
+from skyward.providers.lambda_cloud.config import Lambda
 from skyward.providers.runpod.config import RunPod
 from skyward.providers.vastai.config import VastAI
 from skyward.providers.verda.config import Verda
@@ -206,6 +207,19 @@ class TestResolvePool:
         assert isinstance(spec.provider, GCP)
         assert spec.provider.project == "my-project"
         assert spec.provider.zone == "us-central1-a"
+
+    def test_lambda_pool(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            '[providers.l]\n'
+            'type = "lambda"\n'
+            'region = "us-west-1"\n'
+            '\n'
+            '[pools.gpu]\nprovider = "l"\nnodes = 1\n'
+        )
+        pool = resolve_pool("gpu", project_dir=tmp_path)
+        spec = pool._specs[0]
+        assert isinstance(spec.provider, Lambda)
+        assert spec.provider.region == "us-west-1"
 
     def test_global_provider_project_pool(self, tmp_path: Path):
         global_toml = tmp_path / "defaults.toml"

@@ -207,3 +207,32 @@ class TestVerdaSanity:
     def test_broadcast(self, pool):
         results = gpu_matmul() @ pool
         _assert_broadcast(results)
+
+
+# ---------------------------------------------------------------------------
+# Lambda Cloud
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.sanity
+@pytest.mark.lambda_cloud
+@pytest.mark.timeout(TIMEOUT)
+@pytest.mark.xdist_group("lambda_cloud")
+class TestLambdaSanity:
+    @pytest.fixture(scope="class")
+    def pool(self):
+        with sky.App(console=False), sky.ComputePool(
+            provider=sky.Lambda(),
+            accelerator=sky.accelerators.A10(),
+            nodes=NODES,
+            image=sky.Image(pip=["torch"]),
+        ) as p:
+            yield p
+
+    def test_single_dispatch(self, pool):
+        result = gpu_matmul() >> pool
+        _assert_single(result)
+
+    def test_broadcast(self, pool):
+        results = gpu_matmul() @ pool
+        _assert_broadcast(results)
