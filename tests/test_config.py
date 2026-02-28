@@ -8,6 +8,7 @@ from skyward.providers.aws.config import AWS
 from skyward.providers.gcp.config import GCP
 from skyward.providers.runpod.config import RunPod
 from skyward.providers.vastai.config import VastAI
+from skyward.providers.hyperstack.config import Hyperstack
 from skyward.providers.verda.config import Verda
 
 pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
@@ -206,6 +207,19 @@ class TestResolvePool:
         assert isinstance(spec.provider, GCP)
         assert spec.provider.project == "my-project"
         assert spec.provider.zone == "us-central1-a"
+
+    def test_hyperstack_pool(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            '[providers.hs]\n'
+            'type = "hyperstack"\n'
+            'region = "CANADA-1"\n'
+            '\n'
+            '[pools.gpu]\nprovider = "hs"\nnodes = 1\n'
+        )
+        pool = resolve_pool("gpu", project_dir=tmp_path)
+        spec = pool._specs[0]
+        assert isinstance(spec.provider, Hyperstack)
+        assert spec.provider.region == "CANADA-1"
 
     def test_global_provider_project_pool(self, tmp_path: Path):
         global_toml = tmp_path / "defaults.toml"

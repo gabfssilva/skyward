@@ -119,6 +119,11 @@ tasks:
     cmds:
       - uv run pytest -m "sanity and verda" {{.CLI_ARGS}}
 
+  test:sanity:hyperstack:
+    desc: Run Hyperstack sanity tests
+    cmds:
+      - uv run pytest -m "sanity and hyperstack" {{.CLI_ARGS}}
+
   test:all:
     desc: Run unit + e2e tests
     cmds:
