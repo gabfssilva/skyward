@@ -10,7 +10,7 @@ from skyward.infra.http import HttpClient, HttpError
 from skyward.infra.retry import on_status_code, retry
 from skyward.observability.logger import logger
 
-from .types import InstanceCreateResponse, InstanceListItem, SSHKeyResponse
+from .types import InstanceCreateResponse, InstanceListItem, PricingEntry, SSHKeyResponse
 
 THUNDER_API_BASE = "https://api.thundercompute.com:8443/v1"
 
@@ -49,9 +49,9 @@ class ThunderClient:
     # =========================================================================
 
     @retry(on=on_status_code(429, 503), max_attempts=3, base_delay=1.0)
-    async def get_pricing(self) -> dict[str, Any]:
+    async def get_pricing(self) -> dict[str, PricingEntry]:
         """Get GPU pricing information."""
-        result: dict[str, Any] | None = await self._request("GET", "/pricing")
+        result: dict[str, PricingEntry] | None = await self._request("GET", "/pricing")
         return result or {}
 
     # =========================================================================

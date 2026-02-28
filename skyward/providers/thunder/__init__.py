@@ -15,13 +15,28 @@ Environment Variables:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .client import ThunderClient, ThunderError
     from .provider import ThunderProvider
 
 from .config import ThunderCompute
+
+
+def __getattr__(name: str) -> Any:
+    if name in ("ThunderClient", "ThunderError"):
+        from .client import ThunderClient, ThunderError
+
+        if name == "ThunderClient":
+            return ThunderClient
+        return ThunderError
+    if name == "ThunderProvider":
+        from .provider import ThunderProvider
+
+        return ThunderProvider
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "ThunderCompute",
