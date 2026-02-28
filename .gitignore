@@ -1,6 +1,7 @@
 .skyward/
 .venv/
 .idea/
+.worktrees/
 
 __pycache__/
 skyward/_version.py
