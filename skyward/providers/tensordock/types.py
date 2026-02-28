@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import NotRequired, TypedDict
 
-
 # =============================================================================
 # Hostnode types (from /api/v0/client/deploy/hostnodes)
 # =============================================================================
@@ -194,7 +193,7 @@ def get_ssh_port(vm: VmDetails) -> int:
     34567
     """
     forwards = vm.get("port_forwards") or {}
-    return forwards.get("22", forwards.get(22, 22))
+    return int(forwards.get("22", 22))
 
 
 def _normalize_string(s: str) -> str:
