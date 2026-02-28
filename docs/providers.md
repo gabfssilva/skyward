@@ -1,17 +1,17 @@
 # Cloud providers
 
-Skyward supports six providers. Five are cloud services — AWS, GCP, RunPod, Verda, VastAI — and one is local containers for development and CI. All implement the same `Provider` protocol, so the orchestration layer (actor system, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
+Skyward supports seven providers. Six are cloud services — AWS, GCP, Hyperstack, RunPod, Verda, VastAI — and one is local containers for development and CI. All implement the same `Provider` protocol, so the orchestration layer (actor system, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
 
 Provider configs are lightweight frozen dataclasses. They hold configuration — region, API keys, disk sizes — but don't import any cloud SDK at module level. The SDK is loaded lazily when the pool starts, so `import skyward` stays fast regardless of which providers are installed.
 
 ## Provider comparison
 
-| Feature | AWS | GCP | RunPod | Verda | VastAI | Container |
-|---------|-----|-----|--------|-------|--------|-----------|
-| **GPUs** | H100, A100, T4, L4, Trainium, Inferentia | H100, A100, T4, L4, V100, H200 | H100, A100, A40, RTX series | H100, A100, H200, GB200 | Marketplace (varies) | None (CPU) |
-| **Spot Instances** | Yes (60-90% savings) | Yes (preemptible/spot) | Yes | Yes | Yes (bid-based) | N/A |
-| **Regions** | 20+ | 40+ zones | Global (Secure + Community) | FIN, ICL, ISR | Global marketplace | Local |
-| **Auth** | AWS credentials | Application Default Credentials | API key | Client ID + Secret | API key | None |
+| Feature | AWS | GCP | Hyperstack | RunPod | Verda | VastAI | Container |
+|---------|-----|-----|------------|--------|-------|--------|-----------|
+| **GPUs** | H100, A100, T4, L4, Trainium, Inferentia | H100, A100, T4, L4, V100, H200 | A100, H100, RTX series | H100, A100, A40, RTX series | H100, A100, H200, GB200 | Marketplace (varies) | None (CPU) |
+| **Spot Instances** | Yes (60-90% savings) | Yes (preemptible/spot) | No (on-demand only) | Yes | Yes | Yes (bid-based) | N/A |
+| **Regions** | 20+ | 40+ zones | Canada, Norway, US | Global (Secure + Community) | FIN, ICL, ISR | Global marketplace | Local |
+| **Auth** | AWS credentials | Application Default Credentials | API key | API key | Client ID + Secret | API key | None |
 
 ## AWS
 
@@ -294,6 +294,49 @@ image_name = sky.VastAI.ubuntu(version="24.04", cuda="12.9.1")
 # → "nvcr.io/nvidia/cuda:12.9.1-runtime-ubuntu24.04"
 ```
 
+## Hyperstack
+
+Hyperstack provides bare-metal GPU instances via their InfraHub API. Resources are organized into environments that group VMs, keypairs, and volumes within a region. Environments are created per cluster and cascade-deleted on teardown. All instances are on-demand — no spot pricing.
+
+### Setup
+
+```bash
+export HYPERSTACK_API_KEY=your_api_key
+```
+
+Get your API key at the [Hyperstack Console](https://infrahub.nexgencloud.com/).
+
+### Usage
+
+```python
+import skyward as sky
+
+with sky.ComputePool(
+    provider=sky.Hyperstack(region="CANADA-1"),
+    accelerator=sky.accelerators.A100(),
+    nodes=2,
+) as pool:
+    result = train(data) >> pool
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `api_key` | `str or None` | `None` | API key (falls back to `HYPERSTACK_API_KEY` env var) |
+| `region` | `str` | `"CANADA-1"` | Deployment region. Options: `CANADA-1`, `NORWAY-1`, `US-1` |
+| `disk_gb` | `int` | `100` | Root disk size in GB |
+| `instance_timeout` | `int` | `300` | Auto-shutdown safety timeout in seconds |
+| `request_timeout` | `int` | `30` | HTTP request timeout in seconds |
+
+### Available regions
+
+| Region | Location |
+|--------|----------|
+| `CANADA-1` | Canada |
+| `NORWAY-1` | Norway |
+| `US-1` | United States |
+
 ## Container
 
 The Container provider runs compute nodes as local containers — Docker, podman, nerdctl, or Apple's container CLI. No cloud credentials, no costs. Useful for development, CI testing, and validating your code before deploying to real hardware.
@@ -330,6 +373,8 @@ with sky.ComputePool(
 **GCP** — Deep integration with Google Cloud. Deep Learning VM images with pre-installed CUDA drivers, dynamic machine type resolution, fleet-style provisioning via `bulk_insert`. Supports T4, L4, V100, A100, H100, H200.
 
 **RunPod** — Fast provisioning, competitive pricing, minimal setup. Both Secure Cloud (dedicated) and Community Cloud (cheaper) tiers. Good for A100/H100/RTX workloads.
+
+**Hyperstack** — Bare-metal GPU cloud with environment-scoped resource management. On-demand only, regions in Canada, Norway, and US.
 
 **Verda** — European data residency (Finland, Iceland, Israel). H100/A100/H200/GB200 availability with automatic region selection.
 
