@@ -193,7 +193,7 @@ def get_ssh_port(vm: VmDetails) -> int:
     34567
     """
     forwards = vm.get("port_forwards") or {}
-    return int(forwards.get("22", 22))
+    return forwards.get("22", 22)
 
 
 def _normalize_string(s: str) -> str:
