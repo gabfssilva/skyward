@@ -1,10 +1,10 @@
-# Provision Controllers
+# Provision controllers
 
 A fixed-size pool works well when you know in advance how much compute you need. But many workloads don't have that property. A hyperparameter sweep might start with a burst of 200 trials and taper off as early stopping kills the losers. An inference service might see ten requests per second at noon and zero at midnight. A data pipeline might have phases — heavy preprocessing, then light aggregation — where the ideal cluster size changes mid-job.
 
 Skyward handles this with **elastic pools**: pools whose node count adjusts automatically based on workload pressure. Two actors make this work — the **autoscaler** and the **reconciler** — and they are designed around a clean separation: the autoscaler is a pure policy engine that decides *how many* nodes are needed, while the reconciler is the actuator that provisions and terminates cloud instances to match that decision. Neither knows about the other's internals. They communicate through a single message: `DesiredCountChanged`.
 
-## Enabling Elastic Pools
+## Enabling elastic pools
 
 Pass a tuple instead of an integer for the `nodes` parameter:
 
@@ -36,13 +36,13 @@ sky.ComputePool(
 
 `autoscale_cooldown` prevents rapid oscillation — the autoscaler won't change its mind more than once every 30 seconds. `autoscale_idle_timeout` controls how patient the system is before releasing idle capacity — a cluster with no inflight tasks must stay idle for 60 seconds before the autoscaler decides to shrink it. `reconcile_tick_interval` sets how often the reconciler checks for drift between the desired and actual cluster size — lower values detect failures faster but add more overhead.
 
-## The Autoscaler
+## The autoscaler
 
 The autoscaler receives **pressure reports** from the task manager and translates them into scaling decisions. A pressure report is a snapshot of the task manager's state: how many tasks are queued, how many are currently running, what the total capacity is, and how many nodes exist. The task manager emits a report on every state change — task submitted, task completed, node added, node removed — so the autoscaler always has a current picture.
 
 The scaling logic is a pure function. It takes the current pressure, the current desired count, and the configuration parameters, and returns a new desired count. No cloud API calls, no side effects, no internal state beyond what's passed in. This makes the algorithm trivially testable — and trivially replaceable, if you ever need a different policy.
 
-### The Decision Tree
+### The decision tree
 
 The autoscaler evaluates these conditions in priority order:
 
@@ -54,7 +54,7 @@ The autoscaler evaluates these conditions in priority order:
 
 **Steady state.** If none of the above conditions are met, the desired count stays the same. The cluster is appropriately sized for its current workload.
 
-### Cooldown and the Timer Tick
+### Cooldown and the timer tick
 
 Two mechanisms prevent the autoscaler from thrashing:
 
@@ -62,7 +62,7 @@ The **cooldown window** (default 30 seconds) suppresses decisions. If the last s
 
 The **timer tick** fires every `cooldown` seconds and replays the most recent pressure report. This is essential for scale-down: if the cluster becomes idle and no new tasks arrive, there are no pressure reports to trigger a re-evaluation. The tick ensures that the "fully idle" condition is eventually detected even in the absence of new activity. Without it, an idle cluster would stay at its current size forever.
 
-## The Reconciler
+## The reconciler
 
 The reconciler translates the autoscaler's decisions into infrastructure changes. It tracks three sets of nodes — `current` (active and healthy), `pending` (provisioning in flight), and `draining` (being removed) — and progresses through three states to bring the actual cluster size in line with the desired count.
 
@@ -91,7 +91,7 @@ The default state. The reconciler monitors for three kinds of events:
 - **`ReconcilerNodeLost`** — A node died (spot preemption, network failure, crash). Remove it from the active set and, if the cluster is now below the desired count, transition to `scaling_up`.
 - **`NodeJoined`** — A previously pending node finished booting and is now active. Move it from `pending` to `current`.
 
-### Scaling Up
+### Scaling up
 
 The reconciler calls `provider.provision(cluster, count)` to launch new instances. When the call returns, it tells the pool actor to spawn node actors for the new instances (`SpawnNodes`), moves their IDs into the `pending` set, and checks whether the effective count now meets the desired count. If not — because the desired count changed mid-flight, or because the provider returned fewer instances than requested — it issues another provision call. Once the effective count meets or exceeds the desired count, it returns to `watching`.
 
@@ -105,17 +105,17 @@ Draining is **cooperative**. The reconciler sends `DrainNode` to the pool actor,
 
 If the desired count increases while draining is in progress (new tasks arrived, the autoscaler changed its mind), the reconciler can abort the drain. It clears the draining set and, if the new desired count exceeds the effective count, transitions directly to `scaling_up`. This means the system responds to new demand even in the middle of scaling down.
 
-### The Reconcile Tick
+### The reconcile tick
 
 Periodically (every `reconcile_tick_interval` seconds — 15 by default), the reconciler checks for **drift**: is the effective count below the desired count? If so, it initiates a scale-up. This is the self-healing mechanism — if a provisioning call failed, if a node crashed between ticks, if the cloud provider returned fewer instances than requested, the tick catches the discrepancy and corrects it. The reconciler doesn't need explicit retry logic because the tick provides implicit, periodic retries.
 
-## Always-On Reconciliation
+## Always-on reconciliation
 
 The reconciler is spawned for **every** pool — not just elastic ones. In a fixed-size pool (`nodes=4`), the reconciler starts with `min_nodes = max_nodes = 4` and the autoscaler is never created. No `DesiredCountChanged` messages arrive, so the reconciler stays in the `watching` state permanently.
 
 But the reconcile tick still fires, and `ReconcilerNodeLost` messages still arrive. If a node dies in a fixed pool, the reconciler detects that the effective count (3) is below the desired count (4) and provisions a replacement. The pool self-heals without any elastic configuration — the reconciliation loop handles node replacement as a natural consequence of keeping `effective == desired`.
 
-## How They Interact
+## How they interact
 
 The full interaction involves four actors: the **task manager** observes workload pressure, the **autoscaler** decides the right cluster size, the **reconciler** makes it happen, and the **pool actor** manages node lifecycles.
 
@@ -161,7 +161,7 @@ sequenceDiagram
 
 The flow is fully event-driven. The task manager doesn't know about the autoscaler — it just emits pressure reports to whoever registers as an observer. The autoscaler doesn't know about the cloud provider — it just tells the reconciler what the desired count should be. The reconciler doesn't know about task scheduling — it just brings the infrastructure in line with the desired count. Each actor has a single, well-defined responsibility, and communication happens through typed messages.
 
-## Design Decisions
+## Design decisions
 
 **Policy and mechanism are separate.** The autoscaler is a pure function wrapped in a thin actor. It has no cloud SDK dependency, no async I/O, no state beyond a few numbers. The reconciler does all the infrastructure work. This means you can reason about scaling policy by reading a single function (`_compute_desired`), and you can reason about infrastructure orchestration by reading the reconciler's state machine — without either concern polluting the other.
 
@@ -173,7 +173,7 @@ The flow is fully event-driven. The task manager doesn't know about the autoscal
 
 **The reconcile tick provides implicit retries.** Rather than implementing explicit retry logic with exponential backoff, the reconciler checks for drift every `reconcile_tick_interval` seconds (default 15). If a provision call fails, the next tick detects that `effective < desired` and tries again. This is simpler, more robust, and naturally rate-limited.
 
-## Further Reading
+## Further reading
 
 - **[Core Concepts](concepts.md)** — Lazy computation, operators, and the pool lifecycle
 - **[Architecture](architecture.md)** — The actor hierarchy and cluster formation

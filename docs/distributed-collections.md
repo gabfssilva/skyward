@@ -1,4 +1,4 @@
-# Distributed Collections
+# Distributed collections
 
 When compute functions run across multiple nodes, they sometimes need to share state. A training loop might track global progress. A batch processor might deduplicate work across workers. A distributed pipeline might need a synchronization point where all nodes wait before proceeding. A checkpoint routine might need mutual exclusion so two nodes don't write conflicting state simultaneously.
 
@@ -145,7 +145,7 @@ With **eventual consistency** (the default), reads are fast but may see slightly
 
 With **strong consistency**, every read returns the latest written value. This is slower because it requires coordination with the actor managing the data, but it's necessary when correctness depends on seeing the most recent state — for example, when using a lock and a dict together to coordinate checkpoint writes, you want the dict reads inside the critical section to be strongly consistent.
 
-## Async Interface
+## Async interface
 
 All collections expose async methods for use in async contexts. The naming convention adds `_async` to each operation:
 
@@ -159,7 +159,7 @@ await lock.acquire_async()
 
 The sync interface (the default, used in most `@sky.compute` functions) blocks the calling thread while waiting for the actor response. The async interface returns awaitables, which is useful if you're writing custom async logic inside a worker or integrating with an existing async codebase.
 
-## Next Steps
+## Next steps
 
 - [Distributed Training](distributed-training.md) — Multi-node training with shared state across workers
 - [Clustering](architecture.md) — How the Casty actor cluster powers distributed collections

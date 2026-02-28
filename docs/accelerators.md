@@ -2,7 +2,7 @@
 
 Every cloud provider has its own naming scheme for GPU instances. AWS calls an A100 machine a `p4d.24xlarge`. RunPod uses a `gpuTypeId`. VastAI filters marketplace offers by GPU model. The `accelerator` parameter on `ComputePool` is Skyward's answer to this fragmentation: you describe the hardware you want, and the provider figures out how to get it.
 
-## Two Ways to Specify
+## Two ways to specify
 
 The simplest form is a string:
 
@@ -20,11 +20,11 @@ sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.A100(memory="40
 
 Each factory returns an `Accelerator` dataclass — frozen, immutable, with `name`, `memory`, `count`, and optional `metadata` (CUDA versions, form factors). The factory populates defaults from an internal catalog, so `sky.accelerators.H100()` already knows it has 80GB of HBM3 without you specifying it.
 
-## NVIDIA Datacenter GPUs
+## NVIDIA datacenter GPUs
 
 These are the workhorses of ML training and inference — available on AWS, RunPod, Verda, and VastAI.
 
-### Hopper and Blackwell (Current Generation)
+### Hopper and Blackwell (current generation)
 
 | Factory | Memory | Architecture | Notes |
 |---------|--------|-------------|-------|
@@ -50,7 +50,7 @@ These are the workhorses of ML training and inference — available on AWS, RunP
 | `L4()` | 24GB GDDR6 | Ada Lovelace. Replaces T4 for inference. |
 | `L40S()` | 48GB GDDR6 | Ada Lovelace. Compute-optimized. |
 
-### Legacy (Still Widely Available)
+### Legacy (still widely available)
 
 | Factory | Memory | Notes |
 |---------|--------|-------|
@@ -169,7 +169,7 @@ Intel's Habana accelerators for deep learning:
 | `Gaudi2()` | 96GB HBM2e | 2x performance vs Gaudi. |
 | `Gaudi()` | — | First gen. |
 
-## Custom Accelerators
+## Custom accelerators
 
 For hardware not in the catalog — experimental chips, private clouds, or overriding defaults:
 
@@ -180,9 +180,9 @@ my_gpu = sky.accelerators.Custom("My-GPU", memory="48GB")
 my_gpu = sky.accelerators.Custom("H100-Custom", memory="80GB", count=8, cuda_min="12.0")
 ```
 
-## Selection Guide
+## Selection guide
 
-### By Workload
+### By workload
 
 | Workload | Recommended | Why |
 |----------|------------|-----|
@@ -193,7 +193,7 @@ my_gpu = sky.accelerators.Custom("H100-Custom", memory="80GB", count=8, cuda_min
 | Pre-training | 8x H100 | Maximum compute |
 | Development | T4 | Cheapest option |
 
-### By Model Size
+### By model size
 
 | Parameters | Minimum | Recommended |
 |------------|---------|-------------|
@@ -203,7 +203,7 @@ my_gpu = sky.accelerators.Custom("H100-Custom", memory="80GB", count=8, cuda_min
 | 13-70B | A100-80GB | 2x H100 |
 | 70B+ | 4x H100 | 8x H100 |
 
-## Detecting Accelerators at Runtime
+## Detecting accelerators at runtime
 
 Inside a `@sky.compute` function, `sky.instance_info()` reports what hardware the function is running on:
 
@@ -225,7 +225,7 @@ def check_gpu():
 
 ---
 
-## Related Topics
+## Related topics
 
 - [Providers](providers.md) — AWS, RunPod, VastAI, Verda, and Container configuration
 - [Distributed Training](distributed-training.md) — Multi-node training guides

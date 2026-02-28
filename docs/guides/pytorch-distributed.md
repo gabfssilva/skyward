@@ -1,10 +1,10 @@
-# PyTorch Distributed
+# PyTorch distributed
 
 Training a neural network across multiple nodes requires coordinating processes that don't share memory. Each node needs to know the cluster topology — who the master is, how many peers exist, what rank it holds — and the processes need to synchronize gradients during backpropagation. PyTorch's DistributedDataParallel (DDP) handles the gradient synchronization, but the environment setup is notoriously manual: setting `MASTER_ADDR`, `MASTER_PORT`, `WORLD_SIZE`, `RANK`, and calling `init_process_group()` correctly on every node.
 
 Skyward's `torch` plugin does all of this automatically. It reads the cluster topology from `instance_info()`, configures the environment variables, and initializes the process group before your function runs. You write a standard DDP training loop — Skyward handles the distributed plumbing.
 
-## The `torch` Plugin
+## The `torch` plugin
 
 Add `sky.plugins.torch()` to your pool's plugins:
 
@@ -30,7 +30,7 @@ Define a standard model and wrap it with `DistributedDataParallel`:
 
 DDP replicates the model on each node and synchronizes gradients during `backward()`. Each node trains on its own shard of the data, but the model parameters stay in sync because gradients are averaged across all nodes before each optimizer step. The `if dist.is_initialized()` guard lets the same code work in both single-node and multi-node contexts.
 
-## Distributed Data Loading
+## Distributed data loading
 
 Use `DistributedSampler` to ensure each node gets a unique subset of the data:
 
@@ -42,7 +42,7 @@ The sampler reads the rank and world size from the process group and partitions 
 
 Both approaches — `sky.shard()` and `DistributedSampler` — achieve the same goal (each node processes different data), but `DistributedSampler` is the PyTorch-native way and handles edge cases like uneven dataset sizes and drop-last semantics within the DataLoader pipeline.
 
-## Aggregating Metrics
+## Aggregating metrics
 
 During training, each node computes local metrics (loss, accuracy). To get global metrics — averaged across all nodes — use `all_reduce`:
 
@@ -52,7 +52,7 @@ During training, each node computes local metrics (loss, accuracy). To get globa
 
 `all_reduce` with `ReduceOp.SUM` sums the tensor across all nodes in-place. After the operation, every node holds the same aggregated values. Dividing by the number of nodes (or total samples) gives you the global average. This is how the head node can log consistent, cluster-wide metrics.
 
-## Run the Full Example
+## Run the full example
 
 ```bash
 git clone https://github.com/gabfssilva/skyward.git

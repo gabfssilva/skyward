@@ -4,9 +4,9 @@ PyTorch's distributed training model is built around `DistributedDataParallel` (
 
 The hard part is the setup. Before `init_process_group()` can be called, every process needs five pieces of information: the address of the rendezvous master (`MASTER_ADDR`), the master port (`MASTER_PORT`), the total number of processes (`WORLD_SIZE`), this process's global rank (`RANK`), and its local rank on the machine (`LOCAL_RANK`). These must be set as environment variables before any distributed operation. In a traditional setup, you write a launch script or use `torchrun` to inject these values. With Skyward, the `torch` plugin reads the cluster topology from `instance_info()` and sets everything before your function body runs.
 
-## What It Does
+## What it does
 
-`sky.plugins.torch()` contributes two hooks to the plugin pipeline: an image transform that installs PyTorch with the correct CUDA wheels on the remote worker, and an `around_app` hook that initializes PyTorch's distributed process group once per worker process.
+The plugin installs PyTorch with the correct CUDA wheels on the remote worker and initializes the distributed process group once per worker process.
 
 ## Parameters
 
@@ -20,9 +20,9 @@ The hard part is the setup. Before `init_process_group()` can be called, every p
 
 The `cuda` value determines the wheel index URL. When the cluster has a GPU accelerator (one with CUDA support in its metadata), the plugin uses `https://download.pytorch.org/whl/{cuda}` as the pip index. When the accelerator is `None` or does not support CUDA, it falls back to `https://download.pytorch.org/whl/cpu`. This auto-detection happens at image transform time, using the cluster's spec to decide.
 
-## How It Works
+## How it works
 
-### Image Transform
+### Image transform
 
 The `transform` hook builds the pip package list and index from the parameters. It assembles the list of PyTorch packages — always `torch`, optionally `torchvision` and `torchaudio` — with their version constraints, then selects the correct pip index based on the cluster's accelerator.
 
@@ -30,7 +30,7 @@ The accelerator detection uses pattern matching on `cluster.spec.accelerator`. I
 
 The packages and index are appended to the existing image using `replace()`, preserving any packages and indexes already defined in the `Image` or added by other plugins.
 
-### Worker Lifecycle (`around_app`)
+### Worker lifecycle (`around_app`)
 
 The `around_app` hook initializes PyTorch's distributed process group once per worker process. When the first task arrives, the hook:
 
@@ -45,11 +45,9 @@ The `around_app` hook initializes PyTorch's distributed process group once per w
 
 The environment variables come from `instance_info()`: `head_addr` becomes `MASTER_ADDR`, `head_port` becomes `MASTER_PORT`, `total_nodes` becomes `WORLD_SIZE`, and `node` becomes `RANK`. These values are populated from the `COMPUTE_POOL` environment variable that Skyward injects on each worker at startup.
 
-`around_app` is the right hook for this because `init_process_group` is a one-time, process-global operation — calling it twice raises an error. The `around_app` lifecycle guarantees it runs exactly once, and its `finally` block ensures `destroy_process_group()` cleans up when the worker shuts down. This is the same pattern used by the JAX plugin for `jax.distributed.initialize()`.
-
 ## Usage
 
-### Basic DDP Training
+### Basic DDP training
 
 ```python
 import skyward as sky
@@ -106,7 +104,7 @@ The `@` operator broadcasts `train()` to all 4 nodes. Each node runs the same fu
 
 `@sky.stdout(only="head")` silences print statements on non-head nodes, so you see one set of epoch logs instead of four.
 
-### With Torchvision and Torchaudio
+### With torchvision and torchaudio
 
 ```python
 with sky.ComputePool(
@@ -120,7 +118,7 @@ with sky.ComputePool(
 
 This installs `torch`, `torchvision`, and `torchaudio` from the CUDA wheel index. Inside the function, you can import `torchvision.models`, `torchvision.transforms`, `torchaudio`, etc.
 
-### Pinning Versions
+### Pinning versions
 
 ```python
 plugins=[sky.plugins.torch(version="2.3.0", vision="0.18.0", cuda="cu124")]
@@ -128,7 +126,7 @@ plugins=[sky.plugins.torch(version="2.3.0", vision="0.18.0", cuda="cu124")]
 
 This pins `torch==2.3.0` and `torchvision==0.18.0`, installed from the CUDA 12.4 wheel index. Version pinning is important for reproducibility — different PyTorch versions can produce different training results due to changes in default behaviors, numerical stability, and operator implementations.
 
-### CPU-Only
+### CPU-only
 
 ```python
 with sky.ComputePool(
@@ -158,7 +156,7 @@ with sky.ComputePool(
 
 The `torch` plugin handles DDP initialization, and the `huggingface` plugin handles authentication and installs `transformers`, `datasets`, and `tokenizers`. Inside the function, HuggingFace's `Trainer` auto-detects the distributed environment set up by the torch plugin and uses it for distributed training, gradient synchronization, and distributed evaluation.
 
-## Next Steps
+## Next steps
 
 - [PyTorch Distributed guide](../guides/pytorch-distributed.md) — Step-by-step DDP training walkthrough
 - [PyTorch Model Roundtrip guide](../guides/torch-model-roundtrip.md) — Sending models to and from the cloud

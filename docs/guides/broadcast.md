@@ -2,7 +2,7 @@
 
 Some operations need to run on every node in the pool — not just one. Distributed training setups, data-parallel processing, cache warming, model loading. The `@` operator handles this: it sends the same computation to all nodes and returns a list with one result per node. Combined with `shard()`, each node can operate on its own partition of the data while receiving the same function and arguments.
 
-## Processing Data on Every Node
+## Processing data on every node
 
 Define a compute function that uses `shard()` to get its portion of the data:
 
@@ -26,7 +26,7 @@ Where `>>` sends work to a single node (round-robin), `@` sends it to *all* node
 
 This is the foundation for distributed patterns in Skyward. When every node runs the same function but `shard()` gives each one different data, you get data parallelism without any explicit coordination. The function body is identical across nodes — the differentiation happens at runtime based on each node's position in the cluster.
 
-## Aggregating Results
+## Aggregating results
 
 Each node returns a partial result. Since broadcast returns a list, you combine them locally on the client side:
 
@@ -36,7 +36,7 @@ Each node returns a partial result. Since broadcast returns a list, you combine 
 
 This map-reduce pattern — broadcast a function, shard the data inside, aggregate the results — is the simplest form of distributed computation in Skyward. More complex patterns (distributed training with gradient synchronization, for example) build on the same foundation but use framework plugins to handle the inter-node communication.
 
-## Run the Full Example
+## Run the full example
 
 ```bash
 git clone https://github.com/gabfssilva/skyward.git

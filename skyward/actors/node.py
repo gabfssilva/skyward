@@ -1264,28 +1264,30 @@ async def _setup_worker_env(
     around_app_hooks: tuple[tuple[str, Any], ...] = (),
     around_process_hooks: tuple[tuple[str, Any], ...] = (),
 ) -> None:
-    from skyward.infra.worker import EnterContext, ExecuteTask, SetProcessHooks
+    from skyward.infra.worker import EnterContext, SetProcessHooks
 
-    def setup_env(
-        info_json: str,
-        extra: dict[str, str],
-    ) -> str:
-        import os
+    _frozen_env = dict(env_vars)
 
-        os.environ["COMPUTE_POOL"] = info_json
-        for k, v in extra.items():
-            os.environ[k] = v
+    def make_env_cm(
+        info_json: str = pool_info_json,
+        extra: dict[str, str] = _frozen_env,
+    ) -> Any:
+        from contextlib import contextmanager
 
-        return "ok"
+        @contextmanager
+        def lifecycle() -> Any:
+            import os
+
+            os.environ["COMPUTE_POOL"] = info_json
+            for k, v in extra.items():
+                os.environ[k] = v
+            yield
+
+        return lifecycle()
 
     await client.ask(
         worker_ref,
-        lambda rto: ExecuteTask(
-            fn=setup_env,
-            args=(pool_info_json, env_vars),
-            kwargs={},
-            reply_to=rto,
-        ),
+        lambda rto: EnterContext(factory=make_env_cm, reply_to=rto),
         timeout=60.0,
     )
 

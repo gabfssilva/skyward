@@ -1,10 +1,10 @@
-# Core Concepts
+# Core concepts
 
 Skyward's programming model is built on a simple idea: **computation and location should be separate concerns**. You write ordinary Python functions. You decide where they run — on which cloud, on how many machines, on which accelerators — at the call site, not inside the function itself. This separation is what makes the same code work on a laptop, a single GPU, or a cluster of eight H100s.
 
 This page walks through the concepts that make this possible.
 
-## Lazy Computation
+## Lazy computation
 
 The central abstraction in Skyward is `@sky.compute`. It transforms a regular function into a **lazy computation** — calling the function no longer executes it. Instead, it produces a `PendingCompute` object: a frozen, serializable description of *what* to compute, without committing to *where* or *when*.
 
@@ -31,7 +31,7 @@ If you need to bypass this and run the original function directly (for testing, 
 result = train.local(10)  # executes immediately, returns float
 ```
 
-## The Pool
+## The pool
 
 A `ComputePool` is a context manager that represents a set of cloud instances with a defined lifecycle. When you enter the block, Skyward provisions the machines, installs dependencies, and establishes connectivity. When you exit — whether normally or through an exception — everything is torn down.
 
@@ -228,7 +228,7 @@ The bootstrap script is generated once and runs identically on every instance. B
 
 There's also `skyward_source`, which controls how Skyward itself reaches the workers. In most cases the default `"auto"` is what you want: it detects whether you're running from an editable install (development mode) and, if so, copies your local Skyward source to the workers instead of installing from PyPI. This means changes to Skyward's own code are reflected immediately on remote machines during development, without publishing a new version.
 
-## Runtime Context
+## Runtime context
 
 Skyward operates in two worlds. The **client side** is your local machine — where `ComputePool` runs, where operators dispatch tasks, where results come back. The **worker side** is the remote instance — where your `@sky.compute` function actually executes. These are separate processes on separate machines, connected by SSH tunnels.
 
@@ -249,7 +249,7 @@ def distributed_task(data):
 
 This is the same mechanism that Skyward's plugins use internally. The `torch` plugin, for example, reads `instance_info()` to configure `MASTER_ADDR`, `WORLD_SIZE`, and `RANK` before calling `init_process_group`. You don't need plugins to access this information — `instance_info()` is always available inside any `@sky.compute` function, whether you're using a plugin or writing raw distributed logic.
 
-### Data Sharding
+### Data sharding
 
 A common pattern in distributed computing is to send the *same function* to all nodes but have each node operate on a *different slice* of the data. `sky.shard()` automates this: it reads the current node's position from `instance_info()` and returns only the portion of the data that belongs to this node.
 
@@ -360,7 +360,7 @@ The catalog covers NVIDIA datacenter GPUs (H100, H200, A100, L40S, T4, etc.), co
 
 For a complete list, see the [Accelerators](accelerators.md) page.
 
-## Allocation Strategies
+## Allocation strategies
 
 Cloud providers offer different pricing models for the same hardware. The most important distinction is between **on-demand** instances (guaranteed availability, full price) and **spot** instances (surplus capacity sold at a discount, but reclaimable by the provider with short notice).
 
@@ -384,7 +384,7 @@ Spot instances are typically 60-90% cheaper than on-demand. The trade-off is tha
 
 The default `"spot-if-available"` tries to get the best of both: it requests spot capacity first and falls back to on-demand if none is available. This means your pool always starts, even during periods of high spot demand, without requiring you to handle the fallback logic yourself.
 
-## Resource Selection
+## Resource selection
 
 The previous sections described choosing a single provider and a single allocation strategy. But accelerator availability and pricing vary across providers and change constantly. An A100 on VastAI might cost $1.50/hr right now while the same accelerator on AWS is $3.00/hr — or VastAI might have no capacity at all. Skyward's resource selection system lets you describe multiple hardware preferences and let the system find the best option.
 
@@ -415,7 +415,7 @@ with sky.ComputePool(
 
 The single-provider form still works — `ComputePool(provider=sky.AWS(), accelerator="A100")` internally creates a single `Spec` and wraps it in a tuple.
 
-### Offers and Instance Types
+### Offers and instance types
 
 Cross-provider comparison requires a common representation of what each provider offers. Skyward models this with two types:
 
@@ -424,14 +424,14 @@ Cross-provider comparison requires a common representation of what each provider
 
 Because different providers produce structurally identical `Offer` objects, Skyward can compare an AWS `p4d.24xlarge` against a VastAI marketplace listing against a Verda H100 — all as normalized offers with comparable prices.
 
-### Selection Strategies
+### Selection strategies
 
 The `selection` parameter on `ComputePool` controls how Skyward chooses among the offers from multiple specs:
 
 - **`"cheapest"`** (default) — Queries all specs, collects all available offers, and picks the one with the lowest price. Best when you want cost optimization and don't have a strong provider preference.
 - **`"first"`** — Tries specs in the order you listed them, and stops at the first provider with available offers. Best when you have a preferred provider and want deterministic fallback.
 
-### The Selection Flow
+### The selection flow
 
 Before provisioning anything, `ComputePool` runs a selection phase to determine where to provision:
 
@@ -461,7 +461,7 @@ The key insight is that offer querying is fast (API calls to check availability 
 
 For a practical walkthrough with code examples, see the [Multi-Provider Selection](guides/multi-provider.md) guide.
 
-## Next Steps
+## Next steps
 
 - **[Getting Started](getting-started.md)** — Installation, credentials, and first example
 - **[Distributed Training](distributed-training.md)** — Multi-node training with PyTorch, Keras, and JAX

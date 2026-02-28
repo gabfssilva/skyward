@@ -1,8 +1,8 @@
-# Multi-Provider Selection
+# Multi-provider selection
 
 Accelerator prices fluctuate. Availability varies by region, time of day, and provider. An A100 on VastAI might cost $1.50/hr right now but have no capacity, while the same accelerator on AWS is $3.00/hr with instant availability. Instead of checking pricing pages manually, you can describe your hardware need across multiple providers and let Skyward query all of them, compare offers, and provision from the best option.
 
-## The Spec
+## The spec
 
 A `sky.Spec` bundles a provider with hardware preferences into a single, composable unit:
 
@@ -17,7 +17,7 @@ sky.Spec(
 
 It carries the same fields you'd normally pass to `ComputePool` — `accelerator`, `nodes`, `vcpus`, `memory_gb`, `architecture`, `allocation`, `region`, `max_hourly_cost`, `ttl` — but scoped to a specific provider. This separation is what makes cross-provider comparison possible: each `Spec` is a self-contained description of "what I want, from whom."
 
-## Cheapest Across Providers
+## Cheapest across providers
 
 Pass multiple `Spec` objects to `ComputePool` and Skyward queries each provider's available offers, compares prices, and provisions from the cheapest:
 
@@ -29,7 +29,7 @@ With `selection="cheapest"` (the default), Skyward calls `offers()` on every pro
 
 This is useful when you don't have a strong provider preference and want cost optimization. The same A100 workload might end up on VastAI one day and AWS the next, depending on current market prices.
 
-## First Available
+## First available
 
 When you have a preferred provider but want a fallback, use `selection="first"`:
 
@@ -39,7 +39,7 @@ When you have a preferred provider but want a fallback, use `selection="first"`:
 
 Specs are tried in order. Skyward queries RunPod first — if it has H100 offers available, that's where the pool provisions. If RunPod has no capacity, Skyward moves to AWS. This gives you deterministic priority ordering while still avoiding manual retries when your preferred provider is out of stock.
 
-## Per-Spec Constraints
+## Per-spec constraints
 
 Each `Spec` can have its own allocation strategy, cost cap, and region. This enables escalating fallback patterns — start aggressive, fall back to safer options:
 
@@ -49,7 +49,7 @@ Each `Spec` can have its own allocation strategy, cost cap, and region. This ena
 
 The first spec tries spot instances on VastAI with a $2.50/hr cap — the cheapest option if available. If that fails (no capacity, or prices exceed the cap), the second spec tries Verda with spot-if-available. The third spec is the safety net: on-demand AWS, which is more expensive but virtually always available. Skyward evaluates all three and picks the cheapest viable option.
 
-## How It Works
+## How it works
 
 When `ComputePool.__enter__` runs, Skyward iterates through your specs before provisioning anything:
 
@@ -60,7 +60,7 @@ When `ComputePool.__enter__` runs, Skyward iterates through your specs before pr
 
 The key insight is that offer querying is fast (API calls to check availability and pricing) while provisioning is slow (launching machines). By querying all providers before committing to one, Skyward makes an informed decision without wasting time on failed provisioning attempts.
 
-## Run the Full Example
+## Run the full example
 
 ```bash
 git clone https://github.com/gabfssilva/skyward.git

@@ -88,9 +88,10 @@ def format_results(r: dict) -> None:
 if __name__ == "__main__":
     with sky.ComputePool(
         sky.Spec(
-            provider=sky.RunPod(),
-            accelerator=sky.accelerators.RTX_A6000(),
+            provider=sky.AWS(),
+            accelerator=sky.accelerators.T4(),
         ),
+        worker=sky.Worker(executor='process'),
         image=sky.Image(pip=['jax[cuda12]']),
     ) as pool:
         format_results(benchmark(4096, iterations=50) >> pool)

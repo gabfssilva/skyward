@@ -1,10 +1,10 @@
-# Cloud Providers
+# Cloud providers
 
 Skyward supports six providers. Five are cloud services — AWS, GCP, RunPod, Verda, VastAI — and one is local containers for development and CI. All implement the same `Provider` protocol, so the orchestration layer (actor system, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
 
 Provider configs are lightweight frozen dataclasses. They hold configuration — region, API keys, disk sizes — but don't import any cloud SDK at module level. The SDK is loaded lazily when the pool starts, so `import skyward` stays fast regardless of which providers are installed.
 
-## Provider Comparison
+## Provider comparison
 
 | Feature | AWS | GCP | RunPod | Verda | VastAI | Container |
 |---------|-----|-----|--------|-------|--------|-----------|
@@ -60,7 +60,7 @@ with sky.ComputePool(
 | `allocation_strategy` | `str` | `"price-capacity-optimized"` | EC2 Fleet spot allocation strategy |
 | `exclude_burstable` | `bool` | `False` | Exclude burstable instances (t3, t4g) |
 
-### Required IAM Permissions
+### Required IAM permissions
 
 ```json
 {
@@ -148,7 +148,7 @@ with sky.ComputePool(
 | `service_account` | `str or None` | `None` | GCE service account email |
 | `thread_pool_size` | `int` | `8` | Thread pool size for blocking GCP API calls |
 
-### Required Permissions
+### Required permissions
 
 The authenticated principal needs the following roles (or equivalent permissions):
 
@@ -238,7 +238,7 @@ with sky.ComputePool(
 | `client_secret` | `str or None` | `None` | OAuth2 client secret (falls back to `VERDA_CLIENT_SECRET`) |
 | `ssh_key_id` | `str or None` | `None` | Specific SSH key ID to use |
 
-### Available Regions
+### Available regions
 
 | Region | Location | GPUs |
 |--------|----------|------|
@@ -323,7 +323,7 @@ with sky.ComputePool(
 | `container_prefix` | `str or None` | `None` | Prefix for container names |
 | `network` | `str or None` | `None` | Docker network name. Auto-created if not set. |
 
-## Choosing a Provider
+## Choosing a provider
 
 **AWS** — When you need specific hardware (H100, Trainium, Inferentia), spot instance savings, or enterprise reliability. Best if you're already in the AWS ecosystem.
 
@@ -337,7 +337,7 @@ with sky.ComputePool(
 
 **Container** — Local development and CI. Zero cost, instant provisioning. Validates your code end-to-end before deploying to a real provider.
 
-## Common Issues
+## Common issues
 
 ### GCP: "No GCP accelerator matches"
 
@@ -371,7 +371,7 @@ with sky.ComputePool(
 
 ---
 
-## Related Topics
+## Related topics
 
 - [Getting Started](getting-started.md) — Installation and credentials setup
 - [Accelerators](accelerators.md) — Accelerator selection guide

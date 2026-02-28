@@ -1,4 +1,4 @@
-# Using Accelerators
+# Using accelerators
 
 Most ML workloads need GPUs. Skyward abstracts GPU selection across providers — you specify the hardware you need, and the provider finds the right instance type, resolves availability, and provisions it. This guide covers how to request specific accelerators, detect the hardware available at runtime, and understand the difference between string and typed accelerator specs.
 
@@ -25,7 +25,7 @@ Both forms produce an `Accelerator` dataclass — a frozen specification with `n
 
 The translation from a logical accelerator name to a provider-specific resource isn't a simple string match. An "A100" on AWS is a `p4d.24xlarge`, on RunPod it's a pod with a specific `gpuTypeId`, on VastAI it's a marketplace offer filtered by GPU model. The catalog centralizes this complexity so that the same `Accelerator` spec resolves correctly on any provider that supports it.
 
-## Detecting Hardware at Runtime
+## Detecting hardware at runtime
 
 Inside a `@sky.compute` function, `instance_info()` tells you what hardware is available:
 
@@ -35,7 +35,7 @@ Inside a `@sky.compute` function, `instance_info()` tells you what hardware is a
 
 `InstanceInfo` includes the node index, cluster size, head status, and the number and type of accelerators. This is useful for conditional logic — running a GPU path when CUDA is available, falling back to CPU otherwise.
 
-## GPU vs CPU Benchmark
+## GPU vs CPU benchmark
 
 A matrix multiplication benchmark illustrates the GPU advantage. The function runs on the remote instance, where the accelerator is available:
 
@@ -47,7 +47,7 @@ The first `torch.matmul` on GPU is a warmup call — it triggers CUDA kernel com
 
 Note that imports happen *inside* the function. This is intentional — the function runs on the remote worker, where `torch` is installed via the Image's `pip` field. Your local machine doesn't need torch installed.
 
-## Run the Full Example
+## Run the full example
 
 ```bash
 git clone https://github.com/gabfssilva/skyward.git

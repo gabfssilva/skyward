@@ -1,4 +1,4 @@
-# Distributed Training
+# Distributed training
 
 Distributed training across multiple machines requires solving two problems simultaneously. First, the environment: every node needs to know the cluster topology — who the master is, how many peers exist, what rank each process holds. Second, the data: each node should train on a different subset, but the model parameters need to stay synchronized across all of them.
 
@@ -6,7 +6,7 @@ Skyward handles the first problem automatically. When you provision a multi-node
 
 This page explains the concepts. For step-by-step tutorials with runnable code, see the guides: [PyTorch Distributed](guides/pytorch-distributed.md), [Keras Training](guides/keras-training.md), and [HuggingFace Fine-tuning](guides/huggingface-finetuning.md).
 
-## How It Works
+## How it works
 
 When a function is broadcast to a pool with `@`, Skyward sends the same serialized payload to every node. Each node deserializes and executes the function independently. From the framework's perspective, this looks like `N` separate processes running the same script — exactly what tools like `torchrun` or `jax.distributed.initialize()` expect.
 
@@ -66,7 +66,7 @@ For single-node fine-tuning, the `Trainer` manages device placement on its own �
 
 See the [HuggingFace Fine-tuning guide](guides/huggingface-finetuning.md) for a complete example.
 
-## Data Partitioning
+## Data partitioning
 
 In distributed training, each node should process different data but the same model. There are two approaches, and which one you use depends on the framework.
 
@@ -84,7 +84,7 @@ def train(x_full, y_full):
 
 Both approaches achieve the same goal: each node trains on different data. The choice is primarily about which framework's idioms you prefer. For a detailed explanation of sharding mechanics — modulo striding, multi-array alignment, `shuffle`, `drop_last` — see [Data Sharding](guides/data-sharding.md).
 
-## Runtime Context
+## Runtime context
 
 Inside a `@sky.compute` function, `sky.instance_info()` returns an `InstanceInfo` describing this node's position in the cluster. Plugins use this internally, but you can also use it directly for custom distributed logic — coordinating checkpoints, conditional logging, role-based execution.
 
@@ -104,7 +104,7 @@ The key fields are `node` (0 to N-1), `total_nodes`, `is_head` (true for node 0)
 
 The head node pattern is especially common in distributed training: only the head node saves checkpoints, logs to experiment trackers, or prints progress. Other nodes do the same computation but stay silent. This avoids duplicate writes and noisy output.
 
-## Output Control
+## Output control
 
 In distributed training, having every node print progress is noisy — four nodes produce four copies of every log line. Skyward provides output control decorators that silence stdout or stderr based on the node's identity:
 
@@ -126,7 +126,7 @@ def train():
     ...
 ```
 
-## Next Steps
+## Next steps
 
 - **[PyTorch Distributed](guides/pytorch-distributed.md)** — DDP training with `DistributedSampler` and metric aggregation
 - **[Keras Training](guides/keras-training.md)** — MNIST across multiple GPUs with JAX backend

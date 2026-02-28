@@ -1,8 +1,8 @@
-# Scikit Grid Search
+# Scikit grid search
 
 Hyperparameter search is embarrassingly parallel — each candidate configuration can be evaluated independently. scikit-learn's `GridSearchCV` already supports parallelism via `n_jobs`, but it's limited to the cores on a single machine. Skyward's `sklearn` plugin extends this to a cluster: it replaces joblib's default backend with a distributed one, so `n_jobs=-1` distributes cross-validation fits across cloud instances instead of local threads.
 
-## The Dataset
+## The dataset
 
 Load digits and split into train/test:
 
@@ -10,7 +10,7 @@ Load digits and split into train/test:
 --8<-- "examples/guides/09_scikit_grid_search.py:15:16"
 ```
 
-## Defining the Search Space
+## Defining the search space
 
 Use a Pipeline with a list-of-dicts `param_grid` to search over both estimators and their hyperparameters:
 
@@ -20,7 +20,7 @@ Use a Pipeline with a list-of-dicts `param_grid` to search over both estimators 
 
 Each dict defines a grid for one estimator family. The `"clf"` key swaps the estimator itself (RandomForest, GradientBoosting, SVC), while `"clf__param"` tunes its hyperparameters. scikit-learn expands all combinations — this grid produces 21 candidates, each cross-validated 5 times, for 105 total fits. On a single machine, these run sequentially or across a few cores. On a cluster, they run across dozens of workers simultaneously.
 
-## Distributed Search with the sklearn Plugin
+## Distributed search with the sklearn plugin
 
 The `sklearn` plugin replaces joblib's default backend so that `Parallel(n_jobs=-1)` — which `GridSearchCV` uses internally — distributes work across cloud instances:
 
@@ -44,7 +44,7 @@ print(f"Test: {grid_search.score(X_test, y_test):.2%}")
 
 The grid search object behaves exactly as it would in a local run — `best_params_`, `best_score_`, `cv_results_` are all populated. The only difference is that the 105 fits ran on a cluster instead of a single machine.
 
-## Run the Full Example
+## Run the full example
 
 ```bash
 git clone https://github.com/gabfssilva/skyward.git

@@ -1,4 +1,4 @@
-# Getting Started
+# Getting started
 
 This page covers installation, credential setup, and your first remote computation. By the end, you'll have run a Python function on a cloud instance and seen the full lifecycle — provision, execute, return, tear down — in action.
 
@@ -27,7 +27,7 @@ uv add skyward[aws]          # AWS (boto3) type hints
 uv add skyward[all]          # All extras
 ```
 
-## Provider Credentials
+## Provider credentials
 
 Each provider needs credentials before Skyward can provision instances. You only need to configure the provider you intend to use.
 
@@ -69,7 +69,7 @@ export VERDA_CLIENT_ID=your_client_id
 export VERDA_CLIENT_SECRET=your_client_secret
 ```
 
-## Your First Remote Function
+## Your first remote function
 
 Create a file called `hello.py`:
 
@@ -116,7 +116,7 @@ Hello from ip-172-31-0-1!
 
 Each line is an event from the pool's lifecycle. The sequence reflects the stages described in [Core Concepts](concepts.md) — the pool actor asks the provider to launch an instance, the instance actor polls until it's running, opens the SSH tunnel, runs the bootstrap script phase by phase, starts the worker, and reports ready. After the task completes, everything is torn down.
 
-## Your First Accelerator Job
+## Your first accelerator job
 
 To run on a GPU, add the `accelerator` and `image` parameters to the pool. The `accelerator` specifies what hardware you need, and the `image` describes what software should be installed on the remote worker:
 
@@ -147,7 +147,7 @@ Notice that `torch` is imported *inside* the function, not at the top of the fil
 
 The `allocation="spot"` parameter requests spot instances, which are typically 60-90% cheaper than on-demand. If spot capacity isn't available, the pool will fail rather than fall back. Use `allocation="spot-if-available"` (the default) to automatically fall back to on-demand pricing.
 
-## Parallel Execution
+## Parallel execution
 
 A single `>>` sends one computation to one node. When you have multiple independent tasks, `gather()` dispatches them all concurrently:
 
@@ -172,7 +172,7 @@ The `&` operator does the same thing with a fixed set of computations and full t
 
 Both approaches dispatch tasks to the pool's nodes via round-robin scheduling. For a deeper look at parallel execution patterns, see the [Parallel Execution guide](guides/parallel-execution.md).
 
-## Multi-Node Clusters
+## Multi-node clusters
 
 To scale beyond a single instance, set `nodes` on the pool. The `@` operator broadcasts a function to every node:
 
@@ -196,7 +196,7 @@ with sky.ComputePool(provider=sky.AWS(), nodes=4) as pool:
 
 Where `>>` sends work to one node, `@` sends it to all of them. Each node runs the same function independently, but `sky.instance_info()` returns different values on each one — node index, total count, head status — so the function can adapt its behavior based on where it's running. This is the foundation for distributed training, data-parallel processing, and any workload that benefits from multiple machines. See [Broadcast](guides/broadcast.md) for more.
 
-## Local Testing
+## Local testing
 
 During development, you'll want to test your functions without provisioning any cloud infrastructure. Every `@sky.compute` function exposes the original, unwrapped version via `.local`:
 
@@ -215,7 +215,7 @@ with sky.ComputePool(provider=sky.Container(), nodes=2) as pool:
     result = hello() >> pool  # runs in local Docker containers
 ```
 
-## Verbose Logging
+## Verbose logging
 
 Skyward logs lifecycle events through Python's standard `logging` module under the `"skyward"` logger. To see detailed debug output:
 
@@ -237,7 +237,7 @@ If bootstrap takes too long or **times out**, the most common cause is a large `
 
 **Connection issues on AWS** usually mean the instance doesn't have outbound internet access (needed for package installation) or the security group doesn't allow the SSH connection. Skyward creates a temporary security group during `prepare()`, but VPC configurations can override this. Enabling SSM access provides a fallback connectivity path that doesn't require open inbound ports.
 
-## Next Steps
+## Next steps
 
 - **[Core Concepts](concepts.md)** — The programming model: lazy computation, operators, ephemeral pools
 - **[Providers](providers.md)** — Detailed configuration for AWS, RunPod, VastAI, Verda, and Container

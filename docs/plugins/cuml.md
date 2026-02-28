@@ -6,28 +6,11 @@ scikit-learn is CPU-only. For large datasets — tens of thousands of samples, h
 
 Skyward's `cuml` plugin makes this practical without a local GPU. It installs the cuML package with the correct CUDA variant, configures the NVIDIA pip index, and activates the zero-code-change acceleration on the remote worker. Your function imports `sklearn`, calls `sklearn` APIs, and cuML handles the rest.
 
-## What It Does
-
-The plugin contributes two hooks:
+## What it does
 
 **Image transform** — Appends `cuml-cu12` (or the CUDA variant you specify) to the worker's pip dependencies and adds the NVIDIA pip index (`https://pypi.nvidia.com`) configured for that package. The RAPIDS packages are hosted on NVIDIA's own index, not PyPI, so the plugin handles the index configuration that you would otherwise need to set up manually in the `Image`.
 
 **Worker lifecycle (`around_app`)** — When the worker starts, the plugin calls `cuml.accel.install()`. This is cuML's zero-code-change acceleration entry point. It monkey-patches the scikit-learn namespace so that `from sklearn.ensemble import RandomForestClassifier` returns cuML's GPU implementation instead of scikit-learn's CPU one. The patching happens once, at worker startup, before any task runs. Every task on that worker benefits from it.
-
-The `around_app` hook is different from `around_client` — it runs on the worker process, not on the client. This is important because `cuml.accel.install()` needs to run in the environment where scikit-learn will be imported and used. The client machine does not need cuML installed, and typically does not have a GPU.
-
-## How cuml.accel.install() Works
-
-cuML's acceleration mode is not a wrapper or an adapter. It replaces scikit-learn's estimator classes at the module level. After `cuml.accel.install()` runs:
-
-- `sklearn.ensemble.RandomForestClassifier` is cuML's `RandomForestClassifier`
-- `sklearn.cluster.KMeans` is cuML's `KMeans`
-- `sklearn.decomposition.PCA` is cuML's `PCA`
-- `sklearn.neighbors.KNeighborsClassifier` is cuML's `KNeighborsClassifier`
-
-And so on for all supported estimators. Unsupported estimators (those cuML does not implement) fall through to the original scikit-learn implementation. This means your code does not need to change — not even the imports. `from sklearn.ensemble import RandomForestClassifier` already resolves to the GPU version.
-
-This also means that scikit-learn utilities that operate on estimators — `cross_val_score`, `GridSearchCV`, `Pipeline` — work with cuML estimators automatically. They call `.fit()` and `.predict()` on whatever estimator they receive, and cuML's estimators implement the same interface.
 
 ## Parameters
 
@@ -39,7 +22,7 @@ The default `"cu12"` works with CUDA 12.x, which covers most modern NVIDIA GPUs 
 
 ## Usage
 
-### Basic GPU-Accelerated Training
+### Basic GPU-accelerated training
 
 The simplest case: a single-node GPU training with standard scikit-learn code:
 
@@ -85,7 +68,7 @@ The `sklearn` plugin installs scikit-learn and joblib; the `cuml` plugin install
 
 The data is loaded on the remote worker (`fetch_openml` downloads from the internet), avoiding the need to serialize and ship large arrays over the SSH tunnel. This is a general best practice for data-heavy workloads.
 
-### Combining with Distributed Joblib
+### Combining with distributed Joblib
 
 cuML accelerates individual estimator operations on GPU. The sklearn plugin distributes parallel operations across the cluster. Together, each parallel task (e.g., each fold of cross-validation) runs on GPU:
 
@@ -105,7 +88,7 @@ with sky.ComputePool(
 
 Here, `GridSearchCV(n_jobs=-1)` distributes fits across the 4-node cluster, and each fit runs on GPU thanks to cuML. This is particularly effective for large grid searches where both the individual fits and the number of candidates are expensive.
 
-### Without the sklearn Plugin
+### Without the sklearn plugin
 
 If your function does not use scikit-learn's `n_jobs` parallelism, you can use the `cuml` plugin alone:
 
@@ -128,7 +111,7 @@ cuML requires an NVIDIA GPU. The plugin is only useful with GPU-equipped instanc
 
 The CUDA version on the worker must be compatible with the `cuda` parameter. The default `"cu12"` requires CUDA 12.x. Most cloud GPU instances ship with CUDA 12 by default.
 
-## Next Steps
+## Next steps
 
 - [cuML GPU Acceleration guide](../guides/cuml-acceleration.md) — CPU vs GPU comparison with benchmarks
 - [sklearn plugin](sklearn.md) — Distributed scikit-learn with the joblib backend

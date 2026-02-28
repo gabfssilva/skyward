@@ -1,8 +1,8 @@
-# HuggingFace Fine-tuning
+# HuggingFace fine-tuning
 
 Fine-tuning a pre-trained transformer is one of the most common ML workflows: take a model from the HuggingFace Hub, adapt it to your task with a small labeled dataset, and evaluate the results. The bottleneck is usually hardware — fine-tuning even a small model like DistilBERT benefits significantly from a GPU, and larger models require one. Skyward lets you wrap the entire pipeline in a single `@sky.compute` function, provision a GPU instance, and run it remotely. Everything — model download, tokenization, training, evaluation — happens on the cloud instance.
 
-## Loading Model and Tokenizer
+## Loading model and tokenizer
 
 Load a pre-trained model inside the compute function:
 
@@ -12,7 +12,7 @@ Load a pre-trained model inside the compute function:
 
 `AutoModelForSequenceClassification.from_pretrained()` downloads the base model and adds a classification head. The download happens on the remote instance, which typically has faster internet than a laptop and avoids transferring multi-GB model weights over the SSH tunnel. The `id2label` and `label2id` mappings configure the model for binary sentiment classification.
 
-## Preparing the Dataset
+## Preparing the dataset
 
 Load IMDB, tokenize, and prepare for training — all on the remote instance:
 
@@ -36,7 +36,7 @@ The `Trainer` manages the training loop, evaluation, gradient accumulation, and 
 
 The function returns a summary dict with training loss, evaluation accuracy, and runtime. This is the result that comes back through the SSH tunnel to your local process.
 
-## Dispatching to the Cloud
+## Dispatching to the cloud
 
 The full example dispatches the fine-tuning job to an A100 instance:
 
@@ -50,7 +50,7 @@ result = finetune(
 
 The HuggingFace Trainer handles device placement and mixed-precision internally. Skyward provisions the GPU instance, runs the function, and returns the result. The `Image(pip=[...])` in the pool configuration installs the required dependencies on the worker.
 
-## Run the Full Example
+## Run the full example
 
 ```bash
 git clone https://github.com/gabfssilva/skyward.git

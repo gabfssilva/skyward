@@ -417,12 +417,19 @@ def start_bridge(
 _subprocess_conn: Connection | None = None
 
 
-def ipc_initializer(registration_queue: Any) -> None:
+def ipc_initializer(
+    registration_queue: Any,
+    index_queue: Any = None,
+) -> None:
     """Loky worker initializer — creates a Pipe and registers with the bridge.
 
     Called once per worker process (including respawns). Each worker creates
     its own Pipe, sends the parent end to the bridge via the registration queue,
     and keeps the child end for IPC.
+
+    If *index_queue* is provided (a ``multiprocessing.Queue`` pre-filled with
+    indices 0..N-1), claims a unique worker index for this subprocess and
+    stores it in ``process_state._worker_index``.
     """
     import multiprocessing
     import sys
@@ -435,6 +442,12 @@ def ipc_initializer(registration_queue: Any) -> None:
     registration_queue.put(parent_conn)
     _subprocess_conn = child_conn
     _set_active_registry(IPCRegistry(child_conn))
+
+    if index_queue is not None:
+        from skyward.plugins.process_state import set_worker_index
+
+        idx = index_queue.get()
+        set_worker_index(idx)
 
     # Loky subprocesses inherit fd 1/2 pointing to casty.log (via shell redirect),
     # but Python defaults to block buffering for non-TTY fds (~8KB buffer).

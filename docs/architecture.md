@@ -4,7 +4,7 @@ Skyward uses [Casty](https://gabfssilva.github.io/casty/) as its distributed run
 
 This page explains how the cluster is structured and why the actor model is a natural fit for ephemeral cloud orchestration.
 
-## Why Actors
+## Why actors
 
 The pool lifecycle involves a lot of concurrent, independent activity. Multiple cloud instances boot at different speeds. SSH connections are established in parallel. Bootstrap scripts run simultaneously on different machines. Worker processes start up and begin accepting tasks. Some nodes might fail and need replacement. All of this happens concurrently, and different nodes progress through their state machines at different rates.
 
@@ -12,7 +12,7 @@ The actor model handles this naturally. An actor is an isolated unit of state th
 
 Both Casty and Skyward are built on asyncio, so actors are cheap and message passing doesn't block threads. The system scales to hundreds of nodes without requiring proportional memory or CPU on your laptop.
 
-## How the Cluster Forms
+## How the cluster forms
 
 When you enter a `ComputePool` context manager, Skyward creates a local Casty actor system on your machine and spawns a **pool actor** — the root of the supervision hierarchy. The pool actor asks the provider to launch instances, and for each one, it spawns a **node actor** to manage that instance's lifecycle.
 
@@ -35,7 +35,7 @@ graph LR
 
 Node 0 plays a special role: it's the **head node**. Once its instance is ready, it broadcasts its address to all other nodes so they can form a cluster. This is how distributed training frameworks (PyTorch DDP, JAX, etc.) discover each other — `MASTER_ADDR` always points to node 0.
 
-## The Actor Hierarchy
+## The actor hierarchy
 
 The full hierarchy on your local machine consists of four layers, each with a well-defined responsibility.
 
@@ -49,7 +49,7 @@ The **task manager** dispatches tasks to nodes using round-robin scheduling. It 
 
 Communication between actors uses Casty's `tell` (fire-and-forget) and `ask` (request-reply with timeout) patterns. A `tell` is a one-way message — the sender doesn't wait for a response. An `ask` creates a temporary reply-to reference, sends it along with the message, and blocks until the recipient responds. The full path of a task — from `>> pool` on your laptop to the remote worker and back — is a chain of `ask` calls: pool actor → task manager → node actor → instance actor → remote worker → back through `reply_to` references.
 
-## Distributed State
+## Distributed state
 
 The cluster also powers Skyward's [distributed collections](distributed-collections.md). When you call `sky.dict("cache")` inside a `@sky.compute` function, Casty creates a distributed map that is replicated across the cluster. Every node can read and write to it, and Casty handles replication and consistency automatically.
 
@@ -61,7 +61,7 @@ Skyward needs a runtime that can form ad-hoc clusters from ephemeral cloud insta
 
 The alternative would be running a separate coordination service on every ephemeral cluster — Redis for state, a message broker for task routing, a custom protocol for function execution. That's more moving parts, more dependencies to install on each worker, and more failure modes to handle during the brief life of a training job. Casty collapses all of these into a single actor system that starts in milliseconds and communicates over plain TCP. For a cluster that might live for ten minutes to run a training job, that simplicity matters.
 
-## Further Reading
+## Further reading
 
 - [Casty Documentation](https://gabfssilva.github.io/casty/) — Full reference for the actor framework
 - [Distributed Collections](distributed-collections.md) — Dict, set, counter, queue, barrier, lock

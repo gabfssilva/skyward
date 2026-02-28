@@ -1,8 +1,8 @@
-# Worker Executors
+# Worker executors
 
 Every node in a Skyward pool runs a worker process that receives tasks and executes them. The `Worker` dataclass controls how that execution happens — specifically, whether tasks run as **separate OS processes** or as **threads** inside the worker. This choice determines whether CPU-bound Python code can use all available cores or is limited by the GIL.
 
-## A CPU-Bound Task
+## A CPU-bound task
 
 Consider a tight numerical loop — pure Python, no C extensions, no I/O:
 
@@ -12,7 +12,7 @@ Consider a tight numerical loop — pure Python, no C extensions, no I/O:
 
 This is the worst case for the GIL: the Python interpreter never releases the lock, so only one thread can make progress at a time. On a 2-vCPU machine with `concurrency=2`, a thread-based executor will show ~50% CPU utilization — one core active, one idle.
 
-## Thread Executor (Default)
+## Thread executor (default)
 
 The thread executor runs tasks as threads inside the worker process. All threads share the same memory space and the same GIL:
 
@@ -22,7 +22,7 @@ The thread executor runs tasks as threads inside the worker process. All threads
 
 Threads are lightweight, support streaming (generator functions and iterator parameters), and work seamlessly with distributed collections. For most workloads — I/O-bound tasks, C extension heavy code (NumPy, PyTorch), and mixed workloads — the thread executor is the right choice. The `executor="thread"` is the default, so `Worker(concurrency=2)` is equivalent.
 
-## Process Executor
+## Process executor
 
 The process executor runs each task in a separate OS process via `ProcessPoolExecutor`. Each process has its own Python interpreter and its own GIL, so CPU-bound work saturates all available cores:
 
@@ -43,7 +43,7 @@ On a 2-vCPU instance with `concurrency=2`, this achieves ~100% CPU utilization �
 | **Task isolation** | Full — crash in one task doesn't affect others | Shared — exceptions propagate normally |
 | **Serialization** | Task args and results cross process boundary (pickle) | No extra serialization |
 
-## When to Use Each
+## When to use each
 
 **Use thread (default)** for:
 
@@ -58,7 +58,7 @@ On a 2-vCPU instance with `concurrency=2`, this achieves ~100% CPU utilization �
 - Any workload where Python code dominates CPU time
 - Tasks that benefit from crash isolation
 
-## Run the Full Example
+## Run the full example
 
 ```bash
 git clone https://github.com/gabfssilva/skyward.git

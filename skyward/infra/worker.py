@@ -188,6 +188,19 @@ def _run_in_process(
     subprocess (idempotent via ensure_around_process).
     """
     os.environ.update(env)
+
+    from skyward.plugins.process_state import get_worker_index
+
+    worker_idx = get_worker_index()
+    if worker_idx is not None:
+        import json
+
+        pool_json = os.environ.get("COMPUTE_POOL")
+        if pool_json:
+            pool_data = json.loads(pool_json)
+            pool_data["worker"] = worker_idx
+            os.environ["COMPUTE_POOL"] = json.dumps(pool_data)
+
     if around_process_hooks:
         from skyward.api.runtime import instance_info
         from skyward.plugins.process_state import ensure_around_process
@@ -433,10 +446,13 @@ async def main(
 
                 mp_ctx = multiprocessing.get_context("spawn")
                 ipc_queue = mp_ctx.Queue()
+                index_queue = mp_ctx.Queue()
+                for i in range(workers_per_node):
+                    index_queue.put(i)
                 task_executor: Executor = LokyProcessPoolExecutor(
                     max_workers=workers_per_node,
                     initializer=ipc_initializer,
-                    initargs=(ipc_queue,),
+                    initargs=(ipc_queue, index_queue),
                 )
             case _:
                 pool_size = max((os.cpu_count() or 1) + 4, workers_per_node)

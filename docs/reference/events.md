@@ -6,7 +6,7 @@
 
 ::: skyward.Fact
 
-## Type Aliases
+## Type aliases
 
 ::: skyward.RequestId
 

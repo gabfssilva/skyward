@@ -2,7 +2,7 @@
 
 Andrej Karpathy's [MicroGPT](https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95) trains a character-level GPT in ~200 lines of pure Python — no frameworks, no dependencies. It's the complete algorithm; everything else is just efficiency. This guide takes that same algorithm, rewrites it in idiomatic JAX, and distributes it across multiple GPUs with Skyward. By the end, you'll have a model that trains on sharded data across a cluster, with automatic gradient synchronization, and generates hallucinated names from what it learned.
 
-## The Compute Function
+## The compute function
 
 The entire training pipeline lives inside a single `@sky.compute` function:
 
@@ -15,7 +15,7 @@ The entire training pipeline lives inside a single `@sky.compute` function:
 
 JAX's distributed runtime is initialized by `sky.plugins.jax()` on the pool (shown in the [Running It](#running-it) section below). All hyperparameters are function arguments with defaults — you can override any of them when calling the function without touching the code.
 
-## Data Sharding
+## Data sharding
 
 Each node downloads the dataset independently, but only trains on its own slice:
 
@@ -31,7 +31,7 @@ Each node downloads the dataset independently, but only trains on its own slice:
 
 This is data parallelism at the dataset level — the model is identical on every node, but each node sees different training examples.
 
-## Mesh Sharding
+## Mesh sharding
 
 This is where Skyward's JAX plugin and JAX's SPMD model come together. After initializing parameters, the code sets up a sharding mesh:
 
@@ -61,7 +61,7 @@ The training loop samples mini-batches from the local token array and feeds them
 
 `jax.make_array_from_process_local_data` takes each node's local batch and constructs a globally-sharded array that JAX's runtime distributes according to the mesh. From JAX's perspective, it sees a single large batch split across devices.
 
-## Running It
+## Running it
 
 The main block provisions a cluster and broadcasts the training function to all nodes:
 
@@ -73,7 +73,7 @@ The main block provisions a cluster and broadcasts the training function to all 
 
 The `jax` plugin is specified on the pool via `plugins=[sky.plugins.jax()]` — it installs JAX with CUDA support and initializes the distributed runtime on each worker before the function runs.
 
-## Run the Full Example
+## Run the full example
 
 ```bash
 git clone https://github.com/gabfssilva/skyward.git

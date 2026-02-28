@@ -1,4 +1,4 @@
-# Local Containers
+# Local containers
 
 When developing with Skyward, the normal feedback loop involves provisioning cloud instances, waiting for bootstrap, running your function, and tearing everything down. This works, but it's slow and costs money — not ideal when you're iterating on a function's logic, debugging serialization issues, or validating that your `Image` installs the right dependencies.
 
@@ -14,7 +14,7 @@ You need a container runtime installed and running:
 - **Podman**: pass `binary="podman"` to `sky.Container()`
 - **nerdctl**: pass `binary="nerdctl"`
 
-## Basic Usage
+## Basic usage
 
 The `Container` provider is a drop-in replacement for any cloud provider. The only change is the `provider` parameter:
 
@@ -28,7 +28,7 @@ The `Container` provider is a drop-in replacement for any cloud provider. The on
 
 Behind the scenes, Skyward builds a lightweight Docker image with SSH access, starts a container, opens an SSH tunnel, bootstraps the environment, and runs the worker — the same pipeline that runs on a real cloud instance. The function is serialized with cloudpickle, sent over the tunnel, executed inside the container, and the result comes back.
 
-## Testing Your Image
+## Testing your image
 
 One of the most common sources of failures in cloud runs is a misconfigured `Image`: a missing pip package, a wrong environment variable, a Python version mismatch. The Container provider lets you validate all of this locally before spending time and money on cloud provisioning.
 
@@ -42,7 +42,7 @@ One of the most common sources of failures in cloud runs is a misconfigured `Ima
 
 If the function returns `"it works"`, you know the `env` field in your Image is being injected correctly. The same applies to `pip` (install packages and import them inside the function), `apt` (install system tools and shell out to them), and `includes` (sync local modules and import them).
 
-## Multi-Node Locally
+## Multi-node locally
 
 The Container provider supports `nodes > 1`. Each node becomes a separate container, and they form a real Casty cluster — with a head node, peer discovery, and inter-node networking via a Docker bridge network. This lets you test broadcast, data sharding, and distributed collections without any cloud infrastructure.
 
@@ -123,7 +123,7 @@ def test_broadcast(pool):
 
 This runs real containers, real SSH tunnels, real serialization — the full Skyward stack — in your CI pipeline.
 
-## What You Can and Can't Test Locally
+## What you can and can't test locally
 
 The Container provider replicates the full orchestration pipeline: provisioning, SSH, bootstrap, worker startup, cluster formation, task dispatch, and teardown. Most of what matters for correctness — serialization, Image configuration, data sharding, distributed collections, broadcast — works identically.
 
@@ -136,7 +136,7 @@ What it **doesn't** replicate:
 
 The general pattern: test logic and integration locally with `Container`, test performance and infrastructure with a real cloud provider.
 
-## Run the Full Example
+## Run the full example
 
 ```bash
 git clone https://github.com/gabfssilva/skyward.git

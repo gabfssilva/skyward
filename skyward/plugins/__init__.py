@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from .jax import jax
     from .joblib import joblib
     from .keras import keras
+    from .mig import mig
     from .mps import mps
     from .sklearn import sklearn
     from .torch import torch
@@ -35,6 +36,7 @@ __all__ = [
     "cuml",
     "huggingface",
     "joblib",
+    "mig",
     "mps",
     "sklearn",
 ]
@@ -46,6 +48,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "cuml": ("skyward.plugins.cuml", "cuml"),
     "huggingface": ("skyward.plugins.huggingface", "huggingface"),
     "joblib": ("skyward.plugins.joblib", "joblib"),
+    "mig": ("skyward.plugins.mig", "mig"),
     "mps": ("skyward.plugins.mps", "mps"),
     "sklearn": ("skyward.plugins.sklearn", "sklearn"),
 }

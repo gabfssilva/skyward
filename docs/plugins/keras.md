@@ -12,17 +12,6 @@ Keras 3 is backend-agnostic: the same model definition compiles and runs on JAX,
 
 The default is `"jax"` because JAX offers the tightest integration with Skyward's automatic distribution. When running on multiple nodes with the JAX backend, the plugin configures `DataParallel` distribution and RNG synchronization without any user code. The `"torch"` and `"tensorflow"` backends work equally well for model definition and single-node training, but multi-node distribution with those backends requires combining the Keras plugin with the corresponding framework plugin and using that framework's native distributed primitives.
 
-## Why the backend must be set early
-
-Keras reads `KERAS_BACKEND` exactly once, at import time. The following sequence silently produces wrong behavior:
-
-```python
-import keras                    # reads KERAS_BACKEND — too late to change
-os.environ["KERAS_BACKEND"] = "jax"  # has no effect
-```
-
-The plugin addresses this at two levels. First, it adds `KERAS_BACKEND` to the `Image` environment dictionary via its `transform` hook. This means the variable is baked into the bootstrap script and is present in the shell environment before the worker process starts. Second, as a defensive measure, the plugin's `around_app` hook re-sets `os.environ["KERAS_BACKEND"]` when the worker initializes, before any user function runs. The two-layer approach — image-level and worker-lifecycle-level — guarantees the backend is always correct regardless of execution timing.
-
 ## Multi-node behavior by backend
 
 ### JAX backend
@@ -35,7 +24,7 @@ The JAX backend is the recommended choice for multi-node Keras training on Skywa
 
 This means that on a 4-node cluster, `model.fit()` automatically distributes batches across all 4 nodes and averages gradients, with no changes to your training code.
 
-Note that the JAX plugin must run *before* the Keras plugin so that `jax.distributed.initialize()` completes before Keras tries to list devices. Plugin order in the list matters — `around_app` hooks are entered in plugin order:
+The JAX plugin must come before the Keras plugin in the list so that the distributed runtime is initialized before Keras tries to list devices:
 
 ```python
 plugins=[sky.plugins.jax(), sky.plugins.keras(backend="jax")]  # correct order
@@ -150,16 +139,6 @@ The Keras plugin is a backend configurator, not a distributed runtime. For multi
 | Any (single node) | `sky.plugins.keras()` | None needed |
 
 The JAX combination is unique in that distribution is fully automatic — the plugins handle everything. With PyTorch and TensorFlow, the Keras plugin provides backend configuration while the framework's native distributed APIs handle the rest.
-
-## Hooks
-
-The Keras plugin uses two of the five available plugin hooks:
-
-**`transform`** modifies the worker's `Image` to add `keras` to pip dependencies and set `KERAS_BACKEND` in the environment dictionary. This ensures the variable is present in the shell environment from the moment the worker process starts.
-
-**`around_app`** is a context manager entered once per worker process. It re-sets `KERAS_BACKEND` in `os.environ` as a safety net, and — for multi-node JAX — configures `DataParallel` distribution and synchronizes the RNG. Since `DataParallel` setup and RNG synchronization are one-time, process-global operations, `around_app` is the natural hook: it runs exactly once and persists for the worker's lifetime, matching the same pattern used by the JAX and PyTorch plugins.
-
-The plugin does not use `bootstrap`, `decorate`, or `around_client` hooks.
 
 ## Further reading
 

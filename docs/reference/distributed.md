@@ -1,4 +1,4 @@
-# Distributed Collections
+# Distributed collections
 
 ::: skyward.dict
 

@@ -2,7 +2,7 @@
 
 This guide walks you through running your first function on a remote cloud instance. By the end, you'll understand the three core ideas in Skyward: compute functions, pools, and the `>>` operator — and what happens behind the scenes when you combine them.
 
-## The Compute Function
+## The compute function
 
 Any Python function can run on the cloud. The only change is adding the `@sky.compute` decorator:
 
@@ -14,7 +14,7 @@ This decorator doesn't execute anything. Calling `add(2, 3)` no longer returns `
 
 This design means `PendingCompute` is a value you can pass around, compose with other computations, or store for later. It's also what makes remote execution possible: because the computation is a data structure rather than a running process, it can be serialized with cloudpickle, sent over the network, and executed on a different machine.
 
-## The Pool
+## The pool
 
 A `ComputePool` is a context manager that provisions cloud infrastructure for the duration of your work:
 
@@ -38,7 +38,7 @@ This single expression triggers the full execution pipeline. The pool serializes
 
 The generic type flows through the entire chain: `add(2, 3)` produces `PendingCompute[int]`, and `>> pool` returns `int`. Your type checker sees the correct types whether the function runs locally or on a cloud GPU.
 
-## Local Execution
+## Local execution
 
 During development, you often want to test a compute function without provisioning any infrastructure. Every `@sky.compute` function exposes the original, unwrapped version via `.local`:
 
@@ -48,7 +48,7 @@ result = add.local(2, 3)  # executes immediately, returns 5
 
 This bypasses the lazy computation entirely — no `PendingCompute`, no serialization, no pool required. It's useful for unit testing, debugging, and local profiling.
 
-## Run the Full Example
+## Run the full example
 
 ```bash
 git clone https://github.com/gabfssilva/skyward.git

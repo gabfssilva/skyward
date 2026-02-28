@@ -4,9 +4,7 @@ The HuggingFace ecosystem — transformers, datasets, tokenizers — is the domi
 
 Skyward's `huggingface` plugin handles all of this at the pool level. It installs the core HuggingFace libraries on the worker, sets the `HF_TOKEN` environment variable, and runs `huggingface-cli login` during bootstrap so that gated model downloads work without any manual intervention inside your compute function. Your function just calls `from_pretrained()` and it works — even for gated models like Llama or Mistral.
 
-## What It Does
-
-The plugin contributes two hooks:
+## What it does
 
 **Image transform** — Appends `transformers`, `datasets`, and `tokenizers` to the worker's pip dependencies and sets `HF_TOKEN` in the environment. This means the libraries are installed during bootstrap and the token is available to every process on the worker. You do not need to specify these packages in the `Image` yourself, and you do not need to call `huggingface_hub.login()` inside your function.
 
@@ -22,7 +20,7 @@ Together, these two hooks mean that by the time your `@sky.compute` function run
 
 The token is passed as a plain string. It ends up in the worker's environment as `HF_TOKEN` and in the Hub's credential store via `huggingface-cli login`. If you are working with gated models (Llama, Mistral, Gemma), you must accept the model's license on the Hub before the token will grant access.
 
-## How It Works
+## How it works
 
 When `ComputePool.__enter__` runs, the plugin's image transform modifies the `Image` before bootstrap script generation:
 
@@ -43,7 +41,7 @@ This writes the token to disk. From that point on, any HuggingFace library call 
 
 ## Usage
 
-### Single-Node Fine-Tuning
+### Single-node fine-tuning
 
 The most common pattern is single-node fine-tuning with the Trainer API. The plugin handles dependencies and authentication; HuggingFace's Trainer handles device placement:
 
@@ -101,7 +99,7 @@ Notice that the function imports `transformers` and `datasets` inside the functi
 
 The Trainer handles device placement internally — it detects the GPU and moves the model there, enables fp16 when appropriate, and manages the training loop. For a single node, no distributed coordination is needed.
 
-### Multi-Node Distributed Training
+### Multi-node distributed training
 
 For larger models or faster iteration, distribute training across multiple nodes. The HuggingFace Trainer integrates with PyTorch's DistributedDataParallel when the process group is initialized. Combine the `huggingface` plugin with the `torch` plugin:
 
@@ -154,7 +152,7 @@ with sky.ComputePool(
 
 The `torch` plugin initializes the process group before your function runs — it sets `MASTER_ADDR`, `WORLD_SIZE`, `RANK`, and calls `init_process_group()`. The Trainer detects the initialized process group and automatically wraps the model with `DistributedDataParallel`, shards the data across ranks, and synchronizes gradients. The `huggingface` plugin contributes the libraries and authentication. Plugin order in the list does not affect behavior — each plugin's hooks run at their respective lifecycle points.
 
-### Inference with Pipelines
+### Inference with pipelines
 
 For lighter workloads like batch inference, the plugin is equally useful — it ensures the libraries and authentication are in place:
 
@@ -180,7 +178,7 @@ with sky.ComputePool(
     predictions = classify(["Great movie!", "Terrible film."]) >> pool
 ```
 
-## Next Steps
+## Next steps
 
 - [HuggingFace Fine-tuning guide](../guides/huggingface-finetuning.md) — Complete fine-tuning walkthrough with dataset preparation, training, and evaluation
 - [PyTorch Distributed](../guides/pytorch-distributed.md) — How DDP works under the hood with the `torch` plugin

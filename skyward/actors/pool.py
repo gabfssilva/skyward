@@ -57,6 +57,8 @@ def _build_pool_info_json(
     accelerator_count = accel.count if accel else 1
     total_accelerators = accelerator_count * spec.nodes
 
+    wpn = spec.worker.concurrency if spec.worker.executor == "process" else 1
+
     pool_info = build_pool_info(
         node=node_id,
         total_nodes=spec.nodes,
@@ -69,7 +71,7 @@ def _build_pool_info_json(
         accelerator_type=getattr(spec, "accelerator_name", None),
         placement_group=ni.network_interface or None,
         worker=0,
-        workers_per_node=1,
+        workers_per_node=wpn,
     )
     return pool_info.model_dump_json()
 

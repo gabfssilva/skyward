@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from skyward.plugins.plugin import ProcessLifecycle
 
 _active_contexts: dict[str, AbstractContextManager[None]] = {}
+_worker_index: int | None = None
 
 
 def is_setup(name: str) -> bool:
@@ -45,6 +46,19 @@ def cleanup() -> None:
     _active_contexts.clear()
 
 
+def get_worker_index() -> int | None:
+    """Return the worker index assigned to this subprocess, or None."""
+    return _worker_index
+
+
+def set_worker_index(idx: int) -> None:
+    """Assign a worker index to this subprocess (called once by initializer)."""
+    global _worker_index
+    _worker_index = idx
+
+
 def reset() -> None:
     """Reset state without calling __exit__ (for testing)."""
+    global _worker_index
     _active_contexts.clear()
+    _worker_index = None

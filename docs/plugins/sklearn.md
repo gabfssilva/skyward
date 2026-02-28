@@ -4,15 +4,13 @@ scikit-learn is built on joblib for parallelism. Every estimator and utility tha
 
 Skyward's `sklearn` plugin does exactly this. It installs scikit-learn and joblib on the worker, registers the same `SkywardBackend` that the [joblib plugin](joblib.md) uses, and enters the `parallel_backend("skyward")` context for the duration of the pool. Inside the pool block, `n_jobs=-1` means "all workers in the cluster." No code changes are needed beyond the pool configuration — your existing scikit-learn code works as-is.
 
-## What It Does
-
-The plugin contributes two hooks:
+## What it does
 
 **Image transform** — Appends `scikit-learn` (optionally at a pinned version) and `joblib` to the worker's pip dependencies. Both are needed on the worker because scikit-learn imports joblib internally, and the `SkywardBackend` dispatches tasks that need to be deserialized in an environment where both packages are available.
 
 **Client lifecycle (`around_client`)** — Reuses the joblib plugin's infrastructure: it calls `_setup_backend(pool)` to register `SkywardBackend`, calls `_strip_local_warning_filters()` to sanitize warning filters (see the [joblib plugin documentation](joblib.md) for why this matters), and enters `parallel_backend("skyward")`. This is the same machinery as the joblib plugin — the sklearn plugin is effectively the joblib plugin plus scikit-learn installation.
 
-## Relationship with the Joblib Plugin
+## Relationship with the Joblib plugin
 
 The `sklearn` plugin and the `joblib` plugin share the same backend. Under the hood, both register `SkywardBackend` as a custom joblib parallel backend, and both enter the `parallel_backend("skyward")` context. The difference is what they install on the worker:
 
@@ -31,7 +29,7 @@ If you happen to specify both, nothing breaks — the backend registration is id
 
 Version pinning is important when your local code depends on specific scikit-learn behavior, or when you need reproducibility across runs. The worker's scikit-learn version should match (or be compatible with) the version used to define the estimators and pipelines, because cloudpickle serializes Python objects and deserializes them in the worker's environment.
 
-## What Works with `n_jobs`
+## What works with `n_jobs`
 
 Everything in scikit-learn that accepts `n_jobs` distributes across the cluster without modification:
 
@@ -48,7 +46,7 @@ The pattern is consistent: scikit-learn calls `joblib.Parallel(n_jobs=self.n_job
 
 ## Usage
 
-### Grid Search
+### Grid search
 
 The most common use case is distributing hyperparameter search:
 
@@ -101,7 +99,7 @@ This grid has 32 candidates and 5-fold CV, producing 160 fits. With 4 nodes and 
 
 Note that the `GridSearchCV` call happens inside a `@sky.compute` function. The grid search itself runs on a remote worker — it is the grid search's internal `Parallel` calls that distribute across the cluster. The outer `>> pool` dispatches the function to one node; that node's joblib backend then fans out the 160 individual fits across all nodes.
 
-### Cross-Validation
+### Cross-validation
 
 For a quick evaluation without hyperparameter tuning:
 
@@ -149,7 +147,7 @@ with sky.ComputePool(
 
 The `cuml` plugin intercepts sklearn calls and routes them to GPU. The `sklearn` plugin ensures scikit-learn and joblib are installed. See the [cuML plugin documentation](cuml.md) for details.
 
-## Next Steps
+## Next steps
 
 - [Scikit Grid Search guide](../guides/scikit-grid-search.md) — Complete example with multiple estimator families and pipeline search
 - [joblib plugin](joblib.md) — How `SkywardBackend` works, warning filter sanitization, and tuning concurrency

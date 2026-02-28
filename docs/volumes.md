@@ -4,7 +4,7 @@ Cloud instances are ephemeral — when the pool exits, the machines are gone. Bu
 
 The key idea is that **storage and compute have different lifecycles**. A dataset in S3 exists before the pool starts and persists after it's torn down. Checkpoints written during training survive instance preemption. Multiple pools — even across different providers — can mount the same bucket. Volumes make this separation explicit: you declare what storage you need, and Skyward mounts it before your code runs.
 
-## The Volume Dataclass
+## The Volume dataclass
 
 A `Volume` is a frozen dataclass with four fields:
 
@@ -21,7 +21,7 @@ sky.Volume(
 
 Validation is immediate: mount paths must be absolute, and system paths (`/`, `/root`, `/tmp`, `/opt`) are rejected at construction time.
 
-## Using Volumes
+## Using volumes
 
 Pass volumes to `ComputePool` as a list. Inside `@sky.compute` functions, the mount paths are regular directories:
 
@@ -48,7 +48,7 @@ with sky.ComputePool(
 
 The function doesn't know it's reading from S3 or writing to S3. It sees `/data` and `/checkpoints` as local directories. This means existing code — scripts that read from disk, libraries that expect file paths, frameworks that save checkpoints to a directory — works without modification.
 
-## How It Works
+## How it works
 
 Under the hood, Skyward uses [s3fs-fuse](https://github.com/s3fs-fuse/s3fs-fuse) to mount S3-compatible buckets as FUSE filesystems. The mounting happens during the bootstrap phase, after system packages and Python dependencies are installed but before the worker starts accepting tasks.
 
@@ -68,7 +68,7 @@ graph LR
     D -->|s3fs-fuse| F["s3://my-experiments"]
 ```
 
-## Provider Support
+## Provider support
 
 Volumes work with any provider that implements the `Mountable` protocol — a single method that returns an S3-compatible endpoint with optional credentials.
 
@@ -96,7 +96,7 @@ volumes=[
 
 This creates one FUSE mount at `/mnt/s3fs/my-data` (read-write, because `/output` needs writes) and three symlinks: `/train → /mnt/s3fs/my-data/train/`, `/val → /mnt/s3fs/my-data/val/`, `/output → /mnt/s3fs/my-data/results/`. The mode is coerced upward: if any volume on a bucket is writable, the bucket mounts as read-write.
 
-## TOML Configuration
+## TOML configuration
 
 Volumes can also be declared in `skyward.toml` or `~/.skyward/defaults.toml`:
 
@@ -119,7 +119,7 @@ read_only = false
 
 This is equivalent to passing the same `Volume` objects in Python. TOML configuration is useful for separating infrastructure concerns from code — the same script can mount different buckets in different environments by swapping the config file.
 
-## Next Steps
+## Next steps
 
 - **[S3 Volumes Guide](guides/s3-volumes.md)** — Step-by-step walkthrough with a working example
 - **[Providers](providers.md)** — Provider-specific configuration and authentication

@@ -4,9 +4,7 @@ joblib's `Parallel` is how Python parallelizes embarrassingly parallel work. sci
 
 Skyward's `joblib` plugin replaces joblib's execution backend with a distributed one. When the plugin is active, `n_jobs=-1` means "all workers in the cluster" — not local cores. The joblib API is completely unchanged. `Parallel`, `delayed`, `n_jobs` all work as documented. The difference is that each task is serialized with cloudpickle, sent to a remote worker over SSH, executed there, and the result returned. No code changes beyond the pool configuration.
 
-## What It Does
-
-The plugin contributes two hooks:
+## What it does
 
 **Image transform** — Appends `joblib` (optionally at a pinned version) to the worker's pip dependencies. This ensures the remote workers have joblib installed for deserialization.
 
@@ -18,22 +16,11 @@ The plugin contributes two hooks:
 
 3. **Enters the `parallel_backend("skyward")` context manager**, which tells joblib to route all `Parallel` calls to the Skyward backend for the duration of the pool block. When the pool exits, the default backend is restored.
 
-## How SkywardBackend Works
+## How SkywardBackend works
 
-`SkywardBackend` is not a monkey-patch. It is a proper joblib backend — a subclass of `ParallelBackendBase` that implements joblib's backend protocol. joblib's architecture is designed for pluggable backends, and Skyward registers one.
+`SkywardBackend` is a joblib backend that serializes each task with cloudpickle, wraps it in a `@sky.compute` function, and dispatches it to the cluster. Each joblib task becomes a Skyward compute task, sent to a remote worker over SSH. The serialization overhead is minimal — cloudpickle is fast, and payloads are compressed with lz4 on the wire.
 
-The key method is `submit()`. When joblib dispatches a batch of work, it calls `submit(func)` on the backend. The default backends run `func` in a local thread or process. `SkywardBackend` does something different:
-
-1. **Serialize** the function with `cloudpickle.dumps()`. joblib passes a pre-batched callable that captures the task function and its arguments.
-2. **Wrap** the serialized payload in a `@sky.compute` function that deserializes and executes it on the remote worker.
-3. **Dispatch** the wrapped function to the pool using the async `>` operator, which returns a `Future[T]`.
-4. **Return** the future to joblib. joblib collects futures and resolves them, calling `retrieve_result_callback` to get the result from each future.
-
-This means each joblib task becomes a Skyward compute task, dispatched to a remote worker through the same SSH tunnel and actor system that all Skyward tasks use. The serialization overhead is minimal — cloudpickle is fast, and the payloads are compressed with lz4 on the wire.
-
-**Effective parallelism** is `nodes * concurrency`. If you have 4 nodes with `Worker(concurrency=10)`, joblib sees 40 available workers. `n_jobs=-1` uses all of them. `n_jobs=20` would use 20. The backend's `effective_n_jobs()` method reports this number to joblib so it can batch work appropriately.
-
-**Nesting** is handled gracefully. If a joblib `Parallel` call happens inside another `Parallel` call (which scikit-learn does internally in some estimators), the inner call falls back to `SequentialBackend` to avoid recursive remote dispatch.
+**Effective parallelism** is `nodes * concurrency`. If you have 4 nodes with `Worker(concurrency=10)`, joblib sees 40 available workers. `n_jobs=-1` uses all of them. `n_jobs=20` would use 20.
 
 ## Parameters
 
@@ -45,7 +32,7 @@ Version pinning is useful when you need reproducible environments or when a spec
 
 ## Usage
 
-### Basic Parallel Execution
+### Basic parallel execution
 
 Any function works with joblib — the plugin handles serialization and dispatch:
 
@@ -75,7 +62,7 @@ with sky.ComputePool(
 
 With 10 nodes and `concurrency=10`, effective parallelism is 100. The 2000 tasks take 5 seconds each. Ideal time: `2000 / 100 * 5 = 100s`. In practice, overhead from serialization and network round-trips adds a few percent — expect 97-98% efficiency for tasks of this duration.
 
-### Tuning with Worker Concurrency
+### Tuning with worker concurrency
 
 The `Worker(concurrency=N)` parameter controls how many tasks each node handles simultaneously. This is the multiplier that makes joblib-on-Skyward practical:
 
@@ -111,17 +98,11 @@ with sky.ComputePool(
 
 See the [sklearn plugin documentation](sklearn.md) for details.
 
-## Warning Filter Sanitization
+## Warning filter sanitization
 
-This deserves a deeper explanation because it solves a problem that would otherwise cause silent failures.
+The plugin strips non-stdlib warning filters from `warnings.filters` before entering the joblib backend context. This prevents `ModuleNotFoundError` on workers when cloudpickle tries to deserialize warning category classes from packages (pytest, cloud SDKs, etc.) that are installed locally but not on the remote worker.
 
-When scikit-learn's `Parallel` dispatches tasks, it captures the current `warnings.filters` list and includes it in the task payload. This is a list of tuples, each containing a warning category class. Those classes are real Python objects that reference their defining module.
-
-In a typical development environment, `warnings.filters` contains entries from pytest (`PytestUnraisableExceptionWarning`), cloud SDKs, monitoring libraries, and other tools. When cloudpickle serializes these, it records the module path. On the worker, cloudpickle tries to import that module to reconstruct the class. If the module does not exist on the worker — which it almost certainly does not, because workers have a minimal environment — deserialization fails with `ModuleNotFoundError`.
-
-The plugin solves this by removing any warning filter whose category class comes from outside the standard library before the `parallel_backend("skyward")` context is entered. Only filters from `stdlib_module_names` and `builtins` are kept. This is safe because third-party packages installed on the worker will register their own filters at import time, and the stripped filters were specific to your local environment anyway.
-
-## Next Steps
+## Next steps
 
 - [Joblib Concurrency guide](../guides/joblib-concurrency.md) — Throughput analysis, real-world benchmarks, and cost model
 - [sklearn plugin](sklearn.md) — The scikit-learn plugin that builds on the same backend

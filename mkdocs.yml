@@ -75,23 +75,23 @@ markdown_extensions:
 nav:
   - Home:
       - Skyward: index.md
-      - Getting Started: getting-started.md
-      - Core Concepts: concepts.md
+      - Getting started: getting-started.md
+      - Core concepts: concepts.md
       - Infrastructure:
           - Providers: providers.md
           - Accelerators: accelerators.md
           - Volumes: volumes.md
-          - Provision Controllers: provision-controllers.md
-          - Why Asyncio: why-asyncio.md
+          - Provision controllers: provision-controllers.md
+          - Why asyncio: why-asyncio.md
       - Clustering:
           - Architecture: architecture.md
-          - Distributed Training: distributed-training.md
-          - Distributed Collections: distributed-collections.md
+          - Distributed training: distributed-training.md
+          - Distributed collections: distributed-collections.md
       - Misc:
-          - Sky Computing: sky-computing.md
-          - For HPC Users: hpc.md
+          - Sky computing: sky-computing.md
+          - For HPC users: hpc.md
   - Plugins:
-      - What are Plugins?: plugins/index.md
+      - What are plugins?: plugins/index.md
       - PyTorch: plugins/torch.md
       - JAX: plugins/jax.md
       - Keras: plugins/keras.md
@@ -100,32 +100,34 @@ nav:
       - Scikit-learn: plugins/sklearn.md
       - cuML: plugins/cuml.md
       - NVIDIA MPS: plugins/mps.md
+      - NVIDIA MIG: plugins/mig.md
   - Guides:
-      - Getting Started:
+      - Getting started:
           - "Hello, Skyward!": guides/hello-skyward.md
-          - Parallel Execution: guides/parallel-execution.md
+          - Parallel execution: guides/parallel-execution.md
           - Broadcast: guides/broadcast.md
-          - Using Accelerators: guides/using-accelerators.md
-          - Data Sharding: guides/data-sharding.md
+          - Using accelerators: guides/using-accelerators.md
+          - Data sharding: guides/data-sharding.md
           - Streaming: guides/streaming.md
-          - PyTorch Model Roundtrip: guides/torch-model-roundtrip.md
-      - Distributed Training:
-          - PyTorch Distributed: guides/pytorch-distributed.md
-          - Keras Training: guides/keras-training.md
-          - MicroGPT Distributed: guides/microgpt-distributed.md
-          - HuggingFace Fine-tuning: guides/huggingface-finetuning.md
+          - PyTorch model roundtrip: guides/torch-model-roundtrip.md
+      - Distributed training:
+          - PyTorch distributed: guides/pytorch-distributed.md
+          - Keras training: guides/keras-training.md
+          - MicroGPT distributed: guides/microgpt-distributed.md
+          - HuggingFace fine-tuning: guides/huggingface-finetuning.md
       - Infrastructure:
-          - S3 Volumes: guides/s3-volumes.md
-          - Multi-Provider Selection: guides/multi-provider.md
+          - NVIDIA MIG: guides/nvidia-mig.md
+          - S3 volumes: guides/s3-volumes.md
+          - Multi-provider selection: guides/multi-provider.md
       - Testing:
-          - Local Containers: guides/local-containers.md
+          - Local containers: guides/local-containers.md
       - Misc:
-          - Joblib Concurrency: guides/joblib-concurrency.md
-          - Scikit Grid Search: guides/scikit-grid-search.md
-          - cuML GPU Acceleration: guides/cuml-acceleration.md
-  - API Reference:
+          - Joblib concurrency: guides/joblib-concurrency.md
+          - Scikit grid search: guides/scikit-grid-search.md
+          - cuML GPU acceleration: guides/cuml-acceleration.md
+  - API reference:
       - Core:
-          - Pool & Compute: reference/pool.md
+          - Pool & compute: reference/pool.md
           - Runtime: reference/runtime.md
           - Configuration: reference/config.md
       - Providers:
@@ -134,7 +136,7 @@ nav:
           - RunPod: reference/providers/runpod.md
           - VastAI: reference/providers/vastai.md
           - Verda: reference/providers/verda.md
-      - Distributed Collections: reference/distributed.md
+      - Distributed collections: reference/distributed.md
       - Events: reference/events.md
       - Plugins: reference/plugins.md
       - Accelerators: reference/accelerators.md

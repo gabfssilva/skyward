@@ -1,10 +1,10 @@
-# GPU-Accelerated Scikit-Learn with cuML
+# GPU-accelerated scikit-learn with cuML
 
 scikit-learn runs on CPU. For large datasets, training algorithms like RandomForest or KNN becomes a bottleneck — minutes or hours spent on cross-validation and hyperparameter search. [NVIDIA cuML](https://docs.rapids.ai/api/cuml/stable/) provides GPU-backed implementations of popular sklearn estimators with the same API. Swap the import, and the same code runs on GPU with speedups of 50x to 175x.
 
 Skyward makes this practical even if you don't have a local GPU. Provision a GPU instance on the cloud, send your code there with `@sky.compute`, and cuML handles the rest. The `cuml` plugin installs cuML and configures the RAPIDS package indexes automatically.
 
-## The Dataset
+## The dataset
 
 A 20,000-sample subset of MNIST, downloaded directly on the remote worker — no need to serialize and ship 784-dimensional arrays over the wire:
 
@@ -14,7 +14,7 @@ A 20,000-sample subset of MNIST, downloaded directly on the remote worker — no
 
 `load_mnist` is a plain function (not `@sky.compute`) that the GPU task calls. Since it's defined at module level, cloudpickle captures it alongside the decorated functions. The data is fetched from OpenML on the remote machine.
 
-## GPU Version with cuML
+## GPU version with cuML
 
 The GPU version uses standard scikit-learn imports — cuML's zero-code-change acceleration intercepts sklearn calls and routes them to the GPU:
 
@@ -24,7 +24,7 @@ The GPU version uses standard scikit-learn imports — cuML's zero-code-change a
 
 All sklearn imports are inside the function because `@sky.compute` serializes the function and sends it to a remote worker. The worker needs to resolve imports in its own environment. The function returns both accuracy and wall-clock time so we can compare against a CPU baseline.
 
-## Running with Plugins
+## Running with plugins
 
 The `cuml` plugin handles installing `cuml-cu12` and configuring the RAPIDS pip indexes. Combined with the `sklearn` plugin, which adds `scikit-learn` and `joblib`:
 
@@ -42,7 +42,7 @@ The plugins handle all dependency management — no need to manually specify pip
 
 Expect accuracy to be roughly equivalent between CPU and GPU — cuML implements the same algorithms, not approximations. The wall-clock time is where the difference shows: cuML on an L4 can be significantly faster depending on the algorithm and dataset size.
 
-## Run the Full Example
+## Run the full example
 
 ```bash
 git clone https://github.com/gabfssilva/skyward.git

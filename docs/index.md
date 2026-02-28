@@ -24,7 +24,7 @@ Skyward is a Python library for ephemeral accelerator compute. Spin up cloud acc
 - **Spot-aware.** Automatic spot instance selection, preemption detection, and replacement. Save 60-90% on compute costs.
 - **Built on Casty.** Powered by a distributed, asyncio-based actor model for non-blocking orchestration.
 
-## Quick Example
+## Quick example
 
 ```python
 import skyward as sky
@@ -40,7 +40,7 @@ with sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.A100()) as
 # Accelerator terminated automatically
 ```
 
-## Execution Operators
+## Execution operators
 
 | Operator | Syntax | Description |
 |----------|--------|-------------|
@@ -49,7 +49,7 @@ with sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.A100()) as
 | `&` | `fn1() & fn2() >> pool` | Parallel execution |
 | `gather()` | `gather(fn1(), fn2()) >> pool` | Dynamic parallel execution |
 
-## Next Steps
+## Next steps
 
 <div class="grid cards" markdown>
 

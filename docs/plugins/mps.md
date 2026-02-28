@@ -6,9 +6,7 @@ NVIDIA Multi-Process Service (MPS) solves this. It provides a shared GPU context
 
 Skyward's `mps` plugin starts the MPS daemon during instance bootstrap and configures the environment variables that CUDA uses to connect to it. Every CUDA process on the worker — including concurrent task threads or processes managed by the `Worker` executor — automatically routes through MPS.
 
-## What It Does
-
-The plugin contributes two hooks:
+## What it does
 
 **Image transform** — Sets environment variables that configure the MPS runtime:
 
@@ -19,7 +17,7 @@ The plugin contributes two hooks:
 
 **Bootstrap** — After the base environment is set up, the plugin runs two commands: `mkdir -p /tmp/nvidia-mps /tmp/nvidia-mps-log` to create the pipe and log directories, then `nvidia-cuda-mps-control -d` to start the MPS daemon in the background. The daemon runs for the lifetime of the instance. Once it is running, any CUDA process that starts on the instance automatically connects to it through the pipe directory.
 
-## When to Use MPS
+## When to use MPS
 
 MPS is not for every workload. It is specifically valuable when multiple independent CUDA processes need to share a GPU concurrently, and each individual process does not fully saturate the GPU on its own.
 
@@ -46,7 +44,7 @@ MPS is generally **not useful** for:
 
 **`pinned_memory_limit`** restricts page-locked memory allocation per client. Pinned memory enables fast GPU transfers but is a finite resource. If 8 processes each try to pin 4 GB, the system may run out. The format is `"device_id=limit"` — for example, `"0=2G"` limits each client to 2 GB of pinned memory on GPU 0.
 
-## How It Differs from Multi-Node Training
+## How it differs from multi-node training
 
 MPS and multi-node distributed training solve fundamentally different problems. Multi-node training (via the `torch` plugin with DDP, or the `jax` plugin) splits a single training job across multiple GPUs on multiple machines, synchronizing gradients between them. Each GPU runs one process that fully utilizes it.
 
@@ -56,7 +54,7 @@ You can combine both patterns. A multi-node cluster with the `torch` plugin for 
 
 ## Usage
 
-### Concurrent Inference
+### Concurrent inference
 
 Run multiple inference tasks concurrently on a single GPU node:
 
@@ -102,7 +100,7 @@ The `executor="process"` setting means each concurrent task runs in its own proc
 
 Without MPS, these 8 processes would time-slice on the GPU. With MPS, their kernels overlap, and aggregate throughput is higher. The improvement depends on how much of the GPU each individual process utilizes — smaller models and smaller batch sizes see greater relative improvement because there is more idle compute to fill.
 
-### With Higher Concurrency
+### With higher concurrency
 
 For very high concurrency (many small tasks), increase the worker's concurrency and lower the per-client thread percentage:
 
@@ -125,7 +123,7 @@ with sky.ComputePool(
 
 With 32 concurrent processes, each gets 3% of the GPU's compute threads and at most 1 GB of pinned memory. This is appropriate for very lightweight inference tasks (small models, single-sample batches) where the goal is maximum throughput from a single GPU.
 
-## Next Steps
+## Next steps
 
 - [PyTorch Distributed](../guides/pytorch-distributed.md) — Multi-node training with DDP (complementary to MPS)
 - [Worker Executors](../guides/worker-executors.md) — Thread vs process executors and when to use each

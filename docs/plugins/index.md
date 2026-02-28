@@ -1,10 +1,10 @@
-# What are Plugins?
+# What are plugins?
 
 Skyward's plugin system is the way you bring third-party frameworks into the compute pool. When you pass `plugins=[sky.plugins.torch()]` to a `ComputePool`, you are telling Skyward: install PyTorch on the remote workers, configure the distributed runtime before my function runs, and clean up when the worker stops. The plugin handles the environment setup, the lifecycle hooks, and the per-task wrapping — things you would otherwise do manually with `Image(pip=[...])`, environment variables, and boilerplate inside your `@sky.compute` functions.
 
 The key insight is that plugins operate at the pool level, not at the function level. A single plugin declaration on the pool affects every task dispatched to it. This is different from the decorator pattern you might be used to, where each function explicitly opts in to framework setup. With plugins, the pool is the unit of configuration: once you declare that a pool uses PyTorch with NCCL, every function dispatched to that pool gets PyTorch's distributed environment configured automatically.
 
-## The Plugin Dataclass
+## The Plugin dataclass
 
 A `Plugin` is a frozen dataclass with five optional hooks. Each hook corresponds to a different phase in the pool and worker lifecycle. You do not need to implement all five — most plugins use two or three.
 
@@ -48,7 +48,7 @@ plugin = (
 
 Each `.with_*` method returns a new `Plugin` instance (immutable — uses `replace()`). This is how the built-in plugins are implemented internally: the factory function (e.g., `sky.plugins.torch()`) defines the hooks as closures and chains them together with the builder.
 
-## How Hooks Execute
+## How hooks execute
 
 The hooks run at different points in the pool lifecycle, and the order matters.
 
@@ -68,7 +68,7 @@ When the pool stops (`ComputePool.__exit__`):
 6. **`around_client`** contexts are exited in reverse order.
 7. **`around_app`** contexts are exited in reverse order when the worker process shuts down.
 
-## Plugin Composition
+## Plugin composition
 
 Plugins compose naturally because each hook is independent. You can stack multiple plugins and their effects combine:
 
@@ -95,7 +95,7 @@ plugins=[sky.plugins.jax(), sky.plugins.keras(backend="jax")]
 
 The JAX plugin's `around_app` calls `jax.distributed.initialize()`, and Keras's `around_app` calls `keras.distribution.set_distribution(DataParallel(...))`. The distribution setup needs JAX's device mesh to already be visible, so JAX must initialize first. Since `around_app` hooks are entered in plugin order, listing JAX first ensures the correct sequence.
 
-## Built-in Plugins
+## Built-in plugins
 
 Skyward ships with eight plugins:
 
@@ -110,7 +110,7 @@ Skyward ships with eight plugins:
 | [`cuml`](cuml.md) | `transform`, `around_app` | GPU-accelerated scikit-learn via RAPIDS cuML |
 | [`mps`](mps.md) | `transform`, `bootstrap` | NVIDIA Multi-Process Service for GPU sharing |
 
-## Custom Plugins
+## Custom plugins
 
 Building a custom plugin follows the same pattern as the built-in ones. Define your hooks as functions, then chain them with the builder:
 
@@ -146,7 +146,7 @@ with sky.ComputePool(
     my_task() >> pool
 ```
 
-## Next Steps
+## Next steps
 
 - [PyTorch](torch.md) — DDP initialization and CUDA wheel management
 - [JAX](jax.md) — Distributed initialization with `around_app`

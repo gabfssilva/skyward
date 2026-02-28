@@ -1,4 +1,4 @@
-# Sky Computing
+# Sky computing
 
 > "We don't ask that readers accept Sky Computing as inevitable, merely as not impossible."
 >
@@ -8,17 +8,17 @@ Technology ecosystems follow a predictable pattern. Telephony started with AT&T'
 
 Cloud computing, barely 15 years old, is still in its pre-standards phase. Each provider is a silo with proprietary APIs: AWS, GCP, and Azure each have their own compute, storage, and networking interfaces. The paper [*The Sky Above The Clouds*][paper] (Berkeley, 2022) argues that this is the natural starting point of a technology ecosystem, not its final state. The proposed answer is **Sky Computing** — a compatibility layer above the clouds that routes workloads to the best provider based on cost, availability, or performance, without locking users to a single vendor.
 
-## The Vision
+## The vision
 
 Sky Computing proposes an intercloud broker that abstracts provider differences behind a unified interface. You describe what you need — compute, storage, accelerators — and the broker finds the best option across all available clouds. If one provider is cheaper, the workload goes there. If another has better availability for the GPU you need, it goes there instead. If a provider has an outage, the broker fails over transparently.
 
 This is the same idea behind carrier portability in telephony (keep your phone number when you switch carriers) or TCP/IP in networking (your application doesn't know whether the packet travels over fiber, copper, or wireless). The abstraction boundary moves up: applications talk to the compatibility layer, the compatibility layer talks to providers.
 
-## How Skyward Uses These Ideas
+## How Skyward uses these ideas
 
 Skyward focuses on a specific problem within this vision: **running Python functions on remote accelerators without worrying about where**. The full Sky Computing vision includes storage interoperability, network optimization, and global job scheduling across clouds. Skyward narrows the scope to compute orchestration for ML workloads — but within that scope, it implements the key ideas from the paper.
 
-### Provider Portability
+### Provider portability
 
 All providers implement the same `Provider` protocol — five methods (`prepare`, `provision`, `get_instance`, `terminate`, `teardown`) that map to the pool lifecycle. Switching between providers is a one-line change:
 
@@ -38,17 +38,17 @@ with sky.ComputePool(provider=sky.RunPod(), accelerator="H100", nodes=4) as pool
 
 The `@sky.compute` functions, the operators, the `Image` specification — everything stays identical across providers. Your code doesn't know which cloud it's running on, and it doesn't need to. This is the practical realization of the Sky Computing idea: you're not locked to a single cloud, and moving between them doesn't require rewriting anything.
 
-### Unified Resource Specification
+### Unified resource specification
 
 You describe hardware needs in logical terms — `"A100"`, `sky.accelerators.H100(count=4)` — and the provider translates that into whatever its API requires. An "A100" on AWS is a `p4d.24xlarge` instance. On RunPod, it's a GPU pod with a specific `gpuTypeId`. On VastAI, it's a marketplace offer filtered by GPU model. The translation from a logical accelerator name to a provider-specific resource involves resolving instance types, memory variants, multi-GPU configurations, and availability constraints. The accelerator catalog centralizes this complexity so that `sky.accelerators.A100(count=4)` resolves correctly on any provider that supports it.
 
-### Economic Arbitrage
+### Economic arbitrage
 
 The `allocation` parameter is a simple form of economic optimization. `"spot-if-available"` (the default) requests discounted spot capacity first and falls back to on-demand if none is available. `"spot"` always uses spot instances for maximum savings. `"cheapest"` compares all options and picks the lowest-cost one. These aren't as sophisticated as a full intercloud broker optimizing across providers simultaneously, but they capture the core idea: let the system find the best price for the hardware you need, rather than manually comparing instance types and pricing pages.
 
 With multi-spec pools, Skyward takes this further. You can describe the same hardware need across multiple providers — `sky.Spec(provider=sky.VastAI(), accelerator="A100")` alongside `sky.Spec(provider=sky.AWS(), accelerator="A100")` — and Skyward queries all of them, compares the offers, and provisions from the cheapest. This is cross-provider price comparison at the API level, applied automatically at pool start. See [Resource Selection](concepts.md#resource-selection) for details.
 
-## What Skyward Adds: Ephemeral Compute
+## What Skyward adds: ephemeral compute
 
 While the Berkeley paper focuses on interoperability, Skyward adds a specific philosophy: **ephemeral compute**. Accelerator infrastructure should exist only during your job — not before, not after. The `ComputePool` context manager guarantees this: provision on enter, destroy on exit, cleanup guaranteed even if your code throws an exception.
 
@@ -70,7 +70,7 @@ Both projects draw from the Sky Computing vision. The difference is in programmi
 
 The choice depends on your workflow. If your workload is "run this script end-to-end and store the results," SkyPilot is the right tool. If you want to call a function on a remote GPU and get the result back in a variable — composing remote computation with local logic, running experiments interactively, iterating on training code — Skyward is the right tool.
 
-## Further Reading
+## Further reading
 
 - [The Sky Above The Clouds][paper] — The original Berkeley paper (2022)
 - [SkyPilot][skypilot] — Berkeley's reference implementation

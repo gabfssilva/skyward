@@ -1,4 +1,4 @@
-# Pool & Compute
+# Pool & compute
 
 ::: skyward.ComputePool
 

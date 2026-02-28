@@ -1,8 +1,8 @@
-# Keras Training
+# Keras training
 
 Keras 3 is backend-agnostic — the same model code runs on JAX, TensorFlow, or PyTorch. Skyward's `keras` plugin configures the backend on the remote worker before your function runs, and `shard()` handles data partitioning for multi-node training. This guide walks through training an MLP on MNIST across multiple cloud GPUs using Keras with JAX as the backend.
 
-## The `keras` Plugin
+## The `keras` plugin
 
 Add `sky.plugins.keras(backend="jax")` to your pool's plugins. When using the JAX backend, also include `sky.plugins.jax()` for distributed initialization:
 
@@ -18,7 +18,7 @@ The function itself just uses `@sky.compute` — the backend and distributed set
 --8<-- "examples/guides/07_keras_training.py:11:13"
 ```
 
-## Loading and Sharding Data
+## Loading and sharding data
 
 Load the full dataset inside the function, then use `shard()` to get this node's portion:
 
@@ -30,7 +30,7 @@ Load the full dataset inside the function, then use `shard()` to get this node's
 
 Note that sharding happens *inside* the function, after the data is loaded. The full dataset exists on every node (each one downloads it independently), and sharding selects each node's portion based on `instance_info()`. This is simpler than pre-splitting and distributing data from the client.
 
-## Model Definition
+## Model definition
 
 Define a standard Keras model — nothing Skyward-specific here:
 
@@ -52,7 +52,7 @@ Compile and fit as usual:
 
 For synchronized multi-node training with gradient averaging (similar to PyTorch DDP), Keras provides distribution strategies. The `keras` plugin can configure these automatically when running with JAX on multiple nodes. For data-parallel training where each node trains independently on its shard (as in this example), no extra configuration is needed.
 
-## Run the Full Example
+## Run the full example
 
 ```bash
 git clone https://github.com/gabfssilva/skyward.git

@@ -4,7 +4,7 @@ Most of the time, `@sky.compute` functions run remotely and return a single resu
 
 Streaming solves this. A `@sky.compute` function that uses `yield` instead of `return` becomes a **streaming computation** — results flow back to the caller one at a time as they're produced, and the caller consumes them as a regular Python iterator. No special API, no callback registration, no async boilerplate. You write a generator, dispatch it with `>>`, and iterate.
 
-## Output Streaming
+## Output streaming
 
 The simplest form: the remote function `yield`s values instead of returning a single result. On the client side, `>>` returns an iterator instead of a value.
 
@@ -22,7 +22,7 @@ Under the hood, the worker detects that the function is a generator and creates 
 
 This means **time-to-first-result** scales with your function's first `yield`, not with the total computation time. A function that yields a progress update every epoch gives you live feedback from the first epoch onward.
 
-## Input Streaming
+## Input streaming
 
 The inverse pattern: instead of streaming results *out*, you stream data *in*. Annotate a parameter with `Iterator[T]`, and Skyward streams the argument to the worker incrementally instead of serializing it all at once.
 
@@ -40,7 +40,7 @@ The detection is based on the type annotation: Skyward inspects the function's t
 
 This is useful when the input data is large or lazily produced. Instead of serializing a 10GB dataset into a single cloudpickle blob, you can pass a generator that reads from disk chunk by chunk — each chunk crosses the network as a stream element, and the worker processes it as it arrives. Memory usage stays flat on both sides.
 
-## Bidirectional Streaming
+## Bidirectional streaming
 
 Combine both: a function that takes an `Iterator[T]` input and `yield`s results. Data flows in, transformed results flow out, and neither side materializes the full dataset:
 
@@ -54,7 +54,7 @@ Combine both: a function that takes an `Iterator[T]` input and `yield`s results.
 
 The client feeds values into the input stream, the worker consumes them one at a time, and each computed result is yielded back through the output stream. This is the streaming equivalent of a Unix pipe — data flows through the remote function without buffering the entire input or output.
 
-## Run the Full Example
+## Run the full example
 
 ```bash
 git clone https://github.com/gabfssilva/skyward.git

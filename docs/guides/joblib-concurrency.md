@@ -1,8 +1,8 @@
-# Joblib Concurrency
+# Joblib concurrency
 
 joblib's `Parallel` is the standard way to parallelize work in Python — scikit-learn, NLTK, and many other libraries use it internally. By default, it runs tasks across local threads or processes. Skyward's `joblib` plugin replaces the backend with a distributed one: `n_jobs=-1` sends tasks to cloud instances instead of local cores. No code changes needed beyond the pool configuration — existing `Parallel(n_jobs=-1)(delayed(fn)(x) for x in data)` patterns work as-is.
 
-## Defining Tasks
+## Defining tasks
 
 Any regular Python function works with joblib — the plugin handles serialization and dispatch internally:
 
@@ -12,7 +12,7 @@ Any regular Python function works with joblib — the plugin handles serializati
 
 joblib handles its own serialization. The `joblib` plugin intercepts joblib's task batches, wraps them internally, and dispatches them to the cluster.
 
-## Distributed Execution with the Joblib Plugin
+## Distributed execution with the Joblib plugin
 
 Wrap your `Parallel` call inside a `ComputePool` with the `joblib` plugin:
 
@@ -24,7 +24,7 @@ When you enter the pool block, Skyward provisions the instances and the `joblib`
 
 When you exit the block, the instances are terminated and the default joblib backend is restored.
 
-## Measuring Throughput
+## Measuring throughput
 
 Compare actual time against the theoretical ideal:
 
@@ -34,7 +34,7 @@ Compare actual time against the theoretical ideal:
 
 With 2000 tasks, 100 effective workers, and 5 seconds per task, the ideal time is `2000 / 100 * 5 = 100s`. Efficiency measures how close you get to that ideal — the ratio of ideal time to actual time.
 
-## Real-World Results
+## Real-world results
 
 Running with 10 `t4g.micro` instances (1GB RAM, 2 vCPUs) on AWS:
 
@@ -51,7 +51,7 @@ Efficiency: 97.5%
 
 This also illustrates the cost model: 10 `t4g.micro` instances at ~$0.008/hour each costs $0.08/hour total. The same 2000 tasks running locally at 1 task/second would take ~2.8 hours. The cluster finishes in under 2 minutes for a fraction of a cent.
 
-## Run the Full Example
+## Run the full example
 
 ```bash
 git clone https://github.com/gabfssilva/skyward.git
