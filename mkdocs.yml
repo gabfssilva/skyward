@@ -134,6 +134,7 @@ nav:
           - AWS: reference/providers/aws.md
           - GCP: reference/providers/gcp.md
           - RunPod: reference/providers/runpod.md
+          - Thunder Compute: reference/providers/thunder.md
           - VastAI: reference/providers/vastai.md
           - Verda: reference/providers/verda.md
       - Distributed collections: reference/distributed.md

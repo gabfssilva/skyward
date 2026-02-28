@@ -1,17 +1,17 @@
 # Cloud providers
 
-Skyward supports six providers. Five are cloud services — AWS, GCP, RunPod, Verda, VastAI — and one is local containers for development and CI. All implement the same `Provider` protocol, so the orchestration layer (actor system, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
+Skyward supports seven providers. Six are cloud services — AWS, GCP, RunPod, Thunder Compute, Verda, VastAI — and one is local containers for development and CI. All implement the same `Provider` protocol, so the orchestration layer (actor system, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
 
 Provider configs are lightweight frozen dataclasses. They hold configuration — region, API keys, disk sizes — but don't import any cloud SDK at module level. The SDK is loaded lazily when the pool starts, so `import skyward` stays fast regardless of which providers are installed.
 
 ## Provider comparison
 
-| Feature | AWS | GCP | RunPod | Verda | VastAI | Container |
-|---------|-----|-----|--------|-------|--------|-----------|
-| **GPUs** | H100, A100, T4, L4, Trainium, Inferentia | H100, A100, T4, L4, V100, H200 | H100, A100, A40, RTX series | H100, A100, H200, GB200 | Marketplace (varies) | None (CPU) |
-| **Spot Instances** | Yes (60-90% savings) | Yes (preemptible/spot) | Yes | Yes | Yes (bid-based) | N/A |
-| **Regions** | 20+ | 40+ zones | Global (Secure + Community) | FIN, ICL, ISR | Global marketplace | Local |
-| **Auth** | AWS credentials | Application Default Credentials | API key | Client ID + Secret | API key | None |
+| Feature | AWS | GCP | RunPod | Thunder | Verda | VastAI | Container |
+|---------|-----|-----|--------|---------|-------|--------|-----------|
+| **GPUs** | H100, A100, T4, L4, Trainium, Inferentia | H100, A100, T4, L4, V100, H200 | H100, A100, A40, RTX series | H100, A100, A6000 | H100, A100, H200, GB200 | Marketplace (varies) | None (CPU) |
+| **Spot Instances** | Yes (60-90% savings) | Yes (preemptible/spot) | Yes | No (on-demand only) | Yes | Yes (bid-based) | N/A |
+| **Regions** | 20+ | 40+ zones | Global (Secure + Community) | Quebec, Canada | FIN, ICL, ISR | Global marketplace | Local |
+| **Auth** | AWS credentials | Application Default Credentials | API key | API token | Client ID + Secret | API key | None |
 
 ## AWS
 
@@ -203,6 +203,49 @@ with sky.ComputePool(
 | `data_center_ids` | `tuple or "global"` | `"global"` | Preferred data centers or `"global"` for auto-selection |
 | `ports` | `tuple[str, ...]` | `("22/tcp",)` | Port mappings |
 
+## Thunder Compute
+
+Thunder Compute is a GPU cloud based in Quebec, Canada, offering H100, A100, and A6000 accelerators with per-minute billing. All instances are on-demand (no spot). Thunder supports two modes: **production** (full CUDA, multi-GPU) and **prototyping** (cheaper, limited CUDA).
+
+### Setup
+
+```bash
+export TNR_API_TOKEN=your-token
+```
+
+Get your API token at: [https://console.thundercompute.com/settings?tab=tokens](https://console.thundercompute.com/settings?tab=tokens)
+
+### Usage
+
+```python
+import skyward as sky
+
+with sky.ComputePool(
+    provider=sky.ThunderCompute(),
+    accelerator=sky.accelerators.A100(),
+    nodes=2,
+) as pool:
+    result = train(data) >> pool
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `api_token` | `str or None` | `None` | API token (falls back to `TNR_API_TOKEN` env var, then `~/.thunder/token`) |
+| `mode` | `str` | `"production"` | `"production"` (full CUDA, multi-GPU) or `"prototyping"` (cheaper, limited CUDA) |
+| `template` | `str` | `"base"` | Instance template (`"base"`, `"ollama"`, `"comfy-ui"`, or a snapshot ID) |
+| `disk_size_gb` | `int` | `100` | Disk size in GB |
+| `cpu_cores` | `int` | `18` | Number of CPU cores |
+| `request_timeout` | `int` | `30` | HTTP request timeout in seconds |
+
+### Notes
+
+- **Production mode** provides full CUDA support and multi-GPU instances. Use this for training workloads.
+- **Prototyping mode** is cheaper but has limited CUDA capabilities. Good for development and testing.
+- All instances are on-demand — no spot pricing. Billing is per-minute.
+- The API token can also be stored in `~/.thunder/token` for automatic detection.
+
 ## Verda
 
 Verda is a GPU cloud with data centers in Europe and the Middle East. It uses OAuth2 authentication with a client ID and secret — not a single API key.
@@ -330,6 +373,8 @@ with sky.ComputePool(
 **GCP** — Deep integration with Google Cloud. Deep Learning VM images with pre-installed CUDA drivers, dynamic machine type resolution, fleet-style provisioning via `bulk_insert`. Supports T4, L4, V100, A100, H100, H200.
 
 **RunPod** — Fast provisioning, competitive pricing, minimal setup. Both Secure Cloud (dedicated) and Community Cloud (cheaper) tiers. Good for A100/H100/RTX workloads.
+
+**Thunder Compute** — GPU cloud in Quebec, Canada. H100, A100, A6000 with per-minute billing. On-demand only, no spot complexity. Two modes: production (full CUDA) and prototyping (cheaper, limited CUDA).
 
 **Verda** — European data residency (Finland, Iceland, Israel). H100/A100/H200/GB200 availability with automatic region selection.
 
