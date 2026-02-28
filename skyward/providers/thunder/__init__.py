@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .client import ThunderClient
+    from .client import ThunderClient, ThunderError
     from .provider import ThunderProvider
 
 from .config import ThunderCompute
@@ -26,5 +26,6 @@ from .config import ThunderCompute
 __all__ = [
     "ThunderCompute",
     "ThunderClient",
+    "ThunderError",
     "ThunderProvider",
 ]

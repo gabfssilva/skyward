@@ -95,14 +95,9 @@ def get_vram_gb(gpu_type: str) -> int:
     Returns
     -------
     int
-        VRAM in gigabytes.
-
-    Raises
-    ------
-    KeyError
-        If the gpu_type is unknown.
+        VRAM in gigabytes, or 0 if unknown.
     """
-    return _GPU_VRAM[gpu_type]
+    return _GPU_VRAM.get(gpu_type, 0)
 
 
 def get_display_name(gpu_type: str) -> str:
@@ -117,10 +112,5 @@ def get_display_name(gpu_type: str) -> str:
     -------
     str
         Human-readable display name (e.g., ``"H100"``, ``"A100 80GB"``).
-
-    Raises
-    ------
-    KeyError
-        If the gpu_type is unknown.
     """
-    return _GPU_DISPLAY[gpu_type]
+    return _GPU_DISPLAY.get(gpu_type, gpu_type.upper())
