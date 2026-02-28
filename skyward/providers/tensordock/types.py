@@ -219,3 +219,180 @@ def gpu_matches(td_gpu_id: str, requested: str) -> bool:
     requested_norm = _normalize_string(requested)
     td_norm = _normalize_string(td_gpu_id)
     return display_norm == requested_norm or td_norm == requested_norm
+
+
+# =============================================================================
+# v2 Location types (from GET /api/v2/locations)
+# =============================================================================
+
+
+class LocationGpuPricing(TypedDict):
+    per_vcpu_hr: float
+    per_gb_ram_hr: float
+    per_gb_storage_hr: float
+
+
+class LocationGpuNetworkFeatures(TypedDict):
+    dedicated_ip_available: bool
+    port_forwarding_available: bool
+    network_storage_available: bool
+
+
+class LocationGpuResources(TypedDict):
+    max_vcpus: int
+    max_ram_gb: int
+    max_storage_gb: int
+
+
+class LocationGpu(TypedDict):
+    v0Name: str
+    displayName: str
+    max_count: int
+    price_per_hr: float
+    resources: LocationGpuResources
+    pricing: LocationGpuPricing
+    network_features: LocationGpuNetworkFeatures
+
+
+class LocationsData(TypedDict):
+    locations: list[Location]
+
+
+class Location(TypedDict):
+    id: str
+    city: str
+    stateprovince: str
+    country: str
+    tier: int
+    gpus: list[LocationGpu]
+
+
+class LocationsResponse(TypedDict):
+    data: LocationsData
+
+
+# =============================================================================
+# v2 Instance types (from /api/v2/instances)
+# =============================================================================
+
+
+class PortForward(TypedDict):
+    internal_port: int
+    external_port: int
+
+
+class InstanceGpuInfo(TypedDict):
+    count: int
+    v0Name: NotRequired[str]
+
+
+class InstanceResources(TypedDict):
+    vcpu_count: int
+    ram_gb: int
+    storage_gb: int
+    gpus: dict[str, InstanceGpuInfo]
+
+
+class V2InstanceResponse(TypedDict):
+    type: str
+    id: str
+    name: NotRequired[str]
+    status: NotRequired[str]
+    ipAddress: NotRequired[str]
+    portForwards: NotRequired[list[PortForward]]
+    resources: NotRequired[InstanceResources]
+    rateHourly: NotRequired[float]
+
+
+class V2InstanceCreateResponse(TypedDict):
+    data: V2InstanceResponse
+
+
+class V2InstanceListData(TypedDict):
+    instances: list[V2InstanceResponse]
+
+
+class V2InstanceListResponse(TypedDict):
+    data: V2InstanceListData
+
+
+class V2AuthTestResponse(TypedDict):
+    success: bool
+    organizationId: NotRequired[str]
+
+
+# =============================================================================
+# v2 helpers
+# =============================================================================
+
+
+def normalize_gpu_name_v2(gpu: LocationGpu) -> str:
+    """Extract display name from v2 LocationGpu.
+
+    Uses the displayName field directly from the API response,
+    falling back to v0Name if displayName is empty.
+
+    """
+    return gpu.get("displayName") or gpu.get("v0Name", "")
+
+
+def get_gpu_memory_gb_v2(gpu: LocationGpu) -> int:
+    """Extract GPU memory in GB from v2 LocationGpu.
+
+    Parses the v0Name suffix (e.g., 'geforcertx5090-pcie-32gb' -> 32).
+    """
+    return get_gpu_memory_gb(gpu.get("v0Name", ""))
+
+
+def gpu_matches_v2(gpu: LocationGpu, requested: str) -> bool:
+    """Check if a v2 LocationGpu matches a requested GPU name.
+
+    Checks against the static name map (v0Name → short name), the full
+    displayName (contains check), and the raw v0Name, all normalized.
+    """
+    requested_norm = _normalize_string(requested)
+    # Static map: "geforcertx4090-pcie-24gb" → "RTX 4090"
+    mapped_norm = _normalize_string(normalize_gpu_name(gpu.get("v0Name", "")))
+    if mapped_norm == requested_norm:
+        return True
+    # Contains: "NVIDIA GeForce RTX 4090 PCIe 24GB" contains "RTX 4090"
+    display_norm = _normalize_string(gpu.get("displayName", ""))
+    if requested_norm in display_norm:
+        return True
+    v0_norm = _normalize_string(gpu.get("v0Name", ""))
+    return requested_norm in v0_norm
+
+
+def get_ssh_port_v2(port_forwards: list[PortForward]) -> int:
+    """Extract external SSH port from v2 portForwards array.
+
+    Examples
+    --------
+    >>> get_ssh_port_v2([{"internal_port": 22, "external_port": 34567}])
+    34567
+    >>> get_ssh_port_v2([])
+    22
+    """
+    for pf in port_forwards:
+        if pf.get("internal_port") == 22:
+            return pf.get("external_port", 22)
+    return 22
+
+
+_V2_IMAGE_MAP: dict[str, str] = {
+    "Ubuntu 22.04 LTS": "ubuntu2204",
+    "Ubuntu 24.04 LTS": "ubuntu2404",
+}
+
+
+def resolve_v2_image(operating_system: str) -> str:
+    """Map legacy OS name to v2 image ID, or pass through if already v2 format.
+
+    Examples
+    --------
+    >>> resolve_v2_image("Ubuntu 22.04 LTS")
+    'ubuntu2204'
+    >>> resolve_v2_image("ubuntu2404")
+    'ubuntu2404'
+    """
+    return _V2_IMAGE_MAP.get(operating_system, operating_system)

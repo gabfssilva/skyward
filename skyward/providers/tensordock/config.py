@@ -13,35 +13,36 @@ if typing.TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class TensorDock(ProviderConfig):
-    """TensorDock GPU marketplace configuration.
+    """TensorDock GPU marketplace configuration (v2 API).
 
     Parameters
     ----------
     api_key
         API key. Falls back to TENSORDOCK_API_KEY env var.
     api_token
-        API token. Falls back to TENSORDOCK_API_TOKEN env var.
+        API token (used as Bearer token for v2 API).
+        Falls back to TENSORDOCK_API_TOKEN env var.
     location
-        Country code filter (e.g., "us", "de", "gb"). None means global.
+        Country filter (e.g., "United States", "Germany"). None means global.
     storage_gb
         Disk storage per VM in GB. Minimum 100.
     operating_system
-        OS image to deploy. Default: Ubuntu 22.04 LTS.
+        OS image ID for deployment (e.g., "ubuntu2404", "ubuntu2204").
     instance_timeout
         Auto-shutdown in seconds. Default: 300.
     request_timeout
         HTTP request timeout in seconds. Default: 30.
     min_ram_gb
-        Minimum RAM per VM in GB. None for provider default.
+        Minimum RAM per VM in GB. None for provider default (16).
     min_vcpus
-        Minimum vCPUs per VM. None for provider default.
+        Minimum vCPUs per VM. None for provider default (4).
     """
 
     api_key: str | None = None
     api_token: str | None = None
     location: str | None = None
     storage_gb: int = 100
-    operating_system: str = "Ubuntu 22.04 LTS"
+    operating_system: str = "ubuntu2404"
     instance_timeout: int = 300
     request_timeout: int = 30
     min_ram_gb: int | None = None

@@ -1,8 +1,7 @@
-"""TensorDock provider implementation.
+"""TensorDock provider implementation (v2 API).
 
-Provisions GPU VMs on TensorDock's marketplace via their v0 REST API.
-Hostnodes are queried for dynamic GPU availability, and VMs are deployed
-with cloud-init for SSH key injection.
+Provisions GPU VMs on TensorDock's marketplace via their v2 REST API.
+Uses location-based auto-placement for simplified provisioning.
 """
 
 from __future__ import annotations
@@ -17,68 +16,41 @@ from dataclasses import dataclass
 
 from skyward.accelerators import Accelerator
 from skyward.api import PoolSpec
-from skyward.api.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
+from skyward.api.model import Cluster, Instance, InstanceType, Offer
 from skyward.observability.logger import logger
 from skyward.providers.provider import Provider
 from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
 
 from .client import TensorDockClient, TensorDockError
 from .config import TensorDock
-from .types import (  # noqa: F401
-    HostnodeResponse,
-    VmDetails,
+from .types import (
+    Location,
     get_gpu_memory_gb,
-    get_ssh_port,
-    gpu_matches,
+    get_ssh_port_v2,
+    gpu_matches_v2,
     normalize_gpu_name,
+    resolve_v2_image,
 )
 
 log = logger.bind(provider="tensordock")
 
 
-def _get_credentials(config: TensorDock) -> tuple[str, str]:
-    """Resolve API key and token from config or environment.
-
-    Returns
-    -------
-    tuple[str, str]
-        (api_key, api_token)
-
-    Raises
-    ------
-    RuntimeError
-        If credentials are not found.
-    """
-    api_key = config.api_key or os.environ.get("TENSORDOCK_API_KEY")
-    api_token = config.api_token or os.environ.get("TENSORDOCK_API_TOKEN")
-
-    if not api_key or not api_token:
+def _get_token(config: TensorDock) -> str:
+    """Resolve API token from config or environment."""
+    token = config.api_token or os.environ.get("TENSORDOCK_API_TOKEN")
+    if not token:
         raise RuntimeError(
-            "TensorDock credentials required. Set TENSORDOCK_API_KEY and "
-            "TENSORDOCK_API_TOKEN environment variables or pass them to "
-            "TensorDock(api_key=..., api_token=...)."
+            "TensorDock API token required. Set TENSORDOCK_API_TOKEN "
+            "environment variable or pass it to TensorDock(api_token=...)."
         )
-    return api_key, api_token
-
-
-def _build_cloudinit(ssh_public_key: str) -> str:
-    """Generate cloud-init YAML to inject SSH key for user 'user'."""
-    return (
-        "#cloud-config\n"
-        "users:\n"
-        "  - name: user\n"
-        "    sudo: ALL=(ALL) NOPASSWD:ALL\n"
-        "    shell: /bin/bash\n"
-        "    ssh_authorized_keys:\n"
-        f"      - {ssh_public_key}\n"
-    )
+    return token
 
 
 @dataclass(frozen=True, slots=True)
 class TensorDockOfferData:
-    """Carried in Offer.specific -- hostnode details for provisioning."""
+    """Carried in Offer.specific — location + GPU details for provisioning."""
 
-    hostnode_id: str
+    location_id: str
     gpu_model: str
     gpu_count: int
     vcpus: int
@@ -91,67 +63,57 @@ class TensorDockSpecific:
     """TensorDock-specific cluster data flowing through Cluster[TensorDockSpecific]."""
 
     ssh_public_key: str
-    password: str
-    location: str | None = None
-    operating_system: str = "Ubuntu 22.04 LTS"
+    location_id: str
 
 
-def _filter_hostnodes(
-    hostnodes: dict[str, HostnodeResponse],
+def _filter_locations(
+    locations: list[Location],
     spec: PoolSpec,
     config: TensorDock,
 ) -> list[tuple[str, str, int, int, int, float]]:
-    """Filter and rank hostnodes by GPU match, availability, and price.
+    """Filter and rank location GPUs by match, availability, and price.
 
-    Returns a list of (hostnode_id, gpu_model, gpu_count, vcpus, ram_gb, hourly_rate)
-    sorted by price ascending.
+    Returns
+    -------
+    list[tuple[str, str, int, int, int, float]]
+        (location_id, gpu_v0name, gpu_count, vcpus, ram_gb, hourly_rate)
+        sorted by price ascending.
     """
     gpu_count = spec.accelerator_count or 1
     candidates: list[tuple[str, str, int, int, int, float]] = []
 
-    for hid, node in hostnodes.items():
+    for loc in locations:
         if config.location:
-            loc = node.get("location", {})
             country = loc.get("country", "").lower()
             if country != config.location.lower():
                 continue
 
-        specs = node.get("specs", {})
-        pricing = node.get("pricing")
-        if not pricing:
-            continue
-
-        gpu_specs = specs.get("gpu", {})
-        gpu_pricing = pricing.get("gpu", {})
-
-        for gpu_model, gpu_info in gpu_specs.items():
-            available = gpu_info.get("amount", 0)
+        for gpu in loc.get("gpus", []):
+            v0_name = gpu.get("v0Name", "")
+            available = gpu.get("max_count", 0)
             if available < gpu_count:
                 continue
 
-            if spec.accelerator_name and not gpu_matches(gpu_model, spec.accelerator_name):
+            if spec.accelerator_name and not gpu_matches_v2(gpu, spec.accelerator_name):
                 continue
 
-            gpu_price = gpu_pricing.get(gpu_model)
-            if gpu_price is None:
-                continue
-
-            ram_specs = specs.get("ram", {})
-            cpu_specs = specs.get("cpu", {})
-            ram_available = sum(ram_specs.values()) if ram_specs else 0
-            cpu_available = sum(cpu_specs.values()) if cpu_specs else 0
+            gpu_price = gpu.get("price_per_hr", 0.0)
+            pricing = gpu.get("pricing", {})
+            resources = gpu.get("resources", {})
 
             min_ram = config.min_ram_gb or 16
             min_vcpus = config.min_vcpus or 4
             ram_gb = int(max(min_ram, spec.memory_gb or 0))
             vcpus = max(min_vcpus, int(spec.vcpus or 0))
 
-            if ram_available < ram_gb or cpu_available < vcpus:
+            max_vcpus = resources.get("max_vcpus", 0)
+            max_ram = resources.get("max_ram_gb", 0)
+            if max_vcpus < vcpus or max_ram < ram_gb:
                 continue
 
-            ram_price = pricing.get("ram", 0.0)
-            cpu_price = pricing.get("cpu", 0.0)
-            storage_price = pricing.get("storage", 0.0)
+            ram_price = pricing.get("per_gb_ram_hr", 0.0)
+            cpu_price = pricing.get("per_vcpu_hr", 0.0)
+            storage_price = pricing.get("per_gb_storage_hr", 0.0)
 
             hourly_rate = (
                 gpu_price * gpu_count
@@ -160,7 +122,7 @@ def _filter_hostnodes(
                 + storage_price * config.storage_gb
             )
 
-            candidates.append((hid, gpu_model, gpu_count, vcpus, ram_gb, hourly_rate))
+            candidates.append((loc["id"], v0_name, gpu_count, vcpus, ram_gb, hourly_rate))
 
     if spec.max_hourly_cost:
         max_per_instance = spec.max_hourly_cost / spec.nodes
@@ -171,7 +133,7 @@ def _filter_hostnodes(
 
 
 class TensorDockProvider(Provider[TensorDock, TensorDockSpecific]):
-    """Stateless TensorDock provider. Holds only immutable config."""
+    """TensorDock provider using v2 API."""
 
     def __init__(self, config: TensorDock) -> None:
         self._config = config
@@ -181,20 +143,18 @@ class TensorDockProvider(Provider[TensorDock, TensorDockSpecific]):
         return cls(config)
 
     async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
-        api_key, api_token = _get_credentials(self._config)
+        token = _get_token(self._config)
 
-        async with TensorDockClient(
-            api_key, api_token, timeout=self._config.request_timeout,
-        ) as client:
-            hostnodes = await client.list_hostnodes()
+        async with TensorDockClient(token, timeout=self._config.request_timeout) as client:
+            locations = await client.list_locations()
 
-        candidates = _filter_hostnodes(hostnodes, spec, self._config)
+        candidates = _filter_locations(locations, spec, self._config)
 
         if not candidates:
-            log.debug("No matching hostnodes found")
+            log.debug("No matching locations found")
             return
 
-        for hid, gpu_model, gpu_count, vcpus, ram_gb, hourly_rate in candidates:
+        for loc_id, gpu_model, gpu_count, vcpus, ram_gb, hourly_rate in candidates:
             display_name = normalize_gpu_name(gpu_model)
             memory_gb = get_gpu_memory_gb(gpu_model)
             accel = Accelerator(
@@ -213,13 +173,13 @@ class TensorDockProvider(Provider[TensorDock, TensorDockSpecific]):
             )
 
             yield Offer(
-                id=f"td-{hid}-{gpu_model}",
+                id=f"td-{loc_id[:8]}-{gpu_model}",
                 instance_type=it,
                 spot_price=None,
                 on_demand_price=hourly_rate,
                 billing_unit="second",
                 specific=TensorDockOfferData(
-                    hostnode_id=hid,
+                    location_id=loc_id,
                     gpu_model=gpu_model,
                     gpu_count=gpu_count,
                     vcpus=vcpus,
@@ -229,17 +189,15 @@ class TensorDockProvider(Provider[TensorDock, TensorDockSpecific]):
             )
 
     async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[TensorDockSpecific]:
-        api_key, api_token = _get_credentials(self._config)
+        token = _get_token(self._config)
         ssh_key_path = get_ssh_key_path()
         _, ssh_public_key = get_local_ssh_key()
 
-        async with TensorDockClient(
-            api_key, api_token, timeout=self._config.request_timeout,
-        ) as client:
+        async with TensorDockClient(token, timeout=self._config.request_timeout) as client:
             if not await client.test_auth():
                 raise RuntimeError("TensorDock authentication failed — check credentials")
 
-        password = "".join(random.choices(string.ascii_letters + string.digits, k=24))
+        offer_data: TensorDockOfferData = offer.specific
 
         return Cluster(
             id=f"tensordock-{uuid.uuid4().hex[:8]}",
@@ -252,9 +210,7 @@ class TensorDockProvider(Provider[TensorDock, TensorDockSpecific]):
             shutdown_command="sudo shutdown -h now",
             specific=TensorDockSpecific(
                 ssh_public_key=ssh_public_key,
-                password=password,
-                location=self._config.location,
-                operating_system=self._config.operating_system,
+                location_id=offer_data.location_id,
             ),
         )
 
@@ -262,63 +218,102 @@ class TensorDockProvider(Provider[TensorDock, TensorDockSpecific]):
         self, cluster: Cluster[TensorDockSpecific], count: int,
     ) -> tuple[Cluster[TensorDockSpecific], Sequence[Instance]]:
         specific = cluster.specific
-        api_key, api_token = _get_credentials(self._config)
+        offer_data: TensorDockOfferData = cluster.offer.specific
+        token = _get_token(self._config)
+        image = resolve_v2_image(self._config.operating_system)
 
-        cloudinit = _build_cloudinit(specific.ssh_public_key)
         instances: list[Instance] = []
 
-        async with TensorDockClient(
-            api_key, api_token, timeout=self._config.request_timeout,
-        ) as client:
-            hostnodes = await client.list_hostnodes()
-            candidates = _filter_hostnodes(hostnodes, cluster.spec, self._config)
-
-            if not candidates:
-                log.error("No hostnodes available for provisioning")
-                return cluster, instances
-
+        async with TensorDockClient(token, timeout=self._config.request_timeout) as client:
             for i in range(count):
-                instance = await _try_deploy_from_candidates(
-                    client, self._config, cluster, candidates, cloudinit, i,
-                )
-                if instance is None:
-                    log.error("All hostnodes failed for instance {i}/{count}", i=i + 1, count=count)
+                suffix = "".join(random.choices(string.ascii_lowercase, k=6))
+                vm_name = f"skyward-{cluster.id}-{i}-{suffix}"
+
+                try:
+                    result = await client.create_instance(
+                        name=vm_name,
+                        image=image,
+                        gpu_model=offer_data.gpu_model,
+                        gpu_count=offer_data.gpu_count,
+                        vcpus=offer_data.vcpus,
+                        ram_gb=offer_data.ram_gb,
+                        storage_gb=self._config.storage_gb,
+                        location_id=specific.location_id,
+                        ssh_key=specific.ssh_public_key,
+                    )
+                except TensorDockError as e:
+                    log.error(
+                        "Failed to create instance {i}/{count}: {err}",
+                        i=i + 1, count=count, err=e,
+                    )
                     continue
-                instances.append(instance)
+
+                instance_id = result.get("id", "")
+                if not instance_id:
+                    log.warning("Create returned no instance ID: {r}", r=result)
+                    continue
+
+                log.info(
+                    "Created instance {name}: id={id}",
+                    name=vm_name, id=instance_id,
+                )
+
+                instances.append(Instance(
+                    id=instance_id,
+                    status="provisioning",
+                    offer=cluster.offer,
+                    ip="",
+                    private_ip=None,
+                    ssh_port=22,
+                    spot=False,
+                ))
 
         return cluster, instances
 
     async def get_instance(
         self, cluster: Cluster[TensorDockSpecific], instance_id: str,
     ) -> tuple[Cluster[TensorDockSpecific], Instance | None]:
-        api_key, api_token = _get_credentials(self._config)
+        token = _get_token(self._config)
 
-        async with TensorDockClient(
-            api_key, api_token, timeout=self._config.request_timeout,
-        ) as client:
-            vm = await client.get_vm(instance_id)
+        async with TensorDockClient(token, timeout=self._config.request_timeout) as client:
+            vm = await client.get_instance(instance_id)
 
         if not vm:
             return cluster, None
 
         status_str = (vm.get("status") or "").lower()
-        ip = vm.get("ip") or ""
+        ip = vm.get("ipAddress") or ""
+        port_forwards = vm.get("portForwards") or []
 
         log.debug(
-            "VM {vid} status={status}, ip={ip}",
-            vid=instance_id, status=status_str, ip=ip,
+            "Instance {id} status={status}, ip={ip}",
+            id=instance_id, status=status_str, ip=ip,
         )
+
+        ssh_port = get_ssh_port_v2(port_forwards)
 
         match status_str:
             case "stopped" | "error" | "terminated" | "deleted":
                 return cluster, None
             case "running" if ip:
-                return cluster, _build_instance(
-                    instance_id, vm, "provisioned", cluster.offer,
+                return cluster, Instance(
+                    id=instance_id,
+                    status="provisioned",
+                    offer=cluster.offer,
+                    ip=ip,
+                    private_ip=ip or None,
+                    ssh_port=ssh_port,
+                    spot=False,
                 )
             case _:
-                return cluster, _build_instance(
-                    instance_id, vm, "provisioning", cluster.offer,
+                return cluster, Instance(
+                    id=instance_id,
+                    status="provisioning",
+                    offer=cluster.offer,
+                    ip=ip,
+                    private_ip=ip or None,
+                    ssh_port=ssh_port,
+                    spot=False,
                 )
 
     async def terminate(
@@ -327,15 +322,13 @@ class TensorDockProvider(Provider[TensorDock, TensorDockSpecific]):
         if not instance_ids:
             return cluster
 
-        api_key, api_token = _get_credentials(self._config)
-        async with TensorDockClient(
-            api_key, api_token, timeout=self._config.request_timeout,
-        ) as client:
+        token = _get_token(self._config)
+        async with TensorDockClient(token, timeout=self._config.request_timeout) as client:
             async def _delete(iid: str) -> None:
                 try:
-                    await client.delete_vm(iid)
+                    await client.delete_instance(iid)
                 except Exception as e:
-                    log.error("Failed to delete VM {iid}: {err}", iid=iid, err=e)
+                    log.error("Failed to delete instance {id}: {err}", id=iid, err=e)
 
             await asyncio.gather(*(_delete(iid) for iid in instance_ids))
         return cluster
@@ -344,122 +337,3 @@ class TensorDockProvider(Provider[TensorDock, TensorDockSpecific]):
         self, cluster: Cluster[TensorDockSpecific],
     ) -> Cluster[TensorDockSpecific]:
         return cluster
-
-
-def _build_instance(
-    instance_id: str,
-    vm: VmDetails,
-    status: InstanceStatus,
-    offer: Offer,
-) -> Instance:
-    """Build an Instance from TensorDock VM details."""
-    ip = vm.get("ip") or ""
-    ssh_port = get_ssh_port(vm)
-
-    return Instance(
-        id=instance_id,
-        status=status,
-        offer=offer,
-        ip=ip,
-        private_ip=ip or None,
-        ssh_port=ssh_port,
-        spot=False,
-    )
-
-
-async def _try_deploy_from_candidates(
-    client: TensorDockClient,
-    config: TensorDock,
-    cluster: Cluster[TensorDockSpecific],
-    candidates: list[tuple[str, str, int, int, int, float]],
-    cloudinit: str,
-    instance_index: int,
-) -> Instance | None:
-    """Try deploying a VM on each candidate hostnode until one succeeds."""
-    specific = cluster.specific
-    suffix = "".join(random.choices(string.ascii_lowercase, k=6))
-    vm_name = f"skyward-{cluster.id}-{instance_index}-{suffix}"
-
-    for idx, (hid, gpu_model, gpu_count, vcpus, ram_gb, hourly_rate) in enumerate(candidates):
-        log.debug(
-            "Trying hostnode {i}/{total}: id={hid}, gpu={gpu}",
-            i=idx + 1, total=len(candidates), hid=hid, gpu=gpu_model,
-        )
-
-        try:
-            result = await client.deploy_vm(
-                hostnode=hid,
-                gpu_model=gpu_model,
-                gpu_count=gpu_count,
-                vcpus=vcpus,
-                ram=ram_gb,
-                storage=config.storage_gb,
-                password=specific.password,
-                name=vm_name,
-                operating_system=specific.operating_system,
-                internal_ports="22,25520",
-                external_ports="22,25520",
-                cloudinit_script=cloudinit,
-            )
-
-            server_id = result.get("server", "")
-            if not server_id:
-                log.warning("Deploy returned no server ID: {r}", r=result)
-                continue
-
-            ip = result.get("ip", "")
-            port_forwards = result.get("port_forwards", {})
-            ssh_port = port_forwards.get("22", 22)
-
-            display_name = normalize_gpu_name(gpu_model)
-            memory_gb = get_gpu_memory_gb(gpu_model)
-            accel = Accelerator(
-                name=display_name,
-                memory=f"{memory_gb}GB" if memory_gb else "",
-                count=gpu_count,
-            )
-            it = InstanceType(
-                name=display_name,
-                accelerator=accel,
-                vcpus=float(vcpus),
-                memory_gb=float(ram_gb),
-                architecture="x86_64",
-                specific=None,
-            )
-            offer = Offer(
-                id=f"td-{hid}-{gpu_model}",
-                instance_type=it,
-                spot_price=None,
-                on_demand_price=hourly_rate,
-                billing_unit="second",
-                specific=TensorDockOfferData(
-                    hostnode_id=hid,
-                    gpu_model=gpu_model,
-                    gpu_count=gpu_count,
-                    vcpus=vcpus,
-                    ram_gb=ram_gb,
-                    hourly_rate=hourly_rate,
-                ),
-            )
-
-            log.info(
-                "Deployed VM {name} on hostnode {hid}: id={sid}, ip={ip}:{port}",
-                name=vm_name, hid=hid, sid=server_id, ip=ip, port=ssh_port,
-            )
-
-            return Instance(
-                id=server_id,
-                status="provisioning",
-                offer=offer,
-                ip=ip,
-                private_ip=ip or None,
-                ssh_port=ssh_port,
-                spot=False,
-            )
-        except TensorDockError as e:
-            log.warning(
-                "Hostnode {i}/{total} failed: {err}",
-                i=idx + 1, total=len(candidates), err=e,
-            )
-
-    return None
