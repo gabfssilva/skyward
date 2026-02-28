@@ -9,6 +9,7 @@ from skyward.providers.gcp.config import GCP
 from skyward.providers.hyperstack.config import Hyperstack
 from skyward.providers.lambda_cloud.config import Lambda
 from skyward.providers.runpod.config import RunPod
+from skyward.providers.tensordock.config import TensorDock
 from skyward.providers.vastai.config import VastAI
 from skyward.providers.thunder.config import ThunderCompute
 from skyward.providers.verda.config import Verda
@@ -235,6 +236,22 @@ class TestResolvePool:
         spec = pool._specs[0]
         assert isinstance(spec.provider, Lambda)
         assert spec.provider.region == "us-west-1"
+
+    def test_tensordock_pool(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            '[providers.td]\n'
+            'type = "tensordock"\n'
+            'location = "us"\n'
+            'storage_gb = 200\n'
+            '\n'
+            '[pools.gpu]\nprovider = "td"\nnodes = 1\n'
+        )
+        pool = resolve_pool("gpu", project_dir=tmp_path)
+        assert isinstance(pool, ComputePool)
+        spec = pool._specs[0]
+        assert isinstance(spec.provider, TensorDock)
+        assert spec.provider.location == "us"
+        assert spec.provider.storage_gb == 200
 
     def test_thunder_pool(self, tmp_path: Path):
         (tmp_path / "skyward.toml").write_text(
