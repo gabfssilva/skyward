@@ -64,18 +64,6 @@ class SSHKeyResponse(TypedDict):
     public_key: str
 
 
-class LaunchRequest(TypedDict, total=False):
-    """Launch instances request body."""
-
-    region_name: str
-    instance_type_name: str
-    ssh_key_names: list[str]
-    file_system_names: list[str]
-    name: str
-    quantity: int
-    user_data: str
-
-
 class LaunchResponse(TypedDict):
     """Launch instances response."""
 

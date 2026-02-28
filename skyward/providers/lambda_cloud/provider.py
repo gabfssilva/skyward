@@ -147,8 +147,8 @@ class LambdaProvider(Provider[Lambda, LambdaSpecific]):
         specific = cluster.specific
         label = f"skyward-{cluster.id}"
 
-        # Generate cloud-init user_data from bootstrap
-        user_data = _build_user_data(cluster)
+        ttl = cluster.spec.ttl
+        user_data = _self_destruction_script(ttl, cluster.shutdown_command) if ttl else None
 
         async with LambdaClient(api_key, self._config) as client:
             try:
@@ -314,20 +314,11 @@ async def _ensure_ssh_key(
         raise
 
 
-def _build_user_data(cluster: Cluster[LambdaSpecific]) -> str | None:
-    """Build cloud-init user_data for instance bootstrap.
+def _self_destruction_script(ttl: int, shutdown_command: str) -> str:
+    from skyward.providers.bootstrap.compose import resolve
+    from skyward.providers.bootstrap.ops import instance_timeout
 
-    Lambda supports cloud-init via user_data (max 1MB).
-    Returns None if no bootstrap is needed.
-    """
-    ttl = cluster.spec.ttl
-    if not ttl:
-        return None
-
-    # Minimal cloud-init: just the safety timeout
-    lines = [
-        "#!/bin/bash",
-        "set -e",
-        f"(sleep {ttl} && sudo shutdown -h now) &",
-    ]
+    lines = ["#!/bin/bash", "set -e"]
+    if ttl:
+        lines.append(resolve(instance_timeout(ttl, shutdown_command=shutdown_command)))
     return "\n".join(lines) + "\n"
