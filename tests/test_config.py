@@ -6,9 +6,9 @@ from skyward.api.pool import ComputePool
 from skyward.config import _deep_merge, load_config, resolve_pool
 from skyward.providers.aws.config import AWS
 from skyward.providers.gcp.config import GCP
+from skyward.providers.hyperstack.config import Hyperstack
 from skyward.providers.runpod.config import RunPod
 from skyward.providers.vastai.config import VastAI
-from skyward.providers.hyperstack.config import Hyperstack
 from skyward.providers.verda.config import Verda
 
 pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]

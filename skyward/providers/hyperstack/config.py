@@ -28,8 +28,6 @@ class Hyperstack(ProviderConfig):
         Hyperstack API key. Falls back to HYPERSTACK_API_KEY env var.
     region
         Deployment region. One of CANADA-1, NORWAY-1, US-1.
-    disk_gb
-        Root disk size in GB.
     instance_timeout
         Auto-shutdown safety timeout in seconds.
     request_timeout
@@ -38,7 +36,6 @@ class Hyperstack(ProviderConfig):
 
     api_key: str | None = None
     region: str = "CANADA-1"
-    disk_gb: int = 100
     instance_timeout: int = 300
     request_timeout: int = 30
 

@@ -28,6 +28,10 @@ HYPERSTACK_API_BASE = "https://infrahub-api.nexgencloud.com/v1"
 class HyperstackError(Exception):
     """Error from Hyperstack API."""
 
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
 
 # =============================================================================
 # Custom Auth — Hyperstack uses 'api_key' header, not Authorization: Bearer
@@ -106,7 +110,7 @@ class HyperstackClient:
                 path=path,
                 status=e.status,
             )
-            raise HyperstackError(f"API error {e.status}: {e.body}") from e
+            raise HyperstackError(f"API error {e.status}: {e.body}", status=e.status) from e
 
     # =========================================================================
     # Environments
@@ -184,7 +188,7 @@ class HyperstackClient:
         try:
             result = await self._request("GET", f"/core/virtual-machines/{vm_id}")
         except HyperstackError as e:
-            if "404" in str(e):
+            if e.status == 404:
                 return None
             raise
         if not result:

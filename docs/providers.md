@@ -325,7 +325,6 @@ with sky.ComputePool(
 |-----------|------|---------|-------------|
 | `api_key` | `str or None` | `None` | API key (falls back to `HYPERSTACK_API_KEY` env var) |
 | `region` | `str` | `"CANADA-1"` | Deployment region. Options: `CANADA-1`, `NORWAY-1`, `US-1` |
-| `disk_gb` | `int` | `100` | Root disk size in GB |
 | `instance_timeout` | `int` | `300` | Auto-shutdown safety timeout in seconds |
 | `request_timeout` | `int` | `30` | HTTP request timeout in seconds |
 

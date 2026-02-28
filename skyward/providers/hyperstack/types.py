@@ -107,14 +107,6 @@ class PricebookEntry(TypedDict):
     region_name: NotRequired[str]
 
 
-class StockResponse(TypedDict):
-    """GPU stock availability."""
-
-    gpu: NotRequired[str]
-    region: NotRequired[str]
-    available: NotRequired[bool]
-
-
 # =============================================================================
 # Helper functions
 # =============================================================================
