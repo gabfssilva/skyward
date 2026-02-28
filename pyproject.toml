@@ -121,6 +121,7 @@ markers = [
     "vastai: VastAI provider tests",
     "verda: Verda provider tests",
     "gcp: GCP provider tests",
+    "tensordock: TensorDock provider tests",
 ]
 
 [dependency-groups]

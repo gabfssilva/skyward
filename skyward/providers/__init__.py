@@ -24,6 +24,7 @@ from .aws.config import AWS
 from .container.config import Container
 from .gcp.config import GCP
 from .runpod.config import RunPod
+from .tensordock.config import TensorDock
 from .vastai.config import VastAI
 from .verda.config import Verda
 
@@ -33,6 +34,7 @@ __all__ = [
     "Container",
     "GCP",
     "RunPod",
+    "TensorDock",
     "VastAI",
     "Verda",
 ]

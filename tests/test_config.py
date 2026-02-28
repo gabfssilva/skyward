@@ -7,6 +7,7 @@ from skyward.config import _deep_merge, load_config, resolve_pool
 from skyward.providers.aws.config import AWS
 from skyward.providers.gcp.config import GCP
 from skyward.providers.runpod.config import RunPod
+from skyward.providers.tensordock.config import TensorDock
 from skyward.providers.vastai.config import VastAI
 from skyward.providers.verda.config import Verda
 
@@ -206,6 +207,22 @@ class TestResolvePool:
         assert isinstance(spec.provider, GCP)
         assert spec.provider.project == "my-project"
         assert spec.provider.zone == "us-central1-a"
+
+    def test_tensordock_pool(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            '[providers.td]\n'
+            'type = "tensordock"\n'
+            'location = "us"\n'
+            'storage_gb = 200\n'
+            '\n'
+            '[pools.gpu]\nprovider = "td"\nnodes = 1\n'
+        )
+        pool = resolve_pool("gpu", project_dir=tmp_path)
+        assert isinstance(pool, ComputePool)
+        spec = pool._specs[0]
+        assert isinstance(spec.provider, TensorDock)
+        assert spec.provider.location == "us"
+        assert spec.provider.storage_gb == 200
 
     def test_global_provider_project_pool(self, tmp_path: Path):
         global_toml = tmp_path / "defaults.toml"

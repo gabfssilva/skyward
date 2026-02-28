@@ -119,6 +119,11 @@ tasks:
     cmds:
       - uv run pytest -m "sanity and verda" {{.CLI_ARGS}}
 
+  test:sanity:tensordock:
+    desc: Run TensorDock sanity tests
+    cmds:
+      - uv run pytest -m "sanity and tensordock" {{.CLI_ARGS}}
+
   test:all:
     desc: Run unit + e2e tests
     cmds:

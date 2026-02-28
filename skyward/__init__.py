@@ -87,7 +87,7 @@ from .distributed import (
     queue,
     set,
 )
-from .providers import AWS, GCP, Container, RunPod, VastAI, Verda
+from .providers import AWS, GCP, Container, RunPod, TensorDock, VastAI, Verda
 
 __all__ = [
     "__version__",
@@ -112,6 +112,7 @@ __all__ = [
     "Container",
     "GCP",
     "RunPod",
+    "TensorDock",
     "VastAI",
     "Verda",
     "Image",

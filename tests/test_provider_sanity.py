@@ -12,6 +12,7 @@ Run individually:
 
 Run all sanity tests:
     uv run pytest -m sanity --no-header -q
+    uv run pytest -m tensordock --no-header -q
 """
 
 from __future__ import annotations
@@ -195,6 +196,35 @@ class TestVerdaSanity:
         with sky.App(console=False), sky.ComputePool(
             provider=sky.Verda(),
             accelerator=sky.accelerators.A100(),
+            nodes=NODES,
+            image=sky.Image(pip=["torch"]),
+        ) as p:
+            yield p
+
+    def test_single_dispatch(self, pool):
+        result = gpu_matmul() >> pool
+        _assert_single(result)
+
+    def test_broadcast(self, pool):
+        results = gpu_matmul() @ pool
+        _assert_broadcast(results)
+
+
+# ---------------------------------------------------------------------------
+# TensorDock
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.sanity
+@pytest.mark.tensordock
+@pytest.mark.timeout(TIMEOUT)
+@pytest.mark.xdist_group("tensordock")
+class TestTensorDockSanity:
+    @pytest.fixture(scope="class")
+    def pool(self):
+        with sky.App(console=False), sky.ComputePool(
+            provider=sky.TensorDock(),
+            accelerator=sky.accelerators.RTX_4090(),
             nodes=NODES,
             image=sky.Image(pip=["torch"]),
         ) as p:
