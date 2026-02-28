@@ -8,6 +8,7 @@ from skyward.providers.aws.config import AWS
 from skyward.providers.gcp.config import GCP
 from skyward.providers.runpod.config import RunPod
 from skyward.providers.vastai.config import VastAI
+from skyward.providers.thunder.config import ThunderCompute
 from skyward.providers.verda.config import Verda
 
 pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
@@ -206,6 +207,21 @@ class TestResolvePool:
         assert isinstance(spec.provider, GCP)
         assert spec.provider.project == "my-project"
         assert spec.provider.zone == "us-central1-a"
+
+    def test_thunder_pool(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            '[providers.tc]\n'
+            'type = "thunder"\n'
+            'api_token = "test-token-xxx"\n'
+            'mode = "prototyping"\n'
+            '\n'
+            '[pools.gpu]\nprovider = "tc"\nnodes = 1\n'
+        )
+        pool = resolve_pool("gpu", project_dir=tmp_path)
+        spec = pool._specs[0]
+        assert isinstance(spec.provider, ThunderCompute)
+        assert spec.provider.api_token == "test-token-xxx"
+        assert spec.provider.mode == "prototyping"
 
     def test_global_provider_project_pool(self, tmp_path: Path):
         global_toml = tmp_path / "defaults.toml"
