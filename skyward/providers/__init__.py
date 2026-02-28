@@ -12,6 +12,7 @@ Available providers:
 - GCP: Google Cloud Platform (Compute Engine, instance templates, bulk_insert)
 - RunPod: GPU cloud (pods, serverless endpoints)
 - VastAI: GPU marketplace (Docker containers, spot/bid pricing)
+- Thunder: Thunder Compute (GPU cloud, Quebec, per-minute billing)
 - Verda: GPU cloud (dedicated instances, spot pricing)
 
 NOTE: Only config classes are imported at module level to avoid pulling in
@@ -24,6 +25,7 @@ from .aws.config import AWS
 from .container.config import Container
 from .gcp.config import GCP
 from .runpod.config import RunPod
+from .thunder.config import ThunderCompute
 from .vastai.config import VastAI
 from .verda.config import Verda
 
@@ -33,6 +35,7 @@ __all__ = [
     "Container",
     "GCP",
     "RunPod",
+    "ThunderCompute",
     "VastAI",
     "Verda",
 ]
