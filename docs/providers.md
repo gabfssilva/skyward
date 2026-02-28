@@ -1,17 +1,18 @@
 # Cloud providers
 
-Skyward supports six providers. Five are cloud services — AWS, GCP, RunPod, Verda, VastAI — and one is local containers for development and CI. All implement the same `Provider` protocol, so the orchestration layer (actor system, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
+Skyward supports seven providers. Six are cloud services — AWS, GCP, RunPod, TensorDock, Verda, VastAI — and one is local containers for development and CI. All implement the same `Provider` protocol, so the orchestration layer (actor system, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
 
 Provider configs are lightweight frozen dataclasses. They hold configuration — region, API keys, disk sizes — but don't import any cloud SDK at module level. The SDK is loaded lazily when the pool starts, so `import skyward` stays fast regardless of which providers are installed.
 
 ## Provider comparison
 
-| Feature | AWS | GCP | RunPod | Verda | VastAI | Container |
-|---------|-----|-----|--------|-------|--------|-----------|
-| **GPUs** | H100, A100, T4, L4, Trainium, Inferentia | H100, A100, T4, L4, V100, H200 | H100, A100, A40, RTX series | H100, A100, H200, GB200 | Marketplace (varies) | None (CPU) |
-| **Spot Instances** | Yes (60-90% savings) | Yes (preemptible/spot) | Yes | Yes | Yes (bid-based) | N/A |
-| **Regions** | 20+ | 40+ zones | Global (Secure + Community) | FIN, ICL, ISR | Global marketplace | Local |
-| **Auth** | AWS credentials | Application Default Credentials | API key | Client ID + Secret | API key | None |
+| Feature | AWS | GCP | RunPod | TensorDock | Verda | VastAI | Container |
+|---------|-----|-----|--------|------------|-------|--------|-----------|
+| **GPUs** | H100, A100, T4, L4, Trainium, Inferentia | H100, A100, T4, L4, V100, H200 | H100, A100, A40, RTX series | H100, A100, L40, RTX series, V100 | H100, A100, H200, GB200 | Marketplace (varies) | None (CPU) |
+| **Spot Instances** | Yes (60-90% savings) | Yes (preemptible/spot) | Yes | No (on-demand only) | Yes | Yes (bid-based) | N/A |
+| **Regions** | 20+ | 40+ zones | Global (Secure + Community) | 100+ locations, 20+ countries | FIN, ICL, ISR | Global marketplace | Local |
+| **Auth** | AWS credentials | Application Default Credentials | API key | API key + token | Client ID + Secret | API key | None |
+| **Billing** | Per-second | Per-second | Per-second | Per-second | Per-second | Per-minute | Free |
 
 ## AWS
 
@@ -294,6 +295,51 @@ image_name = sky.VastAI.ubuntu(version="24.04", cuda="12.9.1")
 # → "nvcr.io/nvidia/cuda:12.9.1-runtime-ubuntu24.04"
 ```
 
+## TensorDock
+
+TensorDock is a GPU marketplace with bare-metal VMs across 100+ locations in 20+ countries. Per-second billing, on-demand only (no spot). Skyward queries available hostnodes, selects the cheapest matching your GPU requirements, and deploys VMs with cloud-init for SSH key injection.
+
+SSH keys are injected per-instance via cloud-init (TensorDock has no SSH key registration API). The SSH user is `user` (not root). Port forwarding maps internal ports to random external ports — Skyward handles this automatically.
+
+### Setup
+
+```bash
+export TENSORDOCK_API_KEY=your_api_key
+export TENSORDOCK_API_TOKEN=your_api_token
+```
+
+Get your credentials at: [https://console.tensordock.com/api](https://console.tensordock.com/api)
+
+### Usage
+
+```python
+import skyward as sky
+
+with sky.ComputePool(
+    provider=sky.TensorDock(location="us"),
+    accelerator=sky.accelerators.RTX_4090(),
+    nodes=2,
+) as pool:
+    result = train(data) >> pool
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `api_key` | `str or None` | `None` | API key (falls back to `TENSORDOCK_API_KEY`) |
+| `api_token` | `str or None` | `None` | API token (falls back to `TENSORDOCK_API_TOKEN`) |
+| `location` | `str or None` | `None` | Country code filter (e.g., `"us"`, `"de"`, `"gb"`). Global if not set. |
+| `storage_gb` | `int` | `100` | Disk storage per VM in GB |
+| `operating_system` | `str` | `"Ubuntu 22.04 LTS"` | OS image |
+| `instance_timeout` | `int` | `300` | Auto-shutdown in seconds |
+| `request_timeout` | `int` | `30` | HTTP request timeout in seconds |
+| `min_ram_gb` | `int or None` | `None` | Minimum RAM per VM in GB |
+| `min_vcpus` | `int or None` | `None` | Minimum vCPUs per VM |
+
+!!! note "Port forwarding"
+    TensorDock maps internal ports to random external ports. SSH is never on port 22 externally. Skyward reads the port mapping from the deploy response and configures SSH tunnels accordingly — no manual port configuration needed.
+
 ## Container
 
 The Container provider runs compute nodes as local containers — Docker, podman, nerdctl, or Apple's container CLI. No cloud credentials, no costs. Useful for development, CI testing, and validating your code before deploying to real hardware.
@@ -333,6 +379,8 @@ with sky.ComputePool(
 
 **Verda** — European data residency (Finland, Iceland, Israel). H100/A100/H200/GB200 availability with automatic region selection.
 
+**TensorDock** — Bare-metal VMs across 100+ locations with per-second billing. Good for RTX 4090, A100, H100 workloads without spot complexity. On-demand only.
+
 **VastAI** — Maximum cost savings through marketplace pricing. Consumer GPUs (RTX 4090, 3090) available alongside datacenter hardware. Overlay networks for multi-node training.
 
 **Container** — Local development and CI. Zero cost, instant provisioning. Validates your code end-to-end before deploying to a real provider.
@@ -361,6 +409,12 @@ with sky.ComputePool(
 
 1. The default region is `"FIN-01"` — try a different one or let auto-discovery find capacity
 2. Check your account's region access
+
+### TensorDock: "No hostnodes available"
+
+1. Try a different location or remove the `location` filter
+2. Try a different GPU type — hostnode availability is dynamic
+3. Check marketplace availability at [https://marketplace.tensordock.com](https://marketplace.tensordock.com)
 
 ### VastAI: "No offers available"
 
