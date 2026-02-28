@@ -9,6 +9,8 @@ Run individually:
     uv run pytest -m runpod --no-header -q
     uv run pytest -m vastai --no-header -q
     uv run pytest -m verda --no-header -q
+    uv run pytest -m hyperstack --no-header -q
+    uv run pytest -m lambda_cloud --no-header -q
 
 Run all sanity tests:
     uv run pytest -m sanity --no-header -q
@@ -194,6 +196,35 @@ class TestVerdaSanity:
     def pool(self):
         with sky.App(console=False), sky.ComputePool(
             provider=sky.Verda(),
+            accelerator=sky.accelerators.A100(),
+            nodes=NODES,
+            image=sky.Image(pip=["torch"]),
+        ) as p:
+            yield p
+
+    def test_single_dispatch(self, pool):
+        result = gpu_matmul() >> pool
+        _assert_single(result)
+
+    def test_broadcast(self, pool):
+        results = gpu_matmul() @ pool
+        _assert_broadcast(results)
+
+
+# ---------------------------------------------------------------------------
+# Hyperstack
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.sanity
+@pytest.mark.hyperstack
+@pytest.mark.timeout(TIMEOUT)
+@pytest.mark.xdist_group("hyperstack")
+class TestHyperstackSanity:
+    @pytest.fixture(scope="class")
+    def pool(self):
+        with sky.App(console=False), sky.ComputePool(
+            provider=sky.Hyperstack(),
             accelerator=sky.accelerators.A100(),
             nodes=NODES,
             image=sky.Image(pip=["torch"]),

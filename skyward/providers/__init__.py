@@ -14,6 +14,7 @@ Available providers:
 - RunPod: GPU cloud (pods, serverless endpoints)
 - VastAI: GPU marketplace (Docker containers, spot/bid pricing)
 - Verda: GPU cloud (dedicated instances, spot pricing)
+- Hyperstack: GPU cloud (bare-metal, environment-scoped resources)
 
 NOTE: Only config classes are imported at module level to avoid pulling in
 SDK dependencies (aioboto3, google-cloud-compute, etc.).
@@ -24,6 +25,7 @@ SDK dependencies (aioboto3, google-cloud-compute, etc.).
 from .aws.config import AWS
 from .container.config import Container
 from .gcp.config import GCP
+from .hyperstack.config import Hyperstack
 from .lambda_cloud.config import Lambda
 from .runpod.config import RunPod
 from .vastai.config import VastAI
@@ -34,6 +36,7 @@ __all__ = [
     "AWS",
     "Container",
     "GCP",
+    "Hyperstack",
     "Lambda",
     "RunPod",
     "VastAI",
