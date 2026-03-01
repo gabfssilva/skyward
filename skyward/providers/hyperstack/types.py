@@ -31,12 +31,20 @@ class ImageResponse(TypedDict):
     type: NotRequired[str]
 
 
+class EnvironmentFeatures(TypedDict):
+    """Features field from environment response."""
+
+    network_optimised: NotRequired[bool]
+    green_status: NotRequired[str]
+
+
 class EnvironmentResponse(TypedDict):
     """Environment grouping resources."""
 
     id: int
     name: str
     region: NotRequired[str]
+    features: NotRequired[EnvironmentFeatures]
 
 
 class KeypairResponse(TypedDict):
@@ -113,6 +121,14 @@ class PricebookEntry(TypedDict):
     value: NotRequired[float]
     original_value: NotRequired[float]
     discount_applied: NotRequired[bool]
+
+
+class AccessKeyResponse(TypedDict):
+    """Object storage access key from the API."""
+
+    access_key: str
+    secret_key: NotRequired[str]
+    id: int
 
 
 # =============================================================================

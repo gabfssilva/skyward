@@ -127,6 +127,33 @@ class TestMountVolumes:
         assert "s3fs b /mnt/s3fs/b" in script
         assert "ln -sfn /mnt/s3fs/b/datasets/ /data" in script
 
+    def test_path_style_option(self):
+        from skyward.providers.bootstrap.compose import resolve
+        from skyward.providers.bootstrap.ops import mount_volumes
+
+        volumes = (Volume(bucket="b", mount="/data"),)
+        endpoint = MountEndpoint(
+            endpoint="https://ca1.obj.nexgencloud.io",
+            access_key="ak",
+            secret_key="sk",
+            path_style=True,
+        )
+        script = resolve(mount_volumes(volumes, endpoint))
+        assert "use_path_request_style" in script
+
+    def test_no_path_style_by_default(self):
+        from skyward.providers.bootstrap.compose import resolve
+        from skyward.providers.bootstrap.ops import mount_volumes
+
+        volumes = (Volume(bucket="b", mount="/data"),)
+        endpoint = MountEndpoint(
+            endpoint="https://storage.googleapis.com",
+            access_key="ak",
+            secret_key="sk",
+        )
+        script = resolve(mount_volumes(volumes, endpoint))
+        assert "use_path_request_style" not in script
+
     def test_iam_role_when_no_credentials(self):
         from skyward.providers.bootstrap.compose import resolve
         from skyward.providers.bootstrap.ops import mount_volumes

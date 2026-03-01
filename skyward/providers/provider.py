@@ -90,6 +90,7 @@ class MountEndpoint:
     endpoint: str
     access_key: str | None = None
     secret_key: str | None = None
+    path_style: bool = False
 
 
 @runtime_checkable

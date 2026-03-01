@@ -14,6 +14,7 @@ from skyward.observability.logger import logger
 
 from .config import Hyperstack
 from .types import (
+    AccessKeyResponse,
     CreateVMPayload,
     CreateVMResponse,
     EnvironmentResponse,
@@ -248,6 +249,25 @@ class HyperstackClient:
                 "port_range_max": port_max,
             },
         )
+
+    # =========================================================================
+    # Object Storage Access Keys
+    # =========================================================================
+
+    async def create_access_key(self, region: str = "CANADA-1") -> AccessKeyResponse:
+        """Create an object storage access key.
+
+        The API returns fields at the top level (no wrapper key).
+        """
+        result = await self._request(
+            "POST", "/object-storage/access-keys",
+            json={"region": region},
+        )
+        return result
+
+    async def delete_access_key(self, access_key_id: int) -> None:
+        """Delete an object storage access key."""
+        await self._request("DELETE", f"/object-storage/access-keys/{access_key_id}")
 
     # =========================================================================
     # Pricing

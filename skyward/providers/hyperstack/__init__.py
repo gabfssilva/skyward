@@ -14,8 +14,10 @@ if TYPE_CHECKING:
     from .client import HyperstackClient, HyperstackError, get_api_key
     from .provider import HyperstackProvider, HyperstackSpecific
     from .types import (
+        AccessKeyResponse,
         CreateVMPayload,
         CreateVMResponse,
+        EnvironmentFeatures,
         EnvironmentResponse,
         FlavorResponse,
         ImageResponse,
@@ -42,9 +44,9 @@ def __getattr__(name: str) -> Any:
 
         return {"HyperstackProvider": HyperstackProvider, "HyperstackSpecific": HyperstackSpecific}[name]
     if name in (
-        "FlavorResponse", "ImageResponse", "EnvironmentResponse",
-        "KeypairResponse", "VMResponse", "CreateVMPayload",
-        "CreateVMResponse", "PricebookEntry",
+        "AccessKeyResponse", "FlavorResponse", "ImageResponse",
+        "EnvironmentFeatures", "EnvironmentResponse", "KeypairResponse",
+        "VMResponse", "CreateVMPayload", "CreateVMResponse", "PricebookEntry",
     ):
         from . import types
 
@@ -59,8 +61,10 @@ __all__ = [
     "HyperstackProvider",
     "HyperstackSpecific",
     "get_api_key",
+    "AccessKeyResponse",
     "FlavorResponse",
     "ImageResponse",
+    "EnvironmentFeatures",
     "EnvironmentResponse",
     "KeypairResponse",
     "VMResponse",

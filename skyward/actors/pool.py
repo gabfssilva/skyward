@@ -159,7 +159,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                         if not isinstance(provider, Mountable):
                             reply_to.tell(ProvisionFailed(
                                 reason="Provider does not support volumes. "
-                                       "Supported providers: AWS, GCP, RunPod.",
+                                       "Supported providers: AWS, GCP, Hyperstack, RunPod.",
                             ))
                             return Behaviors.stopped()
 

@@ -555,6 +555,8 @@ def mount_volumes(
             mount_log = f"/tmp/s3fs_{bucket}.log"
 
             opts = [f"url={endpoint.endpoint}"]
+            if endpoint.path_style:
+                opts.append("use_path_request_style")
             if endpoint.access_key is not None:
                 opts.append("passwd_file=/etc/s3fs-passwd")
             else:

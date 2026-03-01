@@ -1,6 +1,7 @@
 """Hyperstack provider implementation.
 
-Stateless provider — all mutable state flows through Cluster[HyperstackSpecific].
+Mutable state: object storage access keys (created in prepare, deleted in teardown).
+All other state flows through Cluster[HyperstackSpecific].
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from skyward.accelerators import Accelerator
 from skyward.api import PoolSpec
 from skyward.api.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
 from skyward.observability.logger import logger
-from skyward.providers.provider import Provider
+from skyward.providers.provider import Mountable, MountEndpoint, Provider
 from skyward.providers.ssh_keys import generate_key_name, get_local_ssh_key, get_ssh_key_path
 
 from .client import HyperstackClient, get_api_key
@@ -24,7 +25,7 @@ from .types import FlavorResponse, PricebookEntry, VMResponse, normalize_gpu_nam
 
 log = logger.bind(provider="hyperstack")
 
-_PREFERRED_IMAGE = "Ubuntu Server 22.04 LTS R535 CUDA 12.2"
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,13 +39,17 @@ class HyperstackSpecific:
     image_name: str
     region: str
     firewall_applied: frozenset[int] = frozenset()
+    network_optimised: bool = False
 
 
-class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific]):
-    """Stateless Hyperstack provider. Holds only immutable config."""
+class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific], Mountable[HyperstackSpecific]):
+    """Hyperstack provider with S3-compatible object storage support."""
 
     def __init__(self, config: Hyperstack) -> None:
         self._config = config
+        self._access_key: str | None = None
+        self._secret_key: str | None = None
+        self._access_key_id: int | None = None
 
     @classmethod
     async def create(cls, config: Hyperstack) -> HyperstackProvider:
@@ -53,6 +58,17 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific]):
     async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
         api_key = get_api_key(self._config)
         regions = self._config.region
+        has_volumes = bool(spec.volumes)
+
+        if has_volumes:
+            regions = _constrain_region_for_volumes(
+                regions, self._config.object_storage_region,
+            )
+
+        if self._config.network_optimised:
+            regions = _constrain_region_for_network(
+                regions, self._config.network_optimised_regions,
+            )
 
         async with HyperstackClient(api_key, config=self._config) as client:
             match regions:
@@ -79,10 +95,13 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific]):
             sample=dict(list(price_map.items())[:5]),
         )
 
+        net_regions = frozenset(
+            r.upper() for r in self._config.network_optimised_regions
+        )
         for flavor in flavors:
             if not _matches_spec(flavor, spec):
                 continue
-            yield _to_offer(flavor, price_map)
+            yield _to_offer(flavor, price_map, net_regions)
 
     async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[HyperstackSpecific]:
         api_key = get_api_key(self._config)
@@ -98,16 +117,40 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific]):
         async with HyperstackClient(api_key, config=self._config) as client:
             env = await client.create_environment(env_name, region)
             env_id = env["id"]
+            features = env.get("features") or {}
+            env_network_optimised = bool(features.get("network_optimised"))
             log.info(
-                "Created environment {name} (id={eid})",
-                name=env_name, eid=env_id,
+                "Created environment {name} (id={eid}, network_optimised={net})",
+                name=env_name, eid=env_id, net=env_network_optimised,
             )
+
+            if self._config.network_optimised and not env_network_optimised:
+                log.warning(
+                    "Requested network_optimised but environment {name} in "
+                    "region {region} reports network_optimised={actual}",
+                    name=env_name, region=region, actual=env_network_optimised,
+                )
 
             await client.import_keypair(env_name, key_name, public_key)
             log.info("Imported SSH keypair {name}", name=key_name)
 
-            image_name = await _resolve_image(client, region)
+            image_name = self._config.image or await _resolve_image(client, region)
             log.info("Resolved image: {img}", img=image_name)
+
+            if spec.volumes:
+                key = await client.create_access_key(
+                    region=self._config.object_storage_region,
+                )
+                self._access_key = key["access_key"]
+                self._secret_key = key.get("secret_key", "")
+                self._access_key_id = key["id"]
+                log.info("Created object storage access key for volumes")
+
+                buckets = {v.bucket for v in spec.volumes}
+                await _ensure_buckets(
+                    self._access_key, self._secret_key, buckets,
+                    endpoint=self._config.object_storage_endpoint,
+                )
 
         return Cluster(
             id=f"hyperstack-{uuid.uuid4().hex[:8]}",
@@ -125,6 +168,7 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific]):
                 flavor_name=flavor_name,
                 image_name=image_name,
                 region=region,
+                network_optimised=env_network_optimised,
             ),
         )
 
@@ -218,12 +262,27 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific]):
 
         return cluster
 
+    async def mount_endpoint(self, cluster: Cluster[HyperstackSpecific]) -> MountEndpoint:
+        if self._access_key is None or self._secret_key is None:
+            raise RuntimeError("Access key not created — call prepare() with volumes first")
+        return MountEndpoint(
+            endpoint=self._config.object_storage_endpoint,
+            access_key=self._access_key,
+            secret_key=self._secret_key,
+            path_style=True,
+        )
+
     async def teardown(
         self, cluster: Cluster[HyperstackSpecific],
     ) -> Cluster[HyperstackSpecific]:
         api_key = get_api_key(self._config)
 
         async with HyperstackClient(api_key, config=self._config) as client:
+            if self._access_key_id:
+                with suppress(Exception):
+                    await client.delete_access_key(self._access_key_id)
+                    log.info("Deleted object storage access key")
+                self._access_key_id = None
             instance_ids = tuple(inst.id for inst in cluster.instances)
             if instance_ids:
                 await asyncio.gather(*(
@@ -260,6 +319,100 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific]):
 # =============================================================================
 # Helpers
 # =============================================================================
+
+
+async def _ensure_buckets(
+    access_key: str,
+    secret_key: str,
+    buckets: set[str],
+    *,
+    endpoint: str,
+) -> None:
+    """Create S3 buckets that don't exist yet via the S3-compatible API."""
+    import aioboto3
+    from botocore.exceptions import ClientError
+
+    session = aioboto3.Session()
+    async with session.client(  # pyright: ignore[reportGeneralTypeIssues]
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name="us-east-1",
+    ) as s3:
+        for bucket in sorted(buckets):
+            try:
+                await s3.head_bucket(Bucket=bucket)
+                log.debug("Bucket {b} already exists", b=bucket)
+            except ClientError:
+                await s3.create_bucket(Bucket=bucket)
+                log.info("Created bucket {b}", b=bucket)
+
+
+def _constrain_region_for_volumes(
+    regions: str | tuple[str, ...] | None,
+    storage_region: str,
+) -> str | tuple[str, ...]:
+    """Constrain region selection when volumes are requested.
+
+    Object storage is only available in a specific region. When no region
+    is specified, automatically select it. When a specific region is set,
+    validate it includes the storage region.
+    """
+    match regions:
+        case None:
+            log.info("Volumes requested — restricting offers to {r}", r=storage_region)
+            return storage_region
+        case str() if regions.upper() != storage_region.upper():
+            raise ValueError(
+                f"Volumes require region {storage_region}, "
+                f"but region is set to '{regions}'."
+            )
+        case tuple() if storage_region.upper() not in {r.upper() for r in regions}:
+            raise ValueError(
+                f"Volumes require region {storage_region}, "
+                f"but configured regions {regions} do not include it."
+            )
+    return regions
+
+
+def _constrain_region_for_network(
+    regions: str | tuple[str, ...] | None,
+    allowed_regions: tuple[str, ...],
+) -> str | tuple[str, ...]:
+    """Constrain region selection when network_optimised is requested.
+
+    Network-optimised environments (SR-IOV, up to 350 Gbps) are only
+    available in certain regions. When no region is specified, restrict
+    to network-optimised regions. When specific regions are set, validate
+    they are all network-optimised.
+    """
+    allowed_upper = {r.upper() for r in allowed_regions}
+    match regions:
+        case None:
+            allowed = tuple(sorted(allowed_regions))
+            log.info(
+                "Network optimised — restricting offers to {r}", r=allowed,
+            )
+            return allowed
+        case str() if regions.upper() not in allowed_upper:
+            raise ValueError(
+                f"network_optimised=True requires a supported region "
+                f"({', '.join(sorted(allowed_regions))}), "
+                f"but region is set to '{regions}'."
+            )
+        case tuple():
+            unsupported = {
+                r for r in regions
+                if r.upper() not in allowed_upper
+            }
+            if unsupported:
+                raise ValueError(
+                    f"network_optimised=True requires all regions to be "
+                    f"network-optimised ({', '.join(sorted(allowed_regions))}), "
+                    f"but {unsupported} are not supported."
+                )
+    return regions
 
 
 async def _ensure_firewall(
@@ -366,7 +519,11 @@ def _matches_spec(flavor: FlavorResponse, spec: PoolSpec) -> bool:
     return not (spec.accelerator_count and flavor.get("gpu_count", 0) != spec.accelerator_count)
 
 
-def _to_offer(flavor: FlavorResponse, price_map: dict[str, float]) -> Offer:
+def _to_offer(
+    flavor: FlavorResponse,
+    price_map: dict[str, float],
+    network_optimised_regions: frozenset[str],
+) -> Offer:
     """Convert a Hyperstack flavor to a Skyward Offer."""
     gpu_name = flavor.get("gpu", "")
     gpu_count = flavor.get("gpu_count", 0)
@@ -384,6 +541,7 @@ def _to_offer(flavor: FlavorResponse, price_map: dict[str, float]) -> Offer:
     gpu_upper = gpu_name.upper()
     per_gpu = price_map.get(gpu_upper, 0.0)
     hourly = per_gpu * gpu_count
+    region = flavor.get("region_name", "")
 
     return Offer(
         id=str(flavor["id"]),
@@ -391,7 +549,11 @@ def _to_offer(flavor: FlavorResponse, price_map: dict[str, float]) -> Offer:
         spot_price=None,
         on_demand_price=hourly if hourly > 0 else None,
         billing_unit="hour",
-        specific={"flavor_name": flavor["name"], "region": flavor.get("region_name", "")},
+        specific={
+            "flavor_name": flavor["name"],
+            "region": region,
+            "network_optimised": region.upper() in network_optimised_regions,
+        },
     )
 
 
@@ -412,25 +574,22 @@ def _build_instance(
 
 
 async def _resolve_image(client: HyperstackClient, region: str) -> str:
-    """Find the best Ubuntu + CUDA image available."""
+    """Find the newest Ubuntu + CUDA image available.
+
+    Priority: Ubuntu + CUDA (newest first), then any Ubuntu, then any image.
+    """
     images = await client.list_images(region=region)
+    if not images:
+        raise RuntimeError(f"No images found in region {region}")
 
-    for img in images:
-        if img["name"] == _PREFERRED_IMAGE:
-            return img["name"]
+    by_date = sorted(images, key=lambda i: i.get("created_at", ""), reverse=True)
 
-    # Fallback: any Ubuntu image with CUDA
-    for img in images:
-        name = img["name"].lower()
-        if "ubuntu" in name and "cuda" in name:
-            return img["name"]
+    ubuntu_cuda = [i for i in by_date if "ubuntu" in i["name"].lower() and "cuda" in i["name"].lower()]
+    if ubuntu_cuda:
+        return ubuntu_cuda[0]["name"]
 
-    # Last resort: any Ubuntu image
-    for img in images:
-        if "ubuntu" in img["name"].lower():
-            return img["name"]
+    ubuntu = [i for i in by_date if "ubuntu" in i["name"].lower()]
+    if ubuntu:
+        return ubuntu[0]["name"]
 
-    if images:
-        return images[0]["name"]
-
-    raise RuntimeError(f"No images found in region {region}")
+    return by_date[0]["name"]
