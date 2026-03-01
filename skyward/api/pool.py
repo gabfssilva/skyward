@@ -594,9 +594,9 @@ class ComputePool:
                 self._context_token = None
 
             if self._active:
-                self._run_sync_with_timeout(self._stop_async(), timeout=30.0)
+                self._run_sync_with_timeout(self._stop_async(), timeout=60.0)
         except TimeoutError:
-            logger.warning("Pool stop timed out after 30s, forcing cleanup")
+            logger.warning("Pool stop timed out after 60s, forcing cleanup")
         except Exception as e:
             logger.warning("Error stopping pool: {err}", err=e)
         except BaseException as e:
@@ -1015,7 +1015,7 @@ class ComputePool:
             await self._system.ask(
                 self._pool_ref,
                 lambda reply_to: StopPool(reply_to=reply_to),
-                timeout=30.0,
+                timeout=60.0,
             )
             logger.debug("StopPool completed, cluster destroyed")
 

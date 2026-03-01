@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .config import RunPod
 
-from skyward.infra.http import BearerAuth, HttpClient, HttpError
+import httpx
+
 from skyward.infra.retry import on_status_code, retry
 from skyward.observability.logger import logger
 
@@ -150,18 +151,21 @@ class RunPodClient:
         self._api_key = api_key
         self._config = config or RunPod()
         self._log = logger.bind(provider="runpod", component="client")
-        self._http = HttpClient(
-            RUNPOD_API_BASE,
-            BearerAuth(api_key),
-            timeout=self._config.request_timeout,
-            default_headers={"Content-Type": "application/json"},
+        self._http = httpx.AsyncClient(
+            base_url=RUNPOD_API_BASE,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            timeout=httpx.Timeout(self._config.request_timeout),
         )
 
     async def __aenter__(self) -> RunPodClient:
         return self
 
     async def __aexit__(self, *_args: object) -> None:
-        await self._http.close()
+        await self._http.aclose()
 
     async def _request(
         self,
@@ -170,14 +174,14 @@ class RunPodClient:
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        try:
-            return await self._http.request(method, path, json=json, params=params)
-        except HttpError as e:
+        resp = await self._http.request(method, path, json=json, params=params)
+        if resp.status_code >= 400:
             self._log.warning(
                 "API error {method} {path}: {status}",
-                method=method, path=path, status=e.status,
+                method=method, path=path, status=resp.status_code,
             )
-            raise RunPodError(f"API error {e.status}: {e.body}") from e
+            raise RunPodError(f"API error {resp.status_code}: {resp.text}")
+        return resp.json() if resp.content else None
 
     # =========================================================================
     # Pod Management
@@ -288,30 +292,33 @@ class RunPodClient:
     ) -> dict[str, Any]:
         op_name = query.strip().split("(")[0].split("{")[0].strip().split()[-1]
         self._log.debug("Executing GraphQL: {op}", op=op_name)
-        try:
-            async with HttpClient(
-                RUNPOD_GRAPHQL_URL,
-                BearerAuth(self._api_key),
-                timeout=self._config.request_timeout * 2,
-                default_headers={"Content-Type": "application/json"},
-            ) as http:
-                data = await http.request(
-                    "POST", "", json={"query": query, "variables": variables or {}}
-                )
+        async with httpx.AsyncClient(
+            base_url=RUNPOD_GRAPHQL_URL,
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            timeout=httpx.Timeout(self._config.request_timeout * 2),
+        ) as http:
+            resp = await http.post(
+                "", json={"query": query, "variables": variables or {}}
+            )
+            if resp.status_code >= 400:
+                raise RunPodError(f"API error {resp.status_code}: {resp.text}")
+            data = resp.json() if resp.content else None
 
-            match data:
-                case dict() as d if "errors" in d:
-                    self._log.warning(
-                        "GraphQL error in {op}: {errors}",
-                        op=op_name, errors=d["errors"],
-                    )
-                    raise RunPodError(f"GraphQL error: {d['errors']}")
-                case dict() as d:
-                    return d.get("data", {})
-                case _:
-                    return {}
-        except HttpError as e:
-            raise RunPodError(f"API error {e.status}: {e.body}") from e
+        match data:
+            case dict() as d if "errors" in d:
+                self._log.warning(
+                    "GraphQL error in {op}: {errors}",
+                    op=op_name, errors=d["errors"],
+                )
+                raise RunPodError(f"GraphQL error: {d['errors']}")
+            case dict() as d:
+                return d.get("data", {})
+            case _:
+                return {}
 
     # =========================================================================
     # SSH Key Management (via GraphQL)

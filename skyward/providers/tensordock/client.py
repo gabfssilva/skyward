@@ -1,14 +1,16 @@
 """TensorDock API v2 client.
 
-Uses the standard HttpClient + BearerAuth pattern. The api_token doubles
-as the Bearer token for the v2 API at dashboard.tensordock.com.
+Uses httpx.AsyncClient for HTTP. The api_token doubles as the Bearer
+token for the v2 API at dashboard.tensordock.com.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from skyward.infra.http import BearerAuth, HttpClient, HttpError
+import httpx
+
+from skyward.infra.http import HttpError
 from skyward.infra.retry import on_status_code, retry
 from skyward.infra.throttle import throttle
 from skyward.observability.logger import logger
@@ -40,16 +42,22 @@ class TensorDockClient:
     """Async client for TensorDock v2 API."""
 
     def __init__(self, api_token: str, *, timeout: int = 30) -> None:
-        self._http = HttpClient(
-            TENSORDOCK_API_BASE,
-            BearerAuth(api_token),
-            timeout=timeout,
+        self._http = httpx.AsyncClient(
+            base_url=TENSORDOCK_API_BASE,
+            headers={
+                "Authorization": f"Bearer {api_token}",
+                "Accept": "application/json",
+            },
+            timeout=httpx.Timeout(timeout),
         )
-        self._public = HttpClient(TENSORDOCK_API_BASE, timeout=timeout)
+        self._public = httpx.AsyncClient(
+            base_url=TENSORDOCK_API_BASE,
+            timeout=httpx.Timeout(timeout),
+        )
 
     async def close(self) -> None:
-        await self._http.close()
-        await self._public.close()
+        await self._http.aclose()
+        await self._public.aclose()
 
     async def __aenter__(self) -> TensorDockClient:
         return self
@@ -64,10 +72,13 @@ class TensorDockClient:
     async def list_locations(self) -> list[Location]:
         """List all locations with GPU availability. No auth required."""
         try:
-            data = await self._public.request("GET", "/api/v2/locations")
+            resp = await self._public.request("GET", "/api/v2/locations")
+            if resp.status_code >= 400:
+                raise HttpError(status=resp.status_code, body=resp.text)
         except HttpError as e:
             raise _wrap(e) from e
-        return data.get("data", {}).get("locations", [])
+        data = resp.json() if resp.content else None
+        return data.get("data", {}).get("locations", []) if data else []
 
     # ── Auth ─────────────────────────────────────────────────────────
 
@@ -75,11 +86,12 @@ class TensorDockClient:
     async def test_auth(self) -> bool:
         """Verify credentials via POST /api/v2/auth/test."""
         try:
-            data: V2AuthTestResponse = await self._http.request(
-                "POST", "/api/v2/auth/test",
-            )
+            resp = await self._http.request("POST", "/api/v2/auth/test")
+            if resp.status_code >= 400:
+                raise HttpError(status=resp.status_code, body=resp.text)
         except HttpError:
             return False
+        data: V2AuthTestResponse = resp.json() if resp.content else {"success": False}
         return data.get("success", False)
 
     # ── Instances ────────────────────────────────────────────────────
@@ -98,6 +110,7 @@ class TensorDockClient:
         storage_gb: int,
         location_id: str,
         ssh_key: str,
+        port_forwards: list[dict[str, int]] | None = None,
         cloud_init: dict[str, Any] | None = None,
         dedicated_ip: bool = False,
     ) -> V2InstanceResponse:
@@ -114,29 +127,51 @@ class TensorDockClient:
             },
             "location_id": location_id,
             "ssh_key": ssh_key,
-            "useDedicatedIp": dedicated_ip,
         }
+        if dedicated_ip:
+            attributes["useDedicatedIp"] = True
+        elif port_forwards:
+            attributes["port_forwards"] = port_forwards
         if cloud_init:
             attributes["cloud_init"] = cloud_init
 
         body = {"data": {"type": "virtualmachine", "attributes": attributes}}
 
         try:
-            data = await self._http.request("POST", "/api/v2/instances", json=body)
+            resp = await self._http.request("POST", "/api/v2/instances", json=body)
+            if resp.status_code >= 400:
+                raise HttpError(status=resp.status_code, body=resp.text)
         except HttpError as e:
             raise _wrap(e) from e
+        data = resp.json() if resp.content else {}
         return data.get("data", data)
+
+    @retry(on=on_status_code(429, 503), max_attempts=3, base_delay=1.0)
+    @throttle(max_concurrent=2, interval=1.0)
+    async def list_instances(self) -> list[V2InstanceResponse]:
+        """List all instances."""
+        try:
+            resp = await self._http.request("GET", "/api/v2/instances")
+            if resp.status_code >= 400:
+                raise HttpError(status=resp.status_code, body=resp.text)
+        except HttpError as e:
+            raise _wrap(e) from e
+        data = resp.json() if resp.content else {}
+        return data.get("data", {}).get("instances", [])
 
     @retry(on=on_status_code(429, 503), max_attempts=5, base_delay=1.0)
     @throttle(max_concurrent=2, interval=1.0)
     async def get_instance(self, instance_id: str) -> V2InstanceResponse | None:
         """Get instance details. Returns None if not found."""
         try:
-            data = await self._http.request("GET", f"/api/v2/instances/{instance_id}")
+            resp = await self._http.request("GET", f"/api/v2/instances/{instance_id}")
+            if resp.status_code >= 400:
+                raise HttpError(status=resp.status_code, body=resp.text)
         except HttpError as e:
             if e.status == 404:
                 return None
             raise _wrap(e) from e
+        data = resp.json() if resp.content else None
         return data.get("data", data) if data else None
 
     @retry(on=on_status_code(429, 503), max_attempts=5, base_delay=1.0)
@@ -144,7 +179,9 @@ class TensorDockClient:
     async def delete_instance(self, instance_id: str) -> None:
         """Delete an instance."""
         try:
-            await self._http.request("DELETE", f"/api/v2/instances/{instance_id}")
+            resp = await self._http.request("DELETE", f"/api/v2/instances/{instance_id}")
+            if resp.status_code >= 400:
+                raise HttpError(status=resp.status_code, body=resp.text)
         except HttpError as e:
             if e.status == 404:
                 log.warning("Instance {id} already deleted", id=instance_id)
@@ -155,7 +192,9 @@ class TensorDockClient:
     async def start_instance(self, instance_id: str) -> None:
         """Start a stopped instance."""
         try:
-            await self._http.request("POST", f"/api/v2/instances/{instance_id}/start")
+            resp = await self._http.request("POST", f"/api/v2/instances/{instance_id}/start")
+            if resp.status_code >= 400:
+                raise HttpError(status=resp.status_code, body=resp.text)
         except HttpError as e:
             raise _wrap(e) from e
 
@@ -163,6 +202,8 @@ class TensorDockClient:
     async def stop_instance(self, instance_id: str) -> None:
         """Stop a running instance."""
         try:
-            await self._http.request("POST", f"/api/v2/instances/{instance_id}/stop")
+            resp = await self._http.request("POST", f"/api/v2/instances/{instance_id}/stop")
+            if resp.status_code >= 400:
+                raise HttpError(status=resp.status_code, body=resp.text)
         except HttpError as e:
             raise _wrap(e) from e

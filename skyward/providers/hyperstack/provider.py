@@ -8,7 +8,8 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass
+from contextlib import suppress
+from dataclasses import dataclass, replace
 
 from skyward.accelerators import Accelerator
 from skyward.api import PoolSpec
@@ -36,6 +37,7 @@ class HyperstackSpecific:
     flavor_name: str
     image_name: str
     region: str
+    firewall_applied: frozenset[int] = frozenset()
 
 
 class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific]):
@@ -50,12 +52,32 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific]):
 
     async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
         api_key = get_api_key(self._config)
+        regions = self._config.region
 
         async with HyperstackClient(api_key, config=self._config) as client:
-            flavors = await client.list_flavors(region=self._config.region)
+            match regions:
+                case str():
+                    flavors = await client.list_flavors(region=regions)
+                case tuple():
+                    all_flavors = await client.list_flavors()
+                    allowed = {r.upper() for r in regions}
+                    flavors = [
+                        f for f in all_flavors
+                        if f.get("region_name", "").upper() in allowed
+                    ]
+                case None:
+                    flavors = await client.list_flavors()
             pricebook = await client.get_pricebook()
 
-        price_map = _build_price_map(pricebook, self._config.region)
+        price_map = _build_price_map(pricebook)
+
+        gpu_names = {f.get("gpu", "") for f in flavors if f.get("gpu")}
+        log.debug(
+            "Available GPUs: {gpus}, spec={spec}, price_map_sample={sample}",
+            gpus=gpu_names,
+            spec=spec.accelerator_name,
+            sample=dict(list(price_map.items())[:5]),
+        )
 
         for flavor in flavors:
             if not _matches_spec(flavor, spec):
@@ -69,7 +91,9 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific]):
         key_name = generate_key_name(public_path)
 
         env_name = f"skyward-{uuid.uuid4().hex[:8]}"
-        region = self._config.region
+        offer_data: dict[str, str] = offer.specific
+        flavor_name = offer_data["flavor_name"]
+        region = offer_data["region"]
 
         async with HyperstackClient(api_key, config=self._config) as client:
             env = await client.create_environment(env_name, region)
@@ -84,8 +108,6 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific]):
 
             image_name = await _resolve_image(client, region)
             log.info("Resolved image: {img}", img=image_name)
-
-        flavor_name: str = offer.specific
 
         return Cluster(
             id=f"hyperstack-{uuid.uuid4().hex[:8]}",
@@ -144,15 +166,7 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific]):
                 result = await client.create_vms(payload)
 
                 for vm in result.get("instances", []):
-                    instances.append(
-                        Instance(
-                            id=str(vm["id"]),
-                            status="provisioning",
-                            offer=cluster.offer,
-                            spot=False,
-                            region=specific.region,
-                        ),
-                    )
+                    instances.append(_build_instance(vm, "provisioning", cluster))
 
                 remaining -= batch_size
 
@@ -164,20 +178,23 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific]):
         instance_id: str,
     ) -> tuple[Cluster[HyperstackSpecific], Instance | None]:
         api_key = get_api_key(self._config)
+        vm_id = int(instance_id)
 
         async with HyperstackClient(api_key, config=self._config) as client:
-            info = await client.get_vm(int(instance_id))
+            info = await client.get_vm(vm_id)
 
-        if not info:
-            return cluster, None
-
-        match info.get("status", "").upper():
-            case "SHUTOFF" | "HIBERNATED" | "ERROR" | "DELETING" | "DELETED":
+            if not info:
                 return cluster, None
-            case "ACTIVE" if info.get("floating_ip"):
-                return cluster, _build_instance(info, "provisioned", cluster)
-            case _:
-                return cluster, _build_instance(info, "provisioning", cluster)
+
+            match info.get("status", "").upper():
+                case "SHUTOFF" | "HIBERNATED" | "ERROR" | "DELETING" | "DELETED":
+                    return cluster, None
+                case "ACTIVE" if info.get("floating_ip"):
+                    cluster, ready = await _ensure_firewall(client, cluster, vm_id)
+                    status = "provisioned" if ready else "provisioning"
+                    return cluster, _build_instance(info, status, cluster)
+                case _:
+                    return cluster, _build_instance(info, "provisioning", cluster)
 
     async def terminate(
         self,
@@ -207,6 +224,23 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific]):
         api_key = get_api_key(self._config)
 
         async with HyperstackClient(api_key, config=self._config) as client:
+            instance_ids = tuple(inst.id for inst in cluster.instances)
+            if instance_ids:
+                await asyncio.gather(*(
+                    client.delete_vm(int(iid))
+                    for iid in instance_ids
+                ), return_exceptions=True)
+
+                deadline = asyncio.get_event_loop().time() + self._config.teardown_timeout
+                interval = self._config.teardown_poll_interval
+                while asyncio.get_event_loop().time() < deadline:
+                    await asyncio.sleep(interval)
+                    vms = await asyncio.gather(*(
+                        client.get_vm(int(iid)) for iid in instance_ids
+                    ), return_exceptions=True)
+                    if all(v is None or isinstance(v, Exception) for v in vms):
+                        break
+
             try:
                 await client.delete_environment(cluster.specific.environment_id)
                 log.info(
@@ -228,6 +262,67 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific]):
 # =============================================================================
 
 
+async def _ensure_firewall(
+    client: HyperstackClient,
+    cluster: Cluster[HyperstackSpecific],
+    vm_id: int,
+) -> tuple[Cluster[HyperstackSpecific], bool]:
+    """Open SSH (22) publicly and all ports between cluster peers.
+
+    Returns ``(cluster, ready)`` where *ready* is True only when SSH and
+    **all** peer rules have been applied.  When a peer VM hasn't received
+    its private IP yet the function returns ``ready=False`` so the caller
+    keeps the instance in ``"provisioning"`` and the node actor continues
+    polling until every peer is reachable.
+    """
+    specific = cluster.specific
+
+    if vm_id in specific.firewall_applied:
+        return cluster, True
+
+    with suppress(Exception):
+        await client.add_firewall_rule(vm_id, port_min=22, port_max=22)
+
+    peers: list[tuple[int, str]] = []
+    all_resolved = True
+    for inst in cluster.instances:
+        peer_id = int(inst.id)
+        if peer_id == vm_id:
+            continue
+        pip = inst.private_ip
+        if not pip:
+            peer_info = await client.get_vm(peer_id)
+            pip = peer_info.get("fixed_ip", "") if peer_info else ""
+        if pip:
+            peers.append((peer_id, pip))
+        else:
+            all_resolved = False
+
+    log.debug(
+        "Firewall VM {vm_id}: peers_resolved={peers}, all_resolved={ok}",
+        vm_id=vm_id, peers=peers, ok=all_resolved,
+    )
+
+    if not all_resolved:
+        return cluster, False
+
+    try:
+        await asyncio.gather(*(
+            client.add_firewall_rule(
+                vm_id, port_min=1, port_max=65535,
+                protocol=proto, remote_ip=f"{peer_ip}/32",
+            )
+            for _, peer_ip in peers
+            for proto in ("tcp", "udp")
+        ))
+    except Exception as e:
+        log.warning("Peer firewall rules for VM {vm_id} failed: {e}", vm_id=vm_id, e=e)
+        return cluster, False
+
+    updated = replace(specific, firewall_applied=specific.firewall_applied | {vm_id})
+    return replace(cluster, specific=updated), True
+
+
 def _self_destruction_script(ttl: int, shutdown_command: str) -> str:
     from skyward.providers.bootstrap.compose import resolve
     from skyward.providers.bootstrap.ops import instance_timeout
@@ -238,17 +333,22 @@ def _self_destruction_script(ttl: int, shutdown_command: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _build_price_map(
-    pricebook: list[PricebookEntry], region: str,
-) -> dict[str, float]:
-    """Build GPU name -> price/GPU/hr map filtered by region."""
+def _build_price_map(pricebook: list[PricebookEntry]) -> dict[str, float]:
+    """Build resource name -> hourly price map.
+
+    The pricebook entries use ``name`` for the resource/GPU and ``value``
+    for the hourly price. Entries have no region field — the list is global.
+    """
     prices: dict[str, float] = {}
     for entry in pricebook:
-        entry_region = entry.get("region_name", "")
-        gpu_name = entry.get("gpu_name", "")
-        price = entry.get("price_per_gpu_hr", 0.0)
-        if entry_region.upper() == region.upper() and gpu_name and price:
-            prices[gpu_name.upper()] = price
+        name = entry.get("name", "")
+        raw = entry.get("value", 0)
+        try:
+            price = float(raw) if raw else 0.0
+        except (ValueError, TypeError):
+            continue
+        if name and price > 0:
+            prices[name.upper()] = price
     return prices
 
 
@@ -291,7 +391,7 @@ def _to_offer(flavor: FlavorResponse, price_map: dict[str, float]) -> Offer:
         spot_price=None,
         on_demand_price=hourly if hourly > 0 else None,
         billing_unit="hour",
-        specific=flavor["name"],
+        specific={"flavor_name": flavor["name"], "region": flavor.get("region_name", "")},
     )
 
 

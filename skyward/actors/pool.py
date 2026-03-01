@@ -235,9 +235,16 @@ def pool_actor() -> Behavior[PoolMsg]:
                         max=spec.max_provision_attempts,
                     )
 
+                    from dataclasses import replace as _replace
+
                     new_spawned = dict(spawned)
                     remaining = spec.nodes - len(new_spawned)
                     to_spawn = instances[:remaining]
+
+                    updated_cluster = _replace(
+                        updated_cluster,
+                        instances=(*updated_cluster.instances, *to_spawn),
+                    )
 
                     for instance in to_spawn:
                         nid = len(new_spawned)

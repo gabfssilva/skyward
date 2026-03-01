@@ -6,7 +6,9 @@ import os
 from pathlib import Path
 from typing import Any
 
-from skyward.infra.http import HttpClient, HttpError
+import httpx
+
+from skyward.infra.http import HttpError
 from skyward.infra.retry import on_status_code, retry
 from skyward.observability.logger import logger
 
@@ -20,12 +22,12 @@ class ThunderError(Exception):
 
 
 class ThunderClient:
-    def __init__(self, http_client: HttpClient) -> None:
+    def __init__(self, http_client: httpx.AsyncClient) -> None:
         self._http = http_client
         self._log = logger.bind(provider="thunder", component="client")
 
     async def close(self) -> None:
-        await self._http.close()
+        await self._http.aclose()
 
     async def _request(
         self,
@@ -36,7 +38,10 @@ class ThunderClient:
     ) -> Any:
         self._log.debug("{method} {path}", method=method, path=path)
         try:
-            return await self._http.request(method, path, json=json, params=params)
+            resp = await self._http.request(method, path, json=json, params=params)
+            if resp.status_code >= 400:
+                raise HttpError(status=resp.status_code, body=resp.text)
+            return resp.json() if resp.content else None
         except HttpError as e:
             self._log.warning(
                 "API error {method} {path}: {status}",

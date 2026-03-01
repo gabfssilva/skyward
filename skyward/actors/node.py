@@ -141,8 +141,8 @@ def node_actor(
         start_time = asyncio.get_event_loop().time()
 
         async def _do_poll() -> _PollResult:
-            _, inst = await provider.get_instance(cluster, instance_id)
-            return _PollResult(instance=inst)
+            updated_cluster, inst = await provider.get_instance(cluster, instance_id)
+            return _PollResult(instance=inst, cluster=updated_cluster)
 
         ctx.pipe_to_self(
             _do_poll(),
@@ -164,13 +164,15 @@ def node_actor(
             match msg:
                 case HeadAddressKnown() as h:
                     return polling(cluster, provider, instance_id, start_time, h, pending_tasks)
-                case _PollResult(instance=inst) if (
+                case _PollResult(instance=inst, cluster=updated) if (
                     inst and inst.status == "provisioned" and inst.ip
                 ):
-                    ni = _bind_to_node(inst, node_id, provider_name, cluster)
+                    c = updated or cluster
+                    ni = _bind_to_node(inst, node_id, provider_name, c)
                     log.info("Instance ready at {ip}", ip=inst.ip)
-                    return _start_connecting(ctx, cluster, provider, ni, head_info, pending_tasks)
-                case _PollResult():
+                    return _start_connecting(ctx, c, provider, ni, head_info, pending_tasks)
+                case _PollResult(cluster=updated):
+                    c = updated or cluster
                     elapsed = asyncio.get_event_loop().time() - start_time
                     if elapsed > poll_timeout:
                         log.error("Instance not ready within {t}s", t=poll_timeout)
@@ -180,20 +182,20 @@ def node_actor(
                             )
                         )
                         return _start_replacing(
-                            ctx, cluster, provider, instance_id, pending_tasks, head_info
+                            ctx, c, provider, instance_id, pending_tasks, head_info
                         )
 
                     async def _poll_after_delay() -> _PollResult:
                         await asyncio.sleep(poll_interval)
-                        _, inst = await provider.get_instance(cluster, instance_id)
-                        return _PollResult(instance=inst)
+                        updated_cluster, inst = await provider.get_instance(c, instance_id)
+                        return _PollResult(instance=inst, cluster=updated_cluster)
 
                     ctx.pipe_to_self(
                         _poll_after_delay(),
                         on_failure=lambda e: _PollResult(instance=None),
                     )
                     return polling(
-                        cluster, provider, instance_id, start_time, head_info, pending_tasks
+                        c, provider, instance_id, start_time, head_info, pending_tasks
                     )
                 case Preempted():
                     log.warning("Preempted during polling")
@@ -287,6 +289,11 @@ def node_actor(
     ) -> Behavior[NodeMsg]:
         spec = cluster.spec
         log.info("Starting bootstrap")
+
+        async def _close_transport() -> None:
+            await _cleanup_transport(transport, listener)
+
+        ctx.on_stop(_close_transport)
 
         if not _skip_monitor:
             ctx.spawn(

@@ -12,7 +12,7 @@ from skyward.observability.logger import logger
 from skyward.providers.provider import Provider
 from skyward.providers.ssh_keys import ensure_ssh_key_on_provider, get_ssh_key_path
 
-from .client import VerdaClient, VerdaError
+from .client import VerdaClient, VerdaError, _OAuth2
 from .config import Verda
 from .types import (
     InstanceResponse,
@@ -56,7 +56,7 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
 
     @classmethod
     async def create(cls, config: Verda) -> VerdaProvider:
-        from skyward.infra.http import HttpClient, OAuth2Auth
+        import httpx
 
         from .client import VERDA_API_BASE, get_credentials
 
@@ -65,8 +65,12 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
         if not client_id or not client_secret:
             client_id, client_secret = get_credentials()
 
-        auth = OAuth2Auth(client_id, client_secret, f"{VERDA_API_BASE}/oauth2/token")
-        http_client = HttpClient(VERDA_API_BASE, auth, timeout=config.request_timeout)
+        auth = _OAuth2(client_id, client_secret, f"{VERDA_API_BASE}/oauth2/token")
+        http_client = httpx.AsyncClient(
+            base_url=VERDA_API_BASE,
+            auth=auth,
+            timeout=httpx.Timeout(config.request_timeout),
+        )
         client = VerdaClient(http_client)
         return cls(config, client)
 

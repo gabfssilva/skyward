@@ -331,6 +331,7 @@ class Preempted:
 @dataclass(frozen=True, slots=True)
 class _PollResult:
     instance: Any | None = None
+    cluster: Any | None = None
 
 
 @dataclass(frozen=True, slots=True)

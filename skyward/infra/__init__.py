@@ -1,12 +1,7 @@
 """Internal machinery — HTTP, SSH, retry, throttle, serialization."""
 
 from .cache import DiskCache, cached, get_cache
-from .http import (
-    BearerAuth,
-    HttpClient,
-    HttpError,
-    OAuth2Auth,
-)
+from .http import HttpError
 from .pricing import InstancePricing, get_instance_pricing
 from .protocols import (
     Executor,
@@ -39,10 +34,7 @@ __all__ = [
     "Limiter",
     "ThrottleError",
     "throttle",
-    "BearerAuth",
-    "HttpClient",
     "HttpError",
-    "OAuth2Auth",
     "Executor",
     "HealthChecker",
     "PreemptionChecker",

@@ -138,8 +138,7 @@ def retry[**P, T](
 def on_status_code(*codes: int) -> RetryPredicate:
     """Create a predicate that retries on specific HTTP status codes.
 
-    Works with HttpError, aiohttp.ClientResponseError, and similar
-    exceptions that expose a `status` attribute.
+    Works with any exception that exposes a `status` attribute (e.g. HttpError).
 
     Example:
         @retry(on=on_status_code(429, 503))

@@ -21,10 +21,11 @@ from skyward.observability.logger import logger
 from skyward.providers.provider import Provider
 from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
 
-from .client import TensorDockClient, TensorDockError
+from .client import TensorDockClient
 from .config import TensorDock
 from .types import (
     Location,
+    V2InstanceResponse,
     get_gpu_memory_gb,
     get_ssh_port_v2,
     gpu_matches_v2,
@@ -83,6 +84,8 @@ def _filter_locations(
     candidates: list[tuple[str, str, int, int, int, float]] = []
 
     for loc in locations:
+        if config.tier is not None and loc.get("tier") != config.tier:
+            continue
         if config.location:
             country = loc.get("country", "").lower()
             if country != config.location.lower():
@@ -214,6 +217,28 @@ class TensorDockProvider(Provider[TensorDock, TensorDockSpecific]):
             ),
         )
 
+    async def _recover_instance(
+        self, client: TensorDockClient, vm_name: str,
+    ) -> V2InstanceResponse | None:
+        """Check if an instance was created despite the request failing."""
+        for attempt in range(3):
+            if attempt > 0:
+                await asyncio.sleep(5)
+            try:
+                all_instances = await client.list_instances()
+            except Exception:
+                continue
+            names = [inst.get("name") for inst in all_instances]
+            log.debug(
+                "Recovery attempt {n}: {count} instances, names={names}",
+                n=attempt + 1, count=len(all_instances), names=names,
+            )
+            for inst in all_instances:
+                if inst.get("name") == vm_name:
+                    log.info("Recovered instance {name}: id={id}", name=vm_name, id=inst.get("id"))
+                    return inst
+        return None
+
     async def provision(
         self, cluster: Cluster[TensorDockSpecific], count: int,
     ) -> tuple[Cluster[TensorDockSpecific], Sequence[Instance]]:
@@ -229,6 +254,7 @@ class TensorDockProvider(Provider[TensorDock, TensorDockSpecific]):
                 suffix = "".join(random.choices(string.ascii_lowercase, k=6))
                 vm_name = f"skyward-{cluster.id}-{i}-{suffix}"
 
+                result: V2InstanceResponse | None = None
                 try:
                     result = await client.create_instance(
                         name=vm_name,
@@ -240,12 +266,20 @@ class TensorDockProvider(Provider[TensorDock, TensorDockSpecific]):
                         storage_gb=self._config.storage_gb,
                         location_id=specific.location_id,
                         ssh_key=specific.ssh_public_key,
+                        port_forwards=[
+                            {"internal_port": 22, "external_port": 0},
+                            {"internal_port": 25520, "external_port": 0},
+                        ],
                     )
-                except TensorDockError as e:
-                    log.error(
-                        "Failed to create instance {i}/{count}: {err}",
-                        i=i + 1, count=count, err=e,
+                except Exception as e:
+                    log.warning(
+                        "Create request failed for {name}, checking if instance exists: {err}",
+                        name=vm_name, err=e,
                     )
+                    result = await self._recover_instance(client, vm_name)
+
+                if not result:
+                    log.error("Failed to create instance {i}/{count}", i=i + 1, count=count)
                     continue
 
                 instance_id = result.get("id", "")
@@ -323,14 +357,18 @@ class TensorDockProvider(Provider[TensorDock, TensorDockSpecific]):
             return cluster
 
         token = _get_token(self._config)
+        log.debug("Terminating {n} instances", n=len(instance_ids))
         async with TensorDockClient(token, timeout=self._config.request_timeout) as client:
             async def _delete(iid: str) -> None:
                 try:
+                    log.debug("Deleting instance {id}...", id=iid)
                     await client.delete_instance(iid)
+                    log.debug("Deleted instance {id}", id=iid)
                 except Exception as e:
                     log.error("Failed to delete instance {id}: {err}", id=iid, err=e)
 
             await asyncio.gather(*(_delete(iid) for iid in instance_ids))
+        log.debug("Terminate complete")
         return cluster
 
     async def teardown(

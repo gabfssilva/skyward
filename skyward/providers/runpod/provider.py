@@ -7,11 +7,12 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
+import httpx
+
 from skyward.accelerators import Accelerator
 from skyward.accelerators.catalog import SPECS
 from skyward.api import PoolSpec
 from skyward.api.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
-from skyward.infra.http import HttpClient
 from skyward.observability.logger import logger
 from skyward.providers.provider import MountEndpoint, Provider
 from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
@@ -127,9 +128,12 @@ async def _fetch_docker_tags() -> list[str]:
     params: dict[str, str] | None = {"page_size": "100", "ordering": "-last_updated"}
 
     try:
-        async with HttpClient(_DOCKER_HUB_URL, timeout=15) as http:
+        async with httpx.AsyncClient(base_url=_DOCKER_HUB_URL, timeout=httpx.Timeout(15)) as http:
             for _ in range(5):
-                data = await http.request("GET", path, params=params)
+                resp = await http.get(path, params=params)
+                if resp.status_code >= 400:
+                    break
+                data = resp.json()
                 if not data:
                     break
                 all_tags.extend(tag["name"] for tag in data.get("results", []))

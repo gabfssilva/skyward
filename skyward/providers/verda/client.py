@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import os
+from collections.abc import AsyncGenerator
 from typing import Any
 
-from skyward.infra.http import HttpClient, HttpError
+import httpx
+
+from skyward.infra.http import HttpError
 from skyward.observability.logger import logger
 
 from .types import (
@@ -23,13 +26,55 @@ class VerdaError(Exception):
     """Error from Verda API."""
 
 
+class _OAuth2(httpx.Auth):
+    """OAuth2 client-credentials flow with automatic 401 retry."""
+
+    requires_response_body = True
+
+    def __init__(self, client_id: str, client_secret: str, token_url: str) -> None:
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._token_url = token_url
+        self._token: str | None = None
+
+    def _token_request(self) -> httpx.Request:
+        return httpx.Request(
+            "POST",
+            self._token_url,
+            data={
+                "grant_type": "client_credentials",
+                "client_id": self._client_id,
+                "client_secret": self._client_secret,
+            },
+        )
+
+    async def async_auth_flow(
+        self, request: httpx.Request,
+    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
+        if self._token is None:
+            token_resp = yield self._token_request()
+            token_resp.raise_for_status()
+            self._token = token_resp.json()["access_token"]
+
+        request.headers["Authorization"] = f"Bearer {self._token}"
+        response = yield request
+
+        if response.status_code == 401:
+            self._token = None
+            token_resp = yield self._token_request()
+            token_resp.raise_for_status()
+            self._token = token_resp.json()["access_token"]
+            request.headers["Authorization"] = f"Bearer {self._token}"
+            yield request
+
+
 class VerdaClient:
-    def __init__(self, http_client: HttpClient) -> None:
+    def __init__(self, http_client: httpx.AsyncClient) -> None:
         self._http = http_client
         self._log = logger.bind(provider="verda", component="client")
 
     async def close(self) -> None:
-        await self._http.close()
+        await self._http.aclose()
 
     async def _request(
         self,
@@ -39,14 +84,14 @@ class VerdaClient:
         params: dict[str, Any] | None = None,
     ) -> Any:
         self._log.debug("{method} {path}", method=method, path=path)
-        try:
-            return await self._http.request(method, path, json=json, params=params)
-        except HttpError as e:
+        resp = await self._http.request(method, path, json=json, params=params)
+        if resp.status_code >= 400:
             self._log.warning(
                 "API error {method} {path}: {status}",
-                method=method, path=path, status=e.status,
+                method=method, path=path, status=resp.status_code,
             )
-            raise VerdaError(f"API error {e.status}: {e.body}") from e
+            raise VerdaError(f"API error {resp.status_code}: {resp.text}")
+        return resp.json() if resp.content else None
 
     # =========================================================================
     # Instance Types
@@ -109,9 +154,12 @@ class VerdaClient:
         import json as json_mod
 
         try:
-            text = await self._http.request(
-                "POST", "/scripts", json={"name": name, "script": script}, format="text"
+            resp = await self._http.request(
+                "POST", "/scripts", json={"name": name, "script": script},
             )
+            if resp.status_code >= 400:
+                raise HttpError(status=resp.status_code, body=resp.text)
+            text = resp.text
             text = text.strip()
             self._log.debug("create_startup_script response: {resp}", resp=text[:200])
 
@@ -161,7 +209,10 @@ class VerdaClient:
         import json as json_mod
 
         try:
-            text = await self._http.request("POST", "/instances", json=body, format="text")
+            resp = await self._http.request("POST", "/instances", json=body)
+            if resp.status_code >= 400:
+                raise HttpError(status=resp.status_code, body=resp.text)
+            text = resp.text
             text = text.strip()
             self._log.debug("create_instance response: {resp}", resp=text[:200])
 

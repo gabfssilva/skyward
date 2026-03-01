@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from skyward.api.provider import ProviderConfig
 
 if typing.TYPE_CHECKING:
+    from typing import Literal
+
     from skyward.providers.tensordock.provider import TensorDockProvider
 
 
@@ -41,10 +43,11 @@ class TensorDock(ProviderConfig):
     api_key: str | None = None
     api_token: str | None = None
     location: str | None = None
+    tier: Literal[0, 1, 2, 3, 4] | None = None
     storage_gb: int = 100
     operating_system: str = "ubuntu2404"
     instance_timeout: int = 300
-    request_timeout: int = 30
+    request_timeout: int = 120
     min_ram_gb: int | None = None
     min_vcpus: int | None = None
 

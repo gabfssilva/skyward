@@ -182,9 +182,11 @@ def evaluate_model(test_data: list, test_labels: list) -> dict:
 
 if __name__ == "__main__":
     with sky.ComputePool(
-        provider=sky.AWS(),
+        provider=sky.Hyperstack(),
+        accelerator=sky.accelerators.RTX_A4000(),
+        # provider=sky.AWS(),
         nodes=2,
-        accelerator=sky.accelerators.T4(),
+        # accelerator=sky.accelerators.T4(),
         plugins=[sky.plugins.torch()],
     ) as pool:
         print("=" * 60)

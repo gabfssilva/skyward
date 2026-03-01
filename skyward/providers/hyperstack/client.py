@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from skyward.infra.http import HttpClient, HttpError
+import httpx
+
+from skyward.infra.http import HttpError
 from skyward.infra.retry import on_status_code, retry
 from skyward.infra.throttle import throttle
 from skyward.observability.logger import logger
@@ -34,28 +36,6 @@ class HyperstackError(Exception):
 
 
 # =============================================================================
-# Custom Auth — Hyperstack uses 'api_key' header, not Authorization: Bearer
-# =============================================================================
-
-
-class HyperstackAuth:
-    """Hyperstack API key auth using custom api_key header."""
-
-    def __init__(self, api_key: str) -> None:
-        self._api_key = api_key
-
-    async def headers(self) -> dict[str, str]:
-        return {
-            "api_key": self._api_key,
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }
-
-    async def on_401(self) -> None:
-        pass
-
-
-# =============================================================================
 # Async Client
 # =============================================================================
 
@@ -66,10 +46,14 @@ class HyperstackClient:
     def __init__(self, api_key: str, config: Hyperstack | None = None) -> None:
         self._api_key = api_key
         self._config = config or Hyperstack()
-        self._http = HttpClient(
-            HYPERSTACK_API_BASE,
-            HyperstackAuth(api_key),
-            timeout=self._config.request_timeout,
+        self._http = httpx.AsyncClient(
+            base_url=HYPERSTACK_API_BASE,
+            headers={
+                "api_key": api_key,
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            timeout=httpx.Timeout(self._config.request_timeout),
         )
         self._log = logger.bind(provider="hyperstack", component="client")
 
@@ -80,7 +64,7 @@ class HyperstackClient:
         await self.close()
 
     async def close(self) -> None:
-        await self._http.close()
+        await self._http.aclose()
 
     @retry(on=on_status_code(429, 503), max_attempts=10, base_delay=0.5)
     @throttle(max_concurrent=5, interval=0.12)
@@ -91,7 +75,10 @@ class HyperstackClient:
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        return await self._http.request(method, path, json=json, params=params)
+        resp = await self._http.request(method, path, json=json, params=params)
+        if resp.status_code >= 400:
+            raise HttpError(status=resp.status_code, body=resp.text)
+        return resp.json() if resp.content else None
 
     async def _request(
         self,
@@ -123,6 +110,7 @@ class HyperstackClient:
             "/core/environments",
             json={"name": name, "region": region},
         )
+        self._log.debug("create_environment response={r}", r=result)
         return result.get("environment", result)
 
     async def list_environments(self) -> list[EnvironmentResponse]:
@@ -163,16 +151,51 @@ class HyperstackClient:
     # =========================================================================
 
     async def list_flavors(self, region: str | None = None) -> list[FlavorResponse]:
-        """List available hardware flavors."""
+        """List available hardware flavors.
+
+        The API returns ``{"data": [{"gpu": ..., "region_name": ..., "flavors": [...]}]}``.
+        We flatten the nested groups into a single list.
+        """
         params = {"region": region} if region else None
         result = await self._request("GET", "/core/flavors", params=params)
-        return result.get("flavors", []) if result else []
+        if not result:
+            return []
+        self._log.debug(
+            "Flavors response keys={keys} type={t}",
+            keys=list(result.keys()) if isinstance(result, dict) else "N/A",
+            t=type(result).__name__,
+        )
+        data = result.get("data", [])
+        self._log.debug(
+            "Flavors data entries={n} first={first}",
+            n=len(data),
+            first=data[0] if data else None,
+        )
+        flavors = [
+            flavor
+            for group in data
+            for flavor in group.get("flavors", [])
+            if flavor.get("stock_available", True)
+        ]
+        self._log.debug("Flattened flavors count={n}", n=len(flavors))
+        return flavors
 
     async def list_images(self, region: str | None = None) -> list[ImageResponse]:
-        """List available OS images."""
+        """List available OS images.
+
+        The API returns ``{"images": [{"type": ..., "region_name": ..., "images": [...]}]}``.
+        We flatten the nested groups into a single list.
+        """
         params = {"region": region} if region else None
         result = await self._request("GET", "/core/images", params=params)
-        return result.get("images", []) if result else []
+        if not result:
+            return []
+        groups = result.get("images", [])
+        return [
+            image
+            for group in groups
+            for image in group.get("images", [])
+        ]
 
     # =========================================================================
     # Virtual Machines
@@ -204,14 +227,45 @@ class HyperstackClient:
         """Delete a VM."""
         await self._request("DELETE", f"/core/virtual-machines/{vm_id}")
 
+    async def add_firewall_rule(
+        self,
+        vm_id: int,
+        port_min: int,
+        port_max: int,
+        protocol: str = "tcp",
+        remote_ip: str = "0.0.0.0/0",
+    ) -> None:
+        """Add a firewall (security group) rule to a VM."""
+        await self._request(
+            "POST",
+            f"/core/virtual-machines/{vm_id}/sg-rules",
+            json={
+                "remote_ip_prefix": remote_ip,
+                "direction": "ingress",
+                "ethertype": "IPv4",
+                "protocol": protocol,
+                "port_range_min": port_min,
+                "port_range_max": port_max,
+            },
+        )
+
     # =========================================================================
     # Pricing
     # =========================================================================
 
     async def get_pricebook(self) -> list[PricebookEntry]:
-        """Get hourly GPU pricing."""
+        """Get hourly GPU pricing.
+
+        The API returns a raw JSON array (not wrapped in a dict).
+        """
         result = await self._request("GET", "/pricebook")
-        return result.get("pricebook", []) if result else []
+        self._log.debug(
+            "Pricebook response type={t} len={n} first={first}",
+            t=type(result).__name__,
+            n=len(result) if isinstance(result, list) else "N/A",
+            first=result[0] if isinstance(result, list) and result else None,
+        )
+        return result if isinstance(result, list) else []
 
 
 # =============================================================================

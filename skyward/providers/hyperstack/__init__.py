@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .client import HyperstackAuth, HyperstackClient, HyperstackError, get_api_key
+    from .client import HyperstackClient, HyperstackError, get_api_key
     from .provider import HyperstackProvider, HyperstackSpecific
     from .types import (
         CreateVMPayload,
@@ -28,13 +28,12 @@ from .config import Hyperstack
 
 
 def __getattr__(name: str) -> Any:
-    if name in ("HyperstackClient", "HyperstackError", "HyperstackAuth", "get_api_key"):
-        from .client import HyperstackAuth, HyperstackClient, HyperstackError, get_api_key
+    if name in ("HyperstackClient", "HyperstackError", "get_api_key"):
+        from .client import HyperstackClient, HyperstackError, get_api_key
 
         _map = {
             "HyperstackClient": HyperstackClient,
             "HyperstackError": HyperstackError,
-            "HyperstackAuth": HyperstackAuth,
             "get_api_key": get_api_key,
         }
         return _map[name]
@@ -57,7 +56,6 @@ __all__ = [
     "Hyperstack",
     "HyperstackClient",
     "HyperstackError",
-    "HyperstackAuth",
     "HyperstackProvider",
     "HyperstackSpecific",
     "get_api_key",

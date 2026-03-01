@@ -18,6 +18,8 @@ class FlavorResponse(TypedDict):
     disk: int
     gpu: str
     gpu_count: int
+    region_name: NotRequired[str]
+    stock_available: NotRequired[bool]
 
 
 class ImageResponse(TypedDict):
@@ -100,11 +102,17 @@ class CreateVMResponse(TypedDict):
 
 
 class PricebookEntry(TypedDict):
-    """Pricing entry from the pricebook."""
+    """Pricing entry from the pricebook.
 
-    gpu_name: NotRequired[str]
-    price_per_gpu_hr: NotRequired[float]
-    region_name: NotRequired[str]
+    The /pricebook endpoint returns a flat list of these entries.
+    ``name`` is the resource/GPU name, ``value`` is the hourly price.
+    """
+
+    id: NotRequired[int]
+    name: NotRequired[str]
+    value: NotRequired[float]
+    original_value: NotRequired[float]
+    discount_applied: NotRequired[bool]
 
 
 # =============================================================================

@@ -27,7 +27,9 @@ class Hyperstack(ProviderConfig):
     api_key
         Hyperstack API key. Falls back to HYPERSTACK_API_KEY env var.
     region
-        Deployment region. One of CANADA-1, NORWAY-1, US-1.
+        Deployment region(s). A single string, a tuple of strings,
+        or None to search all regions. Examples: ``"CANADA-1"``,
+        ``("CANADA-1", "NORWAY-1")``, ``None``.
     instance_timeout
         Auto-shutdown safety timeout in seconds.
     request_timeout
@@ -35,9 +37,11 @@ class Hyperstack(ProviderConfig):
     """
 
     api_key: str | None = None
-    region: str = "CANADA-1"
+    region: str | tuple[str, ...] | None = None
     instance_timeout: int = 300
     request_timeout: int = 30
+    teardown_timeout: int = 120
+    teardown_poll_interval: float = 2.0
 
     @property
     def type(self) -> str:

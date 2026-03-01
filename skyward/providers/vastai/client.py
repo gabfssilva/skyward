@@ -9,7 +9,9 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from skyward.infra.http import BearerAuth, HttpClient, HttpError
+import httpx
+
+from skyward.infra.http import HttpError
 from skyward.infra.retry import on_status_code, retry
 from skyward.infra.throttle import throttle
 from skyward.observability.logger import logger
@@ -124,8 +126,10 @@ class VastAIClient:
     def __init__(self, api_key: str, config: VastAI | None = None) -> None:
         self._api_key = api_key
         self.config = config or VastAI()
-        self._http = HttpClient(
-            VAST_API_BASE, BearerAuth(api_key), timeout=self.config.request_timeout,
+        self._http = httpx.AsyncClient(
+            base_url=VAST_API_BASE,
+            headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+            timeout=httpx.Timeout(self.config.request_timeout),
         )
         self._log = logger.bind(provider="vastai", component="client")
 
@@ -136,7 +140,7 @@ class VastAIClient:
         await self.close()
 
     async def close(self) -> None:
-        await self._http.close()
+        await self._http.aclose()
 
     @retry(on=on_status_code(429, 503), max_attempts=10, base_delay=0.5)
     @throttle(max_concurrent=2, interval=1.5)
@@ -147,7 +151,10 @@ class VastAIClient:
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        return await self._http.request(method, path, json=json, params=params)
+        resp = await self._http.request(method, path, json=json, params=params)
+        if resp.status_code >= 400:
+            raise HttpError(status=resp.status_code, body=resp.text)
+        return resp.json() if resp.content else None
 
     async def _request(
         self,

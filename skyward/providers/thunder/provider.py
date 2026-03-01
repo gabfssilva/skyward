@@ -45,13 +45,16 @@ class ThunderProvider(Provider[ThunderCompute, ThunderSpecific]):
 
     @classmethod
     async def create(cls, config: ThunderCompute) -> ThunderProvider:
-        from skyward.infra.http import BearerAuth, HttpClient
+        import httpx
 
         from .client import THUNDER_API_BASE
 
         api_key = get_api_key(config.api_token)
-        auth = BearerAuth(api_key)
-        http_client = HttpClient(THUNDER_API_BASE, auth, timeout=config.request_timeout)
+        http_client = httpx.AsyncClient(
+            base_url=THUNDER_API_BASE,
+            headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+            timeout=httpx.Timeout(config.request_timeout),
+        )
         client = ThunderClient(http_client)
         return cls(config, client)
 
