@@ -1,5 +1,7 @@
 from collections.abc import AsyncIterator, Sequence
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol, Self, runtime_checkable
 
 from skyward.api import Cluster, Instance, PoolSpec
@@ -94,7 +96,20 @@ class MountEndpoint:
 
 
 @runtime_checkable
+class ObjectStore(Protocol):
+    """Protocol for S3-compatible object storage operations."""
+
+    async def upload_file(self, bucket: str, key: str, path: Path) -> None: ...
+    async def download_file(self, bucket: str, key: str, path: Path) -> None: ...
+    async def list_objects(self, bucket: str, prefix: str) -> list[str]: ...
+    async def delete_objects(self, bucket: str, keys: Sequence[str]) -> None: ...
+    async def head_object(self, bucket: str, key: str) -> bool: ...
+
+
+@runtime_checkable
 class Mountable[S](Protocol):
     """Protocol for providers that support volume mounting."""
 
     async def mount_endpoint(self, cluster: Cluster[S]) -> MountEndpoint: ...
+
+    def object_store(self) -> AbstractAsyncContextManager[ObjectStore]: ...

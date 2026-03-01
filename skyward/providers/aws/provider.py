@@ -5,7 +5,7 @@ import base64
 import json
 import uuid
 from collections.abc import AsyncIterator, Sequence
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import cast
@@ -17,7 +17,7 @@ from skyward.api.spec import Volume
 from skyward.infra.cache import cached
 from skyward.infra.retry import on_exception_message, retry
 from skyward.observability.logger import logger
-from skyward.providers.provider import MountEndpoint, Provider
+from skyward.providers.provider import MountEndpoint, ObjectStore, Provider
 
 from .clients import EC2ClientFactory
 from .config import AWS, AllocationStrategy
@@ -285,6 +285,21 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
         return MountEndpoint(
             endpoint=f"https://s3.{self._config.region}.amazonaws.com",
         )
+
+    @asynccontextmanager
+    async def object_store(self) -> AsyncIterator[ObjectStore]:
+        import aioboto3
+        from botocore.config import Config
+
+        session = aioboto3.Session()
+        async with session.client(  # pyright: ignore[reportGeneralTypeIssues]
+            "s3",
+            region_name=self._config.region,
+            config=Config(request_checksum_calculation="when_required"),
+        ) as s3:
+            from skyward.infra.object_store import S3ObjectStore
+
+            yield S3ObjectStore(s3)
 
     async def teardown(self, cluster: Cluster[AWSSpecific]) -> Cluster[AWSSpecific]:
         if self._auto_profile_prefix:

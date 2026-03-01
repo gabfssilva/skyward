@@ -1,19 +1,17 @@
 """Hyperstack Object Storage Volumes.
 
-Mount Hyperstack S3-compatible buckets as local filesystems on GPU instances.
-Hyperstack Object Storage uses the endpoint ca1.obj.nexgencloud.io (CANADA-1 only).
+End-to-end workflow: upload a dataset locally, train a model on the cluster,
+and download the trained model — all via S3-compatible object storage.
 
-Access keys are created/deleted automatically — no manual setup needed.
-When no region is configured, Skyward automatically selects CANADA-1.
-
-    ┌─────────────────────────────────────────────┐
-    │  Hyperstack VM (CANADA-1)                   │
-    │                                             │
-    │  /data        → s3://my-dataset/train/  RO  │
-    │  /checkpoints → s3://my-outputs/ckpt/   RW  │
-    │                                             │
-    │  Mounted via s3fs-fuse                      │
-    └─────────────────────────────────────────────┘
+    ┌──────────┐  VolumeClient.upload()   ┌──────────────────┐
+    │  Local   │ ──────────────────────→  │  S3 Bucket       │
+    │  Machine │ ←────────────────────── │  (Hyperstack)    │
+    └──────────┘  VolumeClient.download() └──────────────────┘
+                                                  ↕  s3fs-fuse
+                                          ┌──────────────────┐
+                                          │  Hyperstack VM   │
+                                          │  /data  /model   │
+                                          └──────────────────┘
 """
 
 import time
@@ -23,92 +21,100 @@ import skyward as sky
 
 
 @sky.compute
-def explore_data(data_dir: str) -> dict:
-    """Explore the mounted dataset volume."""
-    path = Path(data_dir)
-    info = sky.instance_info()
+def train(data_path: str, model_dir: str) -> dict:
+    """Load dataset from volume, train a model, save to output volume."""
+    import pickle
 
-    if not path.exists():
-        return {"node": info.node, "error": f"{data_dir} not found"}
+    import numpy as np
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.metrics import accuracy_score
 
-    files = [f for f in path.rglob("*") if f.is_file()]
-    total_size = sum(f.stat().st_size for f in files)
+    # Load dataset from mounted volume
+    raw = np.loadtxt(data_path, delimiter=",", skiprows=1)
+    features, labels = raw[:, :-1], raw[:, -1].astype(int)
+
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model.fit(features, labels)
+
+    acc = accuracy_score(labels, model.predict(features))
+
+    # Save trained model to the output volume
+    out = Path(model_dir) / "model.pkl"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "wb") as f:
+        pickle.dump(model, f)
+
+    # Wait for s3fs to sync the write
+    time.sleep(5)
 
     return {
-        "node": info.node,
-        "files": len(files),
-        "total_mb": round(total_size / (1024 * 1024), 2),
-        "sample": [f.name for f in files[:5]],
+        "samples": len(features),
+        "accuracy": round(acc, 4),
+        "model_bytes": out.stat().st_size,
     }
 
 
-@sky.compute
-def save_checkpoint(checkpoint_dir: str, epoch: int, loss: float) -> dict:
-    """Save a training checkpoint to the writable volume."""
-    import json
-
-    info = sky.instance_info()
-    path = Path(checkpoint_dir) / f"node{info.node}_epoch{epoch}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    checkpoint = {"epoch": epoch, "loss": loss, "node": info.node}
-    with open(path, "w") as f:
-        json.dump(checkpoint, f, indent=2)
-
-    return {"node": info.node, "path": str(path), "size": path.stat().st_size}
-
-
-@sky.compute
-def list_checkpoints(checkpoint_dir: str) -> list[str]:
-    """List checkpoint files visible from this node."""
-    path = Path(checkpoint_dir)
-    if not path.exists():
-        return []
-    return sorted(f.name for f in path.glob("*.json"))
-
-
 if __name__ == "__main__":
-    # Replace with your Hyperstack Object Storage bucket names
     DATA_BUCKET = "my-dataset-bucket"
-    CHECKPOINT_BUCKET = "my-checkpoint-bucket"
+    MODEL_BUCKET = "my-model-bucket"
 
+    data_volume = sky.Volume(
+        bucket=DATA_BUCKET,
+        mount="/data",
+        prefix="iris/",
+        read_only=True,
+    )
+    model_volume = sky.Volume(
+        bucket=MODEL_BUCKET,
+        mount="/model",
+        prefix="experiment-001/",
+        read_only=False,
+    )
+
+    # ── 1. Generate dataset locally and upload to volume ─────────────
+    print("Preparing dataset...")
+    from sklearn.datasets import load_iris
+
+    iris = load_iris()
+    import numpy as np
+
+    dataset = np.column_stack([iris.data, iris.target])
+    csv_path = Path("/tmp/iris.csv")
+    header = ",".join(iris.feature_names + ["target"])
+    np.savetxt(csv_path, dataset, delimiter=",", header=header, comments="")
+
+    print(f"  {len(dataset)} samples, {iris.data.shape[1]} features")
+
+    print("Uploading to volume...")
+    with sky.VolumeClient(data_volume, provider=sky.Hyperstack()) as vc:
+        vc.upload(csv_path, key="iris.csv")
+        print(f"  Uploaded: {vc.ls()}")
+
+    # ── 2. Train on the cluster ──────────────────────────────────────
     with sky.ComputePool(
         provider=sky.Hyperstack(),
         accelerator=sky.accelerators.L4(),
-        nodes=2,
-        volumes=[
-            sky.Volume(
-                bucket=DATA_BUCKET,
-                mount="/data",
-                prefix="train/",
-                read_only=True,
-            ),
-            sky.Volume(
-                bucket=CHECKPOINT_BUCKET,
-                mount="/checkpoints",
-                prefix="experiment-001/",
-                read_only=False,
-            ),
-        ],
+        image=sky.Image(pip=["scikit-learn", "numpy"]),
+        volumes=[data_volume, model_volume],
     ) as pool:
-        # Each node explores its view of the dataset
-        print("Dataset stats per node:")
-        for stats in explore_data("/data") @ pool:
-            if "error" in stats:
-                print(f"  Node {stats['node']}: {stats['error']}")
-            else:
-                print(f"  Node {stats['node']}: {stats['files']} files, {stats['total_mb']}MB")
+        print("\nTraining...")
+        result = train("/data/iris.csv", "/model") >> pool
+        print(f"  {result['samples']} samples, acc={result['accuracy']}, model={result['model_bytes']} bytes")
 
-        # Each node saves a checkpoint
-        print("\nSaving checkpoints:")
-        for result in save_checkpoint("/checkpoints", epoch=1, loss=0.42) @ pool:
-            print(f"  Node {result['node']}: {result['path']} ({result['size']} bytes)")
+    # ── 3. Download trained model locally ────────────────────────────
+    print("\nDownloading model...")
+    model_path = Path("/tmp/trained_model.pkl")
 
-        # Wait for s3fs async sync
-        print("\nWaiting for S3 sync...")
-        time.sleep(10)
+    with sky.VolumeClient(model_volume, provider=sky.Hyperstack()) as vc:
+        vc.download("model.pkl", model_path)
 
-        # Verify all checkpoints are visible
-        print("\nCheckpoints visible per node:")
-        for i, files in enumerate(list_checkpoints("/checkpoints") @ pool):
-            print(f"  Node {i}: {files}")
+    import pickle
+
+    with open(model_path, "rb") as f:
+        model = pickle.load(f)  # noqa: S301
+
+    preds = model.predict(iris.data)
+    from sklearn.metrics import accuracy_score
+
+    acc = accuracy_score(iris.target, preds)
+    print(f"  Loaded model: {type(model).__name__}, full-dataset accuracy={acc:.4f}")

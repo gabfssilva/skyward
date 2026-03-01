@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
 from skyward.api.model import Cluster, Offer
@@ -78,28 +76,26 @@ class TestConstrainRegionForVolumes:
 
 
 class TestMountEndpoint:
-    def test_returns_endpoint_with_credentials(self):
+    @pytest.mark.asyncio()
+    async def test_returns_endpoint_with_credentials(self):
         provider = HyperstackProvider(Hyperstack())
         provider._access_key = "ak_test123"
         provider._secret_key = "sk_secret456"
 
         cluster = _dummy_cluster()
-        endpoint = asyncio.get_event_loop().run_until_complete(
-            provider.mount_endpoint(cluster),
-        )
+        endpoint = await provider.mount_endpoint(cluster)
         assert endpoint.endpoint == _DEFAULT_STORAGE_ENDPOINT
         assert endpoint.access_key == "ak_test123"
         assert endpoint.secret_key == "sk_secret456"
         assert endpoint.path_style is True
 
-    def test_raises_without_keys(self):
+    @pytest.mark.asyncio()
+    async def test_raises_without_keys(self):
         provider = HyperstackProvider(Hyperstack())
         cluster = _dummy_cluster()
 
         with pytest.raises(RuntimeError, match="Access key not created"):
-            asyncio.get_event_loop().run_until_complete(
-                provider.mount_endpoint(cluster),
-            )
+            await provider.mount_endpoint(cluster)
 
 
 class TestProviderAccessKeyState:

@@ -4,6 +4,7 @@ import asyncio
 import re
 import uuid
 from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
@@ -14,7 +15,7 @@ from skyward.accelerators.catalog import SPECS
 from skyward.api import PoolSpec
 from skyward.api.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
 from skyward.observability.logger import logger
-from skyward.providers.provider import MountEndpoint, Provider
+from skyward.providers.provider import MountEndpoint, ObjectStore, Provider
 from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
 
 from .client import RunPodClient, RunPodError, get_api_key
@@ -581,6 +582,39 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
             access_key=api_key,
             secret_key=api_key,
         )
+
+    @asynccontextmanager
+    async def object_store(self) -> AsyncIterator[ObjectStore]:
+        api_key = get_api_key(self._config.api_key)
+
+        if self._config.data_center_ids == "global":
+            raise ValueError(
+                "RunPod volumes require an explicit data_center_ids setting. "
+                f"S3-supported datacenters: {', '.join(sorted(_RUNPOD_S3_DATACENTERS))}",
+            )
+
+        dc = self._config.data_center_ids[0]
+        if dc not in _RUNPOD_S3_DATACENTERS:
+            raise ValueError(
+                f"RunPod datacenter '{dc}' does not support S3 API. "
+                f"Supported: {', '.join(sorted(_RUNPOD_S3_DATACENTERS))}",
+            )
+
+        import aioboto3
+        from botocore.config import Config
+
+        dc_lower = dc.lower()
+        session = aioboto3.Session()
+        async with session.client(  # pyright: ignore[reportGeneralTypeIssues]
+            "s3",
+            endpoint_url=f"https://s3api-{dc_lower}.runpod.io",
+            aws_access_key_id=api_key,
+            aws_secret_access_key=api_key,
+            config=Config(request_checksum_calculation="when_required"),
+        ) as s3:
+            from skyward.infra.object_store import S3ObjectStore
+
+            yield S3ObjectStore(s3)
 
     async def teardown(self, cluster: Cluster[RunPodSpecific]) -> Cluster[RunPodSpecific]:
         specific = cluster.specific

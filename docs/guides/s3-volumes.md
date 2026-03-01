@@ -1,64 +1,84 @@
 # S3 volumes
 
-This guide walks through mounting S3 buckets as local filesystems on remote workers. You'll mount a read-only volume for input data and a writable volume for saving results — both accessible as ordinary directories inside your `@sky.compute` functions.
+This guide walks through a complete volume workflow: upload a dataset from your local machine, train a model on a remote cluster, and download the result — all through S3-compatible object storage. Your local machine talks to S3 via `VolumeClient`, and remote workers see the same data as mounted directories via s3fs-fuse.
 
 ## Declaring volumes
 
-A `Volume` maps an S3 bucket (or a prefix within it) to a local path on every worker:
+A `Volume` maps an S3 bucket (or a prefix within it) to a local path on every worker. You declare two: one read-only for input data, one writable for output artifacts.
 
 ```python
---8<-- "examples/guides/17_s3_volumes.py:57:70"
+--8<-- "examples/guides/17_s3_volumes.py:52:63"
 ```
 
-The first volume mounts the `imagenet/` prefix of `my-datasets` at `/data` — read-only, so your training code can read from it but can't accidentally modify the dataset. The second mounts `run-042/` of `my-experiments` at `/checkpoints` — writable, so workers can save artifacts that persist to S3 after the pool is torn down.
+The `prefix` scopes each volume to a subfolder within its bucket. `read_only=True` on the data volume prevents accidental writes to the dataset. The model volume is writable so the training function can persist its output to S3.
 
-## Reading from a volume
+## The training function
 
-Inside a `@sky.compute` function, the mount path is a regular directory. Standard filesystem operations — `Path.iterdir()`, `open()`, `glob()` — work as expected:
+The remote function reads from `/data` and writes to `/output` — regular filesystem paths. It doesn't know about S3, buckets, or object stores. Libraries that expect file paths work without modification.
 
 ```python
---8<-- "examples/guides/17_s3_volumes.py:8:14"
+--8<-- "examples/guides/17_s3_volumes.py:19:45"
 ```
 
-Because the volume is backed by s3fs-fuse, reads are transparently fetched from S3. There's no download step, no SDK calls, no boto3 — just file paths.
+Imports happen inside the function body because they only need to exist on the remote worker.
 
-## Writing to a volume
+## Uploading data with VolumeClient
 
-Writable volumes (`read_only=False`) let workers save files that persist to S3:
+Before the cluster starts, you upload your dataset from the local machine directly to S3. `VolumeClient` wraps the provider's S3-compatible API and scopes all operations to the volume's prefix.
 
 ```python
---8<-- "examples/guides/17_s3_volumes.py:17:31"
+--8<-- "examples/guides/17_s3_volumes.py:75:77"
 ```
 
-Each node writes its own checkpoint file. Because the volume is backed by S3, these files survive instance termination — they're in the bucket, not on ephemeral local disk. Note that s3fs syncs writes asynchronously, so freshly written files may take a moment to appear on other nodes or in the S3 console.
+`VolumeClient` is a context manager that opens an S3 connection through the provider. `upload` puts a local file into the bucket at the given key (relative to the volume's prefix). `ls` lists everything under that prefix. You can also use `download`, `exists`, and `rm` — all scoped to the volume.
 
-## Broadcasting across nodes
+## Training on the cluster
 
-Volumes are mounted on every node, so broadcast operations naturally see the same storage:
+With data in S3, you provision a pool with both volumes mounted and dispatch the training function.
 
 ```python
---8<-- "examples/guides/17_s3_volumes.py:34:50"
+--8<-- "examples/guides/17_s3_volumes.py:79:86"
 ```
 
-When dispatched with `@` (broadcast), each node independently counts files in `/data`. They all see the same S3 data, so the counts should match — but each reports from its own perspective via `instance_info()`.
+The pool mounts both volumes on every worker during bootstrap. When the `with` block exits, the instances are destroyed — but the model checkpoint is already in S3.
 
-## Putting it together
+## Downloading results
+
+After the pool is torn down, the model persists in the output bucket. A second `VolumeClient` session downloads it back to your local machine.
 
 ```python
---8<-- "examples/guides/17_s3_volumes.py:53:84"
+--8<-- "examples/guides/17_s3_volumes.py:88:102"
 ```
 
-The pool provisions two nodes, mounts both volumes on each, and then the three operations — count, checkpoint, verify — run against familiar filesystem paths. When the `with` block exits, the instances are destroyed, but the checkpoints remain in S3.
+The downloaded model is a standard pickle file. You can load it locally and verify it works against the original data — no cluster required.
 
-## IAM authentication (AWS)
+## The full picture
 
-On AWS, the cleanest approach is an instance profile with S3 permissions. Pass `instance_profile_arn="auto"` and Skyward uses IAM role authentication — no credentials are written to disk, no access keys in environment variables:
+The three phases — upload, train, download — decouple your local environment from the remote cluster. Your local machine never needs the GPU libraries, and the remote workers never need your local filesystem. S3 is the bridge between both.
 
-```python
-sky.AWS(instance_profile_arn="auto")
+```mermaid
+sequenceDiagram
+    participant L as Local Machine
+    participant S as S3 Bucket
+    participant W as Remote Worker
+
+    L->>S: VolumeClient.upload(dataset)
+    Note over W: Pool provisions, mounts volumes
+    W->>S: read /data/iris.csv (s3fs-fuse)
+    W->>S: write /output/model.pkl (s3fs-fuse)
+    Note over W: Pool tears down
+    L->>S: VolumeClient.download(model.pkl)
 ```
 
-The instance profile must have `s3:GetObject` and `s3:ListBucket` permissions for read-only volumes, plus `s3:PutObject` and `s3:DeleteObject` for writable ones.
+## Why not rely solely on `@sky.compute` input and output?
+
+You could pass a NumPy array as an argument to a `@sky.compute` function and return the trained model directly. For small payloads that works — cloudpickle serializes the arguments, lz4-compresses them, and ships them over SSH. But the approach breaks down as data grows.
+
+The problem is both size and contention. Skyward communicates with remote workers through Casty actors — when you send a large payload as a function argument, the worker actor is busy deserializing and processing that message for the entire transfer. No other task can be dispatched to that worker until the operation completes. A 2 GB dataset as input and a 500 MB model as output means the worker is effectively unavailable for the duration of both transfers. Multiply that by several nodes and the coordination overhead dominates actual compute time.
+
+Volumes sidestep this entirely. Instead of pushing data through actor messages, you place it in S3 and let workers read it locally via FUSE. The function receives a *path*, not the data itself — a string costs bytes, not gigabytes. The actor channel stays free for what it's designed to carry: lightweight task coordination. Outputs written to a writable volume persist in S3 immediately, surviving instance preemption and pool teardown.
+
+The rule of thumb: if it fits comfortably in a return value (a metric, a small dict, a summary), pass it through `@sky.compute`. If it's a couple hundred MBs dataset, a model checkpoint, or anything you'd rather not push through actor messages — use a volume.
 
 ## Run the full example
 
@@ -73,7 +93,6 @@ uv run python examples/guides/17_s3_volumes.py
 **What you learned:**
 
 - **`sky.Volume`** maps an S3 bucket to a local path on every worker — read or read-write.
-- **`prefix`** scopes a volume to a subfolder within the bucket, keeping mount points clean.
+- **`sky.VolumeClient`** manages data outside the cluster — upload before training, download after.
 - **s3fs-fuse** handles the mounting transparently — no SDK, no download step, just file paths.
-- **Writable volumes** persist data to S3, surviving instance termination and pool teardown.
-- **IAM roles** (`instance_profile_arn="auto"`) are the cleanest auth strategy on AWS — no credentials on disk.
+- **Three-phase workflow** — upload, train, download — decouples local and remote environments through S3.

@@ -38,6 +38,7 @@ from .spec import Spec as Spec
 from .spec import Volume as Volume
 from .spec import Worker as Worker
 from .spec import WorkerExecutor as WorkerExecutor
+from .volume_client import VolumeClient as VolumeClient
 
 __all__ = [
     "PendingCompute",
@@ -72,6 +73,7 @@ __all__ = [
     "Spec",
     "PipIndex",
     "Volume",
+    "VolumeClient",
     "Worker",
     "WorkerExecutor",
 ]

@@ -13,6 +13,7 @@ import re
 import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -20,7 +21,7 @@ from skyward.accelerators import Accelerator
 from skyward.api import PoolSpec
 from skyward.api.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
 from skyward.observability.logger import logger
-from skyward.providers.provider import MountEndpoint, Provider
+from skyward.providers.provider import MountEndpoint, ObjectStore, Provider
 from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
 
 from .config import GCP
@@ -646,6 +647,58 @@ class GCPProvider(Provider[GCP, GCPSpecific]):
             access_key=self._hmac_access_key,
             secret_key=self._hmac_secret_key,
         )
+
+    @asynccontextmanager
+    async def object_store(self) -> AsyncIterator[ObjectStore]:
+        from google.cloud import storage as gcs_storage  # type: ignore[reportMissingImports]
+
+        storage_client = gcs_storage.Client(project=self._project)
+
+        sa_email = self._config.service_account
+        if not sa_email:
+            import google.auth  # type: ignore[reportMissingImports]
+
+            credentials, _ = google.auth.default()
+            sa_email = getattr(credentials, "service_account_email", None)
+            if not sa_email:
+                raise RuntimeError(
+                    "Cannot create HMAC keys: no service account configured. "
+                    "Set service_account in GCP() config.",
+                )
+
+        hmac_key, key_metadata = await self._run(
+            storage_client.create_hmac_key,
+            service_account_email=sa_email,
+        )
+        access_id = key_metadata.access_id
+
+        try:
+            import aioboto3
+            from botocore.config import Config
+
+            session = aioboto3.Session()
+            async with session.client(  # pyright: ignore[reportGeneralTypeIssues]
+                "s3",
+                endpoint_url="https://storage.googleapis.com",
+                aws_access_key_id=access_id,
+                aws_secret_access_key=hmac_key,
+                config=Config(request_checksum_calculation="when_required"),
+            ) as s3:
+                from skyward.infra.object_store import S3ObjectStore
+
+                yield S3ObjectStore(s3)
+        finally:
+            try:
+                meta = await self._run(
+                    storage_client.get_hmac_key_metadata,
+                    access_id,
+                    project_id=self._project,
+                )
+                meta.state = "INACTIVE"
+                await self._run(meta.update)
+                await self._run(meta.delete)
+            except Exception as e:
+                log.warning("Failed to delete HMAC key: {err}", err=e)
 
     async def teardown(self, cluster: Cluster[GCPSpecific]) -> Cluster[GCPSpecific]:
         specific = cluster.specific

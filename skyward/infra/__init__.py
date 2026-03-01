@@ -2,6 +2,7 @@
 
 from .cache import DiskCache, cached, get_cache
 from .http import HttpError
+from .object_store import S3ObjectStore
 from .pricing import InstancePricing, get_instance_pricing
 from .protocols import (
     Executor,
@@ -47,4 +48,5 @@ __all__ = [
     "get_cache",
     "InstancePricing",
     "get_instance_pricing",
+    "S3ObjectStore",
 ]

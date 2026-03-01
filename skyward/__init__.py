@@ -76,6 +76,7 @@ from .api import Offer as Offer
 from .api import SelectionStrategy as SelectionStrategy
 from .api import Spec as Spec
 from .api import Volume as Volume
+from .api import VolumeClient as VolumeClient
 from .api import Worker as Worker
 from .api import WorkerExecutor as WorkerExecutor
 from .app import App
@@ -126,6 +127,7 @@ __all__ = [
     "SelectionStrategy",
     "Spec",
     "Volume",
+    "VolumeClient",
     "Worker",
     "WorkerExecutor",
     "dict",
