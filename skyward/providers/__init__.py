@@ -10,11 +10,9 @@ Each provider implements the Provider[C, S] protocol:
 Available providers:
 - AWS: Amazon Web Services (EC2 Fleet, spot instances)
 - GCP: Google Cloud Platform (Compute Engine, instance templates, bulk_insert)
-- Lambda: Lambda Cloud (bare-metal GPUs, on-demand)
 - RunPod: GPU cloud (pods, serverless endpoints)
 - TensorDock: GPU marketplace (bare-metal VMs, per-second billing)
 - VastAI: GPU marketplace (Docker containers, spot/bid pricing)
-- Thunder: Thunder Compute (GPU cloud, Quebec, per-minute billing)
 - Verda: GPU cloud (dedicated instances, spot pricing)
 - Hyperstack: GPU cloud (bare-metal, environment-scoped resources)
 
@@ -28,10 +26,8 @@ from .aws.config import AWS
 from .container.config import Container
 from .gcp.config import GCP
 from .hyperstack.config import Hyperstack
-from .lambda_cloud.config import Lambda
 from .runpod.config import RunPod
 from .tensordock.config import TensorDock
-from .thunder.config import ThunderCompute
 from .vastai.config import VastAI
 from .verda.config import Verda
 
@@ -41,10 +37,8 @@ __all__ = [
     "Container",
     "GCP",
     "Hyperstack",
-    "Lambda",
     "RunPod",
     "TensorDock",
-    "ThunderCompute",
     "VastAI",
     "Verda",
 ]

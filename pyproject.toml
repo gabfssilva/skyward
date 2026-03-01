@@ -122,9 +122,7 @@ markers = [
     "verda: Verda provider tests",
     "gcp: GCP provider tests",
     "hyperstack: Hyperstack provider tests",
-    "lambda_cloud: Lambda Cloud provider tests",
     "tensordock: TensorDock provider tests",
-    "thunder: Thunder Compute provider tests",
 ]
 
 [dependency-groups]

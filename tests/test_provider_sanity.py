@@ -10,7 +10,6 @@ Run individually:
     uv run pytest -m vastai --no-header -q
     uv run pytest -m verda --no-header -q
     uv run pytest -m hyperstack --no-header -q
-    uv run pytest -m lambda_cloud --no-header -q
     uv run pytest -m tensordock --no-header -q
 
 Run all sanity tests:
@@ -242,35 +241,6 @@ class TestHyperstackSanity:
 
 
 # ---------------------------------------------------------------------------
-# Lambda Cloud
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.sanity
-@pytest.mark.lambda_cloud
-@pytest.mark.timeout(TIMEOUT)
-@pytest.mark.xdist_group("lambda_cloud")
-class TestLambdaSanity:
-    @pytest.fixture(scope="class")
-    def pool(self):
-        with sky.App(console=False), sky.ComputePool(
-            provider=sky.Lambda(),
-            accelerator=sky.accelerators.A10(),
-            nodes=NODES,
-            image=sky.Image(pip=["torch"]),
-        ) as p:
-            yield p
-
-    def test_single_dispatch(self, pool):
-        result = gpu_matmul() >> pool
-        _assert_single(result)
-
-    def test_broadcast(self, pool):
-        results = gpu_matmul() @ pool
-        _assert_broadcast(results)
-
-
-# ---------------------------------------------------------------------------
 # TensorDock
 # ---------------------------------------------------------------------------
 
@@ -285,35 +255,6 @@ class TestTensorDockSanity:
         with sky.App(console=False), sky.ComputePool(
             provider=sky.TensorDock(),
             accelerator=sky.accelerators.RTX_4090(),
-            nodes=NODES,
-            image=sky.Image(pip=["torch"]),
-        ) as p:
-            yield p
-
-    def test_single_dispatch(self, pool):
-        result = gpu_matmul() >> pool
-        _assert_single(result)
-
-    def test_broadcast(self, pool):
-        results = gpu_matmul() @ pool
-        _assert_broadcast(results)
-
-
-# ---------------------------------------------------------------------------
-# Thunder Compute
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.sanity
-@pytest.mark.thunder
-@pytest.mark.timeout(TIMEOUT)
-@pytest.mark.xdist_group("thunder")
-class TestThunderSanity:
-    @pytest.fixture(scope="class")
-    def pool(self):
-        with sky.App(console=False), sky.ComputePool(
-            provider=sky.ThunderCompute(mode="production"),
-            accelerator=sky.accelerators.A100(),
             nodes=NODES,
             image=sky.Image(pip=["torch"]),
         ) as p:

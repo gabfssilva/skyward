@@ -124,20 +124,10 @@ tasks:
     cmds:
       - uv run pytest -m "sanity and hyperstack" {{.CLI_ARGS}}
 
-  test:sanity:lambda:
-    desc: Run Lambda Cloud sanity tests
-    cmds:
-      - uv run pytest -m "sanity and lambda_cloud" {{.CLI_ARGS}}
-
   test:sanity:tensordock:
     desc: Run TensorDock sanity tests
     cmds:
       - uv run pytest -m "sanity and tensordock" {{.CLI_ARGS}}
-
-  test:sanity:thunder:
-    desc: Run Thunder Compute sanity tests
-    cmds:
-      - uv run pytest -m "sanity and thunder" {{.CLI_ARGS}}
 
   test:all:
     desc: Run unit + e2e tests

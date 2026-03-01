@@ -1,3 +1,0 @@
-# Thunder Compute
-
-::: skyward.ThunderCompute

@@ -7,11 +7,9 @@ from skyward.config import _deep_merge, load_config, resolve_pool
 from skyward.providers.aws.config import AWS
 from skyward.providers.gcp.config import GCP
 from skyward.providers.hyperstack.config import Hyperstack
-from skyward.providers.lambda_cloud.config import Lambda
 from skyward.providers.runpod.config import RunPod
 from skyward.providers.tensordock.config import TensorDock
 from skyward.providers.vastai.config import VastAI
-from skyward.providers.thunder.config import ThunderCompute
 from skyward.providers.verda.config import Verda
 
 pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
@@ -224,19 +222,6 @@ class TestResolvePool:
         assert isinstance(spec.provider, Hyperstack)
         assert spec.provider.region == "CANADA-1"
 
-    def test_lambda_pool(self, tmp_path: Path):
-        (tmp_path / "skyward.toml").write_text(
-            '[providers.l]\n'
-            'type = "lambda"\n'
-            'region = "us-west-1"\n'
-            '\n'
-            '[pools.gpu]\nprovider = "l"\nnodes = 1\n'
-        )
-        pool = resolve_pool("gpu", project_dir=tmp_path)
-        spec = pool._specs[0]
-        assert isinstance(spec.provider, Lambda)
-        assert spec.provider.region == "us-west-1"
-
     def test_tensordock_pool(self, tmp_path: Path):
         (tmp_path / "skyward.toml").write_text(
             '[providers.td]\n'
@@ -252,21 +237,6 @@ class TestResolvePool:
         assert isinstance(spec.provider, TensorDock)
         assert spec.provider.location == "us"
         assert spec.provider.storage_gb == 200
-
-    def test_thunder_pool(self, tmp_path: Path):
-        (tmp_path / "skyward.toml").write_text(
-            '[providers.tc]\n'
-            'type = "thunder"\n'
-            'api_token = "test-token-xxx"\n'
-            'mode = "prototyping"\n'
-            '\n'
-            '[pools.gpu]\nprovider = "tc"\nnodes = 1\n'
-        )
-        pool = resolve_pool("gpu", project_dir=tmp_path)
-        spec = pool._specs[0]
-        assert isinstance(spec.provider, ThunderCompute)
-        assert spec.provider.api_token == "test-token-xxx"
-        assert spec.provider.mode == "prototyping"
 
     def test_global_provider_project_pool(self, tmp_path: Path):
         global_toml = tmp_path / "defaults.toml"
