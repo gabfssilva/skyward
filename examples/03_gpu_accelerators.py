@@ -9,13 +9,13 @@ Demonstrates how to:
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def instance_information() -> sky.InstanceInfo:
     """Get information about available GPUs."""
     return sky.instance_info()
 
 
-@sky.compute
+@sky.function
 def matrix_multiply(size: int) -> dict:
     """Benchmark matrix multiplication on GPU vs CPU."""
     import time
@@ -49,7 +49,7 @@ def matrix_multiply(size: int) -> dict:
     return results
 
 
-@sky.compute
+@sky.function
 def heavy_matrix_ops(size: int, iterations: int) -> dict:
     """Heavy matrix operations that take ~5s on CPU.
 
@@ -103,7 +103,7 @@ def heavy_matrix_ops(size: int, iterations: int) -> dict:
     return results
 
 
-@sky.compute
+@sky.function
 def train_simple_model(epochs: int) -> dict:
     """Train a simple neural network on GPU."""
     import torch

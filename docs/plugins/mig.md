@@ -6,7 +6,7 @@ NVIDIA Multi-Instance GPU (MIG) solves this at the hardware level. It partitions
 
 The operational burden of MIG is what keeps most teams from using it. You need to enable MIG mode (which requires a GPU reset), create GPU instances with the right profile via `nvidia-smi`, create compute instances inside those GPU instances, enumerate the resulting MIG UUIDs, and assign each process to its partition by setting `CUDA_VISIBLE_DEVICES` to the correct UUID. Get any step wrong — mismatched profiles, wrong UUID indexing, MIG mode not enabled — and CUDA sees the wrong device or no device at all.
 
-Skyward's `mig` plugin handles the full lifecycle: enables MIG mode during bootstrap, creates the requested partitions, and pins each subprocess to its own device before any task executes. Your `@sky.compute` functions see a normal CUDA device — they don't know MIG exists.
+Skyward's `mig` plugin handles the full lifecycle: enables MIG mode during bootstrap, creates the requested partitions, and pins each subprocess to its own device before any task executes. Your `@sky.function` functions see a normal CUDA device — they don't know MIG exists.
 
 ## What it does
 
@@ -108,7 +108,7 @@ The most common pattern: run independent training jobs on separate partitions of
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def train_on_partition(epochs: int, lr: float) -> dict:
     import os
 

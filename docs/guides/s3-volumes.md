@@ -70,15 +70,15 @@ sequenceDiagram
     L->>S: VolumeClient.download(model.pkl)
 ```
 
-## Why not rely solely on `@sky.compute` input and output?
+## Why not rely solely on `@sky.function` input and output?
 
-You could pass a NumPy array as an argument to a `@sky.compute` function and return the trained model directly. For small payloads that works — cloudpickle serializes the arguments, lz4-compresses them, and ships them over SSH. But the approach breaks down as data grows.
+You could pass a NumPy array as an argument to a `@sky.function` function and return the trained model directly. For small payloads that works — cloudpickle serializes the arguments, lz4-compresses them, and ships them over SSH. But the approach breaks down as data grows.
 
 The problem is both size and contention. Skyward communicates with remote workers through Casty actors — when you send a large payload as a function argument, the worker actor is busy deserializing and processing that message for the entire transfer. No other task can be dispatched to that worker until the operation completes. A 2 GB dataset as input and a 500 MB model as output means the worker is effectively unavailable for the duration of both transfers. Multiply that by several nodes and the coordination overhead dominates actual compute time.
 
 Volumes sidestep this entirely. Instead of pushing data through actor messages, you place it in S3 and let workers read it locally via FUSE. The function receives a *path*, not the data itself — a string costs bytes, not gigabytes. The actor channel stays free for what it's designed to carry: lightweight task coordination. Outputs written to a writable volume persist in S3 immediately, surviving instance preemption and pool teardown.
 
-The rule of thumb: if it fits comfortably in a return value (a metric, a small dict, a summary), pass it through `@sky.compute`. If it's a couple hundred MBs dataset, a model checkpoint, or anything you'd rather not push through actor messages — use a volume.
+The rule of thumb: if it fits comfortably in a return value (a metric, a small dict, a summary), pass it through `@sky.function`. If it's a couple hundred MBs dataset, a model checkpoint, or anything you'd rather not push through actor messages — use a volume.
 
 ## Run the full example
 

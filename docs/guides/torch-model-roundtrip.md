@@ -26,7 +26,7 @@ The 60k training images (each 28x28) are flattened to 784-d vectors and normaliz
 
 ## The remote training function
 
-The `@sky.compute` function receives the model as an argument and returns it after training:
+The `@sky.function` function receives the model as an argument and returns it after training:
 
 ```python
 --8<-- "examples/guides/15_torch_model_roundtrip.py:50:94"

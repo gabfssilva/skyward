@@ -205,10 +205,10 @@ my_gpu = sky.accelerators.Custom("H100-Custom", memory="80GB", count=8, cuda_min
 
 ## Detecting accelerators at runtime
 
-Inside a `@sky.compute` function, `sky.instance_info()` reports what hardware the function is running on:
+Inside a `@sky.function` function, `sky.instance_info()` reports what hardware the function is running on:
 
 ```python
-@sky.compute
+@sky.function
 def check_gpu():
     import torch
 

@@ -30,7 +30,7 @@ The simplest case: a single-node GPU training with standard scikit-learn code:
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def train_on_gpu(n_samples: int) -> dict:
     from time import perf_counter
 

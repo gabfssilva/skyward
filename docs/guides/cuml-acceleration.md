@@ -2,7 +2,7 @@
 
 scikit-learn runs on CPU. For large datasets, training algorithms like RandomForest or KNN becomes a bottleneck — minutes or hours spent on cross-validation and hyperparameter search. [NVIDIA cuML](https://docs.rapids.ai/api/cuml/stable/) provides GPU-backed implementations of popular sklearn estimators with the same API. Swap the import, and the same code runs on GPU with speedups of 50x to 175x.
 
-Skyward makes this practical even if you don't have a local GPU. Provision a GPU instance on the cloud, send your code there with `@sky.compute`, and cuML handles the rest. The `cuml` plugin installs cuML and configures the RAPIDS package indexes automatically.
+Skyward makes this practical even if you don't have a local GPU. Provision a GPU instance on the cloud, send your code there with `@sky.function`, and cuML handles the rest. The `cuml` plugin installs cuML and configures the RAPIDS package indexes automatically.
 
 ## The dataset
 
@@ -12,7 +12,7 @@ A 20,000-sample subset of MNIST, downloaded directly on the remote worker — no
 --8<-- "examples/guides/16_cuml_acceleration.py:14:22"
 ```
 
-`load_mnist` is a plain function (not `@sky.compute`) that the GPU task calls. Since it's defined at module level, cloudpickle captures it alongside the decorated functions. The data is fetched from OpenML on the remote machine.
+`load_mnist` is a plain function (not `@sky.function`) that the GPU task calls. Since it's defined at module level, cloudpickle captures it alongside the decorated functions. The data is fetched from OpenML on the remote machine.
 
 ## GPU version with cuML
 
@@ -22,7 +22,7 @@ The GPU version uses standard scikit-learn imports — cuML's zero-code-change a
 --8<-- "examples/guides/16_cuml_acceleration.py:25:40"
 ```
 
-All sklearn imports are inside the function because `@sky.compute` serializes the function and sends it to a remote worker. The worker needs to resolve imports in its own environment. The function returns both accuracy and wall-clock time so we can compare against a CPU baseline.
+All sklearn imports are inside the function because `@sky.function` serializes the function and sends it to a remote worker. The worker needs to resolve imports in its own environment. The function returns both accuracy and wall-clock time so we can compare against a CPU baseline.
 
 ## Running with plugins
 

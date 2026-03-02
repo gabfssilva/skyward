@@ -18,7 +18,7 @@ Skyward's `joblib` plugin replaces joblib's execution backend with a distributed
 
 ## How SkywardBackend works
 
-`SkywardBackend` is a joblib backend that serializes each task with cloudpickle, wraps it in a `@sky.compute` function, and dispatches it to the cluster. Each joblib task becomes a Skyward compute task, sent to a remote worker over SSH. The serialization overhead is minimal — cloudpickle is fast, and payloads are compressed with lz4 on the wire.
+`SkywardBackend` is a joblib backend that serializes each task with cloudpickle, wraps it in a `@sky.function` function, and dispatches it to the cluster. Each joblib task becomes a Skyward compute task, sent to a remote worker over SSH. The serialization overhead is minimal — cloudpickle is fast, and payloads are compressed with lz4 on the wire.
 
 **Effective parallelism** is `nodes * concurrency`. If you have 4 nodes with `Worker(concurrency=10)`, joblib sees 40 available workers. `n_jobs=-1` uses all of them. `n_jobs=20` would use 20.
 

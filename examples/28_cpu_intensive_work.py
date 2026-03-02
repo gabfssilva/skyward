@@ -9,7 +9,7 @@ from time import monotonic
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def cpu_burn(task_id: int) -> dict:
     start = monotonic()
     total = 0.0

@@ -21,7 +21,7 @@ Requires:
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def tpu_benchmark(matrix_size: int, iterations: int) -> dict:
     """Benchmark matrix operations on TPU vs CPU."""
     import time

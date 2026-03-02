@@ -15,7 +15,7 @@ from time import sleep
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def hello(n: int) -> str:
     sleep(2)
 

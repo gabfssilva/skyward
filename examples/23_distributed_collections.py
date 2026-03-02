@@ -27,7 +27,7 @@ import skyward as sky
 # =============================================================================
 
 
-@sky.compute
+@sky.function
 def process_with_cache(items: list[str]) -> dict:
     """Process items using shared cache to avoid duplicate work."""
     cache = sky.dict("embeddings")
@@ -63,7 +63,7 @@ def process_with_cache(items: list[str]) -> dict:
 # =============================================================================
 
 
-@sky.compute
+@sky.function
 def accumulate_results(batch_id: int) -> dict:
     """Accumulate unique results across workers using dict + set."""
     results = sky.dict("all_results")
@@ -87,7 +87,7 @@ def accumulate_results(batch_id: int) -> dict:
 # =============================================================================
 
 
-@sky.compute
+@sky.function
 def synchronized_epoch(epoch: int) -> dict:
     """Simulate synchronized distributed training."""
     sync = sky.barrier("epoch_sync", n=sky.instance_info().total_nodes)
@@ -115,7 +115,7 @@ def synchronized_epoch(epoch: int) -> dict:
 # =============================================================================
 
 
-@sky.compute
+@sky.function
 def safe_update_checkpoint(step: int) -> dict:
     """Update shared checkpoint safely using lock."""
     lock = sky.lock("checkpoint_lock")
@@ -142,7 +142,7 @@ def safe_update_checkpoint(step: int) -> dict:
     }
 
 
-@sky.compute
+@sky.function
 def read_checkpoint() -> dict:
     """Read checkpoint state from within the cluster."""
     state = sky.dict("checkpoint")
@@ -158,7 +158,7 @@ def read_checkpoint() -> dict:
 # =============================================================================
 
 
-@sky.compute
+@sky.function
 def worker_from_queue() -> dict:
     """Workers pull tasks from shared queue."""
     queue = sky.queue("tasks")
@@ -183,7 +183,7 @@ def worker_from_queue() -> dict:
     }
 
 
-@sky.compute
+@sky.function
 def producer_fill_queue(tasks: list[int]) -> dict:
     """Head node fills the work queue."""
     queue = sky.queue("tasks")

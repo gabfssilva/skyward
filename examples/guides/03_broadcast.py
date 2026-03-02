@@ -3,7 +3,7 @@
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def process_partition(data: list[int]) -> dict:
     """Process this node's shard of the data."""
     info = sky.instance_info()

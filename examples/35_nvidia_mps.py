@@ -15,7 +15,7 @@ from time import perf_counter
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def resnet_inference(task_id: int, batches: int, batch_size: int) -> dict:
     """Run ResNet-50 inference and report throughput."""
     import subprocess

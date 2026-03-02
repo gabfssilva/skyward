@@ -11,7 +11,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.timeout(120), pytest.mark.xdist_group
 
 class TestOutputStreaming:
     def test_generator_returns_iterable(self, pool):
-        @sky.compute
+        @sky.function
         def counter(n):
             yield from range(n)
 
@@ -19,7 +19,7 @@ class TestOutputStreaming:
         assert list(result) == [0, 1, 2, 3, 4]
 
     def test_generator_single_yield(self, pool):
-        @sky.compute
+        @sky.function
         def single():
             yield 42
 
@@ -27,7 +27,7 @@ class TestOutputStreaming:
         assert list(result) == [42]
 
     def test_generator_empty(self, pool):
-        @sky.compute
+        @sky.function
         def empty():
             return
             yield  # noqa: RET504
@@ -36,7 +36,7 @@ class TestOutputStreaming:
         assert list(result) == []
 
     def test_generator_yields_complex_types(self, pool):
-        @sky.compute
+        @sky.function
         def dicts(n):
             for i in range(n):
                 yield {"index": i, "squared": i**2}
@@ -51,7 +51,7 @@ class TestOutputStreaming:
 
 class TestInputStreaming:
     def test_iterator_param_consumed(self, pool):
-        @sky.compute
+        @sky.function
         def summer(data: Iterator[int]) -> int:
             return sum(data)
 
@@ -59,7 +59,7 @@ class TestInputStreaming:
         assert result == 4950
 
     def test_iterator_with_regular_args(self, pool):
-        @sky.compute
+        @sky.function
         def multiply_sum(data: Iterator[int], factor: int) -> int:
             return sum(data) * factor
 
@@ -69,7 +69,7 @@ class TestInputStreaming:
 
 class TestBidirectional:
     def test_input_and_output_streaming(self, pool):
-        @sky.compute
+        @sky.function
         def transform(data: Iterator[int]):
             for x in data:
                 yield x * 2
@@ -80,7 +80,7 @@ class TestBidirectional:
 
 class TestStreamingBroadcast:
     def test_generator_broadcast(self, pool):
-        @sky.compute
+        @sky.function
         def counter(n):
             yield from range(n)
 
@@ -91,11 +91,11 @@ class TestStreamingBroadcast:
 
 class TestStreamingParallel:
     def test_generator_in_parallel_group(self, pool):
-        @sky.compute
+        @sky.function
         def counter(n):
             yield from range(n)
 
-        @sky.compute
+        @sky.function
         def add(a, b):
             return a + b
 

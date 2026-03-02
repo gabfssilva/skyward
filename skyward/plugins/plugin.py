@@ -41,7 +41,7 @@ class Plugin:
         Factory that receives Cluster[S] and returns extra shell ops appended
         after Image-driven bootstrap phases.
     decorate
-        Classic Python decorator: (fn) -> fn. Wraps each @sky.compute
+        Classic Python decorator: (fn) -> fn. Wraps each @sky.function
         function at execution time on the remote worker.
     around_app
         Worker lifecycle context manager: InstanceInfo -> ContextManager[None].

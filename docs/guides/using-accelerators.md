@@ -27,7 +27,7 @@ The translation from a logical accelerator name to a provider-specific resource 
 
 ## Detecting hardware at runtime
 
-Inside a `@sky.compute` function, `instance_info()` tells you what hardware is available:
+Inside a `@sky.function` function, `instance_info()` tells you what hardware is available:
 
 ```python
 --8<-- "examples/guides/04_gpu_accelerators.py:6:9"
@@ -62,5 +62,5 @@ uv run python examples/guides/04_gpu_accelerators.py
 - **`accelerator`** parameter requests specific GPU hardware — works as a string or typed factory function.
 - **`sky.accelerators.*`** provides catalog-backed specs with VRAM, CUDA version, and provider-specific resolution.
 - **`instance_info()`** detects hardware at runtime — node identity, accelerators, cluster metadata.
-- **Imports inside `@sky.compute`** — remote dependencies don't need to be installed locally.
+- **Imports inside `@sky.function`** — remote dependencies don't need to be installed locally.
 - **GPU warmup** — first CUDA kernel compilation is a one-time cost; benchmark after warmup for accurate numbers.

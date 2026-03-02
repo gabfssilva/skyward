@@ -44,7 +44,8 @@ After this call returns, JAX's global state is initialized. Every call to `jax.d
 ```python
 import skyward as sky
 
-@sky.compute
+
+@sky.function
 def train():
     import jax
     import jax.numpy as jnp
@@ -57,6 +58,7 @@ def train():
     # distributed computation works out of the box
     mesh = jax.sharding.Mesh(jax.devices(), axis_names=("devices",))
     ...
+
 
 with sky.ComputePool(
     provider=sky.AWS(),

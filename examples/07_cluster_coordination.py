@@ -11,7 +11,7 @@ The head node (node 0) typically aggregates results or coordinates work.
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def get_cluster_info() -> dict:
     """Get detailed cluster information."""
     pool = sky.instance_info()
@@ -28,7 +28,7 @@ def get_cluster_info() -> dict:
     }
 
 
-@sky.compute
+@sky.function
 def distributed_sum(values: list[int]) -> dict:
     """Demonstrate distributed reduce pattern."""
     pool = sky.instance_info()
@@ -53,7 +53,7 @@ def distributed_sum(values: list[int]) -> dict:
     return result
 
 
-@sky.compute
+@sky.function
 def worker_with_role(task_id: int) -> dict:
     """Different behavior based on node role."""
     import time
@@ -80,7 +80,7 @@ def worker_with_role(task_id: int) -> dict:
         }
 
 
-@sky.compute
+@sky.function
 def map_reduce_example(data: list[int], operation: str) -> dict:
     """Classic map-reduce pattern."""
     pool = sky.instance_info()

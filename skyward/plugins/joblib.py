@@ -49,9 +49,9 @@ def _strip_local_warning_filters() -> None:
 
 
 def _make_remote_executor() -> Callable[[bytes], Any]:
-    from skyward import compute
+    from skyward import function
 
-    @compute
+    @function
     def execute_batch(payload: bytes) -> Any:
         import cloudpickle
 

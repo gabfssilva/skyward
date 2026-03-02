@@ -3,7 +3,7 @@
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def train(epochs: int) -> dict:
     """Simulate a training run and return metrics."""
     import time

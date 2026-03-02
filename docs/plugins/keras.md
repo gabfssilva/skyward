@@ -65,7 +65,8 @@ This is the configuration with the best automatic distribution support. The JAX 
 ```python
 import skyward as sky
 
-@sky.compute
+
+@sky.function
 def train():
     import keras
     from keras import layers
@@ -84,6 +85,7 @@ def train():
     model.fit(x_train, y_train, epochs=5, batch_size=64)
     _, accuracy = model.evaluate(x_test / 255.0, y_test)
     return accuracy
+
 
 with sky.ComputePool(
     provider=sky.AWS(),

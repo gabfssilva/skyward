@@ -15,7 +15,7 @@ from random import randint
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def simulate_work(task_id: int, duration: float) -> dict:
     """Simulate a task that takes variable time."""
     time.sleep(duration)

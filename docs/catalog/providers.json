@@ -1,0 +1,22 @@
+[
+  {
+    "id": "vastai",
+    "name": "Vast.ai"
+  },
+  {
+    "id": "hyperstack",
+    "name": "Hyperstack"
+  },
+  {
+    "id": "tensordock",
+    "name": "TensorDock"
+  },
+  {
+    "id": "aws",
+    "name": "AWS"
+  },
+  {
+    "id": "gcp",
+    "name": "GCP"
+  }
+]

@@ -61,7 +61,7 @@ Task dispatch — the `>>`, `@`, `&` operators — translates to actor messages 
 
 ### What's not here
 
-Computation. The client never executes your `@sky.compute` functions — that happens on the remote workers. The only CPU work on your laptop is serialization (cloudpickle + lz4 compression), which takes microseconds per task. Everything else is waiting for network responses.
+Computation. The client never executes your `@sky.function` functions — that happens on the remote workers. The only CPU work on your laptop is serialization (cloudpickle + lz4 compression), which takes microseconds per task. Everything else is waiting for network responses.
 
 ## Why this matters at scale
 

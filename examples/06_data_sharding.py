@@ -11,7 +11,7 @@ enabling efficient parallel processing.
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def train_on_shard(full_x: list, full_y: list) -> dict:
     """Train on this node's shard of the data."""
     import numpy as np
@@ -39,7 +39,7 @@ def train_on_shard(full_x: list, full_y: list) -> dict:
     }
 
 
-@sky.compute
+@sky.function
 def demonstrate_shard_types() -> dict:
     """Show that shard() preserves types."""
     import numpy as np
@@ -69,7 +69,7 @@ def demonstrate_shard_types() -> dict:
     }
 
 
-@sky.compute
+@sky.function
 def train_with_dataloader(epochs: int, batch_size: int) -> dict:
     """Use DistributedSampler with PyTorch DataLoader."""
     import torch

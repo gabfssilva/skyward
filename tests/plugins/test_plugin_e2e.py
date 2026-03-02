@@ -56,7 +56,7 @@ def plugin_pool():
 
 class TestPluginHooksE2E:
     def test_transform_sets_env_var(self, plugin_pool: ComputePool) -> None:
-        @sky.compute
+        @sky.function
         def check():
             import os
 
@@ -65,7 +65,7 @@ class TestPluginHooksE2E:
         assert (check() >> plugin_pool) == "applied"
 
     def test_decorate_wraps_execution(self, plugin_pool: ComputePool) -> None:
-        @sky.compute
+        @sky.function
         def check():
             import os
 
@@ -74,7 +74,7 @@ class TestPluginHooksE2E:
         assert (check() >> plugin_pool) == "applied"
 
     def test_around_app_context_entered(self, plugin_pool: ComputePool) -> None:
-        @sky.compute
+        @sky.function
         def check():
             import os
 
@@ -83,7 +83,7 @@ class TestPluginHooksE2E:
         assert (check() >> plugin_pool) == "entered"
 
     def test_all_hooks_active(self, plugin_pool: ComputePool) -> None:
-        @sky.compute
+        @sky.function
         def check_all():
             import os
 
@@ -139,7 +139,7 @@ def process_pool():
 
 class TestAroundProcessE2E:
     def test_around_process_context_entered(self, process_pool: ComputePool) -> None:
-        @sky.compute
+        @sky.function
         def check():
             import os
 
@@ -150,7 +150,7 @@ class TestAroundProcessE2E:
         assert result.startswith("pid-")
 
     def test_around_process_idempotent(self, process_pool: ComputePool) -> None:
-        @sky.compute
+        @sky.function
         def check():
             import os
 
@@ -161,7 +161,7 @@ class TestAroundProcessE2E:
         assert r1 == r2
 
     def test_around_process_runs_in_subprocess(self, process_pool: ComputePool) -> None:
-        @sky.compute
+        @sky.function
         def get_pids():
             import os
 

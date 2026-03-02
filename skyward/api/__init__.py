@@ -8,9 +8,9 @@ from .model import InstanceType as InstanceType
 from .model import Offer as Offer
 from .pool import (
     ComputePool,
-    PendingCompute,
-    PendingComputeGroup,
-    compute,
+    PendingFunction,
+    PendingFunctionGroup,
+    function,
     gather,
     sky,
 )
@@ -41,10 +41,10 @@ from .spec import WorkerExecutor as WorkerExecutor
 from .volume_client import VolumeClient as VolumeClient
 
 __all__ = [
-    "PendingCompute",
-    "PendingComputeGroup",
+    "PendingFunction",
+    "PendingFunctionGroup",
     "ComputePool",
-    "compute",
+    "function",
     "gather",
     "sky",
     "AllocationStrategy",

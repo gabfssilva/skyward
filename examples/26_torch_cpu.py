@@ -10,7 +10,7 @@ to scope the PyTorch index to torch/torchvision only.
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def matrix_multiply(size: int) -> dict:
     import torch
 

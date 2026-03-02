@@ -26,7 +26,7 @@ NODES = 2
 TIMEOUT = 600
 
 
-@sky.compute
+@sky.function
 def gpu_matmul(size: int = 512) -> dict:
     """Multiply two matrices on GPU and return diagnostics."""
     import torch

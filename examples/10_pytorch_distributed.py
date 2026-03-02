@@ -13,7 +13,7 @@ RANK, and initializes the process group.
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def train_model(epochs: int, batch_size: int, learning_rate: float) -> dict:
     """Train a neural network with distributed data parallelism."""
     import torch
@@ -139,7 +139,7 @@ def train_model(epochs: int, batch_size: int, learning_rate: float) -> dict:
     }
 
 
-@sky.compute
+@sky.function
 def evaluate_model(test_data: list, test_labels: list) -> dict:
     """Evaluate model on test data (run on head node)."""
     import torch

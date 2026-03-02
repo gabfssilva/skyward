@@ -10,7 +10,7 @@ Demonstrates fine-tuning a pre-trained transformer model:
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def check_environment() -> dict:
     """Verify the training environment."""
     import torch
@@ -24,7 +24,7 @@ def check_environment() -> dict:
     }
 
 
-@sky.compute
+@sky.function
 def finetune_classifier(
     model_name: str,
     num_epochs: int,
@@ -145,7 +145,7 @@ def finetune_classifier(
     }
 
 
-@sky.compute
+@sky.function
 def inference_demo(model_name: str, texts: list[str]) -> dict:
     """Run inference with a pre-trained model."""
     from transformers import pipeline

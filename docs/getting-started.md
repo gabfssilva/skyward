@@ -76,11 +76,13 @@ Create a file called `hello.py`:
 ```python
 import skyward as sky
 
-@sky.compute
+
+@sky.function
 def hello() -> str:
     """This function runs on a remote instance."""
     import socket
     return f"Hello from {socket.gethostname()}!"
+
 
 with sky.ComputePool(provider=sky.AWS()) as pool:
     result = hello() >> pool
@@ -123,7 +125,8 @@ To run on a GPU, add the `accelerator` and `image` parameters to the pool. The `
 ```python
 import skyward as sky
 
-@sky.compute
+
+@sky.function
 def gpu_info() -> dict:
     import torch
     return {
@@ -131,6 +134,7 @@ def gpu_info() -> dict:
         "device_count": torch.cuda.device_count(),
         "device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
     }
+
 
 with sky.ComputePool(
     provider=sky.AWS(),
@@ -143,7 +147,7 @@ with sky.ComputePool(
     print(f"CUDA devices: {info['device_count']}")
 ```
 
-Notice that `torch` is imported *inside* the function, not at the top of the file. This is intentional: `torch` doesn't need to be installed on your local machine — it only needs to exist on the remote worker, where the function actually runs. The `Image(pip=["torch"])` tells Skyward to install it there during bootstrap. This pattern — importing heavy dependencies inside `@sky.compute` functions — keeps your local environment lightweight.
+Notice that `torch` is imported *inside* the function, not at the top of the file. This is intentional: `torch` doesn't need to be installed on your local machine — it only needs to exist on the remote worker, where the function actually runs. The `Image(pip=["torch"])` tells Skyward to install it there during bootstrap. This pattern — importing heavy dependencies inside `@sky.function` functions — keeps your local environment lightweight.
 
 The `allocation="spot"` parameter requests spot instances, which are typically 60-90% cheaper than on-demand. If spot capacity isn't available, the pool will fail rather than fall back. Use `allocation="spot-if-available"` (the default) to automatically fall back to on-demand pricing.
 
@@ -154,9 +158,11 @@ A single `>>` sends one computation to one node. When you have multiple independ
 ```python
 import skyward as sky
 
-@sky.compute
+
+@sky.function
 def square(x: int) -> int:
     return x * x
+
 
 with sky.ComputePool(provider=sky.AWS()) as pool:
     results = sky.gather(square(1), square(2), square(3)) >> pool
@@ -179,7 +185,8 @@ To scale beyond a single instance, set `nodes` on the pool. The `@` operator bro
 ```python
 import skyward as sky
 
-@sky.compute
+
+@sky.function
 def worker_info() -> dict:
     info = sky.instance_info()
     return {
@@ -187,6 +194,7 @@ def worker_info() -> dict:
         "total": info.total_nodes,
         "is_head": info.is_head,
     }
+
 
 with sky.ComputePool(provider=sky.AWS(), nodes=4) as pool:
     results = worker_info() @ pool
@@ -198,7 +206,7 @@ Where `>>` sends work to one node, `@` sends it to all of them. Each node runs t
 
 ## Local testing
 
-During development, you'll want to test your functions without provisioning any cloud infrastructure. Every `@sky.compute` function exposes the original, unwrapped version via `.local`:
+During development, you'll want to test your functions without provisioning any cloud infrastructure. Every `@sky.function` function exposes the original, unwrapped version via `.local`:
 
 ```python
 result = my_function.local(test_data)  # executes immediately, no cloud

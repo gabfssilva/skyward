@@ -3,13 +3,13 @@
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def gpu_info() -> sky.InstanceInfo:
     """Return information about this instance."""
     return sky.instance_info()
 
 
-@sky.compute
+@sky.function
 def matrix_benchmark(size: int) -> dict:
     """Benchmark matrix multiplication on GPU vs CPU."""
     import time

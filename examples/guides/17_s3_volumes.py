@@ -16,7 +16,7 @@ from pathlib import Path
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def train(data_path: str, output_dir: str) -> dict:
     """Load dataset from volume, train a model, save to output volume."""
     import pickle

@@ -5,7 +5,7 @@ import random
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def train_on_shard(full_x: list, full_y: list) -> dict:
     """Train on this node's shard of the data."""
     import numpy as np
@@ -22,7 +22,7 @@ def train_on_shard(full_x: list, full_y: list) -> dict:
     }
 
 
-@sky.compute
+@sky.function
 def show_shard_types() -> dict:
     """Demonstrate that shard() preserves types."""
     import numpy as np

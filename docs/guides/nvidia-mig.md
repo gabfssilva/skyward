@@ -28,7 +28,7 @@ The concurrency and the profile must agree: if a profile creates two partitions,
 
 ## What the plugin does
 
-The plugin handles the full MIG lifecycle so your `@sky.compute` function doesn't need to know about partitioning at all. When the node boots, the plugin enables MIG mode and creates the requested partitions. When a subprocess picks up its first task, the plugin detects which partition belongs to it and sets `CUDA_VISIBLE_DEVICES` accordingly. From that point on, CUDA sees only that partition — your code calls `torch.device("cuda")` and lands on the right slice of the GPU automatically.
+The plugin handles the full MIG lifecycle so your `@sky.function` function doesn't need to know about partitioning at all. When the node boots, the plugin enables MIG mode and creates the requested partitions. When a subprocess picks up its first task, the plugin detects which partition belongs to it and sets `CUDA_VISIBLE_DEVICES` accordingly. From that point on, CUDA sees only that partition — your code calls `torch.device("cuda")` and lands on the right slice of the GPU automatically.
 
 For the technical details on how each hook works, see the [MIG plugin reference](../plugins/mig.md).
 
@@ -75,5 +75,5 @@ uv run python examples/guides/18_nvidia_mig.py
 - **`sky.plugins.mig(profile="3g.40gb")`** — enables MIG mode, creates partitions during bootstrap, and assigns each subprocess to its own MIG device.
 - **`Worker(concurrency=N, executor="process")`** — one loky subprocess per partition; concurrency must match the number of partitions the profile supports.
 - **Hardware isolation** — each partition has dedicated compute units, memory, and L2 cache; no time-slicing or contention.
-- **Transparent to `@sky.compute`** — functions see a normal CUDA device; the plugin sets `CUDA_VISIBLE_DEVICES` per subprocess via the `around_process` hook.
+- **Transparent to `@sky.function`** — functions see a normal CUDA device; the plugin sets `CUDA_VISIBLE_DEVICES` per subprocess via the `around_process` hook.
 - **Profile choice** — more partitions means less compute per partition; pick based on your workload's memory and throughput needs.

@@ -16,7 +16,7 @@ from pathlib import Path
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def list_files(data_dir: str, pattern: str = "*") -> list[str]:
     """List files in the mounted S3 volume."""
     path = Path(data_dir)
@@ -28,7 +28,7 @@ def list_files(data_dir: str, pattern: str = "*") -> list[str]:
     return [f.name for f in sorted(files)[:20]]
 
 
-@sky.compute
+@sky.function
 def save_checkpoint(checkpoint_dir: str, epoch: int, metrics: dict) -> dict:
     """Save a training checkpoint to S3 and verify it was written."""
     import json
@@ -54,7 +54,7 @@ def save_checkpoint(checkpoint_dir: str, epoch: int, metrics: dict) -> dict:
     }
 
 
-@sky.compute
+@sky.function
 def process_dataset(data_dir: str) -> dict:
     """Process files from S3 and return statistics."""
     path = Path(data_dir)

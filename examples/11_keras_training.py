@@ -19,7 +19,7 @@ from keras import layers
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 @sky.stdout(only=lambda i: i.node == 0)
 def train_vit(
     vit_config: ViTConfig | None = None,

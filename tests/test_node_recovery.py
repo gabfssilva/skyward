@@ -135,7 +135,7 @@ class TestNodeFailureRecovery:
             ssh_retry_interval=2,
         ) as pool:
 
-            @sky.compute
+            @sky.function
             def whoami() -> int:
                 info = sky.instance_info()
                 return info.node if info else -1
@@ -158,14 +158,14 @@ class TestNodeFailureRecovery:
             ssh_retry_interval=2,
         ) as pool:
 
-            @sky.compute
+            @sky.function
             def ping() -> str:
                 return "pong"
 
             results = ping() @ pool
             assert results == ["pong", "pong", "pong"]
 
-            @sky.compute
+            @sky.function
             def add(a: int, b: int) -> int:
                 return a + b
 
@@ -293,7 +293,7 @@ class TestActiveNodeRecovery:
             default_compute_timeout=15,
         ) as pool:
 
-            @sky.compute
+            @sky.function
             def ping() -> str:
                 return "pong"
 
@@ -304,7 +304,7 @@ class TestActiveNodeRecovery:
             # 2. Kill node 3's container (0-indexed)
             kill_switch.kill(3)
 
-            @sky.compute
+            @sky.function
             def whoami() -> int:
                 info = sky.instance_info()
                 return info.node if info else -1

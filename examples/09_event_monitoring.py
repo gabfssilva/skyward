@@ -12,7 +12,7 @@ Events enable real-time visibility into the execution lifecycle.
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def heavy_computation(iterations: int) -> dict:
     """CPU-intensive computation for metrics demonstration."""
     import time
@@ -34,7 +34,7 @@ def heavy_computation(iterations: int) -> dict:
     }
 
 
-@sky.compute
+@sky.function
 def gpu_computation(size: int) -> dict:
     """GPU computation to generate GPU metrics."""
     import torch

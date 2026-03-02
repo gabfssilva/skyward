@@ -9,7 +9,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.timeout(180), pytest.mark.xdist_group
 
 class TestTorchPlugin:
     def test_process_group_initialized(self, torch_plugin_pool) -> None:
-        @sky.compute
+        @sky.function
         def check_init():
             import torch.distributed as dist
 
@@ -19,7 +19,7 @@ class TestTorchPlugin:
         assert all(results)
 
     def test_correct_rank_and_world_size(self, torch_plugin_pool) -> None:
-        @sky.compute
+        @sky.function
         def check_rank():
             import torch.distributed as dist
 
@@ -37,7 +37,7 @@ class TestTorchPlugin:
             assert r["world_size"] == r["total_nodes"] == 2
 
     def test_allreduce(self, torch_plugin_pool) -> None:
-        @sky.compute
+        @sky.function
         def allreduce():
             import torch
             import torch.distributed as dist

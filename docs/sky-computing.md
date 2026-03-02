@@ -36,7 +36,7 @@ with sky.ComputePool(provider=sky.RunPod(), accelerator="H100", nodes=4) as pool
     result = train(data) >> pool
 ```
 
-The `@sky.compute` functions, the operators, the `Image` specification — everything stays identical across providers. Your code doesn't know which cloud it's running on, and it doesn't need to. This is the practical realization of the Sky Computing idea: you're not locked to a single cloud, and moving between them doesn't require rewriting anything.
+The `@sky.function` functions, the operators, the `Image` specification — everything stays identical across providers. Your code doesn't know which cloud it's running on, and it doesn't need to. This is the practical realization of the Sky Computing idea: you're not locked to a single cloud, and moving between them doesn't require rewriting anything.
 
 ### Unified resource specification
 
@@ -66,7 +66,7 @@ Both projects draw from the Sky Computing vision. The difference is in programmi
 
 **SkyPilot** is job-oriented. You define a task in YAML — a script, resource requirements, and storage mounts — and run `sky launch` to submit it. SkyPilot provisions a cluster, runs your script, and optionally tears it down. The cluster can persist between jobs (for iterative development) or auto-shutdown after idle time. Results are written to storage (S3, GCS, etc.) rather than returned to your code. SkyPilot excels at batch pipelines where jobs are self-contained units — you submit a script, it runs on the best available cloud, and the output lands in a storage bucket.
 
-**Skyward** is function-oriented. You decorate a Python function with `@sky.compute` and dispatch it with `>>` or `@`. Your local Python process orchestrates everything — functions are transparently executed remotely and return results directly to your code. There's no YAML, no job submission, no separate storage layer for results. The programming model is a function call that happens to execute on a remote GPU. Skyward excels at interactive development where you iterate quickly and want remote compute to feel like a local operation.
+**Skyward** is function-oriented. You decorate a Python function with `@sky.function` and dispatch it with `>>` or `@`. Your local Python process orchestrates everything — functions are transparently executed remotely and return results directly to your code. There's no YAML, no job submission, no separate storage layer for results. The programming model is a function call that happens to execute on a remote GPU. Skyward excels at interactive development where you iterate quickly and want remote compute to feel like a local operation.
 
 The choice depends on your workflow. If your workload is "run this script end-to-end and store the results," SkyPilot is the right tool. If you want to call a function on a remote GPU and get the result back in a variable — composing remote computation with local logic, running experiments interactively, iterating on training code — Skyward is the right tool.
 

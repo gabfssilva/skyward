@@ -11,7 +11,7 @@ Tests that serialization and transitive dependencies work across the cluster.
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def run_experiment(config) -> dict:
     import numpy as np
     from lib import normalize, summarize

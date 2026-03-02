@@ -8,7 +8,7 @@ Great for large datasets that don't fit in instance storage.
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def list_data_files() -> list[str]:
     """List files in the mounted S3 bucket."""
     import os
@@ -22,7 +22,7 @@ def list_data_files() -> list[str]:
     return files[:10]  # First 10 files
 
 
-@sky.compute
+@sky.function
 def process_data_file(path: str) -> dict:
     """Process a file from the mounted volume."""
     with open(path, "rb") as f:
@@ -34,7 +34,7 @@ def process_data_file(path: str) -> dict:
     }
 
 
-@sky.compute
+@sky.function
 def save_checkpoint(data: dict) -> str:
     """Save checkpoint to writable volume."""
     import json

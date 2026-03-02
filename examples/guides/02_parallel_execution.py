@@ -5,19 +5,19 @@ import time
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def process_chunk(data: list[int]) -> int:
     """Sum all numbers in a chunk."""
     return sum(data)
 
 
-@sky.compute
+@sky.function
 def multiply(x: int, y: int) -> int:
     """Multiply two numbers."""
     return x * y
 
 
-@sky.compute
+@sky.function
 def factorial(n: int) -> int:
     """Calculate factorial."""
     result = 1

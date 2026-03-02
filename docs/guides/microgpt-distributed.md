@@ -4,13 +4,13 @@ Andrej Karpathy's [MicroGPT](https://gist.github.com/karpathy/8627fe009c40f57531
 
 ## The compute function
 
-The entire training pipeline lives inside a single `@sky.compute` function:
+The entire training pipeline lives inside a single `@sky.function` function:
 
 ```python
 --8<-- "examples/30_flax_minigpt.py:33:46"
 ```
 
-- **`@sky.compute`** wraps the function into a `PendingCompute` — nothing executes until dispatched to a pool via an operator.
+- **`@sky.function`** wraps the function into a `PendingCompute` — nothing executes until dispatched to a pool via an operator.
 - **`@sky.stdout(only="head")`** silences stdout on all nodes except node 0. Without this, every node would print interleaved training logs.
 
 JAX's distributed runtime is initialized by `sky.plugins.jax()` on the pool (shown in the [Running It](#running-it) section below). All hyperparameters are function arguments with defaults — you can override any of them when calling the function without touching the code.

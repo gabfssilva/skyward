@@ -30,7 +30,7 @@ DATA_URL = (
 )
 
 
-@sky.compute
+@sky.function
 @sky.stdout(only="head")
 def train_microgpt(
     n_layer: int = 6,

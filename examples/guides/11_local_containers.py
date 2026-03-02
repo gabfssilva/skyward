@@ -3,7 +3,7 @@
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def hello() -> str:
     """A simple function that reports where it's running."""
     import socket
@@ -11,7 +11,7 @@ def hello() -> str:
     return f"Hello from {socket.gethostname()}"
 
 
-@sky.compute
+@sky.function
 def check_env() -> str:
     """Read an environment variable set via Image."""
     import os
@@ -19,7 +19,7 @@ def check_env() -> str:
     return os.environ.get("MY_VAR", "not set")
 
 
-@sky.compute
+@sky.function
 def node_info() -> dict:
     """Report this node's position in the cluster."""
     info = sky.instance_info()
@@ -31,7 +31,7 @@ def node_info() -> dict:
     }
 
 
-@sky.compute
+@sky.function
 def shard_sum(data: list[int]) -> int:
     """Sum only this node's shard of the data."""
     local = sky.shard(data)

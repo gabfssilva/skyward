@@ -14,7 +14,7 @@ pytestmark = [
 
 class TestDistributedDict:
     def test_set_and_get_across_nodes(self, pool):
-        @sky.compute
+        @sky.function
         def writer():
             d = sky.dict("cross_dict")
             info = sky.instance_info()
@@ -23,7 +23,7 @@ class TestDistributedDict:
 
         writer() @ pool
 
-        @sky.compute
+        @sky.function
         def reader():
             d = sky.dict("cross_dict")
             return d.get("node-0"), d.get("node-1")
@@ -32,7 +32,7 @@ class TestDistributedDict:
         assert result == (0, 1)
 
     def test_dict_operations(self, pool):
-        @sky.compute
+        @sky.function
         def dict_ops():
             d = sky.dict("ops_dict")
             d["key"] = "value"
@@ -45,7 +45,7 @@ class TestDistributedDict:
 
 class TestDistributedCounter:
     def test_increment_from_multiple_nodes(self, pool):
-        @sky.compute
+        @sky.function
         def increment():
             c = sky.counter("multi_counter")
             c.increment(1)
@@ -53,7 +53,7 @@ class TestDistributedCounter:
 
         increment() @ pool
 
-        @sky.compute
+        @sky.function
         def read_counter():
             c = sky.counter("multi_counter")
             return c.value
@@ -62,7 +62,7 @@ class TestDistributedCounter:
         assert value == 2
 
     def test_counter_operations(self, pool):
-        @sky.compute
+        @sky.function
         def counter_ops():
             c = sky.counter("ops_counter")
             c.increment(10)
@@ -77,7 +77,7 @@ class TestDistributedCounter:
 
 class TestDistributedQueue:
     def test_put_and_get(self, pool):
-        @sky.compute
+        @sky.function
         def queue_ops():
             q = sky.queue("test_q")
             q.put("hello")
@@ -90,7 +90,7 @@ class TestDistributedQueue:
         assert result == ("hello", "world")
 
     def test_get_timeout_returns_none(self, pool):
-        @sky.compute
+        @sky.function
         def queue_timeout():
             q = sky.queue("empty_q")
             return q.get(timeout=0.5)
@@ -101,7 +101,7 @@ class TestDistributedQueue:
 
 class TestDistributedLock:
     def test_lock_context_manager(self, pool):
-        @sky.compute
+        @sky.function
         def lock_ops():
             lock = sky.lock("test_lock")
             c = sky.counter("lock_counter")
@@ -115,7 +115,7 @@ class TestDistributedLock:
 
 class TestDistributedBarrier:
     def test_barrier_synchronizes_all_nodes(self, pool):
-        @sky.compute
+        @sky.function
         def wait_at_barrier():
             b = sky.barrier("sync_point", 2)
             b.wait()
@@ -127,7 +127,7 @@ class TestDistributedBarrier:
 
 class TestDistributedSet:
     def test_set_operations(self, pool):
-        @sky.compute
+        @sky.function
         def set_ops():
             s = sky.set("test_set")
             s.add("a")

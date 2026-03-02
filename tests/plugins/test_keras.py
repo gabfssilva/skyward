@@ -9,7 +9,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.timeout(180), pytest.mark.xdist_group
 
 class TestKerasPlugin:
     def test_backend_is_set(self, keras_plugin_pool) -> None:
-        @sky.compute
+        @sky.function
         def check_env():
             import os
 
@@ -19,7 +19,7 @@ class TestKerasPlugin:
         assert all(r == "torch" for r in results)
 
     def test_keras_import_works(self, keras_plugin_pool) -> None:
-        @sky.compute
+        @sky.function
         def check_backend():
             import keras
 

@@ -3,13 +3,13 @@
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def add(a: int, b: int) -> int:
     """Add two numbers on a remote instance."""
     return a + b
 
 
-@sky.compute
+@sky.function
 def process(data: list[int]) -> dict:
     """Process data remotely and return statistics."""
     return {

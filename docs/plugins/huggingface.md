@@ -10,7 +10,7 @@ Skyward's `huggingface` plugin handles all of this at the pool level. It install
 
 **Bootstrap** — After the base environment is set up, the plugin runs `huggingface-cli login --token $HF_TOKEN`. This writes the token to the Hub's local credential store (`~/.cache/huggingface/token`), which is where `from_pretrained()` looks when downloading gated models. The login happens once during instance bootstrap, not on every task.
 
-Together, these two hooks mean that by the time your `@sky.compute` function runs, the worker has the HuggingFace libraries installed, the CLI authenticated, and the token in the environment. Your function can focus on the actual ML work.
+Together, these two hooks mean that by the time your `@sky.function` function runs, the worker has the HuggingFace libraries installed, the CLI authenticated, and the token in the environment. Your function can focus on the actual ML work.
 
 ## Parameters
 
@@ -49,7 +49,7 @@ The most common pattern is single-node fine-tuning with the Trainer API. The plu
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def finetune(model_name: str, epochs: int) -> dict:
     from datasets import load_dataset
     from transformers import (
@@ -104,7 +104,7 @@ The Trainer handles device placement internally — it detects the GPU and moves
 For larger models or faster iteration, distribute training across multiple nodes. The HuggingFace Trainer integrates with PyTorch's DistributedDataParallel when the process group is initialized. Combine the `huggingface` plugin with the `torch` plugin:
 
 ```python
-@sky.compute
+@sky.function
 def distributed_finetune(model_name: str) -> dict:
     from datasets import load_dataset
     from transformers import (
@@ -157,7 +157,7 @@ The `torch` plugin initializes the process group before your function runs — i
 For lighter workloads like batch inference, the plugin is equally useful — it ensures the libraries and authentication are in place:
 
 ```python
-@sky.compute
+@sky.function
 def classify(texts: list[str]) -> list[dict]:
     from transformers import pipeline
 

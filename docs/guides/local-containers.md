@@ -4,7 +4,7 @@ When developing with Skyward, the normal feedback loop involves provisioning clo
 
 The `Container` provider solves this by running the exact same orchestration locally. Instead of launching EC2 instances or GPU pods, it starts Docker containers on your machine. The pool lifecycle is identical: SSH tunnels, bootstrap scripts, worker processes, cluster formation. The only difference is that "the cloud" is your laptop.
 
-This means you can develop and test your `@sky.compute` functions locally, then switch to `sky.AWS()` or `sky.RunPod()` when you're ready for real hardware — with confidence that the behavior will be the same.
+This means you can develop and test your `@sky.function` functions locally, then switch to `sky.AWS()` or `sky.RunPod()` when you're ready for real hardware — with confidence that the behavior will be the same.
 
 ## Prerequisites
 
@@ -109,12 +109,14 @@ def pool():
 Then test your compute functions against the fixture:
 
 ```python
-@sky.compute
+@sky.function
 def double(x: int) -> int:
     return x * 2
 
+
 def test_single_execution(pool):
     assert double(5) >> pool == 10
+
 
 def test_broadcast(pool):
     results = double(5) @ pool

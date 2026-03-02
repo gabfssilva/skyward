@@ -1,0 +1,170 @@
+[
+  {
+    "spec_id": "73c563e16e55",
+    "instance_type": "a2-highgpu-1g",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "f061ddce9bde",
+    "instance_type": "a2-highgpu-2g",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "46c0fc631fc7",
+    "instance_type": "a2-highgpu-4g",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "daaf66b355eb",
+    "instance_type": "a2-highgpu-8g",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "e138f2c82a78",
+    "instance_type": "a2-megagpu-16g",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "f56bab74ddd1",
+    "instance_type": "a2-ultragpu-1g",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "7740c2bf4c1e",
+    "instance_type": "a2-ultragpu-2g",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "af9624bdcb38",
+    "instance_type": "a2-ultragpu-4g",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "3802510b278e",
+    "instance_type": "a2-ultragpu-8g",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "af85ab68d0bf",
+    "instance_type": "a3-edgegpu-8g",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "830ca2c8f1d6",
+    "instance_type": "a3-edgegpu-8g-nolssd",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "81f94a4a36a3",
+    "instance_type": "a3-highgpu-1g",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "1223974c6b9d",
+    "instance_type": "a3-highgpu-2g",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "012272f55aa1",
+    "instance_type": "a3-highgpu-4g",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "af85ab68d0bf",
+    "instance_type": "a3-highgpu-8g",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "af85ab68d0bf",
+    "instance_type": "a3-megagpu-8g",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "42e1493d28fa",
+    "instance_type": "g2-standard-12",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "f6012a60bc9b",
+    "instance_type": "g2-standard-16",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "9df913a5b57d",
+    "instance_type": "g2-standard-24",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "ba8fd194f807",
+    "instance_type": "g2-standard-32",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "908f00263d8f",
+    "instance_type": "g2-standard-4",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "67ad1a8d4659",
+    "instance_type": "g2-standard-48",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "101988859609",
+    "instance_type": "g2-standard-8",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "c74cf70aec53",
+    "instance_type": "g2-standard-96",
+    "region": "us-central1-a",
+    "spot_price": null,
+    "on_demand_price": null
+  }
+]

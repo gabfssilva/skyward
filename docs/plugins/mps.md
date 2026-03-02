@@ -62,7 +62,7 @@ Run multiple inference tasks concurrently on a single GPU node:
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def inference(task_id: int, batch_size: int) -> dict:
     import torch
     from torchvision.models import resnet50

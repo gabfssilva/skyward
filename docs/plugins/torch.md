@@ -52,7 +52,8 @@ The environment variables come from `instance_info()`: `head_addr` becomes `MAST
 ```python
 import skyward as sky
 
-@sky.compute
+
+@sky.function
 @sky.stdout(only="head")
 def train() -> dict:
     import torch
@@ -88,6 +89,7 @@ def train() -> dict:
         print(f"Epoch {epoch}: loss={loss.item():.4f}")
 
     return {"final_loss": loss.item(), "rank": rank}
+
 
 with sky.ComputePool(
     provider=sky.AWS(),

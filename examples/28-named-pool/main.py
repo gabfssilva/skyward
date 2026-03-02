@@ -10,7 +10,7 @@ numpy computation across nodes.
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def matrix_stats(seed: int) -> dict:
     import numpy as np
 

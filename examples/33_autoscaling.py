@@ -6,7 +6,7 @@ import skyward as sky
 from skyward.api import Worker
 
 
-@sky.compute
+@sky.function
 def heavy_work(seconds: int) -> str:
     sleep(seconds)
     info = sky.instance_info()

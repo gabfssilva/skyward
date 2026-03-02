@@ -16,17 +16,17 @@ import pandas as pd
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def hello() -> str:
     return "hi!"
 
-@sky.compute
+@sky.function
 def describe_dataset(df: pd.DataFrame) -> pd.DataFrame:
     """Compute descriptive statistics on the remote worker."""
     return df.describe()
 
 
-@sky.compute
+@sky.function
 def revenue_by_category(df: pd.DataFrame) -> pd.DataFrame:
     """Aggregate revenue per product category."""
     import pandas as pd
@@ -43,7 +43,7 @@ def revenue_by_category(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-@sky.compute
+@sky.function
 def add_features(df: pd.DataFrame) -> pd.DataFrame:
     """Feature engineering on the remote side — returns a new DataFrame."""
     df = df.copy()

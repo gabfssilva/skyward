@@ -4,7 +4,7 @@ This module provides the user-facing synchronous API that mirrors v1:
 
     import skyward as sky
 
-    @sky.compute
+    @sky.function
     def train(data):
         return model.fit(data)
 
@@ -98,16 +98,16 @@ class _Sky:
         results = compute_fn(args) @ sky   # broadcast to all nodes
     """
 
-    def __rrshift__(self, pending: PendingCompute[Any] | PendingComputeGroup) -> Any:
+    def __rrshift__(self, pending: PendingFunction[Any] | PendingFunctionGroup) -> Any:
         """pending >> sky - execute computation(s)."""
         pool = _get_active_pool()
         match pending:
-            case PendingComputeGroup():
+            case PendingFunctionGroup():
                 return pool.run_parallel(pending)
             case _:
                 return pool.run(pending)
 
-    def __rmatmul__(self, pending: PendingCompute[Any]) -> list[Any]:
+    def __rmatmul__(self, pending: PendingFunction[Any]) -> list[Any]:
         """pending @ sky - broadcast to all nodes."""
         pool = _get_active_pool()
         return pool.broadcast(pending)
@@ -123,7 +123,7 @@ sky = _Sky()
 
 
 @dataclass(frozen=True, slots=True)
-class PendingCompute[T]:
+class PendingFunction[T]:
     """Lazy computation wrapper.
 
     Represents a function call that will be executed remotely
@@ -147,8 +147,8 @@ class PendingCompute[T]:
     kwargs: dict[str, Any]
     timeout: float | None = None
 
-    def with_timeout(self, timeout: float) -> PendingCompute[T]:
-        return PendingCompute(fn=self.fn, args=self.args, kwargs=self.kwargs, timeout=timeout)
+    def with_timeout(self, timeout: float) -> PendingFunction[T]:
+        return PendingFunction(fn=self.fn, args=self.args, kwargs=self.kwargs, timeout=timeout)
 
     def __rshift__(self, target: ComputePool | _Sky | types.ModuleType) -> T:
         match target:
@@ -178,17 +178,17 @@ class PendingCompute[T]:
             case _:
                 return target.broadcast(self)  # type: ignore[union-attr]
 
-    def __and__(self, other: PendingCompute[Any] | PendingComputeGroup) -> PendingComputeGroup:
+    def __and__(self, other: PendingFunction[Any] | PendingFunctionGroup) -> PendingFunctionGroup:
         """Combine with another computation for parallel execution."""
         match other:
-            case PendingComputeGroup():
-                return PendingComputeGroup(items=(self, *other.items))
+            case PendingFunctionGroup():
+                return PendingFunctionGroup(items=(self, *other.items))
             case _:
-                return PendingComputeGroup(items=(self, other))
+                return PendingFunctionGroup(items=(self, other))
 
 
 @dataclass(frozen=True, slots=True)
-class PendingComputeGroup:
+class PendingFunctionGroup:
     """Group of computations for parallel execution.
 
     Created by using the & operator:
@@ -200,27 +200,27 @@ class PendingComputeGroup:
         results = group >> sky
     """
 
-    items: tuple[PendingCompute[Any], ...]
+    items: tuple[PendingFunction[Any], ...]
     stream: bool = False
     ordered: bool = True
     timeout: float | None = None
 
-    def with_timeout(self, timeout: float) -> PendingComputeGroup:
-        return PendingComputeGroup(
+    def with_timeout(self, timeout: float) -> PendingFunctionGroup:
+        return PendingFunctionGroup(
             items=self.items, stream=self.stream,
             ordered=self.ordered, timeout=timeout,
         )
 
-    def __and__(self, other: PendingCompute[Any] | PendingComputeGroup) -> PendingComputeGroup:
+    def __and__(self, other: PendingFunction[Any] | PendingFunctionGroup) -> PendingFunctionGroup:
         """Add another computation to the group."""
         match other:
-            case PendingComputeGroup():
-                return PendingComputeGroup(
+            case PendingFunctionGroup():
+                return PendingFunctionGroup(
                     items=(*self.items, *other.items),
                     stream=self.stream, ordered=self.ordered,
                 )
             case _:
-                return PendingComputeGroup(
+                return PendingFunctionGroup(
                     items=(*self.items, other),
                     stream=self.stream, ordered=self.ordered,
                 )
@@ -240,15 +240,15 @@ class PendingComputeGroup:
     def __len__(self) -> int:
         return len(self.items)
 
-    def __iter__(self) -> Iterator[PendingCompute[Any]]:
+    def __iter__(self) -> Iterator[PendingFunction[Any]]:
         return iter(self.items)
 
 
 def gather(
-    *pendings: PendingCompute[Any],
+    *pendings: PendingFunction[Any],
     stream: bool = False,
     ordered: bool = True,
-) -> PendingComputeGroup:
+) -> PendingFunctionGroup:
     """Group computations for parallel execution.
 
     Example:
@@ -261,26 +261,26 @@ def gather(
         for result in gather(task1(), task2(), task3(), stream=True, ordered=False) >> sky:
             print(result)  # yields results as they complete, unordered
     """
-    return PendingComputeGroup(items=pendings, stream=stream, ordered=ordered)
+    return PendingFunctionGroup(items=pendings, stream=stream, ordered=ordered)
 
 
 @overload
-def compute[**P, T](fn: Callable[P, T]) -> Callable[P, PendingCompute[T]]: ...
+def function[**P, T](fn: Callable[P, T]) -> Callable[P, PendingFunction[T]]: ...
 
 @overload
-def compute[**P, T](
+def function[**P, T](
     *, timeout: float,
-) -> Callable[[Callable[P, T]], Callable[P, PendingCompute[T]]]: ...
+) -> Callable[[Callable[P, T]], Callable[P, PendingFunction[T]]]: ...
 
-def compute[**P, T](
+def function[**P, T](
     fn: Callable[P, T] | None = None,
     *,
     timeout: float | None = None,
-) -> Callable[P, PendingCompute[T]] | Callable[[Callable[P, T]], Callable[P, PendingCompute[T]]]:
-    def decorator(f: Callable[P, T]) -> Callable[P, PendingCompute[T]]:
+) -> Callable[P, PendingFunction[T]] | Callable[[Callable[P, T]], Callable[P, PendingFunction[T]]]:
+    def decorator(f: Callable[P, T]) -> Callable[P, PendingFunction[T]]:
         @functools.wraps(f)
-        def wrapper(*args: P.args, **kwargs: P.kwargs) -> PendingCompute[T]:
-            return PendingCompute(fn=f, args=args, kwargs=kwargs, timeout=timeout)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> PendingFunction[T]:
+            return PendingFunction(fn=f, args=args, kwargs=kwargs, timeout=timeout)
         return wrapper
 
     if fn is not None:
@@ -631,10 +631,10 @@ class ComputePool:
     def _unwrap_result(self, result: TaskResult) -> Any:
         return self._unwrap_broadcast_result(result.value)
 
-    def _resolve_timeout(self, pending: PendingCompute[Any]) -> float:
+    def _resolve_timeout(self, pending: PendingFunction[Any]) -> float:
         return pending.timeout if pending.timeout is not None else self.default_compute_timeout
 
-    def _submit(self, pending: PendingCompute[Any]) -> Callable[[ActorRef[Any]], SubmitTask]:
+    def _submit(self, pending: PendingFunction[Any]) -> Callable[[ActorRef[Any]], SubmitTask]:
         timeout = self._resolve_timeout(pending)
         fn = self._decorate_fn(pending.fn)
         return lambda reply_to: SubmitTask(
@@ -642,7 +642,7 @@ class ComputePool:
             reply_to=reply_to, timeout=timeout,
         )
 
-    def run[T](self, pending: PendingCompute[T]) -> T:
+    def run[T](self, pending: PendingFunction[T]) -> T:
         if not self._active or self._pool_ref is None or self._system is None:
             raise RuntimeError("Pool is not active")
 
@@ -653,7 +653,7 @@ class ComputePool:
         )
         return self._unwrap_result(result)
 
-    def run_async[T](self, pending: PendingCompute[T]) -> Future[T]:
+    def run_async[T](self, pending: PendingFunction[T]) -> Future[T]:
         if not self._active or self._pool_ref is None or self._system is None or self._loop is None:
             raise RuntimeError("Pool is not active")
 
@@ -670,7 +670,7 @@ class ComputePool:
 
         return asyncio.run_coroutine_threadsafe(_run(), self._loop)
 
-    def broadcast[T](self, pending: PendingCompute[T]) -> list[T]:
+    def broadcast[T](self, pending: PendingFunction[T]) -> list[T]:
         if not self._active or self._pool_ref is None or self._system is None:
             raise RuntimeError("Pool is not active")
 
@@ -694,7 +694,7 @@ class ComputePool:
         return self._run_sync(_broadcast())
 
     def run_parallel(
-        self, group: PendingComputeGroup
+        self, group: PendingFunctionGroup
     ) -> tuple[Any, ...] | Generator[Any, None, None]:
         if not self._active or self._pool_ref is None or self._system is None:
             raise RuntimeError("Pool is not active")
@@ -720,7 +720,7 @@ class ComputePool:
 
         return self._run_sync(_run_parallel())
 
-    def _run_parallel_stream(self, group: PendingComputeGroup) -> Generator[Any, None, None]:
+    def _run_parallel_stream(self, group: PendingFunctionGroup) -> Generator[Any, None, None]:
         q: queue.Queue[Any] = queue.Queue()
         sentinel = object()
 
@@ -776,7 +776,7 @@ class ComputePool:
             tasks = [
                 self._system.ask(  # type: ignore[union-attr]
                     self._pool_ref,
-                    self._submit(PendingCompute(fn=fn, args=(item,), kwargs={})),
+                    self._submit(PendingFunction(fn=fn, args=(item,), kwargs={})),
                     timeout=self.default_compute_timeout,
                 )
                 for item in items

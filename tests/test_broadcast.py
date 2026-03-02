@@ -9,7 +9,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.timeout(120), pytest.mark.xdist_group
 
 class TestBroadcast:
     def test_executes_on_all_nodes(self, pool):
-        @sky.compute
+        @sky.function
         def whoami():
             info = sky.instance_info()
             return info.node if info else None
@@ -18,7 +18,7 @@ class TestBroadcast:
         assert sorted(nodes) == [0, 1]
 
     def test_returns_list_with_length_equal_to_nodes(self, pool):
-        @sky.compute
+        @sky.function
         def ping():
             return "pong"
 
@@ -27,7 +27,7 @@ class TestBroadcast:
         assert len(results) == 2
 
     def test_each_node_produces_different_output(self, pool):
-        @sky.compute
+        @sky.function
         def node_specific():
             info = sky.instance_info()
             return f"node-{info.node}" if info else None

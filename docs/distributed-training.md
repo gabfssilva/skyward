@@ -13,11 +13,12 @@ When a function is broadcast to a pool with `@`, Skyward sends the same serializ
 The difference is how the environment gets configured. In a traditional setup, you'd write a launch script that sets `MASTER_ADDR`, `WORLD_SIZE`, and `RANK` on each machine, then starts the training process. With Skyward, plugins do this for you. They read the cluster topology from `instance_info()` — which is populated from a `COMPUTE_POOL` environment variable that Skyward injects on each worker — and set the appropriate variables before your function body runs.
 
 ```python
-@sky.compute
+@sky.function
 def train():
     import torch.distributed as dist
     # dist.is_initialized() is True — process group already configured
     ...
+
 
 with sky.ComputePool(
     provider=sky.AWS(),
@@ -70,10 +71,10 @@ See the [HuggingFace Fine-tuning guide](guides/huggingface-finetuning.md) for a 
 
 In distributed training, each node should process different data but the same model. There are two approaches, and which one you use depends on the framework.
 
-**`sky.shard()`** is Skyward's built-in data partitioning. It works inside any `@sky.compute` function and is framework-agnostic. You pass the full dataset as an argument, call `shard()` inside the function, and each node gets its portion based on `instance_info()`. The sharding is type-preserving (lists produce lists, tensors produce tensors) and supports synchronized shuffling with a fixed seed. This is the natural choice for Keras, JAX, and any workflow where you load data inside the function.
+**`sky.shard()`** is Skyward's built-in data partitioning. It works inside any `@sky.function` function and is framework-agnostic. You pass the full dataset as an argument, call `shard()` inside the function, and each node gets its portion based on `instance_info()`. The sharding is type-preserving (lists produce lists, tensors produce tensors) and supports synchronized shuffling with a fixed seed. This is the natural choice for Keras, JAX, and any workflow where you load data inside the function.
 
 ```python
-@sky.compute
+@sky.function
 def train(x_full, y_full):
     x, y = sky.shard(x_full, y_full, shuffle=True, seed=42)
     # x[i] still corresponds to y[i]
@@ -86,10 +87,10 @@ Both approaches achieve the same goal: each node trains on different data. The c
 
 ## Runtime context
 
-Inside a `@sky.compute` function, `sky.instance_info()` returns an `InstanceInfo` describing this node's position in the cluster. Plugins use this internally, but you can also use it directly for custom distributed logic — coordinating checkpoints, conditional logging, role-based execution.
+Inside a `@sky.function` function, `sky.instance_info()` returns an `InstanceInfo` describing this node's position in the cluster. Plugins use this internally, but you can also use it directly for custom distributed logic — coordinating checkpoints, conditional logging, role-based execution.
 
 ```python
-@sky.compute
+@sky.function
 def distributed_task(data):
     info = sky.instance_info()
     print(f"Node {info.node} of {info.total_nodes}")
@@ -109,7 +110,7 @@ The head node pattern is especially common in distributed training: only the hea
 In distributed training, having every node print progress is noisy — four nodes produce four copies of every log line. Skyward provides output control decorators that silence stdout or stderr based on the node's identity:
 
 ```python
-@sky.compute
+@sky.function
 @sky.stdout(only="head")
 def train():
     print(f"Epoch {epoch}: loss={loss:.4f}")  # only head node prints
@@ -117,10 +118,10 @@ def train():
 
 `only="head"` silences all non-head nodes. You can also pass a predicate — `only=lambda info: info.node < 2` — for finer control (for example, printing from only the first two nodes for debugging). `@sky.silent` suppresses both stdout and stderr on all nodes entirely. These decorators are implemented by redirecting output streams to `StringIO()` based on `instance_info()` at function entry.
 
-Output control decorators go below `@sky.compute`:
+Output control decorators go below `@sky.function`:
 
 ```python
-@sky.compute
+@sky.function
 @sky.stdout(only="head")
 def train():
     ...

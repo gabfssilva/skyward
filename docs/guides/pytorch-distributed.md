@@ -14,7 +14,7 @@ Add `sky.plugins.torch()` to your pool's plugins:
 
 The plugin is specified on the pool, not on the function — it configures the *cluster*, not the *task*. It reads `instance_info()` and sets `MASTER_ADDR` to the head node's private IP, `MASTER_PORT` to the coordination port, `WORLD_SIZE` to the total number of nodes, and `RANK` to this node's index. It then calls `torch.distributed.init_process_group()` with the configured backend (defaulting to `nccl` for GPU, `gloo` for CPU). By the time your function body runs, the distributed environment is fully initialized.
 
-The function itself just uses `@sky.compute` — the distributed setup is handled by the plugin:
+The function itself just uses `@sky.function` — the distributed setup is handled by the plugin:
 
 ```python
 --8<-- "examples/guides/06_pytorch_distributed.py:6:8"

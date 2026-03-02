@@ -1,4 +1,4 @@
-"""Streaming with @sky.compute.
+"""Streaming with @sky.function.
 
 Demonstrates three streaming patterns:
 
@@ -17,7 +17,7 @@ from collections.abc import Iterator
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def fibonacci(n: int):
     """Output streaming: yields Fibonacci numbers one at a time."""
     a, b = 0, 1
@@ -29,7 +29,7 @@ def fibonacci(n: int):
             break
 
 
-@sky.compute
+@sky.function
 def running_mean(data: Iterator[float]) -> list[float]:
     """Input streaming: consumes an iterator of floats, returns running means."""
     total = 0.0
@@ -40,7 +40,7 @@ def running_mean(data: Iterator[float]) -> list[float]:
     return means
 
 
-@sky.compute
+@sky.function
 def moving_average(data: Iterator[float], window: int = 3):
     """Bidirectional: streams data in, yields moving averages out."""
     from collections import deque

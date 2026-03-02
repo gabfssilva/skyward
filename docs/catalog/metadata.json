@@ -1,0 +1,33 @@
+{
+  "updated_at": "2026-03-02T00:11:35.204911+00:00",
+  "providers": {
+    "vastai": {
+      "status": "ok",
+      "count": 2004
+    },
+    "runpod": {
+      "status": "error",
+      "error": "API error 404: {\"message\":\"Not Found\"}"
+    },
+    "hyperstack": {
+      "status": "ok",
+      "count": 45
+    },
+    "tensordock": {
+      "status": "ok",
+      "count": 44
+    },
+    "verda": {
+      "status": "error",
+      "error": "Client error '401 Unauthorized' for url 'https://api.verda.com/v1/auth/token'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401"
+    },
+    "aws": {
+      "status": "ok",
+      "count": 72
+    },
+    "gcp": {
+      "status": "ok",
+      "count": 24
+    }
+  }
+}

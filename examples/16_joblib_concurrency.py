@@ -29,10 +29,10 @@ if __name__ == '__main__':
     ) as pool:
         # just to warm up
         for _ in range(10):
-            sky.compute(lambda: f"pong from {sky.instance_info().node}")() @ pool
+            sky.function(lambda: f"pong from {sky.instance_info().node}")() @ pool
 
         t_ping = perf_counter()
-        pongs = sky.compute(lambda: f"pong from {sky.instance_info().node}")() @ pool
+        pongs = sky.function(lambda: f"pong from {sky.instance_info().node}")() @ pool
         ping_elapsed = perf_counter() - t_ping
         print(f"\nBroadcast ping: {pongs} in {ping_elapsed * 1000:.0f}ms")
 

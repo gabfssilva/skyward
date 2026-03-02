@@ -1,6 +1,6 @@
 # Volumes
 
-Cloud instances are ephemeral — when the pool exits, the machines are gone. But data isn't ephemeral. Training datasets, model checkpoints, experiment artifacts — these need to outlive the compute that produced or consumed them. Volumes bridge this gap: they mount cloud storage (S3, GCS, or any S3-compatible API) as a local filesystem on every worker, so your `@sky.compute` functions read and write to familiar paths like `/data` or `/checkpoints` while the actual bytes live in a durable object store.
+Cloud instances are ephemeral — when the pool exits, the machines are gone. But data isn't ephemeral. Training datasets, model checkpoints, experiment artifacts — these need to outlive the compute that produced or consumed them. Volumes bridge this gap: they mount cloud storage (S3, GCS, or any S3-compatible API) as a local filesystem on every worker, so your `@sky.function` functions read and write to familiar paths like `/data` or `/checkpoints` while the actual bytes live in a durable object store.
 
 The key idea is that **storage and compute have different lifecycles**. A dataset in S3 exists before the pool starts and persists after it's torn down. Checkpoints written during training survive instance preemption. Multiple pools — even across different providers — can mount the same bucket. Volumes make this separation explicit: you declare what storage you need, and Skyward mounts it before your code runs.
 
@@ -23,17 +23,19 @@ Validation is immediate: mount paths must be absolute, and system paths (`/`, `/
 
 ## Using volumes
 
-Pass volumes to `ComputePool` as a list. Inside `@sky.compute` functions, the mount paths are regular directories:
+Pass volumes to `ComputePool` as a list. Inside `@sky.function` functions, the mount paths are regular directories:
 
 ```python
 import skyward as sky
 
-@sky.compute
+
+@sky.function
 def train(data_dir: str, checkpoint_dir: str) -> float:
     dataset = load(data_dir)
     model = fit(dataset)
     torch.save(model, f"{checkpoint_dir}/model.pt")
     return model.accuracy
+
 
 with sky.ComputePool(
     provider=sky.AWS(instance_profile_arn="auto"),

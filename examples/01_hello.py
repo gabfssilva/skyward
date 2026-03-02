@@ -16,7 +16,7 @@ A simple introduction to Skyward that demonstrates:
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def benchmark(matrix_size: int, iterations: int) -> dict:
     """Benchmark matrix operations on GPU vs CPU.
 

@@ -12,14 +12,14 @@ total setup time.
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def preprocess(data: dict) -> dict:
     """CPU-intensive preprocessing."""
     # Simulate preprocessing
     return {"processed": True, **data}
 
 
-@sky.compute
+@sky.function
 def train_model(data: dict) -> dict:
     """GPU-intensive training."""
     import torch
@@ -28,7 +28,7 @@ def train_model(data: dict) -> dict:
     return {"trained": True, "device": device, **data}
 
 
-@sky.compute
+@sky.function
 def evaluate(data: dict) -> dict:
     """Evaluation on smaller GPU."""
     return {"evaluated": True, "score": 0.95, **data}

@@ -6,7 +6,7 @@ import skyward as sky
 
 
 # --8<-- [start:cpu_burn]
-@sky.compute
+@sky.function
 def cpu_burn(task_id: int) -> dict:
     """CPU-intensive task: tight numerical loop for ~10 seconds."""
     start = monotonic()

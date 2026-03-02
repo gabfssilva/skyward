@@ -22,7 +22,7 @@ def load_mnist(n_samples: int):  # noqa: N806
     return X, y
 
 
-@sky.compute
+@sky.function
 def train_on_gpu(n_samples: int):
     """Train the same RandomForest, but with cuML GPU acceleration."""
     from time import perf_counter

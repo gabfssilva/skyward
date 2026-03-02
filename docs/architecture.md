@@ -51,7 +51,7 @@ Communication between actors uses Casty's `tell` (fire-and-forget) and `ask` (re
 
 ## Distributed state
 
-The cluster also powers Skyward's [distributed collections](distributed-collections.md). When you call `sky.dict("cache")` inside a `@sky.compute` function, Casty creates a distributed map that is replicated across the cluster. Every node can read and write to it, and Casty handles replication and consistency automatically.
+The cluster also powers Skyward's [distributed collections](distributed-collections.md). When you call `sky.dict("cache")` inside a `@sky.function` function, Casty creates a distributed map that is replicated across the cluster. Every node can read and write to it, and Casty handles replication and consistency automatically.
 
 This works because the worker processes on each node are part of the same `ClusteredActorSystem`. Distributed data structures are a natural extension of the actor model: each key-value pair (in the case of `sky.dict`) is managed by its own actor, and reads and writes are messages. The same message-passing infrastructure that carries task payloads between your laptop and the workers also carries collection operations between nodes.
 

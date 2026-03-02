@@ -15,7 +15,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.timeout(180), pytest.mark.xdist_group
 
 class TestPipPackages:
     def test_pip_package_available_on_worker(self, pip_pool):
-        @sky.compute
+        @sky.function
         def check_requests():
             import requests
 
@@ -28,7 +28,7 @@ class TestPipPackages:
 
 class TestAptPackages:
     def test_apt_package_available_on_worker(self, apt_pool):
-        @sky.compute
+        @sky.function
         def check_jq():
             import subprocess
 
@@ -43,7 +43,7 @@ class TestAptPackages:
 
 class TestEnvVars:
     def test_env_vars_visible_on_worker(self, env_pool):
-        @sky.compute
+        @sky.function
         def read_env():
             import os
 
@@ -64,7 +64,7 @@ class TestIncludes:
             nodes=1,
             image=Image(includes=[str(module_dir)]),
         ) as pool:
-            @sky.compute
+            @sky.function
             def import_module():
                 import my_test_module  # noqa: F811  # pyright: ignore[reportMissingImports]
 

@@ -82,7 +82,7 @@ def metrics_monitor(event: SkywardEvent) -> None:
             pass  # Ignore other events
 
 
-@sky.compute
+@sky.function
 def train_step(batch_id: int) -> dict:
     """Simulated training step."""
     import time

@@ -8,7 +8,7 @@ from keras import layers
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def train_mnist(epochs: int = 5, batch_size: int = 128) -> dict:
     """Train an MLP on this node's shard of MNIST."""
     info = sky.instance_info()

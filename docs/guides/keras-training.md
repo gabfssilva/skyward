@@ -12,7 +12,7 @@ Add `sky.plugins.keras(backend="jax")` to your pool's plugins. When using the JA
 
 The `backend` parameter sets `KERAS_BACKEND` on the remote worker before Keras is imported. This is critical — Keras reads the backend at import time, so the environment variable must be set first.
 
-The function itself just uses `@sky.compute` — the backend and distributed setup are handled by the plugins:
+The function itself just uses `@sky.function` — the backend and distributed setup are handled by the plugins:
 
 ```python
 --8<-- "examples/guides/07_keras_training.py:11:13"

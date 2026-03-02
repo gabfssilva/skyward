@@ -3,24 +3,24 @@ from __future__ import annotations
 import pytest
 
 import skyward as sky
-from skyward import PendingCompute
+from skyward import PendingFunction
 
 pytestmark = [pytest.mark.e2e, pytest.mark.timeout(120), pytest.mark.xdist_group("pool")]
 
 
 class TestComputeDecorator:
     def test_returns_pending_compute(self):
-        @sky.compute
+        @sky.function
         def add(a, b):
             return a + b
 
         pending = add(2, 3)
-        assert isinstance(pending, PendingCompute)
+        assert isinstance(pending, PendingFunction)
 
     def test_does_not_execute_on_call(self):
         calls = []
 
-        @sky.compute
+        @sky.function
         def side_effect():
             calls.append(1)
             return 42
@@ -31,7 +31,7 @@ class TestComputeDecorator:
 
 class TestSingleDispatch:
     def test_execute_returns_result(self, pool):
-        @sky.compute
+        @sky.function
         def add(a, b):
             return a + b
 
@@ -39,7 +39,7 @@ class TestSingleDispatch:
         assert result == 5
 
     def test_execute_with_kwargs(self, pool):
-        @sky.compute
+        @sky.function
         def greet(name, greeting="hello"):
             return f"{greeting} {name}"
 
@@ -49,7 +49,7 @@ class TestSingleDispatch:
     def test_closure_captures_locals(self, pool):
         factor = 10
 
-        @sky.compute
+        @sky.function
         def multiply(x):
             return x * factor
 
@@ -57,7 +57,7 @@ class TestSingleDispatch:
         assert result == 50
 
     def test_returns_complex_type(self, pool):
-        @sky.compute
+        @sky.function
         def make_dict():
             return {"key": "value", "nested": [1, 2, 3]}
 
@@ -65,7 +65,7 @@ class TestSingleDispatch:
         assert result == {"key": "value", "nested": [1, 2, 3]}
 
     def test_worker_exception_propagates(self, pool):
-        @sky.compute
+        @sky.function
         def fail():
             raise ValueError("boom")
 
@@ -73,7 +73,7 @@ class TestSingleDispatch:
             fail() >> pool  # noqa: B018  # pyright: ignore[reportUnusedExpression]
 
     def test_sky_singleton_resolves_module_pool(self, pool):
-        @sky.compute
+        @sky.function
         def ping():
             return "pong"
 

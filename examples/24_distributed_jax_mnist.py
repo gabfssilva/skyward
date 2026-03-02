@@ -10,7 +10,7 @@ all-reduce for gradients (no explicit pmean needed).
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def train_distributed() -> dict:
     import jax
     import jax.numpy as jnp

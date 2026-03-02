@@ -1,0 +1,506 @@
+[
+  {
+    "spec_id": "1d20526479a0",
+    "instance_type": "trn1.32xlarge",
+    "region": "us-east-1",
+    "spot_price": 5.3319,
+    "on_demand_price": 21.5
+  },
+  {
+    "spec_id": "837b9df55243",
+    "instance_type": "g6e.8xlarge",
+    "region": "us-east-1",
+    "spot_price": 1.8047,
+    "on_demand_price": 4.52856
+  },
+  {
+    "spec_id": "885cac433c64",
+    "instance_type": "g5.2xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.4473,
+    "on_demand_price": 1.212
+  },
+  {
+    "spec_id": "a46f66f4a469",
+    "instance_type": "g5.4xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.6788,
+    "on_demand_price": 1.624
+  },
+  {
+    "spec_id": "100c169d9857",
+    "instance_type": "g6.24xlarge",
+    "region": "us-east-1",
+    "spot_price": 3.9366,
+    "on_demand_price": 6.6752
+  },
+  {
+    "spec_id": "06d9edfc85da",
+    "instance_type": "inf2.48xlarge",
+    "region": "us-east-1",
+    "spot_price": 4.3483,
+    "on_demand_price": 12.98127
+  },
+  {
+    "spec_id": "a4f6367e954d",
+    "instance_type": "g6e.48xlarge",
+    "region": "us-east-1",
+    "spot_price": 8.6263,
+    "on_demand_price": 30.13118
+  },
+  {
+    "spec_id": "1d20526479a0",
+    "instance_type": "trn1n.32xlarge",
+    "region": "us-east-1",
+    "spot_price": 3.0507,
+    "on_demand_price": 24.78
+  },
+  {
+    "spec_id": "dbaac2bfc16e",
+    "instance_type": "g7e.8xlarge",
+    "region": "us-east-1",
+    "spot_price": 1.5408,
+    "on_demand_price": 5.26824
+  },
+  {
+    "spec_id": "7e5f6241a7a2",
+    "instance_type": "inf1.xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.0479,
+    "on_demand_price": 0.228
+  },
+  {
+    "spec_id": "7218f73cbcf9",
+    "instance_type": "trn1.2xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.2623,
+    "on_demand_price": 1.34375
+  },
+  {
+    "spec_id": "d3946f0f629b",
+    "instance_type": "inf2.8xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.5097,
+    "on_demand_price": 1.96786
+  },
+  {
+    "spec_id": "1fc5194fdec7",
+    "instance_type": "g7e.2xlarge",
+    "region": "us-east-1",
+    "spot_price": 1.0411,
+    "on_demand_price": 3.36312
+  },
+  {
+    "spec_id": "f66daa0effa6",
+    "instance_type": "g4dn.metal",
+    "region": "us-east-1",
+    "spot_price": 2.8772,
+    "on_demand_price": 7.824
+  },
+  {
+    "spec_id": "3f2dc1dc4fb7",
+    "instance_type": "g4ad.4xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.3632,
+    "on_demand_price": 0.867
+  },
+  {
+    "spec_id": "7b972be19173",
+    "instance_type": "g7e.48xlarge",
+    "region": "us-east-1",
+    "spot_price": 11.0953,
+    "on_demand_price": 33.14432
+  },
+  {
+    "spec_id": "b3f321f87d0e",
+    "instance_type": "g6.48xlarge",
+    "region": "us-east-1",
+    "spot_price": 9.2079,
+    "on_demand_price": 13.3504
+  },
+  {
+    "spec_id": "2d589af2cda3",
+    "instance_type": "g4dn.12xlarge",
+    "region": "us-east-1",
+    "spot_price": 1.313,
+    "on_demand_price": 3.912
+  },
+  {
+    "spec_id": "62cbec24602b",
+    "instance_type": "g4ad.8xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.6849,
+    "on_demand_price": 1.734
+  },
+  {
+    "spec_id": "aa903fe00324",
+    "instance_type": "g6.8xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.7351,
+    "on_demand_price": 2.0144
+  },
+  {
+    "spec_id": "087104d3764c",
+    "instance_type": "g7e.12xlarge",
+    "region": "us-east-1",
+    "spot_price": 2.5123,
+    "on_demand_price": 8.28608
+  },
+  {
+    "spec_id": "1158ff3c93af",
+    "instance_type": "g7e.4xlarge",
+    "region": "us-east-1",
+    "spot_price": 1.1138,
+    "on_demand_price": 3.99816
+  },
+  {
+    "spec_id": "a597a97dab3f",
+    "instance_type": "g5.24xlarge",
+    "region": "us-east-1",
+    "spot_price": 3.7663,
+    "on_demand_price": 8.144
+  },
+  {
+    "spec_id": "68d6e2bac24e",
+    "instance_type": "g4ad.2xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.1941,
+    "on_demand_price": 0.54117
+  },
+  {
+    "spec_id": "c8031b49ac88",
+    "instance_type": "g6e.16xlarge",
+    "region": "us-east-1",
+    "spot_price": 2.4806,
+    "on_demand_price": 7.57719
+  },
+  {
+    "spec_id": "e99f1509e6ca",
+    "instance_type": "g5g.16xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.3912,
+    "on_demand_price": 2.744
+  },
+  {
+    "spec_id": "06804f352e7c",
+    "instance_type": "p4de.24xlarge",
+    "region": "us-east-1",
+    "spot_price": 21.3989,
+    "on_demand_price": 27.44705
+  },
+  {
+    "spec_id": "e318fcc42727",
+    "instance_type": "p3.2xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.37,
+    "on_demand_price": 3.06
+  },
+  {
+    "spec_id": "a7e30074bf22",
+    "instance_type": "inf2.24xlarge",
+    "region": "us-east-1",
+    "spot_price": 1.1753,
+    "on_demand_price": 6.49063
+  },
+  {
+    "spec_id": "9a1c1a7bc8ee",
+    "instance_type": "g6e.12xlarge",
+    "region": "us-east-1",
+    "spot_price": 6.2606,
+    "on_demand_price": 10.49264
+  },
+  {
+    "spec_id": "5ef4cb0f72c1",
+    "instance_type": "g5g.2xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.2118,
+    "on_demand_price": 0.556
+  },
+  {
+    "spec_id": "3adf15bd1ab5",
+    "instance_type": "inf1.2xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.1034,
+    "on_demand_price": 0.362
+  },
+  {
+    "spec_id": "ae82c9b7e8c6",
+    "instance_type": "p4d.24xlarge",
+    "region": "us-east-1",
+    "spot_price": 7.5365,
+    "on_demand_price": 21.957642
+  },
+  {
+    "spec_id": "d351f452251d",
+    "instance_type": "p6-b200.48xlarge",
+    "region": "us-east-1",
+    "spot_price": 22.334,
+    "on_demand_price": 113.9328
+  },
+  {
+    "spec_id": "d68f63be77cc",
+    "instance_type": "g5.12xlarge",
+    "region": "us-east-1",
+    "spot_price": 2.2984,
+    "on_demand_price": 5.672
+  },
+  {
+    "spec_id": "53ead086fc04",
+    "instance_type": "inf1.6xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.1762,
+    "on_demand_price": 1.18
+  },
+  {
+    "spec_id": "7c404f7c4591",
+    "instance_type": "p5.4xlarge",
+    "region": "us-east-1",
+    "spot_price": 6.88,
+    "on_demand_price": 0.0
+  },
+  {
+    "spec_id": "e99f1509e6ca",
+    "instance_type": "g5g.metal",
+    "region": "us-east-1",
+    "spot_price": 0.4906,
+    "on_demand_price": 2.744
+  },
+  {
+    "spec_id": "7a37b52927b9",
+    "instance_type": "p5.48xlarge",
+    "region": "us-east-1",
+    "spot_price": 18.3202,
+    "on_demand_price": 55.04
+  },
+  {
+    "spec_id": "8301ab6d5b52",
+    "instance_type": "g5g.8xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.8375,
+    "on_demand_price": 1.372
+  },
+  {
+    "spec_id": "eac534bf7cda",
+    "instance_type": "inf2.xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.1069,
+    "on_demand_price": 0.7582
+  },
+  {
+    "spec_id": "f533c759acec",
+    "instance_type": "g5.16xlarge",
+    "region": "us-east-1",
+    "spot_price": 1.3839,
+    "on_demand_price": 4.096
+  },
+  {
+    "spec_id": "8d68a1f4283b",
+    "instance_type": "g6.2xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.4435,
+    "on_demand_price": 0.9776
+  },
+  {
+    "spec_id": "3fa8b7ab6ee9",
+    "instance_type": "g6.xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.4295,
+    "on_demand_price": 0.8048
+  },
+  {
+    "spec_id": "bcde5c5544fd",
+    "instance_type": "g4dn.xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.2055,
+    "on_demand_price": 0.526
+  },
+  {
+    "spec_id": "3a693bfb47cd",
+    "instance_type": "g6.12xlarge",
+    "region": "us-east-1",
+    "spot_price": 2.1818,
+    "on_demand_price": 4.6016
+  },
+  {
+    "spec_id": "dd408ff2884c",
+    "instance_type": "p5en.48xlarge",
+    "region": "us-east-1",
+    "spot_price": 21.5083,
+    "on_demand_price": 0.0
+  },
+  {
+    "spec_id": "63d6d5504bc6",
+    "instance_type": "g5.xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.4227,
+    "on_demand_price": 1.006
+  },
+  {
+    "spec_id": "ef5910a628f4",
+    "instance_type": "g6.16xlarge",
+    "region": "us-east-1",
+    "spot_price": 1.3681,
+    "on_demand_price": 3.3968
+  },
+  {
+    "spec_id": "079e3b1801d7",
+    "instance_type": "gr6.8xlarge",
+    "region": "us-east-1",
+    "spot_price": 1.1716,
+    "on_demand_price": 2.4464
+  },
+  {
+    "spec_id": "7a81d67dfe84",
+    "instance_type": "g5.8xlarge",
+    "region": "us-east-1",
+    "spot_price": 1.0617,
+    "on_demand_price": 2.448
+  },
+  {
+    "spec_id": "41485489e2e9",
+    "instance_type": "g6.4xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.6215,
+    "on_demand_price": 1.3232
+  },
+  {
+    "spec_id": "79c8d903a676",
+    "instance_type": "g6e.4xlarge",
+    "region": "us-east-1",
+    "spot_price": 1.0527,
+    "on_demand_price": 3.00424
+  },
+  {
+    "spec_id": "a06f4100dc5e",
+    "instance_type": "g6e.2xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.9757,
+    "on_demand_price": 2.24208
+  },
+  {
+    "spec_id": "827b8873dbac",
+    "instance_type": "dl1.24xlarge",
+    "region": "us-east-1",
+    "spot_price": 7.7235,
+    "on_demand_price": 13.10904
+  },
+  {
+    "spec_id": "3214d8bcd9a9",
+    "instance_type": "g4dn.16xlarge",
+    "region": "us-east-1",
+    "spot_price": 1.2186,
+    "on_demand_price": 4.352
+  },
+  {
+    "spec_id": "085d27e021fa",
+    "instance_type": "g4ad.16xlarge",
+    "region": "us-east-1",
+    "spot_price": 1.6625,
+    "on_demand_price": 3.468
+  },
+  {
+    "spec_id": "0d9261b7ffce",
+    "instance_type": "inf1.24xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.7328,
+    "on_demand_price": 4.721
+  },
+  {
+    "spec_id": "0189b320a2db",
+    "instance_type": "p3.16xlarge",
+    "region": "us-east-1",
+    "spot_price": 2.7197,
+    "on_demand_price": 24.48
+  },
+  {
+    "spec_id": "7210ea2b5ddf",
+    "instance_type": "gr6.4xlarge",
+    "region": "us-east-1",
+    "spot_price": 1.0381,
+    "on_demand_price": 1.5392
+  },
+  {
+    "spec_id": "113464cf865f",
+    "instance_type": "g6e.xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.8886,
+    "on_demand_price": 1.861
+  },
+  {
+    "spec_id": "9ac236e8277b",
+    "instance_type": "g5.48xlarge",
+    "region": "us-east-1",
+    "spot_price": 8.2618,
+    "on_demand_price": 16.288
+  },
+  {
+    "spec_id": "2fe872fa375c",
+    "instance_type": "p3dn.24xlarge",
+    "region": "us-east-1",
+    "spot_price": 4.4788,
+    "on_demand_price": 31.212
+  },
+  {
+    "spec_id": "952b6d3a7b45",
+    "instance_type": "p3.8xlarge",
+    "region": "us-east-1",
+    "spot_price": 1.5474,
+    "on_demand_price": 12.24
+  },
+  {
+    "spec_id": "b7e897a5eba2",
+    "instance_type": "g4dn.2xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.2999,
+    "on_demand_price": 0.752
+  },
+  {
+    "spec_id": "f0f9a6029429",
+    "instance_type": "g4dn.4xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.3758,
+    "on_demand_price": 1.204
+  },
+  {
+    "spec_id": "d63ba4c96acb",
+    "instance_type": "g7e.24xlarge",
+    "region": "us-east-1",
+    "spot_price": 4.7214,
+    "on_demand_price": 16.57216
+  },
+  {
+    "spec_id": "4783dd5794c7",
+    "instance_type": "g5g.xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.1234,
+    "on_demand_price": 0.42
+  },
+  {
+    "spec_id": "78b9f91052e0",
+    "instance_type": "g5g.4xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.2496,
+    "on_demand_price": 0.828
+  },
+  {
+    "spec_id": "12747056146d",
+    "instance_type": "g6e.24xlarge",
+    "region": "us-east-1",
+    "spot_price": 5.8424,
+    "on_demand_price": 15.06559
+  },
+  {
+    "spec_id": "b0313381cf86",
+    "instance_type": "g4ad.xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.1119,
+    "on_demand_price": 0.37853
+  },
+  {
+    "spec_id": "ca5e99cdbf2c",
+    "instance_type": "g4dn.8xlarge",
+    "region": "us-east-1",
+    "spot_price": 0.6115,
+    "on_demand_price": 2.176
+  }
+]

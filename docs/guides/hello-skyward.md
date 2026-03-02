@@ -4,7 +4,7 @@ This guide walks you through running your first function on a remote cloud insta
 
 ## The compute function
 
-Any Python function can run on the cloud. The only change is adding the `@sky.compute` decorator:
+Any Python function can run on the cloud. The only change is adding the `@sky.function` decorator:
 
 ```python
 --8<-- "examples/guides/01_hello_skyward.py:6:19"
@@ -40,7 +40,7 @@ The generic type flows through the entire chain: `add(2, 3)` produces `PendingCo
 
 ## Local execution
 
-During development, you often want to test a compute function without provisioning any infrastructure. Every `@sky.compute` function exposes the original, unwrapped version via `.local`:
+During development, you often want to test a compute function without provisioning any infrastructure. Every `@sky.function` function exposes the original, unwrapped version via `.local`:
 
 ```python
 result = add.local(2, 3)  # executes immediately, returns 5
@@ -60,7 +60,7 @@ uv run python examples/guides/01_hello_skyward.py
 
 **What you learned:**
 
-- **`@sky.compute`** transforms a function into a lazy `PendingCompute` — calling it captures the computation without executing it.
+- **`@sky.function`** transforms a function into a lazy `PendingCompute` — calling it captures the computation without executing it.
 - **`ComputePool`** provisions cloud instances on enter and tears them down on exit — ephemeral, scoped infrastructure.
 - **`>>`** dispatches a computation to the pool: serialize, send, execute remotely, return the result.
 - **`.local`** bypasses remote execution for testing and debugging.

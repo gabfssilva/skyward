@@ -10,7 +10,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.timeout(120), pytest.mark.xdist_group
 
 class TestInstanceInfo:
     def test_returns_instance_info(self, pool):
-        @sky.compute
+        @sky.function
         def get_info():
             info = sky.instance_info()
             return {
@@ -25,7 +25,7 @@ class TestInstanceInfo:
         assert result["node"] in (0, 1)
 
     def test_head_node_is_node_zero(self, pool):
-        @sky.compute
+        @sky.function
         def check_head():
             info = sky.instance_info()
             return info.is_head == (info.node == 0)
@@ -34,7 +34,7 @@ class TestInstanceInfo:
         assert all(results)
 
     def test_each_node_has_unique_index(self, pool):
-        @sky.compute
+        @sky.function
         def get_node():
             return sky.instance_info().node
 
@@ -42,7 +42,7 @@ class TestInstanceInfo:
         assert len(set(nodes)) == 2
 
     def test_job_id_consistent(self, pool):
-        @sky.compute
+        @sky.function
         def get_job_id():
             return sky.instance_info().job_id
 
@@ -52,7 +52,7 @@ class TestInstanceInfo:
 
 class TestShard:
     def test_shard_list(self, pool):
-        @sky.compute
+        @sky.function
         def shard_data():
             data = list(range(10))
             return sky.shard(data)
@@ -64,7 +64,7 @@ class TestShard:
         assert sorted(combined) == list(range(10))
 
     def test_shard_preserves_coverage(self, pool):
-        @sky.compute
+        @sky.function
         def shard_and_count():
             data = list(range(100))
             chunk = sky.shard(data)
@@ -74,7 +74,7 @@ class TestShard:
         assert sum(counts) == 100
 
     def test_shard_multiple_arrays(self, pool):
-        @sky.compute
+        @sky.function
         def shard_aligned():
             x = list(range(10))
             y = [v * 10 for v in range(10)]
@@ -89,7 +89,7 @@ class TestShard:
             assert y == x * 10
 
     def test_shard_with_shuffle(self, pool):
-        @sky.compute
+        @sky.function
         def shard_shuffled():
             data = list(range(20))
             return sky.shard(data, shuffle=True, seed=42)

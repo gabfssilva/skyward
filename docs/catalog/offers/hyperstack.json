@@ -1,0 +1,317 @@
+[
+  {
+    "spec_id": "3bce0b997830",
+    "instance_type": "n3-A100x1",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 1.35
+  },
+  {
+    "spec_id": "12157ff20af6",
+    "instance_type": "n3-A100x2",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 2.7
+  },
+  {
+    "spec_id": "bb50c7260c55",
+    "instance_type": "n3-A100x4",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 5.4
+  },
+  {
+    "spec_id": "d0c9e9d98b51",
+    "instance_type": "n3-A100x1-spot",
+    "region": "CANADA-1",
+    "spot_price": 1.08,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "5a21ec955f03",
+    "instance_type": "n3-A100x2-spot",
+    "region": "CANADA-1",
+    "spot_price": 2.16,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "7891f50a325b",
+    "instance_type": "n3-A100x4-spot",
+    "region": "CANADA-1",
+    "spot_price": 4.32,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "fe8a33bc1cb5",
+    "instance_type": "n3-A100-SXM4x8",
+    "region": "US-1",
+    "spot_price": null,
+    "on_demand_price": 12.8
+  },
+  {
+    "spec_id": "f316bf201159",
+    "instance_type": "n3-H100x1",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 1.9
+  },
+  {
+    "spec_id": "f316bf201159",
+    "instance_type": "n3-H100x1-bigroot",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 1.9
+  },
+  {
+    "spec_id": "3cbdf9968c15",
+    "instance_type": "n3-H100x2",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 3.8
+  },
+  {
+    "spec_id": "3cbdf9968c15",
+    "instance_type": "n3-H100x2-bigroot",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 3.8
+  },
+  {
+    "spec_id": "10f38d90342a",
+    "instance_type": "n3-H100x4",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 7.6
+  },
+  {
+    "spec_id": "10f38d90342a",
+    "instance_type": "n3-H100x4-bigroot",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 7.6
+  },
+  {
+    "spec_id": "96d615c8e56d",
+    "instance_type": "n3-H100x8",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 15.2
+  },
+  {
+    "spec_id": "96d615c8e56d",
+    "instance_type": "n3-H100x8-bigroot",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 15.2
+  },
+  {
+    "spec_id": "7bad7f8aad3e",
+    "instance_type": "n3-H100x8-NVLink",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 15.6
+  },
+  {
+    "spec_id": "7bad7f8aad3e",
+    "instance_type": "n3-H100x8-NVLink-bigroot",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 15.6
+  },
+  {
+    "spec_id": "1cf7b13db1bc",
+    "instance_type": "n3-H100x1-spot",
+    "region": "CANADA-1",
+    "spot_price": 1.52,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "c50033184ebd",
+    "instance_type": "n3-H100x2-spot",
+    "region": "CANADA-1",
+    "spot_price": 3.04,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "e60dfe600209",
+    "instance_type": "n3-H100x4-spot",
+    "region": "CANADA-1",
+    "spot_price": 6.08,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "4ef7edc2e978",
+    "instance_type": "n3-H100x8-spot",
+    "region": "CANADA-1",
+    "spot_price": 12.16,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "017389c4886d",
+    "instance_type": "n3-L40x1",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 1.0
+  },
+  {
+    "spec_id": "017389c4886d",
+    "instance_type": "n3-L40x1-bigroot",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 1.0
+  },
+  {
+    "spec_id": "8370f5e18638",
+    "instance_type": "n3-L40x2",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 2.0
+  },
+  {
+    "spec_id": "8370f5e18638",
+    "instance_type": "n3-L40x2-bigroot",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 2.0
+  },
+  {
+    "spec_id": "fa8e5a2e2c10",
+    "instance_type": "n3-L40x4",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 4.0
+  },
+  {
+    "spec_id": "fa8e5a2e2c10",
+    "instance_type": "n3-L40x4-bigroot",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 4.0
+  },
+  {
+    "spec_id": "0f0398e00d4d",
+    "instance_type": "n3-L40x8",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 8.0
+  },
+  {
+    "spec_id": "0f0398e00d4d",
+    "instance_type": "n3-L40x8-bigroot",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 8.0
+  },
+  {
+    "spec_id": "f519f0631ce4",
+    "instance_type": "n3-L40x1-spot",
+    "region": "CANADA-1",
+    "spot_price": 0.8,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "a6d86a3d676d",
+    "instance_type": "n3-L40x2-spot",
+    "region": "CANADA-1",
+    "spot_price": 1.6,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "60f3207240f7",
+    "instance_type": "n3-L40x4-spot",
+    "region": "CANADA-1",
+    "spot_price": 3.2,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "792efd39cd63",
+    "instance_type": "n3-RTX-A4000x1",
+    "region": "NORWAY-1",
+    "spot_price": null,
+    "on_demand_price": 0.15
+  },
+  {
+    "spec_id": "8324fb73adf4",
+    "instance_type": "n3-RTX-A4000x2",
+    "region": "NORWAY-1",
+    "spot_price": null,
+    "on_demand_price": 0.3
+  },
+  {
+    "spec_id": "b291c9256fd4",
+    "instance_type": "n3-RTX-A4000x4",
+    "region": "NORWAY-1",
+    "spot_price": null,
+    "on_demand_price": 0.6
+  },
+  {
+    "spec_id": "b63560f00cd8",
+    "instance_type": "n3-RTX-A4000x8",
+    "region": "NORWAY-1",
+    "spot_price": null,
+    "on_demand_price": 1.2
+  },
+  {
+    "spec_id": "40d97bebf407",
+    "instance_type": "n3-RTX-A6000x1",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 0.5
+  },
+  {
+    "spec_id": "2c5090da0eff",
+    "instance_type": "n3-RTX-A6000x2",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 1.0
+  },
+  {
+    "spec_id": "2c5090da0eff",
+    "instance_type": "n3-RTX-A6000x2-bigroot",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 1.0
+  },
+  {
+    "spec_id": "a067c21a84d7",
+    "instance_type": "n3-RTX-A6000x4",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 2.0
+  },
+  {
+    "spec_id": "a067c21a84d7",
+    "instance_type": "n3-RTX-A6000x4-bigroot",
+    "region": "CANADA-1",
+    "spot_price": null,
+    "on_demand_price": 2.0
+  },
+  {
+    "spec_id": "da6c569d649d",
+    "instance_type": "n3-RTX-A6000x1-spot",
+    "region": "CANADA-1",
+    "spot_price": 0.4,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "104b8392438e",
+    "instance_type": "n3-RTX-A6000x2-spot",
+    "region": "CANADA-1",
+    "spot_price": 0.8,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "a692a47316d1",
+    "instance_type": "n3-RTX-A6000x4-spot",
+    "region": "CANADA-1",
+    "spot_price": 1.6,
+    "on_demand_price": null
+  },
+  {
+    "spec_id": "5c427a29ba06",
+    "instance_type": "n3-RTX-A6000x8-spot",
+    "region": "CANADA-1",
+    "spot_price": 3.2,
+    "on_demand_price": null
+  }
+]

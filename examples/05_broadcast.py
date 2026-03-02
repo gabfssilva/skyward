@@ -6,7 +6,7 @@ Demonstrates the @ operator for executing a function on ALL nodes in the pool.
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def process_partition(data: list[int]) -> dict:
     """Process a partition of data on this node."""
     pool = sky.instance_info()

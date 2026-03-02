@@ -6,17 +6,19 @@ This page walks through the concepts that make this possible.
 
 ## Lazy computation
 
-The central abstraction in Skyward is `@sky.compute`. It transforms a regular function into a **lazy computation** — calling the function no longer executes it. Instead, it produces a `PendingCompute` object: a frozen, serializable description of *what* to compute, without committing to *where* or *when*.
+The central abstraction in Skyward is `@sky.function`. It transforms a regular function into a **lazy computation** — calling the function no longer executes it. Instead, it produces a `PendingCompute` object: a frozen, serializable description of *what* to compute, without committing to *where* or *when*.
 
 ```python
 import skyward as sky
 
-@sky.compute
+
+@sky.function
 def train(epochs: int) -> float:
     model = build_model()
     return model.fit(epochs=epochs)
 
-pending = train(10)   # nothing runs — returns PendingCompute[float]
+
+pending = train(10)  # nothing runs — returns PendingCompute[float]
 ```
 
 In functional programming, this pattern is known as reifying an **effect**. Calling `train(10)` doesn't produce a result — it produces a *description* of a computation that, when interpreted, will produce a result. The side effects (provisioning a GPU, transferring data, executing remotely) are not performed at the call site. They are deferred to an interpreter — in this case, the pool and its operators. This is the same idea behind `IO` in Haskell, `Effect` in ZIO, or `suspend` in Kotlin: separating the description of a program from its execution so that the runtime can decide how, where, and when to run it.
@@ -130,7 +132,7 @@ For a practical comparison with benchmarks, see the [Worker Executors](guides/wo
 
 Most distributed computing frameworks require you to express execution through configuration files, job submission APIs, or method calls like `pool.submit(fn, args)`. Skyward takes a different approach: it uses Python's operator overloading to create a small vocabulary where the syntax itself communicates intent. The expression `train(10) >> pool` reads as "send this computation to the pool" — and that's exactly what it does.
 
-This works because `@sky.compute` returns a `PendingCompute` value, not a result. Operators are defined on `PendingCompute` (via `__rshift__`, `__matmul__`, `__and__`, `__gt__`), and each one triggers a different dispatch strategy on the pool. The pool serializes the function and arguments with cloudpickle, sends the payload to the appropriate worker(s) over SSH, waits for the result, deserializes it, and returns it to the caller.
+This works because `@sky.function` returns a `PendingCompute` value, not a result. Operators are defined on `PendingCompute` (via `__rshift__`, `__matmul__`, `__and__`, `__gt__`), and each one triggers a different dispatch strategy on the pool. The pool serializes the function and arguments with cloudpickle, sends the payload to the appropriate worker(s) over SSH, waits for the result, deserializes it, and returns it to the caller.
 
 ### `>>` — Execute on one node
 
@@ -230,12 +232,12 @@ There's also `skyward_source`, which controls how Skyward itself reaches the wor
 
 ## Runtime context
 
-Skyward operates in two worlds. The **client side** is your local machine — where `ComputePool` runs, where operators dispatch tasks, where results come back. The **worker side** is the remote instance — where your `@sky.compute` function actually executes. These are separate processes on separate machines, connected by SSH tunnels.
+Skyward operates in two worlds. The **client side** is your local machine — where `ComputePool` runs, where operators dispatch tasks, where results come back. The **worker side** is the remote instance — where your `@sky.function` function actually executes. These are separate processes on separate machines, connected by SSH tunnels.
 
-Inside a `@sky.compute` function, you're in the worker world. The function has access to the remote machine's resources (GPUs, local disk, network), but it doesn't have a reference to the pool object or the client's memory. What it does have is `sky.instance_info()`: a view of the cluster topology from this node's perspective.
+Inside a `@sky.function` function, you're in the worker world. The function has access to the remote machine's resources (GPUs, local disk, network), but it doesn't have a reference to the pool object or the client's memory. What it does have is `sky.instance_info()`: a view of the cluster topology from this node's perspective.
 
 ```python
-@sky.compute
+@sky.function
 def distributed_task(data):
     info = sky.instance_info()
     print(f"Node {info.node} of {info.total_nodes}")
@@ -247,17 +249,18 @@ def distributed_task(data):
 
 `InstanceInfo` is populated from a `COMPUTE_POOL` environment variable that Skyward injects before starting the worker process. It contains the node's index (`node`), the total cluster size (`total_nodes`), whether this is the head node (`is_head`), the head node's address and port (for coordination protocols), the number of accelerators on this node, and a list of all peers with their private IPs.
 
-This is the same mechanism that Skyward's plugins use internally. The `torch` plugin, for example, reads `instance_info()` to configure `MASTER_ADDR`, `WORLD_SIZE`, and `RANK` before calling `init_process_group`. You don't need plugins to access this information — `instance_info()` is always available inside any `@sky.compute` function, whether you're using a plugin or writing raw distributed logic.
+This is the same mechanism that Skyward's plugins use internally. The `torch` plugin, for example, reads `instance_info()` to configure `MASTER_ADDR`, `WORLD_SIZE`, and `RANK` before calling `init_process_group`. You don't need plugins to access this information — `instance_info()` is always available inside any `@sky.function` function, whether you're using a plugin or writing raw distributed logic.
 
 ### Data sharding
 
 A common pattern in distributed computing is to send the *same function* to all nodes but have each node operate on a *different slice* of the data. `sky.shard()` automates this: it reads the current node's position from `instance_info()` and returns only the portion of the data that belongs to this node.
 
 ```python
-@sky.compute
+@sky.function
 def process(full_dataset):
     local_data = sky.shard(full_dataset)
     return analyze(local_data)
+
 
 with sky.ComputePool(provider=sky.AWS(), nodes=4) as pool:
     # each node gets 1/4 of the data
@@ -271,7 +274,7 @@ Sharding is type-preserving: lists produce lists, tuples produce tuples, NumPy a
 When sharding multiple arrays, indices are aligned — the same positions are selected from each array, so paired data (features and labels, inputs and targets) stays consistent:
 
 ```python
-@sky.compute
+@sky.function
 def train(x_full, y_full):
     x, y = sky.shard(x_full, y_full, shuffle=True, seed=42)
     # x[i] still corresponds to y[i]
@@ -284,13 +287,14 @@ The `shuffle` parameter randomizes the order before sharding, with a fixed `seed
 
 The patterns above — `>>`, `@`, `&`, `gather` — all follow the same shape: serialize the function and arguments, ship them to a worker, execute, serialize the result, ship it back. The full result materializes on the worker before anything crosses the network. For most workloads this is fine. But some computations produce results incrementally — a training loop that yields metrics every epoch, a data pipeline that emits rows one at a time, a search that finds matches progressively. Waiting for the entire result before returning anything wastes time and memory.
 
-Streaming changes this. If a `@sky.compute` function is a generator — it uses `yield` instead of `return` — Skyward streams the values back to the caller as they're produced. The dispatch expression `task() >> pool` returns a synchronous iterator instead of a single value, and each element arrives as soon as the worker yields it:
+Streaming changes this. If a `@sky.function` function is a generator — it uses `yield` instead of `return` — Skyward streams the values back to the caller as they're produced. The dispatch expression `task() >> pool` returns a synchronous iterator instead of a single value, and each element arrives as soon as the worker yields it:
 
 ```python
-@sky.compute
+@sky.function
 def generate_samples(n: int):
     for i in range(n):
         yield expensive_sample(i)
+
 
 with sky.ComputePool(provider=sky.AWS(), nodes=1) as pool:
     for sample in generate_samples(1000) >> pool:
@@ -302,13 +306,15 @@ The inverse also works: parameters annotated with `Iterator[T]` are streamed *to
 ```python
 from collections.abc import Iterator
 
-@sky.compute
+
+@sky.function
 def process(data: Iterator[dict]) -> int:
     count = 0
     for record in data:
         transform(record)
         count += 1
     return count
+
 
 result = process(iter(huge_dataset)) >> pool
 ```

@@ -113,7 +113,7 @@ class TestProvisionRetryPartial:
             provision_retry_delay=1.0,
             max_provision_attempts=5,
         ) as pool:
-            @sky.compute
+            @sky.function
             def ping() -> str:
                 return "pong"
 
@@ -158,7 +158,7 @@ class TestProvisionRetryGradual:
             provision_retry_delay=1.0,
             max_provision_attempts=5,
         ) as pool:
-            @sky.compute
+            @sky.function
             def node_id() -> int:
                 info = sky.instance_info()
                 return info.node if info else -1

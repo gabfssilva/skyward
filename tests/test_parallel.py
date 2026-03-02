@@ -10,11 +10,11 @@ pytestmark = [pytest.mark.e2e, pytest.mark.timeout(120), pytest.mark.xdist_group
 
 class TestAndOperator:
     def test_parallel_execution_returns_tuple(self, pool):
-        @sky.compute
+        @sky.function
         def double(x):
             return x * 2
 
-        @sky.compute
+        @sky.function
         def triple(x):
             return x * 3
 
@@ -23,7 +23,7 @@ class TestAndOperator:
         assert b == 15
 
     def test_three_tasks_in_parallel(self, pool):
-        @sky.compute
+        @sky.function
         def identity(x):
             return x
 
@@ -33,7 +33,7 @@ class TestAndOperator:
 
 class TestGather:
     def test_gather_returns_results_in_order(self, pool):
-        @sky.compute
+        @sky.function
         def identity(x):
             return x
 
@@ -41,7 +41,7 @@ class TestGather:
         assert results == (1, 2, 3)
 
     def test_gather_streaming(self, pool):
-        @sky.compute
+        @sky.function
         def identity(x):
             return x
 
@@ -52,7 +52,7 @@ class TestGather:
         assert sorted(results) == [1, 2, 3]
 
     def test_gather_streaming_unordered(self, pool):
-        @sky.compute
+        @sky.function
         def identity(x):
             return x
 

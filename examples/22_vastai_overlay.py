@@ -9,7 +9,7 @@ instance-to-instance communication.
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def distributed_train(batch_data: list) -> dict:
     """Distributed training with NCCL via overlay network."""
     import torch
@@ -45,7 +45,7 @@ def distributed_train(batch_data: list) -> dict:
     }
 
 
-@sky.compute
+@sky.function
 def get_network_info() -> dict:
     """Get network interface information."""
     import subprocess
@@ -113,7 +113,7 @@ def main():
 def main_simple():
     """Simpler example without distributed training."""
 
-    @sky.compute
+    @sky.function
     def node_info() -> dict:
         import socket
 

@@ -3,7 +3,7 @@
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def train(epochs: int, batch_size: int, lr: float) -> dict:
     """Train a neural network with DistributedDataParallel."""
     import torch

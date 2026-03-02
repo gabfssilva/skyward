@@ -4,14 +4,14 @@ When compute functions run across multiple nodes, they sometimes need to share s
 
 Skyward provides distributed data structures for these cases. They look like their Python counterparts — `dict`, `set`, `counter`, `queue`, `barrier`, `lock` — but they're backed by Casty's distributed actor system and replicated across the [cluster](architecture.md). Any node can read and write to them, and the cluster handles synchronization automatically.
 
-Collections are created lazily by name. Calling `sky.dict("cache")` on any node returns a proxy to the same shared dict — if the collection doesn't exist yet, the cluster creates it; if it already exists, you get a reference to the existing one. Inside `@sky.compute` functions, use the module-level shortcuts (`sky.dict`, `sky.counter`, `sky.set`, etc.) which resolve the active pool automatically through a `ContextVar`. You can also access them via the pool directly: `pool.dict("cache")`, `pool.counter("steps")`, etc.
+Collections are created lazily by name. Calling `sky.dict("cache")` on any node returns a proxy to the same shared dict — if the collection doesn't exist yet, the cluster creates it; if it already exists, you get a reference to the existing one. Inside `@sky.function` functions, use the module-level shortcuts (`sky.dict`, `sky.counter`, `sky.set`, etc.) which resolve the active pool automatically through a `ContextVar`. You can also access them via the pool directly: `pool.dict("cache")`, `pool.counter("steps")`, etc.
 
 ## Dict
 
 The distributed dict is a shared key-value store across all workers. The most common use case is a distributed cache: if one node computes an expensive result, other nodes can read it instead of recomputing.
 
 ```python
-@sky.compute
+@sky.function
 def process_with_cache(items: list[str]) -> dict:
     cache = sky.dict("embeddings")
 
@@ -34,7 +34,7 @@ Internally, each key is managed by a separate actor (entity-per-key), which mean
 The distributed counter is an atomic integer shared across all workers. Every node can increment and decrement it, and all operations are serialized through the counter's backing actor — no lost updates, no race conditions.
 
 ```python
-@sky.compute
+@sky.function
 def train_step(batch) -> dict:
     progress = sky.counter("global_steps")
     progress.increment()
@@ -48,7 +48,7 @@ The counter supports `progress.value` (current value), `progress.increment(n=1)`
 The distributed set tracks unique values across workers. The typical use case is deduplication — ensuring that a batch isn't processed twice even when multiple nodes receive overlapping work.
 
 ```python
-@sky.compute
+@sky.function
 def deduplicate(batch_id: int) -> str:
     seen = sky.set("processed_batches")
     key = f"batch:{batch_id}"
@@ -67,7 +67,7 @@ The set supports `value in s`, `len(s)`, `s.add(value)`, and `s.discard(value)`.
 The distributed queue is a FIFO work queue for dynamic task distribution. Unlike the static partitioning that `shard()` provides — where each node gets a predetermined slice of the data — a queue lets workers pull tasks at their own pace. Fast workers process more items, slow workers process fewer, and the overall throughput adapts to heterogeneous performance.
 
 ```python
-@sky.compute
+@sky.function
 def producer(tasks: list[int]):
     queue = sky.queue("work")
     info = sky.instance_info()
@@ -75,7 +75,8 @@ def producer(tasks: list[int]):
         for task in tasks:
             queue.put(task)
 
-@sky.compute
+
+@sky.function
 def worker() -> list:
     queue = sky.queue("work")
     results = []
@@ -94,7 +95,7 @@ The queue supports `queue.put(value)`, `queue.get(timeout=None)` (returns `None`
 The distributed barrier is a synchronization point where all workers must arrive before any can proceed. This is useful when your distributed computation has phases that must complete globally before the next phase begins — for example, ensuring all nodes have finished an epoch before aggregating results, or waiting for all nodes to load a model before starting inference.
 
 ```python
-@sky.compute
+@sky.function
 def synchronized_epoch(epoch: int) -> dict:
     info = sky.instance_info()
     sync = sky.barrier("epoch_sync", n=info.total_nodes)
@@ -112,7 +113,7 @@ The barrier is created with a participant count `n`. When `n` workers have calle
 The distributed lock provides mutual exclusion across the cluster. When multiple nodes need to update shared state atomically — like writing the best checkpoint so far, or coordinating access to an external resource — a lock ensures only one node enters the critical section at a time.
 
 ```python
-@sky.compute
+@sky.function
 def safe_checkpoint(step: int) -> bool:
     lock = sky.lock("checkpoint_lock")
     state = sky.dict("checkpoint")
@@ -157,7 +158,7 @@ await queue.put_async(value)
 await lock.acquire_async()
 ```
 
-The sync interface (the default, used in most `@sky.compute` functions) blocks the calling thread while waiting for the actor response. The async interface returns awaitables, which is useful if you're writing custom async logic inside a worker or integrating with an existing async codebase.
+The sync interface (the default, used in most `@sky.function` functions) blocks the calling thread while waiting for the actor response. The async interface returns awaitables, which is useful if you're writing custom async logic inside a worker or integrating with an existing async codebase.
 
 ## Next steps
 

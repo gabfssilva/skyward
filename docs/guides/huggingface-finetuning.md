@@ -1,6 +1,6 @@
 # HuggingFace fine-tuning
 
-Fine-tuning a pre-trained transformer is one of the most common ML workflows: take a model from the HuggingFace Hub, adapt it to your task with a small labeled dataset, and evaluate the results. The bottleneck is usually hardware — fine-tuning even a small model like DistilBERT benefits significantly from a GPU, and larger models require one. Skyward lets you wrap the entire pipeline in a single `@sky.compute` function, provision a GPU instance, and run it remotely. Everything — model download, tokenization, training, evaluation — happens on the cloud instance.
+Fine-tuning a pre-trained transformer is one of the most common ML workflows: take a model from the HuggingFace Hub, adapt it to your task with a small labeled dataset, and evaluate the results. The bottleneck is usually hardware — fine-tuning even a small model like DistilBERT benefits significantly from a GPU, and larger models require one. Skyward lets you wrap the entire pipeline in a single `@sky.function` function, provision a GPU instance, and run it remotely. Everything — model download, tokenization, training, evaluation — happens on the cloud instance.
 
 ## Loading model and tokenizer
 

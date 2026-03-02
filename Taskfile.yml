@@ -193,6 +193,13 @@ tasks:
     cmds:
       - docker images --format '{{"{{"}}.Repository{{"}}"}}:{{"{{"}}.Tag{{"}}"}}' | grep 'ghcr.io/gabfssilva/skyward:' | xargs -r docker rmi 2>/dev/null || true
 
+  # ── Catalog ──────────────────────────────────────────────
+
+  catalog:
+    desc: Fetch GPU instance catalog from all providers
+    cmds:
+      - uv run python scripts/fetch_catalog.py
+
   # ── Build ────────────────────────────────────────────────
 
   build:

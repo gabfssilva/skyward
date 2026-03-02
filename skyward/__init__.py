@@ -2,7 +2,7 @@
 
     import skyward as sky
 
-    @sky.compute
+    @sky.function
     def train(data):
         return model.fit(data)
 
@@ -55,11 +55,11 @@ from .api import (
     ComputePool,
     Image,
     InstanceInfo,
-    PendingCompute,
-    PendingComputeGroup,
+    PendingFunction,
+    PendingFunctionGroup,
     PipIndex,
     PoolSpec,
-    compute,
+    function,
     gather,
     instance_info,
     is_head,
@@ -95,11 +95,11 @@ __all__ = [
     "App",
     "sky",
     "pool",
-    "compute",
+    "function",
     "gather",
     "ComputePool",
-    "PendingCompute",
-    "PendingComputeGroup",
+    "PendingFunction",
+    "PendingFunctionGroup",
     "InstanceInfo",
     "instance_info",
     "shard",

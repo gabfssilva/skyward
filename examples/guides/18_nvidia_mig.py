@@ -6,7 +6,7 @@ PARTITIONS = 2
 PROFILE = "3g.40gb"
 
 
-@sky.compute
+@sky.function
 def train_on_partition(epochs: int, lr: float) -> dict:
     """Train a small CNN on a MIG partition."""
     import os

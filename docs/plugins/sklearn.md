@@ -59,7 +59,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 
 
-@sky.compute
+@sky.function
 def run_search() -> dict:
     X, y = load_digits(return_X_y=True)
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
@@ -97,14 +97,14 @@ with sky.ComputePool(
 
 This grid has 32 candidates and 5-fold CV, producing 160 fits. With 4 nodes and `concurrency=4`, 16 fits run in parallel. The `n_jobs=-1` inside `GridSearchCV` tells joblib to use all available workers, which the Skyward backend reports as 16.
 
-Note that the `GridSearchCV` call happens inside a `@sky.compute` function. The grid search itself runs on a remote worker — it is the grid search's internal `Parallel` calls that distribute across the cluster. The outer `>> pool` dispatches the function to one node; that node's joblib backend then fans out the 160 individual fits across all nodes.
+Note that the `GridSearchCV` call happens inside a `@sky.function` function. The grid search itself runs on a remote worker — it is the grid search's internal `Parallel` calls that distribute across the cluster. The outer `>> pool` dispatches the function to one node; that node's joblib backend then fans out the 160 individual fits across all nodes.
 
 ### Cross-validation
 
 For a quick evaluation without hyperparameter tuning:
 
 ```python
-@sky.compute
+@sky.function
 def evaluate_model() -> dict:
     from sklearn.datasets import load_digits
     from sklearn.ensemble import RandomForestClassifier

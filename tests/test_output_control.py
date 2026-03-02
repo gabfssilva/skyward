@@ -9,7 +9,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.timeout(120), pytest.mark.xdist_group
 
 class TestStdoutControl:
     def test_head_only_stdout(self, pool):
-        @sky.compute
+        @sky.function
         @sky.stdout(only="head")
         def print_node():
             import sys
@@ -23,7 +23,7 @@ class TestStdoutControl:
         assert sorted(results) == [0, 1]
 
     def test_predicate_based_stdout(self, pool):
-        @sky.compute
+        @sky.function
         @sky.stdout(only=lambda i: i.node == 0)
         def print_node():
             print("hello")
@@ -36,7 +36,7 @@ class TestStdoutControl:
 
 class TestSilent:
     def test_silent_suppresses_output(self, pool):
-        @sky.compute
+        @sky.function
         @sky.silent
         def noisy():
             print("this should be silenced")
@@ -46,7 +46,7 @@ class TestSilent:
         assert result == 42
 
     def test_silent_preserves_return_value(self, pool):
-        @sky.compute
+        @sky.function
         @sky.silent
         def compute_with_print():
             print("noise")

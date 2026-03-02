@@ -17,7 +17,7 @@ PARTITIONS = 2
 PROFILE = "3g.40gb"
 
 
-@sky.compute
+@sky.function
 def matmul_bench(iterations: int, size: int) -> dict:
     """Run matrix multiplications on the assigned MIG partition."""
     import os

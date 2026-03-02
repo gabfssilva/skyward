@@ -1,4 +1,4 @@
-"""Streaming primitives for @sky.compute generator functions.
+"""Streaming primitives for @sky.function generator functions.
 
 Supports bidirectional streaming:
 - Output: generator functions stream results back as a sync iterator

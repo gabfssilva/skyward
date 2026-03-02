@@ -11,7 +11,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.timeout(120), pytest.mark.xdist_group
 
 class TestAsyncExecution:
     def test_returns_future(self, pool):
-        @sky.compute
+        @sky.function
         def add(a, b):
             return a + b
 
@@ -19,7 +19,7 @@ class TestAsyncExecution:
         assert isinstance(future, Future)
 
     def test_future_result_returns_value(self, pool):
-        @sky.compute
+        @sky.function
         def add(a, b):
             return a + b
 
@@ -27,7 +27,7 @@ class TestAsyncExecution:
         assert future.result(timeout=30) == 5
 
     def test_multiple_futures_execute_concurrently(self, pool):
-        @sky.compute
+        @sky.function
         def identity(x):
             return x
 

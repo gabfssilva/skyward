@@ -9,7 +9,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.timeout(180), pytest.mark.xdist_group
 
 class TestJAXPlugin:
     def test_distributed_initialized(self, jax_plugin_pool) -> None:
-        @sky.compute
+        @sky.function
         def check_init():
             import jax
 
@@ -19,7 +19,7 @@ class TestJAXPlugin:
         assert all(r == 2 for r in results)
 
     def test_process_index_matches_node(self, jax_plugin_pool) -> None:
-        @sky.compute
+        @sky.function
         def check_index():
             import jax
 

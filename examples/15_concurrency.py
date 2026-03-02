@@ -9,7 +9,7 @@ from time import sleep
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def heavy_stuff(x: int, y: int) -> int:
     print("That's one expensive sum.")
     sleep(10)

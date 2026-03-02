@@ -3,7 +3,7 @@
 import skyward as sky
 
 
-@sky.compute
+@sky.function
 def finetune(model_name: str, epochs: int, batch_size: int, max_samples: int = 500) -> dict:
     """Fine-tune a transformer for sentiment analysis."""
     import numpy as np

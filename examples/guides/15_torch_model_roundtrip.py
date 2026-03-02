@@ -47,7 +47,7 @@ def load_mnist() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor
     return x_train, y_train, x_test, y_test
 
 
-@sky.compute
+@sky.function
 def train(
     model: nn.Module,
     x: torch.Tensor,
