@@ -44,10 +44,10 @@ with sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.T4(), imag
 
 ## Features
 
-- **[One decorator, any cloud](https://gabfssilva.github.io/skyward/concepts/)** — `@compute` makes any function remotely executable. AWS, RunPod, VastAI, and Verda with a unified API.
+- **[A single API, any cloud](https://gabfssilva.github.io/skyward/concepts/)** — A unified declarative API to run functions on AWS, GCP, Hyperstack, RunPod, TensorDock, VastAI, Verda, and more.
 - **[Operators, not boilerplate](https://gabfssilva.github.io/skyward/concepts/)** — `>>` executes on one node, `@` broadcasts to all, `&` runs in parallel. No job configs, no YAML.
 - **[Ephemeral by default](https://gabfssilva.github.io/skyward/concepts/)** — Instances provision on demand and terminate automatically. Context managers guarantee cleanup.
-- **[Multi-provider support](https://gabfssilva.github.io/skyward/providers/)** — AWS, RunPod, VastAI, Verda with automatic fallback and cost optimization.
+- **[Multi-provider support](https://gabfssilva.github.io/skyward/providers/)** — AWS, GCP, Hyperstack, RunPod, TensorDock, VastAI, Verda with automatic fallback and cost optimization.
 - **[Distributed training](https://gabfssilva.github.io/skyward/distributed-training/)** — PyTorch DDP, Keras 3, JAX, TensorFlow, and HuggingFace integration decorators.
 - **[Distributed collections](https://gabfssilva.github.io/skyward/distributed-collections/)** — Dict, set, counter, queue, barrier, and lock replicated across the cluster.
 - **[Spot-aware](https://gabfssilva.github.io/skyward/providers/)** — Automatic spot instance selection, preemption detection, and replacement. Save 60-90% on compute costs.

@@ -6,7 +6,7 @@ The key idea is that **storage and compute have different lifecycles**. A datase
 
 ## The Volume dataclass
 
-A `Volume` is a frozen dataclass with four fields:
+A `Volume` is a frozen dataclass with five fields:
 
 ```python
 sky.Volume(
@@ -14,10 +14,11 @@ sky.Volume(
     mount="/data",              # where it appears on the worker
     prefix="imagenet/train/",   # subfolder within the bucket (optional)
     read_only=True,             # default — prevents accidental writes
+    storage=sky.storage.S3(),   # explicit storage endpoint (optional)
 )
 ```
 
-`bucket` is the storage identifier — an S3 bucket name on AWS, a GCS bucket name on GCP, or a network volume ID on RunPod. `mount` is the absolute path where the volume appears on workers. `prefix` scopes the mount to a subfolder within the bucket, so you don't expose the entire bucket when you only need one directory. `read_only` defaults to `True` because most volumes are input data — you opt into writes explicitly.
+`bucket` is the storage identifier — an S3 bucket name on AWS, a GCS bucket name on GCP, or a network volume ID on RunPod. `mount` is the absolute path where the volume appears on workers. `prefix` scopes the mount to a subfolder within the bucket, so you don't expose the entire bucket when you only need one directory. `read_only` defaults to `True` because most volumes are input data — you opt into writes explicitly. `storage` optionally binds the volume to a specific `Storage` endpoint — when omitted, the pool's provider supplies credentials automatically.
 
 Validation is immediate: mount paths must be absolute, and system paths (`/`, `/root`, `/tmp`, `/opt`) are rejected at construction time.
 
@@ -50,13 +51,111 @@ with sky.ComputePool(
 
 The function doesn't know it's reading from S3 or writing to S3. It sees `/data` and `/checkpoints` as local directories. This means existing code — scripts that read from disk, libraries that expect file paths, frameworks that save checkpoints to a directory — works without modification.
 
+## Storage
+
+`Storage` is a frozen dataclass that represents an S3-compatible object storage endpoint. It doubles as a context manager for local CRUD operations — uploading data before the cluster starts, downloading results after it's torn down.
+
+### Presets
+
+Factory functions return pre-configured `Storage` instances for common providers:
+
+```python
+# AWS S3
+storage = sky.storage.S3(region="us-east-1", access_key="...", secret_key="...")
+
+# Google Cloud Storage (S3-compatible HMAC)
+storage = sky.storage.GCS(access_key="...", secret_key="...")
+
+# Cloudflare R2
+storage = sky.storage.R2(account_id="...", access_key="...", secret_key="...")
+
+# Wasabi
+storage = sky.storage.Wasabi(region="us-east-1", access_key="...", secret_key="...")
+
+# Backblaze B2
+storage = sky.storage.Backblaze(region="us-west-004", key_id="...", app_key="...")
+
+# Hyperstack (auto-provisioned ephemeral credentials)
+storage = sky.storage.Hyperstack()
+```
+
+Or construct a `Storage` directly for any S3-compatible endpoint:
+
+```python
+storage = sky.Storage(
+    endpoint="https://s3.us-east-1.amazonaws.com",
+    access_key="...",
+    secret_key="...",
+    path_style=False,
+)
+```
+
+### CRUD operations
+
+`Storage` is a context manager. Open it to upload, download, list, check, or delete objects:
+
+```python
+storage = sky.storage.Hyperstack()
+
+with storage:
+    storage.upload("my-bucket", "/local/data.csv", key="data.csv")
+    storage.upload("my-bucket", "/local/output/")  # uploads entire directory
+
+    storage.download("my-bucket", "model.pkl", "/local/model.pkl")
+
+    keys = storage.ls("my-bucket", prefix="experiments/")
+
+    if storage.exists("my-bucket", "model.pkl"):
+        storage.rm("my-bucket", "model.pkl")
+```
+
+Each `with` block opens an S3 session and closes it on exit. All operations are synchronous from the caller's perspective.
+
+### Callable credentials
+
+Credentials accept strings, sync callables, or async callables — useful for deferred or dynamic credential resolution:
+
+```python
+import os
+
+storage = sky.Storage(
+    endpoint="https://s3.example.com",
+    access_key=lambda: os.environ["MY_ACCESS_KEY"],
+    secret_key=lambda: os.environ["MY_SECRET_KEY"],
+)
+```
+
+The `Hyperstack()` preset uses this internally: it creates an ephemeral access key via the Hyperstack API on first use and deletes it when the context manager exits.
+
+### Binding storage to volumes
+
+By default, volumes inherit credentials from the pool's provider. The `storage` field lets you override this per-volume — useful when your data lives in a different provider than your compute:
+
+```python
+r2 = sky.storage.R2(account_id="...", access_key="...", secret_key="...")
+
+with sky.ComputePool(
+    provider=sky.AWS(),
+    accelerator="A100",
+    volumes=[
+        # This volume uses R2 credentials, not AWS
+        sky.Volume(bucket="my-r2-data", mount="/data", storage=r2),
+        # This volume uses AWS credentials from the provider
+        sky.Volume(bucket="my-s3-output", mount="/output", read_only=False),
+    ],
+) as pool:
+    train("/data", "/output") >> pool
+```
+
+This enables heterogeneous volumes — different storage providers in the same pool.
+
 ## How it works
 
 Under the hood, Skyward uses [s3fs-fuse](https://github.com/s3fs-fuse/s3fs-fuse) to mount S3-compatible buckets as FUSE filesystems. The mounting happens during the bootstrap phase, after system packages and Python dependencies are installed but before the worker starts accepting tasks.
 
 The process has three steps:
 
-1. **Endpoint resolution.** The pool actor asks the provider for its S3-compatible endpoint and credentials. AWS returns the regional S3 endpoint with IAM role authentication (no explicit credentials). GCP returns the GCS S3-compatible endpoint with HMAC keys. RunPod returns its datacenter-specific S3 API endpoint with the API key as credentials.
+1. **Endpoint resolution.** For each volume, Skyward resolves storage credentials. If the volume has an explicit `storage` field, those credentials are used. Otherwise, the pool's provider supplies them — AWS returns the regional S3 endpoint with IAM role authentication, GCP returns HMAC keys, Hyperstack creates ephemeral access keys, RunPod uses the API key.
 
 2. **Bucket mounting.** Each unique bucket is mounted once at `/mnt/s3fs/<bucket>` via s3fs. If multiple volumes reference the same bucket, Skyward deduplicates — one FUSE mount serves all of them. If any volume on a bucket needs writes, the entire bucket is mounted read-write.
 
@@ -72,17 +171,18 @@ graph LR
 
 ## Provider support
 
-Volumes work with any provider that implements the `Mountable` protocol — a single method that returns an S3-compatible endpoint with optional credentials.
+Volumes work with any provider that implements the `Mountable` protocol — a single method that returns a `Storage` endpoint with credentials.
 
 | Provider | Endpoint | Authentication |
 |----------|----------|----------------|
 | **AWS** | `s3.{region}.amazonaws.com` | IAM role (no explicit credentials) |
 | **GCP** | `storage.googleapis.com` | HMAC keys (generated during `prepare()`) |
+| **Hyperstack** | `ca1.obj.nexgencloud.io` | Ephemeral access keys (created during `prepare()`, deleted during `teardown()`) |
 | **RunPod** | `s3api-{datacenter}.runpod.io` | API key |
 
-On AWS, the cleanest setup is an instance profile with S3 permissions — pass `instance_profile_arn="auto"` to `sky.AWS()` and no credentials are written to disk. On GCP, Skyward generates HMAC keys automatically from your service account during cluster preparation. On RunPod, the existing API key doubles as S3 credentials.
+On AWS, the cleanest setup is an instance profile with S3 permissions — pass `instance_profile_arn="auto"` to `sky.AWS()` and no credentials are written to disk. On GCP, Skyward generates HMAC keys automatically from your service account during cluster preparation. On Hyperstack, ephemeral access keys are provisioned and cleaned up automatically. On RunPod, the existing API key doubles as S3 credentials.
 
-Providers that don't implement `Mountable` (VastAI, Verda, Container) will fail fast with a clear error if you pass volumes.
+Providers that don't implement `Mountable` (VastAI, Verda, Container) will fail fast with a clear error if you pass volumes — unless every volume has an explicit `storage` field.
 
 ## Deduplication
 

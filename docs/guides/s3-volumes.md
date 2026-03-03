@@ -1,13 +1,15 @@
 # S3 volumes
 
-This guide walks through a complete volume workflow: upload a dataset from your local machine, train a model on a remote cluster, and download the result — all through S3-compatible object storage. Your local machine talks to S3 via `VolumeClient`, and remote workers see the same data as mounted directories via s3fs-fuse.
+This guide walks through a complete volume workflow: upload a dataset from your local machine, train a model on a remote cluster, and download the result — all through S3-compatible object storage. Your local machine talks to S3 via `Storage`, and remote workers see the same data as mounted directories via s3fs-fuse.
 
-## Declaring volumes
+## Storage and volumes
+
+A `Storage` object represents an S3-compatible endpoint. Presets like `sky.storage.Hyperstack()` auto-provision ephemeral credentials — no manual key management needed.
 
 A `Volume` maps an S3 bucket (or a prefix within it) to a local path on every worker. You declare two: one read-only for input data, one writable for output artifacts.
 
 ```python
---8<-- "examples/guides/17_s3_volumes.py:52:63"
+--8<-- "examples/guides/17_s3_volumes.py:55:69"
 ```
 
 The `prefix` scopes each volume to a subfolder within its bucket. `read_only=True` on the data volume prevents accidental writes to the dataset. The model volume is writable so the training function can persist its output to S3.
@@ -17,37 +19,35 @@ The `prefix` scopes each volume to a subfolder within its bucket. `read_only=Tru
 The remote function reads from `/data` and writes to `/output` — regular filesystem paths. It doesn't know about S3, buckets, or object stores. Libraries that expect file paths work without modification.
 
 ```python
---8<-- "examples/guides/17_s3_volumes.py:19:45"
+--8<-- "examples/guides/17_s3_volumes.py:22:48"
 ```
 
 Imports happen inside the function body because they only need to exist on the remote worker.
 
-## Uploading data with VolumeClient
+## Uploading data with Storage
 
-Before the cluster starts, you upload your dataset from the local machine directly to S3. `VolumeClient` wraps the provider's S3-compatible API and scopes all operations to the volume's prefix.
+Before the cluster starts, you upload your dataset from the local machine directly to S3. `Storage` is a context manager that opens an S3 connection. `upload` puts a local file into the bucket at the given key. `ls` lists objects in the bucket. You can also use `download`, `exists`, and `rm`.
 
 ```python
---8<-- "examples/guides/17_s3_volumes.py:75:77"
+--8<-- "examples/guides/17_s3_volumes.py:80:82"
 ```
-
-`VolumeClient` is a context manager that opens an S3 connection through the provider. `upload` puts a local file into the bucket at the given key (relative to the volume's prefix). `ls` lists everything under that prefix. You can also use `download`, `exists`, and `rm` — all scoped to the volume.
 
 ## Training on the cluster
 
 With data in S3, you provision a pool with both volumes mounted and dispatch the training function.
 
 ```python
---8<-- "examples/guides/17_s3_volumes.py:79:86"
+--8<-- "examples/guides/17_s3_volumes.py:84:91"
 ```
 
 The pool mounts both volumes on every worker during bootstrap. When the `with` block exits, the instances are destroyed — but the model checkpoint is already in S3.
 
 ## Downloading results
 
-After the pool is torn down, the model persists in the output bucket. A second `VolumeClient` session downloads it back to your local machine.
+After the pool is torn down, the model persists in the output bucket. A second `Storage` session downloads it back to your local machine.
 
 ```python
---8<-- "examples/guides/17_s3_volumes.py:88:102"
+--8<-- "examples/guides/17_s3_volumes.py:93:107"
 ```
 
 The downloaded model is a standard pickle file. You can load it locally and verify it works against the original data — no cluster required.
@@ -62,12 +62,12 @@ sequenceDiagram
     participant S as S3 Bucket
     participant W as Remote Worker
 
-    L->>S: VolumeClient.upload(dataset)
+    L->>S: Storage.upload(dataset)
     Note over W: Pool provisions, mounts volumes
     W->>S: read /data/iris.csv (s3fs-fuse)
     W->>S: write /output/model.pkl (s3fs-fuse)
     Note over W: Pool tears down
-    L->>S: VolumeClient.download(model.pkl)
+    L->>S: Storage.download(model.pkl)
 ```
 
 ## Why not rely solely on `@sky.function` input and output?
@@ -93,6 +93,6 @@ uv run python examples/guides/17_s3_volumes.py
 **What you learned:**
 
 - **`sky.Volume`** maps an S3 bucket to a local path on every worker — read or read-write.
-- **`sky.VolumeClient`** manages data outside the cluster — upload before training, download after.
+- **`sky.Storage`** manages data outside the cluster — upload before training, download after.
 - **s3fs-fuse** handles the mounting transparently — no SDK, no download step, just file paths.
 - **Three-phase workflow** — upload, train, download — decouples local and remote environments through S3.

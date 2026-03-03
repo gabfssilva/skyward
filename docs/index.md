@@ -17,7 +17,7 @@
 
 Skyward is a Python library for ephemeral accelerator compute. Spin up cloud accelerators (GPUs, TPUs, Trainium, and more), run your ML training code, and tear them down automatically. No infrastructure to manage.
 
-- **One decorator, any cloud.** `@compute` makes any function remotely executable. AWS, RunPod, VastAI, and Verda with a unified API.
+- **A single API, any cloud.** A unified declarative API to run functions on AWS, GCP, Hyperstack, RunPod, TensorDock, VastAI, Verda, and more.
 - **Operators, not boilerplate.** `>>` executes on one node, `@` broadcasts to all, `&` runs in parallel. No job configs, no YAML.
 - **Ephemeral by default.** Instances provision on demand and terminate automatically. Context managers guarantee cleanup.
 - **Multi-accelerator out of the box.** GPUs, TPUs, Trainium — with PyTorch DDP, Keras 3, JAX, TensorFlow, and HuggingFace plugins.
