@@ -145,4 +145,8 @@ def resolve_pool(
 
         volumes = tuple(Volume(**v) for v in raw_volumes)
 
+    if "accelerator" in raw_pool and isinstance(raw_pool["accelerator"], str):
+        from skyward.accelerators import Accelerator
+        raw_pool["accelerator"] = Accelerator.from_name(raw_pool["accelerator"])
+
     return ComputePool(provider=provider, image=image, volumes=volumes, **raw_pool)

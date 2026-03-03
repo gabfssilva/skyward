@@ -62,7 +62,7 @@ def train():
 
 with sky.ComputePool(
     provider=sky.AWS(),
-    accelerator="A100",
+    accelerator=sky.accelerators.A100(),
     nodes=4,
     plugins=[sky.plugins.jax()],
 ) as pool:
@@ -78,7 +78,7 @@ JAX is the recommended backend for multi-node Keras training. When using Keras w
 ```python
 with sky.ComputePool(
     provider=sky.AWS(),
-    accelerator="A100",
+    accelerator=sky.accelerators.A100(),
     nodes=2,
     plugins=[
         sky.plugins.jax(),

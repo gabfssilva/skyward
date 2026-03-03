@@ -90,7 +90,7 @@ def train():
 with sky.ComputePool(
     provider=sky.AWS(),
     nodes=2,
-    accelerator="T4",
+    accelerator=sky.accelerators.T4(),
     plugins=[sky.plugins.jax(), sky.plugins.keras(backend="jax")],
 ) as pool:
     results = train() @ pool
@@ -106,7 +106,7 @@ When you prefer PyTorch as the execution engine — perhaps because your pipelin
 with sky.ComputePool(
     provider=sky.AWS(),
     nodes=4,
-    accelerator="A100",
+    accelerator=sky.accelerators.A100(),
     plugins=[sky.plugins.torch(), sky.plugins.keras(backend="torch")],
 ) as pool:
     results = train() @ pool
@@ -121,7 +121,7 @@ For experimentation, prototyping, or workloads that fit on a single GPU, the Ker
 ```python
 with sky.ComputePool(
     provider=sky.AWS(),
-    accelerator="T4",
+    accelerator=sky.accelerators.T4(),
     plugins=[sky.plugins.keras()],
 ) as pool:
     result = train() >> pool

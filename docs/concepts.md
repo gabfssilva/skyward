@@ -40,7 +40,7 @@ A `ComputePool` is a context manager that represents a set of cloud instances wi
 ```python
 with sky.ComputePool(
     provider=sky.AWS(),
-    accelerator="A100",
+    accelerator=sky.accelerators.A100(),
     nodes=4,
     image=sky.Image(pip=["torch", "transformers"]),
 ) as pool:
@@ -346,21 +346,17 @@ For details on configuring each provider, see the [Providers](providers.md) page
 
 ## Accelerators
 
-The `accelerator` parameter on `ComputePool` tells the provider what hardware you need. You can pass a plain string (`"A100"`) or use the typed factory functions under `sky.accelerators`, which provide IDE autocomplete and carry catalog metadata like VRAM size and CUDA compatibility:
+The `accelerator` parameter on `ComputePool` tells the provider what hardware you need. Use the factory functions under `sky.accelerators`, which provide IDE autocomplete and carry catalog metadata like VRAM size and CUDA compatibility:
 
 ```python
-# String — simple, works everywhere
-sky.ComputePool(provider=sky.AWS(), accelerator="A100")
-
-# Factory function — type-safe, with defaults from the catalog
 sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.A100())
 sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.H100(count=4))
 sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.A100(memory="40GB"))
 ```
 
-Both forms produce an `Accelerator` dataclass — a frozen, immutable specification with `name`, `memory`, `count`, and optional `metadata`. The factory functions look up defaults from an internal catalog (VRAM sizes, CUDA versions, form factors), so `sky.accelerators.H100()` already knows it has 80GB of memory without you specifying it.
+Each factory returns an `Accelerator` dataclass — a frozen, immutable specification with `name`, `memory`, `count`, and optional `metadata`. The factory functions look up defaults from an internal catalog (VRAM sizes, CUDA versions, form factors), so `sky.accelerators.H100()` already knows it has 80GB of memory without you specifying it.
 
-The recommended approach is the factory function (`sky.accelerators.A100()`), not the string. If an accelerator isn't available as a factory, it means Skyward hasn't mapped it yet — and that mapping matters. Each cloud provider uses its own naming conventions and instance type structures: an "A100" on AWS is a `p4d.24xlarge`, on RunPod it's a pod with a specific `gpuTypeId`, on VastAI it's a marketplace offer filtered by GPU model. The translation from a logical accelerator name to a provider-specific resource isn't a simple string match — it involves resolving instance types, memory variants, multi-GPU configurations, and availability constraints. The catalog centralizes this complexity so that `sky.accelerators.A100(count=4)` resolves correctly on any provider that supports it.
+Each cloud provider uses its own naming conventions and instance type structures: an "A100" on AWS is a `p4d.24xlarge`, on RunPod it's a pod with a specific `gpuTypeId`, on VastAI it's a marketplace offer filtered by GPU model. The translation from a logical accelerator to a provider-specific resource isn't a simple string match — it involves resolving instance types, memory variants, multi-GPU configurations, and availability constraints. The catalog centralizes this complexity so that `sky.accelerators.A100(count=4)` resolves correctly on any provider that supports it.
 
 The catalog covers NVIDIA datacenter GPUs (H100, H200, A100, L40S, T4, etc.), consumer cards (RTX 4090 down to GTX 1060), AMD Instinct (MI300X, MI250X), AWS Trainium and Inferentia, Habana Gaudi, and Google TPUs.
 
@@ -401,7 +397,7 @@ A `Spec` is a frozen dataclass that bundles a provider with hardware preferences
 ```python
 sky.Spec(
     provider=sky.VastAI(),
-    accelerator="A100",
+    accelerator=sky.accelerators.A100(),
     nodes=4,
     allocation="spot",
     max_hourly_cost=2.50,
@@ -412,14 +408,14 @@ It carries the same fields you'd normally pass to `ComputePool` — `accelerator
 
 ```python
 with sky.ComputePool(
-    sky.Spec(provider=sky.VastAI(), accelerator="A100"),
-    sky.Spec(provider=sky.AWS(), accelerator="A100"),
+    sky.Spec(provider=sky.VastAI(), accelerator=sky.accelerators.A100()),
+    sky.Spec(provider=sky.AWS(), accelerator=sky.accelerators.A100()),
     selection="cheapest",
 ) as pool:
     result = train(data) >> pool
 ```
 
-The single-provider form still works — `ComputePool(provider=sky.AWS(), accelerator="A100")` internally creates a single `Spec` and wraps it in a tuple.
+The single-provider form still works — `ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.A100())` internally creates a single `Spec` and wraps it in a tuple.
 
 ### Offers and instance types
 

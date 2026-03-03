@@ -24,8 +24,8 @@ if __name__ == "__main__":
     image = sky.Image(pip=["jax[cuda12]"])
 
     with sky.MultiPool(
-        sky.ComputePool(provider=sky.AWS(), image=image, accelerator="T4"),
-        sky.ComputePool(provider=sky.AWS(), image=image, accelerator="L4"),
+        sky.ComputePool(provider=sky.AWS(), image=image, accelerator=sky.accelerators.T4()),
+        sky.ComputePool(provider=sky.AWS(), image=image, accelerator=sky.accelerators.L4()),
     ) as (T4, L4):
         time_t4, time_l4 = matmul_bench(4096) >> T4, matmul_bench(4096) >> L4
         print(f"T4: {time_t4:.2f}s | L4: {time_l4:.2f}s | Speedup: {time_t4 / time_l4:.1f}x")

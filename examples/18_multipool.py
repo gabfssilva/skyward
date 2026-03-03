@@ -45,7 +45,7 @@ def main():
 
     gpu_pool = sky.ComputePool(
         provider=sky.AWS(),
-        accelerator="A100",
+        accelerator=sky.accelerators.A100(),
         nodes=2,
         image=sky.Image(pip=["torch"]),
         allocation="spot-if-available",
@@ -53,7 +53,7 @@ def main():
 
     eval_pool = sky.ComputePool(
         provider=sky.AWS(),
-        accelerator="T4",
+        accelerator=sky.accelerators.T4(),
         image=sky.Image(pip=["torch"]),
         allocation="spot-if-available",
     )

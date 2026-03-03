@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from skyward.accelerators import Accelerator
 from skyward.api.pool import ComputePool
 from skyward.config import _deep_merge, load_config, resolve_pool
 from skyward.providers.aws.config import AWS
@@ -86,7 +87,7 @@ class TestResolvePool:
         assert isinstance(spec.provider, AWS)
         assert spec.provider.region == "us-west-2"
         assert spec.nodes == 4
-        assert spec.accelerator == "A100"
+        assert spec.accelerator == Accelerator.from_name("A100")
         assert spec.allocation == "spot"
 
     def test_vastai_pool(self, tmp_path: Path):
@@ -105,7 +106,7 @@ class TestResolvePool:
         assert isinstance(spec.provider, VastAI)
         assert spec.provider.geolocation == "US"
         assert spec.nodes == 1
-        assert spec.accelerator == "H100"
+        assert spec.accelerator == Accelerator.from_name("H100")
 
     def test_pool_with_image(self, tmp_path: Path):
         (tmp_path / "skyward.toml").write_text(
@@ -300,4 +301,4 @@ class TestComputePoolNamed:
         assert isinstance(pool, ComputePool)
         spec = pool._specs[0]
         assert spec.nodes == 2
-        assert spec.accelerator == "T4"
+        assert spec.accelerator == Accelerator.from_name("T4")

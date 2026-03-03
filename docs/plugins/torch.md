@@ -93,7 +93,7 @@ def train() -> dict:
 
 with sky.ComputePool(
     provider=sky.AWS(),
-    accelerator="A100",
+    accelerator=sky.accelerators.A100(),
     nodes=4,
     plugins=[sky.plugins.torch()],
 ) as pool:
@@ -111,7 +111,7 @@ The `@` operator broadcasts `train()` to all 4 nodes. Each node runs the same fu
 ```python
 with sky.ComputePool(
     provider=sky.AWS(),
-    accelerator="A100",
+    accelerator=sky.accelerators.A100(),
     nodes=2,
     plugins=[sky.plugins.torch(vision="latest", audio="latest")],
 ) as pool:
@@ -146,7 +146,7 @@ Without an `accelerator`, the pool uses CPU instances. The plugin detects the ab
 ```python
 with sky.ComputePool(
     provider=sky.AWS(),
-    accelerator="A100",
+    accelerator=sky.accelerators.A100(),
     nodes=2,
     plugins=[
         sky.plugins.torch(),

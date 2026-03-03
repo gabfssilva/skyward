@@ -8,7 +8,7 @@ This module provides the user-facing synchronous API that mirrors v1:
     def train(data):
         return model.fit(data)
 
-    with sky.ComputePool(provider=sky.AWS(), accelerator="A100", nodes=4) as pool:
+    with sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.A100(), nodes=4) as pool:
         result = train(data) >> pool         # execute on one node
         results = train(data) @ pool         # broadcast to all nodes
         a, b = (task1() & task2()) >> pool   # parallel execution
@@ -321,13 +321,13 @@ class ComputePool:
     Two usage modes:
 
         # Single provider (legacy)
-        with ComputePool(provider=AWS(), accelerator="A100", nodes=4) as pool:
+        with ComputePool(provider=AWS(), accelerator=A100(), nodes=4) as pool:
             result = train(data) >> pool
 
         # Multi-spec with fallback
         with ComputePool(
-            Spec(provider=VastAI(), accelerator="A100"),
-            Spec(provider=AWS(), accelerator="A100"),
+            Spec(provider=VastAI(), accelerator=A100()),
+            Spec(provider=AWS(), accelerator=A100()),
             selection="cheapest",
         ) as pool:
             result = train(data) >> pool
@@ -338,7 +338,7 @@ class ComputePool:
         self, *,
         provider: ProviderConfig,
         nodes: int | tuple[int, int] = ...,
-        accelerator: str | Accelerator | None = ...,
+        accelerator: Accelerator | None = ...,
         vcpus: float | None = ...,
         memory_gb: float | None = ...,
         architecture: Literal["x86_64", "arm64"] | None = ...,
@@ -387,7 +387,7 @@ class ComputePool:
         *specs: Spec,
         provider: ProviderConfig | None = None,
         nodes: int | tuple[int, int] = 1,
-        accelerator: str | Accelerator | None = None,
+        accelerator: Accelerator | None = None,
         vcpus: float | None = None,
         memory_gb: float | None = None,
         architecture: Literal["x86_64", "arm64"] | None = None,
@@ -855,7 +855,8 @@ class ComputePool:
             if result[0]:
                 return result
         except Exception:
-            pass
+            logger.debug("Catalog selection failed, falling back to live API: {err}",
+                         err=__import__("traceback").format_exc())
 
         return await self._select_offers_live()
 
@@ -886,8 +887,7 @@ class ComputePool:
                 query = query.max_price(s.max_hourly_cost)
 
             use_spot = s.allocation in ("spot", "spot-if-available")
-            if use_spot:
-                query = query.spot()
+            query = query.allocation(s.allocation)
 
             catalog_offers = query.cheapest(20)
             if not catalog_offers:

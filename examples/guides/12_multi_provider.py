@@ -24,8 +24,8 @@ def train(epochs: int) -> dict:
 if __name__ == "__main__":
     # Cheapest across providers
     with sky.ComputePool(
-        sky.Spec(provider=sky.VastAI(), accelerator="A100"),
-        sky.Spec(provider=sky.AWS(), accelerator="A100"),
+        sky.Spec(provider=sky.VastAI(), accelerator=sky.accelerators.A100()),
+        sky.Spec(provider=sky.AWS(), accelerator=sky.accelerators.A100()),
         selection="cheapest",
         image=sky.Image(pip=["torch"]),
     ) as pool:
@@ -34,8 +34,8 @@ if __name__ == "__main__":
 
     # First available (priority order)
     with sky.ComputePool(
-        sky.Spec(provider=sky.RunPod(), accelerator="H100", nodes=4),
-        sky.Spec(provider=sky.AWS(), accelerator="H100", nodes=4),
+        sky.Spec(provider=sky.RunPod(), accelerator=sky.accelerators.H100(), nodes=4),
+        sky.Spec(provider=sky.AWS(), accelerator=sky.accelerators.H100(), nodes=4),
         selection="first",
         image=sky.Image(pip=["torch"]),
     ) as pool:
@@ -46,18 +46,18 @@ if __name__ == "__main__":
     with sky.ComputePool(
         sky.Spec(
             provider=sky.VastAI(),
-            accelerator="A100",
+            accelerator=sky.accelerators.A100(),
             max_hourly_cost=2.50,
             allocation="spot",
         ),
         sky.Spec(
             provider=sky.Verda(),
-            accelerator="A100",
+            accelerator=sky.accelerators.A100(),
             allocation="spot-if-available",
         ),
         sky.Spec(
             provider=sky.AWS(),
-            accelerator="A100",
+            accelerator=sky.accelerators.A100(),
             allocation="on-demand",
         ),
         selection="cheapest",

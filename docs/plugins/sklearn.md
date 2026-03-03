@@ -135,7 +135,7 @@ For GPU-accelerated scikit-learn, stack the `cuml` plugin with `sklearn`:
 ```python
 with sky.ComputePool(
     provider=sky.AWS(),
-    accelerator="L4",
+    accelerator=sky.accelerators.L4(),
     nodes=1,
     plugins=[
         sky.plugins.cuml(),

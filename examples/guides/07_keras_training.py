@@ -48,7 +48,7 @@ def train_mnist(epochs: int = 5, batch_size: int = 128) -> dict:
 if __name__ == "__main__":
     with sky.ComputePool(
         provider=sky.AWS(),
-        accelerator="T4",
+        accelerator=sky.accelerators.T4(),
         nodes=2,
         plugins=[sky.plugins.jax(), sky.plugins.keras(backend="jax")],
     ) as pool:

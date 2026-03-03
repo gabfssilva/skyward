@@ -175,28 +175,9 @@ from .factories import (
 # Core dataclass
 from .spec import Accelerator
 
-# Literal types for type annotations
-from .types import (
-    AMD,
-    GPU,
-    NVIDIA,
-    TPU,
-    Habana,
-    Inferentia,
-    Trainium,
-)
-
 __all__ = [
     # Core dataclass
     "Accelerator",
-    # Literal types for type hints
-    "NVIDIA",
-    "AMD",
-    "TPU",
-    "Habana",
-    "Trainium",
-    "Inferentia",
-    "GPU",
     # Custom accelerator
     "Custom",
     # NVIDIA Datacenter - Hopper

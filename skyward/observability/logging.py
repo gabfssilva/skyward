@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 from skyward.observability.logger import logger
@@ -65,7 +66,7 @@ class LogConfig:
     """
 
     level: LogLevel = "INFO"
-    file: str = ".skyward/skyward.log"
+    file: str = str(Path.home() / ".skyward" / "logs" / "skyward.log")
     console: bool = True
     rotation: str = "50 MB"
     retention: int = 10
@@ -73,8 +74,6 @@ class LogConfig:
 
 def setup_logging(config: LogConfig) -> list[int]:
     """Configure logging and return handler IDs for cleanup."""
-    from pathlib import Path
-
     logger.remove()
     logger.enable("skyward")
     logger.configure(patcher=_patcher)

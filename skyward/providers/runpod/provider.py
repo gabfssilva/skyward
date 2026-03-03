@@ -11,7 +11,6 @@ from difflib import SequenceMatcher
 import httpx
 
 from skyward.accelerators import Accelerator
-from skyward.accelerators.catalog import SPECS
 from skyward.api import PoolSpec
 from skyward.api.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
 from skyward.observability.logger import logger
@@ -107,15 +106,8 @@ def _build_allowed_cuda_versions(
 def _get_cuda_range(spec: PoolSpec) -> tuple[str | None, str | None]:
     """Extract CUDA min/max from the accelerator specification."""
     match spec.accelerator:
-        case None:
-            return None, None
-        case str(name):
-            catalog = SPECS.get(name)
-            if catalog and "cuda" in catalog:
-                return catalog["cuda"].get("min"), catalog["cuda"].get("max")
-            return None, None
-        case accel if accel.metadata and "cuda" in accel.metadata:
-            cuda = accel.metadata["cuda"]
+        case Accelerator(metadata=metadata) if metadata and "cuda" in metadata:
+            cuda = metadata["cuda"]
             return cuda.get("min"), cuda.get("max")
         case _:
             return None, None

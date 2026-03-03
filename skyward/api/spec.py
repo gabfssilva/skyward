@@ -83,7 +83,7 @@ class Worker:
 class Spec:
     """User-facing hardware preference for ComputePool fallback chains."""
     provider: ProviderConfig
-    accelerator: Accelerator | str | None = None
+    accelerator: Accelerator | None = None
     nodes: int = 1
     vcpus: float | None = None
     memory_gb: float | None = None
@@ -193,9 +193,10 @@ class PoolSpec:
         provider: Override provider (usually inferred from context).
 
     Example:
+        >>> from skyward.accelerators import H100
         >>> spec = PoolSpec(
         ...     nodes=4,
-        ...     accelerator="H100",
+        ...     accelerator=H100(),
         ...     region="us-east-1",
         ...     allocation="spot-if-available",
         ...     image=Image(pip=["torch"]),
@@ -210,7 +211,7 @@ class PoolSpec:
     """
 
     nodes: int
-    accelerator: Accelerator | str | None
+    accelerator: Accelerator | None
     region: str
     vcpus: float | None = None
     memory_gb: float | None = None
@@ -247,24 +248,12 @@ class PoolSpec:
     @property
     def accelerator_name(self) -> str | None:
         """Get the canonical accelerator name for provider matching."""
-        match self.accelerator:
-            case None:
-                return None
-            case str(name):
-                return name
-            case accel:
-                return accel.name
+        return self.accelerator.name if self.accelerator else None
 
     @property
     def accelerator_count(self) -> int:
         """Get the number of accelerators per node."""
-        match self.accelerator:
-            case None:
-                return 0
-            case str():
-                return 1
-            case accel:
-                return accel.count
+        return self.accelerator.count if self.accelerator else 0
 
     @property
     def auto_scaling(self) -> bool:

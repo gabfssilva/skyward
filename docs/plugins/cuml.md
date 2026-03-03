@@ -53,7 +53,7 @@ def train_on_gpu(n_samples: int) -> dict:
 
 with sky.ComputePool(
     provider=sky.AWS(),
-    accelerator="L4",
+    accelerator=sky.accelerators.L4(),
     nodes=1,
     plugins=[
         sky.plugins.cuml(),
@@ -75,7 +75,7 @@ cuML accelerates individual estimator operations on GPU. The sklearn plugin dist
 ```python
 with sky.ComputePool(
     provider=sky.AWS(),
-    accelerator="L4",
+    accelerator=sky.accelerators.L4(),
     nodes=4,
     worker=sky.Worker(concurrency=2),
     plugins=[
@@ -95,7 +95,7 @@ If your function does not use scikit-learn's `n_jobs` parallelism, you can use t
 ```python
 with sky.ComputePool(
     provider=sky.AWS(),
-    accelerator="L4",
+    accelerator=sky.accelerators.L4(),
     nodes=1,
     plugins=[sky.plugins.cuml()],
     image=sky.Image(pip=["scikit-learn"]),
@@ -107,7 +107,7 @@ You need to add `scikit-learn` to the image manually since the `cuml` plugin doe
 
 ## Requirements
 
-cuML requires an NVIDIA GPU. The plugin is only useful with GPU-equipped instances — `accelerator="L4"`, `accelerator="T4"`, `accelerator="A100"`, etc. Using it on a CPU-only instance will either fail at import time or silently fall through to CPU scikit-learn.
+cuML requires an NVIDIA GPU. The plugin is only useful with GPU-equipped instances — `accelerator=sky.accelerators.L4()`, `accelerator=sky.accelerators.T4()`, `accelerator=sky.accelerators.A100()`, etc. Using it on a CPU-only instance will either fail at import time or silently fall through to CPU scikit-learn.
 
 The CUDA version on the worker must be compatible with the `cuda` parameter. The default `"cu12"` requires CUDA 12.x. Most cloud GPU instances ship with CUDA 12 by default.
 

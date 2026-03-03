@@ -81,7 +81,7 @@ if __name__ == "__main__":
     with sky.ComputePool(
         provider=sky.AWS(),
         nodes=1,
-        accelerator="T4",
+        accelerator=sky.accelerators.T4(),
         worker=sky.Worker(concurrency=CONCURRENCY, executor='process'),
         plugins=[
             sky.plugins.torch(),

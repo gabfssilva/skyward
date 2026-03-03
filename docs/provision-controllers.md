@@ -13,7 +13,7 @@ import skyward as sky
 
 with sky.ComputePool(
     provider=sky.AWS(),
-    accelerator="A100",
+    accelerator=sky.accelerators.A100(),
     nodes=(2, 16),  # min 2, max 16
     image=sky.Image(pip=["torch"]),
 ) as pool:

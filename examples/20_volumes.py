@@ -74,7 +74,7 @@ def main():
 
     with sky.ComputePool(
         provider=sky.AWS(),
-        accelerator="T4",
+        accelerator=sky.accelerators.T4(),
         volume=[data_volume, checkpoint_volume],
         # Or: volume=volumes_dict,
         image=sky.Image(pip=["numpy"]),

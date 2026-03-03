@@ -2,15 +2,9 @@
 
 Every cloud provider has its own naming scheme for GPU instances. AWS calls an A100 machine a `p4d.24xlarge`. RunPod uses a `gpuTypeId`. VastAI filters marketplace offers by GPU model. The `accelerator` parameter on `ComputePool` is Skyward's answer to this fragmentation: you describe the hardware you want, and the provider figures out how to get it.
 
-## Two ways to specify
+## Specifying accelerators
 
-The simplest form is a string:
-
-```python
-sky.ComputePool(provider=sky.AWS(), accelerator="A100")
-```
-
-This works, but it carries no metadata — no memory size, no count, no type safety. The richer form uses the factory functions under `sky.accelerators`:
+Use the factory functions under `sky.accelerators`:
 
 ```python
 sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.A100())

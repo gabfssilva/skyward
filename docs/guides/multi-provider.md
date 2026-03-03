@@ -9,7 +9,7 @@ A `sky.Spec` bundles a provider with hardware preferences into a single, composa
 ```python
 sky.Spec(
     provider=sky.VastAI(),
-    accelerator="A100",
+    accelerator=sky.accelerators.A100(),
     max_hourly_cost=2.50,
     allocation="spot",
 )

@@ -88,7 +88,7 @@ def finetune(model_name: str, epochs: int) -> dict:
 with sky.ComputePool(
     provider=sky.AWS(),
     nodes=1,
-    accelerator="A100",
+    accelerator=sky.accelerators.A100(),
     plugins=[sky.plugins.huggingface(token="hf_...")],
 ) as pool:
     result = finetune("distilbert-base-uncased", epochs=3) >> pool
@@ -141,7 +141,7 @@ def distributed_finetune(model_name: str) -> dict:
 with sky.ComputePool(
     provider=sky.AWS(),
     nodes=4,
-    accelerator="A100",
+    accelerator=sky.accelerators.A100(),
     plugins=[
         sky.plugins.torch(backend="nccl"),
         sky.plugins.huggingface(token="hf_..."),
@@ -172,7 +172,7 @@ def classify(texts: list[str]) -> list[dict]:
 with sky.ComputePool(
     provider=sky.AWS(),
     nodes=1,
-    accelerator="T4",
+    accelerator=sky.accelerators.T4(),
     plugins=[sky.plugins.huggingface(token="hf_...")],
 ) as pool:
     predictions = classify(["Great movie!", "Terrible film."]) >> pool

@@ -10,18 +10,14 @@ Specify the accelerator when creating a pool:
 --8<-- "examples/guides/04_gpu_accelerators.py:43:47"
 ```
 
-You can pass a plain string (`"A100"`, `"T4"`, `"H100"`) or use the typed factory functions under `sky.accelerators`. The factory functions carry catalog metadata — VRAM size, CUDA compatibility, form factor — and provide IDE autocomplete:
+Use the factory functions under `sky.accelerators`. They carry catalog metadata — VRAM size, CUDA compatibility, form factor — and provide IDE autocomplete:
 
 ```python
-# String — simple, works everywhere
-sky.ComputePool(provider=sky.AWS(), accelerator="A100")
-
-# Factory function — type-safe, with catalog defaults
 sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.A100())
 sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.H100(count=4))
 ```
 
-Both forms produce an `Accelerator` dataclass — a frozen specification with `name`, `memory`, `count`, and optional metadata. The factory functions look up defaults from an internal catalog, so `sky.accelerators.H100()` already knows it has 80GB of memory without you specifying it.
+Each factory returns an `Accelerator` dataclass — a frozen specification with `name`, `memory`, `count`, and optional metadata. The factory functions look up defaults from an internal catalog, so `sky.accelerators.H100()` already knows it has 80GB of memory without you specifying it.
 
 The translation from a logical accelerator name to a provider-specific resource isn't a simple string match. An "A100" on AWS is a `p4d.24xlarge`, on RunPod it's a pod with a specific `gpuTypeId`, on VastAI it's a marketplace offer filtered by GPU model. The catalog centralizes this complexity so that the same `Accelerator` spec resolves correctly on any provider that supports it.
 
@@ -59,7 +55,7 @@ uv run python examples/guides/04_gpu_accelerators.py
 
 **What you learned:**
 
-- **`accelerator`** parameter requests specific GPU hardware — works as a string or typed factory function.
+- **`accelerator`** parameter requests specific GPU hardware via factory functions like `sky.accelerators.A100()`.
 - **`sky.accelerators.*`** provides catalog-backed specs with VRAM, CUDA version, and provider-specific resolution.
 - **`instance_info()`** detects hardware at runtime — node identity, accelerators, cluster metadata.
 - **Imports inside `@sky.function`** — remote dependencies don't need to be installed locally.

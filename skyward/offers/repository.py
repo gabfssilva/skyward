@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import sqlite3
 from collections.abc import Sequence
@@ -100,16 +99,12 @@ class OfferRepository:
         providers
             Which providers to ensure are fresh and load.
         """
-        from .feed import cached_provider_paths, ensure_fresh, provider_path
+        from .feed import CATALOG_DIR, ensure_fresh
 
         await ensure_fresh(providers=providers)
-
-        files = (
-            [provider_path(p) for p in providers if provider_path(p).exists()]
-            if providers is not None
-            else cached_provider_paths()
+        return await asyncio.to_thread(
+            _load, CATALOG_DIR, list(providers) if providers is not None else None,
         )
-        return await asyncio.to_thread(_load, files)
 
     # ── filter entry points ──────────────────────────────────
 
@@ -162,67 +157,46 @@ class OfferRepository:
 # ── private helpers ──────────────────────────────────────────
 
 
-def _load(provider_files: list[Path]) -> OfferRepository:
-    """Build an in-memory SQLite DB from denormalized per-provider JSON files."""
+def _load(catalog_dir: Path, providers: list[str] | None = None) -> OfferRepository:
+    """Build an in-memory SQLite DB from normalized catalog JSON files."""
     db = sqlite3.connect(":memory:", check_same_thread=False)
     db.executescript(_SCHEMA)
 
-    seen_accels: set[str] = set()
-    seen_specs: set[str] = set()
-
-    for path in provider_files:
-        provider = path.stem
-        try:
-            raw_offers: list[dict[str, Any]] = json.loads(path.read_text())
-        except Exception:
-            continue
-
-        for o in raw_offers:
-            gpu = o.get("gpu", "")
-            vram = o.get("gpu_vram", 0.0)
-            vcpus = o.get("vcpus", 0.0)
-            memory_gb = o.get("memory_gb", 0.0)
-
-            accel_id = hashlib.md5(f"{gpu}:{vram}".encode()).hexdigest()[:12]
-            spec_id = hashlib.md5(
-                f"{accel_id}:{vcpus}:{memory_gb}".encode(),
-            ).hexdigest()[:12]
-
-            if accel_id not in seen_accels:
-                seen_accels.add(accel_id)
-                db.execute(
-                    "INSERT OR IGNORE INTO accelerators VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        accel_id, gpu, vram,
-                        o.get("manufacturer", ""),
-                        o.get("architecture", ""),
-                        o.get("cuda_min", ""),
-                        o.get("cuda_max", ""),
-                    ),
-                )
-
-            if spec_id not in seen_specs:
-                seen_specs.add(spec_id)
-                db.execute(
-                    "INSERT OR IGNORE INTO specs VALUES (?, ?, ?, ?)",
-                    (spec_id, accel_id, vcpus, memory_gb),
-                )
-
-            specific = o.get("specific")
+    accels_file = catalog_dir / "accelerators.json"
+    if accels_file.exists():
+        for a in json.loads(accels_file.read_text()):
             db.execute(
-                "INSERT INTO offers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    provider,
-                    spec_id,
-                    o.get("gpu_count", 1),
-                    o.get("instance_type", ""),
-                    o.get("region", ""),
-                    o.get("spot_price"),
-                    o.get("on_demand_price"),
-                    o.get("billing_unit", "hour"),
-                    json.dumps(specific) if specific is not None else None,
-                ),
+                "INSERT OR IGNORE INTO accelerators VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (a["id"], a["name"], a["vram"], a.get("manufacturer", ""),
+                 a.get("architecture", ""), a.get("cuda_min", ""), a.get("cuda_max", "")),
             )
+
+    specs_file = catalog_dir / "specs.json"
+    if specs_file.exists():
+        for s in json.loads(specs_file.read_text()):
+            db.execute(
+                "INSERT OR IGNORE INTO specs VALUES (?, ?, ?, ?)",
+                (s["id"], s["accelerator_id"], s["vcpus"], s["memory_gb"]),
+            )
+
+    offers_dir = catalog_dir / "offers"
+    if offers_dir.exists():
+        provider_files = (
+            [offers_dir / f"{p}.json" for p in providers if (offers_dir / f"{p}.json").exists()]
+            if providers is not None
+            else sorted(offers_dir.glob("*.json"))
+        )
+        for pf in provider_files:
+            provider = pf.stem
+            for o in json.loads(pf.read_text()):
+                specific = o.get("specific")
+                db.execute(
+                    "INSERT INTO offers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (provider, o["spec_id"], o["accelerator_count"], o["instance_type"],
+                     o["region"], o.get("spot_price"), o.get("on_demand_price"),
+                     o.get("billing_unit", "hour"),
+                     json.dumps(specific) if specific is not None else None),
+                )
 
     db.commit()
     return OfferRepository(db)

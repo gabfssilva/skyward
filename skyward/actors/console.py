@@ -1056,16 +1056,7 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
             console.print()
             console.print(banner)
             console.print()
-            accel_mem = ""
-            match spec.accelerator:
-                case str(name):
-                    import contextlib
-
-                    from skyward.accelerators import Accelerator
-                    with contextlib.suppress(ValueError):
-                        accel_mem = Accelerator.from_name(name).memory
-                case accel if accel is not None:
-                    accel_mem = accel.memory
+            accel_mem = spec.accelerator.memory if spec.accelerator else ""
             state = _State(
                 total_nodes=spec.nodes,
                 desired_nodes=spec.nodes,

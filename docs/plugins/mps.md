@@ -84,7 +84,7 @@ CONCURRENCY = 8
 with sky.ComputePool(
     provider=sky.AWS(),
     nodes=1,
-    accelerator="T4",
+    accelerator=sky.accelerators.T4(),
     worker=sky.Worker(concurrency=CONCURRENCY, executor="process"),
     plugins=[
         sky.plugins.torch(),
@@ -108,7 +108,7 @@ For very high concurrency (many small tasks), increase the worker's concurrency 
 with sky.ComputePool(
     provider=sky.AWS(),
     nodes=1,
-    accelerator="A100",
+    accelerator=sky.accelerators.A100(),
     worker=sky.Worker(concurrency=32, executor="process"),
     plugins=[
         sky.plugins.torch(),

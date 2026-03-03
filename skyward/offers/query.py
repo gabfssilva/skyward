@@ -75,15 +75,26 @@ class OfferQuery:
         self._params.append(min_count)
         return self
 
+    def allocation(self, strategy: str) -> OfferQuery:
+        """Filter by allocation strategy.
+
+        ``"spot"`` requires spot pricing.  ``"on-demand"`` requires on-demand
+        pricing.  ``"spot-if-available"`` and ``"cheapest"`` accept any offer.
+        """
+        match strategy:
+            case "spot":
+                self._clauses.append("spot_price IS NOT NULL")
+            case "on-demand":
+                self._clauses.append("on_demand_price IS NOT NULL")
+        return self
+
     def spot(self) -> OfferQuery:
         """Only offers with spot pricing."""
-        self._clauses.append("spot_price IS NOT NULL")
-        return self
+        return self.allocation("spot")
 
     def on_demand(self) -> OfferQuery:
         """Only offers with on-demand pricing."""
-        self._clauses.append("on_demand_price IS NOT NULL")
-        return self
+        return self.allocation("on-demand")
 
     def max_price(self, usd_hr: float) -> OfferQuery:
         """Filter by maximum price per hour (spot preferred, falls back to on-demand)."""

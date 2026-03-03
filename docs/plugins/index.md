@@ -75,7 +75,7 @@ Plugins compose naturally because each hook is independent. You can stack multip
 ```python
 with sky.ComputePool(
     provider=sky.AWS(),
-    accelerator="A100",
+    accelerator=sky.accelerators.A100(),
     nodes=4,
     plugins=[
         sky.plugins.torch(backend="nccl"),

@@ -89,7 +89,7 @@ def format_results(r: dict) -> None:
 if __name__ == "__main__":
     with sky.ComputePool(
         provider=sky.GCP(zone="us-central1-a"),
-        accelerator="v5litepod-1",
+        accelerator=sky.accelerators.TPUv5e(),
         image=sky.Image(
             pip=["jax[tpu]"],
         ),

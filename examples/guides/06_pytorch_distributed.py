@@ -77,7 +77,7 @@ if __name__ == "__main__":
     with sky.ComputePool(
         provider=sky.AWS(),
         nodes=2,
-        accelerator="T4",
+        accelerator=sky.accelerators.T4(),
         plugins=[sky.plugins.torch()],
     ) as pool:
         results = train(epochs=5, batch_size=64, lr=0.001) @ pool

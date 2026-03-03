@@ -23,7 +23,7 @@ def train():
 with sky.ComputePool(
     provider=sky.AWS(),
     nodes=4,
-    accelerator="A100",
+    accelerator=sky.accelerators.A100(),
     plugins=[sky.plugins.torch()],
 ) as pool:
     results = train() @ pool  # runs on all 4 nodes

@@ -74,7 +74,7 @@ def main():
 
     with sky.ComputePool(
         provider=provider,
-        accelerator="RTX 4090",
+        accelerator=sky.accelerators.RTX_4090(),
         nodes=4,  # Multi-node automatically creates overlay
         image=sky.Image(env={"NCCL_DEBUG": "INFO"}),
         plugins=[sky.plugins.torch()],
@@ -128,7 +128,7 @@ def main_simple():
     # VastAI automatically sets up overlay for nodes > 1
     with sky.ComputePool(
         provider=sky.VastAI(geolocation="US"),
-        accelerator="RTX 3090",
+        accelerator=sky.accelerators.RTX_3090(),
         nodes=2,
         allocation="spot-if-available",
     ) as pool:
