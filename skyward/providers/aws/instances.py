@@ -215,7 +215,7 @@ async def _fetch_ondemand_price(instance_type: str, region: str) -> float | None
     import aioboto3
 
     session = aioboto3.Session()
-    async with session.client("pricing", region_name="us-east-1") as pricing:
+    async with session.client("pricing", region_name="us-east-1") as pricing:  # type: ignore[reportGeneralTypeIssues]
         resp = await pricing.get_products(
             ServiceCode="AmazonEC2",
             Filters=[
