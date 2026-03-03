@@ -130,6 +130,8 @@ class Offer:
     region: str
     spot_price: float | None = None
     on_demand_price: float | None = None
+    billing_unit: str = "hour"
+    specific: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +204,7 @@ async def fetch_vastai() -> list[Offer]:
             region=raw.get("geolocation", "unknown"),
             spot_price=_safe_float(raw.get("min_bid")),
             on_demand_price=_safe_float(raw.get("dph_total")),
+            billing_unit="hour",
         ))
     return offers
 
@@ -224,13 +227,16 @@ async def fetch_runpod() -> list[Offer]:
         on_demand = _safe_float(lowest.get("uninterruptablePrice"))
         if spot is None and on_demand is None:
             continue
+        gpu_id = gpu.get("id", display_name)
         offers.append(Offer(
             spec=_make_spec(display_name, float(gpu.get("memoryInGb", 0))),
             accelerator_count=1,
-            instance_type=gpu.get("id", display_name),
+            instance_type=gpu_id,
             region="global",
             spot_price=spot,
             on_demand_price=on_demand,
+            billing_unit="hour",
+            specific={"gpu_type_id": gpu_id},
         ))
     return offers
 
@@ -293,6 +299,8 @@ async def fetch_hyperstack() -> list[Offer]:
             region=g["region"],
             spot_price=g["spot_price"],
             on_demand_price=g["on_demand_price"],
+            billing_unit="hour",
+            specific={"flavor_name": base_name, "region": g["region"]},
         ))
     return offers
 
@@ -305,10 +313,13 @@ async def fetch_tensordock() -> list[Offer]:
 
     offers: list[Offer] = []
     for location in locations:
+        loc_id = location.get("id", "")
         region = f"{location.get('city', '')}, {location.get('country', '')}"
         for gpu in location.get("gpus", []):
             display_name: str = gpu.get("displayName", "")
             resources = gpu.get("resources", {})
+            gpu_model = gpu.get("v0Name", display_name)
+            hourly_rate = _safe_float(gpu.get("price_per_hr"))
             offers.append(Offer(
                 spec=_make_spec(
                     display_name, _parse_vram_from_name(display_name),
@@ -316,9 +327,18 @@ async def fetch_tensordock() -> list[Offer]:
                     memory_gb=float(resources.get("max_ram_gb", 0)),
                 ),
                 accelerator_count=1,
-                instance_type=gpu.get("v0Name", display_name),
+                instance_type=gpu_model,
                 region=region,
-                on_demand_price=_safe_float(gpu.get("price_per_hr")),
+                on_demand_price=hourly_rate,
+                billing_unit="second",
+                specific={
+                    "location_id": loc_id,
+                    "gpu_model": gpu_model,
+                    "gpu_count": 1,
+                    "vcpus": int(resources.get("max_vcpus", 0)),
+                    "ram_gb": int(resources.get("max_ram_gb", 0)),
+                    "hourly_rate": hourly_rate,
+                },
             ))
     return offers
 
@@ -379,6 +399,8 @@ async def fetch_verda() -> list[Offer]:
                 region=region,
                 spot_price=_safe_float(itype.get("spot_price")),
                 on_demand_price=_safe_float(itype.get("price_per_hour")),
+                billing_unit="hour",
+                specific={"os_image": itype.get("os_image", "ubuntu-22.04")},
             ))
     return offers
 
@@ -410,6 +432,8 @@ async def fetch_aws() -> list[Offer]:
             region=region,
             spot_price=spot,
             on_demand_price=ondemand,
+            billing_unit="second",
+            specific={"architecture": res.architecture},
         )
 
     sem = asyncio.Semaphore(10)
@@ -470,6 +494,7 @@ async def fetch_gcp() -> list[Offer]:
         gpu_model: str = gpu_family_model.get(family) or family.upper()
         per_gpu_vram = float(estimate_vram(accel_type))
 
+        uses_guest = family not in _BUILTIN_GPU_FAMILIES
         offers.append(Offer(
             spec=_make_spec(
                 gpu_model, per_gpu_vram,
@@ -479,6 +504,17 @@ async def fetch_gcp() -> list[Offer]:
             accelerator_count=gpu_count,
             instance_type=mt.name,
             region=zone,
+            billing_unit="second",
+            specific={
+                "machine_type": mt.name,
+                "uses_guest_accelerators": uses_guest,
+                "accelerator_type": accel_type,
+                "gpu_count": gpu_count,
+                "gpu_model": gpu_model,
+                "gpu_vram_gb": int(per_gpu_vram),
+                "vcpus": mt.guest_cpus,
+                "memory_gb": round(mt.memory_mb / 1024, 1),
+            },
         ))
 
     pool.shutdown(wait=False)
@@ -529,6 +565,8 @@ def _serialize_offer(offer: Offer) -> dict[str, Any]:
         "region": offer.region,
         "spot_price": offer.spot_price,
         "on_demand_price": offer.on_demand_price,
+        "billing_unit": offer.billing_unit,
+        "specific": offer.specific,
     }
 
 

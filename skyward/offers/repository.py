@@ -38,7 +38,9 @@ CREATE TABLE offers (
     instance_type TEXT NOT NULL,
     region TEXT NOT NULL,
     spot_price REAL,
-    on_demand_price REAL
+    on_demand_price REAL,
+    billing_unit TEXT NOT NULL DEFAULT 'hour',
+    specific TEXT
 );
 
 CREATE VIEW catalog AS
@@ -56,7 +58,9 @@ SELECT
     s.vcpus,
     s.memory_gb,
     o.spot_price,
-    o.on_demand_price
+    o.on_demand_price,
+    o.billing_unit,
+    o.specific
 FROM offers o
 JOIN specs s ON o.spec_id = s.id
 JOIN accelerators a ON s.accelerator_id = a.id;
@@ -161,9 +165,19 @@ def _load(catalog_dir: Path) -> OfferRepository:
         provider = provider_file.stem
         with open(provider_file) as f:
             db.executemany(
-                "INSERT INTO offers VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO offers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
-                    (provider, o["spec_id"], o["accelerator_count"], o["instance_type"], o["region"], o.get("spot_price"), o.get("on_demand_price"))
+                    (
+                        provider,
+                        o["spec_id"],
+                        o["accelerator_count"],
+                        o["instance_type"],
+                        o["region"],
+                        o.get("spot_price"),
+                        o.get("on_demand_price"),
+                        o.get("billing_unit", "hour"),
+                        json.dumps(o["specific"]) if o.get("specific") is not None else None,
+                    )
                     for o in json.load(f)
                 ],
             )

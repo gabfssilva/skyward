@@ -27,3 +27,5 @@ class CatalogOffer:
     memory_gb: float
     spot_price: float | None
     on_demand_price: float | None
+    billing_unit: str
+    specific: str | None

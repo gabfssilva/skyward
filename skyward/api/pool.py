@@ -845,10 +845,111 @@ class ComputePool:
     ) -> tuple[tuple[Offer, ...], ProviderConfig, Any, PoolSpec]:
         """Rank all offers across specs by price.
 
-        Returns (offers_sorted, provider_config, cloud_provider, pool_spec)
-        where offers_sorted is ordered by preference (cheapest first for
-        the chosen allocation strategy).
+        Tries the static catalog first (instant SQL queries), then falls back
+        to live API calls if the catalog path fails or is unavailable.
+
+        Returns (offers_sorted, provider_config, cloud_provider, pool_spec).
         """
+        try:
+            result = await self._select_offers_from_catalog()
+            if result[0]:
+                return result
+        except Exception:
+            pass
+
+        return await self._select_offers_live()
+
+    async def _select_offers_from_catalog(
+        self,
+    ) -> tuple[tuple[Offer, ...], ProviderConfig, Any, PoolSpec]:
+        """Select offers from the static SQLite catalog."""
+        from skyward.offers import OfferRepository, to_offer
+        from skyward.offers.query import OfferQuery
+
+        repo = await OfferRepository.create()
+
+        ranked: list[tuple[float, Offer, ProviderConfig, PoolSpec]] = []
+
+        for s in self._build_specs():
+            accel = s.accelerator
+            accel_name = accel.name if isinstance(accel, Accelerator) else accel
+
+            query: OfferQuery = repo.accelerator(accel_name) if accel_name else OfferQuery(repo._db)
+            query = query.provider(s.provider.type)
+
+            if s.vcpus:
+                query = query.vcpus(s.vcpus)
+            if s.memory_gb:
+                query = query.memory(s.memory_gb)
+            if s.max_hourly_cost:
+                query = query.max_price(s.max_hourly_cost)
+
+            use_spot = s.allocation in ("spot", "spot-if-available")
+            if use_spot:
+                query = query.spot()
+
+            catalog_offers = query.cheapest(20)
+            if not catalog_offers:
+                continue
+
+            provider_config = s.provider
+            region = s.region or catalog_offers[0].region
+
+            pool_spec = PoolSpec(
+                nodes=s.nodes,
+                accelerator=accel,
+                region=region,
+                vcpus=s.vcpus,
+                memory_gb=s.memory_gb,
+                architecture=s.architecture,
+                allocation=s.allocation,
+                image=self.image,
+                ttl=s.ttl,
+                worker=self.worker,
+                provider=provider_config.type,  # type: ignore[arg-type]
+                max_hourly_cost=s.max_hourly_cost,
+                ssh_timeout=float(self.ssh_timeout),
+                ssh_retry_interval=float(self.ssh_retry_interval),
+                provision_retry_delay=self.provision_retry_delay,
+                max_provision_attempts=self.max_provision_attempts,
+                volumes=self.volumes,
+                min_nodes=self._scaling[0] if self._scaling else None,
+                max_nodes=self._scaling[1] if self._scaling else None,
+                autoscale_cooldown=self.autoscale_cooldown,
+                autoscale_idle_timeout=self.autoscale_idle_timeout,
+                reconcile_tick_interval=self.reconcile_tick_interval,
+                plugins=self._plugins,
+            )
+
+            for co in catalog_offers:
+                offer = to_offer(co)
+                price_raw = offer.spot_price if use_spot else offer.on_demand_price
+                price = price_raw if price_raw is not None else float("inf")
+                ranked.append((price, offer, provider_config, pool_spec))
+
+        repo.close()
+
+        if not ranked:
+            raise RuntimeError("No catalog offers found")
+
+        ranked.sort(key=lambda x: x[0])
+        offers = tuple(r[1] for r in ranked)
+        _, _, best_config, best_spec = ranked[0]
+
+        cloud_provider = await best_config.create_provider()
+
+        logger.info(
+            "Catalog selection: {provider} {instance} in {region} (${price}/hr)",
+            provider=best_config.type, instance=offers[0].instance_type.name,
+            region=best_spec.region, price=offers[0].spot_price or offers[0].on_demand_price or 0,
+        )
+
+        return offers, best_config, cloud_provider, best_spec
+
+    async def _select_offers_live(
+        self,
+    ) -> tuple[tuple[Offer, ...], ProviderConfig, Any, PoolSpec]:
+        """Select offers via live provider API calls (original behavior)."""
         user_specs = self._build_specs()
 
         ranked: list[tuple[float, Offer, ProviderConfig, Any, PoolSpec]] = []

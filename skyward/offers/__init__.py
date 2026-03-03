@@ -21,6 +21,7 @@ Usage::
 
 from __future__ import annotations
 
+from .conversion import to_offer
 from .model import CatalogOffer
 from .query import OfferQuery
 from .repository import OfferRepository
@@ -29,4 +30,5 @@ __all__ = [
     "CatalogOffer",
     "OfferQuery",
     "OfferRepository",
+    "to_offer",
 ]

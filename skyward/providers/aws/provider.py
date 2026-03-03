@@ -202,9 +202,16 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
         offer = cluster.offer
         spot = cluster.spec.allocation in ("spot", "spot-if-available")
 
+        ami = offer.specific.ami
+        if not ami:
+            has_gpu = offer.instance_type.accelerator is not None
+            arch = offer.instance_type.architecture
+            ami_lookup = _get_dlami if has_gpu else _get_ubuntu_ami
+            ami = await ami_lookup(self._config, arch)
+
         instance_configs = (_InstanceConfig(
             instance_type=offer.instance_type.name,
-            ami=offer.specific.ami,
+            ami=ami,
             spot=spot,
         ),)
 
