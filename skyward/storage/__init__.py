@@ -205,11 +205,16 @@ async def _resolve_credential(cred: Credential | None) -> str | None:
 
 async def _open_store(storage: Storage, loop: asyncio.AbstractEventLoop, thread: threading.Thread) -> None:
     import aioboto3
+    from botocore.config import Config
 
     ak = await _resolve_credential(storage.access_key)
     sk = await _resolve_credential(storage.secret_key)
 
-    kwargs: dict[str, Any] = {"endpoint_url": storage.endpoint}
+    kwargs: dict[str, Any] = {
+        "endpoint_url": storage.endpoint,
+        "region_name": "us-east-1",
+        "config": Config(request_checksum_calculation="when_required"),
+    }
     if ak is not None:
         kwargs["aws_access_key_id"] = ak
     if sk is not None:
