@@ -1,0 +1,51 @@
+name: Update GPU Catalog
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1" # Weekly, Monday 06:00 UTC
+
+permissions:
+  contents: write
+
+jobs:
+  update-catalog:
+    runs-on: ubuntu-latest
+    environment: catalog
+
+    steps:
+    - uses: actions/checkout@v4
+    - uses: arduino/setup-task@v2
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        python-version: "3.13"
+    - name: Install dependencies
+      run: task setup
+
+    - name: Fetch catalog
+      run: task catalog
+      env:
+        RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        HYPERSTACK_API_KEY: ${{ secrets.HYPERSTACK_API_KEY }}
+        TENSORDOCK_API_TOKEN: ${{ secrets.TENSORDOCK_API_TOKEN }}
+        VASTAI_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+        VERDA_CLIENT_ID: ${{ secrets.VERDA_CLIENT_ID }}
+        VERDA_CLIENT_SECRET: ${{ secrets.VERDA_CLIENT_SECRET }}
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_DEFAULT_REGION: us-east-1
+        GOOGLE_CLOUD_PROJECT: ${{ secrets.GOOGLE_CLOUD_PROJECT }}
+        GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
+
+    - name: Commit and push
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add docs/catalog/
+        if git diff --cached --quiet; then
+          echo "No catalog changes"
+        else
+          git commit -m "chore(catalog): update GPU catalog $(date -u +%Y-%m-%d)"
+          git push
+        fi

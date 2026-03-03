@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/logo_sky.png" alt="Skyward" width="400">
+  <img src="https://github.com/gabfssilva/skyward/blob/main/docs/logo_sky.png?raw=true" alt="Skyward" width="400">
 </p>
 
 <p align="center">

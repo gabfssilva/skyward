@@ -3,6 +3,10 @@
 Queries raw APIs of each supported provider, normalizes into a relational
 JSON structure (specs, providers, offers), and writes to docs/catalog/.
 
+Accelerator metadata (manufacturer, architecture, CUDA compatibility) is
+enriched inline from ``skyward.accelerators.catalog.SPECS`` — the single
+source of truth for hardware specs.
+
 Usage:
     uv run python scripts/fetch_catalog.py
 """
@@ -34,31 +38,94 @@ PROVIDER_NAMES: dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
+# GPU name normalization
+# ---------------------------------------------------------------------------
+
+# Hyperstack dashed format: "a40-pcie-48gb", "geforcertx5090-pcie-32gb"
+_HYPERSTACK_RE = re.compile(
+    r"^(?:geforce)?-?(rtx)?-?([a-z]?\d+[a-z]?\d*)-.*$", re.IGNORECASE,
+)
+# Hyperstack datacenter: "A100-80G-PCIe", "H100-80G-PCIe-NVLink"
+_HYPERSTACK_DC_RE = re.compile(
+    r"^([A-Z]+\d+[A-Z]?)-\d+G(?:-.+)?$",
+)
+
+
+def _normalize_gpu_name(raw: str) -> str:
+    """Normalize a provider GPU name to a canonical form."""
+    name = raw.strip()
+
+    # Strip count prefix: "1x ", "2x "
+    name = re.sub(r"^\d+x\s+", "", name)
+
+    # Strip "-spot" suffix
+    name = re.sub(r"-spot$", "", name)
+
+    # Strip vendor prefixes
+    for prefix in ("AMD Instinct ", "NVIDIA GeForce ", "NVIDIA Tesla ",
+                    "NVIDIA ", "AMD "):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+
+    # Hyperstack datacenter format: "A100-80G-PCIe" → "A100"
+    if m := _HYPERSTACK_DC_RE.match(name):
+        name = m.group(1)
+    # Hyperstack consumer format: "geforcertx5090-pcie-32gb" → "RTX 5090"
+    elif m := _HYPERSTACK_RE.match(name):
+        prefix_part = (m.group(1) or "").upper()
+        model_part = m.group(2).upper()
+        name = f"{prefix_part} {model_part}".strip() if prefix_part else model_part
+
+    # Dashed workstation names: "RTX-A6000" → "RTX A6000"
+    name = re.sub(r"^(RTX)-([A-Z])", r"\1 \2", name)
+
+    # Strip VRAM suffix: " 80GB", " 48GB"
+    name = re.sub(r"\s+\d+\s*GB\s*$", "", name, flags=re.IGNORECASE)
+
+    # Strip form factor suffix: " PCIe", " SXM", " SXM4", " OAM", " NVL", " NVLink"
+    name = re.sub(r"\s*[-\s]?(?:PCIe|SXM\d?|OAM|NVL|NVLink)\s*$", "", name,
+                  flags=re.IGNORECASE)
+
+    return name.strip()
+
+
+# ---------------------------------------------------------------------------
 # Data models
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
-class Spec:
-    accelerator: str
-    accelerator_count: int
-    accelerator_memory_gb: float
-    vcpus: float
-    memory_gb: float
-    architecture: str = "x86_64"
+class Accelerator:
+    name: str
+    vram: float
+    manufacturer: str = ""
+    architecture: str = ""
+    cuda_min: str = ""
+    cuda_max: str = ""
 
     @property
     def id(self) -> str:
-        raw = (
-            f"{self.accelerator}:{self.accelerator_count}"
-            f":{self.accelerator_memory_gb}:{self.vcpus}:{self.memory_gb}"
-        )
+        raw = f"{self.name}:{self.vram}"
+        return hashlib.md5(raw.encode()).hexdigest()[:12]
+
+
+@dataclass(frozen=True, slots=True)
+class Spec:
+    accelerator: Accelerator
+    vcpus: float
+    memory_gb: float
+
+    @property
+    def id(self) -> str:
+        raw = f"{self.accelerator.id}:{self.vcpus}:{self.memory_gb}"
         return hashlib.md5(raw.encode()).hexdigest()[:12]
 
 
 @dataclass(frozen=True, slots=True)
 class Offer:
     spec: Spec
+    accelerator_count: int
     instance_type: str
     region: str
     spot_price: float | None = None
@@ -68,6 +135,27 @@ class Offer:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _make_spec(
+    raw_name: str, vram: float, vcpus: float = 0, memory_gb: float = 0,
+) -> Spec:
+    """Create a Spec with an Accelerator enriched from SPECS."""
+    from skyward.accelerators.catalog import SPECS, get_gpu_vram_gb
+
+    name = _normalize_gpu_name(raw_name)
+    spec = SPECS.get(name)
+    if vram <= 0 and spec:
+        vram = float(get_gpu_vram_gb(name))
+    accel = Accelerator(
+        name=name,
+        vram=round(vram, 1),
+        manufacturer=spec.get("manufacturer", "") if spec else "",
+        architecture=spec.get("architecture", "") if spec else "",
+        cuda_min=spec.get("cuda", {}).get("min", "") if spec else "",
+        cuda_max=spec.get("cuda", {}).get("max", "") if spec else "",
+    )
+    return Spec(accelerator=accel, vcpus=vcpus, memory_gb=round(memory_gb, 1))
 
 
 def _parse_vram_from_name(name: str) -> float:
@@ -100,16 +188,17 @@ async def fetch_vastai() -> list[Offer]:
         gpu_name: str = raw.get("gpu_name", "")
         if not gpu_name:
             continue
-        spec = Spec(
-            accelerator=gpu_name,
-            accelerator_count=raw.get("num_gpus") or 1,
-            accelerator_memory_gb=(raw.get("gpu_ram") or 0) / 1024,
-            vcpus=float(raw.get("cpu_cores") or 0),
-            memory_gb=(raw.get("cpu_ram") or 0) / 1024,
-        )
+        num_gpus = raw.get("num_gpus") or 1
+        total_vram_gb = (raw.get("gpu_ram") or 0) / 1024
+        per_gpu_vram = total_vram_gb / num_gpus if num_gpus > 0 else 0
         offers.append(Offer(
-            spec=spec,
-            instance_type=f"{gpu_name}x{raw.get('num_gpus', 1)}",
+            spec=_make_spec(
+                gpu_name, per_gpu_vram,
+                vcpus=float(raw.get("cpu_cores") or 0),
+                memory_gb=(raw.get("cpu_ram") or 0) / 1024,
+            ),
+            accelerator_count=num_gpus,
+            instance_type=f"{_normalize_gpu_name(gpu_name)}x{num_gpus}",
             region=raw.get("geolocation", "unknown"),
             spot_price=_safe_float(raw.get("min_bid")),
             on_demand_price=_safe_float(raw.get("dph_total")),
@@ -131,19 +220,13 @@ async def fetch_runpod() -> list[Offer]:
         if not display_name:
             continue
         lowest = gpu.get("lowestPrice") or {}
-        spec = Spec(
-            accelerator=display_name,
-            accelerator_count=1,
-            accelerator_memory_gb=float(gpu.get("memoryInGb", 0)),
-            vcpus=0,
-            memory_gb=0,
-        )
         spot = _safe_float(lowest.get("minimumBidPrice"))
         on_demand = _safe_float(lowest.get("uninterruptablePrice"))
         if spot is None and on_demand is None:
             continue
         offers.append(Offer(
-            spec=spec,
+            spec=_make_spec(display_name, float(gpu.get("memoryInGb", 0))),
+            accelerator_count=1,
             instance_type=gpu.get("id", display_name),
             region="global",
             spot_price=spot,
@@ -167,31 +250,49 @@ async def fetch_hyperstack() -> list[Offer]:
         if name and value is not None:
             prices[name] = float(value)
 
-    offers: list[Offer] = []
+    # Group by base flavor name (strip "-spot") to merge spot + on-demand prices
+    grouped: dict[str, dict[str, Any]] = {}
     for flavor in flavors:
         gpu_name: str = flavor.get("gpu", "")
         if not gpu_name:
             continue
-        gpu_count = flavor.get("gpu_count", 1)
         flavor_name: str = flavor.get("name", "")
         is_spot = flavor_name.endswith("-spot")
+        base_name = flavor_name.removesuffix("-spot")
 
+        gpu_count = flavor.get("gpu_count", 1)
         per_gpu_price = prices.get(gpu_name)
         total_price = per_gpu_price * gpu_count if per_gpu_price is not None else None
 
-        spec = Spec(
-            accelerator=gpu_name,
-            accelerator_count=gpu_count,
-            accelerator_memory_gb=0,
-            vcpus=float(flavor.get("cpu", 0)),
-            memory_gb=float(flavor.get("ram", 0)),
-        )
+        if base_name not in grouped:
+            grouped[base_name] = {
+                "gpu_name": gpu_name,
+                "gpu_count": gpu_count,
+                "vcpus": float(flavor.get("cpu", 0)),
+                "memory_gb": float(flavor.get("ram", 0)),
+                "region": flavor.get("region_name", "unknown"),
+                "spot_price": None,
+                "on_demand_price": None,
+            }
+
+        if is_spot:
+            grouped[base_name]["spot_price"] = total_price
+        else:
+            grouped[base_name]["on_demand_price"] = total_price
+
+    offers: list[Offer] = []
+    for base_name, g in grouped.items():
         offers.append(Offer(
-            spec=spec,
-            instance_type=flavor_name,
-            region=flavor.get("region_name", "unknown"),
-            spot_price=total_price if is_spot else None,
-            on_demand_price=total_price if not is_spot else None,
+            spec=_make_spec(
+                g["gpu_name"], 0,
+                vcpus=g["vcpus"],
+                memory_gb=g["memory_gb"],
+            ),
+            accelerator_count=g["gpu_count"],
+            instance_type=base_name,
+            region=g["region"],
+            spot_price=g["spot_price"],
+            on_demand_price=g["on_demand_price"],
         ))
     return offers
 
@@ -208,15 +309,13 @@ async def fetch_tensordock() -> list[Offer]:
         for gpu in location.get("gpus", []):
             display_name: str = gpu.get("displayName", "")
             resources = gpu.get("resources", {})
-            spec = Spec(
-                accelerator=display_name,
-                accelerator_count=1,
-                accelerator_memory_gb=_parse_vram_from_name(display_name),
-                vcpus=float(resources.get("max_vcpus", 0)),
-                memory_gb=float(resources.get("max_ram_gb", 0)),
-            )
             offers.append(Offer(
-                spec=spec,
+                spec=_make_spec(
+                    display_name, _parse_vram_from_name(display_name),
+                    vcpus=float(resources.get("max_vcpus", 0)),
+                    memory_gb=float(resources.get("max_ram_gb", 0)),
+                ),
+                accelerator_count=1,
                 instance_type=gpu.get("v0Name", display_name),
                 region=region,
                 on_demand_price=_safe_float(gpu.get("price_per_hr")),
@@ -235,7 +334,7 @@ async def fetch_verda() -> list[Offer]:
     )
 
     client_id, client_secret = get_credentials()
-    auth = _OAuth2(client_id, client_secret, f"{VERDA_API_BASE}/auth/token")
+    auth = _OAuth2(client_id, client_secret, f"{VERDA_API_BASE}/oauth2/token")
     async with httpx.AsyncClient(base_url=VERDA_API_BASE, auth=auth, timeout=30) as http:
         client = VerdaClient(http)
         instance_types = await client.list_instance_types()
@@ -261,13 +360,7 @@ async def fetch_verda() -> list[Offer]:
         if gpu_count == 0:
             continue
 
-        spec = Spec(
-            accelerator=gpu_desc,
-            accelerator_count=gpu_count,
-            accelerator_memory_gb=float(gpu_memory),
-            vcpus=float(cpu_info.get("number_of_cores", 0)),
-            memory_gb=float(mem_info.get("size_in_gigabytes", 0)),
-        )
+        per_gpu_vram = float(gpu_memory) / gpu_count if gpu_count > 0 else 0
 
         available_regions = [
             r for r, types in on_demand_avail.items()
@@ -276,7 +369,12 @@ async def fetch_verda() -> list[Offer]:
 
         for region in available_regions or ["unknown"]:
             offers.append(Offer(
-                spec=spec,
+                spec=_make_spec(
+                    gpu_desc, per_gpu_vram,
+                    vcpus=float(cpu_info.get("number_of_cores", 0)),
+                    memory_gb=float(mem_info.get("size_in_gigabytes", 0)),
+                ),
+                accelerator_count=gpu_count,
                 instance_type=itype_name,
                 region=region,
                 spot_price=_safe_float(itype.get("spot_price")),
@@ -300,15 +398,14 @@ async def fetch_aws() -> list[Offer]:
             _fetch_spot_price(res.instance_type, region),
             _fetch_ondemand_price(res.instance_type, region),
         )
-        spec = Spec(
-            accelerator=res.gpu_model,
-            accelerator_count=res.gpu_count,
-            accelerator_memory_gb=res.gpu_vram_gb,
-            vcpus=float(res.vcpus),
-            memory_gb=res.memory_gb,
-        )
+        per_gpu_vram = res.gpu_vram_gb / res.gpu_count if res.gpu_count > 0 else 0
         return Offer(
-            spec=spec,
+            spec=_make_spec(
+                res.gpu_model, per_gpu_vram,
+                vcpus=float(res.vcpus),
+                memory_gb=res.memory_gb,
+            ),
+            accelerator_count=res.gpu_count,
             instance_type=res.instance_type,
             region=region,
             spot_price=spot,
@@ -358,6 +455,9 @@ async def fetch_gcp() -> list[Offer]:
         "a4": "nvidia-h200",
         "g2": "nvidia-l4",
     }
+    gpu_family_model: dict[str, str] = {
+        "a2": "A100", "a3": "H100", "a4": "H200", "g2": "L4",
+    }
 
     offers: list[Offer] = []
     for mt in machines:
@@ -367,28 +467,16 @@ async def fetch_gcp() -> list[Offer]:
 
         accel_type = gpu_family_accel.get(family, "")
         gpu_count = parse_builtin_gpu_count(mt.name)
-        gpu_model = family.upper()
-        match family:
-            case "a2":
-                gpu_model = "A100"
-            case "a3":
-                gpu_model = "H100"
-            case "a4":
-                gpu_model = "H200"
-            case "g2":
-                gpu_model = "L4"
+        gpu_model: str = gpu_family_model.get(family) or family.upper()
+        per_gpu_vram = float(estimate_vram(accel_type))
 
-        vram = estimate_vram(accel_type) * gpu_count
-
-        spec = Spec(
-            accelerator=gpu_model,
-            accelerator_count=gpu_count,
-            accelerator_memory_gb=float(vram),
-            vcpus=float(mt.guest_cpus),
-            memory_gb=mt.memory_mb / 1024,
-        )
         offers.append(Offer(
-            spec=spec,
+            spec=_make_spec(
+                gpu_model, per_gpu_vram,
+                vcpus=float(mt.guest_cpus),
+                memory_gb=mt.memory_mb / 1024,
+            ),
+            accelerator_count=gpu_count,
             instance_type=mt.name,
             region=zone,
         ))
@@ -418,15 +506,25 @@ def _resolve_gcp_project() -> str:
 # ---------------------------------------------------------------------------
 
 
-def _serialize_spec(spec: Spec) -> dict[str, Any]:
-    d = asdict(spec)
-    d["id"] = spec.id
+def _serialize_accelerator(accel: Accelerator) -> dict[str, Any]:
+    d = asdict(accel)
+    d["id"] = accel.id
     return d
+
+
+def _serialize_spec(spec: Spec) -> dict[str, Any]:
+    return {
+        "id": spec.id,
+        "accelerator_id": spec.accelerator.id,
+        "vcpus": spec.vcpus,
+        "memory_gb": spec.memory_gb,
+    }
 
 
 def _serialize_offer(offer: Offer) -> dict[str, Any]:
     return {
         "spec_id": offer.spec.id,
+        "accelerator_count": offer.accelerator_count,
         "instance_type": offer.instance_type,
         "region": offer.region,
         "spot_price": offer.spot_price,
@@ -462,6 +560,7 @@ async def main() -> None:
     )
 
     all_specs: dict[str, Spec] = {}
+    all_accelerators: dict[str, Accelerator] = {}
     metadata: dict[str, Any] = {
         "updated_at": datetime.now(UTC).isoformat(),
         "providers": {},
@@ -485,6 +584,7 @@ async def main() -> None:
 
         for offer in provider_offers:
             all_specs[offer.spec.id] = offer.spec
+            all_accelerators[offer.spec.accelerator.id] = offer.spec.accelerator
 
         _write_json(
             OFFERS_DIR / f"{provider_id}.json",
@@ -492,10 +592,18 @@ async def main() -> None:
         )
 
     _write_json(
+        CATALOG_DIR / "accelerators.json",
+        sorted(
+            [_serialize_accelerator(a) for a in all_accelerators.values()],
+            key=lambda a: (a["manufacturer"], a["architecture"], a["name"]),
+        ),
+    )
+
+    _write_json(
         CATALOG_DIR / "specs.json",
         sorted(
             [_serialize_spec(s) for s in all_specs.values()],
-            key=lambda s: (s["accelerator"], s["accelerator_count"]),
+            key=lambda s: (s["accelerator_id"], s["vcpus"]),
         ),
     )
 
@@ -513,7 +621,10 @@ async def main() -> None:
     ok = sum(1 for p in metadata["providers"].values() if p["status"] == "ok")
     total = len(FETCHERS)
     print(f"\nCatalog written to {CATALOG_DIR}")
-    print(f"Providers: {ok}/{total} succeeded, {len(all_specs)} unique specs")
+    print(
+        f"Providers: {ok}/{total} succeeded, "
+        f"{len(all_accelerators)} accelerators, {len(all_specs)} specs"
+    )
 
 
 if __name__ == "__main__":

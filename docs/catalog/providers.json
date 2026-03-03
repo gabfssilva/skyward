@@ -4,12 +4,20 @@
     "name": "Vast.ai"
   },
   {
+    "id": "runpod",
+    "name": "RunPod"
+  },
+  {
     "id": "hyperstack",
     "name": "Hyperstack"
   },
   {
     "id": "tensordock",
     "name": "TensorDock"
+  },
+  {
+    "id": "verda",
+    "name": "Verda"
   },
   {
     "id": "aws",

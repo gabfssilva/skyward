@@ -6,15 +6,15 @@
 
 ::: skyward.SelectionStrategy
 
-::: skyward.compute
+::: skyward.function
 
 ::: skyward.sky
 
 ::: skyward.gather
 
-::: skyward.PendingCompute
+::: skyward.PendingFunction
 
-::: skyward.PendingComputeGroup
+::: skyward.PendingFunctionGroup
 
 ::: skyward.Offer
 

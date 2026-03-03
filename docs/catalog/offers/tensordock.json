@@ -1,307 +1,343 @@
 [
   {
-    "spec_id": "8cd5def45c7f",
+    "spec_id": "b999023261a3",
+    "accelerator_count": 1,
     "instance_type": "geforcertx4090-pcie-24gb",
     "region": "Chubbuck, United States",
     "spot_price": null,
-    "on_demand_price": 0.3966666666666667
+    "on_demand_price": 0.39666666666666667
   },
   {
-    "spec_id": "9ad155628dcb",
+    "spec_id": "d9126dba23cf",
+    "accelerator_count": 1,
     "instance_type": "rtxa6000-pcie-48gb",
     "region": "Chubbuck, United States",
     "spot_price": null,
     "on_demand_price": 0.4
   },
   {
-    "spec_id": "6e99a953772c",
+    "spec_id": "9125ba57ff96",
+    "accelerator_count": 1,
     "instance_type": "geforcertx5090-pcie-32gb",
     "region": "Chubbuck, United States",
     "spot_price": null,
     "on_demand_price": 0.54
   },
   {
-    "spec_id": "09614b563cc3",
+    "spec_id": "1b1cac742d63",
+    "accelerator_count": 1,
     "instance_type": "rtx5000ada-pcie-32gb",
     "region": "Chubbuck, United States",
     "spot_price": null,
     "on_demand_price": 0.55
   },
   {
-    "spec_id": "1df12e06db7d",
+    "spec_id": "58b3afd01993",
+    "accelerator_count": 1,
     "instance_type": "geforcertx3090-pcie-24gb",
     "region": "Dallas, United States",
     "spot_price": null,
     "on_demand_price": 0.22000000000000008
   },
   {
-    "spec_id": "8ad85b6a43dd",
+    "spec_id": "263dc2a4e61b",
+    "accelerator_count": 1,
     "instance_type": "geforcertx3090-pcie-24gb",
     "region": "Delaware, United States",
     "spot_price": null,
     "on_demand_price": 0.2
   },
   {
-    "spec_id": "d054ff9ad833",
+    "spec_id": "7b5659cb5a8f",
+    "accelerator_count": 1,
+    "instance_type": "rtxa4000-pcie-16gb",
+    "region": "Delaware, United States",
+    "spot_price": null,
+    "on_demand_price": 0.22000000000000003
+  },
+  {
+    "spec_id": "8b08a8341a91",
+    "accelerator_count": 1,
     "instance_type": "rtxa4000-pcie-16gb",
     "region": "Detroit, United States",
     "spot_price": null,
     "on_demand_price": 0.08
   },
   {
-    "spec_id": "ca74651250a2",
+    "spec_id": "5ccc0a4dbe3f",
+    "accelerator_count": 1,
     "instance_type": "geforcertx4090-pcie-24gb",
     "region": "Joplin, United States",
     "spot_price": null,
-    "on_demand_price": 0.4400000000000001
+    "on_demand_price": 0.44000000000000017
   },
   {
-    "spec_id": "98e22c1dcea8",
+    "spec_id": "8daf43978fe0",
+    "accelerator_count": 1,
     "instance_type": "geforcertx3090-pcie-24gb",
     "region": "Manassas, United States",
     "spot_price": null,
     "on_demand_price": 0.19999999999999998
   },
   {
-    "spec_id": "5593a45c1207",
+    "spec_id": "267194180e5b",
+    "accelerator_count": 1,
     "instance_type": "geforcertx4090-pcie-24gb",
     "region": "Manassas, United States",
     "spot_price": null,
-    "on_demand_price": 0.3822
+    "on_demand_price": 0.38133333333333336
   },
   {
-    "spec_id": "657f67663eac",
+    "spec_id": "2a8354032b0a",
+    "accelerator_count": 1,
     "instance_type": "rtxa6000-pcie-48gb",
     "region": "Manassas, United States",
     "spot_price": null,
     "on_demand_price": 0.39
   },
   {
-    "spec_id": "c852d79ed0d2",
+    "spec_id": "03d5875114b8",
+    "accelerator_count": 1,
     "instance_type": "a100-sxm4-80gb",
     "region": "Mischii, Romania",
     "spot_price": null,
     "on_demand_price": 0.85
   },
   {
-    "spec_id": "6a111b6a8d64",
+    "spec_id": "3030575ce7ae",
+    "accelerator_count": 1,
     "instance_type": "l4-pcie-24gb",
     "region": "Mölln, Germany",
     "spot_price": null,
     "on_demand_price": 0.225
   },
   {
-    "spec_id": "03809b171d57",
+    "spec_id": "2e6116968600",
+    "accelerator_count": 1,
     "instance_type": "rtx6000ada-pcie-48gb",
     "region": "Mölln, Germany",
     "spot_price": null,
     "on_demand_price": 0.7000000000000001
   },
   {
-    "spec_id": "ab92984d4e16",
+    "spec_id": "60cf7c984ded",
+    "accelerator_count": 1,
     "instance_type": "rtxa5000-pcie-24gb",
     "region": "Mumbai, India",
     "spot_price": null,
     "on_demand_price": 0.21
   },
   {
-    "spec_id": "191c15e5dcd7",
+    "spec_id": "be118256dded",
+    "accelerator_count": 1,
     "instance_type": "v100-sxm2-16gb",
     "region": "New York City, United States",
     "spot_price": null,
     "on_demand_price": 0.18999999999999997
   },
   {
-    "spec_id": "e4a746a1c727",
+    "spec_id": "73cf47c3351b",
+    "accelerator_count": 1,
     "instance_type": "v100-sxm3-32gb",
     "region": "New York City, United States",
     "spot_price": null,
     "on_demand_price": 0.29
   },
   {
-    "spec_id": "da79d261a207",
-    "instance_type": "geforcertx3090-pcie-24gb",
+    "spec_id": "a62f1a55ec79",
+    "accelerator_count": 1,
+    "instance_type": "geforcertx5090-pcie-32gb",
     "region": "Ontario, Canada",
     "spot_price": null,
-    "on_demand_price": 0.19333233333333333
+    "on_demand_price": 0.509999
   },
   {
-    "spec_id": "79ec049bb380",
-    "instance_type": "geforcertx4090-pcie-24gb",
-    "region": "Ontario, Canada",
-    "spot_price": null,
-    "on_demand_price": 0.329999
-  },
-  {
-    "spec_id": "efc62a03bf96",
+    "spec_id": "a12740dffa6a",
+    "accelerator_count": 1,
     "instance_type": "geforcertx4090-pcie-24gb",
     "region": "Orlando, United States",
     "spot_price": null,
-    "on_demand_price": 0.35468749999999993
+    "on_demand_price": 0.35333333333333333
   },
   {
-    "spec_id": "fbc9ee37e451",
-    "instance_type": "l40s-pcie-48gb",
-    "region": "Orlando, United States",
+    "spec_id": "b29bd9e2ec62",
+    "accelerator_count": 1,
+    "instance_type": "geforcertx4090-pcie-24gb",
+    "region": "Ottawa, Canada",
     "spot_price": null,
-    "on_demand_price": 0.55
+    "on_demand_price": 0.33
   },
   {
-    "spec_id": "8e27db2a818a",
+    "spec_id": "f5b99cbac472",
+    "accelerator_count": 1,
     "instance_type": "a100-sxm4-80gb",
     "region": "Prague, Czech Republic",
     "spot_price": null,
-    "on_demand_price": 0.86125
+    "on_demand_price": 0.8613636363636363
   },
   {
-    "spec_id": "8493a22afe16",
+    "spec_id": "77741c741cf6",
+    "accelerator_count": 1,
     "instance_type": "a100-pcie-80gb",
     "region": "Prague, Czech Republic",
     "spot_price": null,
     "on_demand_price": 0.75
   },
   {
-    "spec_id": "d898b9b76cfe",
+    "spec_id": "98b381c3a3a4",
+    "accelerator_count": 1,
     "instance_type": "rtxa4000-pcie-16gb",
     "region": "Raleigh, United States",
     "spot_price": null,
     "on_demand_price": 0.10509999999999999
   },
   {
-    "spec_id": "b5169ad2c237",
+    "spec_id": "05dff21de9ad",
+    "accelerator_count": 1,
     "instance_type": "rtxa4000-pcie-16gb",
     "region": "Rzeszow, Poland",
     "spot_price": null,
     "on_demand_price": 0.103
   },
   {
-    "spec_id": "e4d9e95ecfbd",
+    "spec_id": "9eee84f8509e",
+    "accelerator_count": 1,
     "instance_type": "geforcertx3090-pcie-24gb",
     "region": "Rzeszow, Poland",
     "spot_price": null,
     "on_demand_price": 0.207
   },
   {
-    "spec_id": "159189e0bfe8",
+    "spec_id": "006bbb1f28b6",
+    "accelerator_count": 1,
     "instance_type": "geforcertx3090-pcie-24gb",
     "region": "San Diego, United States",
     "spot_price": null,
     "on_demand_price": 0.19999999999999998
   },
   {
-    "spec_id": "2820e5dfa2c7",
+    "spec_id": "630a599a83e9",
+    "accelerator_count": 1,
     "instance_type": "h100-sxm5-80gb",
     "region": "Seattle, United States",
     "spot_price": null,
     "on_demand_price": 1.9899999999999995
   },
   {
-    "spec_id": "bf7a6bd658e1",
+    "spec_id": "2b2c9a66056d",
+    "accelerator_count": 1,
     "instance_type": "rtxa4000-pcie-16gb",
     "region": "Southfield, United States",
     "spot_price": null,
     "on_demand_price": 0.11
   },
   {
-    "spec_id": "96217d630ef7",
+    "spec_id": "1a611352226e",
+    "accelerator_count": 1,
     "instance_type": "geforcertx4090-pcie-24gb",
     "region": "Southfield, United States",
     "spot_price": null,
-    "on_demand_price": 0.35000000000000003
+    "on_demand_price": 0.33999999999999997
   },
   {
-    "spec_id": "26b21c57c873",
+    "spec_id": "b74ec10632ee",
+    "accelerator_count": 1,
     "instance_type": "rtxa4000-pcie-16gb",
     "region": "Tallinn, Estonia",
     "spot_price": null,
     "on_demand_price": 0.08999999999999998
   },
   {
-    "spec_id": "bb8817d7366c",
+    "spec_id": "3c33f30dd1ad",
+    "accelerator_count": 1,
     "instance_type": "rtxa4000-pcie-16gb",
     "region": "Tallinn, Estonia",
     "spot_price": null,
     "on_demand_price": 0.11000000000000003
   },
   {
-    "spec_id": "2a29f201f0b5",
+    "spec_id": "88d32713cb34",
+    "accelerator_count": 1,
     "instance_type": "rtxa4000-pcie-16gb",
     "region": "Tallinn, Estonia",
     "spot_price": null,
     "on_demand_price": 0.10000000000000005
   },
   {
-    "spec_id": "c982a1a2e0a8",
+    "spec_id": "60db3ada3ae3",
+    "accelerator_count": 1,
     "instance_type": "geforcertx4080-pcie-16gb",
     "region": "Tallinn, Estonia",
     "spot_price": null,
     "on_demand_price": 0.16
   },
   {
-    "spec_id": "88e66e919cb9",
+    "spec_id": "9482ccb7e422",
+    "accelerator_count": 1,
     "instance_type": "geforcertx3090-pcie-24gb",
     "region": "Tallinn, Estonia",
     "spot_price": null,
-    "on_demand_price": 0.2
+    "on_demand_price": 0.20000000000000004
   },
   {
-    "spec_id": "ec3a1abb5838",
+    "spec_id": "51c8520ace16",
+    "accelerator_count": 1,
     "instance_type": "geforcertx4090-pcie-24gb",
     "region": "Tallinn, Estonia",
     "spot_price": null,
-    "on_demand_price": 0.38
+    "on_demand_price": 0.37999999999999995
   },
   {
-    "spec_id": "632b582ee427",
+    "spec_id": "b5ae12267e65",
+    "accelerator_count": 1,
     "instance_type": "v100-sxm2-16gb",
     "region": "Texas, United States",
     "spot_price": null,
     "on_demand_price": 0.19
   },
   {
-    "spec_id": "1625d335a9da",
+    "spec_id": "1114048122b4",
+    "accelerator_count": 1,
     "instance_type": "v100-sxm3-32gb",
     "region": "Texas, United States",
     "spot_price": null,
     "on_demand_price": 0.29
   },
   {
-    "spec_id": "43ced2b2a73d",
+    "spec_id": "2ab6cbf804fe",
+    "accelerator_count": 1,
     "instance_type": "rtxa6000-pcie-48gb",
     "region": "Vancouver, Canada",
     "spot_price": null,
-    "on_demand_price": 0.45
+    "on_demand_price": 0.45000000000000007
   },
   {
-    "spec_id": "7e813be4282b",
-    "instance_type": "geforcertx3090-pcie-24gb",
-    "region": "Winnipeg, Canada",
-    "spot_price": null,
-    "on_demand_price": 0.19
-  },
-  {
-    "spec_id": "1b5c15399a74",
+    "spec_id": "d537c795ade6",
+    "accelerator_count": 1,
     "instance_type": "geforcertx4090-pcie-24gb",
     "region": "Winnipeg, Canada",
     "spot_price": null,
     "on_demand_price": 0.33
   },
   {
-    "spec_id": "26a0b9cd7214",
+    "spec_id": "88b671d5009e",
+    "accelerator_count": 1,
     "instance_type": "a40-pcie-48gb",
     "region": "Wolverhampton, United Kingdom",
     "spot_price": null,
     "on_demand_price": 0.35
   },
   {
-    "spec_id": "bcb1dc6461e2",
+    "spec_id": "cefe9008909d",
+    "accelerator_count": 1,
     "instance_type": "rtxa6000-pcie-48gb",
     "region": "Wolverhampton, United Kingdom",
     "spot_price": null,
     "on_demand_price": 0.4
   },
   {
-    "spec_id": "ae3105544bff",
+    "spec_id": "7552baf01aef",
+    "accelerator_count": 1,
     "instance_type": "l40s-pcie-48gb",
     "region": "Wolverhampton, United Kingdom",
     "spot_price": null,

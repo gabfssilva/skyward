@@ -12,3 +12,4 @@ examples/guides/ignored/
 PLANNED_PROVIDERS.md
 site/
 paper/
+.DS_Store

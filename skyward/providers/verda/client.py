@@ -29,41 +29,36 @@ class VerdaError(Exception):
 class _OAuth2(httpx.Auth):
     """OAuth2 client-credentials flow with automatic 401 retry."""
 
-    requires_response_body = True
-
     def __init__(self, client_id: str, client_secret: str, token_url: str) -> None:
         self._client_id = client_id
         self._client_secret = client_secret
         self._token_url = token_url
         self._token: str | None = None
 
-    def _token_request(self) -> httpx.Request:
-        return httpx.Request(
-            "POST",
-            self._token_url,
-            data={
-                "grant_type": "client_credentials",
-                "client_id": self._client_id,
-                "client_secret": self._client_secret,
-            },
-        )
+    async def _fetch_token(self) -> str:
+        async with httpx.AsyncClient() as http:
+            resp = await http.post(
+                self._token_url,
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": self._client_id,
+                    "client_secret": self._client_secret,
+                },
+            )
+            resp.raise_for_status()
+            return resp.json()["access_token"]
 
     async def async_auth_flow(
         self, request: httpx.Request,
     ) -> AsyncGenerator[httpx.Request, httpx.Response]:
         if self._token is None:
-            token_resp = yield self._token_request()
-            token_resp.raise_for_status()
-            self._token = token_resp.json()["access_token"]
+            self._token = await self._fetch_token()
 
         request.headers["Authorization"] = f"Bearer {self._token}"
         response = yield request
 
         if response.status_code == 401:
-            self._token = None
-            token_resp = yield self._token_request()
-            token_resp.raise_for_status()
-            self._token = token_resp.json()["access_token"]
+            self._token = await self._fetch_token()
             request.headers["Authorization"] = f"Bearer {self._token}"
             yield request
 

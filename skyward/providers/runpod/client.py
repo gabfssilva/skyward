@@ -293,7 +293,6 @@ class RunPodClient:
         op_name = query.strip().split("(")[0].split("{")[0].strip().split()[-1]
         self._log.debug("Executing GraphQL: {op}", op=op_name)
         async with httpx.AsyncClient(
-            base_url=RUNPOD_GRAPHQL_URL,
             headers={
                 "Authorization": f"Bearer {self._api_key}",
                 "Accept": "application/json",
@@ -302,7 +301,8 @@ class RunPodClient:
             timeout=httpx.Timeout(self._config.request_timeout * 2),
         ) as http:
             resp = await http.post(
-                "", json={"query": query, "variables": variables or {}}
+                RUNPOD_GRAPHQL_URL,
+                json={"query": query, "variables": variables or {}},
             )
             if resp.status_code >= 400:
                 raise RunPodError(f"API error {resp.status_code}: {resp.text}")
