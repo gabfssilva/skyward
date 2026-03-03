@@ -76,19 +76,22 @@ class TestConstrainRegionForVolumes:
         assert result == "US-1"
 
 
-class TestMountEndpoint:
+class TestStorage:
     @pytest.mark.asyncio()
-    async def test_returns_endpoint_with_credentials(self):
+    async def test_returns_storage_with_credentials(self):
+        from skyward.storage import Storage
+
         provider = HyperstackProvider(Hyperstack())
         provider._access_key = "ak_test123"
         provider._secret_key = "sk_secret456"
 
         cluster = _dummy_cluster()
-        endpoint = await provider.mount_endpoint(cluster)
-        assert endpoint.endpoint == _DEFAULT_STORAGE_ENDPOINT
-        assert endpoint.access_key == "ak_test123"
-        assert endpoint.secret_key == "sk_secret456"
-        assert endpoint.path_style is True
+        result = await provider.storage(cluster)
+        assert isinstance(result, Storage)
+        assert result.endpoint == _DEFAULT_STORAGE_ENDPOINT
+        assert result.access_key == "ak_test123"
+        assert result.secret_key == "sk_secret456"
+        assert result.path_style is True
 
     @pytest.mark.asyncio()
     async def test_raises_without_keys(self):
@@ -96,7 +99,7 @@ class TestMountEndpoint:
         cluster = _dummy_cluster()
 
         with pytest.raises(RuntimeError, match="Access key not created"):
-            await provider.mount_endpoint(cluster)
+            await provider.storage(cluster)
 
 
 class TestProviderAccessKeyState:

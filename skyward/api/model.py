@@ -7,7 +7,8 @@ from skyward.api.spec import Architecture, PoolSpec
 
 if TYPE_CHECKING:
     from skyward.accelerators import Accelerator
-    from skyward.providers.provider import MountEndpoint
+    from skyward.api.spec import Volume
+    from skyward.storage import Storage
 
 type InstanceStatus = Literal[
     "provisioning",
@@ -75,4 +76,4 @@ class Cluster[S]:
     specific: S
     instances: tuple[Instance, ...] = ()
     prebaked: bool = False
-    mount_endpoint: MountEndpoint | None = None
+    resolved_volumes: tuple[tuple[Volume, Storage], ...] | None = None

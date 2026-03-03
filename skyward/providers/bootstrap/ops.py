@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
     from skyward.api.spec import PipIndex, Volume
-    from skyward.providers.provider import MountEndpoint
+    from skyward.storage import Storage
 
 from skyward.providers.bootstrap.compose import SKYWARD_DIR
 
@@ -506,59 +506,57 @@ def stop_metrics() -> Op:
 
 
 def mount_volumes(
-    volumes: tuple[Volume, ...],
-    endpoint: MountEndpoint,
+    volumes: tuple[tuple[Volume, Storage], ...],
 ) -> Op:
     """Install s3fs-fuse and mount all volumes as local filesystem paths.
 
-    Generates a bootstrap op that:
-    1. Installs s3fs via apt (lock-wait safe)
-    2. Writes credential file if access_key is provided
-    3. Creates mount points and mounts each volume via s3fs
-
-    When no credentials are provided (AWS IAM role), uses iam_role=auto.
-
     Parameters
     ----------
-    volumes : tuple[Volume, ...]
-        Volumes to mount.
-    endpoint : MountEndpoint
-        S3-compatible endpoint with optional credentials.
+    volumes : tuple[tuple[Volume, Storage], ...]
+        Volume-storage pairs. Each volume is mounted using its paired storage endpoint.
     """
 
     def generate() -> str:
         lines: list[str] = []
 
         # 1. Install s3fs
-        lines.append(
-            "apt-get -o DPkg::Lock::Timeout=-1 install -y -qq s3fs"
-        )
+        lines.append("apt-get -o DPkg::Lock::Timeout=-1 install -y -qq s3fs")
 
-        # 2. Write credentials if provided
-        if endpoint.access_key is not None:
-            lines.append(
-                f'echo "{endpoint.access_key}:{endpoint.secret_key}" '
-                f"> /etc/s3fs-passwd"
+        # 2. Collect endpoint info and deduplicate
+        mount_key_rw: dict[tuple[str, str], bool] = {}
+        endpoint_info: dict[str, tuple[str | None, str | None, bool]] = {}
+
+        for vol, storage in volumes:
+            key = (vol.bucket, storage.endpoint)
+            needs_write = not vol.read_only
+            mount_key_rw[key] = mount_key_rw.get(key, False) or needs_write
+            endpoint_info[storage.endpoint] = (
+                storage.access_key, storage.secret_key, storage.path_style,
             )
-            lines.append("chmod 600 /etc/s3fs-passwd")
 
-        # 3. Deduplicate buckets — mount each once, rw if any volume needs writes
-        bucket_rw: dict[str, bool] = {}
-        for v in volumes:
-            needs_write = not v.read_only
-            bucket_rw[v.bucket] = bucket_rw.get(v.bucket, False) or needs_write
+        # 3. Write credential files per unique endpoint
+        cred_files: dict[str, str] = {}
+        for endpoint, (access_key, secret_key, _path_style) in endpoint_info.items():
+            if access_key is not None:
+                import hashlib
 
-        # 4. Mount each unique bucket at /mnt/s3fs/<bucket>
-        mounted: set[str] = set()
-        for bucket, writable in bucket_rw.items():
+                ep_hash = hashlib.md5(endpoint.encode()).hexdigest()[:8]
+                cred_path = f"/etc/s3fs-passwd-{ep_hash}"
+                lines.append(f'echo "{access_key}:{secret_key}" > {cred_path}')
+                lines.append(f"chmod 600 {cred_path}")
+                cred_files[endpoint] = cred_path
+
+        # 4. Mount each unique (bucket, endpoint) pair
+        for (bucket, endpoint), writable in mount_key_rw.items():
+            access_key, _secret_key, path_style = endpoint_info[endpoint]
             fuse_mount = f"/mnt/s3fs/{bucket}"
             mount_log = f"/tmp/s3fs_{bucket}.log"
 
-            opts = [f"url={endpoint.endpoint}"]
-            if endpoint.path_style:
+            opts = [f"url={endpoint}"]
+            if path_style:
                 opts.append("use_path_request_style")
-            if endpoint.access_key is not None:
-                opts.append("passwd_file=/etc/s3fs-passwd")
+            if endpoint in cred_files:
+                opts.append(f"passwd_file={cred_files[endpoint]}")
             else:
                 opts.append("iam_role=auto")
             if not writable:
@@ -578,16 +576,15 @@ def mount_volumes(
                 f"else echo 's3fs: FAILED to mount {fuse_mount}'; "
                 f"exit 1; fi"
             )
-            mounted.add(bucket)
 
-        # 5. Create user mount points — symlink to prefix subdir or bucket root
-        for v in volumes:
-            fuse_mount = f"/mnt/s3fs/{v.bucket}"
-            if v.prefix:
-                lines.append(f"mkdir -p {fuse_mount}/{v.prefix}")
-                lines.append(f"ln -sfn {fuse_mount}/{v.prefix} {v.mount}")
+        # 5. Create user mount points — symlinks
+        for vol, _storage in volumes:
+            fuse_mount = f"/mnt/s3fs/{vol.bucket}"
+            if vol.prefix:
+                lines.append(f"mkdir -p {fuse_mount}/{vol.prefix}")
+                lines.append(f"ln -sfn {fuse_mount}/{vol.prefix} {vol.mount}")
             else:
-                lines.append(f"ln -sfn {fuse_mount} {v.mount}")
+                lines.append(f"ln -sfn {fuse_mount} {vol.mount}")
 
         return "\n".join(lines)
 

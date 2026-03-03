@@ -5,10 +5,10 @@ import base64
 import json
 import uuid
 from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager, suppress
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import timedelta
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from skyward.api import PoolSpec
 from skyward.api.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
@@ -17,7 +17,10 @@ from skyward.api.spec import Volume
 from skyward.infra.cache import cached
 from skyward.infra.retry import on_exception_message, retry
 from skyward.observability.logger import logger
-from skyward.providers.provider import MountEndpoint, ObjectStore, Provider
+from skyward.providers.provider import Provider
+
+if TYPE_CHECKING:
+    from skyward.storage import Storage
 
 from .clients import EC2ClientFactory
 from .config import AWS, AllocationStrategy
@@ -288,25 +291,12 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
         await _terminate_instances(self._ec2, list(instance_ids))
         return cluster
 
-    async def mount_endpoint(self, cluster: Cluster[AWSSpecific]) -> MountEndpoint:
-        return MountEndpoint(
+    async def storage(self, cluster: Cluster[AWSSpecific]) -> Storage:
+        from skyward.storage import Storage
+
+        return Storage(
             endpoint=f"https://s3.{self._config.region}.amazonaws.com",
         )
-
-    @asynccontextmanager
-    async def object_store(self) -> AsyncIterator[ObjectStore]:
-        import aioboto3
-        from botocore.config import Config
-
-        session = aioboto3.Session()
-        async with session.client(  # pyright: ignore[reportGeneralTypeIssues]
-            "s3",
-            region_name=self._config.region,
-            config=Config(request_checksum_calculation="when_required"),
-        ) as s3:
-            from skyward.infra.object_store import S3ObjectStore
-
-            yield S3ObjectStore(s3)
 
     async def teardown(self, cluster: Cluster[AWSSpecific]) -> Cluster[AWSSpecific]:
         if self._auto_profile_prefix:
@@ -686,6 +676,7 @@ def _select_instances_cache_key(config: AWS, spec: PoolSpec, max_candidates: int
         spec.architecture,
         spec.accelerator_name,
         spec.accelerator_count,
+        spec.accelerator_memory_gb,
         max_candidates,
     )
     return hashlib.sha256(str(parts).encode()).hexdigest()[:16]
@@ -718,6 +709,10 @@ async def _select_instances(
                 arch_requirements["AcceleratorTypes"] = ["gpu"]
                 arch_requirements["AcceleratorNames"] = [spec.accelerator_name.lower()]
                 arch_requirements["AcceleratorCount"] = {"Min": spec.accelerator_count or 1}
+                if spec.accelerator_memory_gb > 0:
+                    arch_requirements["AcceleratorTotalMemoryMiB"] = {
+                        "Min": spec.accelerator_memory_gb * 1024,
+                    }
 
             response = await client.get_instance_types_from_instance_requirements(
                 ArchitectureTypes=[a],

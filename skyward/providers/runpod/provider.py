@@ -4,9 +4,9 @@ import asyncio
 import re
 import uuid
 from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from typing import TYPE_CHECKING
 
 import httpx
 
@@ -14,7 +14,10 @@ from skyward.accelerators import Accelerator
 from skyward.api import PoolSpec
 from skyward.api.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
 from skyward.observability.logger import logger
-from skyward.providers.provider import MountEndpoint, ObjectStore, Provider
+from skyward.providers.provider import Provider
+
+if TYPE_CHECKING:
+    from skyward.storage import Storage
 from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
 
 from .client import RunPodClient, RunPodError, get_api_key
@@ -335,6 +338,10 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                 if gpu_id in seen:
                     continue
 
+                vram_gb = gpu.get("memoryInGb", 0)
+                if spec.accelerator_memory_gb > 0 and vram_gb < spec.accelerator_memory_gb:
+                    continue
+
                 lowest = gpu.get("lowestPrice") or {}
                 spot_price = lowest.get("minimumBidPrice")
                 on_demand_price = lowest.get("uninterruptablePrice")
@@ -550,7 +557,9 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
             await asyncio.gather(*(_terminate(pid) for pid in instance_ids))
         return cluster
 
-    async def mount_endpoint(self, cluster: Cluster[RunPodSpecific]) -> MountEndpoint:
+    async def storage(self, cluster: Cluster[RunPodSpecific]) -> Storage:
+        from skyward.storage import Storage
+
         from .client import get_api_key
 
         api_key = get_api_key(self._config.api_key)
@@ -569,44 +578,11 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
             )
 
         dc_lower = dc.lower()
-        return MountEndpoint(
+        return Storage(
             endpoint=f"https://s3api-{dc_lower}.runpod.io",
             access_key=api_key,
             secret_key=api_key,
         )
-
-    @asynccontextmanager
-    async def object_store(self) -> AsyncIterator[ObjectStore]:
-        api_key = get_api_key(self._config.api_key)
-
-        if self._config.data_center_ids == "global":
-            raise ValueError(
-                "RunPod volumes require an explicit data_center_ids setting. "
-                f"S3-supported datacenters: {', '.join(sorted(_RUNPOD_S3_DATACENTERS))}",
-            )
-
-        dc = self._config.data_center_ids[0]
-        if dc not in _RUNPOD_S3_DATACENTERS:
-            raise ValueError(
-                f"RunPod datacenter '{dc}' does not support S3 API. "
-                f"Supported: {', '.join(sorted(_RUNPOD_S3_DATACENTERS))}",
-            )
-
-        import aioboto3
-        from botocore.config import Config
-
-        dc_lower = dc.lower()
-        session = aioboto3.Session()
-        async with session.client(  # pyright: ignore[reportGeneralTypeIssues]
-            "s3",
-            endpoint_url=f"https://s3api-{dc_lower}.runpod.io",
-            aws_access_key_id=api_key,
-            aws_secret_access_key=api_key,
-            config=Config(request_checksum_calculation="when_required"),
-        ) as s3:
-            from skyward.infra.object_store import S3ObjectStore
-
-            yield S3ObjectStore(s3)
 
     async def teardown(self, cluster: Cluster[RunPodSpecific]) -> Cluster[RunPodSpecific]:
         specific = cluster.specific

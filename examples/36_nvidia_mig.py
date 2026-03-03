@@ -74,7 +74,7 @@ if __name__ == "__main__":
     with sky.ComputePool(
         provider=sky.Verda(),
         nodes=1,
-        accelerator=sky.accelerators.H100(),
+        accelerator=sky.accelerators.A100(),
         worker=sky.Worker(concurrency=PARTITIONS, executor="process"),
         plugins=[
             sky.plugins.torch(),

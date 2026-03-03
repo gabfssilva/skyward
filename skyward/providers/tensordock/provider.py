@@ -100,6 +100,11 @@ def _filter_locations(
             if spec.accelerator_name and not gpu_matches_v2(gpu, spec.accelerator_name):
                 continue
 
+            if spec.accelerator_memory_gb > 0:
+                vram = get_gpu_memory_gb(v0_name)
+                if vram < spec.accelerator_memory_gb:
+                    continue
+
             gpu_price = gpu.get("price_per_hr", 0.0)
             pricing = gpu.get("pricing", {})
             resources = gpu.get("resources", {})

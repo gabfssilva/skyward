@@ -153,26 +153,30 @@ def pool_actor() -> Behavior[PoolMsg]:
                         n=effective_spec.nodes,
                     )
 
-                    if effective_spec.volumes and cluster.mount_endpoint is None:
+                    if effective_spec.volumes and cluster.resolved_volumes is None:
                         from skyward.providers.provider import Mountable
 
-                        if not isinstance(provider, Mountable):
-                            reply_to.tell(ProvisionFailed(
-                                reason="Provider does not support volumes. "
-                                       "Supported providers: AWS, GCP, Hyperstack, RunPod.",
-                            ))
-                            return Behaviors.stopped()
-
-                        async def _resolve_mount() -> Any:
-                            endpoint = await provider.mount_endpoint(cluster)
+                        async def _resolve_volumes() -> Any:
+                            resolved: list[tuple] = []
+                            for vol in effective_spec.volumes:
+                                if vol.storage is not None:
+                                    resolved.append((vol, vol.storage))
+                                elif isinstance(provider, Mountable):
+                                    s = await provider.storage(cluster)
+                                    resolved.append((vol, s))
+                                else:
+                                    raise RuntimeError(
+                                        f"Volume '{vol.bucket}' has no storage and provider "
+                                        "does not support volumes."
+                                    )
                             from dataclasses import replace
-                            return replace(cluster, mount_endpoint=endpoint)
+                            return replace(cluster, resolved_volumes=tuple(resolved))
 
                         ctx.pipe_to_self(
-                            _resolve_mount(),
+                            _resolve_volumes(),
                             mapper=lambda c: ClusterReady(cluster=c),
                             on_failure=lambda err: ProvisionFailed(
-                                reason=f"Volume mount setup failed: {err}",
+                                reason=f"Volume storage resolution failed: {err}",
                             ),
                         )
                         return requesting(

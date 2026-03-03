@@ -98,10 +98,12 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
             accel = get_accelerator(itype)
             if not accel:
                 return False
-            return (
+            if not (
                 accel.upper() in spec.accelerator_name.upper()
                 or spec.accelerator_name.upper() in accel.upper()
-            )
+            ):
+                return False
+            return spec.accelerator_memory_gb == 0 or get_accelerator_memory_gb(itype) >= spec.accelerator_memory_gb
 
         candidates = [itype for itype in instance_types if _matches(itype)]
 
@@ -333,10 +335,12 @@ async def _resolve_instance_type(
         accel = get_accelerator(itype)
         if not accel:
             return False
-        return (
+        if not (
             accel.upper() in spec.accelerator_name.upper()
             or spec.accelerator_name.upper() in accel.upper()
-        )
+        ):
+            return False
+        return spec.accelerator_memory_gb == 0 or get_accelerator_memory_gb(itype) >= spec.accelerator_memory_gb
 
     candidates = [itype for itype in instance_types if _matches(itype)]
     log.debug("Found {n} matching instance type candidates", n=len(candidates))

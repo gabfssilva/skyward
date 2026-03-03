@@ -17,8 +17,10 @@ except ModuleNotFoundError:
 
 from skyward import accelerators as accelerators
 from skyward import plugins as plugins
+from skyward import storage as storage
 from skyward.observability import LogConfig
 from skyward.observability import metrics as metrics
+from skyward.storage import Storage as Storage
 
 from .actors.messages import (
     ClusterDestroyed,
@@ -76,7 +78,6 @@ from .api import Offer as Offer
 from .api import SelectionStrategy as SelectionStrategy
 from .api import Spec as Spec
 from .api import Volume as Volume
-from .api import VolumeClient as VolumeClient
 from .api import Worker as Worker
 from .api import WorkerExecutor as WorkerExecutor
 from .app import App
@@ -141,7 +142,8 @@ __all__ = [
     "SelectionStrategy",
     "Spec",
     "Volume",
-    "VolumeClient",
+    "Storage",
+    "storage",
     "Worker",
     "WorkerExecutor",
     "dict",

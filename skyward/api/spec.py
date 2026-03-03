@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
     from skyward.actors.messages import ProviderName
     from skyward.api.provider import ProviderConfig
     from skyward.plugins.plugin import Plugin
+    from skyward.storage import Storage
 
 
 type AllocationStrategy = Literal[
@@ -164,6 +166,7 @@ class Volume:
     mount: str
     prefix: str = ""
     read_only: bool = True
+    storage: Storage | None = None
 
     def __post_init__(self) -> None:
         if not self.mount.startswith("/"):
@@ -254,6 +257,17 @@ class PoolSpec:
     def accelerator_count(self) -> int:
         """Get the number of accelerators per node."""
         return self.accelerator.count if self.accelerator else 0
+
+    @property
+    def accelerator_memory_gb(self) -> int:
+        """Get the requested VRAM per accelerator in GB, or 0 if unspecified."""
+        if not self.accelerator or not self.accelerator.memory:
+            return 0
+        match = re.match(r"(\d+)(GB|TB)", self.accelerator.memory, re.IGNORECASE)
+        if not match:
+            return 0
+        value = int(match.group(1))
+        return value * 1024 if match.group(2).upper() == "TB" else value
 
     @property
     def auto_scaling(self) -> bool:

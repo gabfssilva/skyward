@@ -1,11 +1,13 @@
+from __future__ import annotations
+
 from collections.abc import AsyncIterator, Sequence
-from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Protocol, Self, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, Self, runtime_checkable
 
 from skyward.api import Cluster, Instance, PoolSpec
 from skyward.api.model import Offer
+
+if TYPE_CHECKING:
+    from skyward.storage import Storage
 
 
 @runtime_checkable
@@ -85,31 +87,8 @@ class WarmableProvider[C, S](Provider[C, S], Protocol):
         ...
 
 
-@dataclass(frozen=True, slots=True)
-class MountEndpoint:
-    """S3-compatible endpoint for volume mounting."""
-
-    endpoint: str
-    access_key: str | None = None
-    secret_key: str | None = None
-    path_style: bool = False
-
-
-@runtime_checkable
-class ObjectStore(Protocol):
-    """Protocol for S3-compatible object storage operations."""
-
-    async def upload_file(self, bucket: str, key: str, path: Path) -> None: ...
-    async def download_file(self, bucket: str, key: str, path: Path) -> None: ...
-    async def list_objects(self, bucket: str, prefix: str) -> list[str]: ...
-    async def delete_objects(self, bucket: str, keys: Sequence[str]) -> None: ...
-    async def head_object(self, bucket: str, key: str) -> bool: ...
-
-
 @runtime_checkable
 class Mountable[S](Protocol):
     """Protocol for providers that support volume mounting."""
 
-    async def mount_endpoint(self, cluster: Cluster[S]) -> MountEndpoint: ...
-
-    def object_store(self) -> AbstractAsyncContextManager[ObjectStore]: ...
+    async def storage(self, cluster: Cluster[S]) -> Storage: ...

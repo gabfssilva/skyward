@@ -9,14 +9,18 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager, suppress
+from contextlib import suppress
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 from skyward.accelerators import Accelerator
 from skyward.api import PoolSpec
 from skyward.api.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
 from skyward.observability.logger import logger
-from skyward.providers.provider import Mountable, MountEndpoint, ObjectStore, Provider
+from skyward.providers.provider import Mountable, Provider
+
+if TYPE_CHECKING:
+    from skyward.storage import Storage
 from skyward.providers.ssh_keys import generate_key_name, get_local_ssh_key, get_ssh_key_path
 
 from .client import HyperstackClient, get_api_key
@@ -262,47 +266,17 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific], Mountable[Hyp
 
         return cluster
 
-    async def mount_endpoint(self, cluster: Cluster[HyperstackSpecific]) -> MountEndpoint:
+    async def storage(self, cluster: Cluster[HyperstackSpecific]) -> Storage:
+        from skyward.storage import Storage
+
         if self._access_key is None or self._secret_key is None:
             raise RuntimeError("Access key not created — call prepare() with volumes first")
-        return MountEndpoint(
+        return Storage(
             endpoint=self._config.object_storage_endpoint,
             access_key=self._access_key,
             secret_key=self._secret_key,
             path_style=True,
         )
-
-    @asynccontextmanager
-    async def object_store(self) -> AsyncIterator[ObjectStore]:
-        api_key = get_api_key(self._config)
-
-        async with HyperstackClient(api_key, config=self._config) as client:
-            key = await client.create_access_key(
-                region=self._config.object_storage_region,
-            )
-            access_key = key["access_key"]
-            secret_key = key.get("secret_key", "")
-            key_id = key["id"]
-
-            try:
-                import aioboto3
-                from botocore.config import Config
-
-                session = aioboto3.Session()
-                async with session.client(  # pyright: ignore[reportGeneralTypeIssues]
-                    "s3",
-                    endpoint_url=self._config.object_storage_endpoint,
-                    aws_access_key_id=access_key,
-                    aws_secret_access_key=secret_key,
-                    region_name="us-east-1",
-                    config=Config(request_checksum_calculation="when_required"),
-                ) as s3:
-                    from skyward.infra.object_store import S3ObjectStore
-
-                    yield S3ObjectStore(s3)
-            finally:
-                with suppress(Exception):
-                    await client.delete_access_key(key_id)
 
     async def teardown(
         self, cluster: Cluster[HyperstackSpecific],
