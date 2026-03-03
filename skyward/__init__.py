@@ -88,7 +88,21 @@ from .distributed import (
     queue,
     set,
 )
+from .offers.repository import OfferRepository
 from .providers import AWS, GCP, Container, Hyperstack, RunPod, TensorDock, VastAI, Verda
+
+
+async def offers() -> OfferRepository:
+    """Load the GPU offer catalog into a queryable repository.
+
+    Usage::
+
+        import skyward as sky
+
+        repo = await sky.offers()
+        offer = repo.accelerator("A100").spot().cheapest()
+    """
+    return await OfferRepository.create()
 
 __all__ = [
     "__version__",
@@ -165,5 +179,7 @@ __all__ = [
     "metrics",
     "LogConfig",
     "accelerators",
+    "offers",
+    "OfferRepository",
     "plugins",
 ]
