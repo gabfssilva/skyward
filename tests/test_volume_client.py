@@ -32,7 +32,7 @@ class TestS3ObjectStore:
         f.write_text("a,b\n1,2")
         await store.upload_file("bucket", "data.csv", f)
         s3.put_object.assert_awaited_once_with(
-            Bucket="bucket", Key="data.csv", Body=b"a,b\n1,2", ContentLength=7,
+            Bucket="bucket", Key="data.csv", Body=b"a,b\n1,2",
         )
 
     @pytest.mark.asyncio()

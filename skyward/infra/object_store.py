@@ -18,9 +18,7 @@ class S3ObjectStore:
 
     async def upload_file(self, bucket: str, key: str, path: Path) -> None:
         content = path.read_bytes()
-        await self._s3.put_object(
-            Bucket=bucket, Key=key, Body=content, ContentLength=len(content),
-        )
+        await self._s3.put_object(Bucket=bucket, Key=key, Body=content)
 
     async def download_file(self, bucket: str, key: str, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

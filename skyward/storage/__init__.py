@@ -245,7 +245,7 @@ async def _upload(s3: Any, bucket: str, path: Path, key: str | None) -> None:
     if path.is_file():
         resolved = key or path.name
         content = path.read_bytes()
-        await s3.put_object(Bucket=bucket, Key=resolved, Body=content, ContentLength=len(content))
+        await s3.put_object(Bucket=bucket, Key=resolved, Body=content)
     else:
         coros = []
         for file in path.rglob("*"):
@@ -254,7 +254,7 @@ async def _upload(s3: Any, bucket: str, path: Path, key: str | None) -> None:
             relative = file.relative_to(path.parent)
             resolved = key + "/" + str(file.relative_to(path)) if key else str(relative)
             content = file.read_bytes()
-            coros.append(s3.put_object(Bucket=bucket, Key=resolved, Body=content, ContentLength=len(content)))
+            coros.append(s3.put_object(Bucket=bucket, Key=resolved, Body=content))
         if coros:
             await asyncio.gather(*coros)
 
