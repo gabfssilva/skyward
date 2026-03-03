@@ -180,6 +180,32 @@ class TestPresets:
         assert s.access_key == "KID"
         assert s.secret_key == "APPK"
 
+    def test_hyperstack_returns_storage_with_callables(self):
+        from skyward.storage import Storage
+        from skyward.storage.presets import Hyperstack
+
+        s = Hyperstack(api_key="test-key", region="CANADA-1")
+        assert isinstance(s, Storage)
+        assert s.endpoint == "https://ca1.obj.nexgencloud.io"
+        assert callable(s.access_key)
+        assert callable(s.secret_key)
+        assert s.path_style is True
+
+    def test_hyperstack_custom_endpoint(self):
+        from skyward.storage.presets import Hyperstack
+
+        s = Hyperstack(api_key="k", endpoint="https://custom.endpoint.io")
+        assert s.endpoint == "https://custom.endpoint.io"
+
+    def test_hyperstack_registers_on_close(self):
+        from skyward.storage import _ON_CLOSE
+        from skyward.storage.presets import Hyperstack
+
+        s = Hyperstack(api_key="k")
+        assert id(s) in _ON_CLOSE
+        assert len(_ON_CLOSE[id(s)]) == 1
+        _ON_CLOSE.pop(id(s))
+
 
 class TestVolumeStorageField:
     def test_volume_accepts_storage(self):
@@ -216,6 +242,7 @@ class TestTopLevelExports:
         assert hasattr(sky.storage, "GCS")
         assert hasattr(sky.storage, "Wasabi")
         assert hasattr(sky.storage, "Backblaze")
+        assert hasattr(sky.storage, "Hyperstack")
 
     def test_volume_client_removed(self):
         import skyward

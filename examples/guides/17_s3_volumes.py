@@ -10,11 +10,10 @@
                                          │  /data  /output  │
                                          └──────────────────┘
 
-Credentials are resolved lazily from environment variables:
-    HYPERSTACK_ACCESS_KEY, HYPERSTACK_SECRET_KEY
+Uses sky.storage.Hyperstack() to auto-provision ephemeral S3 credentials.
+Requires HYPERSTACK_API_KEY env var.
 """
 
-import os
 from pathlib import Path
 
 import skyward as sky
@@ -53,27 +52,20 @@ if __name__ == "__main__":
     DATA_BUCKET = "my-dataset-bucket"
     MODEL_BUCKET = "my-model-bucket"
 
-    # Storage with lazy credential resolution from environment variables
-    storage = sky.Storage(
-        endpoint="https://objects.ord1.hyperstack.cloud",
-        access_key=lambda: os.environ["HYPERSTACK_ACCESS_KEY"],
-        secret_key=lambda: os.environ["HYPERSTACK_SECRET_KEY"],
-        path_style=True,
-    )
+    # Auto-provisioned credentials
+    storage = sky.storage.Hyperstack()
 
     data_volume = sky.Volume(
         bucket=DATA_BUCKET,
         mount="/data",
         prefix="iris/",
         read_only=True,
-        storage=storage,
     )
     model_volume = sky.Volume(
         bucket=MODEL_BUCKET,
         mount="/output",
         prefix="experiment-001/",
         read_only=False,
-        storage=storage,
     )
 
     import numpy as np

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from skyward.storage import Credential, Storage
@@ -114,3 +114,66 @@ def Backblaze(*, region: str, key_id: Credential, app_key: Credential) -> Storag
         access_key=key_id,
         secret_key=app_key,
     )
+
+
+def Hyperstack(
+    *,
+    api_key: str | None = None,
+    region: str = "CANADA-1",
+    endpoint: str | None = None,
+) -> Storage:
+    """Hyperstack object storage with auto-provisioned credentials.
+
+    Creates an ephemeral access key via the Hyperstack API on first use
+    and deletes it when the context manager exits.
+
+    Parameters
+    ----------
+    api_key
+        Hyperstack API key. Falls back to ``HYPERSTACK_API_KEY`` env var.
+    region
+        Object storage region (e.g. ``CANADA-1``).
+    endpoint
+        S3 endpoint override. Defaults to the region's standard endpoint.
+    """
+    from skyward.providers.hyperstack.config import Hyperstack as HyperstackConfig
+    from skyward.storage import _ON_CLOSE, Storage
+
+    config = HyperstackConfig(api_key=api_key, object_storage_region=region)
+    resolved_endpoint = endpoint or config.object_storage_endpoint
+
+    _created: dict[str, Any] = {}
+
+    async def _create_and_get_access_key() -> str:
+        from skyward.providers.hyperstack.client import HyperstackClient, get_api_key
+
+        resolved_api_key = get_api_key(config)
+        async with HyperstackClient(resolved_api_key, config=config) as client:
+            result = await client.create_access_key(region=config.object_storage_region)
+        _created.update({
+            "access_key": result["access_key"],
+            "secret_key": result.get("secret_key", ""),
+            "id": result["id"],
+            "api_key": resolved_api_key,
+        })
+        return _created["access_key"]
+
+    async def _get_secret_key() -> str:
+        return _created["secret_key"]
+
+    async def _delete_key() -> None:
+        if "id" not in _created:
+            return
+        from skyward.providers.hyperstack.client import HyperstackClient
+
+        async with HyperstackClient(_created["api_key"], config=config) as client:
+            await client.delete_access_key(_created["id"])
+
+    storage = Storage(
+        endpoint=resolved_endpoint,
+        access_key=_create_and_get_access_key,
+        secret_key=_get_secret_key,
+        path_style=True,
+    )
+    _ON_CLOSE[id(storage)] = [_delete_key]
+    return storage

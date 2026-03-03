@@ -13,11 +13,12 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any
 
-from .presets import GCS, R2, S3, Backblaze, Wasabi
+from .presets import GCS, R2, S3, Backblaze, Hyperstack, Wasabi
 
 type Credential = str | Callable[[], str | Awaitable[str]]
 
 _STATE: dict[int, _StoreState] = {}
+_ON_CLOSE: dict[int, list[Callable[[], Coroutine[Any, Any, None]]]] = {}
 
 
 @dataclass
@@ -87,8 +88,12 @@ class Storage:
     ) -> None:
         try:
             state = _STATE.get(id(self))
-            if state is not None and state.s3_ctx is not None:
-                _run(state.loop, state.s3_ctx.__aexit__(None, None, None))
+            if state is not None:
+                if state.s3_ctx is not None:
+                    _run(state.loop, state.s3_ctx.__aexit__(None, None, None))
+                for cb in _ON_CLOSE.pop(id(self), []):
+                    with suppress(Exception):
+                        _run(state.loop, cb())
         finally:
             _cleanup(self)
 
@@ -313,9 +318,10 @@ async def _rm(s3: Any, bucket: str, key: str) -> None:
 __all__ = [
     "Credential",
     "Storage",
+    "Backblaze",
+    "GCS",
+    "Hyperstack",
     "R2",
     "S3",
-    "GCS",
     "Wasabi",
-    "Backblaze",
 ]

@@ -13,11 +13,12 @@ and download the trained model — all via S3-compatible object storage.
                                          │  /data  /model   │
                                          └──────────────────┘
 
-Credentials are resolved lazily from environment variables:
-    HYPERSTACK_ACCESS_KEY, HYPERSTACK_SECRET_KEY
+The Hyperstack storage preset creates ephemeral access keys via the
+Hyperstack API on entry and deletes them on exit.
+
+Requires HYPERSTACK_API_KEY env var.
 """
 
-import os
 import time
 from pathlib import Path
 
@@ -62,29 +63,9 @@ if __name__ == "__main__":
     DATA_BUCKET = "my-dataset-bucket"
     MODEL_BUCKET = "my-model-bucket"
 
-    # Storage with lazy credential resolution from environment variables
-    storage = sky.Storage(
-        endpoint="https://objects.ord1.hyperstack.cloud",
-        access_key=lambda: os.environ["HYPERSTACK_ACCESS_KEY"],
-        secret_key=lambda: os.environ["HYPERSTACK_SECRET_KEY"],
-        path_style=True,
-    )
-
-    # Volumes with explicit storage — no provider fallback needed
-    data_volume = sky.Volume(
-        bucket=DATA_BUCKET,
-        mount="/data",
-        prefix="iris/",
-        read_only=True,
-        storage=storage,
-    )
-    model_volume = sky.Volume(
-        bucket=MODEL_BUCKET,
-        mount="/model",
-        prefix="experiment-001/",
-        read_only=False,
-        storage=storage,
-    )
+    # Auto-provisioned credentials — creates an access key on entry,
+    # deletes it on exit.
+    storage = sky.storage.Hyperstack()
 
     # ── 1. Generate dataset locally and upload to volume ─────────────
     print("Preparing dataset...")
@@ -106,6 +87,21 @@ if __name__ == "__main__":
         print(f"  Uploaded: {storage.ls(DATA_BUCKET)}")
 
     # ── 2. Train on the cluster ──────────────────────────────────────
+    # Volumes WITHOUT explicit storage= — the Hyperstack provider
+    # creates its own credentials during prepare().
+    data_volume = sky.Volume(
+        bucket=DATA_BUCKET,
+        mount="/data",
+        prefix="iris/",
+        read_only=True,
+    )
+    model_volume = sky.Volume(
+        bucket=MODEL_BUCKET,
+        mount="/model",
+        prefix="experiment-001/",
+        read_only=False,
+    )
+
     with sky.ComputePool(
         provider=sky.Hyperstack(),
         accelerator=sky.accelerators.L4(),
