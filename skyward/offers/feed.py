@@ -520,7 +520,7 @@ async def _fetch_gcp() -> list[_Offer]:
 
     project, zone = _resolve_gcp_project(), "us-central1-a"
 
-    from google.cloud import compute_v1
+    from google.cloud import compute_v1  # type: ignore[reportMissingImports]
 
     machines_client = compute_v1.MachineTypesClient()
     loop = asyncio.get_event_loop()
