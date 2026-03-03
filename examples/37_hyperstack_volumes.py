@@ -94,6 +94,7 @@ if __name__ == "__main__":
         mount="/data",
         prefix="iris/",
         read_only=True,
+        storage=storage,
     )
     model_volume = sky.Volume(
         bucket=MODEL_BUCKET,
@@ -117,7 +118,7 @@ if __name__ == "__main__":
     model_path = Path("/tmp/trained_model.pkl")
 
     with storage:
-        storage.download(MODEL_BUCKET, "model.pkl", model_path)
+        storage.download(MODEL_BUCKET, "experiment-001/model.pkl", model_path)
 
     import pickle
 
