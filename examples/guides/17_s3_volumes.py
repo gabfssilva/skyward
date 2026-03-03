@@ -1,9 +1,9 @@
 """S3 Volumes — end-to-end: upload data, train on cluster, download results.
 
-    ┌──────────┐  VolumeClient.upload()   ┌──────────────────┐
+    ┌──────────┐  Storage.upload()        ┌──────────────────┐
     │  Local   │ ──────────────────────→  │  S3 Bucket       │
     │  Machine │ ←────────────────────── │  (provider)      │
-    └──────────┘  VolumeClient.download() └──────────────────┘
+    └──────────┘  Storage.download()      └──────────────────┘
                                                  ↕  s3fs-fuse
                                          ┌──────────────────┐
                                          │  Remote Worker   │
@@ -49,22 +49,31 @@ if __name__ == "__main__":
     DATA_BUCKET = "my-dataset-bucket"
     MODEL_BUCKET = "my-model-bucket"
 
+    # Explicit storage for standalone CRUD (upload/download outside a pool)
+    storage = sky.Storage(
+        endpoint="https://objects.ord1.hyperstack.cloud",
+        access_key="YOUR_ACCESS_KEY",
+        secret_key="YOUR_SECRET_KEY",
+        path_style=True,
+    )
+
     data_volume = sky.Volume(
         bucket=DATA_BUCKET,
         mount="/data",
         prefix="iris/",
         read_only=True,
+        storage=storage,
     )
     model_volume = sky.Volume(
         bucket=MODEL_BUCKET,
         mount="/output",
         prefix="experiment-001/",
         read_only=False,
+        storage=storage,
     )
 
-    from sklearn.datasets import load_iris
-
     import numpy as np
+    from sklearn.datasets import load_iris
 
     iris = load_iris()
     dataset = np.column_stack([iris.data, iris.target])
@@ -72,9 +81,9 @@ if __name__ == "__main__":
     header = ",".join(iris.feature_names + ["target"])
     np.savetxt(csv_path, dataset, delimiter=",", header=header, comments="")
 
-    with sky.VolumeClient(data_volume, provider=sky.Hyperstack()) as vc:
-        vc.upload(csv_path, key="iris.csv")
-        print(f"Uploaded: {vc.ls()}")
+    with storage:
+        storage.upload(DATA_BUCKET, csv_path, key="iris.csv")
+        print(f"Uploaded: {storage.ls(DATA_BUCKET)}")
 
     with sky.ComputePool(
         provider=sky.Hyperstack(),
@@ -87,8 +96,8 @@ if __name__ == "__main__":
 
     model_path = Path("/tmp/trained_model.pkl")
 
-    with sky.VolumeClient(model_volume, provider=sky.Hyperstack()) as vc:
-        vc.download("model.pkl", model_path)
+    with storage:
+        storage.download(MODEL_BUCKET, "model.pkl", model_path)
 
     import pickle
 

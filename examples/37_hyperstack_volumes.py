@@ -3,15 +3,15 @@
 End-to-end workflow: upload a dataset locally, train a model on the cluster,
 and download the trained model — all via S3-compatible object storage.
 
-    ┌──────────┐  VolumeClient.upload()   ┌──────────────────┐
+    ┌──────────┐  Storage.upload()        ┌──────────────────┐
     │  Local   │ ──────────────────────→  │  S3 Bucket       │
     │  Machine │ ←────────────────────── │  (Hyperstack)    │
-    └──────────┘  VolumeClient.download() └──────────────────┘
-                                                  ↕  s3fs-fuse
-                                          ┌──────────────────┐
-                                          │  Hyperstack VM   │
-                                          │  /data  /model   │
-                                          └──────────────────┘
+    └──────────┘  Storage.download()      └──────────────────┘
+                                                 ↕  s3fs-fuse
+                                         ┌──────────────────┐
+                                         │  Hyperstack VM   │
+                                         │  /data  /model   │
+                                         └──────────────────┘
 """
 
 import time
@@ -58,17 +58,28 @@ if __name__ == "__main__":
     DATA_BUCKET = "my-dataset-bucket"
     MODEL_BUCKET = "my-model-bucket"
 
+    # Explicit storage configuration for standalone CRUD operations
+    storage = sky.Storage(
+        endpoint="https://objects.ord1.hyperstack.cloud",
+        access_key="YOUR_ACCESS_KEY",
+        secret_key="YOUR_SECRET_KEY",
+        path_style=True,
+    )
+
+    # Volumes with explicit storage — no provider fallback needed
     data_volume = sky.Volume(
         bucket=DATA_BUCKET,
         mount="/data",
         prefix="iris/",
         read_only=True,
+        storage=storage,
     )
     model_volume = sky.Volume(
         bucket=MODEL_BUCKET,
         mount="/model",
         prefix="experiment-001/",
         read_only=False,
+        storage=storage,
     )
 
     # ── 1. Generate dataset locally and upload to volume ─────────────
@@ -86,9 +97,9 @@ if __name__ == "__main__":
     print(f"  {len(dataset)} samples, {iris.data.shape[1]} features")
 
     print("Uploading to volume...")
-    with sky.VolumeClient(data_volume, provider=sky.Hyperstack()) as vc:
-        vc.upload(csv_path, key="iris.csv")
-        print(f"  Uploaded: {vc.ls()}")
+    with storage:
+        storage.upload(DATA_BUCKET, csv_path, key="iris.csv")
+        print(f"  Uploaded: {storage.ls(DATA_BUCKET)}")
 
     # ── 2. Train on the cluster ──────────────────────────────────────
     with sky.ComputePool(
@@ -105,8 +116,8 @@ if __name__ == "__main__":
     print("\nDownloading model...")
     model_path = Path("/tmp/trained_model.pkl")
 
-    with sky.VolumeClient(model_volume, provider=sky.Hyperstack()) as vc:
-        vc.download("model.pkl", model_path)
+    with storage:
+        storage.download(MODEL_BUCKET, "model.pkl", model_path)
 
     import pickle
 

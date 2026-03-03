@@ -1,7 +1,7 @@
 """
 S3 Volume Mounting.
 
-Mount S3 buckets as local filesystems using AWS Mountpoint.
+Mount S3 buckets as local filesystems using s3fs-fuse.
 Great for large datasets that don't fit in instance storage.
 """
 
@@ -51,32 +51,25 @@ def save_checkpoint(data: dict) -> str:
 
 def main():
     # Read-only volume for input data
-    data_volume = sky.S3Volume(
-        mount_path="/data",
+    data_volume = sky.Volume(
         bucket="my-ml-datasets",
+        mount="/data",
         prefix="training/",
         read_only=True,
     )
 
     # Read-write volume for checkpoints
-    checkpoint_volume = sky.S3Volume(
-        mount_path="/checkpoints",
+    checkpoint_volume = sky.Volume(
         bucket="my-ml-outputs",
+        mount="/checkpoints",
         prefix="checkpoints/",
         read_only=False,
     )
 
-    # You can also use dict syntax
-    _volumes_dict = {
-        "/data": "s3://my-ml-datasets/training/",
-        "/checkpoints": "s3://my-ml-outputs/checkpoints/",
-    }
-
     with sky.ComputePool(
         provider=sky.AWS(),
         accelerator=sky.accelerators.T4(),
-        volume=[data_volume, checkpoint_volume],
-        # Or: volume=volumes_dict,
+        volumes=[data_volume, checkpoint_volume],
         image=sky.Image(pip=["numpy"]),
         allocation="spot-if-available",
     ) as pool:
