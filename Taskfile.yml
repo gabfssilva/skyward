@@ -196,9 +196,9 @@ tasks:
   # ── Catalog ──────────────────────────────────────────────
 
   catalog:
-    desc: Fetch GPU instance catalog from all providers
+    desc: Refresh GPU offer catalog cache
     cmds:
-      - uv run python scripts/fetch_catalog.py
+      - uv run python -c "import asyncio; from skyward.offers.feed import refresh; asyncio.run(refresh())"
 
   # ── Build ────────────────────────────────────────────────
 

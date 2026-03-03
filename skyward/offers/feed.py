@@ -1,54 +1,61 @@
-"""Fetch GPU instance catalog from all Skyward providers.
+"""Runtime catalog feed — fetches provider offers and caches locally.
 
-Queries raw APIs of each supported provider, normalizes into a relational
-JSON structure (specs, providers, offers), and writes to docs/catalog/.
+Each provider's GPU offers are fetched on demand, cached as JSON in
+``~/.skyward/cache/catalog/``, and refreshed when the per-provider TTL
+expires.  Marketplace providers (VastAI, RunPod, TensorDock) use short
+TTLs (minutes) while cloud providers (AWS, GCP) use longer ones (hours/days).
 
-Accelerator metadata (manufacturer, architecture, CUDA compatibility) is
-enriched inline from ``skyward.accelerators.catalog.SPECS`` — the single
-source of truth for hardware specs.
+Usage::
 
-Usage:
-    uv run python scripts/fetch_catalog.py
+    from skyward.offers.feed import ensure_fresh, refresh
+
+    await ensure_fresh(providers=["aws", "vastai"])   # only if stale
+    await refresh(providers=["vastai"])                # force re-fetch
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import re
-import sys
-from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from collections.abc import Callable, Coroutine, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-CATALOG_DIR = Path(__file__).resolve().parent.parent / "docs" / "catalog"
-OFFERS_DIR = CATALOG_DIR / "offers"
+from skyward.infra.cache import CACHE_DIR
+from skyward.observability.logger import logger
 
-PROVIDER_NAMES: dict[str, str] = {
-    "aws": "AWS",
-    "gcp": "GCP",
-    "vastai": "Vast.ai",
-    "runpod": "RunPod",
-    "hyperstack": "Hyperstack",
-    "tensordock": "TensorDock",
-    "verda": "Verda",
+# ---------------------------------------------------------------------------
+# Cache paths & per-provider TTLs
+# ---------------------------------------------------------------------------
+
+_CATALOG_DIR = CACHE_DIR / "catalog"
+_META_FILE = _CATALOG_DIR / "meta.json"
+
+_PROVIDER_TTL: dict[str, timedelta] = {
+    "vastai": timedelta(minutes=5),
+    "runpod": timedelta(minutes=15),
+    "tensordock": timedelta(minutes=15),
+    "hyperstack": timedelta(hours=6),
+    "verda": timedelta(hours=6),
+    "aws": timedelta(days=1),
+    "gcp": timedelta(days=1),
 }
 
+ALL_PROVIDERS: tuple[str, ...] = tuple(_PROVIDER_TTL)
 
 # ---------------------------------------------------------------------------
-# GPU name normalization
+# GPU name normalization (moved from scripts/fetch_catalog.py)
 # ---------------------------------------------------------------------------
 
-# Hyperstack dashed format: "a40-pcie-48gb", "geforcertx5090-pcie-32gb"
+# Hyperstack consumer: "geforcertx5090-pcie-32gb"
 _HYPERSTACK_RE = re.compile(
     r"^(?:geforce)?-?(rtx)?-?([a-z]?\d+[a-z]?\d*)-.*$", re.IGNORECASE,
 )
 # Hyperstack datacenter: "A100-80G-PCIe", "H100-80G-PCIe-NVLink"
-_HYPERSTACK_DC_RE = re.compile(
-    r"^([A-Z]+\d+[A-Z]?)-\d+G(?:-.+)?$",
-)
+_HYPERSTACK_DC_RE = re.compile(r"^([A-Z]+\d+[A-Z]?)-\d+G(?:-.+)?$")
 
 
 def _normalize_gpu_name(raw: str) -> str:
@@ -62,8 +69,9 @@ def _normalize_gpu_name(raw: str) -> str:
     name = re.sub(r"-spot$", "", name)
 
     # Strip vendor prefixes
-    for prefix in ("AMD Instinct ", "NVIDIA GeForce ", "NVIDIA Tesla ",
-                    "NVIDIA ", "AMD "):
+    for prefix in (
+        "AMD Instinct ", "NVIDIA GeForce ", "NVIDIA Tesla ", "NVIDIA ", "AMD ",
+    ):
         if name.startswith(prefix):
             name = name[len(prefix):]
             break
@@ -84,80 +92,12 @@ def _normalize_gpu_name(raw: str) -> str:
     name = re.sub(r"\s+\d+\s*GB\s*$", "", name, flags=re.IGNORECASE)
 
     # Strip form factor suffix: " PCIe", " SXM", " SXM4", " OAM", " NVL", " NVLink"
-    name = re.sub(r"\s*[-\s]?(?:PCIe|SXM\d?|OAM|NVL|NVLink)\s*$", "", name,
-                  flags=re.IGNORECASE)
+    name = re.sub(
+        r"\s*[-\s]?(?:PCIe|SXM\d?|OAM|NVL|NVLink)\s*$", "", name,
+        flags=re.IGNORECASE,
+    )
 
     return name.strip()
-
-
-# ---------------------------------------------------------------------------
-# Data models
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class Accelerator:
-    name: str
-    vram: float
-    manufacturer: str = ""
-    architecture: str = ""
-    cuda_min: str = ""
-    cuda_max: str = ""
-
-    @property
-    def id(self) -> str:
-        raw = f"{self.name}:{self.vram}"
-        return hashlib.md5(raw.encode()).hexdigest()[:12]
-
-
-@dataclass(frozen=True, slots=True)
-class Spec:
-    accelerator: Accelerator
-    vcpus: float
-    memory_gb: float
-
-    @property
-    def id(self) -> str:
-        raw = f"{self.accelerator.id}:{self.vcpus}:{self.memory_gb}"
-        return hashlib.md5(raw.encode()).hexdigest()[:12]
-
-
-@dataclass(frozen=True, slots=True)
-class Offer:
-    spec: Spec
-    accelerator_count: int
-    instance_type: str
-    region: str
-    spot_price: float | None = None
-    on_demand_price: float | None = None
-    billing_unit: str = "hour"
-    specific: dict[str, Any] | None = None
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_spec(
-    raw_name: str, vram: float, vcpus: float = 0, memory_gb: float = 0,
-) -> Spec:
-    """Create a Spec with an Accelerator enriched from SPECS."""
-    from skyward.accelerators.catalog import SPECS, get_gpu_vram_gb
-
-    name = _normalize_gpu_name(raw_name)
-    spec = SPECS.get(name)
-    if vram <= 0 and spec:
-        vram = float(get_gpu_vram_gb(name))
-    accel = Accelerator(
-        name=name,
-        vram=round(vram, 1),
-        manufacturer=spec.get("manufacturer", "") if spec else "",
-        architecture=spec.get("architecture", "") if spec else "",
-        cuda_min=spec.get("cuda", {}).get("min", "") if spec else "",
-        cuda_max=spec.get("cuda", {}).get("max", "") if spec else "",
-    )
-    return Spec(accelerator=accel, vcpus=vcpus, memory_gb=round(memory_gb, 1))
 
 
 def _parse_vram_from_name(name: str) -> float:
@@ -174,18 +114,77 @@ def _safe_float(value: Any) -> float | None:
 
 
 # ---------------------------------------------------------------------------
+# Private data models
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _Accelerator:
+    name: str
+    vram: float
+    manufacturer: str = ""
+    architecture: str = ""
+    cuda_min: str = ""
+    cuda_max: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class _Spec:
+    accelerator: _Accelerator
+    vcpus: float
+    memory_gb: float
+
+
+@dataclass(frozen=True, slots=True)
+class _Offer:
+    spec: _Spec
+    accelerator_count: int
+    instance_type: str
+    region: str
+    spot_price: float | None = None
+    on_demand_price: float | None = None
+    billing_unit: str = "hour"
+    specific: dict[str, Any] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Spec builder (enriches from accelerators SPECS)
+# ---------------------------------------------------------------------------
+
+
+def _make_spec(
+    raw_name: str, vram: float, vcpus: float = 0, memory_gb: float = 0,
+) -> _Spec:
+    from skyward.accelerators.catalog import SPECS, get_gpu_vram_gb
+
+    name = _normalize_gpu_name(raw_name)
+    spec = SPECS.get(name)
+    if vram <= 0 and spec:
+        vram = float(get_gpu_vram_gb(name))
+    accel = _Accelerator(
+        name=name,
+        vram=round(vram, 1),
+        manufacturer=spec.get("manufacturer", "") if spec else "",
+        architecture=spec.get("architecture", "") if spec else "",
+        cuda_min=spec.get("cuda", {}).get("min", "") if spec else "",
+        cuda_max=spec.get("cuda", {}).get("max", "") if spec else "",
+    )
+    return _Spec(accelerator=accel, vcpus=vcpus, memory_gb=round(memory_gb, 1))
+
+
+# ---------------------------------------------------------------------------
 # Provider fetchers
 # ---------------------------------------------------------------------------
 
 
-async def fetch_vastai() -> list[Offer]:
+async def _fetch_vastai() -> list[_Offer]:
     from skyward.providers.vastai.client import VastAIClient, get_api_key
 
     api_key = get_api_key()
     async with VastAIClient(api_key) as client:
         raw_offers = await client.search_offers(limit=5000)
 
-    offers: list[Offer] = []
+    offers: list[_Offer] = []
     for raw in raw_offers:
         gpu_name: str = raw.get("gpu_name", "")
         if not gpu_name:
@@ -193,7 +192,7 @@ async def fetch_vastai() -> list[Offer]:
         num_gpus = raw.get("num_gpus") or 1
         total_vram_gb = (raw.get("gpu_ram") or 0) / 1024
         per_gpu_vram = total_vram_gb / num_gpus if num_gpus > 0 else 0
-        offers.append(Offer(
+        offers.append(_Offer(
             spec=_make_spec(
                 gpu_name, per_gpu_vram,
                 vcpus=float(raw.get("cpu_cores") or 0),
@@ -209,7 +208,7 @@ async def fetch_vastai() -> list[Offer]:
     return offers
 
 
-async def fetch_runpod() -> list[Offer]:
+async def _fetch_runpod() -> list[_Offer]:
     from skyward.providers.runpod.client import RunPodClient, get_api_key
     from skyward.providers.runpod.config import RunPod
 
@@ -217,7 +216,7 @@ async def fetch_runpod() -> list[Offer]:
     async with RunPodClient(api_key, config=RunPod()) as client:
         gpu_types = await client.get_gpu_types()
 
-    offers: list[Offer] = []
+    offers: list[_Offer] = []
     for gpu in gpu_types:
         display_name: str = gpu.get("displayName", "")
         if not display_name:
@@ -228,7 +227,7 @@ async def fetch_runpod() -> list[Offer]:
         if spot is None and on_demand is None:
             continue
         gpu_id = gpu.get("id", display_name)
-        offers.append(Offer(
+        offers.append(_Offer(
             spec=_make_spec(display_name, float(gpu.get("memoryInGb", 0))),
             accelerator_count=1,
             instance_type=gpu_id,
@@ -241,7 +240,7 @@ async def fetch_runpod() -> list[Offer]:
     return offers
 
 
-async def fetch_hyperstack() -> list[Offer]:
+async def _fetch_hyperstack() -> list[_Offer]:
     from skyward.providers.hyperstack.client import HyperstackClient, get_api_key
 
     api_key = get_api_key()
@@ -256,7 +255,6 @@ async def fetch_hyperstack() -> list[Offer]:
         if name and value is not None:
             prices[name] = float(value)
 
-    # Group by base flavor name (strip "-spot") to merge spot + on-demand prices
     grouped: dict[str, dict[str, Any]] = {}
     for flavor in flavors:
         gpu_name: str = flavor.get("gpu", "")
@@ -286,9 +284,9 @@ async def fetch_hyperstack() -> list[Offer]:
         else:
             grouped[base_name]["on_demand_price"] = total_price
 
-    offers: list[Offer] = []
+    offers: list[_Offer] = []
     for base_name, g in grouped.items():
-        offers.append(Offer(
+        offers.append(_Offer(
             spec=_make_spec(
                 g["gpu_name"], 0,
                 vcpus=g["vcpus"],
@@ -305,13 +303,13 @@ async def fetch_hyperstack() -> list[Offer]:
     return offers
 
 
-async def fetch_tensordock() -> list[Offer]:
+async def _fetch_tensordock() -> list[_Offer]:
     from skyward.providers.tensordock.client import TensorDockClient
 
     async with TensorDockClient(api_token="unused") as client:
         locations = await client.list_locations()
 
-    offers: list[Offer] = []
+    offers: list[_Offer] = []
     for location in locations:
         loc_id = location.get("id", "")
         region = f"{location.get('city', '')}, {location.get('country', '')}"
@@ -320,7 +318,7 @@ async def fetch_tensordock() -> list[Offer]:
             resources = gpu.get("resources", {})
             gpu_model = gpu.get("v0Name", display_name)
             hourly_rate = _safe_float(gpu.get("price_per_hr"))
-            offers.append(Offer(
+            offers.append(_Offer(
                 spec=_make_spec(
                     display_name, _parse_vram_from_name(display_name),
                     vcpus=float(resources.get("max_vcpus", 0)),
@@ -343,7 +341,7 @@ async def fetch_tensordock() -> list[Offer]:
     return offers
 
 
-async def fetch_verda() -> list[Offer]:
+async def _fetch_verda() -> list[_Offer]:
     import httpx
 
     from skyward.providers.verda.client import (
@@ -355,17 +353,14 @@ async def fetch_verda() -> list[Offer]:
 
     client_id, client_secret = get_credentials()
     auth = _OAuth2(client_id, client_secret, f"{VERDA_API_BASE}/oauth2/token")
-    async with httpx.AsyncClient(base_url=VERDA_API_BASE, auth=auth, timeout=30) as http:
+    async with httpx.AsyncClient(
+        base_url=VERDA_API_BASE, auth=auth, timeout=30,
+    ) as http:
         client = VerdaClient(http)
         instance_types = await client.list_instance_types()
         on_demand_avail = await client.get_availability(is_spot=False)
-        spot_avail = await client.get_availability(is_spot=True)
 
-    all_regions: set[str] = set()
-    for regions in (*on_demand_avail.values(), *spot_avail.values()):
-        all_regions |= set(regions) if isinstance(regions, frozenset) else set()
-
-    offers: list[Offer] = []
+    offers: list[_Offer] = []
     for itype in instance_types:
         gpu_info = itype.get("gpu")
         gpu_mem_info = itype.get("gpu_memory")
@@ -388,7 +383,7 @@ async def fetch_verda() -> list[Offer]:
         ]
 
         for region in available_regions or ["unknown"]:
-            offers.append(Offer(
+            offers.append(_Offer(
                 spec=_make_spec(
                     gpu_desc, per_gpu_vram,
                     vcpus=float(cpu_info.get("number_of_cores", 0)),
@@ -405,7 +400,7 @@ async def fetch_verda() -> list[Offer]:
     return offers
 
 
-async def fetch_aws() -> list[Offer]:
+async def _fetch_aws() -> list[_Offer]:
     from skyward.providers.aws.instances import (
         _fetch_ondemand_price,
         _fetch_spot_price,
@@ -415,13 +410,13 @@ async def fetch_aws() -> list[Offer]:
     region = "us-east-1"
     gpu_instances = await list_gpu_instances(region)
 
-    async def _with_pricing(res: Any) -> Offer | None:
+    async def _with_pricing(res: Any) -> _Offer | None:
         spot, ondemand = await asyncio.gather(
             _fetch_spot_price(res.instance_type, region),
             _fetch_ondemand_price(res.instance_type, region),
         )
         per_gpu_vram = res.gpu_vram_gb / res.gpu_count if res.gpu_count > 0 else 0
-        return Offer(
+        return _Offer(
             spec=_make_spec(
                 res.gpu_model, per_gpu_vram,
                 vcpus=float(res.vcpus),
@@ -438,7 +433,7 @@ async def fetch_aws() -> list[Offer]:
 
     sem = asyncio.Semaphore(10)
 
-    async def _bounded(res: Any) -> Offer | None:
+    async def _bounded(res: Any) -> _Offer | None:
         async with sem:
             return await _with_pricing(res)
 
@@ -446,10 +441,10 @@ async def fetch_aws() -> list[Offer]:
         *(_bounded(r) for r in gpu_instances),
         return_exceptions=True,
     )
-    return [r for r in results if isinstance(r, Offer)]
+    return [r for r in results if isinstance(r, _Offer)]
 
 
-async def fetch_gcp() -> list[Offer]:
+async def _fetch_gcp() -> list[_Offer]:
     from concurrent.futures import ThreadPoolExecutor
 
     from skyward.providers.gcp.instances import (
@@ -483,7 +478,7 @@ async def fetch_gcp() -> list[Offer]:
         "a2": "A100", "a3": "H100", "a4": "H200", "g2": "L4",
     }
 
-    offers: list[Offer] = []
+    offers: list[_Offer] = []
     for mt in machines:
         family = mt.name.split("-")[0]
         if family not in _BUILTIN_GPU_FAMILIES:
@@ -495,7 +490,7 @@ async def fetch_gcp() -> list[Offer]:
         per_gpu_vram = float(estimate_vram(accel_type))
 
         uses_guest = family not in _BUILTIN_GPU_FAMILIES
-        offers.append(Offer(
+        offers.append(_Offer(
             spec=_make_spec(
                 gpu_model, per_gpu_vram,
                 vcpus=float(mt.guest_cpus),
@@ -538,132 +533,165 @@ def _resolve_gcp_project() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Output serialization
+# Fetcher registry
+# ---------------------------------------------------------------------------
+
+type _Fetcher = Callable[[], Coroutine[Any, Any, list[_Offer]]]
+
+_FETCHERS: dict[str, _Fetcher] = {
+    "vastai": _fetch_vastai,
+    "runpod": _fetch_runpod,
+    "hyperstack": _fetch_hyperstack,
+    "tensordock": _fetch_tensordock,
+    "verda": _fetch_verda,
+    "aws": _fetch_aws,
+    "gcp": _fetch_gcp,
+}
+
+
+# ---------------------------------------------------------------------------
+# JSON serialization (denormalized — each provider file is self-contained)
 # ---------------------------------------------------------------------------
 
 
-def _serialize_accelerator(accel: Accelerator) -> dict[str, Any]:
-    d = asdict(accel)
-    d["id"] = accel.id
-    return d
-
-
-def _serialize_spec(spec: Spec) -> dict[str, Any]:
+def _offer_to_dict(offer: _Offer) -> dict[str, Any]:
     return {
-        "id": spec.id,
-        "accelerator_id": spec.accelerator.id,
-        "vcpus": spec.vcpus,
-        "memory_gb": spec.memory_gb,
-    }
-
-
-def _serialize_offer(offer: Offer) -> dict[str, Any]:
-    return {
-        "spec_id": offer.spec.id,
-        "accelerator_count": offer.accelerator_count,
         "instance_type": offer.instance_type,
+        "gpu": offer.spec.accelerator.name,
+        "gpu_count": offer.accelerator_count,
+        "gpu_vram": offer.spec.accelerator.vram,
+        "vcpus": offer.spec.vcpus,
+        "memory_gb": offer.spec.memory_gb,
         "region": offer.region,
         "spot_price": offer.spot_price,
         "on_demand_price": offer.on_demand_price,
         "billing_unit": offer.billing_unit,
+        "manufacturer": offer.spec.accelerator.manufacturer,
+        "architecture": offer.spec.accelerator.architecture,
+        "cuda_min": offer.spec.accelerator.cuda_min,
+        "cuda_max": offer.spec.accelerator.cuda_max,
         "specific": offer.specific,
     }
 
 
-def _write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+# ---------------------------------------------------------------------------
+# Cache I/O
+# ---------------------------------------------------------------------------
+
+_log = logger.bind(component="catalog-feed")
+
+
+def _read_meta() -> dict[str, str]:
+    try:
+        return json.loads(_META_FILE.read_text()) if _META_FILE.exists() else {}
+    except Exception:
+        return {}
+
+
+def _write_meta(meta: dict[str, str]) -> None:
+    _CATALOG_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = _META_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(meta, indent=2) + "\n")
+    tmp.rename(_META_FILE)
+
+
+def provider_path(name: str) -> Path:
+    """Return the cache file path for a given provider."""
+    return _CATALOG_DIR / f"{name}.json"
+
+
+def cached_provider_paths() -> list[Path]:
+    """Return paths of all cached provider JSON files on disk."""
+    if not _CATALOG_DIR.exists():
+        return []
+    return sorted(
+        p for p in _CATALOG_DIR.glob("*.json") if p.name != "meta.json"
+    )
+
+
+def _is_stale(name: str, meta: dict[str, str]) -> bool:
+    ts_str = meta.get(name)
+    if not ts_str:
+        return True
+    try:
+        fetched_at = datetime.fromisoformat(ts_str)
+        ttl = _PROVIDER_TTL.get(name, timedelta(hours=6))
+        return datetime.now(UTC) - fetched_at > ttl
+    except ValueError:
+        return True
+
+
+def _write_provider_cache(name: str, offers: list[_Offer]) -> None:
+    _CATALOG_DIR.mkdir(parents=True, exist_ok=True)
+    path = provider_path(name)
+    data = [_offer_to_dict(o) for o in offers]
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    tmp.rename(path)
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Public entry points
 # ---------------------------------------------------------------------------
 
 
-FETCHERS: dict[str, Any] = {
-    "vastai": fetch_vastai,
-    "runpod": fetch_runpod,
-    "hyperstack": fetch_hyperstack,
-    "tensordock": fetch_tensordock,
-    "verda": fetch_verda,
-    "aws": fetch_aws,
-    "gcp": fetch_gcp,
-}
+async def _fetch_one(name: str) -> list[_Offer] | None:
+    fetcher = _FETCHERS.get(name)
+    if fetcher is None:
+        _log.warning("Unknown provider {p}, skipping", p=name)
+        return None
+    try:
+        offers = await fetcher()
+        _log.info("Fetched {n} offers from {p}", n=len(offers), p=name)
+        return offers
+    except Exception as exc:
+        _log.warning("Failed to fetch {p}: {err}", p=name, err=exc)
+        return None
 
 
-async def main() -> None:
-    results = await asyncio.gather(
-        *(fn() for fn in FETCHERS.values()),
-        return_exceptions=True,
-    )
+async def ensure_fresh(
+    providers: Sequence[str] | None = None,
+    *,
+    force: bool = False,
+) -> None:
+    """Ensure the on-disk cache is fresh for the given providers.
 
-    all_specs: dict[str, Spec] = {}
-    all_accelerators: dict[str, Accelerator] = {}
-    metadata: dict[str, Any] = {
-        "updated_at": datetime.now(UTC).isoformat(),
-        "providers": {},
-    }
+    Only fetches providers whose TTL has expired (or all if *force* is True).
+    Providers that fail to fetch are silently skipped — their existing cache
+    (even if stale) is preserved.
 
-    for provider_id, result in zip(FETCHERS, results, strict=False):
-        if isinstance(result, BaseException):
-            metadata["providers"][provider_id] = {
-                "status": "error",
-                "error": str(result),
-            }
-            print(f"  [SKIP] {provider_id}: {result}", file=sys.stderr)
-            continue
+    Parameters
+    ----------
+    providers
+        Which providers to consider.  ``None`` means all known providers.
+    force
+        Bypass TTL check and always re-fetch.
+    """
+    targets = list(providers) if providers is not None else list(ALL_PROVIDERS)
+    meta = _read_meta()
 
-        provider_offers: list[Offer] = result
-        metadata["providers"][provider_id] = {
-            "status": "ok",
-            "count": len(provider_offers),
-        }
-        print(f"  [OK]   {provider_id}: {len(provider_offers)} offers")
+    stale = [p for p in targets if force or _is_stale(p, meta)]
+    if not stale:
+        return
 
-        for offer in provider_offers:
-            all_specs[offer.spec.id] = offer.spec
-            all_accelerators[offer.spec.accelerator.id] = offer.spec.accelerator
+    _log.info("Refreshing catalog for {providers}", providers=stale)
 
-        _write_json(
-            OFFERS_DIR / f"{provider_id}.json",
-            [_serialize_offer(o) for o in provider_offers],
-        )
+    results = await asyncio.gather(*(_fetch_one(p) for p in stale))
 
-    _write_json(
-        CATALOG_DIR / "accelerators.json",
-        sorted(
-            [_serialize_accelerator(a) for a in all_accelerators.values()],
-            key=lambda a: (a["manufacturer"], a["architecture"], a["name"]),
-        ),
-    )
+    for name, result in zip(stale, results, strict=True):
+        if result is not None:
+            _write_provider_cache(name, result)
+            meta[name] = datetime.now(UTC).isoformat()
 
-    _write_json(
-        CATALOG_DIR / "specs.json",
-        sorted(
-            [_serialize_spec(s) for s in all_specs.values()],
-            key=lambda s: (s["accelerator_id"], s["vcpus"]),
-        ),
-    )
-
-    _write_json(
-        CATALOG_DIR / "providers.json",
-        [
-            {"id": pid, "name": PROVIDER_NAMES[pid]}
-            for pid in FETCHERS
-            if metadata["providers"].get(pid, {}).get("status") == "ok"
-        ],
-    )
-
-    _write_json(CATALOG_DIR / "metadata.json", metadata)
-
-    ok = sum(1 for p in metadata["providers"].values() if p["status"] == "ok")
-    total = len(FETCHERS)
-    print(f"\nCatalog written to {CATALOG_DIR}")
-    print(
-        f"Providers: {ok}/{total} succeeded, "
-        f"{len(all_accelerators)} accelerators, {len(all_specs)} specs"
-    )
+    _write_meta(meta)
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+async def refresh(providers: Sequence[str] | None = None) -> None:
+    """Force-refresh the on-disk catalog cache.
+
+    Parameters
+    ----------
+    providers
+        Which providers to refresh.  ``None`` refreshes all known providers.
+    """
+    await ensure_fresh(providers=providers, force=True)

@@ -1,17 +1,17 @@
-"""SQLite-backed GPU offer repository — loads the JSON catalog into an in-memory database."""
+"""SQLite-backed GPU offer repository — loads cached catalog into an in-memory database."""
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sqlite3
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from .model import CatalogOffer
 from .query import OfferQuery
-
-_DEFAULT_CATALOG_DIR = Path(__file__).resolve().parent.parent.parent / "docs" / "catalog"
 
 _SCHEMA = """\
 CREATE TABLE accelerators (
@@ -89,9 +89,27 @@ class OfferRepository:
         self._db.row_factory = sqlite3.Row
 
     @staticmethod
-    async def create(catalog_dir: Path | None = None) -> OfferRepository:
-        """Load catalog JSONs into an in-memory SQLite database."""
-        return await asyncio.to_thread(_load, catalog_dir or _DEFAULT_CATALOG_DIR)
+    async def create(providers: Sequence[str] | None = None) -> OfferRepository:
+        """Load catalog into an in-memory SQLite database.
+
+        Refreshes stale provider caches before loading.  When *providers*
+        is ``None``, loads all cached provider files on disk.
+
+        Parameters
+        ----------
+        providers
+            Which providers to ensure are fresh and load.
+        """
+        from .feed import cached_provider_paths, ensure_fresh, provider_path
+
+        await ensure_fresh(providers=providers)
+
+        files = (
+            [provider_path(p) for p in providers if provider_path(p).exists()]
+            if providers is not None
+            else cached_provider_paths()
+        )
+        return await asyncio.to_thread(_load, files)
 
     # ── filter entry points ──────────────────────────────────
 
@@ -123,7 +141,7 @@ class OfferRepository:
         The pre-joined ``catalog`` VIEW is available with columns:
         provider, instance_type, region, gpu, gpu_count, vram,
         manufacturer, architecture, cuda_min, cuda_max, vcpus,
-        memory_gb, spot_price, on_demand_price.
+        memory_gb, spot_price, on_demand_price, billing_unit, specific.
         """
         rows = self._db.execute(sql, params).fetchall()
         return [CatalogOffer(**dict(zip(row.keys(), row, strict=True))) for row in rows]
@@ -144,42 +162,66 @@ class OfferRepository:
 # ── private helpers ──────────────────────────────────────────
 
 
-def _load(catalog_dir: Path) -> OfferRepository:
+def _load(provider_files: list[Path]) -> OfferRepository:
+    """Build an in-memory SQLite DB from denormalized per-provider JSON files."""
     db = sqlite3.connect(":memory:", check_same_thread=False)
     db.executescript(_SCHEMA)
 
-    with open(catalog_dir / "accelerators.json") as f:
-        db.executemany(
-            "INSERT INTO accelerators VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [(a["id"], a["name"], a["vram"], a["manufacturer"], a["architecture"], a["cuda_min"], a["cuda_max"]) for a in json.load(f)],
-        )
+    seen_accels: set[str] = set()
+    seen_specs: set[str] = set()
 
-    with open(catalog_dir / "specs.json") as f:
-        db.executemany(
-            "INSERT INTO specs VALUES (?, ?, ?, ?)",
-            [(s["id"], s["accelerator_id"], s["vcpus"], s["memory_gb"]) for s in json.load(f)],
-        )
+    for path in provider_files:
+        provider = path.stem
+        try:
+            raw_offers: list[dict[str, Any]] = json.loads(path.read_text())
+        except Exception:
+            continue
 
-    offers_dir = catalog_dir / "offers"
-    for provider_file in sorted(offers_dir.glob("*.json")):
-        provider = provider_file.stem
-        with open(provider_file) as f:
-            db.executemany(
-                "INSERT INTO offers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [
+        for o in raw_offers:
+            gpu = o.get("gpu", "")
+            vram = o.get("gpu_vram", 0.0)
+            vcpus = o.get("vcpus", 0.0)
+            memory_gb = o.get("memory_gb", 0.0)
+
+            accel_id = hashlib.md5(f"{gpu}:{vram}".encode()).hexdigest()[:12]
+            spec_id = hashlib.md5(
+                f"{accel_id}:{vcpus}:{memory_gb}".encode(),
+            ).hexdigest()[:12]
+
+            if accel_id not in seen_accels:
+                seen_accels.add(accel_id)
+                db.execute(
+                    "INSERT OR IGNORE INTO accelerators VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
-                        provider,
-                        o["spec_id"],
-                        o["accelerator_count"],
-                        o["instance_type"],
-                        o["region"],
-                        o.get("spot_price"),
-                        o.get("on_demand_price"),
-                        o.get("billing_unit", "hour"),
-                        json.dumps(o["specific"]) if o.get("specific") is not None else None,
-                    )
-                    for o in json.load(f)
-                ],
+                        accel_id, gpu, vram,
+                        o.get("manufacturer", ""),
+                        o.get("architecture", ""),
+                        o.get("cuda_min", ""),
+                        o.get("cuda_max", ""),
+                    ),
+                )
+
+            if spec_id not in seen_specs:
+                seen_specs.add(spec_id)
+                db.execute(
+                    "INSERT OR IGNORE INTO specs VALUES (?, ?, ?, ?)",
+                    (spec_id, accel_id, vcpus, memory_gb),
+                )
+
+            specific = o.get("specific")
+            db.execute(
+                "INSERT INTO offers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    provider,
+                    spec_id,
+                    o.get("gpu_count", 1),
+                    o.get("instance_type", ""),
+                    o.get("region", ""),
+                    o.get("spot_price"),
+                    o.get("on_demand_price"),
+                    o.get("billing_unit", "hour"),
+                    json.dumps(specific) if specific is not None else None,
+                ),
             )
 
     db.commit()

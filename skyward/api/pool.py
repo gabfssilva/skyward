@@ -862,11 +862,12 @@ class ComputePool:
     async def _select_offers_from_catalog(
         self,
     ) -> tuple[tuple[Offer, ...], ProviderConfig, Any, PoolSpec]:
-        """Select offers from the static SQLite catalog."""
+        """Select offers from the cached catalog."""
         from skyward.offers import OfferRepository, to_offer
         from skyward.offers.query import OfferQuery
 
-        repo = await OfferRepository.create()
+        providers = [s.provider.type for s in self._build_specs()]
+        repo = await OfferRepository.create(providers=providers)
 
         ranked: list[tuple[float, Offer, ProviderConfig, PoolSpec]] = []
 
