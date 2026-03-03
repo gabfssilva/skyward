@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 
-def R2(*, account_id: str, access_key: str, secret_key: str) -> Storage:
+if TYPE_CHECKING:
+    from skyward.storage import Credential, Storage
+
+
+def R2(*, account_id: str, access_key: Credential, secret_key: Credential) -> Storage:
     """Cloudflare R2 storage.
 
     Parameters
@@ -24,7 +29,12 @@ def R2(*, account_id: str, access_key: str, secret_key: str) -> Storage:
     )
 
 
-def S3(*, region: str = "us-east-1", access_key: str | None = None, secret_key: str | None = None) -> Storage:
+def S3(
+    *,
+    region: str = "us-east-1",
+    access_key: Credential | None = None,
+    secret_key: Credential | None = None,
+) -> Storage:
     """Amazon S3 storage.
 
     Parameters
@@ -45,7 +55,7 @@ def S3(*, region: str = "us-east-1", access_key: str | None = None, secret_key: 
     )
 
 
-def GCS(*, access_key: str, secret_key: str) -> Storage:
+def GCS(*, access_key: Credential, secret_key: Credential) -> Storage:
     """Google Cloud Storage (S3-compatible interop).
 
     Parameters
@@ -64,7 +74,7 @@ def GCS(*, access_key: str, secret_key: str) -> Storage:
     )
 
 
-def Wasabi(*, region: str = "us-east-1", access_key: str, secret_key: str) -> Storage:
+def Wasabi(*, region: str = "us-east-1", access_key: Credential, secret_key: Credential) -> Storage:
     """Wasabi hot cloud storage.
 
     Parameters
@@ -85,7 +95,7 @@ def Wasabi(*, region: str = "us-east-1", access_key: str, secret_key: str) -> St
     )
 
 
-def Backblaze(*, region: str, key_id: str, app_key: str) -> Storage:
+def Backblaze(*, region: str, key_id: Credential, app_key: Credential) -> Storage:
     """Backblaze B2 storage (S3-compatible).
 
     Parameters
@@ -104,10 +114,3 @@ def Backblaze(*, region: str, key_id: str, app_key: str) -> Storage:
         access_key=key_id,
         secret_key=app_key,
     )
-
-
-if __name__ != "__main__":
-    from typing import TYPE_CHECKING
-
-    if TYPE_CHECKING:
-        from skyward.storage import Storage

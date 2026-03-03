@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import threading
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from concurrent.futures import Future
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import TracebackType
 from typing import Any
 
 from .presets import GCS, R2, S3, Backblaze, Wasabi
+
+type Credential = str | Callable[[], str | Awaitable[str]]
 
 _STATE: dict[int, _StoreState] = {}
 
@@ -35,17 +38,28 @@ class Storage:
     endpoint
         Full HTTPS endpoint URL for the S3-compatible service.
     access_key
-        Access key ID. ``None`` defers to environment / IAM credentials.
+        Access key ID. Accepts a string, a sync callable, or an async
+        callable for lazy resolution. ``None`` defers to environment / IAM.
     secret_key
-        Secret access key. ``None`` defers to environment / IAM credentials.
+        Secret access key. Same resolution rules as *access_key*.
     path_style
         Use path-style addressing instead of virtual-hosted-style.
     """
 
     endpoint: str
-    access_key: str | None = None
-    secret_key: str | None = None
+    access_key: Credential | None = None
+    secret_key: Credential | None = None
     path_style: bool = False
+
+    async def resolve(self) -> Storage:
+        """Return a copy with all callable credentials resolved to strings."""
+        if not callable(self.access_key) and not callable(self.secret_key):
+            return self
+        return replace(
+            self,
+            access_key=await _resolve_credential(self.access_key),
+            secret_key=await _resolve_credential(self.secret_key),
+        )
 
     def __enter__(self) -> Storage:
         loop = asyncio.new_event_loop()
@@ -173,14 +187,28 @@ def _get_state(storage: Storage) -> _StoreState:
     return state
 
 
+async def _resolve_credential(cred: Credential | None) -> str | None:
+    if cred is None:
+        return None
+    if isinstance(cred, str):
+        return cred
+    result = cred()
+    if inspect.isawaitable(result):
+        return await result
+    return result  # type: ignore[return-value]
+
+
 async def _open_store(storage: Storage, loop: asyncio.AbstractEventLoop, thread: threading.Thread) -> None:
     import aioboto3
 
+    ak = await _resolve_credential(storage.access_key)
+    sk = await _resolve_credential(storage.secret_key)
+
     kwargs: dict[str, Any] = {"endpoint_url": storage.endpoint}
-    if storage.access_key is not None:
-        kwargs["aws_access_key_id"] = storage.access_key
-    if storage.secret_key is not None:
-        kwargs["aws_secret_access_key"] = storage.secret_key
+    if ak is not None:
+        kwargs["aws_access_key_id"] = ak
+    if sk is not None:
+        kwargs["aws_secret_access_key"] = sk
 
     session = aioboto3.Session()
     s3_ctx = session.client("s3", **kwargs)
@@ -283,6 +311,7 @@ async def _rm(s3: Any, bucket: str, key: str) -> None:
 
 
 __all__ = [
+    "Credential",
     "Storage",
     "R2",
     "S3",

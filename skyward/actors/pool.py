@@ -160,7 +160,8 @@ def pool_actor() -> Behavior[PoolMsg]:
                             resolved: list[tuple] = []
                             for vol in effective_spec.volumes:
                                 if vol.storage is not None:
-                                    resolved.append((vol, vol.storage))
+                                    s = await vol.storage.resolve()
+                                    resolved.append((vol, s))
                                 elif isinstance(provider, Mountable):
                                     s = await provider.storage(cluster)
                                     resolved.append((vol, s))

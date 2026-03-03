@@ -9,8 +9,12 @@
                                          │  Remote Worker   │
                                          │  /data  /output  │
                                          └──────────────────┘
+
+Credentials are resolved lazily from environment variables:
+    HYPERSTACK_ACCESS_KEY, HYPERSTACK_SECRET_KEY
 """
 
+import os
 from pathlib import Path
 
 import skyward as sky
@@ -49,11 +53,11 @@ if __name__ == "__main__":
     DATA_BUCKET = "my-dataset-bucket"
     MODEL_BUCKET = "my-model-bucket"
 
-    # Explicit storage for standalone CRUD (upload/download outside a pool)
+    # Storage with lazy credential resolution from environment variables
     storage = sky.Storage(
         endpoint="https://objects.ord1.hyperstack.cloud",
-        access_key="YOUR_ACCESS_KEY",
-        secret_key="YOUR_SECRET_KEY",
+        access_key=lambda: os.environ["HYPERSTACK_ACCESS_KEY"],
+        secret_key=lambda: os.environ["HYPERSTACK_SECRET_KEY"],
         path_style=True,
     )
 

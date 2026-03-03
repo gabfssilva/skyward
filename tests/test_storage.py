@@ -32,12 +32,106 @@ class TestStorage:
         s = Storage(endpoint="https://obj.nexgencloud.io", path_style=True)
         assert s.path_style is True
 
+    def test_with_callable_credentials(self):
+        from skyward.storage import Storage
+
+        s = Storage(
+            endpoint="https://s3.amazonaws.com",
+            access_key=lambda: "AK_LAZY",
+            secret_key=lambda: "SK_LAZY",
+        )
+        assert callable(s.access_key)
+        assert callable(s.secret_key)
+
     def test_frozen(self):
         from skyward.storage import Storage
 
         s = Storage(endpoint="https://s3.amazonaws.com")
         with pytest.raises(AttributeError):
             s.endpoint = "other"  # type: ignore[misc]
+
+
+class TestResolve:
+    @pytest.mark.asyncio()
+    async def test_resolve_strings_returns_self(self):
+        from skyward.storage import Storage
+
+        s = Storage(endpoint="https://s3.amazonaws.com", access_key="AK", secret_key="SK")
+        resolved = await s.resolve()
+        assert resolved is s
+
+    @pytest.mark.asyncio()
+    async def test_resolve_none_returns_self(self):
+        from skyward.storage import Storage
+
+        s = Storage(endpoint="https://s3.amazonaws.com")
+        resolved = await s.resolve()
+        assert resolved is s
+
+    @pytest.mark.asyncio()
+    async def test_resolve_sync_callable(self):
+        from skyward.storage import Storage
+
+        s = Storage(
+            endpoint="https://s3.amazonaws.com",
+            access_key=lambda: "AK_RESOLVED",
+            secret_key=lambda: "SK_RESOLVED",
+        )
+        resolved = await s.resolve()
+        assert resolved is not s
+        assert resolved.access_key == "AK_RESOLVED"
+        assert resolved.secret_key == "SK_RESOLVED"
+        assert resolved.endpoint == s.endpoint
+        assert resolved.path_style == s.path_style
+
+    @pytest.mark.asyncio()
+    async def test_resolve_async_callable(self):
+        from skyward.storage import Storage
+
+        async def get_ak() -> str:
+            return "AK_ASYNC"
+
+        async def get_sk() -> str:
+            return "SK_ASYNC"
+
+        s = Storage(
+            endpoint="https://s3.amazonaws.com",
+            access_key=get_ak,
+            secret_key=get_sk,
+        )
+        resolved = await s.resolve()
+        assert resolved.access_key == "AK_ASYNC"
+        assert resolved.secret_key == "SK_ASYNC"
+
+    @pytest.mark.asyncio()
+    async def test_resolve_mixed(self):
+        from skyward.storage import Storage
+
+        async def get_sk() -> str:
+            return "SK_ASYNC"
+
+        s = Storage(
+            endpoint="https://s3.amazonaws.com",
+            access_key="AK_STATIC",
+            secret_key=get_sk,
+        )
+        resolved = await s.resolve()
+        assert resolved.access_key == "AK_STATIC"
+        assert resolved.secret_key == "SK_ASYNC"
+
+    @pytest.mark.asyncio()
+    async def test_resolve_callable_with_preset(self):
+        from skyward.storage.presets import R2
+
+        s = R2(
+            account_id="abc123",
+            access_key=lambda: "AK_LAZY",
+            secret_key=lambda: "SK_LAZY",
+        )
+        resolved = await s.resolve()
+        assert resolved.access_key == "AK_LAZY"
+        assert resolved.secret_key == "SK_LAZY"
+        assert resolved.endpoint == "https://abc123.r2.cloudflarestorage.com"
 
 
 class TestPresets:

@@ -12,8 +12,12 @@ and download the trained model — all via S3-compatible object storage.
                                          │  Hyperstack VM   │
                                          │  /data  /model   │
                                          └──────────────────┘
+
+Credentials are resolved lazily from environment variables:
+    HYPERSTACK_ACCESS_KEY, HYPERSTACK_SECRET_KEY
 """
 
+import os
 import time
 from pathlib import Path
 
@@ -58,11 +62,11 @@ if __name__ == "__main__":
     DATA_BUCKET = "my-dataset-bucket"
     MODEL_BUCKET = "my-model-bucket"
 
-    # Explicit storage configuration for standalone CRUD operations
+    # Storage with lazy credential resolution from environment variables
     storage = sky.Storage(
         endpoint="https://objects.ord1.hyperstack.cloud",
-        access_key="YOUR_ACCESS_KEY",
-        secret_key="YOUR_SECRET_KEY",
+        access_key=lambda: os.environ["HYPERSTACK_ACCESS_KEY"],
+        secret_key=lambda: os.environ["HYPERSTACK_SECRET_KEY"],
         path_style=True,
     )
 
@@ -84,10 +88,10 @@ if __name__ == "__main__":
 
     # ── 1. Generate dataset locally and upload to volume ─────────────
     print("Preparing dataset...")
+    import numpy as np
     from sklearn.datasets import load_iris
 
     iris = load_iris()
-    import numpy as np
 
     dataset = np.column_stack([iris.data, iris.target])
     csv_path = Path("/tmp/iris.csv")
