@@ -415,6 +415,7 @@ async def _fetch_verda() -> list[_Offer]:
         _OAuth2,
         get_credentials,
     )
+    from skyward.providers.verda.types import select_os_image
 
     client_id, client_secret = get_credentials()
     auth = _OAuth2(client_id, client_secret, f"{VERDA_API_BASE}/oauth2/token")
@@ -442,6 +443,16 @@ async def _fetch_verda() -> list[_Offer]:
 
         per_gpu_vram = float(gpu_memory) / gpu_count if gpu_count > 0 else 0
 
+        spec = _make_spec(
+            gpu_desc, per_gpu_vram,
+            vcpus=float(cpu_info.get("number_of_cores", 0)),
+            memory_gb=float(mem_info.get("size_in_gigabytes", 0)),
+        )
+        os_image = select_os_image(
+            itype.get("supported_os", []),
+            cuda_max=spec.accelerator.cuda_max,
+        )
+
         available_regions = [
             r for r, types in on_demand_avail.items()
             if itype_name in types
@@ -449,18 +460,14 @@ async def _fetch_verda() -> list[_Offer]:
 
         for region in available_regions or ["unknown"]:
             offers.append(_Offer(
-                spec=_make_spec(
-                    gpu_desc, per_gpu_vram,
-                    vcpus=float(cpu_info.get("number_of_cores", 0)),
-                    memory_gb=float(mem_info.get("size_in_gigabytes", 0)),
-                ),
+                spec=spec,
                 accelerator_count=gpu_count,
                 instance_type=itype_name,
                 region=region,
                 spot_price=_safe_float(itype.get("spot_price")),
                 on_demand_price=_safe_float(itype.get("price_per_hour")),
                 billing_unit="hour",
-                specific={"os_image": itype.get("os_image", "ubuntu-22.04")},
+                specific={"os_image": os_image},
             ))
     return offers
 

@@ -175,3 +175,63 @@ def get_price_spot(instance_type: InstanceTypeResponse) -> float | None:
         return float(price)
     except (ValueError, TypeError):
         return None
+
+
+def select_os_image(supported_os: list[str], cuda_max: str = "") -> str:
+    """Select the best CUDA OS image for a GPU.
+
+    Picks the highest CUDA version within the GPU's supported range,
+    on the newest Ubuntu, preferring images without docker/cluster suffixes.
+
+    Parameters
+    ----------
+    supported_os
+        Image names from the Verda instance-types API.
+    cuda_max
+        Maximum CUDA version the GPU supports (e.g. ``"13.1"``).
+        Empty string means no upper bound.
+    """
+    if not supported_os:
+        return "ubuntu-22.04"
+
+    max_ver = _parse_ver(cuda_max) if cuda_max else (99, 99)
+
+    def _is_candidate(img: str) -> bool:
+        lower = img.lower()
+        if not lower.startswith("ubuntu-"):
+            return False
+        if any(x in lower for x in ("kubernetes", "jupyter", "cluster")):
+            return False
+        ver = _parse_cuda_ver(img)
+        return ver is not None and ver <= max_ver
+
+    candidates = sorted(filter(_is_candidate, supported_os), key=_image_rank, reverse=True)
+    if candidates:
+        return candidates[0]
+
+    cuda_any = sorted(
+        (img for img in supported_os if "cuda" in img.lower()),
+        key=_image_rank, reverse=True,
+    )
+    if cuda_any:
+        return cuda_any[0]
+
+    return supported_os[0]
+
+
+def _parse_ver(s: str) -> tuple[int, int]:
+    parts = s.split(".")
+    return (int(parts[0]), int(parts[1])) if len(parts) >= 2 else (int(parts[0]), 0)
+
+
+def _parse_cuda_ver(img: str) -> tuple[int, int] | None:
+    m = re.search(r"cuda-?(\d+)\.(\d+)", img.lower())
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def _image_rank(img: str) -> tuple[int, ...]:
+    cuda = _parse_cuda_ver(img) or (0, 0)
+    m = re.search(r"ubuntu-(\d+)\.(\d+)", img.lower())
+    ub = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+    no_docker = 0 if "docker" in img.lower() else 1
+    return (*cuda, *ub, no_docker)

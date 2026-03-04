@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
@@ -24,6 +23,7 @@ from .types import (
     get_price_on_demand,
     get_price_spot,
     get_vcpu,
+    select_os_image,
 )
 
 log = logger.bind(provider="verda")
@@ -140,7 +140,7 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
 
             spot_price = get_price_spot(itype_data)
             on_demand_price = get_price_on_demand(itype_data)
-            os_image = _select_os_image(spec, itype_data.get("supported_os", []))
+            os_image = select_os_image(itype_data.get("supported_os", []))
 
             yield Offer(
                 id=f"verda-{itype_name}",
@@ -307,100 +307,6 @@ def _build_verda_instance(
         spot=bool(info.get("is_spot", False)),
         region=cluster.specific.region,
     )
-
-
-async def _resolve_instance_type(
-    client: VerdaClient, spec: PoolSpec,
-) -> tuple[str, str, InstanceTypeResponse]:
-    use_spot = spec.allocation in ("spot", "spot-if-available")
-
-    instance_types = await client.list_instance_types()
-    availability = await client.get_availability(is_spot=use_spot)
-    log.debug(
-        "Availability: {n} regions, {t} instance types",
-        n=len(availability), t=len(instance_types),
-    )
-
-    available_types = {t for region_types in availability.values() for t in region_types}
-
-    def _matches(itype: InstanceTypeResponse) -> bool:
-        if itype["instance_type"] not in available_types:
-            return False
-        if spec.vcpus and get_vcpu(itype) < spec.vcpus:
-            return False
-        if spec.memory_gb and get_memory_gb(itype) < spec.memory_gb:
-            return False
-        if not spec.accelerator_name:
-            return True
-        accel = get_accelerator(itype)
-        if not accel:
-            return False
-        if not (
-            accel.upper() in spec.accelerator_name.upper()
-            or spec.accelerator_name.upper() in accel.upper()
-        ):
-            return False
-        return spec.accelerator_memory_gb == 0 or get_accelerator_memory_gb(itype) >= spec.accelerator_memory_gb
-
-    candidates = [itype for itype in instance_types if _matches(itype)]
-    log.debug("Found {n} matching instance type candidates", n=len(candidates))
-
-    if not candidates:
-        raise RuntimeError(f"No instance types match accelerator={spec.accelerator_name}")
-
-    def sort_key(it: InstanceTypeResponse) -> float:
-        price = get_price_spot(it) if use_spot else get_price_on_demand(it)
-        return price if price is not None else float("inf")
-
-    candidates.sort(key=sort_key)
-
-    selected = candidates[0]
-    os_image = _select_os_image(spec, selected.get("supported_os", []))
-
-    log.debug(
-        "Selected {itype} with image {img}",
-        itype=selected["instance_type"], img=os_image,
-    )
-    return selected["instance_type"], os_image, selected
-
-
-def _select_os_image(spec: PoolSpec, supported_os: list[str]) -> str:
-    if not spec.accelerator_name:
-        return supported_os[0] if supported_os else "ubuntu-22.04"
-
-    def is_preferred(img: str) -> bool:
-        lower = img.lower()
-        return (
-            lower.startswith("ubuntu-")
-            and "cuda" in lower
-            and not any(x in lower for x in ("kubernetes", "jupyter", "docker", "cluster", "open"))
-        )
-
-    def parse_version(img: str) -> tuple[int, int, int, int]:
-        ubuntu = re.search(r"ubuntu-(\d+)\.(\d+)", img.lower())
-        cuda = re.search(r"cuda-?(\d+)\.(\d+)", img.lower())
-        return (
-            int(cuda.group(1)) if cuda else 0,
-            int(cuda.group(2)) if cuda else 0,
-            int(ubuntu.group(1)) if ubuntu else 0,
-            int(ubuntu.group(2)) if ubuntu else 0,
-        )
-
-    preferred = sorted(
-        filter(is_preferred, supported_os),
-        key=parse_version, reverse=True,
-    )
-    if preferred:
-        return preferred[0]
-
-    cuda_images = sorted(
-        (os for os in supported_os if "cuda" in os.lower()),
-        key=parse_version, reverse=True,
-    )
-    if cuda_images:
-        return cuda_images[0]
-
-    return supported_os[0] if supported_os else "ubuntu-22.04-cuda-12.1"
 
 
 async def _find_available_region(

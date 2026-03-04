@@ -169,24 +169,11 @@ async def _wrap_generator(
 
 
 def _run_in_process(
-    fn: Any,
-    args: tuple[Any, ...],
-    kwargs: dict[str, Any],
+    payload: bytes,
     env: dict[str, str],
     around_process_hooks: tuple[tuple[str, Any], ...] = (),
 ) -> Any:
-    """Execute a task in a subprocess.
-
-    Module-level function so it's picklable by loky.
-    Serialization is handled by loky's built-in cloudpickle integration.
-    Distributed collections are available via IPC bridge (set up by ipc_initializer).
-
-    The env dict propagates environment variables (e.g. COMPUTE_POOL) that were
-    set in the parent process after subprocess spawn.
-
-    around_process_hooks are entered lazily on the first task execution per
-    subprocess (idempotent via ensure_around_process).
-    """
+    """Execute a pre-serialized task in a subprocess."""
     os.environ.update(env)
 
     from skyward.plugins.process_state import get_worker_index
@@ -208,6 +195,10 @@ def _run_in_process(
         info = instance_info()
         for name, factory in around_process_hooks:
             ensure_around_process(name, factory, info)
+
+    import cloudpickle
+
+    fn, args, kwargs = cloudpickle.loads(payload)
     try:
         return fn(*args, **kwargs)
     finally:
@@ -275,9 +266,12 @@ def worker_behavior(
                 )
 
                 if use_process:
+                    import cloudpickle
+
                     loop = asyncio.get_running_loop()
+                    payload = cloudpickle.dumps((fn, args, kwargs))
                     result = await loop.run_in_executor(
-                        executor_pool, _run_in_process, fn, args, kwargs,
+                        executor_pool, _run_in_process, payload,
                         dict(os.environ), tuple(process_hooks),
                     )
                 else:
