@@ -874,10 +874,14 @@ class ComputePool:
 
         for s in self._build_specs():
             accel = s.accelerator
-            accel_name = accel.name if isinstance(accel, Accelerator) else accel
 
-            query: OfferQuery = repo.accelerator(accel_name) if accel_name else OfferQuery(repo._db)
+            query: OfferQuery = repo.accelerator(accel.name) if accel else OfferQuery(repo._db)
             query = query.provider(s.provider.type)
+
+            if accel and accel.memory:
+                mem = accel.memory.upper().removesuffix("GB")
+                if mem.isdigit():
+                    query = query.vram(int(mem))
 
             if s.vcpus:
                 query = query.vcpus(s.vcpus)

@@ -567,10 +567,13 @@ class TestRunInProcessWithHooks:
         }
         os.environ["COMPUTE_POOL"] = json.dumps(pool_info)
         try:
+            import cloudpickle
+
             from skyward.infra.worker import _run_in_process
 
+            payload = cloudpickle.dumps((lambda: 42, (), {}))
             result = _run_in_process(
-                lambda: 42, (), {}, dict(os.environ),
+                payload, dict(os.environ),
                 around_process_hooks=(("test-plugin", lifecycle),),
             )
             assert result == 42
@@ -603,20 +606,24 @@ class TestRunInProcessWithHooks:
         }
         os.environ["COMPUTE_POOL"] = json.dumps(pool_info)
         try:
+            import cloudpickle
+
             from skyward.infra.worker import _run_in_process
 
             hooks: tuple[tuple[str, Any], ...] = (("test-plugin", lifecycle),)
-            _run_in_process(lambda: 1, (), {}, dict(os.environ), hooks)
-            _run_in_process(lambda: 2, (), {}, dict(os.environ), hooks)
+            _run_in_process(cloudpickle.dumps((lambda: 1, (), {})), dict(os.environ), hooks)
+            _run_in_process(cloudpickle.dumps((lambda: 2, (), {})), dict(os.environ), hooks)
             assert call_count == 1
         finally:
             os.environ.pop("COMPUTE_POOL", None)
             reset()
 
     def test_no_hooks_runs_normally(self) -> None:
+        import cloudpickle
+
         from skyward.infra.worker import _run_in_process
 
-        result = _run_in_process(lambda: "ok", (), {}, {})
+        result = _run_in_process(cloudpickle.dumps((lambda: "ok", (), {})), {})
         assert result == "ok"
 
 

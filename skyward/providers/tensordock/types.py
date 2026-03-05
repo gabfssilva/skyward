@@ -384,8 +384,10 @@ _V2_IMAGE_MAP: dict[str, str] = {
     "Ubuntu 24.04 LTS": "ubuntu2404",
 }
 
+_GPU_DEFAULT_IMAGE = "ubuntu2404_ml_everything"
 
-def resolve_v2_image(operating_system: str) -> str:
+
+def resolve_v2_image(operating_system: str, *, has_gpu: bool = False) -> str:
     """Map legacy OS name to v2 image ID, or pass through if already v2 format.
 
     Examples
@@ -394,5 +396,10 @@ def resolve_v2_image(operating_system: str) -> str:
     'ubuntu2204'
     >>> resolve_v2_image("ubuntu2404")
     'ubuntu2404'
+    >>> resolve_v2_image("ubuntu2404", has_gpu=True)
+    'ubuntu2404_ml_everything'
     """
-    return _V2_IMAGE_MAP.get(operating_system, operating_system)
+    image = _V2_IMAGE_MAP.get(operating_system, operating_system)
+    if has_gpu and image == "ubuntu2404":
+        return _GPU_DEFAULT_IMAGE
+    return image

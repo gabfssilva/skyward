@@ -1,14 +1,16 @@
 """Instance monitor actor — streams JSONL events from instances.
 
-An instance monitor tells this story: streaming → stopped.
+An instance monitor tells this story:
+streaming → reconnecting → streaming → ... → stopped.
 
 The monitor receives a shared SSHTransport, reads the events.jsonl file
 (tail -F with offset tracking), converts raw events to typed messages,
 and sends them to event_listener for observability. It runs for the
 entire instance lifetime — not just bootstrap.
 
-The monitor does NOT own the transport. On stream failure, the monitor
-dies — the parent is responsible for supervision and recovery.
+On stream failure after bootstrap, the monitor reconnects automatically
+with exponential backoff, resuming from the last known line offset.
+Before bootstrap, stream failure is fatal.
 
 Bootstrap completion is detected as a side effect: when the monitor
 sees BootstrapPhase(phase="bootstrap", event="completed"), it signals
@@ -18,6 +20,7 @@ other runtime events.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
@@ -39,6 +42,7 @@ from .messages import (
     MonitorMsg,
     NodeInstance,
     StopMonitor,
+    _Reconnect,
     _StreamedEvent,
     _StreamEnded,
 )
@@ -66,13 +70,20 @@ def instance_monitor(
     transport: SSHTransport,
     event_listener: ActorRef,
     reply_to: ActorRef[BootstrapDone],
+    max_reconnect_attempts: int = 5,
+    max_backoff: float = 30.0,
 ) -> Behavior[MonitorMsg]:
-    """An instance monitor tells this story: streaming → stopped."""
+    """An instance monitor tells this story:
+    streaming → reconnecting → streaming → ... → stopped.
+    """
+
+    def _open_stream(start_line: int) -> AsyncIterator:
+        return transport.stream_events(timeout=600.0, start_line=start_line).__aiter__()
 
     async def _setup(ctx: ActorContext[MonitorMsg]) -> Behavior[MonitorMsg]:
         log = logger.bind(actor="monitor", instance_id=info.instance.id)
         log.info("Starting event stream on shared transport")
-        stream = transport.stream_events(timeout=600.0, start_line=0).__aiter__()
+        stream = _open_stream(start_line=0)
         ctx.pipe_to_self(_read_next(stream, info), mapper=lambda msg: msg)
         return streaming(stream, bootstrap_signaled=False, lines_read=0)
 
@@ -80,6 +91,7 @@ def instance_monitor(
         stream: AsyncIterator,
         bootstrap_signaled: bool,
         lines_read: int,
+        reconnect_attempts: int = 0,
     ) -> Behavior[MonitorMsg]:
         async def receive(ctx: ActorContext[MonitorMsg], msg: MonitorMsg) -> Behavior[MonitorMsg]:
             match msg:
@@ -121,8 +133,13 @@ def instance_monitor(
                                 ))
                                 signaled = True
 
-                    if new_lines_read != lines_read or signaled != bootstrap_signaled:
-                        return streaming(stream, signaled, new_lines_read)
+                    changed = (
+                        new_lines_read != lines_read
+                        or signaled != bootstrap_signaled
+                        or reconnect_attempts > 0
+                    )
+                    if changed:
+                        return streaming(stream, signaled, new_lines_read, reconnect_attempts=0)
                     return Behaviors.same()
 
                 case _StreamEnded(error=error):
@@ -138,12 +155,53 @@ def instance_monitor(
                             success=False,
                             error=error or "stream ended before bootstrap completed",
                         ))
-                    return Behaviors.stopped()
+                        return Behaviors.stopped()
+
+                    return reconnecting(lines_read, attempts=reconnect_attempts)
 
                 case StopMonitor():
                     return Behaviors.stopped()
+            return Behaviors.same()
 
         return Behaviors.receive(receive)
+
+    def reconnecting(lines_read: int, attempts: int) -> Behavior[MonitorMsg]:
+        log = logger.bind(actor="monitor", instance_id=info.instance.id)
+
+        if attempts >= max_reconnect_attempts:
+            log.error("Giving up after {n} reconnect attempts", n=attempts)
+            return Behaviors.stopped()
+
+        delay = min(2.0 ** attempts, max_backoff)
+        log.info(
+            "Stream lost, reconnecting in {delay}s (attempt {n}/{max})",
+            delay=delay, n=attempts + 1, max=max_reconnect_attempts,
+        )
+
+        async def _schedule_reconnect() -> _Reconnect:
+            await asyncio.sleep(delay)
+            return _Reconnect()
+
+        async def receive(ctx: ActorContext[MonitorMsg], msg: MonitorMsg) -> Behavior[MonitorMsg]:
+            match msg:
+                case _Reconnect():
+                    stream = _open_stream(start_line=lines_read)
+                    log.info("Reopening stream at line {offset}", offset=lines_read)
+                    ctx.pipe_to_self(_read_next(stream, info), mapper=lambda msg: msg)
+                    return streaming(
+                        stream, bootstrap_signaled=True,
+                        lines_read=lines_read, reconnect_attempts=attempts + 1,
+                    )
+
+                case StopMonitor():
+                    return Behaviors.stopped()
+            return Behaviors.same()
+
+        async def _enter(ctx: ActorContext[MonitorMsg]) -> Behavior[MonitorMsg]:
+            ctx.pipe_to_self(_schedule_reconnect(), mapper=lambda msg: msg)
+            return Behaviors.receive(receive)
+
+        return Behaviors.setup(_enter)
 
     return Behaviors.setup(_setup)
 

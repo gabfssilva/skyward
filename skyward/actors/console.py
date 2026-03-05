@@ -128,6 +128,8 @@ class _State:
     is_elastic: bool = False
     spec_accelerator_memory: str = ""
     tasks_per_instance: MappingProxyType[str, int] = MappingProxyType({})
+    ssh_user: str = ""
+    ssh_key_path: str = ""
 
 
 # --- State transitions (pure) ---
@@ -144,7 +146,10 @@ def _on_cluster_ready(state: _State) -> _State:
 def _on_instances_provisioned(
     state: _State, cluster: Cluster, instances: tuple[Instance, ...],
 ) -> _State:
-    return replace(state, cluster=cluster, instances=instances)
+    return replace(
+        state, cluster=cluster, instances=instances,
+        ssh_user=cluster.ssh_user, ssh_key_path=cluster.ssh_key_path,
+    )
 
 
 def _advance(current: _Phase, candidate: _Phase) -> _Phase:
@@ -477,11 +482,35 @@ def _gauge_badge(_label: str, pct: float) -> Style:
 # --- Stream emitters ---
 
 
-def _badge_text(label: str) -> Text:
+def _badge_text(label: str, link: str = "") -> Text:
     short = label[:8].center(8) if len(label) > 8 else label.center(8)
     t = Text()
-    t.append(f" {short} ", style=_badge_style(label))
+    style = _badge_style(label)
+    if link:
+        style = style + Style(link=link)
+    t.append(f" {short} ", style=style)
     return t
+
+
+def _ssh_url(state: _State, instance_id: str) -> str:
+    inst = next((i for i in state.instances if i.id == instance_id), None)
+    if not inst or not inst.ip or not state.ssh_user:
+        return ""
+    port = f":{inst.ssh_port}" if inst.ssh_port != 22 else ""
+    return f"ssh://{state.ssh_user}@{inst.ip}{port}"
+
+
+def _ssh_command(state: _State, instance_id: str) -> str:
+    inst = next((i for i in state.instances if i.id == instance_id), None)
+    if not inst or not inst.ip or not state.ssh_user:
+        return ""
+    parts = ["ssh"]
+    if state.ssh_key_path:
+        parts.append(f'-i "{state.ssh_key_path}"')
+    if inst.ssh_port != 22:
+        parts.append(f"-p {inst.ssh_port}")
+    parts.append(f"{state.ssh_user}@{inst.ip}")
+    return " ".join(parts)
 
 
 def _inline_badge(label: str) -> Text:
@@ -490,14 +519,14 @@ def _inline_badge(label: str) -> Text:
     return t
 
 
-def _emit(console: Console, badge: str, text: str, style: str = "") -> None:
-    line = _badge_text(badge)
+def _emit(console: Console, badge: str, text: str, style: str = "", link: str = "") -> None:
+    line = _badge_text(badge, link=link)
     line.append(f"  {text}", style=style or None)
     console.print(line)
 
 
-def _emit_task(console: Console, badge: str, status: str, text: str) -> None:
-    line = _badge_text(badge)
+def _emit_task(console: Console, badge: str, status: str, text: str, link: str = "") -> None:
+    line = _badge_text(badge, link=link)
     line.append(" ")
     line.append_text(_inline_badge(status))
     line.append(f" {text}")
@@ -507,16 +536,26 @@ def _emit_task(console: Console, badge: str, status: str, text: str) -> None:
 # --- Metric helpers ---
 
 
-def _find_metric(
+def _find_metrics(
     raw: MappingProxyType[str, float], *prefixes: str,
-) -> float | None:
+) -> list[float]:
+    """Return all metric values matching any prefix.
+
+    Exact match takes priority — if ``"mem"`` is a key, only that value is
+    returned (avoids mixing the percentage with ``mem_used_mb`` /
+    ``mem_total_mb``).  The ``prefix_*`` wildcard search only runs when
+    there is no exact key, which is the case for multi-GPU / MIG metrics
+    (e.g. ``gpu_util_0``, ``gpu_util_1``).
+    """
+    vals: list[float] = []
     for prefix in prefixes:
         if prefix in raw:
-            return raw[prefix]
-        for key, val in raw.items():
-            if key.startswith(f"{prefix}_"):
-                return val
-    return None
+            vals.append(raw[prefix])
+        else:
+            for key, val in raw.items():
+                if key.startswith(f"{prefix}_"):
+                    vals.append(val)
+    return vals
 
 
 def _collect_metric_vals(
@@ -524,8 +563,7 @@ def _collect_metric_vals(
 ) -> list[float]:
     vals: list[float] = []
     for iid in state.metrics:
-        if (v := _find_metric(state.metrics[iid], *prefixes)) is not None:
-            vals.append(v)
+        vals.extend(_find_metrics(state.metrics[iid], *prefixes))
     return vals
 
 
@@ -1150,7 +1188,11 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
                     nid = _node_id_from_path(path)
                     iid = _resolve_instance_id(state, node_id=nid)
                     if iid:
-                        _emit(console, iid, "\u2713 SSH connected", "green")
+                        link = _ssh_url(state, iid)
+                        _emit(console, iid, "\u2713 SSH connected", "green", link=link)
+                        cmd = _ssh_command(state, iid)
+                        if cmd:
+                            _emit(console, iid, cmd, "dim", link=link)
                         new = _on_ssh_connected(state, iid)
                         _update_footer(new)
                         return observing(new)
@@ -1167,35 +1209,39 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
                 case SpyEvent(event=BootstrapConsole() as ev):
                     content = ev.content.strip()
                     if content and not content.startswith("#"):
-                        _emit(console, ev.instance.instance.id, content[:120])
+                        iid = ev.instance.instance.id
+                        _emit(console, iid, content[:120], link=_ssh_url(state, iid))
                     return Behaviors.same()
 
                 case SpyEvent(event=BootstrapPhase() as ev):
                     iid = ev.instance.instance.id
+                    link = _ssh_url(state, iid)
                     match ev.event:
                         case "started":
-                            _emit(console, iid, f"\u25b8 {ev.phase}...")
+                            _emit(console, iid, f"\u25b8 {ev.phase}...", link=link)
                         case "completed":
                             elapsed = f" ({ev.elapsed:.1f}s)" if ev.elapsed else ""
-                            _emit(console, iid, f"\u2713 {ev.phase}{elapsed}", "green")
+                            _emit(console, iid, f"\u2713 {ev.phase}{elapsed}", "green", link=link)
                         case "failed":
-                            _emit(console, iid, f"\u2717 {ev.phase}: {ev.error}", "red")
+                            _emit(console, iid, f"\u2717 {ev.phase}: {ev.error}", "red", link=link)
                     return Behaviors.same()
 
                 case SpyEvent(event=BootstrapCommand() as ev):
                     cmd = ev.command.strip()
                     if cmd:
+                        iid = ev.instance.instance.id
                         display = f"$ {cmd[:80]}..." if len(cmd) > 80 else f"$ {cmd}"
-                        _emit(console, ev.instance.instance.id, display, "dim")
+                        _emit(console, iid, display, "dim", link=_ssh_url(state, iid))
                     return Behaviors.same()
 
                 case SpyEvent(event=BootstrapDone(instance=inst, success=ok, error=err)):
                     iid = inst.instance.id
+                    link = _ssh_url(state, iid)
                     if ok:
                         new = _on_bootstrap_done(state, iid)
                         _update_footer(new)
                         return observing(new)
-                    _emit(console, iid, f"\u2717 Bootstrap failed: {err}", "red")
+                    _emit(console, iid, f"\u2717 Bootstrap failed: {err}", "red", link=link)
                     return Behaviors.same()
 
                 case SpyEvent(event=_LocalInstallDone() | _UserCodeSyncDone()):
@@ -1209,7 +1255,7 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
                     nid = _node_id_from_path(path)
                     iid = _resolve_instance_id(state, node_id=nid)
                     if iid:
-                        _emit(console, iid, "\u2713 Worker joined", "green")
+                        _emit(console, iid, "\u2713 Worker joined", "green", link=_ssh_url(state, iid))
                         new = _on_worker_started(state, iid)
                         _update_footer(new)
                         return observing(new)
@@ -1244,7 +1290,7 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
                     if iid:
                         entry = state.inflight.get(tid)
                         if entry:
-                            _emit_task(console, iid, "running", entry.name)
+                            _emit_task(console, iid, "running", entry.name, link=_ssh_url(state, iid))
                     new = _on_task_assigned(state, tid, iid)
                     return observing(new)
 
@@ -1253,23 +1299,24 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
                     if entry is None:
                         return Behaviors.same()
                     iid = entry.instance_id or _resolve_instance_id(state, node_id=nid) or "skyward"
+                    link = _ssh_url(state, iid)
                     match entry.kind:
                         case "broadcast":
                             new = _on_broadcast_partial(state, tid)
                             updated = new.inflight.get(tid)
                             if updated and updated.broadcast_done >= updated.broadcast_total:
                                 elapsed = time.monotonic() - entry.started_at
-                                _emit_task(console, iid, "done", f"{entry.name} in {elapsed:.1f}s")
+                                _emit_task(console, iid, "done", f"{entry.name} in {elapsed:.1f}s", link=link)
                                 new = _on_task_done(new, tid, elapsed)
                             _update_footer(new)
                             return observing(new)
                         case _:
                             elapsed = time.monotonic() - entry.started_at
                             if is_err:
-                                _emit_task(console, iid, "failed", entry.name)
+                                _emit_task(console, iid, "failed", entry.name, link=link)
                                 new = _on_task_failed(state, tid)
                             else:
-                                _emit_task(console, iid, "done", f"{entry.name} in {elapsed:.1f}s")
+                                _emit_task(console, iid, "done", f"{entry.name} in {elapsed:.1f}s", link=link)
                                 new = _on_task_done(state, tid, elapsed)
                             _update_footer(new)
                             return observing(new)
@@ -1277,7 +1324,8 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
                 case SpyEvent(event=Log() as ev):
                     line = ev.line.strip()
                     if line:
-                        _emit(console, ev.instance.instance.id, line[:120])
+                        iid = ev.instance.instance.id
+                        _emit(console, iid, line[:120], link=_ssh_url(state, iid))
                     return Behaviors.same()
 
                 case SpyEvent(event=Metric() as ev):

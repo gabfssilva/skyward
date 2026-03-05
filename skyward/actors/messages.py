@@ -460,6 +460,16 @@ class TaskResult:
     error: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class _TransportReconnected:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class _TransportReconnectFailed:
+    error: str
+
+
 type NodeMsg = (
     Provision
     | ExecuteOnNode
@@ -479,6 +489,7 @@ type NodeMsg = (
     | _RemoteTaskDone
     | _WorkerDiscovered | _WorkerDiscoveryFailed
     | _EnvSetupDone | _EnvSetupFailed
+    | _TransportReconnected | _TransportReconnectFailed
 )
 
 
@@ -850,7 +861,12 @@ class _StreamEnded:
     error: str | None = None
 
 
-type MonitorMsg = StopMonitor | _StreamedEvent | _StreamEnded
+@dataclass(frozen=True, slots=True)
+class _Reconnect:
+    pass
+
+
+type MonitorMsg = StopMonitor | _StreamedEvent | _StreamEnded | _Reconnect
 
 
 # =============================================================================

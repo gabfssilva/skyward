@@ -250,7 +250,9 @@ class TensorDockProvider(Provider[TensorDock, TensorDockSpecific]):
         specific = cluster.specific
         offer_data: TensorDockOfferData = cluster.offer.specific
         token = _get_token(self._config)
-        image = resolve_v2_image(self._config.operating_system)
+        image = resolve_v2_image(
+            self._config.operating_system, has_gpu=offer_data.gpu_count > 0,
+        )
 
         instances: list[Instance] = []
 

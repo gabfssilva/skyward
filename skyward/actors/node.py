@@ -3,7 +3,8 @@
 Tells this story:
   idle → polling → connecting → bootstrapping → post_bootstrap
        → starting_worker → ready → active
-       → replacing → polling → … (loop back)
+       → reconnecting_transport → active (if reconnect succeeds)
+       → replacing → polling → … (loop back, if reconnect fails)
 
 Absorbs the old instance_actor responsibilities (SSH, bootstrap,
 worker startup) plus task execution (formerly in executor_actor).
@@ -46,6 +47,7 @@ from skyward.actors.messages import (
     _RemoteTaskDone,
     _SnapshotFailed,
     _SnapshotSaved,
+    _TransportReconnectFailed,
     _UserCodeSyncDone,
     _WorkerDiscovered,
     _WorkerDiscoveryFailed,
@@ -981,7 +983,7 @@ def node_actor(
                             )
                         )
                     if conn_err:
-                        log.warning("Connection lost on node {nid}, failing inflight tasks and replacing", nid=node_id)
+                        log.warning("Connection lost on node {nid}, attempting transport reconnect", nid=node_id)
                         conn_error = RuntimeError(f"Node {node_id} connection lost")
                         for other_tid, other_caller in s.inflight.items():
                             if other_tid != tid:
@@ -994,15 +996,21 @@ def node_actor(
                                     )
                                 )
                         await _cleanup_transport(s.transport, s.listener)
-                        pool.tell(NodeLost(node_id=node_id, reason="connection lost"))
-                        return _start_replacing(
-                            ctx,
-                            s.cluster,
-                            s.provider,
-                            s.current_node_instance.instance.id if s.current_node_instance else "",
-                            s.pending_tasks,
-                            s.head_info,
+                        ni = s.current_node_instance
+                        if ni is None:
+                            pool.tell(NodeLost(node_id=node_id, reason="connection lost (no instance)"))
+                            return _start_replacing(
+                                ctx, s.cluster, s.provider, "", s.pending_tasks, s.head_info,
+                            )
+                        pool.tell(NodeLost(node_id=node_id, reason="connection lost (reconnecting)"))
+                        ctx.pipe_to_self(
+                            _open_tunnel(ni, s.cluster, ssh_timeout, ssh_retry_interval),
+                            mapper=lambda result: _Connected(
+                                transport=result[0], listener=result[1],
+                            ),
+                            on_failure=lambda e: _TransportReconnectFailed(error=str(e)),
                         )
+                        return reconnecting_transport(s)
                     if caller:
                         new_inflight = {k: v for k, v in s.inflight.items() if k != tid}
                         return active(replace(s, inflight=new_inflight))
@@ -1023,6 +1031,68 @@ def node_actor(
                     log.info("Snapshot saved")
                 case _SnapshotFailed(error=error):
                     log.warning("Snapshot failed: {error}", error=error)
+            return Behaviors.same()
+
+        return Behaviors.receive(receive)
+
+    # ── reconnecting_transport ─────────────────────────────────────────
+
+    def reconnecting_transport(s: ActiveState) -> Behavior[NodeMsg]:
+        async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
+            match msg:
+                case _Connected(transport=transport, listener=listener):
+                    ni = s.current_node_instance
+                    if ni is None:
+                        await _cleanup_transport(transport, listener)
+                        pool.tell(NodeLost(node_id=node_id, reason="connection lost"))
+                        return Behaviors.stopped()
+                    log.info("Transport reconnected on node {nid}", nid=node_id)
+                    local_port = listener.get_port()
+                    private_ip = ni.instance.private_ip or ni.instance.ip or ""
+                    pool.tell(
+                        NodeBecameReady(
+                            node_id=node_id,
+                            instance=ni,
+                            local_port=local_port,
+                            private_ip=private_ip,
+                        )
+                    )
+                    return ready(
+                        s.cluster, s.provider, ni, transport, listener,
+                        s.head_info, s.pending_tasks,
+                    )
+
+                case _TransportReconnectFailed(error=error):
+                    log.warning(
+                        "Transport reconnect failed on node {nid}: {err}, replacing",
+                        nid=node_id, err=error,
+                    )
+                    pool.tell(NodeLost(node_id=node_id, reason="connection lost"))
+                    return _start_replacing(
+                        ctx,
+                        s.cluster,
+                        s.provider,
+                        s.current_node_instance.instance.id if s.current_node_instance else "",
+                        s.pending_tasks,
+                        s.head_info,
+                    )
+
+                case _RemoteTaskDone():
+                    return Behaviors.same()
+
+                case ExecuteOnNode() as ex:
+                    ex.reply_to.tell(
+                        TaskResult(
+                            value=RuntimeError(f"Node {node_id} reconnecting"),
+                            node_id=node_id,
+                            task_id=ex.task_id or "",
+                            error=True,
+                        )
+                    )
+                    return Behaviors.same()
+
+                case HeadAddressKnown() as h:
+                    return reconnecting_transport(replace(s, head_info=h))
             return Behaviors.same()
 
         return Behaviors.receive(receive)

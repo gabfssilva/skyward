@@ -169,6 +169,11 @@ class SSHTransport:
             self._conn = None
             log.info("SSH connection closed to {host}:{port}", host=self.host, port=self.port)
 
+    async def reconnect(self) -> None:
+        """Close and re-establish SSH connection."""
+        await self.close()
+        await self.connect()
+
     async def __aenter__(self) -> SSHTransport:
         await self.connect()
         return self

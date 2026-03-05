@@ -9,7 +9,7 @@ Usage:
     python examples/36_nvidia_mig.py
 """
 
-from time import perf_counter
+from time import perf_counter, sleep
 
 import skyward as sky
 
@@ -74,13 +74,14 @@ if __name__ == "__main__":
     with sky.ComputePool(
         provider=sky.Verda(),
         nodes=1,
-        accelerator=sky.accelerators.A100(),
+        accelerator=sky.accelerators.A100(memory='80GB'),
         worker=sky.Worker(concurrency=PARTITIONS, executor="process"),
         plugins=[
             sky.plugins.torch(),
             sky.plugins.mig(profile=PROFILE),
         ],
         allocation='spot',
+        ttl=600
     ) as pool:
         print(
             f"Running matmul benchmark on {PARTITIONS} MIG partitions "
@@ -104,3 +105,5 @@ if __name__ == "__main__":
 
         if results[0].get("mig_instances"):
             print(f"\n{results[0]['mig_instances']}")
+
+        sleep(550)
