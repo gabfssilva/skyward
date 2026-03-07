@@ -455,14 +455,13 @@ def ssh_transport(
         attempts: int = 0,
         pending: tuple[TransportMsg, ...] = (),
     ) -> Behavior[TransportMsg]:
+        if attempts >= retry_max_attempts:
+            log.error("Reconnection permanently failed after {n} attempts", n=attempts)
+            if parent:
+                parent.tell(ConnectionFailed(error="max reconnection attempts"))
+            return Behaviors.stopped()
 
         async def setup(ctx: ActorContext[TransportMsg]) -> Behavior[TransportMsg]:
-            if attempts >= retry_max_attempts:
-                log.error("Reconnection permanently failed after {n} attempts", n=attempts)
-                if parent:
-                    parent.tell(ConnectionFailed(error="max reconnection attempts"))
-                return Behaviors.stopped()
-
             delay = retry_delay
             log.info("Reconnecting in {d}s (attempt {n})", d=delay, n=attempts + 1)
 
