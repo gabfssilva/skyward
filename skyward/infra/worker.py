@@ -59,9 +59,50 @@ class TaskFailed:
 type TaskResult = TaskSucceeded | TaskFailed
 
 
-def skyward_serializer() -> Lz4CompressedSerializer:
+class _DiagnosticSerializer:
+    """Wraps a Casty serializer to surface deserialization errors clearly.
+
+    Casty catches all deserialization exceptions as warnings (invisible when
+    log level is ERROR). This wrapper logs at ERROR via Skyward's logger
+    before re-raising, so version-mismatch failures are immediately visible.
+    """
+
+    __slots__ = ("_inner",)
+
+    def __init__(self, inner: Lz4CompressedSerializer) -> None:
+        self._inner = inner
+
+    def serialize[M](self, obj: M) -> bytes:
+        return self._inner.serialize(obj)
+
+    def deserialize[M, R](
+        self,
+        data: bytes,
+        *,
+        ref_factory: Any = None,
+    ) -> M:
+        try:
+            return self._inner.deserialize(data, ref_factory=ref_factory)
+        except (ModuleNotFoundError, AttributeError, ImportError) as exc:
+            logger.error(
+                "Deserialization failed — likely a library version mismatch "
+                "between local and remote environments. Ensure libraries like "
+                "pandas, numpy, torch, etc. are pinned to the same version in "
+                "Image(pip=[...]). Original error: {exc}",
+                exc=exc,
+            )
+            raise
+        except Exception as exc:
+            logger.error(
+                "Deserialization failed: {exc}",
+                exc=exc,
+            )
+            raise
+
+
+def skyward_serializer() -> _DiagnosticSerializer:
     """Shared wire serializer for all Casty endpoints (worker, executor, instance)."""
-    return Lz4CompressedSerializer(CloudPickleSerializer())
+    return _DiagnosticSerializer(Lz4CompressedSerializer(CloudPickleSerializer()))
 
 
 @dataclass(frozen=True, slots=True)

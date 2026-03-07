@@ -164,6 +164,19 @@ def keras_plugin_pool():
 
 
 @pytest.fixture(scope="session")
+def pandas_pool():
+    with sky.App(console=False), ComputePool(
+        provider=sky.Container(network="skyward", container_prefix='skyward-pandas'),
+        nodes=1,
+        worker=Worker(concurrency=2),
+        image=Image(pip=["pandas==2.3.3"]),
+        vcpus=1,
+        memory_gb=1,
+    ) as p:
+        yield p
+
+
+@pytest.fixture(scope="session")
 def joblib_plugin_pool():
     with sky.App(console=False), ComputePool(
         provider=sky.Container(network="skyward", container_prefix='skyward-joblib-plugin'),

@@ -446,8 +446,8 @@ def ipc_initializer(
     and keeps the child end for IPC.
 
     If *index_queue* is provided (a ``multiprocessing.Queue`` pre-filled with
-    indices 0..N-1), claims a unique worker index for this subprocess and
-    stores it in ``process_state._worker_index``.
+    indices 0..N-1), claims a worker index and immediately returns it to the
+    queue so that respawned workers can reclaim an index.
     """
     import multiprocessing
     import sys
@@ -465,6 +465,7 @@ def ipc_initializer(
         from skyward.plugins.process_state import set_worker_index
 
         idx = index_queue.get()
+        index_queue.put(idx)
         set_worker_index(idx)
 
     # Loky subprocesses inherit fd 1/2 pointing to casty.log (via shell redirect),
