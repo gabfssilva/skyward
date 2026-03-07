@@ -63,8 +63,8 @@ def barrier(name: str, n: int) -> BarrierProxy:
     return _get_active_registry().barrier(name, n)
 
 
-def lock(name: str) -> LockProxy:
-    return _get_active_registry().lock(name)
+def lock(name: str, timeout: float = 30) -> LockProxy:
+    return _get_active_registry().lock(name, timeout)
 
 
 __all__ = [

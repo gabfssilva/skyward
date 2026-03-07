@@ -3,76 +3,99 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Any, overload
+from typing import TYPE_CHECKING, Any, overload
 
 from .model import CatalogOffer
+
+if TYPE_CHECKING:
+    from .repository import OfferRepository
 
 
 class OfferQuery:
     """Fluent builder that accumulates WHERE clauses and compiles to SQL on terminal call.
 
-    Filters are chainable and additive (AND). Terminal methods execute the query.
+    Filters are chainable and additive (AND). Terminal methods execute the query
+    asynchronously via the repository's ThreadPoolRunner.
     """
 
-    def __init__(self, db: sqlite3.Connection) -> None:
+    def __init__(self, db: sqlite3.Connection, repo: OfferRepository) -> None:
         self._db = db
+        self._repo = repo
         self._clauses: list[str] = []
         self._params: list[Any] = []
+        self._clause_params: list[tuple[str, Any | None]] = []
 
     # ── chainable filters ────────────────────────────────────
 
+    def _add_filter(self, clause: str, param: Any) -> None:
+        self._clauses.append(clause)
+        self._params.append(param)
+        self._clause_params.append((clause, param))
+
     def accelerator(self, name: str) -> OfferQuery:
-        """Filter by GPU name (exact match, e.g. ``"A100"``)."""
-        self._clauses.append("gpu = ?")
-        self._params.append(name)
+        """Filter by accelerator name (exact match, e.g. ``"A100"``)."""
+        self._add_filter("accelerator_name = ?", name)
         return self
 
     def provider(self, name: str) -> OfferQuery:
         """Filter by provider id (e.g. ``"aws"``, ``"vastai"``)."""
-        self._clauses.append("provider = ?")
-        self._params.append(name)
+        self._add_filter("provider = ?", name)
         return self
 
     def region(self, region: str) -> OfferQuery:
         """Filter by region (exact match)."""
-        self._clauses.append("region = ?")
-        self._params.append(region)
+        self._add_filter("region = ?", region)
         return self
 
     def architecture(self, arch: str) -> OfferQuery:
-        """Filter by GPU architecture (e.g. ``"Hopper"``, ``"Ampere"``)."""
-        self._clauses.append("architecture = ?")
-        self._params.append(arch)
+        """Filter by accelerator architecture (e.g. ``"Hopper"``, ``"Ampere"``)."""
+        self._add_filter("architecture = ?", arch)
         return self
 
     def manufacturer(self, name: str) -> OfferQuery:
         """Filter by manufacturer (e.g. ``"NVIDIA"``, ``"AMD"``)."""
-        self._clauses.append("manufacturer = ?")
-        self._params.append(name)
+        self._add_filter("manufacturer = ?", name)
         return self
 
-    def vram(self, min_gb: float) -> OfferQuery:
-        """Filter by minimum VRAM per GPU in GB."""
-        self._clauses.append("vram >= ?")
-        self._params.append(min_gb)
+    def accelerator_memory(self, min_gb: float) -> OfferQuery:
+        """Filter by minimum accelerator memory in GB."""
+        self._add_filter("accelerator_memory_gb >= ?", min_gb)
         return self
 
-    def vcpus(self, min_vcpus: float) -> OfferQuery:
-        """Filter by minimum vCPUs."""
-        self._clauses.append("vcpus >= ?")
-        self._params.append(min_vcpus)
+    def vcpus(self, exact_or_min: float, max_vcpus: float | None = None) -> OfferQuery:
+        """Filter by vCPUs. Single arg = exact match, two args = range."""
+        if max_vcpus is None:
+            self._add_filter("vcpus = ?", exact_or_min)
+        else:
+            self._clauses.append("vcpus >= ? AND vcpus <= ?")
+            self._params.extend([exact_or_min, max_vcpus])
+            self._clause_params.append(("vcpus_range", (exact_or_min, max_vcpus)))
         return self
 
-    def memory(self, min_gb: float) -> OfferQuery:
-        """Filter by minimum system memory in GB."""
-        self._clauses.append("memory_gb >= ?")
-        self._params.append(min_gb)
+    def memory(self, exact_or_min: float, max_gb: float | None = None) -> OfferQuery:
+        """Filter by system memory in GB. Single arg = exact match, two args = range."""
+        if max_gb is None:
+            self._add_filter("memory_gb = ?", exact_or_min)
+        else:
+            self._clauses.append("memory_gb >= ? AND memory_gb <= ?")
+            self._params.extend([exact_or_min, max_gb])
+            self._clause_params.append(("memory_range", (exact_or_min, max_gb)))
         return self
 
-    def gpus(self, min_count: int) -> OfferQuery:
-        """Filter by minimum GPU count per node."""
-        self._clauses.append("gpu_count >= ?")
-        self._params.append(min_count)
+    def accelerator_count(self, exact_or_min: int, max_count: int | None = None) -> OfferQuery:
+        """Filter by accelerator count. Single arg = exact match, two args = range."""
+        if max_count is None:
+            self._add_filter("accelerator_count = ?", exact_or_min)
+        else:
+            self._clauses.append("accelerator_count >= ? AND accelerator_count <= ?")
+            self._params.extend([exact_or_min, max_count])
+            self._clause_params.append(("accelerator_count_range", (exact_or_min, max_count)))
+        return self
+
+    def cpu_only(self) -> OfferQuery:
+        """Only CPU instances (no accelerator)."""
+        self._clauses.append("accelerator_name = ''")
+        self._clause_params.append(("cpu_only", True))
         return self
 
     def allocation(self, strategy: str) -> OfferQuery:
@@ -103,7 +126,7 @@ class OfferQuery:
         return self
 
     def where(self, clause: str, *params: Any) -> OfferQuery:
-        """Append a raw SQL WHERE clause (e.g. ``"gpu LIKE ?", "H%"``)."""
+        """Append a raw SQL WHERE clause (e.g. ``"accelerator_name LIKE ?", "H%"``)."""
         self._clauses.append(clause)
         self._params.extend(params)
         return self
@@ -111,11 +134,11 @@ class OfferQuery:
     # ── terminals ────────────────────────────────────────────
 
     @overload
-    def cheapest(self) -> CatalogOffer | None: ...
+    async def cheapest(self) -> CatalogOffer | None: ...
     @overload
-    def cheapest(self, n: int) -> list[CatalogOffer]: ...
+    async def cheapest(self, n: int) -> list[CatalogOffer]: ...
 
-    def cheapest(self, n: int | None = None) -> CatalogOffer | list[CatalogOffer] | None:
+    async def cheapest(self, n: int | None = None) -> CatalogOffer | list[CatalogOffer] | None:
         """Return the cheapest offer(s), ordered by lowest available price.
 
         Without arguments returns a single ``CatalogOffer | None``.
@@ -123,22 +146,39 @@ class OfferQuery:
         """
         order = "COALESCE(spot_price, on_demand_price) ASC NULLS LAST"
         if n is None:
-            rows = self._execute(order_by=order, limit=1)
+            rows = await self._execute(order_by=order, limit=1)
             return rows[0] if rows else None
-        return self._execute(order_by=order, limit=n)
+        return await self._execute(order_by=order, limit=n)
 
-    def all(self) -> list[CatalogOffer]:
+    async def all(self) -> list[CatalogOffer]:
         """Execute the query and return all matching offers."""
-        return self._execute()
+        return await self._execute()
 
-    def first(self) -> CatalogOffer | None:
+    async def first(self) -> CatalogOffer | None:
         """Execute the query and return the first match, or ``None``."""
-        rows = self._execute(limit=1)
+        rows = await self._execute(limit=1)
         return rows[0] if rows else None
 
     # ── internals ────────────────────────────────────────────
 
-    def _execute(self, *, order_by: str | None = None, limit: int | None = None) -> list[CatalogOffer]:
+    _FILTER_MAP: dict[str, str] = {
+        "accelerator_name = ?": "accelerator",
+        "provider = ?": "provider",
+        "vcpus = ?": "vcpus",
+        "memory_gb = ?": "memory_gb",
+        "region = ?": "region",
+        "cpu_only": "cpu_only",
+    }
+
+    def _extract_filters(self) -> dict[str, Any]:
+        """Extract structured filters from accumulated clauses."""
+        filters: dict[str, Any] = {}
+        for clause, param in self._clause_params:
+            if key := self._FILTER_MAP.get(clause):
+                filters[key] = param
+        return filters
+
+    async def _execute(self, *, order_by: str | None = None, limit: int | None = None) -> list[CatalogOffer]:
         sql = "SELECT * FROM catalog"
         if self._clauses:
             sql += " WHERE " + " AND ".join(self._clauses)
@@ -146,5 +186,9 @@ class OfferQuery:
             sql += f" ORDER BY {order_by}"
         if limit:
             sql += f" LIMIT {limit}"
-        rows = self._db.execute(sql, self._params).fetchall()
-        return [CatalogOffer(**dict(zip(row.keys(), row, strict=True))) for row in rows]
+        params = tuple(self._params)
+        rows = await self._repo._run_query(sql, params)
+        if not rows:
+            await self._repo._fetch_and_persist(self._extract_filters())
+            rows = await self._repo._run_query(sql, params)
+        return rows

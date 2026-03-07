@@ -55,6 +55,8 @@ class ContainerSpecific:
 
 class ContainerProvider(WarmableProvider[Container, ContainerSpecific]):
 
+    name = "container"
+
     def __init__(self, config: Container) -> None:
         self._config = config
         self._bin = config.binary

@@ -353,6 +353,7 @@ class _UserCodeSyncDone:
 class _Connected:
     transport: Any
     listener: Any
+    instance: NodeInstance | None = None
 
 
 @dataclass(frozen=True, slots=True)

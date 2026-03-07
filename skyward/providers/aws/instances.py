@@ -208,6 +208,25 @@ async def _fetch_spot_price(instance_type: str, region: str) -> float | None:
         return float(history[0]["SpotPrice"]) if history else None
 
 
+async def _fetch_spot_prices_batch(
+    instance_types: list[str], region: str,
+) -> dict[str, float]:
+    import aioboto3
+
+    session = aioboto3.Session()
+    prices: dict[str, float] = {}
+    async with session.client("ec2", region_name=region) as ec2:  # type: ignore[reportGeneralTypeIssues]
+        resp = await ec2.describe_spot_price_history(
+            InstanceTypes=instance_types,
+            ProductDescriptions=["Linux/UNIX"],
+        )
+        for entry in resp.get("SpotPriceHistory", []):
+            itype = entry["InstanceType"]
+            if itype not in prices:
+                prices[itype] = float(entry["SpotPrice"])
+    return prices
+
+
 @cached(namespace="aws-ondemand-prices", ttl=timedelta(days=1))
 async def _fetch_ondemand_price(instance_type: str, region: str) -> float | None:
     import json as json_mod

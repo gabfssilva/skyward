@@ -434,7 +434,7 @@ async def main(
             case "process":
                 import multiprocessing
 
-                from loky import ProcessPoolExecutor as LokyProcessPoolExecutor
+                from loky import get_reusable_executor
 
                 from skyward.distributed.ipc import ipc_initializer
 
@@ -443,10 +443,11 @@ async def main(
                 index_queue = mp_ctx.Queue()
                 for i in range(workers_per_node):
                     index_queue.put(i)
-                task_executor: Executor = LokyProcessPoolExecutor(
+                task_executor: Executor = get_reusable_executor(
                     max_workers=workers_per_node,
                     initializer=ipc_initializer,
                     initargs=(ipc_queue, index_queue),
+                    reuse="auto",
                 )
             case _:
                 pool_size = max((os.cpu_count() or 1) + 4, workers_per_node)

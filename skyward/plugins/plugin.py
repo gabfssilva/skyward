@@ -96,4 +96,11 @@ def chain_decorators[**P, R](
     """
     return reduce(lambda f, d: d(f), reversed(decorators), fn)
 
+def around_app(name: str, around: AppLifecycle) -> Plugin:
+    return Plugin(name=name, around_app=around)
 
+def around_client[S](name: str, around: ClientLifecycle[S]) -> Plugin:
+    return Plugin(name=name, around_client=around)
+
+def around_process(name: str, around: ProcessLifecycle) -> Plugin:
+    return Plugin(name=name, around_process=around)

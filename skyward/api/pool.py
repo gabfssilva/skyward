@@ -820,12 +820,12 @@ class ComputePool:
         logger.debug("Creating distributed barrier: {name} (n={n})", name=name, n=n)
         return self._registry.barrier(name, n)
 
-    def lock(self, name: str) -> LockProxy:
+    def lock(self, name: str, timeout: float = 30) -> LockProxy:
         """Get or create a distributed lock."""
         if self._registry is None:
             raise RuntimeError("Pool is not active")
         logger.debug("Creating distributed lock: {name}", name=name)
-        return self._registry.lock(name)
+        return self._registry.lock(name, timeout)
 
     def current_nodes(self) -> int:
         """Return the number of ready nodes in the pool."""
@@ -845,43 +845,42 @@ class ComputePool:
     ) -> tuple[tuple[Offer, ...], ProviderConfig, Any, PoolSpec]:
         """Rank all offers across specs by price.
 
-        Tries the static catalog first (instant SQL queries), then falls back
-        to live API calls if the catalog path fails or is unavailable.
+        Uses the OfferRepository (SQLite-backed catalog with on-demand live
+        fetching) to query and rank offers from all configured providers.
 
         Returns (offers_sorted, provider_config, cloud_provider, pool_spec).
         """
-        try:
-            result = await self._select_offers_from_catalog()
-            if result[0]:
-                return result
-        except Exception:
-            logger.debug("Catalog selection failed, falling back to live API: {err}",
-                         err=__import__("traceback").format_exc())
-
-        return await self._select_offers_live()
-
-    async def _select_offers_from_catalog(
-        self,
-    ) -> tuple[tuple[Offer, ...], ProviderConfig, Any, PoolSpec]:
-        """Select offers from the cached catalog."""
         from skyward.offers import OfferRepository, to_offer
-        from skyward.offers.query import OfferQuery
 
-        providers = [s.provider.type for s in self._build_specs()]
-        repo = await OfferRepository.create(providers=providers)
+        specs = self._build_specs()
+
+        provider_instances: dict[str, Any] = {}
+        config_by_type: dict[str, ProviderConfig] = {}
+        for s in specs:
+            ptype = s.provider.type
+            if ptype not in provider_instances:
+                provider_instances[ptype] = await s.provider.create_provider()
+                config_by_type[ptype] = s.provider
+
+        repo = await OfferRepository.create(
+            providers=list(provider_instances.values()),
+        )
 
         ranked: list[tuple[float, Offer, ProviderConfig, PoolSpec]] = []
 
-        for s in self._build_specs():
+        for s in specs:
             accel = s.accelerator
+            ptype = s.provider.type
 
-            query: OfferQuery = repo.accelerator(accel.name) if accel else OfferQuery(repo._db)
-            query = query.provider(s.provider.type)
+            query = (
+                repo.accelerator(accel.name).provider(ptype) if accel
+                else repo.provider(ptype)
+            )
 
             if accel and accel.memory:
                 mem = accel.memory.upper().removesuffix("GB")
                 if mem.isdigit():
-                    query = query.vram(int(mem))
+                    query = query.accelerator_memory(int(mem))
 
             if s.vcpus:
                 query = query.vcpus(s.vcpus)
@@ -890,11 +889,15 @@ class ComputePool:
             if s.max_hourly_cost:
                 query = query.max_price(s.max_hourly_cost)
 
-            use_spot = s.allocation in ("spot", "spot-if-available")
             query = query.allocation(s.allocation)
+            use_spot = s.allocation in ("spot", "spot-if-available")
 
-            catalog_offers = query.cheapest(20)
+            catalog_offers = await query.cheapest(20)
             if not catalog_offers:
+                logger.warning(
+                    "No offers from {provider} for accelerator={acc}",
+                    provider=ptype, acc=accel.name if accel else "none",
+                )
                 continue
 
             provider_config = s.provider
@@ -935,106 +938,21 @@ class ComputePool:
         repo.close()
 
         if not ranked:
-            raise RuntimeError("No catalog offers found")
+            raise RuntimeError("No offers found across all specs")
 
         ranked.sort(key=lambda x: x[0])
         offers = tuple(r[1] for r in ranked)
         _, _, best_config, best_spec = ranked[0]
 
-        cloud_provider = await best_config.create_provider()
+        cloud_provider = provider_instances[best_config.type]
 
         logger.info(
-            "Catalog selection: {provider} {instance} in {region} (${price}/hr)",
+            "Selected: {provider} {instance} in {region} (${price}/hr)",
             provider=best_config.type, instance=offers[0].instance_type.name,
             region=best_spec.region, price=offers[0].spot_price or offers[0].on_demand_price or 0,
         )
 
         return offers, best_config, cloud_provider, best_spec
-
-    async def _select_offers_live(
-        self,
-    ) -> tuple[tuple[Offer, ...], ProviderConfig, Any, PoolSpec]:
-        """Select offers via live provider API calls (original behavior)."""
-        user_specs = self._build_specs()
-
-        ranked: list[tuple[float, Offer, ProviderConfig, Any, PoolSpec]] = []
-
-        for s in user_specs:
-            provider_config = s.provider
-            cloud_provider = await provider_config.create_provider()
-            provider_name = provider_config.type
-            region = s.region or getattr(provider_config, "region", "unknown")
-
-            pool_spec = PoolSpec(
-                nodes=s.nodes,
-                accelerator=s.accelerator,
-                region=region,
-                vcpus=s.vcpus,
-                memory_gb=s.memory_gb,
-                architecture=s.architecture,
-                allocation=s.allocation,
-                image=self.image,
-                ttl=s.ttl,
-                worker=self.worker,
-                provider=provider_name,  # type: ignore[arg-type]
-                max_hourly_cost=s.max_hourly_cost,
-                ssh_timeout=float(self.ssh_timeout),
-                ssh_retry_interval=float(self.ssh_retry_interval),
-                provision_retry_delay=self.provision_retry_delay,
-                max_provision_attempts=self.max_provision_attempts,
-                volumes=self.volumes,
-                min_nodes=self._scaling[0] if self._scaling else None,
-                max_nodes=self._scaling[1] if self._scaling else None,
-                autoscale_cooldown=self.autoscale_cooldown,
-                autoscale_idle_timeout=self.autoscale_idle_timeout,
-                reconcile_tick_interval=self.reconcile_tick_interval,
-                plugins=self._plugins,
-            )
-
-            logger.debug(
-                "Querying offers from {provider} (accelerator={acc})",
-                provider=provider_name, acc=pool_spec.accelerator_name,
-            )
-            offer_count = 0
-            try:
-                async for offer in cloud_provider.offers(pool_spec):
-                    offer_count += 1
-                    logger.debug(
-                        "Offer: {oid} ({name}) spot=${spot} od=${od}",
-                        oid=offer.id, name=offer.instance_type.name,
-                        spot=offer.spot_price, od=offer.on_demand_price,
-                    )
-                    use_spot = (
-                        s.allocation in ("spot", "spot-if-available")
-                        and offer.spot_price is not None
-                    )
-                    raw = (
-                        offer.spot_price if use_spot
-                        else offer.on_demand_price
-                    )
-                    price = raw if raw is not None else float("inf")
-                    ranked.append((
-                        price, offer, provider_config, cloud_provider, pool_spec,
-                    ))
-            except Exception as exc:
-                logger.error(
-                    "Error querying offers from {provider}: {err}",
-                    provider=provider_name, err=exc,
-                )
-
-            if offer_count == 0:
-                logger.warning(
-                    "No offers from {provider} for accelerator={acc}",
-                    provider=provider_name, acc=pool_spec.accelerator_name,
-                )
-
-        if not ranked:
-            raise RuntimeError("No offers found across all specs")
-
-        ranked.sort(key=lambda x: x[0])
-        offers = tuple(r[1] for r in ranked)
-        _, _, best_config, best_provider, best_spec = ranked[0]
-        return offers, best_config, best_provider, best_spec
 
     async def _start_async(self) -> None:
         """Start pool asynchronously using actors (zero bus)."""

@@ -531,6 +531,42 @@ class TestInstanceIdResolution:
         assert _resolve_instance_id(state, node_id=None) is None
 
 
+class TestUpdateInstance:
+    def test_updates_instance_ip(self) -> None:
+        from unittest.mock import MagicMock
+
+        from skyward.actors.console import _ssh_url, _State, _update_instance
+
+        inst_no_ip = MagicMock()
+        inst_no_ip.id = "i-abc"
+        inst_no_ip.ip = None
+        inst_no_ip.ssh_port = 22
+
+        inst_with_ip = MagicMock()
+        inst_with_ip.id = "i-abc"
+        inst_with_ip.ip = "10.0.0.1"
+        inst_with_ip.ssh_port = 22
+
+        state = _State(total_nodes=1, instances=(inst_no_ip,), ssh_user="ubuntu")
+        assert _ssh_url(state, "i-abc") == ""
+
+        updated = _update_instance(state, inst_with_ip)
+        assert _ssh_url(updated, "i-abc") == "ssh://ubuntu@10.0.0.1"
+
+    def test_ssh_url_with_custom_port(self) -> None:
+        from unittest.mock import MagicMock
+
+        from skyward.actors.console import _ssh_url, _State
+
+        inst = MagicMock()
+        inst.id = "i-abc"
+        inst.ip = "10.0.0.1"
+        inst.ssh_port = 2222
+
+        state = _State(total_nodes=1, instances=(inst,), ssh_user="root")
+        assert _ssh_url(state, "i-abc") == "ssh://root@10.0.0.1:2222"
+
+
 class TestNodeIdFromPath:
     def test_extracts_node_id(self) -> None:
         from skyward.actors.console import _node_id_from_path

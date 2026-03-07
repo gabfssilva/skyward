@@ -63,6 +63,7 @@ def _ipc_call(
     method: str,
     args: tuple[Any, ...] = (),
     create_kwargs: dict[str, Any] | None = None,
+    timeout: float | None = None,
 ) -> Any:
     request = IPCRequest(
         collection_type=collection_type,
@@ -72,6 +73,10 @@ def _ipc_call(
         create_kwargs=create_kwargs or {},
     )
     conn.send(request)
+    if timeout is not None and not conn.poll(timeout):
+        raise TimeoutError(
+            f"IPC call timed out after {timeout}s ({collection_type}.{method})"
+        )
     response: IPCResponse = conn.recv()
     if response.error is not None:
         raise RuntimeError(
@@ -246,14 +251,19 @@ class IPCBarrierProxy:
 
 
 class IPCLockProxy:
-    __slots__ = ("_conn", "_name")
+    __slots__ = ("_conn", "_name", "_timeout")
 
-    def __init__(self, conn: Connection, name: str) -> None:
+    def __init__(self, conn: Connection, name: str, timeout: float) -> None:
         self._conn = conn
         self._name = name
+        self._timeout = timeout
 
     def acquire(self) -> bool:
-        return _ipc_call(self._conn, "lock", self._name, "acquire")
+        return _ipc_call(
+            self._conn, "lock", self._name, "acquire",
+            create_kwargs={"timeout": self._timeout},
+            timeout=self._timeout,
+        )
 
     def release(self) -> None:
         _ipc_call(self._conn, "lock", self._name, "release")
@@ -291,8 +301,8 @@ class IPCRegistry:
     def barrier(self, name: str, n: int) -> IPCBarrierProxy:
         return IPCBarrierProxy(self._conn, name, n)
 
-    def lock(self, name: str) -> IPCLockProxy:
-        return IPCLockProxy(self._conn, name)
+    def lock(self, name: str, timeout: float = 30) -> IPCLockProxy:
+        return IPCLockProxy(self._conn, name, timeout)
 
     def cleanup(self) -> None:
         pass
@@ -300,30 +310,37 @@ class IPCRegistry:
 
 # ── Bridge (parent side) ─────────────────────────────────────────────
 
-def _dispatch(
+def _resolve_proxy(
     request: IPCRequest,
     registry: Any,
     proxy_cache: dict[tuple[str, str], Any],
-) -> IPCResponse:
+) -> Any:
+    cache_key = (request.collection_type, request.collection_name)
+
+    if cache_key not in proxy_cache:
+        factory = getattr(registry, request.collection_type)
+        match request.collection_type:
+            case "barrier":
+                n = request.create_kwargs.get("n", 1)
+                proxy_cache[cache_key] = factory(request.collection_name, n)
+            case "dict" | "set" | "counter":
+                consistency = request.create_kwargs.get("consistency")
+                proxy_cache[cache_key] = factory(
+                    request.collection_name, consistency=consistency,
+                )
+            case "lock":
+                timeout = request.create_kwargs.get("timeout", 30)
+                proxy_cache[cache_key] = factory(
+                    request.collection_name, timeout=timeout,
+                )
+            case _:
+                proxy_cache[cache_key] = factory(request.collection_name)
+
+    return proxy_cache[cache_key]
+
+
+def _execute(proxy: Any, request: IPCRequest) -> IPCResponse:
     try:
-        cache_key = (request.collection_type, request.collection_name)
-
-        if cache_key not in proxy_cache:
-            factory = getattr(registry, request.collection_type)
-            match request.collection_type:
-                case "barrier":
-                    n = request.create_kwargs.get("n", 1)
-                    proxy_cache[cache_key] = factory(request.collection_name, n)
-                case "dict" | "set" | "counter":
-                    consistency = request.create_kwargs.get("consistency")
-                    proxy_cache[cache_key] = factory(
-                        request.collection_name, consistency=consistency,
-                    )
-                case _:
-                    proxy_cache[cache_key] = factory(request.collection_name)
-
-        proxy = proxy_cache[cache_key]
-
         match request.method:
             case "value" if request.collection_type == "counter":
                 result = proxy.value
@@ -348,7 +365,8 @@ def _bridge_loop(
 
     def _handle(conn: Connection, request: IPCRequest) -> None:
         with cache_lock:
-            response = _dispatch(request, registry, proxy_cache)
+            proxy = _resolve_proxy(request, registry, proxy_cache)
+        response = _execute(proxy, request)
         try:
             conn.send(response)
         except (BrokenPipeError, EOFError, OSError):

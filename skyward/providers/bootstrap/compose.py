@@ -65,7 +65,7 @@ MAX_SIZE=10485760  # 10MB rotation threshold
 
 # Base emit with automatic rotation
 emit() {{{{
-    echo "$1" >> "$EVENTS_LOG"
+    printf '%s\n' "$1" >> "$EVENTS_LOG"
     local size
     size=$(stat -c%s "$EVENTS_LOG" 2>/dev/null || stat -f%z "$EVENTS_LOG" 2>/dev/null || echo 0)
     if [ "$size" -gt "$MAX_SIZE" ]; then

@@ -87,8 +87,10 @@ def format_results(r: dict) -> None:
 
 if __name__ == "__main__":
     with sky.ComputePool(
-        provider=sky.Hyperstack(),
-        accelerator=sky.accelerators.RTX_A4000(),
+        provider=sky.AWS(),
+        accelerator=sky.accelerators.T4(),
+        # provider=sky.Hyperstack(),
+        # accelerator=sky.accelerators.RTX_A4000(),
         # provider=sky.TensorDock(tier=0),
         # accelerator=sky.accelerators.RTX_3090(),
         image=sky.Image(pip=['jax[cuda12]']),

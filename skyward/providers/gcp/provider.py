@@ -64,6 +64,8 @@ class GCPSpecific:
 class GCPProvider(Provider[GCP, GCPSpecific]):
     """Stateless GCP provider. Holds only immutable config + sync clients."""
 
+    name = "gcp"
+
     def __init__(
         self,
         config: GCP,

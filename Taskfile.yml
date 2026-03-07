@@ -134,6 +134,16 @@ tasks:
     cmds:
       - uv run pytest -m "unit or e2e" {{.CLI_ARGS}}
 
+  test:offers:
+    desc: "Offer catalog unit tests"
+    cmds:
+      - uv run pytest tests/offers/ -v -m "not integration" {{.CLI_ARGS}}
+
+  test:offers:integration:
+    desc: "Offer catalog integration tests (real API calls)"
+    cmds:
+      - uv run pytest tests/offers/ -v -m integration {{.CLI_ARGS}}
+
   # ── Docs ─────────────────────────────────────────────────
 
   docs:

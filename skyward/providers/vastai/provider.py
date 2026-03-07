@@ -50,6 +50,8 @@ class VastAISpecific:
 class VastAIProvider(Provider[VastAI, VastAISpecific]):
     """Stateless VastAI provider. Holds only immutable config."""
 
+    name = "vastai"
+
     def __init__(self, config: VastAI) -> None:
         self._config = config
 

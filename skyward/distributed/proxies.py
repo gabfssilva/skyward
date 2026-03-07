@@ -32,7 +32,7 @@ def _get_loop() -> asyncio.AbstractEventLoop:
     return _system_loop
 
 
-def _run_sync[T](coro: Coroutine[Any, Any, T]) -> T:
+def _run_sync[T](coro: Coroutine[Any, Any, T], *, timeout: float = 30) -> T:
     loop = _get_loop()
 
     try:
@@ -47,9 +47,9 @@ def _run_sync[T](coro: Coroutine[Any, Any, T]) -> T:
 
     future = asyncio.run_coroutine_threadsafe(coro, loop)
     try:
-        return future.result(timeout=30)
+        return future.result(timeout=timeout)
     except TimeoutError:
-        log.warning("Cross-thread coroutine submission timed out after 30s")
+        log.warning("Cross-thread coroutine submission timed out after {t}s", t=timeout)
         raise
     except Exception:
         log.debug("Cross-thread coroutine submission failed")
@@ -239,13 +239,14 @@ class BarrierProxy:
 
 
 class LockProxy:
-    __slots__ = ("_lock",)
+    __slots__ = ("_lock", "_timeout")
 
-    def __init__(self, lock: Any) -> None:
+    def __init__(self, lock: Any, timeout: float) -> None:
         self._lock = lock
+        self._timeout = timeout
 
     def acquire(self) -> bool:
-        _run_sync(self._lock.acquire())
+        _run_sync(self._lock.acquire(), timeout=self._timeout)
         return True
 
     def release(self) -> None:
@@ -259,7 +260,7 @@ class LockProxy:
         self.release()
 
     async def acquire_async(self) -> bool:
-        await self._lock.acquire()
+        await asyncio.wait_for(self._lock.acquire(), timeout=self._timeout)
         return True
 
     async def release_async(self) -> None:

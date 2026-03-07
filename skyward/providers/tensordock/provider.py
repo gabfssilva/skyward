@@ -143,6 +143,8 @@ def _filter_locations(
 class TensorDockProvider(Provider[TensorDock, TensorDockSpecific]):
     """TensorDock provider using v2 API."""
 
+    name = "tensordock"
+
     def __init__(self, config: TensorDock) -> None:
         self._config = config
 

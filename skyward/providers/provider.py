@@ -18,6 +18,8 @@ class Provider[C, S](Protocol):
     Cluster, allowing the immutable context to evolve across the lifecycle.
     """
 
+    name: str
+
     @classmethod
     async def create(cls, config: C) -> Self:
         """Create a new instance of the provider."""

@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from skyward.storage import Storage
 from skyward.providers.ssh_keys import generate_key_name, get_local_ssh_key, get_ssh_key_path
 
-from .client import HyperstackClient, get_api_key
+from .client import HYPERSTACK_API_BASE, HyperstackClient, get_api_key
 from .config import Hyperstack
 from .types import FlavorResponse, PricebookEntry, VMResponse, normalize_gpu_name
 
@@ -48,6 +48,8 @@ class HyperstackSpecific:
 
 class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific], Mountable[HyperstackSpecific]):
     """Hyperstack provider with S3-compatible object storage support."""
+
+    name = "hyperstack"
 
     def __init__(self, config: Hyperstack) -> None:
         self._config = config
@@ -164,7 +166,11 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific], Mountable[Hyp
             ssh_key_path=ssh_key_path,
             ssh_user="ubuntu",
             use_sudo=True,
-            shutdown_command="sudo shutdown -h now",
+            shutdown_command=(
+                "curl -sS -X DELETE"
+                f" '{HYPERSTACK_API_BASE}/core/virtual-machines/{{instance_id}}'"
+                f" -H 'api_key: {api_key}'"
+            ),
             specific=HyperstackSpecific(
                 environment_name=env_name,
                 environment_id=env_id,

@@ -50,6 +50,8 @@ class VerdaSpecific:
 class VerdaProvider(Provider[Verda, VerdaSpecific]):
     """Stateless Verda provider. Holds only immutable config + client."""
 
+    name = "verda"
+
     def __init__(self, config: Verda, client: VerdaClient) -> None:
         self._config = config
         self._client = client
@@ -93,9 +95,9 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
                 return False
             if spec.memory_gb and get_memory_gb(itype) < spec.memory_gb:
                 return False
-            if not spec.accelerator_name:
-                return True
             accel = get_accelerator(itype)
+            if not spec.accelerator_name:
+                return accel is None
             if not accel:
                 return False
             if not (
@@ -140,7 +142,8 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
 
             spot_price = get_price_spot(itype_data)
             on_demand_price = get_price_on_demand(itype_data)
-            os_image = select_os_image(itype_data.get("supported_os", []))
+            supported = itype_data.get("supported_os", [])
+            os_image = select_os_image(supported) if accel else _select_cpu_image(supported)
 
             yield Offer(
                 id=f"verda-{itype_name}",
@@ -323,3 +326,14 @@ async def _find_available_region(
             return region
 
     raise RuntimeError(f"No region has instance type '{instance_type}' available")
+
+
+def _select_cpu_image(supported_os: list[str]) -> str:
+    """Select a plain Ubuntu image for CPU-only instances (no CUDA)."""
+    import re
+
+    ubuntu = [img for img in supported_os if img.lower().startswith("ubuntu-") and "cuda" not in img.lower()]
+    if ubuntu:
+        ubuntu.sort(key=lambda img: tuple(int(x) for x in re.findall(r"\d+", img)), reverse=True)
+        return ubuntu[0]
+    return supported_os[0] if supported_os else "ubuntu-22.04"

@@ -20,7 +20,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from typing import Any, Final
 
-from casty import ActorContext, ActorRef, Behavior, Behaviors
+from casty import ActorContext, ActorRef, Behavior, Behaviors, Terminated
 
 from skyward.actors.messages import (
     BootstrapDone,
@@ -229,7 +229,7 @@ def node_actor(
         log.info("Opening SSH tunnel to {ip}", ip=ni.instance.ip)
         ctx.pipe_to_self(
             _open_tunnel(ni, cluster, ssh_timeout, ssh_retry_interval),
-            mapper=lambda result: _Connected(transport=result[0], listener=result[1]),
+            mapper=lambda result: _Connected(transport=result[0], listener=result[1], instance=ni),
             on_failure=lambda e: _ConnectionFailed(error=str(e)),
         )
         return connecting(cluster, provider, ni, head_info, pending_tasks)
@@ -298,7 +298,7 @@ def node_actor(
         ctx.on_stop(_close_transport)
 
         if not _skip_monitor:
-            ctx.spawn(
+            monitor_ref = ctx.spawn(
                 instance_monitor(
                     info=ni,
                     transport=transport,
@@ -307,6 +307,7 @@ def node_actor(
                 ),
                 f"monitor-{ni.instance.id}",
             )
+            ctx.watch(monitor_ref)
 
         if cluster.prebaked:
             log.info("Prebaked image detected, skipping bootstrap")
@@ -490,6 +491,13 @@ def node_actor(
                     return _start_replacing(
                         ctx, cluster, provider, ni.instance.id, pending_tasks, head_info
                     )
+                case Terminated():
+                    log.warning("Monitor died in post_bootstrap")
+                    await _cleanup_transport(transport, listener)
+                    pool.tell(NodeLost(node_id=node_id, reason="monitor stopped"))
+                    return _start_replacing(
+                        ctx, cluster, provider, ni.instance.id, pending_tasks, head_info
+                    )
                 case ExecuteOnNode() as ex:
                     pt = _PendingTask(
                         ex.fn, ex.args, ex.kwargs, ex.reply_to, ex.task_id, ex.timeout
@@ -573,6 +581,13 @@ def node_actor(
                     return _start_replacing(
                         ctx, cluster, provider, ni.instance.id, pending_tasks, head_info=None
                     )
+                case Terminated():
+                    log.warning("Monitor died while waiting for head")
+                    await _cleanup_transport(transport, listener)
+                    pool.tell(NodeLost(node_id=node_id, reason="monitor stopped"))
+                    return _start_replacing(
+                        ctx, cluster, provider, ni.instance.id, pending_tasks, head_info=None
+                    )
                 case ExecuteOnNode() as ex:
                     pt = _PendingTask(
                         ex.fn, ex.args, ex.kwargs, ex.reply_to, ex.task_id, ex.timeout
@@ -645,6 +660,13 @@ def node_actor(
                     return _start_replacing(
                         ctx, cluster, provider, ni.instance.id, pending_tasks, head_info
                     )
+                case Terminated():
+                    log.warning("Monitor died while starting worker")
+                    await _cleanup_transport(transport, listener)
+                    pool.tell(NodeLost(node_id=node_id, reason="monitor stopped"))
+                    return _start_replacing(
+                        ctx, cluster, provider, ni.instance.id, pending_tasks, head_info
+                    )
                 case ExecuteOnNode() as ex:
                     pt = _PendingTask(
                         ex.fn, ex.args, ex.kwargs, ex.reply_to, ex.task_id, ex.timeout
@@ -705,6 +727,13 @@ def node_actor(
                 case Preempted():
                     await _cleanup_transport(transport, listener)
                     pool.tell(NodeLost(node_id=node_id, reason="preempted"))
+                    return _start_replacing(
+                        ctx, cluster, provider, ni.instance.id, pending_tasks, head_info
+                    )
+                case Terminated():
+                    log.warning("Monitor died while ready")
+                    await _cleanup_transport(transport, listener)
+                    pool.tell(NodeLost(node_id=node_id, reason="monitor stopped"))
                     return _start_replacing(
                         ctx, cluster, provider, ni.instance.id, pending_tasks, head_info
                     )
@@ -775,6 +804,13 @@ def node_actor(
                     return _start_replacing(
                         ctx, cluster, provider, ni.instance.id, pending_tasks, head_info
                     )
+                case Terminated():
+                    log.warning("Monitor died while joining")
+                    await _cleanup_transport(transport, listener)
+                    pool.tell(NodeLost(node_id=node_id, reason="monitor stopped"))
+                    return _start_replacing(
+                        ctx, cluster, provider, ni.instance.id, pending_tasks, head_info
+                    )
                 case ExecuteOnNode() as ex:
                     pt = _PendingTask(
                         ex.fn, ex.args, ex.kwargs, ex.reply_to, ex.task_id, ex.timeout
@@ -834,6 +870,13 @@ def node_actor(
                 case Preempted():
                     await _cleanup_transport(transport, listener)
                     pool.tell(NodeLost(node_id=node_id, reason="preempted"))
+                    return _start_replacing(
+                        ctx, cluster, provider, ni.instance.id, pending_tasks, head_info
+                    )
+                case Terminated():
+                    log.warning("Monitor died during env setup")
+                    await _cleanup_transport(transport, listener)
+                    pool.tell(NodeLost(node_id=node_id, reason="monitor stopped"))
                     return _start_replacing(
                         ctx, cluster, provider, ni.instance.id, pending_tasks, head_info
                     )
@@ -1006,7 +1049,7 @@ def node_actor(
                         ctx.pipe_to_self(
                             _open_tunnel(ni, s.cluster, ssh_timeout, ssh_retry_interval),
                             mapper=lambda result: _Connected(
-                                transport=result[0], listener=result[1],
+                                transport=result[0], listener=result[1], instance=ni,
                             ),
                             on_failure=lambda e: _TransportReconnectFailed(error=str(e)),
                         )
@@ -1019,6 +1062,27 @@ def node_actor(
                     log.warning("Preempted while active: {reason}", reason=reason)
                     await _cleanup_transport(s.transport, s.listener)
                     pool.tell(NodeLost(node_id=node_id, reason=reason))
+                    return _start_replacing(
+                        ctx,
+                        s.cluster,
+                        s.provider,
+                        s.current_node_instance.instance.id if s.current_node_instance else "",
+                        s.pending_tasks,
+                        s.head_info,
+                    )
+                case Terminated():
+                    log.warning("Monitor died while active, marking node lost")
+                    for tid, caller in s.inflight.items():
+                        caller.tell(
+                            TaskResult(
+                                value=RuntimeError(f"Node {node_id} monitor stopped"),
+                                node_id=node_id,
+                                task_id=tid,
+                                error=True,
+                            )
+                        )
+                    await _cleanup_transport(s.transport, s.listener)
+                    pool.tell(NodeLost(node_id=node_id, reason="monitor stopped"))
                     return _start_replacing(
                         ctx,
                         s.cluster,
@@ -1295,7 +1359,13 @@ async def _run_bootstrap(
             postamble_ops.extend(plugin.bootstrap(cluster))
 
     postamble = postamble_ops if postamble_ops else None
-    bootstrap_script = image.generate_bootstrap(ttl=0, postamble=postamble)
+    ttl = spec.ttl or 0
+    shutdown_command = cluster.shutdown_command.format(instance_id=ni.instance.id)
+    bootstrap_script = image.generate_bootstrap(
+        ttl=ttl,
+        shutdown_command=shutdown_command,
+        postamble=postamble,
+    )
 
     await run_bootstrap_via_ssh(
         transport=transport,

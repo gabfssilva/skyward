@@ -97,11 +97,11 @@ class DistributedRegistry:
         barrier = _call_on_loop(self._loop, lambda: d.barrier(name))
         return BarrierProxy(barrier, n)
 
-    def lock(self, name: str) -> LockProxy:
+    def lock(self, name: str, timeout: float = 30) -> LockProxy:
         log.debug("Creating distributed lock name={name}", name=name)
         d = self._get_distributed()
-        lock = _call_on_loop(self._loop, lambda: d.lock(name))
-        return LockProxy(lock)
+        lock = _call_on_loop(self._loop, lambda: d.lock(name, timeout=timeout))
+        return LockProxy(lock, timeout)
 
     def cleanup(self) -> None:
         log.debug("Cleaning up distributed registry")

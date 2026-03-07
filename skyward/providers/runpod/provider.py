@@ -269,6 +269,8 @@ class RunPodSpecific:
 class RunPodProvider(Provider[RunPod, RunPodSpecific]):
     """Stateless RunPod provider. Holds only immutable config."""
 
+    name = "runpod"
+
     def __init__(self, config: RunPod) -> None:
         self._config = config
 

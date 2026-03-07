@@ -11,16 +11,16 @@ def slow_task(x):
 
 
 if __name__ == '__main__':
-    nodes = 2
-    concurrency = 120
+    nodes = 10
+    concurrency = 30
     tasks = 20000
 
     effective_workers = nodes * concurrency
 
     with sky.ComputePool(
-        provider=sky.Verda(),
+        provider=sky.AWS(),
         nodes=nodes,
-        vcpus=64,
+        vcpus=2,
         worker=sky.Worker(concurrency=concurrency),
         allocation="spot",
         plugins=[

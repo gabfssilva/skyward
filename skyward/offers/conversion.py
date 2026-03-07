@@ -9,19 +9,20 @@ from skyward.accelerators.spec import Accelerator
 from skyward.api.model import InstanceType, Offer
 from skyward.api.spec import Architecture
 
+from .feed import _make_spec, _Offer
 from .model import CatalogOffer
 
 
 def to_offer(co: CatalogOffer) -> Offer:
     """Convert a CatalogOffer from the SQLite catalog into a runtime Offer."""
-    accelerator = Accelerator(name=co.gpu, count=co.gpu_count)
+    accelerator = Accelerator(name=co.accelerator_name, count=co.accelerator_count) if co.accelerator_name else None
 
     it = InstanceType(
         name=co.instance_type,
         accelerator=accelerator,
         vcpus=co.vcpus,
         memory_gb=co.memory_gb,
-        architecture=cast(Architecture, "x86_64"),
+        architecture=cast(Architecture, co.cpu_architecture),
         specific=None,
     )
 
@@ -123,3 +124,31 @@ def _verda_specific(raw: dict[str, Any] | None) -> str:
     if raw is None:
         return "ubuntu-22.04"
     return raw.get("os_image", "ubuntu-22.04")
+
+
+def _offer_from_runtime(offer: Offer, provider: str) -> _Offer:
+    accel = offer.instance_type.accelerator
+    gpu_name = accel.name if accel else ""
+    gpu_count = accel.count if accel else 0
+
+    prefix = f"{provider}-"
+    suffix = f"-{offer.instance_type.name}"
+    raw_id = offer.id
+    region = raw_id.removeprefix(prefix).removesuffix(suffix) if (
+        raw_id.startswith(prefix) and raw_id.endswith(suffix)
+    ) else "unknown"
+
+    return _Offer(
+        spec=_make_spec(
+            gpu_name, 0,
+            vcpus=offer.instance_type.vcpus,
+            memory_gb=offer.instance_type.memory_gb,
+            cpu_architecture=offer.instance_type.architecture,
+        ),
+        accelerator_count=gpu_count,
+        instance_type=offer.instance_type.name,
+        region=region,
+        spot_price=offer.spot_price,
+        on_demand_price=offer.on_demand_price,
+        billing_unit=offer.billing_unit,
+    )

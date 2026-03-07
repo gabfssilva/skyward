@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from .plugin import Plugin
+from .plugin import Plugin, around_app, around_client, around_process
 
 if TYPE_CHECKING:
     from .cuml import cuml
@@ -39,6 +39,9 @@ __all__ = [
     "mig",
     "mps",
     "sklearn",
+    "around_client",
+    "around_app",
+    "around_process"
 ]
 
 _LAZY_IMPORTS: dict[str, tuple[str, str]] = {

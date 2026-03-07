@@ -152,6 +152,13 @@ def _on_instances_provisioned(
     )
 
 
+def _update_instance(state: _State, resolved: Instance) -> _State:
+    updated = tuple(
+        resolved if i.id == resolved.id else i for i in state.instances
+    )
+    return replace(state, instances=updated)
+
+
 def _advance(current: _Phase, candidate: _Phase) -> _Phase:
     return candidate if candidate.value > current.value else current
 
@@ -521,7 +528,8 @@ def _inline_badge(label: str) -> Text:
 
 def _emit(console: Console, badge: str, text: str, style: str = "", link: str = "") -> None:
     line = _badge_text(badge, link=link)
-    line.append(f"  {text}", style=style or None)
+    text_style = Style.parse(style) + Style(link=link) if link else (style or None)
+    line.append(f"  {text}", style=text_style)
     console.print(line)
 
 
@@ -529,7 +537,8 @@ def _emit_task(console: Console, badge: str, status: str, text: str, link: str =
     line = _badge_text(badge, link=link)
     line.append(" ")
     line.append_text(_inline_badge(status))
-    line.append(f" {text}")
+    text_style = Style(link=link) if link else None
+    line.append(f" {text}", style=text_style)
     console.print(line)
 
 
@@ -1184,16 +1193,25 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
                     _update_footer(new)
                     return observing(new)
 
-                case SpyEvent(actor_path=path, event=_Connected()):
+                case SpyEvent(actor_path=path, event=_Connected(instance=ni)):
                     nid = _node_id_from_path(path)
-                    iid = _resolve_instance_id(state, node_id=nid)
+                    current = state
+                    if ni is not None:
+                        current = _update_instance(current, ni.instance)
+                        if not current.ssh_user:
+                            current = replace(
+                                current,
+                                ssh_user=ni.ssh_user,
+                                ssh_key_path=ni.ssh_key_path,
+                            )
+                    iid = _resolve_instance_id(current, node_id=nid)
                     if iid:
-                        link = _ssh_url(state, iid)
+                        link = _ssh_url(current, iid)
                         _emit(console, iid, "\u2713 SSH connected", "green", link=link)
-                        cmd = _ssh_command(state, iid)
+                        cmd = _ssh_command(current, iid)
                         if cmd:
                             _emit(console, iid, cmd, "dim", link=link)
-                        new = _on_ssh_connected(state, iid)
+                        new = _on_ssh_connected(current, iid)
                         _update_footer(new)
                         return observing(new)
                     return Behaviors.same()
