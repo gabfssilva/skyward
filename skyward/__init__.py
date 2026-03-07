@@ -9,6 +9,7 @@
     with sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.A100()) as pool:
         result = train(data) >> pool
 """
+from typing import Any
 
 try:
     from skyward._version import __version__ as __version__
@@ -93,7 +94,7 @@ from .offers.repository import OfferRepository
 from .providers import AWS, GCP, Container, Hyperstack, RunPod, TensorDock, VastAI, Verda
 
 
-async def offers() -> OfferRepository:
+async def offers(providers: list[Any]) -> OfferRepository:
     """Load the GPU offer catalog into a queryable repository.
 
     Usage::
@@ -103,7 +104,7 @@ async def offers() -> OfferRepository:
         repo = await sky.offers()
         offer = repo.accelerator("A100").spot().cheapest()
     """
-    return await OfferRepository.create()
+    return await OfferRepository.create(providers)
 
 __all__ = [
     "__version__",

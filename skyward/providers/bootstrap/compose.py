@@ -63,9 +63,13 @@ export PATH="/root/.local/bin:$PATH"
 EVENTS_LOG="{SKYWARD_DIR}/events.jsonl"
 MAX_SIZE=10485760  # 10MB rotation threshold
 
-# Base emit with automatic rotation
+# Base emit with automatic rotation (flock for atomic writes)
+EVENTS_LOCK="{SKYWARD_DIR}/events.lock"
 emit() {{{{
-    printf '%s\n' "$1" >> "$EVENTS_LOG"
+    (
+        flock 9
+        printf '%s\n' "$1" >> "$EVENTS_LOG"
+    ) 9>"$EVENTS_LOCK"
     local size
     size=$(stat -c%s "$EVENTS_LOG" 2>/dev/null || stat -f%z "$EVENTS_LOG" 2>/dev/null || echo 0)
     if [ "$size" -gt "$MAX_SIZE" ]; then
@@ -110,6 +114,7 @@ emit_command() {{{{
 
 # Save emit helpers for post-bootstrap reuse (e.g., Casty log streaming)
 (echo 'EVENTS_LOG="{SKYWARD_DIR}/events.jsonl"'
+ echo 'EVENTS_LOCK="{SKYWARD_DIR}/events.lock"'
  echo 'MAX_SIZE=10485760'
  declare -f emit emit_phase emit_console emit_command) > {SKYWARD_DIR}/emit.sh
 
@@ -127,8 +132,8 @@ run_phase() {{{{
     local start_ns=$(date +%s%N)
 
     set +e
-    "$@" 2>&1 | while IFS= read -r line; do
-        emit_console "$line"
+    "$@" 2>&1 | tr '\\r' '\\n' | while IFS= read -r line; do
+        [ -n "$line" ] && emit_console "$line"
     done
     local exit_code=${{{{PIPESTATUS[0]}}}}
     set -e

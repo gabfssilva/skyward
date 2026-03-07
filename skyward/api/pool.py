@@ -874,7 +874,7 @@ class ComputePool:
 
             query = (
                 repo.accelerator(accel.name).provider(ptype) if accel
-                else repo.provider(ptype)
+                else repo.provider(ptype).cpu_only()
             )
 
             if accel and accel.memory:
