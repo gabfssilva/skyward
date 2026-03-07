@@ -46,6 +46,10 @@ class _PartialContainerProvider:
         self._limits = batch_limits
         self._call = 0
 
+    @property
+    def name(self) -> str:
+        return self._inner.name
+
     async def offers(self, spec: PoolSpec) -> AsyncIterator[sky.Offer]:
         async for offer in self._inner.offers(spec):
             yield offer

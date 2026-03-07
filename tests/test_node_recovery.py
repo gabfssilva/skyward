@@ -60,6 +60,10 @@ class _NodeKillerProvider:
         self._kill_id: str | None = None
         self._killed = False
 
+    @property
+    def name(self) -> str:
+        return self._inner.name
+
     async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
         async for offer in self._inner.offers(spec):
             yield offer
@@ -222,6 +226,10 @@ class _KillSwitchProvider:
     ) -> None:
         self._inner = inner
         self._switch = kill_switch
+
+    @property
+    def name(self) -> str:
+        return self._inner.name
 
     async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
         async for offer in self._inner.offers(spec):

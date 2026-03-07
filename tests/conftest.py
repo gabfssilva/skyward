@@ -16,6 +16,7 @@ def pool():
         worker=Worker(concurrency=5),
         vcpus=1,
         memory_gb=1,
+        logging=True,
     ) as p:
         yield p
 

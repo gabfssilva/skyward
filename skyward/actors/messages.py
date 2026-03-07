@@ -351,8 +351,8 @@ class _UserCodeSyncDone:
 
 @dataclass(frozen=True, slots=True)
 class _Connected:
-    transport: Any
-    listener: Any
+    transport_ref: ActorRef  # ActorRef[TransportMsg]
+    local_port: int
     instance: NodeInstance | None = None
 
 
@@ -461,16 +461,6 @@ class TaskResult:
     error: bool = False
 
 
-@dataclass(frozen=True, slots=True)
-class _TransportReconnected:
-    pass
-
-
-@dataclass(frozen=True, slots=True)
-class _TransportReconnectFailed:
-    error: str
-
-
 type NodeMsg = (
     Provision
     | ExecuteOnNode
@@ -490,7 +480,7 @@ type NodeMsg = (
     | _RemoteTaskDone
     | _WorkerDiscovered | _WorkerDiscoveryFailed
     | _EnvSetupDone | _EnvSetupFailed
-    | _TransportReconnected | _TransportReconnectFailed
+    | Any  # transport actor events + Terminated (child death watch)
 )
 
 
@@ -851,23 +841,7 @@ class StopMonitor:
     pass
 
 
-@dataclass(frozen=True, slots=True)
-class _StreamedEvent:
-    event: Event
-    lines_read: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class _StreamEnded:
-    error: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _Reconnect:
-    pass
-
-
-type MonitorMsg = StopMonitor | _StreamedEvent | _StreamEnded | _Reconnect
+type MonitorMsg = StopMonitor
 
 
 # =============================================================================

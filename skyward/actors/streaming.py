@@ -1,33 +1,23 @@
-"""Instance monitor actor — streams JSONL events from instances.
+"""Instance monitor actor — subscribes to transport for JSONL events.
 
-An instance monitor tells this story:
-streaming → reconnecting → streaming → ... → stopped.
+An instance monitor tells this story: streaming → stopped.
 
-The monitor receives a shared SSHTransport, reads the events.jsonl file
-(tail -F with offset tracking), converts raw events to typed messages,
-and sends them to event_listener for observability. It runs for the
-entire instance lifetime — not just bootstrap.
+The monitor sends SubscribeEvents to the transport actor and receives
+pushed StreamEvent messages. It converts raw events to typed messages
+and forwards them to event_listener. Bootstrap completion is detected
+as a side effect.
 
-On stream failure after bootstrap, the monitor reconnects automatically
-with exponential backoff, resuming from the last known line offset.
-Before bootstrap, stream failure is fatal.
-
-Bootstrap completion is detected as a side effect: when the monitor
-sees BootstrapPhase(phase="bootstrap", event="completed"), it signals
-via reply_to. Streaming continues after that for metrics, logs, and
-other runtime events.
+Reconnection is handled entirely by the transport actor.
 """
-
 from __future__ import annotations
 
-import asyncio
-from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 
 if TYPE_CHECKING:
-    from skyward.infra.ssh import SSHTransport
+    from skyward.infra.ssh_actor import StreamEvent
+
 from skyward.observability.logger import logger
 
 from .messages import (
@@ -42,61 +32,40 @@ from .messages import (
     MonitorMsg,
     NodeInstance,
     StopMonitor,
-    _Reconnect,
-    _StreamedEvent,
-    _StreamEnded,
 )
-
-
-async def _read_next(stream: AsyncIterator, info: NodeInstance) -> MonitorMsg:
-    try:
-        lines_read, raw_event = await stream.__anext__()
-        logger.trace("Read {lines_read}: {raw_event}", lines_read=lines_read, raw_event=raw_event)
-        event = _convert(raw_event, info)
-        match event:
-            case None:
-                return await _read_next(stream, info)
-            case _:
-                return _StreamedEvent(event=event, lines_read=lines_read)
-    except StopAsyncIteration:
-        return _StreamEnded()
-    except Exception as e:
-        logger.warning("Instance monitor stream error on {iid}: {err}", iid=info.instance.id, err=e)
-        return _StreamEnded(error=str(e))
 
 
 def instance_monitor(
     info: NodeInstance,
-    transport: SSHTransport,
+    transport: ActorRef,  # ActorRef[TransportMsg]
     event_listener: ActorRef,
     reply_to: ActorRef[BootstrapDone],
-    max_reconnect_attempts: int = 5,
-    max_backoff: float = 30.0,
-) -> Behavior[MonitorMsg]:
-    """An instance monitor tells this story:
-    streaming → reconnecting → streaming → ... → stopped.
-    """
+) -> Behavior[MonitorMsg | StreamEvent]:
+    """streaming → stopped."""
 
-    def _open_stream(start_line: int) -> AsyncIterator:
-        return transport.stream_events(timeout=600.0, start_line=start_line).__aiter__()
-
-    async def _setup(ctx: ActorContext[MonitorMsg]) -> Behavior[MonitorMsg]:
+    async def _setup(ctx: ActorContext[MonitorMsg | StreamEvent]) -> Behavior[MonitorMsg | StreamEvent]:
+        from skyward.infra.ssh_actor import SubscribeEvents
         log = logger.bind(actor="monitor", instance_id=info.instance.id)
-        log.info("Starting event stream on shared transport")
-        stream = _open_stream(start_line=0)
-        ctx.pipe_to_self(_read_next(stream, info), mapper=lambda msg: msg)
-        return streaming(stream, bootstrap_signaled=False, lines_read=0)
+        log.info("Subscribing to transport for events")
+        transport.tell(SubscribeEvents(start_line=0, subscriber=ctx.self))
+        return streaming(bootstrap_signaled=False)
 
     def streaming(
-        stream: AsyncIterator,
         bootstrap_signaled: bool,
-        lines_read: int,
-        reconnect_attempts: int = 0,
-    ) -> Behavior[MonitorMsg]:
-        async def receive(ctx: ActorContext[MonitorMsg], msg: MonitorMsg) -> Behavior[MonitorMsg]:
+    ) -> Behavior[MonitorMsg | StreamEvent]:
+        async def receive(
+            ctx: ActorContext[MonitorMsg | StreamEvent],
+            msg: MonitorMsg | StreamEvent,
+        ) -> Behavior[MonitorMsg | StreamEvent]:
+            from skyward.infra.ssh_actor import StreamEvent
+
             match msg:
-                case _StreamedEvent(event=event, lines_read=new_lines_read):
+                case StreamEvent(event=raw_event):
                     log = logger.bind(actor="monitor", instance_id=info.instance.id)
+                    event = _convert(raw_event, info)
+                    if event is None:
+                        return Behaviors.same()
+
                     match event:
                         case Metric():
                             log.trace("metric: {name}={value}", name=event.name, value=event.value)
@@ -113,95 +82,29 @@ def instance_monitor(
 
                     event_listener.tell(event)
 
-                    ctx.pipe_to_self(_read_next(stream, info), mapper=lambda msg: msg)
-
                     signaled = bootstrap_signaled
                     if not signaled:
                         match event:
                             case BootstrapPhase(phase="bootstrap", event="completed"):
-                                mon_log = logger.bind(
-                                    actor="monitor", instance_id=info.instance.id,
-                                )
-                                mon_log.info("Bootstrap completion signal received")
+                                log.info("Bootstrap completion signal received")
                                 reply_to.tell(BootstrapDone(instance=info, success=True))
                                 signaled = True
                             case BootstrapFailed(error=error):
                                 reply_to.tell(BootstrapDone(
-                                    instance=info,
-                                    success=False,
-                                    error=error,
+                                    instance=info, success=False, error=error,
                                 ))
                                 signaled = True
 
-                    changed = (
-                        new_lines_read != lines_read
-                        or signaled != bootstrap_signaled
-                        or reconnect_attempts > 0
-                    )
-                    if changed:
-                        return streaming(stream, signaled, new_lines_read, reconnect_attempts=0)
+                    if signaled != bootstrap_signaled:
+                        return streaming(signaled)
                     return Behaviors.same()
-
-                case _StreamEnded(error=error):
-                    log = logger.bind(actor="monitor", instance_id=info.instance.id)
-                    if error is None:
-                        log.info("Stream ended cleanly")
-                    else:
-                        log.warning("Stream ended with error: {err}", err=error)
-
-                    if not bootstrap_signaled:
-                        reply_to.tell(BootstrapDone(
-                            instance=info,
-                            success=False,
-                            error=error or "stream ended before bootstrap completed",
-                        ))
-                        return Behaviors.stopped()
-
-                    return reconnecting(lines_read, attempts=reconnect_attempts)
 
                 case StopMonitor():
                     return Behaviors.stopped()
+
             return Behaviors.same()
 
         return Behaviors.receive(receive)
-
-    def reconnecting(lines_read: int, attempts: int) -> Behavior[MonitorMsg]:
-        log = logger.bind(actor="monitor", instance_id=info.instance.id)
-
-        if attempts >= max_reconnect_attempts:
-            log.error("Giving up after {n} reconnect attempts", n=attempts)
-            return Behaviors.stopped()
-
-        delay = min(2.0 ** attempts, max_backoff)
-        log.info(
-            "Stream lost, reconnecting in {delay}s (attempt {n}/{max})",
-            delay=delay, n=attempts + 1, max=max_reconnect_attempts,
-        )
-
-        async def _schedule_reconnect() -> _Reconnect:
-            await asyncio.sleep(delay)
-            return _Reconnect()
-
-        async def receive(ctx: ActorContext[MonitorMsg], msg: MonitorMsg) -> Behavior[MonitorMsg]:
-            match msg:
-                case _Reconnect():
-                    stream = _open_stream(start_line=lines_read)
-                    log.info("Reopening stream at line {offset}", offset=lines_read)
-                    ctx.pipe_to_self(_read_next(stream, info), mapper=lambda msg: msg)
-                    return streaming(
-                        stream, bootstrap_signaled=True,
-                        lines_read=lines_read, reconnect_attempts=attempts + 1,
-                    )
-
-                case StopMonitor():
-                    return Behaviors.stopped()
-            return Behaviors.same()
-
-        async def _enter(ctx: ActorContext[MonitorMsg]) -> Behavior[MonitorMsg]:
-            ctx.pipe_to_self(_schedule_reconnect(), mapper=lambda msg: msg)
-            return Behaviors.receive(receive)
-
-        return Behaviors.setup(_enter)
 
     return Behaviors.setup(_setup)
 
