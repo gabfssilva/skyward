@@ -51,8 +51,10 @@ def casty_service(
 echo $! > /var/run/casty.pid
 
 # Stream Casty logs to events.jsonl in background
-(tail -f /var/log/casty.log 2>/dev/null | while IFS= read -r line; do
-    emit_console "[casty] $line"
+# tr '\r' '\n' splits tqdm/progress-bar CR updates into separate lines,
+# preventing very long JSONL entries that break atomic writes.
+(tail -f /var/log/casty.log 2>/dev/null | tr '\\r' '\\n' | while IFS= read -r line; do
+    [ -n "$line" ] && emit_console "[casty] $line"
 done) &"""
 
     return generate
