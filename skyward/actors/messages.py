@@ -14,12 +14,18 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
-from casty import ActorRef
+from casty import ActorRef, Terminated
+
+from skyward.infra.ssh_actor import ConnectionFailed, ConnectionLost, ConnectionRestored, PortReForwarded
 
 if TYPE_CHECKING:
+    from casty import ClusterClient
+
     from skyward.api.model import Cluster, Instance, Offer
     from skyward.api.provider import ProviderConfig
     from skyward.api.spec import PoolSpec
+    from skyward.plugins.plugin import AppLifecycle, ProcessLifecycle
+    from skyward.providers.provider import Provider
 
 type RequestId = str
 type ClusterId = str
@@ -404,16 +410,16 @@ class _RemoteTaskDone:
 
 @dataclass(frozen=True, slots=True)
 class JoinCluster:
-    client: Any
+    client: ClusterClient
     pool_info_json: str
     env_vars: dict[str, str]
-    around_app_hooks: tuple[tuple[str, Any], ...] = ()
-    around_process_hooks: tuple[tuple[str, Any], ...] = ()
+    around_app_hooks: tuple[tuple[str, AppLifecycle], ...] = ()
+    around_process_hooks: tuple[tuple[str, ProcessLifecycle], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class _WorkerDiscovered:
-    worker_ref: Any
+    worker_ref: ActorRef
 
 
 @dataclass(frozen=True, slots=True)
@@ -438,9 +444,9 @@ class _EnvSetupFailed:
 
 @dataclass(frozen=True, slots=True)
 class Provision:
-    cluster: Any
-    provider: Any
-    instance: Any
+    cluster: Cluster[Any]
+    provider: Provider[Any, Any]
+    instance: Instance
 
 
 @dataclass(frozen=True, slots=True)
@@ -480,7 +486,8 @@ type NodeMsg = (
     | _RemoteTaskDone
     | _WorkerDiscovered | _WorkerDiscoveryFailed
     | _EnvSetupDone | _EnvSetupFailed
-    | Any  # transport actor events + Terminated (child death watch)
+    | ConnectionLost | ConnectionRestored | ConnectionFailed | PortReForwarded
+    | Terminated
 )
 
 

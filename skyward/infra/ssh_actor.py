@@ -630,3 +630,61 @@ def ssh_transport(
             await asyncio.wait_for(state.conn.wait_closed(), timeout=5.0)
 
     return connecting()
+
+
+# ── Transport bridge helpers ─────────────────────────────────────────
+
+
+async def transport_ask(
+    transport_ref: ActorRef,
+    msg_factory: Any,
+    timeout: float = 60.0,
+) -> Any:
+    future: asyncio.Future[Any] = asyncio.get_event_loop().create_future()
+
+    class _FutureRef:
+        def tell(self, msg: Any) -> None:
+            if not future.done():
+                future.set_result(msg)
+
+    transport_ref.tell(msg_factory(_FutureRef()))
+    return await asyncio.wait_for(future, timeout=timeout)
+
+
+async def transport_run(
+    transport_ref: ActorRef,
+    *command: str,
+    timeout: float | None = None,
+) -> tuple[int, str, str]:
+    result: CommandResult = await transport_ask(
+        transport_ref,
+        lambda rt: RunCommand(command=command, timeout=timeout, reply_to=rt),
+        timeout=timeout or 120.0,
+    )
+    return result.exit_code, result.stdout, result.stderr
+
+
+async def transport_write_file(
+    transport_ref: ActorRef,
+    remote: str,
+    content: str,
+) -> None:
+    result: WriteResult = await transport_ask(
+        transport_ref,
+        lambda rt: WriteFile(remote=remote, content=content, reply_to=rt),
+    )
+    if not result.success:
+        raise RuntimeError(f"Write failed: {result.error}")
+
+
+async def transport_write_bytes(
+    transport_ref: ActorRef,
+    remote: str,
+    content: bytes,
+) -> None:
+    result: WriteResult = await transport_ask(
+        transport_ref,
+        lambda rt: WriteBytes(remote=remote, content=content, reply_to=rt),
+    )
+    if not result.success:
+        raise RuntimeError(f"Write failed: {result.error}")
