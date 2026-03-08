@@ -12,22 +12,21 @@ from .context import _Sky
 
 @dataclass(frozen=True, slots=True)
 class PendingFunction[T]:
-    """Lazy computation wrapper.
+    """Lazy computation — a frozen snapshot of function + args.
 
-    Represents a function call that will be executed remotely
-    when sent to a pool via the >> or @ operator.
+    Created by ``@sky.function`` decorated calls. Nothing executes
+    until dispatched to a pool via an operator (``>>``, ``@``, ``>``, ``&``).
 
-    Example:
-        @compute
-        def train(data):
-            return model.fit(data)
+    Examples
+    --------
+    >>> @sky.function
+    ... def train(data):
+    ...     return model.fit(data)
 
-        pending = train(data)  # Returns PendingCompute, doesn't execute
-        result = pending >> sky  # Executes remotely on pool
-        results = pending @ sky  # Broadcasts to all nodes
-
-        # Override timeout
-        result = train(data).with_timeout(600) >> sky
+    >>> pending = train(data)  # Returns PendingFunction, doesn't execute
+    >>> result = pending >> sky  # Execute on one node
+    >>> results = pending @ sky  # Broadcast to all nodes
+    >>> result = train(data).with_timeout(600) >> sky  # Override timeout
     """
 
     fn: Callable[..., T]
@@ -36,9 +35,36 @@ class PendingFunction[T]:
     timeout: float | None = None
 
     def with_timeout(self, timeout: float) -> PendingFunction[T]:
+        """Return a copy with the given execution timeout in seconds.
+
+        Parameters
+        ----------
+        timeout
+            Maximum execution time in seconds.
+
+        Returns
+        -------
+        PendingFunction[T]
+            New instance with the timeout set.
+        """
         return PendingFunction(fn=self.fn, args=self.args, kwargs=self.kwargs, timeout=timeout)
 
     def __rshift__(self, target: Any) -> T:
+        """Execute on one node via ``task() >> pool``.
+
+        Dispatch this pending function to *target* for synchronous
+        execution on a single node (round-robin selection).
+
+        Parameters
+        ----------
+        target
+            A ``ComputePool``, the ``sky`` singleton, or the ``skyward`` module.
+
+        Returns
+        -------
+        T
+            The remote function's return value.
+        """
         match target:
             case types.ModuleType() if hasattr(target, "sky"):
                 return target.sky.__rrshift__(self)  # type: ignore
@@ -48,6 +74,21 @@ class PendingFunction[T]:
                 return target.run(self)  # type: ignore[union-attr]
 
     def __gt__(self, target: Any) -> Future[T]:
+        """Execute asynchronously via ``task() > pool``.
+
+        Dispatch this pending function for non-blocking execution,
+        returning a ``Future`` that resolves when the task completes.
+
+        Parameters
+        ----------
+        target
+            A ``ComputePool``, the ``sky`` singleton, or the ``skyward`` module.
+
+        Returns
+        -------
+        Future[T]
+            A future that resolves to the remote function's return value.
+        """
         match target:
             case types.ModuleType() if hasattr(target, "sky"):
                 return target.sky._run_async(self)  # type: ignore
@@ -57,7 +98,21 @@ class PendingFunction[T]:
                 return target.run_async(self)  # type: ignore[union-attr]
 
     def __matmul__(self, target: Any) -> list[T] | tuple[T, ...]:
-        """Broadcast to all nodes using @ operator."""
+        """Broadcast to all nodes via ``task() @ pool``.
+
+        Dispatch this pending function to every node in the pool,
+        returning one result per node.
+
+        Parameters
+        ----------
+        target
+            A ``ComputePool``, the ``sky`` singleton, or the ``skyward`` module.
+
+        Returns
+        -------
+        list[T] | tuple[T, ...]
+            One result per node in the pool.
+        """
         match target:
             case types.ModuleType() if hasattr(target, "sky"):
                 return target.sky.__rmatmul__(self)
@@ -67,7 +122,21 @@ class PendingFunction[T]:
                 return target.broadcast(self)  # type: ignore[union-attr]
 
     def __and__(self, other: PendingFunction[Any] | PendingFunctionGroup) -> PendingFunctionGroup:
-        """Combine with another computation for parallel execution."""
+        """Combine with another pending function via ``task1() & task2()``.
+
+        Create a ``PendingFunctionGroup`` for parallel execution when
+        dispatched with ``>> pool``.
+
+        Parameters
+        ----------
+        other
+            Another pending function or group to combine with.
+
+        Returns
+        -------
+        PendingFunctionGroup
+            A group containing both operands.
+        """
         match other:
             case PendingFunctionGroup():
                 return PendingFunctionGroup(items=(self, *other.items))
@@ -77,15 +146,18 @@ class PendingFunction[T]:
 
 @dataclass(frozen=True, slots=True)
 class PendingFunctionGroup:
-    """Group of computations for parallel execution.
+    """Group of pending functions for parallel execution.
 
-    Created by using the & operator:
-        group = task1() & task2() & task3()
-        a, b, c = group >> sky
+    Created by chaining ``&`` operators or calling ``sky.gather()``.
+    Dispatch the group with ``>> pool`` to run all tasks concurrently.
 
-    Or using gather():
-        group = gather(task1(), task2(), task3())
-        results = group >> sky
+    Examples
+    --------
+    >>> group = task1() & task2() & task3()
+    >>> a, b, c = group >> sky
+
+    >>> group = sky.gather(task1(), task2(), task3())
+    >>> results = group >> sky
     """
 
     items: tuple[PendingFunction[Any], ...]
@@ -94,13 +166,36 @@ class PendingFunctionGroup:
     timeout: float | None = None
 
     def with_timeout(self, timeout: float) -> PendingFunctionGroup:
+        """Return a copy with the given execution timeout in seconds.
+
+        Parameters
+        ----------
+        timeout
+            Maximum execution time in seconds, applied to the group.
+
+        Returns
+        -------
+        PendingFunctionGroup
+            New instance with the timeout set.
+        """
         return PendingFunctionGroup(
             items=self.items, stream=self.stream,
             ordered=self.ordered, timeout=timeout,
         )
 
     def __and__(self, other: PendingFunction[Any] | PendingFunctionGroup) -> PendingFunctionGroup:
-        """Add another computation to the group."""
+        """Append another pending function or group via ``&``.
+
+        Parameters
+        ----------
+        other
+            Another pending function or group to add.
+
+        Returns
+        -------
+        PendingFunctionGroup
+            A new group containing all combined items.
+        """
         match other:
             case PendingFunctionGroup():
                 return PendingFunctionGroup(
@@ -114,7 +209,21 @@ class PendingFunctionGroup:
                 )
 
     def __rshift__(self, target: Any) -> tuple[Any, ...] | Any:
-        """Execute all computations in parallel using >> operator."""
+        """Execute all tasks in parallel via ``group >> pool``.
+
+        Dispatch every pending function in the group concurrently
+        and return their results as a tuple.
+
+        Parameters
+        ----------
+        target
+            A ``ComputePool``, the ``sky`` singleton, or the ``skyward`` module.
+
+        Returns
+        -------
+        tuple[Any, ...] | Any
+            Results from all tasks, one element per pending function.
+        """
         match target:
             case types.ModuleType() if hasattr(target, "sky"):
                 return target.sky.__rrshift__(self)  # type: ignore
@@ -135,17 +244,34 @@ def gather(
     stream: bool = False,
     ordered: bool = True,
 ) -> PendingFunctionGroup:
-    """Group computations for parallel execution.
+    """Group pending functions for parallel execution.
 
-    Example:
-        results = gather(task1(), task2(), task3()) >> sky
-        # results is a tuple of (result1, result2, result3)
+    Combine multiple ``PendingFunction`` instances into a
+    ``PendingFunctionGroup`` that runs all tasks concurrently
+    when dispatched with ``>> pool``.
 
-        for result in gather(task1(), task2(), task3(), stream=True) >> sky:
-            print(result)  # yields results as they complete
+    Parameters
+    ----------
+    *pendings
+        Pending functions to execute in parallel.
+    stream
+        If ``True``, yield results as they complete instead of
+        returning a tuple. Default ``False``.
+    ordered
+        If ``True``, preserve submission order when streaming.
+        Ignored when *stream* is ``False``. Default ``True``.
 
-        for result in gather(task1(), task2(), task3(), stream=True, ordered=False) >> sky:
-            print(result)  # yields results as they complete, unordered
+    Returns
+    -------
+    PendingFunctionGroup
+        A group ready for dispatch.
+
+    Examples
+    --------
+    >>> results = gather(task1(), task2(), task3()) >> sky
+
+    >>> for result in gather(task1(), task2(), stream=True) >> sky:
+    ...     print(result)
     """
     return PendingFunctionGroup(items=pendings, stream=stream, ordered=ordered)
 
@@ -163,6 +289,39 @@ def function[**P, T](
     *,
     timeout: float | None = None,
 ) -> Callable[P, PendingFunction[T]] | Callable[[Callable[P, T]], Callable[P, PendingFunction[T]]]:
+    """Mark a function for remote execution on a compute pool.
+
+    Wrapping a function with ``@sky.function`` makes it return a
+    ``PendingFunction[T]`` when called, capturing args without executing.
+    Dispatch via operators: ``>> pool``, ``@ pool``, ``> pool``.
+
+    Can be used bare (``@sky.function``) or with a default timeout
+    (``@sky.function(timeout=600)``).
+
+    Parameters
+    ----------
+    fn
+        The function to wrap. Provided implicitly when used as
+        ``@sky.function`` without parentheses.
+    timeout
+        Default execution timeout in seconds. Can be overridden
+        per-call via ``PendingFunction.with_timeout``.
+
+    Returns
+    -------
+    Callable[P, PendingFunction[T]]
+        A wrapper that captures calls as pending functions.
+
+    Examples
+    --------
+    >>> @sky.function
+    ... def train(data):
+    ...     return model.fit(data)
+
+    >>> @sky.function(timeout=600)
+    ... def long_train(data):
+    ...     return model.fit(data)
+    """
     def decorator(f: Callable[P, T]) -> Callable[P, PendingFunction[T]]:
         @functools.wraps(f)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> PendingFunction[T]:
