@@ -1,7 +1,15 @@
 from __future__ import annotations
 
-import pandas as pd
+from typing import TYPE_CHECKING
+
 import pytest
+
+pytest.importorskip("pandas")
+
+if TYPE_CHECKING:
+    import pandas as pd
+
+import pandas as pd
 
 import skyward as sky
 
@@ -22,9 +30,9 @@ class TestPandasDataFrame:
         @sky.function
         def impute(df: pd.DataFrame) -> pd.DataFrame:
             for col in df.select_dtypes(include="number"):
-                df[col] = df[col].fillna(df[col].median())
+                df[col] = df[col].fillna(float(df[col].median()))
             for col in df.select_dtypes(include="object"):
-                df[col] = df[col].fillna(df[col].mode()[0])
+                df[col] = df[col].fillna(str(df[col].mode()[0]))
             return df
 
         result = impute(df) >> pandas_pool
