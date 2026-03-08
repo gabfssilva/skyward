@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from typing import Any, cast
 
@@ -126,6 +127,16 @@ def _verda_specific(raw: dict[str, Any] | None) -> str:
     return raw.get("os_image", "ubuntu-22.04")
 
 
+def _serialize_specific(specific: Any) -> dict[str, Any] | None:
+    if specific is None:
+        return None
+    if isinstance(specific, dict):
+        return specific
+    if dataclasses.is_dataclass(specific) and not isinstance(specific, type):
+        return dataclasses.asdict(specific)
+    return None
+
+
 def _offer_from_runtime(offer: Offer, provider: str) -> _Offer:
     accel = offer.instance_type.accelerator
     gpu_name = accel.name if accel else ""
@@ -151,4 +162,5 @@ def _offer_from_runtime(offer: Offer, provider: str) -> _Offer:
         spot_price=offer.spot_price,
         on_demand_price=offer.on_demand_price,
         billing_unit=offer.billing_unit,
+        specific=_serialize_specific(offer.specific),
     )

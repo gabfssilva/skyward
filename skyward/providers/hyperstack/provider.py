@@ -11,7 +11,7 @@ import uuid
 from collections.abc import AsyncIterator, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from skyward.accelerators import Accelerator
 from skyward.api import PoolSpec
@@ -91,6 +91,15 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific], Mountable[Hyp
                     flavors = await client.list_flavors()
             pricebook = await client.get_pricebook()
 
+            image_by_region: dict[str, str] = {}
+            for flavor in flavors:
+                r = flavor.get("region_name", "")
+                if r and r not in image_by_region:
+                    image_by_region[r] = (
+                        self._config.image
+                        or await _resolve_image(client, r)
+                    )
+
         price_map = _build_price_map(pricebook)
 
         gpu_names = {f.get("gpu", "") for f in flavors if f.get("gpu")}
@@ -107,7 +116,8 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific], Mountable[Hyp
         for flavor in flavors:
             if not _matches_spec(flavor, spec):
                 continue
-            yield _to_offer(flavor, price_map, net_regions)
+            region = flavor.get("region_name", "")
+            yield _to_offer(flavor, price_map, net_regions, image_by_region.get(region))
 
     async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[HyperstackSpecific]:
         api_key = get_api_key(self._config)
@@ -140,7 +150,11 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific], Mountable[Hyp
             await client.import_keypair(env_name, key_name, public_key)
             log.info("Imported SSH keypair {name}", name=key_name)
 
-            image_name = self._config.image or await _resolve_image(client, region)
+            image_name = (
+                offer_data.get("image_name")
+                or self._config.image
+                or await _resolve_image(client, region)
+            )
             log.info("Resolved image: {img}", img=image_name)
 
             if spec.volumes:
@@ -535,6 +549,7 @@ def _to_offer(
     flavor: FlavorResponse,
     price_map: dict[str, float],
     network_optimised_regions: frozenset[str],
+    image_name: str | None = None,
 ) -> Offer:
     """Convert a Hyperstack flavor to a Skyward Offer."""
     gpu_name = flavor.get("gpu", "")
@@ -555,17 +570,21 @@ def _to_offer(
     hourly = per_gpu * gpu_count
     region = flavor.get("region_name", "")
 
+    specific: dict[str, Any] = {
+        "flavor_name": flavor["name"],
+        "region": region,
+        "network_optimised": region.upper() in network_optimised_regions,
+    }
+    if image_name:
+        specific["image_name"] = image_name
+
     return Offer(
         id=str(flavor["id"]),
         instance_type=it,
         spot_price=None,
         on_demand_price=hourly if hourly > 0 else None,
         billing_unit="hour",
-        specific={
-            "flavor_name": flavor["name"],
-            "region": region,
-            "network_optimised": region.upper() in network_optimised_regions,
-        },
+        specific=specific,
     )
 
 
