@@ -70,21 +70,35 @@ if TYPE_CHECKING:
 
 
 class ComputePool:
-    """Provision cloud compute and execute functions remotely.
+    """Provision cloud compute and dispatch functions to remote nodes.
 
-    Two usage modes:
+    Use as a context manager: provisions on enter, destroys on exit.
+    Internally runs an asyncio event loop in a background daemon thread;
+    the public API is entirely synchronous.
 
-        # Single provider (legacy)
-        with ComputePool(provider=AWS(), accelerator=A100(), nodes=4) as pool:
-            result = train(data) >> pool
+    Two modes:
 
-        # Multi-spec with fallback
-        with ComputePool(
-            Spec(provider=VastAI(), accelerator=A100()),
-            Spec(provider=AWS(), accelerator=A100()),
-            selection="cheapest",
-        ) as pool:
-            result = train(data) >> pool
+    - **Single provider** --- pass ``provider=``, ``accelerator=``, ``nodes=``.
+    - **Multi-spec fallback** --- pass ``Spec(...)`` positional args with
+      ``selection=``.
+
+    Examples
+    --------
+    Single provider:
+
+    >>> with ComputePool(provider=AWS(), accelerator=A100(), nodes=4) as pool:
+    ...     result = train(data) >> pool       # one node (round-robin)
+    ...     results = train(data) @ pool       # broadcast to all nodes
+    ...     a, b = (task1() & task2()) >> pool  # parallel execution
+
+    Multi-spec with fallback (cheapest across providers):
+
+    >>> with ComputePool(
+    ...     Spec(provider=VastAI(), accelerator=A100()),
+    ...     Spec(provider=AWS(), accelerator=A100()),
+    ...     selection="cheapest",
+    ... ) as pool:
+    ...     result = train(data) >> pool
     """
 
     @overload
@@ -422,6 +436,29 @@ class ComputePool:
         return system, ref
 
     def run[T](self, pending: PendingFunction[T]) -> T:
+        """Execute a pending function on one node via round-robin scheduling.
+
+        This is the method behind the ``task() >> pool`` operator.
+
+        Parameters
+        ----------
+        pending
+            Frozen snapshot of the function, args, and kwargs to execute.
+
+        Returns
+        -------
+        T
+            The return value of the remote function call.
+
+        Raises
+        ------
+        RuntimeError
+            When the pool is not active or the remote function raises.
+
+        Examples
+        --------
+        >>> result = train(data) >> pool
+        """
         system, ref = self._get_system_and_ref()
 
         timeout = self._resolve_timeout(pending)
@@ -433,6 +470,32 @@ class ComputePool:
         return self._unwrap_result(result)
 
     def run_async[T](self, pending: PendingFunction[T]) -> Future[T]:
+        """Submit a pending function for asynchronous execution, returning a future.
+
+        This is the method behind the ``task() > pool`` operator. The function
+        is dispatched to one node via round-robin but returns immediately
+        without blocking.
+
+        Parameters
+        ----------
+        pending
+            Frozen snapshot of the function, args, and kwargs to execute.
+
+        Returns
+        -------
+        Future[T]
+            A concurrent future that resolves to the remote return value.
+
+        Raises
+        ------
+        RuntimeError
+            When the pool is not active.
+
+        Examples
+        --------
+        >>> future = train(data) > pool
+        >>> result = future.result()
+        """
         self._assert_active()
 
         timeout = self._resolve_timeout(pending)
@@ -450,6 +513,30 @@ class ComputePool:
         return asyncio.run_coroutine_threadsafe(_run(), loop)
 
     def broadcast[T](self, pending: PendingFunction[T]) -> list[T]:
+        """Execute a pending function on ALL nodes simultaneously.
+
+        This is the method behind the ``task() @ pool`` operator. The function
+        is sent to every ready node and all results are collected.
+
+        Parameters
+        ----------
+        pending
+            Frozen snapshot of the function, args, and kwargs to execute.
+
+        Returns
+        -------
+        list[T]
+            One result per node, in node order.
+
+        Raises
+        ------
+        RuntimeError
+            When the pool is not active or any node raises.
+
+        Examples
+        --------
+        >>> results = train(data) @ pool
+        """
         self._assert_active()
 
         timeout = self._resolve_timeout(pending)
@@ -474,6 +561,36 @@ class ComputePool:
     def run_parallel(
         self, group: PendingFunctionGroup
     ) -> tuple[Any, ...] | Generator[Any, None, None]:
+        """Execute a group of pending functions concurrently across nodes.
+
+        This is the method behind ``(task1() & task2()) >> pool``. Each
+        function in the group is dispatched as a separate task. When
+        ``group.stream`` is set, return a generator that yields results
+        as they complete instead of waiting for all tasks.
+
+        Parameters
+        ----------
+        group
+            A group of pending functions, created via the ``&`` operator
+            or ``sky.gather()``.
+
+        Returns
+        -------
+        tuple[Any, ...] | Generator[Any, None, None]
+            A tuple of results (one per task) when not streaming, or a
+            generator yielding results as they arrive when streaming.
+
+        Raises
+        ------
+        RuntimeError
+            When the pool is not active.
+
+        Examples
+        --------
+        >>> a, b = (task1() & task2()) >> pool
+        >>> for result in sky.gather(t1(), t2(), stream=True) >> pool:
+        ...     print(result)
+        """
         self._assert_active()
         logger.debug("Running {n} tasks in parallel", n=len(group.items))
         if group.stream:
@@ -549,6 +666,32 @@ class ComputePool:
         fn: Callable[[T], R],
         items: Sequence[T],
     ) -> list[R]:
+        """Apply a function to each item, distributing across nodes.
+
+        Each item becomes a separate task dispatched round-robin. Results
+        are returned in the same order as the input items.
+
+        Parameters
+        ----------
+        fn
+            Function to apply to each item.
+        items
+            Sequence of inputs to map over.
+
+        Returns
+        -------
+        list[R]
+            Ordered list of results, one per input item.
+
+        Raises
+        ------
+        RuntimeError
+            When the pool is not active.
+
+        Examples
+        --------
+        >>> results = pool.map(process, [chunk1, chunk2, chunk3])
+        """
         self._assert_active()
 
         async def _map_async() -> list[R]:
@@ -566,49 +709,211 @@ class ComputePool:
         return run_sync(self._get_loop(), _map_async())
 
     def dict(self, name: str, *, consistency: Consistency | None = None) -> DictProxy:
-        """Get or create a distributed dict."""
+        """Get or create a distributed dictionary shared across all nodes.
+
+        Parameters
+        ----------
+        name
+            Unique identifier for this collection.
+        consistency
+            Consistency level. ``None`` uses the system default.
+
+        Returns
+        -------
+        DictProxy
+            Synchronous dict-like proxy backed by the actor system.
+
+        Raises
+        ------
+        RuntimeError
+            When the pool is not active.
+
+        Examples
+        --------
+        >>> metrics = pool.dict("metrics")
+        >>> metrics["loss"] = 0.5
+        """
         if self._registry is None:
             raise RuntimeError("Pool is not active")
         logger.debug("Creating distributed dict: {name}", name=name)
         return self._registry.dict(name, consistency=consistency)
 
     def set(self, name: str, *, consistency: Consistency | None = None) -> SetProxy:
-        """Get or create a distributed set."""
+        """Get or create a distributed set shared across all nodes.
+
+        Parameters
+        ----------
+        name
+            Unique identifier for this collection.
+        consistency
+            Consistency level. ``None`` uses the system default.
+
+        Returns
+        -------
+        SetProxy
+            Synchronous set-like proxy backed by the actor system.
+
+        Raises
+        ------
+        RuntimeError
+            When the pool is not active.
+
+        Examples
+        --------
+        >>> visited = pool.set("visited")
+        >>> visited.add("node-1")
+        """
         if self._registry is None:
             raise RuntimeError("Pool is not active")
         logger.debug("Creating distributed set: {name}", name=name)
         return self._registry.set(name, consistency=consistency)
 
     def counter(self, name: str, *, consistency: Consistency | None = None) -> CounterProxy:
-        """Get or create a distributed counter."""
+        """Get or create a distributed counter shared across all nodes.
+
+        Parameters
+        ----------
+        name
+            Unique identifier for this collection.
+        consistency
+            Consistency level. ``None`` uses the system default.
+
+        Returns
+        -------
+        CounterProxy
+            Synchronous counter proxy backed by the actor system.
+
+        Raises
+        ------
+        RuntimeError
+            When the pool is not active.
+
+        Examples
+        --------
+        >>> steps = pool.counter("steps")
+        >>> steps.increment()
+        >>> steps.value()
+        1
+        """
         if self._registry is None:
             raise RuntimeError("Pool is not active")
         logger.debug("Creating distributed counter: {name}", name=name)
         return self._registry.counter(name, consistency=consistency)
 
     def queue(self, name: str) -> QueueProxy:
-        """Get or create a distributed queue."""
+        """Get or create a distributed queue shared across all nodes.
+
+        Parameters
+        ----------
+        name
+            Unique identifier for this collection.
+
+        Returns
+        -------
+        QueueProxy
+            Synchronous queue proxy backed by the actor system.
+
+        Raises
+        ------
+        RuntimeError
+            When the pool is not active.
+
+        Examples
+        --------
+        >>> work = pool.queue("work")
+        >>> work.put("item-1")
+        >>> work.get()
+        'item-1'
+        """
         if self._registry is None:
             raise RuntimeError("Pool is not active")
         logger.debug("Creating distributed queue: {name}", name=name)
         return self._registry.queue(name)
 
     def barrier(self, name: str, n: int) -> BarrierProxy:
-        """Get or create a distributed barrier."""
+        """Get or create a distributed barrier shared across all nodes.
+
+        All participants must call ``wait()`` before any can proceed.
+
+        Parameters
+        ----------
+        name
+            Unique identifier for this barrier.
+        n
+            Number of participants that must arrive before the barrier opens.
+
+        Returns
+        -------
+        BarrierProxy
+            Synchronous barrier proxy backed by the actor system.
+
+        Raises
+        ------
+        RuntimeError
+            When the pool is not active.
+
+        Examples
+        --------
+        >>> sync = pool.barrier("epoch-sync", n=pool.current_nodes())
+        >>> sync.wait()
+        """
         if self._registry is None:
             raise RuntimeError("Pool is not active")
         logger.debug("Creating distributed barrier: {name} (n={n})", name=name, n=n)
         return self._registry.barrier(name, n)
 
     def lock(self, name: str, timeout: float = 30) -> LockProxy:
-        """Get or create a distributed lock."""
+        """Get or create a distributed lock shared across all nodes.
+
+        Parameters
+        ----------
+        name
+            Unique identifier for this lock.
+        timeout
+            Maximum seconds to wait when acquiring. Default ``30``.
+
+        Returns
+        -------
+        LockProxy
+            Synchronous lock proxy backed by the actor system. Supports
+            use as a context manager.
+
+        Raises
+        ------
+        RuntimeError
+            When the pool is not active.
+
+        Examples
+        --------
+        >>> with pool.lock("checkpoint"):
+        ...     save_checkpoint(model)
+        """
         if self._registry is None:
             raise RuntimeError("Pool is not active")
         logger.debug("Creating distributed lock: {name}", name=name)
         return self._registry.lock(name, timeout)
 
     def current_nodes(self) -> int:
-        """Return the number of ready nodes in the pool."""
+        """Return the number of ready nodes in the pool.
+
+        Query the pool actor for the current count of nodes that have
+        completed bootstrapping and are accepting tasks.
+
+        Returns
+        -------
+        int
+            Number of nodes currently in the ready state.
+
+        Raises
+        ------
+        RuntimeError
+            When the pool is not active.
+
+        Examples
+        --------
+        >>> pool.current_nodes()
+        4
+        """
         system, ref = self._get_system_and_ref()
         result: CurrentNodeCount = run_sync(
             self._get_loop(),
@@ -759,5 +1064,27 @@ class ComputePool:
 
     @classmethod
     def Named(cls, name: str) -> ComputePool:
+        """Create a pool from a named configuration in ``skyward.toml``.
+
+        Look up the pool definition by name in the project's ``skyward.toml``
+        or the user-level ``~/.skyward/defaults.toml`` and construct a
+        ``ComputePool`` with the resolved settings.
+
+        Parameters
+        ----------
+        name
+            Pool name as defined in the ``[pools.<name>]`` section of
+            ``skyward.toml``.
+
+        Returns
+        -------
+        ComputePool
+            A fully configured pool instance (not yet entered).
+
+        Examples
+        --------
+        >>> with ComputePool.Named("training") as pool:
+        ...     result = train(data) >> pool
+        """
         from skyward.config import resolve_pool
         return resolve_pool(name)
