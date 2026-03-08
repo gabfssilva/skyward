@@ -45,27 +45,51 @@ type AllocationStrategy = Literal[
     "spot-if-available",
     "cheapest",
 ]
+"""Instance lifecycle strategy.
+
+- ``"spot"`` — spot/preemptible only (cheapest, may be interrupted).
+- ``"on-demand"`` — on-demand only (reliable, higher cost).
+- ``"spot-if-available"`` — try spot first, fall back to on-demand.
+- ``"cheapest"`` — compare spot and on-demand, pick lowest price.
+"""
 
 type Architecture = Literal["x86_64", "arm64"]
+"""CPU architecture filter."""
 
 type SelectionStrategy = Literal["first", "cheapest"]
+"""Multi-spec selection strategy.
+
+- ``"first"`` — use the first spec that has available offers.
+- ``"cheapest"`` — compare all specs, pick the lowest price.
+"""
 
 type SkywardSource = Literal["auto", "local", "github", "pypi"]
-
+"""Skyward installation source for remote workers."""
 
 type WorkerExecutor = Literal["auto", "thread", "process"]
+"""Worker execution backend.
+
+- ``"auto"`` — resolves to ``"thread"`` (default).
+- ``"thread"`` — ThreadPoolExecutor. Supports streaming, distributed
+  collections without IPC, and has lower overhead.
+- ``"process"`` — ProcessPoolExecutor. Useful for CPU-bound pure-Python
+  workloads that benefit from bypassing the GIL.
+"""
 
 
 @dataclass(frozen=True, slots=True)
 class Worker:
     """Worker configuration per node.
 
-    Args:
-        concurrency: Number of concurrent task slots per node.
-        executor: Execution backend — "auto" (default) resolves to "thread".
-            Use "process" (ProcessPoolExecutor) explicitly for CPU-bound pure-Python
-            workloads that benefit from bypassing the GIL. Thread executor supports
-            streaming, distributed collections without IPC, and has lower overhead.
+    Parameters
+    ----------
+    concurrency
+        Number of concurrent task slots per node. Default ``1``.
+    executor
+        Execution backend — ``"auto"`` (default) resolves to ``"thread"``.
+        Use ``"process"`` explicitly for CPU-bound pure-Python workloads
+        that benefit from bypassing the GIL. Thread executor supports
+        streaming, distributed collections without IPC, and has lower overhead.
     """
 
     concurrency: int = 1
@@ -83,7 +107,44 @@ class Worker:
 
 @dataclass(frozen=True, slots=True)
 class Spec:
-    """User-facing hardware preference for ComputePool fallback chains."""
+    """Hardware specification for multi-provider fallback chains.
+
+    Pass one or more ``Spec`` objects to ``ComputePool`` to define
+    fallback preferences across providers. The pool selects the best
+    match based on the ``selection`` strategy.
+
+    Parameters
+    ----------
+    provider
+        Cloud provider configuration (e.g., ``sky.AWS()``, ``sky.VastAI()``).
+    accelerator
+        GPU type (e.g., ``"A100"``, ``"H100"``). ``None`` for CPU-only.
+    nodes
+        Fixed node count or ``(min, max)`` tuple for autoscaling.
+    vcpus
+        Minimum vCPUs per node.
+    memory_gb
+        Minimum RAM in GB per node.
+    architecture
+        CPU architecture filter. ``None`` accepts any.
+    allocation
+        Instance lifecycle strategy.
+    region
+        Cloud region (provider-specific).
+    max_hourly_cost
+        Cost cap per node per hour in USD.
+    ttl
+        Auto-shutdown timeout in seconds after pool exits. ``0`` disables.
+
+    Examples
+    --------
+    >>> with sky.ComputePool(
+    ...     sky.Spec(provider=sky.VastAI(), accelerator="A100"),
+    ...     sky.Spec(provider=sky.AWS(), accelerator="A100"),
+    ...     selection="cheapest",
+    ... ) as pool:
+    ...     result = train(data) >> pool
+    """
     provider: ProviderConfig
     accelerator: Accelerator | None = None
     nodes: int | tuple[int, int] = 1
@@ -132,10 +193,20 @@ class PipIndex:
 
     Parameters
     ----------
-    url : str
+    url
         Index URL (e.g. ``https://download.pytorch.org/whl/cpu``).
-    packages : tuple[str, ...]
+    packages
         Package names that should resolve from this index.
+
+    Examples
+    --------
+    >>> image = Image(
+    ...     pip=["torch"],
+    ...     pip_indexes=[PipIndex(
+    ...         url="https://download.pytorch.org/whl/cu121",
+    ...         packages=["torch", "torchvision"],
+    ...     )],
+    ... )
     """
 
     url: str
@@ -151,15 +222,24 @@ class Volume:
 
     Parameters
     ----------
-    bucket : str
+    bucket
         S3 bucket name (AWS), GCS bucket name (GCP),
         or network volume ID (RunPod).
-    mount : str
+    mount
         Absolute path where the volume appears on workers.
-    prefix : str
+    prefix
         Object key prefix (subfolder within bucket).
-    read_only : bool
-        Mount as read-only. Default True.
+    read_only
+        Mount as read-only. Default ``True``.
+    storage
+        Storage backend override. ``None`` auto-detects from provider.
+
+    Examples
+    --------
+    >>> pool = sky.ComputePool(
+    ...     provider=sky.AWS(),
+    ...     volumes=[Volume(bucket="my-data", mount="/data")],
+    ... )
     """
 
     bucket: str
@@ -177,40 +257,47 @@ class Volume:
 
 @dataclass(frozen=True, slots=True)
 class PoolSpec:
-    """Pool specification - what the user wants.
+    """Internal pool specification — resolved from user-facing ``ComputePool`` args.
 
     Defines the cluster configuration including number of nodes,
     hardware requirements, and instance allocation strategy.
 
-    Args:
-        nodes: Number of nodes in the cluster.
-        accelerator: GPU/accelerator type - either a string (e.g., "A100", "H100")
-            or an Accelerator instance from skyward.accelerators.
-        region: Cloud region for instances.
-        vcpus: Minimum vCPUs per node.
-        memory_gb: Minimum memory in GB per node.
-        architecture: CPU architecture ("x86_64" or "arm64"), or None for cheapest.
-        allocation: Spot/on-demand strategy.
-        image: Environment specification.
-        ttl: Auto-shutdown timeout in seconds (0 = disabled).
-        provider: Override provider (usually inferred from context).
+    Parameters
+    ----------
+    nodes
+        Number of nodes in the cluster.
+    accelerator
+        GPU/accelerator type, or ``None`` for CPU-only.
+    region
+        Cloud region for instances.
+    vcpus
+        Minimum vCPUs per node.
+    memory_gb
+        Minimum RAM in GB per node.
+    architecture
+        CPU architecture filter. ``None`` accepts any.
+    allocation
+        Instance lifecycle strategy.
+    image
+        Environment specification.
+    ttl
+        Auto-shutdown timeout in seconds. ``0`` disables.
+    worker
+        Worker configuration (concurrency, executor).
+    provider
+        Override provider name (usually inferred from context).
+    max_hourly_cost
+        Cost cap per node per hour in USD.
 
-    Example:
-        >>> from skyward.accelerators import H100
-        >>> spec = PoolSpec(
-        ...     nodes=4,
-        ...     accelerator=H100(),
-        ...     region="us-east-1",
-        ...     allocation="spot-if-available",
-        ...     image=Image(pip=["torch"]),
-        ... )
-
-        >>> from skyward.accelerators import H100
-        >>> spec = PoolSpec(
-        ...     nodes=4,
-        ...     accelerator=H100(count=8),
-        ...     region="us-east-1",
-        ... )
+    Examples
+    --------
+    >>> spec = PoolSpec(
+    ...     nodes=4,
+    ...     accelerator=H100(),
+    ...     region="us-east-1",
+    ...     allocation="spot-if-available",
+    ...     image=Image(pip=["torch"]),
+    ... )
     """
 
     nodes: int
@@ -279,43 +366,47 @@ class Image:
     """Declarative image specification.
 
     Defines the environment (Python version, packages, etc.) in a
-    declarative way. The bootstrap() method generates idempotent
+    declarative way. The ``generate_bootstrap()`` method generates idempotent
     shell scripts that work across all cloud providers.
 
-    Args:
-        python: Python version to use.
-        pip: List of pip packages to install.
-        pip_indexes: Scoped package indexes. Each PipIndex maps specific
-            packages to a custom index URL via uv's explicit index support.
-        apt: List of apt packages to install.
-        env: Environment variables to export.
-        shell_vars: Shell commands for dynamic variable capture.
-        includes: Paths relative to CWD to sync to workers (dirs or .py files).
-        excludes: Glob patterns to ignore within includes (e.g., "__pycache__", "*.pyc").
-        skyward_source: Where to install skyward from. "auto" detects editable
-            installs as "local", otherwise "pypi".
-        metrics: Metrics to collect (CPU, GPU, Memory, etc.). Use None to disable.
+    Parameters
+    ----------
+    python
+        Python version to use. ``"auto"`` detects current interpreter.
+    pip
+        Packages to install via ``uv add``.
+    pip_indexes
+        Scoped package indexes. Each ``PipIndex`` maps specific packages
+        to a custom index URL via uv's explicit index support.
+    apt
+        System packages to install via ``apt-get``.
+    env
+        Environment variables to export on remote workers.
+    shell_vars
+        Shell commands for dynamic variable capture (evaluated at bootstrap).
+    includes
+        Paths relative to CWD to sync to workers (dirs or ``.py`` files).
+    excludes
+        Glob patterns to ignore within includes (e.g., ``"__pycache__"``).
+    skyward_source
+        Where to install skyward from. ``"auto"`` detects editable
+        installs as ``"local"``, otherwise ``"pypi"``.
+    metrics
+        Metrics to collect (CPU, GPU, Memory, etc.). ``None`` disables.
+    bootstrap_timeout
+        Maximum seconds for the bootstrap script to complete. Default ``300``.
 
-    Example:
-        image = Image(
-            python="3.13",
-            pip=["torch", "transformers"],
-            apt=["git", "ffmpeg"],
-            env={"HF_TOKEN": "xxx"},
-        )
+    Examples
+    --------
+    >>> image = Image(
+    ...     python="3.13",
+    ...     pip=["torch", "transformers"],
+    ...     apt=["git", "ffmpeg"],
+    ...     env={"HF_TOKEN": "xxx"},
+    ... )
 
-        # Custom metrics
-        from skyward.spec.metrics import CPU, GPU
-        image = Image(
-            pip=["torch"],
-            metrics=[CPU(interval=0.5), GPU()],
-        )
-
-        # Disable metrics
-        image = Image(metrics=None)
-
-        # Generate bootstrap script
-        script = image.bootstrap(ttl=3600)
+    >>> # Disable metrics
+    >>> image = Image(metrics=None)
     """
 
     python: str | Literal["auto"] = "auto"

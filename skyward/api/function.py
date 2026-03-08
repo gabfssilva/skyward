@@ -277,12 +277,80 @@ def gather(
 
 
 @overload
-def function[**P, T](fn: Callable[P, T]) -> Callable[P, PendingFunction[T]]: ...
+def function[**P, T](fn: Callable[P, T]) -> Callable[P, PendingFunction[T]]:
+    """Mark a function for remote execution on a compute pool.
+
+    Wrapping a function with ``@sky.function`` makes it return a
+    ``PendingFunction[T]`` when called, capturing args without executing.
+    Dispatch via operators: ``>> pool``, ``@ pool``, ``> pool``.
+
+    Can be used bare (``@sky.function``) or with a default timeout
+    (``@sky.function(timeout=600)``).
+
+    Parameters
+    ----------
+    fn
+        The function to wrap. Provided implicitly when used as
+        ``@sky.function`` without parentheses.
+    timeout
+        Default execution timeout in seconds. Can be overridden
+        per-call via ``PendingFunction.with_timeout``.
+
+    Returns
+    -------
+    Callable[P, PendingFunction[T]]
+        A wrapper that captures calls as pending functions.
+
+    Examples
+    --------
+    >>> @sky.function
+    ... def train(data):
+    ...     return model.fit(data)
+
+    >>> @sky.function(timeout=600)
+    ... def long_train(data):
+    ...     return model.fit(data)
+    """
+    ...
 
 @overload
 def function[**P, T](
     *, timeout: float,
-) -> Callable[[Callable[P, T]], Callable[P, PendingFunction[T]]]: ...
+) -> Callable[[Callable[P, T]], Callable[P, PendingFunction[T]]]:
+    """Mark a function for remote execution on a compute pool.
+
+    Wrapping a function with ``@sky.function`` makes it return a
+    ``PendingFunction[T]`` when called, capturing args without executing.
+    Dispatch via operators: ``>> pool``, ``@ pool``, ``> pool``.
+
+    Can be used bare (``@sky.function``) or with a default timeout
+    (``@sky.function(timeout=600)``).
+
+    Parameters
+    ----------
+    fn
+        The function to wrap. Provided implicitly when used as
+        ``@sky.function`` without parentheses.
+    timeout
+        Default execution timeout in seconds. Can be overridden
+        per-call via ``PendingFunction.with_timeout``.
+
+    Returns
+    -------
+    Callable[P, PendingFunction[T]]
+        A wrapper that captures calls as pending functions.
+
+    Examples
+    --------
+    >>> @sky.function
+    ... def train(data):
+    ...     return model.fit(data)
+
+    >>> @sky.function(timeout=600)
+    ... def long_train(data):
+    ...     return model.fit(data)
+    """
+    ...
 
 def function[**P, T](
     fn: Callable[P, T] | None = None,

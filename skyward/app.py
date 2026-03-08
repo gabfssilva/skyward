@@ -14,11 +14,29 @@ _active_app: ContextVar[App | None] = ContextVar("_active_app", default=None)
 
 
 def get_app() -> App | None:
+    """Return the active App instance, or ``None`` if none is active."""
     return _active_app.get()
 
 
 @dataclass
 class App:
+    """Application context manager for console lifecycle and spy wiring.
+
+    Provide a Rich adaptive console and optional spy actor for
+    observing pool events. Usually not needed directly — ``ComputePool``
+    manages its own ``App`` internally.
+
+    Parameters
+    ----------
+    console
+        Whether to enable Rich console output. Default ``True``.
+
+    Examples
+    --------
+    >>> with sky.App(console=True):
+    ...     with sky.ComputePool(...) as pool:
+    ...         result = train(data) >> pool
+    """
     console: bool = True
 
     _spy_ref: ActorRef | None = field(default=None, init=False, repr=False)

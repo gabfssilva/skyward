@@ -57,6 +57,20 @@ def _run_sync[T](coro: Coroutine[Any, Any, T], *, timeout: float = 30) -> T:
 
 
 class CounterProxy:
+    """Synchronous proxy for a distributed counter.
+
+    Thread-safe — submits operations to the actor system's event loop.
+    Use inside ``@sky.function`` or on the client via ``pool.counter()``.
+
+    Examples
+    --------
+    >>> counter = sky.counter("processed")
+    >>> counter.increment()
+    >>> counter.increment(5)
+    >>> print(counter.value)  # 6
+    >>> int(counter)          # 6
+    """
+
     __slots__ = ("_counter", "_consistency")
 
     def __init__(self, counter: Any, consistency: Consistency = "eventual") -> None:
@@ -94,6 +108,21 @@ class CounterProxy:
 
 
 class DictProxy:
+    """Synchronous proxy for a distributed dictionary.
+
+    Support standard dict operations (``[]``, ``in``, ``get``, ``pop``).
+    Thread-safe — submits operations to the actor system's event loop.
+
+    Examples
+    --------
+    >>> metrics = sky.dict("metrics")
+    >>> metrics["loss"] = 0.5
+    >>> metrics["lr"] = 1e-3
+    >>> print(metrics["loss"])      # 0.5
+    >>> print("loss" in metrics)    # True
+    >>> metrics.update({"a": 1, "b": 2})
+    """
+
     __slots__ = ("_map", "_consistency")
 
     def __init__(self, map_: Any, consistency: Consistency = "eventual") -> None:
@@ -150,6 +179,18 @@ class DictProxy:
 
 
 class SetProxy:
+    """Synchronous proxy for a distributed set.
+
+    Thread-safe — submits operations to the actor system's event loop.
+
+    Examples
+    --------
+    >>> seen = sky.set("seen_ids")
+    >>> seen.add("abc")
+    >>> print("abc" in seen)  # True
+    >>> seen.discard("abc")
+    """
+
     __slots__ = ("_set", "_consistency")
 
     def __init__(self, set_: Any, consistency: Consistency = "eventual") -> None:
@@ -179,6 +220,19 @@ class SetProxy:
 
 
 class QueueProxy:
+    """Synchronous proxy for a distributed FIFO queue.
+
+    Thread-safe — submits operations to the actor system's event loop.
+
+    Examples
+    --------
+    >>> q = sky.queue("tasks")
+    >>> q.put("item1")
+    >>> q.put("item2")
+    >>> print(q.get())           # "item1"
+    >>> print(q.get(timeout=5))  # "item2" (waits up to 5s)
+    """
+
     __slots__ = ("_queue",)
 
     def __init__(self, queue: Any) -> None:
@@ -222,6 +276,17 @@ class QueueProxy:
 
 
 class BarrierProxy:
+    """Synchronous proxy for a distributed barrier.
+
+    All participating nodes call ``wait()`` and block until all have arrived.
+
+    Examples
+    --------
+    >>> barrier = sky.barrier("sync_point", n=4)
+    >>> # ... each node does work ...
+    >>> barrier.wait()  # blocks until all 4 arrive
+    """
+
     __slots__ = ("_barrier", "_n")
 
     def __init__(self, barrier: Any, n: int) -> None:
@@ -239,6 +304,24 @@ class BarrierProxy:
 
 
 class LockProxy:
+    """Synchronous proxy for a distributed lock.
+
+    Support both explicit ``acquire``/``release`` and context manager usage.
+
+    Examples
+    --------
+    >>> lock = sky.lock("critical_section")
+    >>> with lock:
+    ...     update_shared_state()
+
+    >>> # Or explicitly
+    >>> lock.acquire()
+    >>> try:
+    ...     update_shared_state()
+    ... finally:
+    ...     lock.release()
+    """
+
     __slots__ = ("_lock", "_timeout")
 
     def __init__(self, lock: Any, timeout: float) -> None:

@@ -16,11 +16,22 @@ if TYPE_CHECKING:
     from skyward.providers.bootstrap import Op
 
 type ImageTransform[S] = Callable[[Image, Cluster[S]], Image]
+"""Hook that modifies the Image before bootstrap."""
+
 type BootstrapFactory[S] = Callable[[Cluster[S]], tuple[Op, ...]]
+"""Hook that produces extra shell ops appended after bootstrap phases."""
+
 type TaskDecorator[**P, R] = Callable[[Callable[P, R]], Callable[P, R]]
+"""Classic Python decorator applied to each @sky.function at execution time."""
+
 type AppLifecycle = Callable[[InstanceInfo], AbstractContextManager[None]]
+"""Worker lifecycle context manager, entered once in the main worker process."""
+
 type ProcessLifecycle = Callable[[InstanceInfo], AbstractContextManager[None]]
+"""Subprocess lifecycle context manager, entered once per subprocess."""
+
 type ClientLifecycle[S] = Callable[[ComputePool, Cluster[S]], AbstractContextManager[None]]
+"""Client-side lifecycle context manager, entered at pool __enter__."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,24 +75,124 @@ class Plugin:
 
     @staticmethod
     def create(name: str) -> Plugin:
+        """Create an empty plugin with just a name.
+
+        Use the ``with_*`` builder methods to attach hooks.
+
+        Parameters
+        ----------
+        name
+            Plugin identifier.
+
+        Returns
+        -------
+        Plugin
+            Empty plugin ready for hook attachment.
+
+        Examples
+        --------
+        >>> plugin = (
+        ...     Plugin.create("my-plugin")
+        ...     .with_image_transform(add_deps)
+        ...     .with_decorator(wrap_fn)
+        ... )
+        """
         return Plugin(name=name)
 
     def with_image_transform[S](self, transform: ImageTransform[S]) -> Plugin:
+        """Attach an image transform hook.
+
+        Parameters
+        ----------
+        transform
+            ``(Image, Cluster[S]) -> Image`` that modifies the image
+            before bootstrap.
+
+        Returns
+        -------
+        Plugin
+            New plugin instance with the transform attached.
+        """
         return replace(self, transform=transform)
 
     def with_bootstrap[S](self, factory: BootstrapFactory[S]) -> Plugin:
+        """Attach a bootstrap factory hook.
+
+        Parameters
+        ----------
+        factory
+            ``Cluster[S] -> tuple[Op, ...]`` returning extra shell ops
+            appended after image-driven bootstrap phases.
+
+        Returns
+        -------
+        Plugin
+            New plugin instance with the bootstrap factory attached.
+        """
         return replace(self, bootstrap=factory)
 
     def with_decorator[**P, R](self, decorate: TaskDecorator[P, R]) -> Plugin:
+        """Attach a per-task decorator hook.
+
+        Parameters
+        ----------
+        decorate
+            Classic Python decorator ``(fn) -> fn`` applied to each
+            ``@sky.function`` at execution time on the remote worker.
+
+        Returns
+        -------
+        Plugin
+            New plugin instance with the decorator attached.
+        """
         return replace(self, decorate=decorate)
 
     def with_around_app(self, around: AppLifecycle) -> Plugin:
+        """Attach a worker lifecycle hook.
+
+        Parameters
+        ----------
+        around
+            ``InstanceInfo -> ContextManager[None]`` entered once
+            in the main worker process.
+
+        Returns
+        -------
+        Plugin
+            New plugin instance with the lifecycle hook attached.
+        """
         return replace(self, around_app=around)
 
     def with_around_process(self, around: ProcessLifecycle) -> Plugin:
+        """Attach a subprocess lifecycle hook.
+
+        Parameters
+        ----------
+        around
+            ``InstanceInfo -> ContextManager[None]`` entered once
+            per subprocess when ``executor="process"``.
+
+        Returns
+        -------
+        Plugin
+            New plugin instance with the subprocess hook attached.
+        """
         return replace(self, around_process=around)
 
     def with_around_client[S](self, around: ClientLifecycle[S]) -> Plugin:
+        """Attach a client-side lifecycle hook.
+
+        Parameters
+        ----------
+        around
+            ``(ComputePool, Cluster[S]) -> ContextManager[None]``
+            entered on the client at pool ``__enter__``.
+
+        Returns
+        -------
+        Plugin
+            New plugin instance with the client hook attached.
+        """
         return replace(self, around_client=around)
 
 
@@ -97,10 +208,58 @@ def chain_decorators[**P, R](
     return reduce(lambda f, d: d(f), reversed(decorators), fn)
 
 def around_app(name: str, around: AppLifecycle) -> Plugin:
+    """Create a plugin with only a worker lifecycle hook.
+
+    Shortcut for ``Plugin.create(name).with_around_app(around)``.
+
+    Parameters
+    ----------
+    name
+        Plugin identifier.
+    around
+        Worker lifecycle context manager.
+
+    Returns
+    -------
+    Plugin
+        Plugin with the ``around_app`` hook set.
+    """
     return Plugin(name=name, around_app=around)
 
 def around_client[S](name: str, around: ClientLifecycle[S]) -> Plugin:
+    """Create a plugin with only a client-side lifecycle hook.
+
+    Shortcut for ``Plugin.create(name).with_around_client(around)``.
+
+    Parameters
+    ----------
+    name
+        Plugin identifier.
+    around
+        Client-side lifecycle context manager.
+
+    Returns
+    -------
+    Plugin
+        Plugin with the ``around_client`` hook set.
+    """
     return Plugin(name=name, around_client=around)
 
 def around_process(name: str, around: ProcessLifecycle) -> Plugin:
+    """Create a plugin with only a subprocess lifecycle hook.
+
+    Shortcut for ``Plugin.create(name).with_around_process(around)``.
+
+    Parameters
+    ----------
+    name
+        Plugin identifier.
+    around
+        Subprocess lifecycle context manager.
+
+    Returns
+    -------
+    Plugin
+        Plugin with the ``around_process`` hook set.
+    """
     return Plugin(name=name, around_process=around)

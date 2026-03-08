@@ -122,20 +122,23 @@ class InstanceInfo(BaseModel):
 
 
 def instance_info() -> InstanceInfo | None:
-    """Get information about the current instance.
+    """Return information about the current compute instance.
 
-    Must be called from within a @compute function running on a remote node.
+    Must be called from within a ``@sky.function`` running on a remote node.
 
-    Returns:
-        InstanceInfo with cluster topology, or None if not in a pool.
+    Returns
+    -------
+    InstanceInfo | None
+        Cluster topology and node metadata, or ``None`` if not in a pool.
 
-    Example:
-        @compute
-        def distributed_task(data):
-            info = sky.instance_info()
-            if info.is_head:
-                print(f"Head node of {info.total_nodes} nodes")
-            return process(data)
+    Examples
+    --------
+    >>> @sky.function
+    ... def distributed_task(data):
+    ...     info = sky.instance_info()
+    ...     if info.is_head:
+    ...         print(f"Head node of {info.total_nodes} nodes")
+    ...     return process(data)
     """
     return InstanceInfo.current()
 
@@ -320,33 +323,40 @@ def shard(
 ) -> Any:
     """Shard data across distributed nodes, preserving input type.
 
-    Returns ONLY this node's portion of the data.
-    Supports: list, tuple, np.ndarray, torch.Tensor, and any Sequence.
+    Return ONLY this node's portion of the data.
+    Supports list, tuple, ``np.ndarray``, ``torch.Tensor``, and any ``Sequence``.
 
-    Can accept multiple arrays at once - they will all be sharded with
+    Can accept multiple arrays at once — they will all be sharded with
     the same indices (useful for keeping x and y aligned).
 
-    Args:
-        *data: One or more arrays/sequences to shard.
-        shuffle: Shuffle with synchronized seed across all nodes.
-        seed: Random seed for reproducible shuffling.
-        drop_last: Drop tail items so all nodes get equal count.
-        node: Override node index (for testing).
-        total_nodes: Override total_nodes (for testing).
+    Parameters
+    ----------
+    *data
+        One or more arrays/sequences to shard.
+    shuffle
+        Shuffle with synchronized seed across all nodes.
+    seed
+        Random seed for reproducible shuffling.
+    drop_last
+        Drop tail items so all nodes get equal count.
+    node
+        Override node index (for testing).
+    total_nodes
+        Override total_nodes (for testing).
 
-    Returns:
-        If single argument: This node's shard with same type as input.
-        If multiple arguments: Tuple of shards.
+    Returns
+    -------
+    T | tuple[T, ...]
+        If single argument: this node's shard with same type as input.
+        If multiple arguments: tuple of shards.
 
-    Example:
-        # Single array
-        my_data = shard(full_dataset, shuffle=True, seed=42)
+    Examples
+    --------
+    >>> my_data = shard(full_dataset, shuffle=True, seed=42)
 
-        # Multiple arrays (keeps alignment)
-        x_train, y_train = shard(x_train, y_train)
+    >>> x_train, y_train = shard(x_train, y_train)
 
-        # Four arrays at once
-        x_train, y_train, x_test, y_test = shard(x_train, y_train, x_test, y_test)
+    >>> x_train, y_train, x_test, y_test = shard(x_train, y_train, x_test, y_test)
     """
     if not data:
         raise ValueError("shard() requires at least one argument")
@@ -395,16 +405,29 @@ def stdout[**P, R](
 ) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Control stdout emission in distributed execution.
 
-    Silences stdout for workers that don't match the predicate.
-    stderr is NOT affected - errors from any worker are always visible.
+    Silence stdout for workers that don't match the predicate.
+    stderr is NOT affected — errors from any worker are always visible.
 
-    Args:
-        only: Predicate or "head" shortcut. Workers matching this emit stdout.
-            - "head": Only head worker (node == 0)
-            - Callable[[InstanceInfo], bool]: Custom predicate
+    Parameters
+    ----------
+    only
+        Predicate or ``"head"`` shortcut. Workers matching this emit stdout.
 
-    Returns:
+        - ``"head"`` — only head worker (node == 0).
+        - ``Callable[[InstanceInfo], bool]`` — custom predicate.
+
+    Returns
+    -------
+    Callable
         Decorator that wraps the function with stdout control.
+
+    Examples
+    --------
+    >>> @sky.stdout(only="head")
+    ... @sky.function
+    ... def train(data):
+    ...     print("Only head node prints this")
+    ...     return model.fit(data)
     """
     predicate = _resolve_predicate(only)
 
@@ -429,11 +452,18 @@ def stderr[**P, R](
 ) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Control stderr emission in distributed execution.
 
-    Silences stderr for workers that don't match the predicate.
-    Use with caution - silencing errors can hide problems.
+    Silence stderr for workers that don't match the predicate.
+    Use with caution — silencing errors can hide problems.
 
-    Args:
-        only: Predicate or "head" shortcut. Workers matching this emit stderr.
+    Parameters
+    ----------
+    only
+        Predicate or ``"head"`` shortcut. Workers matching this emit stderr.
+
+    Returns
+    -------
+    Callable
+        Decorator that wraps the function with stderr control.
     """
     predicate = _resolve_predicate(only)
 
@@ -457,6 +487,13 @@ def silent[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     """Silence both stdout and stderr completely.
 
     Useful for functions that should never emit output regardless of rank.
+
+    Examples
+    --------
+    >>> @sky.silent
+    ... @sky.function
+    ... def quiet_task(data):
+    ...     return process(data)
     """
 
     @wraps(fn)
@@ -468,6 +505,17 @@ def silent[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
 
 
 class CallbackWriter(TextIO):
+    """Write-only stream adapter that forwards writes to a callback.
+
+    Implement the ``TextIO`` interface so it can replace ``sys.stdout``
+    or ``sys.stderr`` via ``contextlib.redirect_stdout``.
+
+    Parameters
+    ----------
+    callback
+        Called with each string written to the stream.
+    """
+
     def __init__(self, callback: Callable[[str], None]) -> None:
         self._callback = callback
         self._buffer = StringIO()
@@ -505,6 +553,25 @@ class CallbackWriter(TextIO):
 def redirect_output(
     callback: Callable[[str], None],
 ) -> Generator[tuple[CallbackWriter, CallbackWriter]]:
+    """Redirect stdout and stderr to a callback within a context.
+
+    Parameters
+    ----------
+    callback
+        Called with each string written to stdout or stderr.
+
+    Yields
+    ------
+    tuple[CallbackWriter, CallbackWriter]
+        The ``(stdout_writer, stderr_writer)`` pair.
+
+    Examples
+    --------
+    >>> lines = []
+    >>> with sky.redirect_output(lines.append):
+    ...     print("captured")
+    >>> assert "captured\\n" in lines
+    """
     out = CallbackWriter(callback)
     err = CallbackWriter(callback)
     with redirect_stdout(out), redirect_stderr(err):  # type: ignore[type-var]

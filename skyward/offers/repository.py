@@ -74,17 +74,23 @@ CREATE INDEX idx_specs_accel ON specs(accelerator_id);
 
 
 class OfferRepository:
-    """SQLite-backed queryable view over the offer catalog.
+    """SQLite-backed queryable catalog of GPU offers across all providers.
 
-    Usage::
+    Pre-load cached offer data into an in-memory SQLite database.
+    Support fluent query building and raw SQL against a ``catalog`` VIEW.
 
-        repo = await OfferRepository.create()
+    Examples
+    --------
+    >>> repo = await sky.offers([sky.AWS(), sky.VastAI()])
 
-        offer = repo.accelerator("A100").accelerator_memory(80).spot().cheapest()
+    >>> # Fluent API
+    >>> cheapest = repo.accelerator("A100").spot().cheapest()
+    >>> top5 = repo.architecture("Hopper").accelerator_count(4).cheapest(5)
 
-        offers = repo.architecture("Hopper").accelerator_count(4).cheapest(5)
-
-        offers = repo.query("SELECT * FROM catalog WHERE accelerator_name LIKE 'H%' ORDER BY spot_price")
+    >>> # Raw SQL
+    >>> offers = repo.query(
+    ...     "SELECT * FROM catalog WHERE accelerator_name LIKE 'H%' ORDER BY spot_price"
+    ... )
     """
 
     def __init__(
