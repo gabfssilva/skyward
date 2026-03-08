@@ -14,17 +14,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
-from casty import ActorRef, Terminated
-
-from skyward.infra.ssh_actor import ConnectionFailed, ConnectionLost, ConnectionRestored, PortReForwarded
+from casty import ActorRef
 
 if TYPE_CHECKING:
-    from casty import ClusterClient
-
-    from skyward.api.model import Cluster, Instance, Offer
-    from skyward.api.provider import ProviderConfig
+    from skyward.api.model import Cluster, Instance
     from skyward.api.spec import PoolSpec
-    from skyward.plugins.plugin import AppLifecycle, ProcessLifecycle
     from skyward.providers.provider import Provider
 
 type RequestId = str
@@ -325,116 +319,13 @@ type Event = Request | Fact
 
 
 # =============================================================================
-# Node Actor Messages (internal to node lifecycle — merged node + instance)
+# Node Actor Messages (shared across actors)
 # =============================================================================
 
 
 @dataclass(frozen=True, slots=True)
 class Preempted:
     reason: str = "preempted"
-
-
-@dataclass(frozen=True, slots=True)
-class _PollResult:
-    instance: Any | None = None
-    cluster: Any | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _LocalInstallDone:
-    instance: NodeInstance
-
-
-@dataclass(frozen=True, slots=True)
-class _PostBootstrapFailed:
-    error: str
-
-
-@dataclass(frozen=True, slots=True)
-class _UserCodeSyncDone:
-    instance: NodeInstance
-
-
-@dataclass(frozen=True, slots=True)
-class _Connected:
-    transport_ref: ActorRef  # ActorRef[TransportMsg]
-    local_port: int
-    instance: NodeInstance | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _ConnectionFailed:
-    error: str
-
-
-@dataclass(frozen=True, slots=True)
-class _WorkerStarted:
-    local_port: int
-    private_ip: str
-
-
-@dataclass(frozen=True, slots=True)
-class _WorkerFailed:
-    error: str
-
-
-@dataclass(frozen=True, slots=True)
-class _BootstrapUploaded:
-    pass
-
-
-@dataclass(frozen=True, slots=True)
-class _BootstrapUploadFailed:
-    error: str
-
-
-@dataclass(frozen=True, slots=True)
-class _SnapshotSaved:
-    pass
-
-
-@dataclass(frozen=True, slots=True)
-class _SnapshotFailed:
-    error: str
-
-
-@dataclass(frozen=True, slots=True)
-class _RemoteTaskDone:
-    task_id: str
-    value: Any
-    node_id: int
-    reply_to: ActorRef[Any]
-    error: bool = False
-    connection_error: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class JoinCluster:
-    client: ClusterClient
-    pool_info_json: str
-    env_vars: dict[str, str]
-    around_app_hooks: tuple[tuple[str, AppLifecycle], ...] = ()
-    around_process_hooks: tuple[tuple[str, ProcessLifecycle], ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class _WorkerDiscovered:
-    worker_ref: ActorRef
-
-
-@dataclass(frozen=True, slots=True)
-class _WorkerDiscoveryFailed:
-    error: str
-
-
-@dataclass(frozen=True, slots=True)
-class _EnvSetupDone:
-    pass
-
-
-@dataclass(frozen=True, slots=True)
-class _EnvSetupFailed:
-    error: str
 
 
 # =============================================================================
@@ -467,28 +358,6 @@ class TaskResult:
     error: bool = False
 
 
-type NodeMsg = (
-    Provision
-    | ExecuteOnNode
-    | TaskResult
-    | HeadAddressKnown
-    | JoinCluster
-    | Preempted
-    | BootstrapDone
-    | _PollResult
-    | _LocalInstallDone
-    | _PostBootstrapFailed
-    | _UserCodeSyncDone
-    | _Connected | _ConnectionFailed
-    | _WorkerStarted | _WorkerFailed
-    | _BootstrapUploaded | _BootstrapUploadFailed
-    | _SnapshotSaved | _SnapshotFailed
-    | _RemoteTaskDone
-    | _WorkerDiscovered | _WorkerDiscoveryFailed
-    | _EnvSetupDone | _EnvSetupFailed
-    | ConnectionLost | ConnectionRestored | ConnectionFailed | PortReForwarded
-    | Terminated
-)
 
 
 # =============================================================================
@@ -512,39 +381,6 @@ class NodeLost:
 
 
 @dataclass(frozen=True, slots=True)
-class PoolStarted:
-    cluster_id: ClusterId
-    instances: tuple[NodeInstance, ...]
-    cluster: Cluster[Any]
-
-
-@dataclass(frozen=True, slots=True)
-class PoolStopped:
-    pass
-
-
-@dataclass(frozen=True, slots=True)
-class ProvisionFailed:
-    """Provisioning failed after exhausting all retry attempts."""
-
-    reason: str
-
-
-@dataclass(frozen=True, slots=True)
-class StartPool:
-    spec: PoolSpec
-    provider_config: ProviderConfig
-    provider: Any
-    offers: tuple[Offer, ...]
-    reply_to: ActorRef[PoolStarted | ProvisionFailed]
-
-
-@dataclass(frozen=True, slots=True)
-class StopPool:
-    reply_to: ActorRef[PoolStopped]
-
-
-@dataclass(frozen=True, slots=True)
 class HeadAddressKnown:
     head_addr: str
     casty_port: int
@@ -558,34 +394,6 @@ class ClusterReady:
     cluster: Cluster
 
 
-@dataclass(frozen=True, slots=True)
-class InstancesProvisioned:
-    cluster: Cluster
-    instances: tuple[Instance, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _ShutdownDone:
-    pass
-
-
-type PoolMsg = (
-    StartPool
-    | StopPool
-    | PoolStarted
-    | ProvisionFailed
-    | HeadAddressKnown
-    | NodeBecameReady
-    | NodeLost
-    | SubmitTask
-    | SubmitBroadcast
-    | ClusterReady
-    | InstancesProvisioned
-    | _ShutdownDone
-    | SpawnNodes
-    | DrainNode
-    | GetCurrentNodes
-)
 
 
 # =============================================================================
@@ -649,13 +457,6 @@ class PressureReport:
     node_count: int
 
 
-@dataclass(frozen=True, slots=True)
-class _ScaleTick:
-    pass
-
-
-type AutoscalerMsg = PressureReport | _ScaleTick
-
 
 # ── Reconciler ────────────────────────────────────────────────────
 
@@ -675,46 +476,6 @@ class ReconcilerNodeLost:
 @dataclass(frozen=True, slots=True)
 class NodeJoined:
     node_id: NodeId
-
-
-@dataclass(frozen=True, slots=True)
-class _ReconcileTick:
-    pass
-
-
-@dataclass(frozen=True, slots=True)
-class _ProvisionResult:
-    instances: tuple[Any, ...]
-    cluster: Any
-
-
-@dataclass(frozen=True, slots=True)
-class _ProvisionError:
-    error: str
-
-
-@dataclass(frozen=True, slots=True)
-class _TerminateResult:
-    node_ids: tuple[NodeId, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _TerminateError:
-    node_ids: tuple[NodeId, ...]
-    error: str
-
-
-type ReconcilerMsg = (
-    DesiredCountChanged
-    | ReconcilerNodeLost
-    | NodeJoined
-    | DrainComplete
-    | _ReconcileTick
-    | _ProvisionResult
-    | _ProvisionError
-    | _TerminateResult
-    | _TerminateError
-)
 
 
 # ── Pool ↔ Reconciler ────────────────────────────────────────────
@@ -757,12 +518,6 @@ class CurrentNodeCount:
 class RegisterPressureObserver:
     observer: ActorRef[PressureReport]
 
-
-type TaskManagerMsg = (
-    NodeAvailable | NodeUnavailable | TaskResult
-    | SubmitTask | SubmitBroadcast | TaskSubmitted
-    | RegisterPressureObserver
-)
 
 
 # =============================================================================
@@ -820,24 +575,6 @@ class _BootstrapScriptFailed:
     error: str
 
 
-type ProviderMsg = (
-    ClusterRequested
-    | InstanceRequested
-    | BootstrapRequested
-    | ShutdownRequested
-    | ShutdownCompleted
-    | InstanceReady
-    | BootstrapDone
-    | _ProvisioningDone
-    | _InstanceNowRunning
-    | _InstanceWaitFailed
-    | _BootstrapScriptDone
-    | _BootstrapScriptFailed
-    | _LocalInstallDone
-    | _UserCodeSyncDone
-)
-
-
 # =============================================================================
 # Monitor Actor Messages
 # =============================================================================
@@ -848,23 +585,9 @@ class StopMonitor:
     pass
 
 
-type MonitorMsg = StopMonitor
-
-
 # =============================================================================
 # Helpers
 # =============================================================================
-
-
-def _to_node_instance(ev: InstanceRunning) -> NodeInstance:
-    return NodeInstance(
-        instance=ev.instance,
-        node=ev.node_id,
-        provider=ev.provider,
-        ssh_user=ev.ssh_user,
-        ssh_key_path=ev.ssh_key_path,
-        network_interface=ev.network_interface,
-    )
 
 
 def _bind_to_node(

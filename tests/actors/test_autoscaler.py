@@ -1,4 +1,4 @@
-from skyward.actors.autoscaler import _compute_desired
+from skyward.actors.autoscaler.state import _compute_desired
 from skyward.actors.messages import PressureReport
 
 

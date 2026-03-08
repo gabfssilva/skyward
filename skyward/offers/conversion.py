@@ -66,13 +66,13 @@ def _build_specific(provider: str, raw: dict[str, Any] | None) -> Any:
 
 
 def _aws_specific(_raw: dict[str, Any] | None) -> Any:
-    from skyward.providers.aws.provider import AWSOfferSpecific
+    from skyward.providers.aws.types import AWSOfferSpecific
 
     return AWSOfferSpecific(ami="")
 
 
 def _gcp_specific(raw: dict[str, Any] | None) -> Any:
-    from skyward.providers.gcp.instances import ResolvedMachine
+    from skyward.providers.gcp.types import ResolvedMachine
 
     if raw is None:
         return ResolvedMachine(

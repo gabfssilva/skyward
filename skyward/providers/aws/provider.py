@@ -22,31 +22,13 @@ from skyward.providers.provider import Provider
 if TYPE_CHECKING:
     from skyward.storage import Storage
 
-from .clients import EC2ClientFactory
+from .client import EC2ClientFactory
 from .config import AWS, AllocationStrategy
+from .types import AWSOfferSpecific, AWSResources, AWSSpecific, IAMStatement
 
 type Architecture = str
 
 log = logger.bind(provider="aws")
-
-
-@dataclass(frozen=True, slots=True)
-class AWSOfferSpecific:
-    ami: str
-
-
-@dataclass(frozen=True, slots=True)
-class AWSSpecific:
-    resources: AWSResources
-    ssh_key_name: str
-    pinned_az: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class AWSResources:
-    instance_profile_arn: str
-    security_group_id: str
-    subnet_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -483,14 +465,6 @@ async def _ensure_key_pair(config: AWS, ec2: EC2ClientFactory) -> tuple[str, str
         log.info("Imported SSH key pair {name}", name=key_name)
 
     return key_name, private_key_path
-
-
-@dataclass(frozen=True, slots=True)
-class IAMStatement:
-    """Single IAM policy statement."""
-
-    actions: tuple[str, ...]
-    resources: tuple[str, ...]
 
 
 _EC2_TRUST_POLICY = json.dumps({

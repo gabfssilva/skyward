@@ -5,7 +5,7 @@ import hashlib
 import tempfile
 import uuid
 from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 
 from skyward.api import PoolSpec
@@ -13,6 +13,7 @@ from skyward.api.model import Cluster, Instance, InstanceType, Offer
 from skyward.observability.logger import logger
 from skyward.providers.container.cli import run, run_json
 from skyward.providers.container.config import Container
+from skyward.providers.container.types import ContainerSpecific
 from skyward.providers.provider import WarmableProvider
 from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
 
@@ -45,12 +46,6 @@ def _make_entrypoint(ttl: int) -> str:
 
 def _is_apple_container(binary: str) -> bool:
     return binary == "container"
-
-@dataclass(frozen=True, slots=True)
-class ContainerSpecific:
-    network: str
-    base_image: str
-    context: str
 
 
 class ContainerProvider(WarmableProvider[Container, ContainerSpecific]):

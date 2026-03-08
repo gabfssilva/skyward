@@ -15,7 +15,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
 
 class TestPhase:
     def test_phases_are_ordered(self) -> None:
-        from skyward.actors.console import _Phase
+        from skyward.actors.console.state import _Phase
 
         phases = list(_Phase)
         names = [p.name for p in phases]
@@ -26,7 +26,7 @@ class TestPhase:
 
 class TestState:
     def test_default_state(self) -> None:
-        from skyward.actors.console import _Phase, _State
+        from skyward.actors.console.state import _Phase, _State
 
         state = _State(total_nodes=4)
         assert state.phase == _Phase.PROVISIONING
@@ -39,7 +39,7 @@ class TestState:
         assert state.task_latencies == ()
 
     def test_state_is_frozen(self) -> None:
-        from skyward.actors.console import _State
+        from skyward.actors.console.state import _State
 
         state = _State(total_nodes=2)
         with pytest.raises(AttributeError):
@@ -48,7 +48,7 @@ class TestState:
 
 class TestNodeStatus:
     def test_node_status_values(self) -> None:
-        from skyward.actors.console import _NodeStatus
+        from skyward.actors.console.state import _NodeStatus
 
         statuses = list(_NodeStatus)
         names = [s.name for s in statuses]
@@ -57,19 +57,16 @@ class TestNodeStatus:
 
 class TestStateTransitions:
     def test_advance_to_ssh(self) -> None:
-        from skyward.actors.console import _on_cluster_ready, _Phase, _State
+        from skyward.actors.console.model import _on_cluster_ready
+        from skyward.actors.console.state import _Phase, _State
 
         state = _State(total_nodes=4, phase=_Phase.PROVISIONING)
         new = _on_cluster_ready(state)
         assert new.phase == _Phase.SSH
 
     def test_ssh_connected_advances_node(self) -> None:
-        from skyward.actors.console import (
-            _NodeStatus,
-            _on_ssh_connected,
-            _Phase,
-            _State,
-        )
+        from skyward.actors.console.model import _on_ssh_connected
+        from skyward.actors.console.state import _NodeStatus, _Phase, _State
 
         state = _State(total_nodes=2, phase=_Phase.SSH)
         new = _on_ssh_connected(state, "i-abc")
@@ -77,35 +74,24 @@ class TestStateTransitions:
         assert new.phase == _Phase.SSH
 
     def test_ssh_all_connected_advances_to_bootstrap(self) -> None:
-        from skyward.actors.console import (
-            _on_ssh_connected,
-            _Phase,
-            _State,
-        )
+        from skyward.actors.console.model import _on_ssh_connected
+        from skyward.actors.console.state import _Phase, _State
 
         state = _State(total_nodes=1, phase=_Phase.SSH)
         new = _on_ssh_connected(state, "i-abc")
         assert new.phase == _Phase.BOOTSTRAP
 
     def test_bootstrap_done_advances_node(self) -> None:
-        from skyward.actors.console import (
-            _NodeStatus,
-            _on_bootstrap_done,
-            _Phase,
-            _State,
-        )
+        from skyward.actors.console.model import _on_bootstrap_done
+        from skyward.actors.console.state import _NodeStatus, _Phase, _State
 
         state = _State(total_nodes=2, phase=_Phase.BOOTSTRAP)
         new = _on_bootstrap_done(state, "i-abc")
         assert new.nodes["i-abc"] == _NodeStatus.BOOTSTRAPPING
 
     def test_worker_started_advances_node(self) -> None:
-        from skyward.actors.console import (
-            _NodeStatus,
-            _on_worker_started,
-            _Phase,
-            _State,
-        )
+        from skyward.actors.console.model import _on_worker_started
+        from skyward.actors.console.state import _NodeStatus, _Phase, _State
 
         state = _State(total_nodes=2, phase=_Phase.WORKERS)
         new = _on_worker_started(state, "i-abc")
@@ -113,11 +99,8 @@ class TestStateTransitions:
         assert new.phase == _Phase.WORKERS
 
     def test_worker_all_started_advances_to_ready(self) -> None:
-        from skyward.actors.console import (
-            _on_worker_started,
-            _Phase,
-            _State,
-        )
+        from skyward.actors.console.model import _on_worker_started
+        from skyward.actors.console.state import _Phase, _State
 
         state = _State(total_nodes=1, phase=_Phase.WORKERS)
         new = _on_worker_started(state, "i-abc")
@@ -126,14 +109,12 @@ class TestStateTransitions:
     def test_phase_never_regresses_during_scaling(self) -> None:
         from unittest.mock import MagicMock
 
-        from skyward.actors.console import (
-            _NodeStatus,
+        from skyward.actors.console.model import (
             _on_spawn_nodes,
             _on_ssh_connected,
             _on_worker_started,
-            _Phase,
-            _State,
         )
+        from skyward.actors.console.state import _NodeStatus, _Phase, _State
 
         state = _State(
             total_nodes=1, phase=_Phase.READY,
@@ -155,7 +136,8 @@ class TestStateTransitions:
         assert state.phase == _Phase.READY
 
     def test_record_task_submitted(self) -> None:
-        from skyward.actors.console import _on_task_submitted, _State
+        from skyward.actors.console.model import _on_task_submitted
+        from skyward.actors.console.state import _State
 
         state = _State(total_nodes=1)
         new = _on_task_submitted(state, "t1", "train", "single")
@@ -164,11 +146,8 @@ class TestStateTransitions:
         assert "t1" in new.inflight
 
     def test_record_task_assigned(self) -> None:
-        from skyward.actors.console import (
-            _on_task_assigned,
-            _on_task_submitted,
-            _State,
-        )
+        from skyward.actors.console.model import _on_task_assigned, _on_task_submitted
+        from skyward.actors.console.state import _State
 
         state = _State(total_nodes=1)
         state = _on_task_submitted(state, "t1", "train", "single")
@@ -177,12 +156,12 @@ class TestStateTransitions:
         assert new.tasks_running == 1
 
     def test_record_task_done(self) -> None:
-        from skyward.actors.console import (
+        from skyward.actors.console.model import (
             _on_task_assigned,
             _on_task_done,
             _on_task_submitted,
-            _State,
         )
+        from skyward.actors.console.state import _State
 
         state = _State(total_nodes=1)
         state = _on_task_submitted(state, "t1", "train", "single")
@@ -193,12 +172,12 @@ class TestStateTransitions:
         assert new.task_latencies == (2.5,)
 
     def test_task_done_tracks_per_instance(self) -> None:
-        from skyward.actors.console import (
+        from skyward.actors.console.model import (
             _on_task_assigned,
             _on_task_done,
             _on_task_submitted,
-            _State,
         )
+        from skyward.actors.console.state import _State
 
         state = _State(total_nodes=2)
         state = _on_task_submitted(state, "t1", "train", "single")
@@ -214,7 +193,8 @@ class TestStateTransitions:
         assert state.tasks_per_instance["i-def"] == 1
 
     def test_record_task_failed(self) -> None:
-        from skyward.actors.console import _on_task_failed, _on_task_submitted, _State
+        from skyward.actors.console.model import _on_task_failed, _on_task_submitted
+        from skyward.actors.console.state import _State
 
         state = _State(total_nodes=1)
         state = _on_task_submitted(state, "t1", "train", "single")
@@ -223,14 +203,16 @@ class TestStateTransitions:
         assert new.tasks_failed == 1
 
     def test_record_metric(self) -> None:
-        from skyward.actors.console import _on_metric, _State
+        from skyward.actors.console.model import _on_metric
+        from skyward.actors.console.state import _State
 
         state = _State(total_nodes=1)
         new = _on_metric(state, "i-abc", "gpu_util", 87.5)
         assert new.metrics["i-abc"]["gpu_util"] == 87.5
 
     def test_throughput(self) -> None:
-        from skyward.actors.console import _State, _throughput
+        from skyward.actors.console.model import _throughput
+        from skyward.actors.console.state import _State
 
         state = _State(
             total_nodes=1, tasks_done=10,
@@ -251,20 +233,20 @@ def _capture_console() -> tuple[Console, StringIO]:
 
 class TestBadge:
     def test_fixed_badge_has_style(self) -> None:
-        from skyward.actors.console import _badge_style
+        from skyward.actors.console.view import _badge_style
 
         style = _badge_style("skyward")
         assert style.bgcolor is not None
 
     def test_dynamic_badge_uses_golden_angle(self) -> None:
-        from skyward.actors.console import _badge_style
+        from skyward.actors.console.view import _badge_style
 
         s1 = _badge_style("i-abc123")
         s2 = _badge_style("i-def456")
         assert s1.bgcolor != s2.bgcolor
 
     def test_same_label_returns_same_style(self) -> None:
-        from skyward.actors.console import _badge_style
+        from skyward.actors.console.view import _badge_style
 
         s1 = _badge_style("i-abc123")
         s2 = _badge_style("i-abc123")
@@ -273,7 +255,7 @@ class TestBadge:
 
 class TestEmit:
     def test_emit_prints_badge_and_text(self) -> None:
-        from skyward.actors.console import _emit
+        from skyward.actors.console.view import _emit
 
         console, buf = _capture_console()
         _emit(console, "skyward", "hello world")
@@ -282,7 +264,7 @@ class TestEmit:
         assert "hello world" in output
 
     def test_emit_with_symbol(self) -> None:
-        from skyward.actors.console import _emit
+        from skyward.actors.console.view import _emit
 
         console, buf = _capture_console()
         _emit(console, "tasks", "\u2713 train completed (2.1s)")
@@ -293,7 +275,8 @@ class TestEmit:
 
 class TestFooter:
     def test_provisioning_footer_single_line(self) -> None:
-        from skyward.actors.console import _Phase, _render_footer, _State
+        from skyward.actors.console.state import _Phase, _State
+        from skyward.actors.console.view import _render_footer
 
         console, buf = _capture_console()
         state = _State(total_nodes=4, phase=_Phase.PROVISIONING)
@@ -303,12 +286,8 @@ class TestFooter:
         assert "provisioning" in output.lower()
 
     def test_bootstrap_footer_shows_progress(self) -> None:
-        from skyward.actors.console import (
-            _NodeStatus,
-            _Phase,
-            _render_footer,
-            _State,
-        )
+        from skyward.actors.console.state import _NodeStatus, _Phase, _State
+        from skyward.actors.console.view import _render_footer
 
         console, buf = _capture_console()
         state = _State(
@@ -325,7 +304,8 @@ class TestFooter:
         assert "1/3" in output
 
     def test_ready_footer_shows_task_counts(self) -> None:
-        from skyward.actors.console import _Phase, _render_footer, _State
+        from skyward.actors.console.state import _Phase, _State
+        from skyward.actors.console.view import _render_footer
 
         console, buf = _capture_console()
         state = _State(
@@ -341,7 +321,8 @@ class TestFooter:
         assert "12 done" in output
 
     def test_stopping_footer(self) -> None:
-        from skyward.actors.console import _Phase, _render_footer, _State
+        from skyward.actors.console.state import _Phase, _State
+        from skyward.actors.console.view import _render_footer
 
         console, buf = _capture_console()
         state = _State(total_nodes=2, phase=_Phase.STOPPING)
@@ -352,7 +333,8 @@ class TestFooter:
 
 class TestSummary:
     def test_summary_includes_duration(self) -> None:
-        from skyward.actors.console import _render_summary, _State
+        from skyward.actors.console.state import _State
+        from skyward.actors.console.view import _render_summary
 
         console, buf = _capture_console()
         state = _State(
@@ -368,7 +350,8 @@ class TestSummary:
         assert "1 failed" in output
 
     def test_summary_includes_throughput(self) -> None:
-        from skyward.actors.console import _render_summary, _State
+        from skyward.actors.console.state import _State
+        from skyward.actors.console.view import _render_summary
 
         console, buf = _capture_console()
         state = _State(
@@ -381,7 +364,8 @@ class TestSummary:
         assert "tasks/min" in output
 
     def test_summary_shows_node_distribution(self) -> None:
-        from skyward.actors.console import _render_summary, _State
+        from skyward.actors.console.state import _State
+        from skyward.actors.console.view import _render_summary
 
         console, buf = _capture_console()
         state = _State(
@@ -399,7 +383,8 @@ class TestSummary:
         assert "max 12" in output
 
     def test_summary_with_no_tasks(self) -> None:
-        from skyward.actors.console import _render_summary, _State
+        from skyward.actors.console.state import _State
+        from skyward.actors.console.view import _render_summary
 
         console, buf = _capture_console()
         state = _State(total_nodes=1, pool_started_at=0.0)
@@ -444,7 +429,7 @@ class TestConsoleActor:
         async def run() -> None:
             from casty import ActorSystem, SpyEvent
 
-            from skyward.actors.messages import StartPool
+            from skyward.actors.pool.messages import StartPool
 
             spec = self._make_spec()
             async with ActorSystem("test") as system:
@@ -467,7 +452,7 @@ class TestConsoleActor:
 
 class TestFormatTask:
     def test_simple_function(self) -> None:
-        from skyward.actors.console import _format_task
+        from skyward.actors.console.view import _format_task
 
         def train() -> None:
             pass
@@ -476,7 +461,7 @@ class TestFormatTask:
         assert result == "train"
 
     def test_with_args(self) -> None:
-        from skyward.actors.console import _format_task
+        from skyward.actors.console.view import _format_task
 
         def train() -> None:
             pass
@@ -485,7 +470,7 @@ class TestFormatTask:
         assert result == "train(10)"
 
     def test_with_kwargs(self) -> None:
-        from skyward.actors.console import _format_task
+        from skyward.actors.console.view import _format_task
 
         def train() -> None:
             pass
@@ -494,7 +479,7 @@ class TestFormatTask:
         assert result == "train(lr=0.01)"
 
     def test_long_signature_truncated(self) -> None:
-        from skyward.actors.console import _format_task
+        from skyward.actors.console.view import _format_task
 
         def train() -> None:
             pass
@@ -505,7 +490,8 @@ class TestFormatTask:
 
 class TestInstanceIdResolution:
     def test_resolve_from_nodes_by_index(self) -> None:
-        from skyward.actors.console import _resolve_instance_id, _State
+        from skyward.actors.console.state import _State
+        from skyward.actors.console.view import _resolve_instance_id
 
         state = _State(total_nodes=2)
         assert _resolve_instance_id(state, node_id=0) is None
@@ -513,7 +499,8 @@ class TestInstanceIdResolution:
     def test_resolve_with_instances(self) -> None:
         from unittest.mock import MagicMock
 
-        from skyward.actors.console import _resolve_instance_id, _State
+        from skyward.actors.console.state import _State
+        from skyward.actors.console.view import _resolve_instance_id
 
         inst0 = MagicMock()
         inst0.id = "i-abc"
@@ -525,7 +512,8 @@ class TestInstanceIdResolution:
         assert _resolve_instance_id(state, node_id=5) is None
 
     def test_resolve_with_none_node_id(self) -> None:
-        from skyward.actors.console import _resolve_instance_id, _State
+        from skyward.actors.console.state import _State
+        from skyward.actors.console.view import _resolve_instance_id
 
         state = _State(total_nodes=2)
         assert _resolve_instance_id(state, node_id=None) is None
@@ -535,7 +523,9 @@ class TestUpdateInstance:
     def test_updates_instance_ip(self) -> None:
         from unittest.mock import MagicMock
 
-        from skyward.actors.console import _ssh_url, _State, _update_instance
+        from skyward.actors.console.model import _update_instance
+        from skyward.actors.console.state import _State
+        from skyward.actors.console.view import _ssh_url
 
         inst_no_ip = MagicMock()
         inst_no_ip.id = "i-abc"
@@ -556,7 +546,8 @@ class TestUpdateInstance:
     def test_ssh_url_with_custom_port(self) -> None:
         from unittest.mock import MagicMock
 
-        from skyward.actors.console import _ssh_url, _State
+        from skyward.actors.console.state import _State
+        from skyward.actors.console.view import _ssh_url
 
         inst = MagicMock()
         inst.id = "i-abc"
@@ -569,14 +560,14 @@ class TestUpdateInstance:
 
 class TestNodeIdFromPath:
     def test_extracts_node_id(self) -> None:
-        from skyward.actors.console import _node_id_from_path
+        from skyward.actors.console.view import _node_id_from_path
 
         assert _node_id_from_path("/system/user/pool/node-0") == 0
         assert _node_id_from_path("/system/user/pool/node-15") == 15
         assert _node_id_from_path("node-3/monitor-xxx") == 3
 
     def test_returns_none_for_no_node(self) -> None:
-        from skyward.actors.console import _node_id_from_path
+        from skyward.actors.console.view import _node_id_from_path
 
         assert _node_id_from_path("/system/user/pool") is None
         assert _node_id_from_path("reconciler") is None
@@ -584,7 +575,8 @@ class TestNodeIdFromPath:
 
 class TestElasticStateTransitions:
     def test_desired_changed_scaling_up(self) -> None:
-        from skyward.actors.console import _on_desired_changed, _State
+        from skyward.actors.console.model import _on_desired_changed
+        from skyward.actors.console.state import _State
 
         state = _State(total_nodes=4, desired_nodes=4, is_elastic=True)
         new = _on_desired_changed(state, 8)
@@ -592,11 +584,8 @@ class TestElasticStateTransitions:
         assert new.reconciler_state == "scaling_up"
 
     def test_desired_changed_scaling_down(self) -> None:
-        from skyward.actors.console import (
-            _NodeStatus,
-            _on_desired_changed,
-            _State,
-        )
+        from skyward.actors.console.model import _on_desired_changed
+        from skyward.actors.console.state import _NodeStatus, _State
 
         state = _State(
             total_nodes=8, desired_nodes=8, is_elastic=True,
@@ -609,7 +598,8 @@ class TestElasticStateTransitions:
     def test_spawn_nodes_increments_pending_and_instances(self) -> None:
         from unittest.mock import MagicMock
 
-        from skyward.actors.console import _on_spawn_nodes, _State
+        from skyward.actors.console.model import _on_spawn_nodes
+        from skyward.actors.console.state import _State
 
         insts = tuple(MagicMock() for _ in range(3))
         state = _State(total_nodes=4, pending_nodes=0)
@@ -619,7 +609,8 @@ class TestElasticStateTransitions:
         assert len(new.instances) == 3
 
     def test_node_joined_decrements_pending(self) -> None:
-        from skyward.actors.console import _on_node_joined, _State
+        from skyward.actors.console.model import _on_node_joined
+        from skyward.actors.console.state import _State
 
         state = _State(total_nodes=4, pending_nodes=2, reconciler_state="scaling_up")
         new = _on_node_joined(state)
@@ -627,7 +618,8 @@ class TestElasticStateTransitions:
         assert new.reconciler_state == "scaling_up"
 
     def test_node_joined_last_pending_goes_to_watching(self) -> None:
-        from skyward.actors.console import _on_node_joined, _State
+        from skyward.actors.console.model import _on_node_joined
+        from skyward.actors.console.state import _State
 
         state = _State(total_nodes=4, pending_nodes=1, reconciler_state="scaling_up")
         new = _on_node_joined(state)
@@ -635,7 +627,8 @@ class TestElasticStateTransitions:
         assert new.reconciler_state == "watching"
 
     def test_drain_node_increments_draining(self) -> None:
-        from skyward.actors.console import _on_drain_node, _State
+        from skyward.actors.console.model import _on_drain_node
+        from skyward.actors.console.state import _State
 
         state = _State(total_nodes=4, draining_nodes=0)
         new = _on_drain_node(state)
@@ -643,7 +636,8 @@ class TestElasticStateTransitions:
         assert new.reconciler_state == "draining"
 
     def test_drain_complete_decrements_draining(self) -> None:
-        from skyward.actors.console import _NodeStatus, _on_drain_complete, _State
+        from skyward.actors.console.model import _on_drain_complete
+        from skyward.actors.console.state import _NodeStatus, _State
 
         state = _State(
             total_nodes=4, draining_nodes=1, reconciler_state="draining",
@@ -660,7 +654,8 @@ class TestElasticStateTransitions:
         assert len(new.nodes) == 3
 
     def test_reconciler_node_lost_decrements_pending(self) -> None:
-        from skyward.actors.console import _on_reconciler_node_lost, _State
+        from skyward.actors.console.model import _on_reconciler_node_lost
+        from skyward.actors.console.state import _State
 
         state = _State(total_nodes=4, pending_nodes=2)
         new = _on_reconciler_node_lost(state)
@@ -670,19 +665,19 @@ class TestElasticStateTransitions:
 class TestCollectBadges:
     @staticmethod
     def _badges_plain(state: object) -> str:
-        from skyward.actors.console import _collect_badges
+        from skyward.actors.console.view import _collect_badges
         infra, status, tasks = _collect_badges(state)  # type: ignore[arg-type]
         return "".join(b.plain for b in [*infra, *status, *tasks])
 
     def test_always_has_skyward(self) -> None:
-        from skyward.actors.console import _State
+        from skyward.actors.console.state import _State
 
         assert "skyward" in self._badges_plain(_State(total_nodes=2))
 
     def test_infra_badges(self) -> None:
         from unittest.mock import MagicMock
 
-        from skyward.actors.console import _State
+        from skyward.actors.console.state import _State
 
         inst = MagicMock()
         inst.spot = True
@@ -708,7 +703,7 @@ class TestCollectBadges:
         assert "16 GB" in plain
 
     def test_ready_static(self) -> None:
-        from skyward.actors.console import _NodeStatus, _Phase, _State
+        from skyward.actors.console.state import _NodeStatus, _Phase, _State
 
         state = _State(
             total_nodes=4, phase=_Phase.READY,
@@ -719,7 +714,7 @@ class TestCollectBadges:
         assert "workers 4/4" in plain
 
     def test_ready_static_shows_reconciler(self) -> None:
-        from skyward.actors.console import _NodeStatus, _Phase, _State
+        from skyward.actors.console.state import _NodeStatus, _Phase, _State
 
         state = _State(
             total_nodes=4, phase=_Phase.READY,
@@ -732,7 +727,7 @@ class TestCollectBadges:
         assert "max" not in plain
 
     def test_ready_static_scaling(self) -> None:
-        from skyward.actors.console import _NodeStatus, _Phase, _State
+        from skyward.actors.console.state import _NodeStatus, _Phase, _State
 
         state = _State(
             total_nodes=4, phase=_Phase.READY,
@@ -744,7 +739,7 @@ class TestCollectBadges:
         assert "pending 1" in plain
 
     def test_ready_elastic_in_sync(self) -> None:
-        from skyward.actors.console import _NodeStatus, _Phase, _State
+        from skyward.actors.console.state import _NodeStatus, _Phase, _State
 
         state = _State(
             total_nodes=4, phase=_Phase.READY,
@@ -758,7 +753,7 @@ class TestCollectBadges:
         assert "max 10" in plain
 
     def test_ready_elastic_scaling(self) -> None:
-        from skyward.actors.console import _NodeStatus, _Phase, _State
+        from skyward.actors.console.state import _NodeStatus, _Phase, _State
 
         state = _State(
             total_nodes=4, phase=_Phase.READY,
@@ -772,7 +767,7 @@ class TestCollectBadges:
         assert "pending 4" in plain
 
     def test_tasks_badges(self) -> None:
-        from skyward.actors.console import _NodeStatus, _Phase, _State
+        from skyward.actors.console.state import _NodeStatus, _Phase, _State
 
         state = _State(
             total_nodes=2, phase=_Phase.READY,
@@ -786,7 +781,7 @@ class TestCollectBadges:
         assert "1 failed" in plain
 
     def test_metric_gauges(self) -> None:
-        from skyward.actors.console import _NodeStatus, _Phase, _State
+        from skyward.actors.console.state import _NodeStatus, _Phase, _State
 
         state = _State(
             total_nodes=1, phase=_Phase.READY,
@@ -809,7 +804,7 @@ class TestCollectBadges:
     def test_vram_from_spec(self) -> None:
         from unittest.mock import MagicMock
 
-        from skyward.actors.console import _State
+        from skyward.actors.console.state import _State
 
         accel = MagicMock()
         accel.name = "A100"
@@ -838,7 +833,8 @@ class TestCollectBadges:
     def test_footer_returns_group(self) -> None:
         from rich.console import Group
 
-        from skyward.actors.console import _Phase, _render_footer, _State
+        from skyward.actors.console.state import _Phase, _State
+        from skyward.actors.console.view import _render_footer
 
         state = _State(total_nodes=2, phase=_Phase.READY)
         result = _render_footer(state)

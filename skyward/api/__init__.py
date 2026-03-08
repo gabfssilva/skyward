@@ -1,19 +1,14 @@
 """User-facing API — pool, compute, runtime."""
 
+from .context import sky
+from .function import PendingFunction, PendingFunctionGroup, function, gather
 from .model import Cluster as Cluster
 from .model import ClusterStatus as ClusterStatus
 from .model import Instance as Instance
 from .model import InstanceStatus as InstanceStatus
 from .model import InstanceType as InstanceType
 from .model import Offer as Offer
-from .pool import (
-    ComputePool,
-    PendingFunction,
-    PendingFunctionGroup,
-    function,
-    gather,
-    sky,
-)
+from .pool import ComputePool
 from .provider import ProviderConfig
 from .runtime import (
     CallbackWriter,

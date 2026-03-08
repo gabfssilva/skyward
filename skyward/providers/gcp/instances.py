@@ -7,54 +7,17 @@ accelerator, rather than relying on static mappings.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 
 from skyward.observability.logger import logger
 
+from .types import (
+    _ACCEL_PATTERNS,
+    _GUEST_ATTACHABLE,
+    _N1_DEFAULTS,
+    _TPU_PATTERNS,
+)
+
 log = logger.bind(provider="gcp")
-
-_ACCEL_PATTERNS: dict[str, tuple[str, ...]] = {
-    "H200": ("nvidia-h200",),
-    "H100": ("nvidia-h100",),
-    "A100": ("nvidia-a100", "nvidia-tesla-a100"),
-    "L4": ("nvidia-l4",),
-    "L40": ("nvidia-l40",),
-    "T4": ("nvidia-tesla-t4",),
-    "V100": ("nvidia-tesla-v100",),
-    "P100": ("nvidia-tesla-p100",),
-    "P4": ("nvidia-tesla-p4",),
-    "A10": ("nvidia-a10",),
-}
-
-_BUILTIN_GPU_FAMILIES = frozenset({"a2", "a3", "a4", "g2"})
-
-_GUEST_ATTACHABLE = frozenset({
-    "nvidia-tesla-t4",
-    "nvidia-tesla-v100",
-    "nvidia-tesla-p100",
-    "nvidia-tesla-p4",
-})
-
-_N1_DEFAULTS: dict[int, str] = {
-    1: "n1-standard-8",
-    2: "n1-standard-16",
-    4: "n1-standard-32",
-    8: "n1-standard-96",
-}
-
-
-@dataclass(frozen=True, slots=True)
-class ResolvedMachine:
-    """Result of dynamic machine type resolution."""
-
-    machine_type: str
-    uses_guest_accelerators: bool
-    accelerator_type: str
-    gpu_count: int
-    gpu_model: str
-    gpu_vram_gb: int
-    vcpus: int
-    memory_gb: float
 
 
 def match_accelerator_name(
@@ -156,12 +119,6 @@ def estimate_vram(accel_type: str) -> int:
             return 8
         case _:
             return 0
-
-
-_TPU_PATTERNS = frozenset({
-    "v2", "v3", "v4", "v5", "v5e", "v5p", "v5lite", "v5litepod",
-    "v6", "v6e", "tpu",
-})
 
 
 def is_tpu_accelerator(name: str) -> bool:

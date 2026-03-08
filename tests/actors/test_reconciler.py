@@ -1,6 +1,6 @@
 from dataclasses import replace
 
-from skyward.actors.reconciler import _State
+from skyward.actors.reconciler.state import _State
 
 _FAKE_CLUSTER: object = object()
 

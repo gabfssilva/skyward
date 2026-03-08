@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
-
-if TYPE_CHECKING:
-    from skyward.api.model import Cluster
 
 from skyward.actors.messages import (
     DesiredCountChanged,
@@ -15,36 +12,31 @@ from skyward.actors.messages import (
     DrainNode,
     NodeId,
     NodeJoined,
-    PoolMsg,
-    ReconcilerMsg,
     ReconcilerNodeLost,
     SpawnNodes,
+)
+
+if TYPE_CHECKING:
+    from skyward.actors.pool.messages import PoolMsg
+from skyward.observability.logger import logger
+
+from .messages import (
+    ReconcilerMsg,
     _ProvisionError,
     _ProvisionResult,
     _ReconcileTick,
     _TerminateError,
     _TerminateResult,
 )
-from skyward.observability.logger import logger
+from .state import _State
 
 log = logger.bind(actor="reconciler")
-
-
-@dataclass(frozen=True, slots=True)
-class _State:
-    desired: int
-    current: frozenset[NodeId]
-    pending: frozenset[NodeId]
-    draining: frozenset[NodeId]
-    next_node_id: int
-    instance_map: dict[NodeId, str]
-    cluster: Cluster
 
 
 def reconciler_actor(
     pool: ActorRef[PoolMsg],
     provider: Any,
-    cluster: Cluster,
+    cluster: Any,
     min_nodes: int,
     max_nodes: int,
     initial_node_ids: frozenset[NodeId],

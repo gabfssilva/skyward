@@ -13,7 +13,6 @@ import re
 import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from skyward.accelerators import Accelerator
@@ -28,7 +27,6 @@ from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
 
 from .config import GCP
 from .instances import (
-    ResolvedMachine,
     default_n1_for_gpus,
     estimate_vram,
     is_guest_attachable,
@@ -38,27 +36,9 @@ from .instances import (
     resolve_tpu_type,
     select_image_family,
 )
+from .types import GCPSpecific, ResolvedMachine
 
 log = logger.bind(provider="gcp")
-
-
-@dataclass(frozen=True, slots=True)
-class GCPSpecific:
-    """GCP-specific cluster data flowing through Cluster[GCPSpecific]."""
-
-    project: str
-    zone: str
-    template_name: str
-    firewall_rule: str | None
-    machine_type: str
-    image: str
-    uses_guest_accelerators: bool
-    accelerator_type: str
-    gpu_count: int = 0
-    gpu_model: str = ""
-    vcpus: int = 0
-    memory_gb: float = 0.0
-    gpu_vram_gb: int = 0
 
 
 class GCPProvider(Provider[GCP, GCPSpecific]):

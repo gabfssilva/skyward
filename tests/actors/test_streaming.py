@@ -10,8 +10,8 @@ from skyward.actors.messages import (
     BootstrapPhase,
     Log,
     NodeInstance,
-    StopMonitor,
 )
+from skyward.actors.streaming.messages import StopMonitor
 from skyward.actors.streaming import instance_monitor
 from skyward.infra.ssh import RawBootstrapPhase, RawLogEvent
 from skyward.infra.ssh_actor import StreamEvent, SubscribeEvents
