@@ -47,13 +47,21 @@ def casty_service(
             f"{seeds_arg}"
         )
 
+        sanitize = (
+            "s/\\x1b\\[[0-9;?]*[a-zA-Z]//g; "
+            "s/[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]//g"
+        )
+
         return f"""nohup {cmd} > /var/log/casty.log 2>&1 &
 echo $! > /var/run/casty.pid
 
 # Stream Casty logs to events.jsonl in background
-# tr '\r' '\n' splits tqdm/progress-bar CR updates into separate lines,
-# preventing very long JSONL entries that break atomic writes.
-(tail -f /var/log/casty.log 2>/dev/null | tr '\\r' '\\n' | while IFS= read -r line; do
+# tr converts CR (tqdm progress-bar updates) into separate lines.
+# sed strips ANSI escape sequences and control chars for valid JSON.
+(tail -f /var/log/casty.log 2>/dev/null \\
+    | tr '\\r' '\\n' \\
+    | sed '{sanitize}' \\
+    | while IFS= read -r line; do
     [ -n "$line" ] && emit_console "[casty] $line"
 done) &"""
 

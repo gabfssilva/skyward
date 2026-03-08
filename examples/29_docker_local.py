@@ -32,7 +32,8 @@ if __name__ == "__main__":
         provider=sky.Container(),
         nodes=3,
         memory_gb=1,
-        vcpus=1
+        vcpus=1,
+        image=sky.Image(pip=['torch', 'scipy', 'marimo'])
     ) as pool:
         all_results = hello(10) @ pool
 

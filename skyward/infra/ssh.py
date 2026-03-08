@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Literal
@@ -532,6 +533,10 @@ class SSHTransport:
 # =============================================================================
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
 def _parse_jsonl_line(line: str) -> RawStreamEvent | None:
     """Parse a single JSONL line from events log.
 
@@ -544,8 +549,12 @@ def _parse_jsonl_line(line: str) -> RawStreamEvent | None:
     try:
         data = json.loads(line)
     except json.JSONDecodeError:
-        log.warning("Failed to parse JSONL line: {line}", line=line[:200])
-        return None
+        sanitized = _CTRL_RE.sub("", _ANSI_RE.sub("", line))
+        try:
+            data = json.loads(sanitized)
+        except json.JSONDecodeError:
+            log.warning("Failed to parse JSONL line: {line}", line=line[:200])
+            return None
 
     match data.get("type"):
         case "console":

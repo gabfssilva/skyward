@@ -54,6 +54,7 @@ rm -f {SKYWARD_DIR}/events.jsonl {SKYWARD_DIR}/events.jsonl.1
 rm -f {SKYWARD_DIR}/pyproject.toml {SKYWARD_DIR}/uv.lock
 
 export DEBIAN_FRONTEND=noninteractive
+export UV_NO_PROGRESS=1
 export PATH="/root/.local/bin:$PATH"
 
 # =============================================================================
@@ -132,7 +133,10 @@ run_phase() {{{{
     local start_ns=$(date +%s%N)
 
     set +e
-    "$@" 2>&1 | tr '\\r' '\\n' | while IFS= read -r line; do
+    script -qefc "$(printf '%q ' "$@")" /dev/null 2>&1 \\
+        | stdbuf -oL tr '\\r' '\\n' \\
+        | stdbuf -oL sed 's/\\x1b\\[[0-9;?]*[a-zA-Z]//g; s/[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]//g' \\
+        | while IFS= read -r line; do
         [ -n "$line" ] && emit_console "$line"
     done
     local exit_code=${{{{PIPESTATUS[0]}}}}
@@ -241,7 +245,7 @@ def _generate_collector(m: Metric) -> str:
         local ts=$(date +%s.%N)
         local idx=0
         {m.command} | while read val; do
-            if [ -n "$val" ]; then
+            if [ -n "$val" ] && [[ "$val" =~ ^-?[0-9]*\\.?[0-9]+$ ]]; then
                 metric_name="{m.name}_$idx"
                 json="{{\\"type\\":\\"metric\\",\\"name\\":\\"$metric_name\\",\\"value\\":$val,\\"ts\\":$ts}}"
                 emit "$json"
@@ -258,7 +262,7 @@ def _generate_collector(m: Metric) -> str:
     while true; do
         local ts=$(date +%s.%N)
         local val=$({m.command})
-        if [ -n "$val" ]; then
+        if [ -n "$val" ] && [[ "$val" =~ ^-?[0-9]*\\.?[0-9]+$ ]]; then
             metric_json="{{\\"type\\":\\"metric\\",\\"name\\":\\"{m.name}\\",\\"value\\":$val,\\"ts\\":$ts}}"
             emit "$metric_json"
         fi

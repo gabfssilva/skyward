@@ -86,7 +86,7 @@ class Spec:
     """User-facing hardware preference for ComputePool fallback chains."""
     provider: ProviderConfig
     accelerator: Accelerator | None = None
-    nodes: int = 1
+    nodes: int | tuple[int, int] = 1
     vcpus: float | None = None
     memory_gb: float | None = None
     architecture: Architecture | None = None

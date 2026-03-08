@@ -72,12 +72,11 @@ if TYPE_CHECKING:
 _active_pool: ContextVar[ComputePool | None] = ContextVar("active_pool", default=None)
 
 
-async def _cancel_pending_tasks() -> None:
+def _cancel_pending_tasks() -> None:
     current = asyncio.current_task()
-    pending = [t for t in asyncio.all_tasks() if t is not current and not t.done()]
-    for task in pending:
-        task.cancel()
-    await asyncio.gather(*pending, return_exceptions=True)
+    for task in asyncio.all_tasks():
+        if task is not current and not task.done():
+            task.cancel()
 
 
 def _get_active_pool() -> ComputePool:
@@ -359,6 +358,7 @@ class ComputePool:
         autoscale_idle_timeout: float = ...,
         reconcile_tick_interval: float = ...,
         plugins: list[Plugin] | tuple[Plugin, ...] = ...,
+        shutdown_timeout: float = ...,
     ) -> None: ...
 
     @overload
@@ -380,6 +380,7 @@ class ComputePool:
         autoscale_idle_timeout: float = ...,
         reconcile_tick_interval: float = ...,
         plugins: list[Plugin] | tuple[Plugin, ...] = ...,
+        shutdown_timeout: float = ...,
     ) -> None: ...
 
     def __init__(
@@ -402,13 +403,14 @@ class ComputePool:
         provision_timeout: int = 300,
         ssh_timeout: int = 300,
         ssh_retry_interval: int = 2,
-        provision_retry_delay: float = 10.0,
-        max_provision_attempts: int = 10,
+        provision_retry_delay: float = 5.0,
+        max_provision_attempts: int = 3,
         volumes: list[Volume] | tuple[Volume, ...] = (),
         autoscale_cooldown: float = 30.0,
         autoscale_idle_timeout: float = 60.0,
         reconcile_tick_interval: float = 15.0,
         plugins: list[Plugin] | tuple[Plugin, ...] = (),
+        shutdown_timeout: float = 120.0,
     ) -> None:
         if specs and provider is not None:
             raise ValueError("Cannot specify both positional Spec args and 'provider'")
@@ -422,15 +424,13 @@ class ComputePool:
             assert provider is not None
             match nodes:
                 case (min_n, max_n):
-                    spec_nodes = min_n
                     self._scaling = (min_n, max_n)
-                case int(n):
-                    spec_nodes = n
+                case _:
                     self._scaling = None
             self._specs = (Spec(
                 provider=provider,
                 accelerator=accelerator,
-                nodes=spec_nodes,
+                nodes=nodes,
                 vcpus=vcpus,
                 memory_gb=memory_gb,
                 architecture=architecture,
@@ -455,6 +455,7 @@ class ComputePool:
         self.autoscale_cooldown = autoscale_cooldown
         self.autoscale_idle_timeout = autoscale_idle_timeout
         self.reconcile_tick_interval = reconcile_tick_interval
+        self.shutdown_timeout = shutdown_timeout
 
         self._log_handler_ids: list[int] = []
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -514,16 +515,19 @@ class ComputePool:
             self._log_handler_ids = setup_logging(log_config)
 
         first = self._specs[0]
-        if self._scaling:
-            logger.info(
-                "Starting pool with {min}-{max} nodes ({accel})",
-                min=self._scaling[0], max=self._scaling[1], accel=first.accelerator,
-            )
-        else:
-            logger.info(
-                "Starting pool with {n} nodes ({accel})",
-                n=first.nodes, accel=first.accelerator,
-            )
+        match first.nodes:
+            case (min_n, max_n):
+                logger.info(
+                    "Starting pool with {min}-{max} nodes ({accel})",
+                    min=min_n, max=max_n, accel=first.accelerator,
+                )
+                fd_nodes = max_n
+            case int(n):
+                logger.info(
+                    "Starting pool with {n} nodes ({accel})",
+                    n=n, accel=first.accelerator,
+                )
+                fd_nodes = n
 
         from skyward.app import App, get_app
 
@@ -542,7 +546,6 @@ class ComputePool:
         )
         self._loop_thread.start()
 
-        fd_nodes = self._scaling[1] if self._scaling else first.nodes
         _check_fd_budget(fd_nodes)
 
         try:
@@ -594,9 +597,12 @@ class ComputePool:
                 self._context_token = None
 
             if self._active:
-                self._run_sync_with_timeout(self._stop_async(), timeout=60.0)
+                self._run_sync_with_timeout(self._stop_async(), timeout=self.shutdown_timeout)
         except TimeoutError:
-            logger.warning("Pool stop timed out after 60s, forcing cleanup")
+            logger.warning(
+                "Pool stop timed out after {t}s, forcing cleanup",
+                t=self.shutdown_timeout,
+            )
         except Exception as e:
             logger.warning("Error stopping pool: {err}", err=e)
         except BaseException as e:
@@ -748,6 +754,10 @@ class ComputePool:
                         result = await coro
                         q.put(self._unwrap_result(result))
             except BaseException as exc:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
                 q.put(_StreamError(exception=exc))
                 return
             q.put(sentinel)
@@ -903,8 +913,18 @@ class ComputePool:
             provider_config = s.provider
             region = s.region or catalog_offers[0].region
 
+            match s.nodes:
+                case (min_n, max_n):
+                    spec_nodes = min_n
+                    spec_min = min_n
+                    spec_max = max_n
+                case int(n):
+                    spec_nodes = n
+                    spec_min = self._scaling[0] if self._scaling else None
+                    spec_max = self._scaling[1] if self._scaling else None
+
             pool_spec = PoolSpec(
-                nodes=s.nodes,
+                nodes=spec_nodes,
                 accelerator=accel,
                 region=region,
                 vcpus=s.vcpus,
@@ -921,8 +941,8 @@ class ComputePool:
                 provision_retry_delay=self.provision_retry_delay,
                 max_provision_attempts=self.max_provision_attempts,
                 volumes=self.volumes,
-                min_nodes=self._scaling[0] if self._scaling else None,
-                max_nodes=self._scaling[1] if self._scaling else None,
+                min_nodes=spec_min,
+                max_nodes=spec_max,
                 autoscale_cooldown=self.autoscale_cooldown,
                 autoscale_idle_timeout=self.autoscale_idle_timeout,
                 reconcile_tick_interval=self.reconcile_tick_interval,
@@ -1039,15 +1059,17 @@ class ComputePool:
             await self._system.ask(
                 self._pool_ref,
                 lambda reply_to: StopPool(reply_to=reply_to),
-                timeout=60.0,
+                timeout=self.shutdown_timeout,
             )
-            logger.debug("StopPool completed, cluster destroyed")
+            logger.debug("StopPool ask resolved")
 
         if self._system is not None:
+            logger.debug("Shutting down actor system...")
             await self._system.__aexit__(None, None, None)
             self._system = None
+            logger.debug("Actor system stopped")
 
-        await _cancel_pending_tasks()
+        _cancel_pending_tasks()
 
     def _run_loop(self) -> None:
         """Run event loop in background thread."""

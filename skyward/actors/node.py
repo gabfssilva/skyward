@@ -799,8 +799,11 @@ async def _do_start_worker(
     )
     tail_inner = (
         f"source {EMIT_SH_PATH} && "
-        f"tail -f /var/log/casty.log 2>/dev/null | while IFS= read -r line; do "
-        f'emit_console "$line"; done'
+        f"tail -f /var/log/casty.log 2>/dev/null "
+        f'| tr "\\r" "\\n" '
+        f'| sed "s/\\x1b\\[[0-9;?]*[a-zA-Z]//g; s/[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]//g" '
+        f"| while IFS= read -r line; do "
+        f'[ -n "$line" ] && emit_console "$line"; done'
     )
     tail_cmd = f"nohup bash -c '{tail_inner}' </dev/null >/dev/null 2>&1 &"
 

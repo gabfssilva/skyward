@@ -92,7 +92,9 @@ class SkywardBackend(ParallelBackendBase):
     def effective_n_jobs(self, n_jobs: int) -> int:  # type: ignore[override]
         if n_jobs == 0:
             return 0
-        return self.pool._specs[0].nodes * self.pool.concurrency
+        nodes = self.pool._specs[0].nodes
+        n = nodes[0] if isinstance(nodes, tuple) else nodes
+        return n * self.pool.concurrency
 
     def submit(
         self,

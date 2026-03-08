@@ -99,3 +99,33 @@ class TestComputeDesired:
             scale_down_idle_seconds=60.0,
         )
         assert result == 6  # 2 + ceil(4/1)=4
+
+    def test_deadline_expired_returns_zero(self) -> None:
+        result = _compute_desired(
+            _report(queued=10, inflight=4, total_capacity=4, node_count=2),
+            current_desired=2, min_nodes=1, max_nodes=8,
+            slots_per_node=2, now=200.0, last_busy_time=200.0,
+            scale_down_idle_seconds=60.0,
+            deadline=150.0,  # expired 50s ago
+        )
+        assert result == 0
+
+    def test_deadline_not_expired_scales_normally(self) -> None:
+        result = _compute_desired(
+            _report(queued=6, inflight=4, total_capacity=4, node_count=2),
+            current_desired=2, min_nodes=1, max_nodes=8,
+            slots_per_node=2, now=100.0, last_busy_time=100.0,
+            scale_down_idle_seconds=60.0,
+            deadline=200.0,  # still 100s left
+        )
+        assert result == 5  # normal scale-up
+
+    def test_deadline_none_scales_normally(self) -> None:
+        result = _compute_desired(
+            _report(queued=6, inflight=4, total_capacity=4, node_count=2),
+            current_desired=2, min_nodes=1, max_nodes=8,
+            slots_per_node=2, now=100.0, last_busy_time=100.0,
+            scale_down_idle_seconds=60.0,
+            deadline=None,  # no deadline
+        )
+        assert result == 5

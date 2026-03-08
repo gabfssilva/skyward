@@ -106,7 +106,7 @@ def torch(
                 os.environ[key] = value
 
         be = backend or ("nccl" if _torch.cuda.is_available() else "gloo")  # type: ignore[reportAttributeAccessIssue]
-        log.debug(
+        log.info(
             "Initializing process group: backend={be}, rank={rank}, world_size={ws}",
             be=be, rank=info.node, ws=info.total_nodes,
         )

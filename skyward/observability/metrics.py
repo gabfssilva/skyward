@@ -151,24 +151,13 @@ def _gpu_metric(
     Returns:
         Metric configured for the specified GPU query.
     """
-    if index is not None:
-        return Metric(
-            name=f"{name}_{index}",
-            command=(
-                f"nvidia-smi -i {index} --query-gpu={query} "
-                f"--format=csv,noheader,nounits 2>/dev/null | tr -d ' '"
-            ),
-            interval=interval,
-        )
-    return Metric(
-        name=name,
-        command=(
-            f"nvidia-smi --query-gpu={query} "
-            f"--format=csv,noheader,nounits 2>/dev/null | tr -d ' '"
-        ),
-        interval=interval,
-        multi=True,
+    cmd = (
+        f"nvidia-smi {f'-i {index} ' if index is not None else ''}"
+        f"--query-gpu={query} --format=csv,noheader,nounits 2>&1 | tr -d ' ' | grep -xE '[0-9]+\\.?[0-9]*'"
     )
+    if index is not None:
+        return Metric(name=f"{name}_{index}", command=cmd, interval=interval)
+    return Metric(name=name, command=cmd, interval=interval, multi=True)
 
 
 def GPU(index: int | None = None, interval: float = 3) -> Metric:
