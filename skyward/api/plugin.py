@@ -1,4 +1,11 @@
-"""Plugin type for declarative third-party integrations."""
+"""Plugin type for declarative third-party integrations.
+
+A ``Plugin`` bundles environment setup, bootstrap ops, worker lifecycle
+hooks, client-side hooks, and per-task wrapping into a single composable
+unit.  Built-in plugins (``sky.plugins.torch``, ``.keras``, etc.) are
+constructed from this type, and users can create custom plugins via
+the ``Plugin.create("name").with_*()`` builder pattern.
+"""
 
 from __future__ import annotations
 
@@ -16,22 +23,48 @@ if TYPE_CHECKING:
     from skyward.providers.bootstrap import Op
 
 type ImageTransform[S] = Callable[[Image, Cluster[S]], Image]
-"""Hook that modifies the Image before bootstrap."""
+"""Hook that modifies the ``Image`` before bootstrap script generation.
+
+Receives the current image and cluster metadata, returns a modified
+copy.  Typically used to inject provider-specific packages or env vars.
+"""
 
 type BootstrapFactory[S] = Callable[[Cluster[S]], tuple[Op, ...]]
-"""Hook that produces extra shell ops appended after bootstrap phases."""
+"""Hook that produces extra shell ops appended after bootstrap phases.
+
+Receives the cluster state and returns a tuple of shell operations
+(strings, callables, or nested lists) that are appended to the
+bootstrap script.
+"""
 
 type TaskDecorator[**P, R] = Callable[[Callable[P, R]], Callable[P, R]]
-"""Classic Python decorator applied to each @sky.function at execution time."""
+"""Classic Python decorator applied to each ``@sky.function`` at execution time.
 
-type AppLifecycle = Callable[[InstanceInfo], AbstractContextManager[None]]
-"""Worker lifecycle context manager, entered once in the main worker process."""
+Wraps the user's function on the remote worker before it runs.
+Useful for injecting runtime context, error handling, or profiling.
+"""
 
-type ProcessLifecycle = Callable[[InstanceInfo], AbstractContextManager[None]]
-"""Subprocess lifecycle context manager, entered once per subprocess."""
+type AppLifecycle = Callable[["InstanceInfo"], AbstractContextManager[None]]
+"""Worker lifecycle context manager, entered once in the main worker process.
 
-type ClientLifecycle[S] = Callable[[Pool, Cluster[S]], AbstractContextManager[None]]
-"""Client-side lifecycle context manager, entered at pool __enter__."""
+Receives ``InstanceInfo`` and returns a context manager whose
+``__enter__`` runs at worker startup and ``__exit__`` at shutdown.
+"""
+
+type ProcessLifecycle = Callable[["InstanceInfo"], AbstractContextManager[None]]
+"""Subprocess lifecycle context manager, entered once per executor subprocess.
+
+Only relevant when ``executor="process"``.  Lazy — enters on the first
+task execution in each subprocess, after env vars are propagated.
+"""
+
+type ClientLifecycle[S] = Callable[["Pool", "Cluster[S]"], AbstractContextManager[None]]
+"""Client-side lifecycle context manager, entered at pool ``__enter__``.
+
+Receives the pool and cluster state.  Runs on the client machine
+(not on remote workers).  Useful for setting up local distributed
+backends or registering cleanup handlers.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,10 +233,23 @@ def chain_decorators[**P, R](
     fn: Callable[P, R],
     decorators: list[TaskDecorator[P, R]],
 ) -> Callable[P, R]:
-    """Chain plugin decorators around a function.
+    """Chain multiple plugin decorators around a function.
 
-    First decorator in list = outermost (runs first).
-    Empty list returns fn unchanged.
+    Applies decorators in reverse order so that the first decorator
+    in the list becomes the outermost wrapper (i.e., runs first).
+    An empty list returns *fn* unchanged.
+
+    Parameters
+    ----------
+    fn
+        The function to wrap.
+    decorators
+        Decorators to apply, ordered outermost-first.
+
+    Returns
+    -------
+    Callable[P, R]
+        The fully-wrapped function.
     """
     return reduce(lambda f, d: d(f), reversed(decorators), fn)
 

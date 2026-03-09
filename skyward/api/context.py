@@ -1,3 +1,11 @@
+"""Context variables and the ``sky`` singleton for implicit pool dispatch.
+
+The ``sky`` object acts as a proxy to the currently active pool, enabling
+the operator-based API (``task() >> sky``, ``task() @ sky``) without an
+explicit pool reference.  Context variables track the active pool and
+session so that nested ``with`` blocks resolve correctly.
+"""
+
 from __future__ import annotations
 
 from contextvars import ContextVar
@@ -50,6 +58,21 @@ class _Sky:
         return pool.broadcast(pending)
 
     def _run_async(self, pending: Any) -> Any:
+        """Submit a pending function for asynchronous execution.
+
+        Resolves the active pool from context and delegates to
+        ``pool.run_async()``.  Behind the ``task() > sky`` operator.
+
+        Parameters
+        ----------
+        pending
+            A ``PendingFunction`` to submit.
+
+        Returns
+        -------
+        Future[T]
+            A future that resolves to the remote function's return value.
+        """
         pool = _get_active_pool()
         return pool.run_async(pending)
 

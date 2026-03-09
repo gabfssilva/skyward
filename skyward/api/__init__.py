@@ -1,6 +1,12 @@
 """Public API — self-contained type definitions and contracts.
 
-All public types are importable from ``skyward.api``:
+This package is the stable, user-facing surface of Skyward.  It defines
+protocols, specs, model types, runtime utilities, and stubs that consumer
+code depends on.  No module in this package imports from ``skyward.actors``,
+``skyward.infra``, or ``skyward.providers`` (except stubs that are wired at
+the edge).
+
+All public types are importable from ``skyward.api``::
 
     from skyward.api import Spec, Options, Image, Pool, Session
 """

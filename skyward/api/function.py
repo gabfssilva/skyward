@@ -1,3 +1,11 @@
+"""Lazy computation primitives and the ``@sky.function`` decorator.
+
+Provides ``PendingFunction[T]`` — a frozen snapshot of a function call that
+does nothing until dispatched to a pool via an operator.  The ``&`` operator
+composes pending functions into ``PendingFunctionGroup`` for parallel
+execution, and ``gather()`` offers the same capability as a function call.
+"""
+
 from __future__ import annotations
 
 import functools

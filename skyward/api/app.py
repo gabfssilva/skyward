@@ -1,4 +1,10 @@
-"""App stub — type-checking interface for application context."""
+"""App stub — type-checking interface for the application context.
+
+The ``App`` context manager manages the Rich adaptive console and
+optional spy actor for observing pool events.  Usually not needed
+directly — ``Session`` and ``Compute`` manage their own ``App``
+internally.
+"""
 
 from __future__ import annotations
 

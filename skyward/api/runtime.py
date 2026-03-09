@@ -21,7 +21,17 @@ if TYPE_CHECKING:
 
 
 class PeerInfo(TypedDict, total=False):
-    """Information about a peer node in the compute pool."""
+    """Information about a peer node in the compute pool.
+
+    Attributes
+    ----------
+    node
+        Zero-based index of the peer node.
+    private_ip
+        Private/VPC IP address of the peer.
+    public_ip
+        Public IP address, or ``None`` if not exposed.
+    """
 
     node: int
     private_ip: str
@@ -29,7 +39,19 @@ class PeerInfo(TypedDict, total=False):
 
 
 class AcceleratorInfo(TypedDict, total=False):
-    """Accelerator configuration for a compute pool."""
+    """Hardware accelerator metadata for the current node.
+
+    Attributes
+    ----------
+    type
+        Accelerator model name (e.g., ``"A100"``, ``"H100"``).
+    count
+        Number of accelerators attached to this node.
+    memory_gb
+        VRAM per accelerator in gigabytes.
+    is_trainium
+        ``True`` if the accelerator is an AWS Trainium chip.
+    """
 
     type: str
     count: int
@@ -38,24 +60,37 @@ class AcceleratorInfo(TypedDict, total=False):
 
 
 class NetworkInfo(TypedDict, total=False):
-    """Network configuration for a compute pool."""
+    """Network topology metadata for the current node.
+
+    Attributes
+    ----------
+    interface
+        Network interface name (e.g., ``"eth0"``, ``"ens5"``).
+    bandwidth_gbps
+        Available network bandwidth in gigabits per second.
+    """
 
     interface: str
     bandwidth_gbps: float
 
 
 class InstanceInfo(BaseModel):
-    """Information about the current compute pool, parsed from COMPUTE_POOL env var.
+    """Cluster topology and node metadata for the current worker.
 
-    This class provides a typed interface to access pool information
-    inside a distributed function.
+    Parsed from the ``COMPUTE_POOL`` environment variable that Skyward
+    injects into every remote worker process.  Provides node indices,
+    peer addresses, accelerator info, and convenience properties for
+    common distributed patterns.
 
-    Example:
-        from skyward import compute_pool
-
-        pool = compute_pool()
-        if pool and pool.is_head:
-            print(f"I am head node of {pool.total_nodes}")
+    Examples
+    --------
+    >>> @sky.function
+    ... def distributed_task():
+    ...     info = sky.instance_info()
+    ...     if info.is_head:
+    ...         print(f"Head node of {info.total_nodes} nodes")
+    ...     local_data = sky.shard(dataset)
+    ...     return train(local_data)
     """
 
     node: int = Field(description="Index of this node (0 to total_nodes - 1)")

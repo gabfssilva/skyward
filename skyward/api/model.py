@@ -13,14 +13,20 @@ if TYPE_CHECKING:
 type InstanceStatus = Literal[
     "provisioning",
     "provisioned",
-    "boostrapping",
-    "boostrapped",
-    "ready"
+    "bootstrapping",
+    "bootstrapped",
+    "ready",
 ]
 """Lifecycle status of an individual instance.
 
-Progression: ``provisioning`` -> ``provisioned`` -> ``bootstrapping``
--> ``bootstrapped`` -> ``ready``.
+Progression: ``provisioning`` → ``provisioned`` → ``bootstrapping``
+→ ``bootstrapped`` → ``ready``.
+
+- ``"provisioning"`` — cloud API call issued, instance not yet available.
+- ``"provisioned"`` — instance running, public IP assigned.
+- ``"bootstrapping"`` — SSH connected, bootstrap script executing.
+- ``"bootstrapped"`` — environment ready, worker starting.
+- ``"ready"`` — worker process healthy, accepting tasks.
 """
 
 
@@ -124,8 +130,15 @@ type ClusterStatus = Literal[
 ]
 """Lifecycle status of the cluster as a whole.
 
-Progression: ``setting_up`` -> ``provisioning`` -> ``bootstrapping``
--> ``ready`` -> ``shutting_down`` -> ``destroyed``.
+Progression: ``setting_up`` → ``provisioning`` → ``bootstrapping``
+→ ``ready`` → ``shutting_down`` → ``destroyed``.
+
+- ``"setting_up"`` — spec resolved, actor system starting.
+- ``"provisioning"`` — cloud instances being created.
+- ``"bootstrapping"`` — SSH connected, environment being configured.
+- ``"ready"`` — all nodes healthy, pool accepting tasks.
+- ``"shutting_down"`` — graceful teardown in progress.
+- ``"destroyed"`` — all instances terminated, resources released.
 """
 
 

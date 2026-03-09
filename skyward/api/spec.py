@@ -339,37 +339,61 @@ class Volume:
 
 @dataclass(frozen=True, slots=True)
 class PoolSpec:
-    """Internal pool specification -- resolved from user-facing ``ComputePool`` args.
+    """Resolved pool specification — the internal, fully-normalized form.
 
-    Defines the cluster configuration including number of nodes,
-    hardware requirements, and instance allocation strategy.
+    Created from user-facing ``Spec`` and ``Options`` objects during pool
+    startup.  Carries every parameter needed to provision a cluster,
+    including hardware requirements, networking, autoscaling bounds, and
+    plugin configuration.
 
     Parameters
     ----------
     nodes
-        Number of nodes in the cluster.
+        Number of nodes to provision.  Must be ``>= 1``.
     accelerator
         GPU/accelerator type, or ``None`` for CPU-only.
     region
-        Cloud region for instances.
+        Cloud region for instance placement.
     vcpus
         Minimum vCPUs per node.
     memory_gb
         Minimum RAM in GB per node.
     architecture
-        CPU architecture filter. ``None`` accepts any.
+        CPU architecture filter.  ``None`` accepts any.
     allocation
-        Instance lifecycle strategy.
+        Instance lifecycle strategy (spot, on-demand, etc.).
     image
-        Environment specification.
+        Declarative environment specification.
     ttl
-        Auto-shutdown timeout in seconds. ``0`` disables.
+        Auto-shutdown timeout in seconds after pool exits.  ``0`` disables.
     worker
-        Worker configuration (concurrency, executor).
+        Worker configuration (concurrency, executor backend).
     provider
-        Override provider name (usually inferred from context).
+        Override provider name (usually inferred from the ``Spec``).
     max_hourly_cost
-        Cost cap per node per hour in USD.
+        Cost cap per node per hour in USD.  ``None`` means no cap.
+    ssh_timeout
+        Maximum seconds to wait for an SSH connection to a node.
+    ssh_retry_interval
+        Seconds between SSH connection retry attempts.
+    provision_retry_delay
+        Seconds between provision retry attempts after a failure.
+    max_provision_attempts
+        Maximum number of provision attempts before giving up.
+    volumes
+        S3/GCS volumes to mount on workers.
+    min_nodes
+        Minimum node count for autoscaling.  ``None`` disables autoscaling.
+    max_nodes
+        Maximum node count for autoscaling.  ``None`` disables autoscaling.
+    autoscale_cooldown
+        Seconds between autoscaling decisions.
+    autoscale_idle_timeout
+        Seconds of idle before the autoscaler considers scaling down.
+    reconcile_tick_interval
+        Seconds between reconciler ticks (provision/drain evaluation).
+    plugins
+        Composable plugins applied to this pool.
 
     Examples
     --------
@@ -440,6 +464,15 @@ class PoolSpec:
 
     @property
     def auto_scaling(self) -> bool:
+        """Whether autoscaling is enabled for this pool.
+
+        ``True`` when both ``min_nodes`` and ``max_nodes`` are set.
+
+        Returns
+        -------
+        bool
+            ``True`` if the pool should scale elastically.
+        """
         return self.min_nodes is not None and self.max_nodes is not None
 
 
@@ -530,7 +563,18 @@ class Image:
                 pass
 
     def content_hash(self) -> str:
-        """Generate hash for AMI/snapshot caching."""
+        """Generate a deterministic hash of this image specification.
+
+        Used by ``WarmableProvider`` implementations to detect whether
+        an existing AMI/snapshot can be reused or a fresh bootstrap is
+        needed.  The hash covers all fields that affect the remote
+        environment (packages, env vars, Python version, etc.).
+
+        Returns
+        -------
+        str
+            A 12-character hex digest (SHA-256 prefix).
+        """
         from skyward import __version__
 
         metrics_data = None
@@ -571,11 +615,26 @@ DEFAULT_IMAGE = Image()
 
 
 class PoolState:
-    """Pool lifecycle states."""
+    """Pool lifecycle states reported by the pool actor.
+
+    Progression: ``INIT`` → ``REQUESTING`` → ``PROVISIONING``
+    → ``READY`` → ``SHUTTING_DOWN`` → ``DESTROYED``.
+    """
 
     INIT = "init"
+    """Pool object created, actor system not yet started."""
+
     REQUESTING = "requesting"
+    """Querying provider for available offers."""
+
     PROVISIONING = "provisioning"
+    """Cloud instances being created and bootstrapped."""
+
     READY = "ready"
+    """All nodes healthy, pool accepting tasks."""
+
     SHUTTING_DOWN = "shutting_down"
+    """Graceful teardown in progress."""
+
     DESTROYED = "destroyed"
+    """All instances terminated, resources released."""

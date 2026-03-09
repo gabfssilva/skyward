@@ -1,4 +1,10 @@
-"""Provider configuration protocol."""
+"""Provider configuration protocol.
+
+Defines the ``ProviderConfig[P]`` protocol that every cloud provider
+config (``sky.AWS()``, ``sky.VastAI()``, etc.) must satisfy.  Config
+objects are lightweight — no SDK imports at module level.  The actual
+provider implementation is created lazily via ``create_provider()``.
+"""
 
 from __future__ import annotations
 
