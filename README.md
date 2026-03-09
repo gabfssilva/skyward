@@ -22,10 +22,10 @@ Skyward is a Python library for ephemeral accelerator compute. Spin up cloud acc
 ```python
 import skyward as sky
 
-
 @sky.function
 def train(epochs: int) -> dict:
     import torch
+
     model = torch.nn.Linear(100, 10).cuda()
     optimizer = torch.optim.Adam(model.parameters())
 
@@ -34,10 +34,14 @@ def train(epochs: int) -> dict:
         loss.backward()
         optimizer.step()
 
-    return {"final_loss": loss.item()}
+    return { "final_loss": loss.item() }
 
 
-with sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.T4(), image=sky.Image(pip=["torch"])) as pool:
+with sky.Compute(
+    provider=sky.AWS(), 
+    accelerator=sky.accelerators.T4(), 
+    image=sky.Image(pip=["torch"])
+) as pool:
     result = train(epochs=100) >> pool
     print(result)
 ```

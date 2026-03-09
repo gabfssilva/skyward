@@ -15,7 +15,7 @@ import asyncio
 import threading
 from contextvars import Token
 from types import TracebackType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Unpack, overload
 
 from casty import ActorRef, ActorSystem, Behaviors, CastyConfig
 
@@ -25,7 +25,7 @@ from skyward.observability.logging import LogConfig, setup_logging, teardown_log
 from .context import _active_session
 from .loop import check_fd_budget, cleanup_loop, run_loop, run_sync
 from .offers import PoolConfig, select_offers
-from .spec import Options, Spec, Worker
+from .spec import Options, Spec, SpecKwargs, Worker
 
 _DEFAULT_OPTIONS = Options()
 
@@ -187,13 +187,36 @@ class Session:
         """True when the session is entered and the actor system is running."""
         return self._active
 
+    @overload
     def compute(
+        self,
+        *specs: Spec,
+        name: str | None = ...,
+        options: Options = ...,
+    ) -> ComputePool: ...
+
+    @overload
+    def compute(
+        self,
+        *,
+        name: str | None = ...,
+        options: Options = ...,
+        **kwargs: Unpack[SpecKwargs],
+    ) -> ComputePool: ...
+
+    def compute(  # pyright: ignore[reportInconsistentOverload]
         self,
         *specs: Spec,
         name: str | None = None,
         options: Options = _DEFAULT_OPTIONS,
+        **kwargs: Unpack[SpecKwargs],
     ) -> ComputePool:
         """Provision a compute pool within this session.
+
+        Two modes:
+
+        - **Single provider** — pass ``provider=``, ``nodes=``, etc.
+        - **Multi-spec fallback** — pass positional ``Spec(...)`` args.
 
         Parameters
         ----------
@@ -205,6 +228,9 @@ class Session:
         options
             Operational tuning (timeouts, retries, autoscaling).
             Defaults are sensible for most workloads.
+        **kwargs
+            Flat keyword arguments matching ``Spec`` fields. Assembled
+            into a single ``Spec`` when no positional specs are given.
 
         Returns
         -------
@@ -216,12 +242,17 @@ class Session:
         RuntimeError
             When the session is not active or provisioning fails.
         ValueError
-            When no specs are provided.
+            When no specs are provided, or both specs and kwargs given.
         """
         if not self._active:
             raise RuntimeError("Session is not active")
+        if specs and kwargs:
+            raise ValueError("Cannot mix positional Spec objects with flat keyword arguments")
+        if not specs and not kwargs:
+            raise ValueError("Either Spec objects or keyword arguments (provider, ...) must be provided")
+
         if not specs:
-            raise ValueError("At least one Spec must be provided")
+            specs = (Spec(**kwargs),)
 
         pool_name = name or f"pool-{len(self._pools)}"
         built_specs = list(specs)

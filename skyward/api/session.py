@@ -9,12 +9,12 @@ implementation lives in ``skyward.core.session``.
 from __future__ import annotations
 
 from types import TracebackType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Unpack, overload
 
 if TYPE_CHECKING:
     from skyward.api.logging import LogConfig
     from skyward.api.pool import Pool
-    from skyward.api.spec import Options, Spec
+    from skyward.api.spec import Options, Spec, SpecKwargs
 
 
 class Session:
@@ -138,13 +138,36 @@ class Session:
         """
         ...
 
+    @overload
     def compute(
+        self,
+        *specs: Spec,
+        name: str | None = ...,
+        options: Options = ...,
+    ) -> Pool: ...
+
+    @overload
+    def compute(
+        self,
+        *,
+        name: str | None = ...,
+        options: Options = ...,
+        **kwargs: Unpack[SpecKwargs],
+    ) -> Pool: ...
+
+    def compute(  # pyright: ignore[reportInconsistentOverload]
         self,
         *specs: Spec,
         name: str | None = None,
         options: Options = ...,  # type: ignore[assignment]
+        **kwargs: Unpack[SpecKwargs],
     ) -> Pool:
         """Provision a compute pool within this session.
+
+        Two modes:
+
+        - **Single provider** — pass ``provider=``, ``nodes=``, etc.
+        - **Multi-spec fallback** — pass positional ``Spec(...)`` args.
 
         Resolves hardware offers from the provider(s), selects the best
         match, provisions cloud instances, bootstraps the environment
@@ -167,6 +190,9 @@ class Session:
         options
             Operational tuning (timeouts, retries, autoscaling, worker
             config, console).  Defaults are sensible for most workloads.
+        **kwargs
+            Flat keyword arguments matching ``Spec`` fields. Assembled
+            into a single ``Spec`` when no positional specs are given.
 
         Returns
         -------
@@ -181,10 +207,13 @@ class Session:
             or if provisioning fails (no offers, quota exceeded, SSH
             timeout, bootstrap failure).
         ValueError
-            If no specs are provided.
+            If no specs are provided, or both specs and kwargs given.
 
         Examples
         --------
+        >>> pool = session.compute(provider=sky.AWS(), accelerator="A100", nodes=4)
+        >>> result = train(data) >> pool
+
         >>> pool = session.compute(
         ...     sky.Spec(provider=sky.VastAI(), accelerator="A100"),
         ...     sky.Spec(provider=sky.AWS(), accelerator="A100"),
