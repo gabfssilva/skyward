@@ -54,7 +54,6 @@ from skyward.actors.pool.messages import (
     StopPool,
     _ShutdownDone,
 )
-from skyward.api.spec import PoolSpec
 
 from .messages import ConsoleInput, LocalOutput
 from .model import (
@@ -94,7 +93,7 @@ from .view import (
 )
 
 
-def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
+def console_actor() -> Behavior[ConsoleInput]:
     """Console tells this story: idle -> observing -> stopped."""
 
     console = Console(stderr=True)
@@ -190,15 +189,7 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
             console.print()
             console.print(banner)
             console.print()
-            accel_mem = spec.accelerator.memory if spec.accelerator else ""
-            state = _State(
-                total_nodes=spec.nodes,
-                desired_nodes=spec.nodes,
-                min_nodes=spec.min_nodes,
-                max_nodes=spec.max_nodes,
-                is_elastic=spec.auto_scaling,
-                spec_accelerator_memory=accel_mem,
-            )
+            state = _State(total_nodes=0)
             behavior = observing(state)
             return Behaviors.with_lifecycle(behavior, post_stop=_restore_stdout)
 
@@ -212,8 +203,17 @@ def console_actor(spec: PoolSpec) -> Behavior[ConsoleInput]:
                 case SpyEvent(event=Terminated()):
                     return Behaviors.same()
 
-                case SpyEvent(event=StartPool()):
-                    new = _on_start_pool(state)
+                case SpyEvent(event=StartPool(spec=pool_spec)):
+                    accel_mem = pool_spec.accelerator.memory if pool_spec.accelerator else ""
+                    new = replace(
+                        _on_start_pool(state),
+                        total_nodes=pool_spec.nodes,
+                        desired_nodes=pool_spec.nodes,
+                        min_nodes=pool_spec.min_nodes,
+                        max_nodes=pool_spec.max_nodes,
+                        is_elastic=pool_spec.auto_scaling,
+                        spec_accelerator_memory=accel_mem,
+                    )
                     _update_footer(new)
                     return observing(new)
 

@@ -413,9 +413,8 @@ class TestConsoleActor:
         async def run() -> None:
             from casty import ActorSystem
 
-            spec = self._make_spec()
             async with ActorSystem("test") as system:
-                ref = system.spawn(console_actor(spec), "console")
+                ref = system.spawn(console_actor(), "console")
                 ref.tell(LocalOutput(line="hello"))
                 await asyncio.sleep(0.1)
 
@@ -433,7 +432,7 @@ class TestConsoleActor:
 
             spec = self._make_spec()
             async with ActorSystem("test") as system:
-                ref = system.spawn(console_actor(spec), "console")
+                ref = system.spawn(console_actor(), "console")
                 ref.tell(SpyEvent(
                     actor_path="/test/pool",
                     event=StartPool(

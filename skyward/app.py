@@ -62,5 +62,5 @@ class App:
 
         from skyward.actors.console import console_actor
 
-        self._spy_ref = system.spawn(console_actor(spec), "console")
+        self._spy_ref = system.spawn(console_actor(), "console")
         logger.debug("Console actor spawned")

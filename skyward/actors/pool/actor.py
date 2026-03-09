@@ -3,9 +3,12 @@ from __future__ import annotations
 import logging as _logging
 from contextlib import suppress
 from dataclasses import replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors, ClusterClient
+
+if TYPE_CHECKING:
+    from skyward.actors.session.messages import SessionMsg
 
 from skyward.actors.messages import (
     ClusterReady,
@@ -76,8 +79,21 @@ def _build_pool_info_json(
     return pool_info.model_dump_json()
 
 
-def pool_actor() -> Behavior[PoolMsg]:
+def pool_actor(
+    *,
+    session_ref: ActorRef[SessionMsg] | None = None,
+    pool_name: str = "",
+) -> Behavior[PoolMsg]:
     """idle -> requesting -> provisioning -> ready -> stopping."""
+
+    def _notify_session(phase: str, nodes_ready: int, nodes_total: int) -> None:
+        if session_ref is not None:
+            from skyward.actors.session.messages import PoolStateChanged
+
+            session_ref.tell(PoolStateChanged(
+                name=pool_name, phase=phase,
+                nodes_ready=nodes_ready, nodes_total=nodes_total,
+            ))
 
     tunnel_map: dict[tuple[str, int], tuple[str, int]] = {}
 
@@ -304,6 +320,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                         )
                         for nbr in s.early_ready:
                             ctx.self.tell(nbr)
+                        _notify_session("provisioning", 0, s.spec.nodes)
                         return provisioning(replace(
                             s,
                             cluster=updated_cluster,
@@ -440,6 +457,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                             instances=tuple(new_instances[i] for i in range(s.spec.nodes)),
                             cluster=s.cluster,
                         ))
+                        _notify_session("ready", len(new_instances), s.spec.nodes)
                         return ready(replace(
                             s,
                             instances=new_instances,
@@ -539,6 +557,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                     ))
                     if s.reconciler_ref is not None:
                         s.reconciler_ref.tell(NodeJoined(node_id=nid))
+                    _notify_session("ready", len(s.ready_nodes | {nid}), s.spec.nodes)
                     return ready(replace(
                         s, ready_nodes=s.ready_nodes | {nid},
                     ))
@@ -561,6 +580,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                             worker_executor=s.spec.worker.resolved_executor,
                         )
                         s.node_refs[nid].tell(head_msg)
+                    _notify_session("ready", len(s.ready_nodes - {nid}), s.spec.nodes)
                     return ready(replace(
                         s, ready_nodes=s.ready_nodes - {nid},
                     ))
@@ -640,6 +660,7 @@ def pool_actor() -> Behavior[PoolMsg]:
                         _shutdown(),
                         mapper=lambda _: _ShutdownDone(),
                     )
+                    _notify_session("stopping", 0, s.spec.nodes)
                     return stopping(stop_reply, s.cluster_id)
             return Behaviors.same()
 

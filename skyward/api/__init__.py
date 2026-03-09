@@ -1,5 +1,6 @@
 """User-facing API — pool, compute, runtime."""
 
+from .compute import Compute
 from .context import sky
 from .function import PendingFunction, PendingFunctionGroup, function, gather
 from .model import Cluster as Cluster
@@ -21,6 +22,7 @@ from .runtime import (
     stderr,
     stdout,
 )
+from .session import Session
 from .spec import DEFAULT_IMAGE as DEFAULT_IMAGE
 from .spec import AllocationStrategy as AllocationStrategy
 from .spec import Architecture as Architecture
@@ -69,4 +71,6 @@ __all__ = [
     "Volume",
     "Worker",
     "WorkerExecutor",
+    "Compute",
+    "Session",
 ]

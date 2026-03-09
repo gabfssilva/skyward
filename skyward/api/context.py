@@ -5,8 +5,15 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from skyward.api.pool import ComputePool
+    from skyward.api.session import Session
 
 _active_pool: ContextVar[ComputePool | None] = ContextVar("active_pool", default=None)
+_active_session: ContextVar[Session | None] = ContextVar("active_session", default=None)
+
+
+def get_session() -> Session | None:
+    """Return the active session, or ``None`` if no session is entered."""
+    return _active_session.get()
 
 
 def _get_active_pool() -> ComputePool:

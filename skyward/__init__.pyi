@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Generator, Sequence
 from concurrent.futures import Future
+from contextlib import AbstractContextManager
 from types import TracebackType
 from typing import Any, Literal, Self, overload
 
@@ -642,6 +643,174 @@ class _Sky:
 
 sky: _Sky
 
+# ── Curated: Session ──────────────────────────────────────────
+
+class Session:
+    """Infrastructure owner for one or more compute pools.
+
+    Manages the asyncio event loop, background thread, actor system,
+    and session actor.  All pools created via ``session.compute()``
+    share the same infrastructure.
+
+    Parameters
+    ----------
+    console
+        Enable the Rich adaptive console spy.
+    logging
+        Logging configuration.  ``True`` uses sensible defaults,
+        ``False`` disables logging, or pass a ``LogConfig`` instance.
+    shutdown_timeout
+        Maximum seconds to wait for a graceful shutdown of the session
+        actor and actor system.
+
+    Examples
+    --------
+    >>> with sky.Session() as session:
+    ...     slow = session.compute(provider=sky.AWS(), accelerator="T4", nodes=8)
+    ...     fast = session.compute(provider=sky.AWS(), accelerator="A100", nodes=2)
+    ...     result = train(data) >> slow
+    """
+
+    def __init__(
+        self,
+        *,
+        console: bool = True,
+        logging: LogConfig | bool = True,
+        shutdown_timeout: float = 120.0,
+    ) -> None: ...
+    def __enter__(self) -> Self: ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None: ...
+
+    @property
+    def is_active(self) -> bool:
+        """True when the session is entered and the actor system is running."""
+        ...
+
+    def compute(
+        self,
+        *specs: Spec,
+        name: str | None = None,
+        provider: ProviderConfig | None = None,
+        nodes: int | tuple[int, int] = 1,
+        accelerator: Accelerator | None = None,
+        vcpus: float | None = None,
+        memory_gb: float | None = None,
+        architecture: Architecture | None = None,
+        allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
+        selection: SelectionStrategy = "cheapest",
+        image: Image = ...,
+        ttl: int = 600,
+        worker: Worker | None = None,
+        max_hourly_cost: float | None = None,
+        default_compute_timeout: float = 300.0,
+        provision_timeout: int = 300,
+        ssh_timeout: int = 300,
+        ssh_retry_interval: int = 2,
+        provision_retry_delay: float = 5.0,
+        max_provision_attempts: int = 3,
+        volumes: list[Volume] | tuple[Volume, ...] = (),
+        autoscale_cooldown: float = 30.0,
+        autoscale_idle_timeout: float = 60.0,
+        reconcile_tick_interval: float = 15.0,
+        plugins: list[Plugin] | tuple[Plugin, ...] = (),
+    ) -> ComputePool:
+        """Provision a compute pool within this session.
+
+        Parameters
+        ----------
+        *specs
+            One or more ``Spec`` objects for multi-provider fallback.
+            Mutually exclusive with the ``provider`` keyword argument.
+        name
+            Pool name.  Auto-generated as ``pool-<n>`` when ``None``.
+        provider
+            Cloud provider configuration (e.g. ``sky.AWS()``).
+            Mutually exclusive with positional ``specs``.
+        nodes
+            Fixed node count or ``(min, max)`` for autoscaling.
+        accelerator
+            GPU type (e.g. ``"A100"``).  ``None`` for CPU-only.
+
+        Returns
+        -------
+        ComputePool
+            A fully provisioned pool ready for task dispatch.
+        """
+        ...
+
+# ── Curated: Compute ─────────────────────────────────────────
+
+def Compute(
+    *specs: Spec,
+    provider: ProviderConfig | None = None,
+    nodes: int | tuple[int, int] = 1,
+    accelerator: Accelerator | None = None,
+    vcpus: float | None = None,
+    memory_gb: float | None = None,
+    architecture: Literal["x86_64", "arm64"] | None = None,
+    allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
+    selection: SelectionStrategy = "cheapest",
+    image: Image = ...,
+    ttl: int = 600,
+    worker: Worker | None = None,
+    logging: LogConfig | bool = True,
+    max_hourly_cost: float | None = None,
+    default_compute_timeout: float = 300.0,
+    provision_timeout: int = 300,
+    ssh_timeout: int = 300,
+    ssh_retry_interval: int = 2,
+    provision_retry_delay: float = 5.0,
+    max_provision_attempts: int = 3,
+    volumes: list[Volume] | tuple[Volume, ...] = (),
+    autoscale_cooldown: float = 30.0,
+    autoscale_idle_timeout: float = 60.0,
+    reconcile_tick_interval: float = 15.0,
+    plugins: list[Plugin] | tuple[Plugin, ...] = (),
+    shutdown_timeout: float = 120.0,
+    console: bool = True,
+) -> AbstractContextManager[ComputePool]:
+    """Single-pool convenience: creates a Session and provisions one pool.
+
+    Equivalent to::
+
+        with sky.Session(console=console, logging=logging) as session:
+            pool = session.compute(provider=..., accelerator=..., nodes=...)
+            yield pool
+
+    Parameters
+    ----------
+    *specs
+        One or more ``Spec`` objects for multi-provider fallback.
+    provider
+        Cloud provider configuration (e.g. ``sky.AWS()``).
+    nodes
+        Fixed node count or ``(min, max)`` for autoscaling.
+    accelerator
+        GPU type (e.g. ``"A100"``).  ``None`` for CPU-only.
+    console
+        Enable the Rich adaptive console spy.
+    logging
+        Logging configuration.
+    shutdown_timeout
+        Maximum seconds to wait for a graceful shutdown.
+
+    Yields
+    ------
+    ComputePool
+        A fully provisioned pool ready for task dispatch.
+
+    Examples
+    --------
+    >>> with sky.Compute(provider=sky.AWS(), accelerator="A100", nodes=4) as pool:
+    ...     result = train(data) >> pool
+    """
+    ...
+
 # ── Curated: App ──────────────────────────────────────────────
 
 class App:
@@ -672,6 +841,8 @@ class App:
 __all__ = [
     "__version__",
     "App",
+    "Compute",
+    "Session",
     "sky",
     "pool",
     "function",

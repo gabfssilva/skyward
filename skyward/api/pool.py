@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import queue
-import threading
 from collections.abc import Callable, Generator, Sequence
 from concurrent.futures import Future
 from contextvars import Token
@@ -31,7 +30,7 @@ from dataclasses import dataclass
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Literal, overload
 
-from casty import ActorRef, ActorSystem, Behaviors, CastyConfig
+from casty import ActorRef, ActorSystem
 
 from skyward.accelerators import Accelerator
 from skyward.actors.messages import (
@@ -60,8 +59,8 @@ from skyward.plugins.plugin import Plugin
 
 from .context import _active_pool
 from .function import PendingFunction, PendingFunctionGroup
-from .loop import cancel_pending_tasks, check_fd_budget, cleanup_loop, run_loop, run_sync
-from .offers import PoolConfig, select_offers
+from .loop import check_fd_budget, run_sync
+from .offers import PoolConfig
 from .spec import DEFAULT_IMAGE, Image, PoolSpec, SelectionStrategy, Spec, Volume, Worker
 
 if TYPE_CHECKING:
@@ -228,7 +227,6 @@ class ComputePool:
 
         self._log_handler_ids: list[int] = []
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._loop_thread: threading.Thread | None = None
         self._active: bool = False
         self._context_token: Token[ComputePool | None] | None = None
         self._registry: DistributedRegistry | None = None
@@ -239,8 +237,8 @@ class ComputePool:
         self._instances: dict[int, NodeInstance] = {}
         self._spec: PoolSpec | None = None
         self._plugin_client_contexts: list[Any] = []
-        self._app: Any = None
-        self._owns_app: bool = False
+        self._session: Any = None
+        self._owns_session: bool = False
 
     def _get_loop(self) -> asyncio.AbstractEventLoop:
         if self._loop is None:
@@ -303,32 +301,29 @@ class ComputePool:
                 )
                 fd_nodes = n
 
-        from skyward.app import App, get_app
+        from skyward.api.context import get_session
+        from skyward.api.session import Session
 
-        app = get_app()
-        if app is None:
-            app = App()
-            app.__enter__()
-            self._owns_app = True
-        self._app = app
-
-        loop = asyncio.new_event_loop()
-        self._loop = loop
-        self._loop_thread = threading.Thread(
-            target=lambda: run_loop(loop),
-            daemon=True,
-            name="skyward-event-loop",
-        )
-        self._loop_thread.start()
+        session = get_session()
+        if session is None:
+            session = Session(
+                console=True,
+                logging=False,
+                shutdown_timeout=self.shutdown_timeout,
+            )
+            session.__enter__()
+            self._owns_session = True
+        self._session = session
+        self._loop = session._loop
+        self._system = session._system
 
         check_fd_budget(fd_nodes)
 
         try:
-            run_sync(loop, self._start_async())
+            self._spawn_via_session(session)
             self._active = True
             self._context_token = _active_pool.set(self)
 
-            # Enter plugin around_client contexts
             assert self._cluster is not None
             for plugin in self._plugins:
                 if plugin.around_client is not None:
@@ -339,7 +334,14 @@ class ComputePool:
             logger.info("Pool ready")
         except Exception as e:
             logger.exception("Error starting pool: {err}", err=e)
-            self._cleanup()
+            if self._owns_session:
+                session.__exit__(None, None, None)
+                self._session = None
+                self._owns_session = False
+            self._loop = None
+            self._system = None
+            if self._log_handler_ids:
+                teardown_logging(self._log_handler_ids)
             raise
 
         return self
@@ -351,7 +353,6 @@ class ComputePool:
         exc_tb: TracebackType | None,
     ) -> None:
         """Stop pool and release resources."""
-        # Exit plugin around_client contexts (reverse order)
         for ctx in reversed(self._plugin_client_contexts):
             try:
                 ctx.__exit__(exc_type, exc_val, exc_tb)
@@ -372,7 +373,7 @@ class ComputePool:
                 self._context_token = None
 
             if self._active and self._loop is not None:
-                run_sync(self._loop, self._stop_async(), timeout=self.shutdown_timeout)
+                run_sync(self._loop, self._stop_pool_actor(), timeout=self.shutdown_timeout)
         except TimeoutError:
             logger.warning(
                 "Pool stop timed out after {t}s, forcing cleanup",
@@ -390,12 +391,13 @@ class ComputePool:
 
             self._active = False
 
-            if self._owns_app and self._app is not None:
-                self._app.__exit__(None, None, None)
-                self._app = None
-                self._owns_app = False
+            if self._owns_session and self._session is not None:
+                self._session.__exit__(None, None, None)
+                self._session = None
+                self._owns_session = False
 
-            self._cleanup()
+            self._loop = None
+            self._system = None
             logger.info("Pool stopped")
 
             if self._log_handler_ids:
@@ -941,90 +943,27 @@ class ComputePool:
             plugins=self._plugins,
         )
 
-    async def _start_async(self) -> None:
-        """Start pool asynchronously using actors (zero bus)."""
-        from skyward.actors.pool import pool_actor
-        from skyward.actors.pool.messages import PoolStarted, ProvisionFailed, StartPool
-
-        offers, provider_config, cloud_provider, spec = await select_offers(
-            self._build_specs(), self._pool_config(),
-        )
-
-        best = offers[0]
-        logger.info(
-            "Ranked {n} offers, best: {offer_id} ({name}, ${price}/hr)",
-            n=len(offers), offer_id=best.id, name=best.instance_type.name,
-            price=best.spot_price or best.on_demand_price or 0,
+    def _spawn_via_session(self, session: Any) -> None:
+        """Select offers and ask the session actor to spawn a pool."""
+        pool_ref, spec, cluster_id, cluster, instances = session._spawn_pool(
+            self._build_specs(),
+            self._pool_config(),
+            f"pool-{id(self)}",
+            float(self.provision_timeout),
         )
 
         self._spec = spec
-        logger.debug(
-            "Built PoolSpec: {nodes} nodes, region={region}, allocation={alloc}",
-            nodes=spec.nodes, region=spec.region, alloc=spec.allocation,
-        )
-
-        self._system = ActorSystem("skyward", config=CastyConfig(
-            suppress_dead_letters_on_shutdown=True
-        ))
-
-        system = self._system
-        await system.__aenter__()
-
-        if self._app is not None:
-            self._app.setup(system, spec)
-
-        spy = self._app.spy if self._app is not None else None
-
-        pool_behavior = pool_actor()
-        if spy is not None:
-            pool_behavior = Behaviors.spy(pool_behavior, spy, spy_children=True)
-
-        logger.debug(
-            "Spawning pool actor (spy={spy})",
-            spy=spy is not None,
-        )
-        pool_ref: ActorRef[PoolMsg] = system.spawn(pool_behavior, "pool")
         self._pool_ref = pool_ref
+        self._cluster_id = cluster_id
+        self._cluster = cluster
+        self.image = self._apply_plugin_transforms(self.image, cluster)
+        self._instances = {info.node: info for info in instances}
 
-        logger.info(
-            "Waiting for pool to start (timeout={timeout}s)",
-            timeout=self.provision_timeout,
-        )
-        result: PoolStarted | ProvisionFailed = await system.ask(
-            pool_ref,
-            lambda reply_to: StartPool(
-                spec=spec,
-                provider_config=provider_config,
-                provider=cloud_provider,
-                offers=offers,
-                reply_to=reply_to,
-            ),
-            timeout=float(self.provision_timeout),
-        )
-        match result:
-            case ProvisionFailed(reason=reason):
-                raise RuntimeError(
-                    f"Pool provisioning failed: {reason}"
-                )
-            case PoolStarted(
-                cluster_id=cluster_id, instances=instances, cluster=cluster,
-            ):
-                logger.info(
-                    "Pool started, cluster_id={cid}, instances={n}",
-                    cid=cluster_id, n=len(instances),
-                )
-                self._cluster_id = cluster_id
-                self._cluster = cluster
-                self.image = self._apply_plugin_transforms(self.image, cluster)
-                self._instances = {
-                    info.node: info
-                    for info in instances
-                }
-
-    async def _stop_async(self) -> None:
-        """Stop pool asynchronously."""
+    async def _stop_pool_actor(self) -> None:
+        """Stop the pool actor without tearing down the actor system."""
         if self._pool_ref is not None and self._system is not None:
             from skyward.actors.pool.messages import StopPool
+
             logger.debug("Sending StopPool to pool actor...")
             await self._system.ask(
                 self._pool_ref,
@@ -1032,20 +971,6 @@ class ComputePool:
                 timeout=self.shutdown_timeout,
             )
             logger.debug("StopPool ask resolved")
-
-        if self._system is not None:
-            logger.debug("Shutting down actor system...")
-            await self._system.__aexit__(None, None, None)
-            self._system = None
-            logger.debug("Actor system stopped")
-
-        cancel_pending_tasks()
-
-    def _cleanup(self) -> None:
-        logger.debug("Cleaning up event loop and thread")
-        cleanup_loop(self._loop, self._loop_thread)
-        self._loop = None
-        self._loop_thread = None
 
     @property
     def concurrency(self) -> int:
@@ -1061,6 +986,57 @@ class ComputePool:
         status = "active" if self._active else "inactive"
         first = self._specs[0]
         return f"ComputePool(nodes={first.nodes}, accelerator={first.accelerator}, {status})"
+
+    @classmethod
+    def _from_session(
+        cls,
+        session: Any,
+        pool_ref: ActorRef[PoolMsg],
+        spec: PoolSpec,
+        specs: tuple[Spec, ...],
+        plugins: tuple[Plugin, ...],
+        cluster_id: str,
+        cluster: Cluster[Any],
+        instances: tuple[Any, ...],
+        image: Image,
+        worker: Worker,
+        default_compute_timeout: float,
+    ) -> ComputePool:
+        """Create a ComputePool bound to an existing Session (internal)."""
+        pool = cls.__new__(cls)
+        pool._specs = specs
+        pool._scaling = None
+        pool.selection = "cheapest"
+        pool.image = image
+        pool.worker = worker
+        pool.logging = False
+        pool.default_compute_timeout = default_compute_timeout
+        pool.provision_timeout = 300
+        pool.ssh_timeout = 300
+        pool.ssh_retry_interval = 2
+        pool.provision_retry_delay = 5.0
+        pool.max_provision_attempts = 3
+        pool.volumes = ()
+        pool._plugins = plugins
+        pool.autoscale_cooldown = 30.0
+        pool.autoscale_idle_timeout = 60.0
+        pool.reconcile_tick_interval = 15.0
+        pool.shutdown_timeout = 120.0
+        pool._log_handler_ids = []
+        pool._loop = session._loop
+        pool._active = True
+        pool._context_token = None
+        pool._registry = None
+        pool._system = session._system
+        pool._pool_ref = pool_ref
+        pool._cluster_id = cluster_id
+        pool._cluster = cluster
+        pool._instances = {info.node: info for info in instances} if instances else {}
+        pool._spec = spec
+        pool._plugin_client_contexts = []
+        pool._session = session
+        pool._owns_session = False
+        return pool
 
     @classmethod
     def Named(cls, name: str) -> ComputePool:
