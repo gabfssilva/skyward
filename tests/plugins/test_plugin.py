@@ -634,27 +634,27 @@ class TestRunInProcessWithHooks:
 
 class TestTypeAliases:
     def test_image_transform_alias_exists(self) -> None:
-        from skyward.plugins import plugin
+        from skyward.api import plugin
 
         assert hasattr(plugin, "ImageTransform")
 
     def test_task_decorator_alias_exists(self) -> None:
-        from skyward.plugins import plugin
+        from skyward.api import plugin
 
         assert hasattr(plugin, "TaskDecorator")
 
     def test_app_lifecycle_alias_exists(self) -> None:
-        from skyward.plugins import plugin
+        from skyward.api import plugin
 
         assert hasattr(plugin, "AppLifecycle")
 
     def test_process_lifecycle_alias_exists(self) -> None:
-        from skyward.plugins import plugin
+        from skyward.api import plugin
 
         assert hasattr(plugin, "ProcessLifecycle")
 
     def test_client_lifecycle_alias_exists(self) -> None:
-        from skyward.plugins import plugin
+        from skyward.api import plugin
 
         assert hasattr(plugin, "ClientLifecycle")
 

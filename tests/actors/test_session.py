@@ -576,7 +576,7 @@ class TestSessionCompute:
         session._session_ref = MagicMock()
 
         with pytest.raises(
-            ValueError, match="At least one Spec must be provided",
+            ValueError, match="Either Spec objects or keyword arguments",
         ):
             session.compute()
 
