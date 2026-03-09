@@ -165,7 +165,7 @@ class OfferRepository:
         if not self._providers:
             return
 
-        from skyward.api.spec import Image, PoolSpec
+        from skyward.core.spec import Image, PoolSpec
         from skyward.offers.conversion import _offer_from_runtime
         from skyward.offers.feed import (
             _serialize_accelerator,

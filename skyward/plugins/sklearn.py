@@ -11,7 +11,7 @@ from skyward.plugins.plugin import Plugin
 
 if TYPE_CHECKING:
     from skyward.api.model import Cluster
-    from skyward.api.pool import ComputePool
+    from skyward.api.pool import Pool
     from skyward.api.spec import Image
 
 
@@ -29,7 +29,7 @@ def sklearn(version: str | None = None) -> Plugin:
         return replace(image, pip=(*image.pip, pkg, "joblib"))
 
     @contextmanager
-    def around_client(pool: ComputePool, cluster: Cluster[Any]) -> Iterator[None]:
+    def around_client(pool: Pool, cluster: Cluster[Any]) -> Iterator[None]:
         from joblib import parallel_backend
 
         from skyward.plugins.joblib import _setup_backend, _strip_local_warning_filters

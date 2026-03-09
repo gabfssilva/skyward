@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from skyward.api.provider import ProviderConfig
+from skyward.core.provider import ProviderConfig
 
 
 def default_config(provider_type: str, region: str | None = None) -> ProviderConfig:

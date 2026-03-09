@@ -19,7 +19,7 @@ from skyward.infra.ssh_actor import StreamEvent, SubscribeEvents
 
 def _make_ni() -> NodeInstance:
     from unittest.mock import MagicMock
-    from skyward.api.model import Instance
+    from skyward.core.model import Instance
     offer = MagicMock()
     inst = Instance(id="i-123", ip="10.0.0.1", status="provisioned", offer=offer)
     return NodeInstance(

@@ -51,13 +51,16 @@ from .actors.messages import (
     TaskCompleted,
     TaskStarted,
 )
-from .api import (
+from .api.pool import Pool as Pool
+from .app import App
+from .core import (
     DEFAULT_IMAGE,
     AllocationStrategy,
     CallbackWriter,
     Compute,
     Image,
     InstanceInfo,
+    Options,
     PendingFunction,
     PendingFunctionGroup,
     PipIndex,
@@ -67,7 +70,6 @@ from .api import (
     gather,
     instance_info,
     is_head,
-    pool,
     redirect_output,
     shard,
     silent,
@@ -75,14 +77,14 @@ from .api import (
     stderr,
     stdout,
 )
-from .api import InstanceType as InstanceType
-from .api import Offer as Offer
-from .api import SelectionStrategy as SelectionStrategy
-from .api import Spec as Spec
-from .api import Volume as Volume
-from .api import Worker as Worker
-from .api import WorkerExecutor as WorkerExecutor
-from .app import App
+from .core import InstanceType as InstanceType
+from .core import Offer as Offer
+from .core import SelectionStrategy as SelectionStrategy
+from .core import Spec as Spec
+from .core import SpecKwargs as SpecKwargs
+from .core import Volume as Volume
+from .core import Worker as Worker
+from .core import WorkerExecutor as WorkerExecutor
 from .distributed import (
     barrier,
     counter,
@@ -113,7 +115,6 @@ __all__ = [
     "Compute",
     "Session",
     "sky",
-    "pool",
     "function",
     "gather",
     "PendingFunction",
@@ -136,14 +137,17 @@ __all__ = [
     "VastAI",
     "Verda",
     "Image",
+    "Options",
     "PipIndex",
     "DEFAULT_IMAGE",
+    "Pool",
     "PoolSpec",
     "AllocationStrategy",
     "InstanceType",
     "Offer",
     "SelectionStrategy",
     "Spec",
+    "SpecKwargs",
     "Volume",
     "Storage",
     "storage",

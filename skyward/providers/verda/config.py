@@ -8,7 +8,7 @@ from __future__ import annotations
 import typing
 from dataclasses import dataclass
 
-from skyward.api.provider import ProviderConfig
+from skyward.core.provider import ProviderConfig
 
 if typing.TYPE_CHECKING:
     from skyward.providers.verda.provider import VerdaProvider

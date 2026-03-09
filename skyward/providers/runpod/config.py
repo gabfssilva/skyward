@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Literal
 
-from skyward.api.provider import ProviderConfig
+from skyward.core.provider import ProviderConfig
 
 type ClusterMode = Literal["instant", "individual"]
 

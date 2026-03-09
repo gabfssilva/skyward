@@ -8,9 +8,9 @@ from casty import ActorRef
 from skyward.actors.pool.messages import PoolMsg
 
 if TYPE_CHECKING:
-    from skyward.api.model import Cluster, Offer
-    from skyward.api.provider import ProviderConfig
-    from skyward.api.spec import PoolSpec
+    from skyward.core.model import Cluster, Offer
+    from skyward.core.provider import ProviderConfig
+    from skyward.core.spec import PoolSpec
 
 type PoolPhase = str
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from skyward.accelerators import Accelerator
-from skyward.api.spec import PoolSpec
+from skyward.core.spec import PoolSpec
 
 
 def _gpu_spec(

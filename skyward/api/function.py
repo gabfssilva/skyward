@@ -7,7 +7,7 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Any, overload
 
-from .context import _Sky
+from skyward.api.context import _Sky
 
 
 @dataclass(frozen=True, slots=True)

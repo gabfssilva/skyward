@@ -401,7 +401,7 @@ class TestSummary:
 class TestConsoleActor:
     @staticmethod
     def _make_spec():
-        from skyward.api.spec import Image, PoolSpec
+        from skyward.core.spec import Image, PoolSpec
 
         return PoolSpec(nodes=2, accelerator=None, region="us-east-1", image=Image())
 

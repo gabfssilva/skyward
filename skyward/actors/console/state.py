@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from types import MappingProxyType
 
-from skyward.api.model import Cluster, Instance
+from skyward.core.model import Cluster, Instance
 
 
 class _Phase(Enum):

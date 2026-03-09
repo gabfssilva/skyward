@@ -8,8 +8,8 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import replace
 from pathlib import Path
 
-from skyward.api import PoolSpec
-from skyward.api.model import Cluster, Instance, InstanceType, Offer
+from skyward.core import PoolSpec
+from skyward.core.model import Cluster, Instance, InstanceType, Offer
 from skyward.observability.logger import logger
 from skyward.providers.container.cli import run, run_json
 from skyward.providers.container.config import Container

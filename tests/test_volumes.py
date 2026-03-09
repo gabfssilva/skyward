@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from skyward.api.pool import ComputePool
-from skyward.api.spec import PoolSpec, Volume
+import skyward as sky
+from skyward.api.pool import Pool
+from skyward.core.spec import PoolSpec, Volume
 from skyward.providers.aws.config import AWS
 from skyward.providers.provider import Mountable
 
@@ -80,7 +81,7 @@ class TestStorageReplacedMountEndpoint:
 class TestClusterResolvedVolumes:
     def test_resolved_volumes_field_default_none(self):
         import dataclasses
-        from skyward.api.model import Cluster
+        from skyward.core.model import Cluster
 
         fields = {f.name: f for f in dataclasses.fields(Cluster)}
         assert "resolved_volumes" in fields
@@ -88,7 +89,7 @@ class TestClusterResolvedVolumes:
 
     def test_mount_endpoint_removed(self):
         import dataclasses
-        from skyward.api.model import Cluster
+        from skyward.core.model import Cluster
 
         fields = {f.name for f in dataclasses.fields(Cluster)}
         assert "mount_endpoint" not in fields
@@ -198,6 +199,8 @@ class TestMountVolumes:
 
 class TestComputePoolVolumes:
     def test_pool_accepts_volumes(self):
+        from skyward.core.pool import ComputePool
+
         vols = [Volume(bucket="b", mount="/data")]
         pool = ComputePool(provider=AWS(), volumes=vols)
         assert hasattr(pool, "volumes")
@@ -205,10 +208,14 @@ class TestComputePoolVolumes:
         assert pool.volumes[0].bucket == "b"
 
     def test_pool_default_no_volumes(self):
+        from skyward.core.pool import ComputePool
+
         pool = ComputePool(provider=AWS())
         assert pool.volumes == ()
 
     def test_pool_converts_list_to_tuple(self):
+        from skyward.core.pool import ComputePool
+
         vols = [Volume(bucket="b", mount="/data")]
         pool = ComputePool(provider=AWS(), volumes=vols)
         assert isinstance(pool.volumes, tuple)
@@ -216,7 +223,7 @@ class TestComputePoolVolumes:
 
 class TestBootstrapWithVolumes:
     def test_generate_bootstrap_with_volume_postamble(self):
-        from skyward.api.spec import Image
+        from skyward.core.spec import Image, generate_bootstrap
         from skyward.providers.bootstrap import mount_volumes, phase
         from skyward.storage import Storage
 
@@ -225,7 +232,7 @@ class TestBootstrapWithVolumes:
         vols = ((Volume(bucket="my-data", mount="/data"), s),)
 
         postamble = phase("volumes", mount_volumes(vols))
-        script = image.generate_bootstrap(ttl=0, postamble=postamble)
+        script = generate_bootstrap(image, ttl=0, postamble=postamble)
 
         assert "s3fs" in script
         assert "s3fs my-data /mnt/s3fs/my-data" in script

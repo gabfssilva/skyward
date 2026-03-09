@@ -3,8 +3,8 @@ from pathlib import Path
 import pytest
 
 from skyward.accelerators import Accelerator
-from skyward.api.pool import ComputePool
 from skyward.config import _deep_merge, load_config, resolve_pool
+from skyward.core.pool import ComputePool
 from skyward.providers.aws.config import AWS
 from skyward.providers.gcp.config import GCP
 from skyward.providers.hyperstack.config import Hyperstack
@@ -290,14 +290,13 @@ class TestResolvePoolWithVolumes:
         assert pool.volumes == ()
 
 
-class TestComputePoolNamed:
-    def test_named_returns_pool(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+class TestResolvePoolNamed:
+    def test_named_returns_pool(self, tmp_path: Path):
         (tmp_path / "skyward.toml").write_text(
             '[providers.a]\ntype = "aws"\nregion = "us-east-1"\n\n'
             '[pools.dev]\nprovider = "a"\nnodes = 2\naccelerator = "T4"\n'
         )
-        monkeypatch.chdir(tmp_path)
-        pool = ComputePool.Named("dev")
+        pool = resolve_pool("dev", project_dir=tmp_path)
         assert isinstance(pool, ComputePool)
         spec = pool._specs[0]
         assert spec.nodes == 2

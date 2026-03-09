@@ -9,8 +9,8 @@ from skyward.actors.messages import NodeBecameReady, NodeInstance
 
 if TYPE_CHECKING:
     from skyward.actors.messages import ClusterId, NodeId
-    from skyward.api.model import Offer
-    from skyward.api.spec import PoolSpec
+    from skyward.core.model import Offer
+    from skyward.core.spec import PoolSpec
 
 
 @dataclass(frozen=True, slots=True)

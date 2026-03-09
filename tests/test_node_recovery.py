@@ -22,8 +22,8 @@ from dataclasses import dataclass, field
 import pytest
 
 import skyward as sky
-from skyward.api.model import Cluster, Instance, Offer
-from skyward.api.spec import PoolSpec
+from skyward.core.model import Cluster, Instance, Offer
+from skyward.core.spec import PoolSpec
 from skyward.providers.container.cli import run
 from skyward.providers.container.config import Container
 from skyward.providers.container.provider import ContainerProvider, ContainerSpecific
@@ -126,7 +126,7 @@ class _NodeKillerContainer(Container):
 class TestNodeFailureRecovery:
     def test_killed_node_is_replaced_and_cluster_recovers(self) -> None:
         """Pool replaces a dead node and all 5 nodes become operational."""
-        with sky.App(console=False), sky.ComputePool(
+        with sky.Compute(
             provider=_NodeKillerContainer(
                 network="skyward",
                 container_prefix="skyward-recovery",
@@ -135,8 +135,11 @@ class TestNodeFailureRecovery:
             nodes=5,
             vcpus=0.5,
             memory_gb=0.5,
-            ssh_timeout=10,
-            ssh_retry_interval=2,
+            options=sky.Options(
+                ssh_timeout=10,
+                ssh_retry_interval=2,
+                console=False,
+            ),
         ) as pool:
 
             @sky.function
@@ -149,7 +152,7 @@ class TestNodeFailureRecovery:
 
     def test_tasks_execute_on_replacement_node(self) -> None:
         """Tasks dispatched after recovery reach all nodes including the replacement."""
-        with sky.App(console=False), sky.ComputePool(
+        with sky.Compute(
             provider=_NodeKillerContainer(
                 network="skyward",
                 container_prefix="skyward-recovery-tasks",
@@ -158,8 +161,11 @@ class TestNodeFailureRecovery:
             nodes=3,
             vcpus=0.5,
             memory_gb=0.5,
-            ssh_timeout=10,
-            ssh_retry_interval=2,
+            options=sky.Options(
+                ssh_timeout=10,
+                ssh_retry_interval=2,
+                console=False,
+            ),
         ) as pool:
 
             @sky.function
@@ -287,7 +293,7 @@ class TestActiveNodeRecovery:
         including the replacement should work after recovery."""
         kill_switch = _KillSwitch(binary="docker", container_prefix="skyward-killswitch")
 
-        with sky.App(console=False), sky.ComputePool(
+        with sky.Compute(
             provider=_KillSwitchContainer(
                 network="skyward",
                 container_prefix="skyward-killswitch",
@@ -296,9 +302,12 @@ class TestActiveNodeRecovery:
             nodes=5,
             vcpus=0.5,
             memory_gb=0.5,
-            ssh_timeout=10,
-            ssh_retry_interval=2,
-            default_compute_timeout=15,
+            options=sky.Options(
+                ssh_timeout=10,
+                ssh_retry_interval=2,
+                default_compute_timeout=15,
+                console=False,
+            ),
         ) as pool:
 
             @sky.function

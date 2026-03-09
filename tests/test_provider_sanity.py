@@ -76,12 +76,13 @@ def _assert_broadcast(results: list[dict]) -> None:
 class TestAWSSanity:
     @pytest.fixture(scope="class")
     def pool(self):
-        with sky.App(console=False), sky.ComputePool(
+        with sky.Compute(
             provider=sky.AWS(),
             accelerator=sky.accelerators.T4(),
             nodes=NODES,
             image=sky.Image(pip=["torch"]),
             allocation="spot-if-available",
+            options=sky.Options(console=False),
         ) as p:
             yield p
 
@@ -106,12 +107,13 @@ class TestAWSSanity:
 class TestGCPSanity:
     @pytest.fixture(scope="class")
     def pool(self):
-        with sky.App(console=False), sky.ComputePool(
+        with sky.Compute(
             provider=sky.GCP(),
             accelerator=sky.accelerators.L4(),
             nodes=NODES,
             image=sky.Image(pip=["torch"]),
             allocation="spot-if-available",
+            options=sky.Options(console=False),
         ) as p:
             yield p
 
@@ -136,11 +138,12 @@ class TestGCPSanity:
 class TestRunPodSanity:
     @pytest.fixture(scope="class")
     def pool(self):
-        with sky.App(console=False), sky.ComputePool(
+        with sky.Compute(
             provider=sky.RunPod(),
             accelerator=sky.accelerators.RTX_4090(),
             nodes=NODES,
             image=sky.Image(pip=["torch"]),
+            options=sky.Options(console=False),
         ) as p:
             yield p
 
@@ -165,11 +168,12 @@ class TestRunPodSanity:
 class TestVastAISanity:
     @pytest.fixture(scope="class")
     def pool(self):
-        with sky.App(console=False), sky.ComputePool(
+        with sky.Compute(
             provider=sky.VastAI(),
             accelerator=sky.accelerators.RTX_3090(),
             nodes=NODES,
             image=sky.Image(pip=["torch"]),
+            options=sky.Options(console=False),
         ) as p:
             yield p
 
@@ -194,11 +198,12 @@ class TestVastAISanity:
 class TestVerdaSanity:
     @pytest.fixture(scope="class")
     def pool(self):
-        with sky.App(console=False), sky.ComputePool(
+        with sky.Compute(
             provider=sky.Verda(),
             accelerator=sky.accelerators.A100(),
             nodes=NODES,
             image=sky.Image(pip=["torch"]),
+            options=sky.Options(console=False),
         ) as p:
             yield p
 
@@ -223,11 +228,12 @@ class TestVerdaSanity:
 class TestHyperstackSanity:
     @pytest.fixture(scope="class")
     def pool(self):
-        with sky.App(console=False), sky.ComputePool(
+        with sky.Compute(
             provider=sky.Hyperstack(),
             accelerator=sky.accelerators.A100(),
             nodes=NODES,
             image=sky.Image(pip=["torch"]),
+            options=sky.Options(console=False),
         ) as p:
             yield p
 
@@ -252,11 +258,12 @@ class TestHyperstackSanity:
 class TestTensorDockSanity:
     @pytest.fixture(scope="class")
     def pool(self):
-        with sky.App(console=False), sky.ComputePool(
+        with sky.Compute(
             provider=sky.TensorDock(),
             accelerator=sky.accelerators.RTX_4090(),
             nodes=NODES,
             image=sky.Image(pip=["torch"]),
+            options=sky.Options(console=False),
         ) as p:
             yield p
 

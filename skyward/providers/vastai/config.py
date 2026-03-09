@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from skyward.api.provider import ProviderConfig
+from skyward.core.provider import ProviderConfig
 
 if TYPE_CHECKING:
     from skyward.providers.vastai.provider import VastAIProvider

@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING
 import httpx
 
 from skyward.accelerators import Accelerator
-from skyward.api import PoolSpec
-from skyward.api.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
+from skyward.core import PoolSpec
+from skyward.core.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
 from skyward.observability.logger import logger
 from skyward.providers.provider import Provider
 

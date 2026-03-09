@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Protocol
+from typing import Any, Protocol
 
-type Consistency = Literal["strong", "eventual"]
+from skyward.api.distributed import Consistency as Consistency
 
 
 class Registry(Protocol):

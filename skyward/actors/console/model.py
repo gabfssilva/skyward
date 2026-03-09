@@ -4,7 +4,7 @@ import time
 from dataclasses import replace
 from types import MappingProxyType
 
-from skyward.api.model import Cluster, Instance
+from skyward.core.model import Cluster, Instance
 
 from .state import _NodeStatus, _Phase, _State, _TaskEntry
 

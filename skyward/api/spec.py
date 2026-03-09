@@ -10,32 +10,16 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, TypedDict
 
-from skyward.observability.metrics import Default as DefaultMetrics
-from skyward.observability.metrics import MetricsConfig
-from skyward.providers.bootstrap import (
-    Op,
-    apt,
-    bootstrap,
-    emit_bootstrap_complete,
-    env_export,
-    install_uv,
-    instance_timeout,
-    phase,
-    phase_simple,
-    shell_vars,
-    start_metrics,
-    uv_add,
-    uv_configure_indexes,
-    uv_init,
-)
+from skyward.api.metrics import Metric, MetricsConfig
 
 if TYPE_CHECKING:
     from skyward.accelerators import Accelerator
     from skyward.actors.messages import ProviderName
+    from skyward.api.logging import LogConfig
+    from skyward.api.plugin import Plugin
     from skyward.api.provider import ProviderConfig
-    from skyward.plugins.plugin import Plugin
     from skyward.storage import Storage
 
 
@@ -47,10 +31,10 @@ type AllocationStrategy = Literal[
 ]
 """Instance lifecycle strategy.
 
-- ``"spot"`` — spot/preemptible only (cheapest, may be interrupted).
-- ``"on-demand"`` — on-demand only (reliable, higher cost).
-- ``"spot-if-available"`` — try spot first, fall back to on-demand.
-- ``"cheapest"`` — compare spot and on-demand, pick lowest price.
+- ``"spot"`` -- spot/preemptible only (cheapest, may be interrupted).
+- ``"on-demand"`` -- on-demand only (reliable, higher cost).
+- ``"spot-if-available"`` -- try spot first, fall back to on-demand.
+- ``"cheapest"`` -- compare spot and on-demand, pick lowest price.
 """
 
 type Architecture = Literal["x86_64", "arm64"]
@@ -59,8 +43,8 @@ type Architecture = Literal["x86_64", "arm64"]
 type SelectionStrategy = Literal["first", "cheapest"]
 """Multi-spec selection strategy.
 
-- ``"first"`` — use the first spec that has available offers.
-- ``"cheapest"`` — compare all specs, pick the lowest price.
+- ``"first"`` -- use the first spec that has available offers.
+- ``"cheapest"`` -- compare all specs, pick the lowest price.
 """
 
 type SkywardSource = Literal["auto", "local", "github", "pypi"]
@@ -69,10 +53,10 @@ type SkywardSource = Literal["auto", "local", "github", "pypi"]
 type WorkerExecutor = Literal["auto", "thread", "process"]
 """Worker execution backend.
 
-- ``"auto"`` — resolves to ``"thread"`` (default).
-- ``"thread"`` — ThreadPoolExecutor. Supports streaming, distributed
+- ``"auto"`` -- resolves to ``"thread"`` (default).
+- ``"thread"`` -- ThreadPoolExecutor. Supports streaming, distributed
   collections without IPC, and has lower overhead.
-- ``"process"`` — ProcessPoolExecutor. Useful for CPU-bound pure-Python
+- ``"process"`` -- ProcessPoolExecutor. Useful for CPU-bound pure-Python
   workloads that benefit from bypassing the GIL.
 """
 
@@ -86,7 +70,7 @@ class Worker:
     concurrency
         Number of concurrent task slots per node. Default ``1``.
     executor
-        Execution backend — ``"auto"`` (default) resolves to ``"thread"``.
+        Execution backend -- ``"auto"`` (default) resolves to ``"thread"``.
         Use ``"process"`` explicitly for CPU-bound pure-Python workloads
         that benefit from bypassing the GIL. Thread executor supports
         streaming, distributed collections without IPC, and has lower overhead.
@@ -107,11 +91,11 @@ class Worker:
 
 @dataclass(frozen=True, slots=True)
 class Spec:
-    """Hardware specification for multi-provider fallback chains.
+    """Hardware and environment specification for compute pools.
 
-    Pass one or more ``Spec`` objects to ``ComputePool`` to define
-    fallback preferences across providers. The pool selects the best
-    match based on the ``selection`` strategy.
+    Pass one or more ``Spec`` objects to ``sky.Compute`` to define
+    what to provision. For multi-provider fallback, pass multiple specs
+    and set ``selection`` in ``Options``.
 
     Parameters
     ----------
@@ -129,19 +113,24 @@ class Spec:
         CPU architecture filter. ``None`` accepts any.
     allocation
         Instance lifecycle strategy.
+    image
+        Environment specification (Python version, packages, etc.).
     region
         Cloud region (provider-specific).
     max_hourly_cost
         Cost cap per node per hour in USD.
     ttl
         Auto-shutdown timeout in seconds after pool exits. ``0`` disables.
+    volumes
+        S3/GCS volumes to mount on workers.
+    plugins
+        Composable plugins to apply to the pool.
 
     Examples
     --------
-    >>> with sky.ComputePool(
+    >>> with sky.Compute(
     ...     sky.Spec(provider=sky.VastAI(), accelerator="A100"),
     ...     sky.Spec(provider=sky.AWS(), accelerator="A100"),
-    ...     selection="cheapest",
     ... ) as pool:
     ...     result = train(data) >> pool
     """
@@ -152,9 +141,102 @@ class Spec:
     memory_gb: float | None = None
     architecture: Architecture | None = None
     allocation: AllocationStrategy = "spot-if-available"
+    image: Image = field(default_factory=lambda: Image())
     region: str | None = None
     max_hourly_cost: float | None = None
     ttl: int = 600
+    volumes: list[Volume] | tuple[Volume, ...] = ()
+    plugins: list[Plugin] | tuple[Plugin, ...] = ()
+
+
+class _SpecRequired(TypedDict):
+    provider: ProviderConfig
+
+
+class SpecKwargs(_SpecRequired, total=False):
+    """TypedDict mirror of ``Spec`` for ``Unpack`` in function signatures.
+
+    Allows ``sky.Compute(provider=sky.AWS(), accelerator="A100")``
+    with full type safety. Convert to ``Spec`` via ``Spec(**kwargs)``.
+    """
+
+    accelerator: Accelerator | None
+    nodes: int | tuple[int, int]
+    vcpus: float | None
+    memory_gb: float | None
+    architecture: Architecture | None
+    allocation: AllocationStrategy
+    image: Image
+    region: str | None
+    max_hourly_cost: float | None
+    ttl: int
+    volumes: list[Volume] | tuple[Volume, ...]
+    plugins: list[Plugin] | tuple[Plugin, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class Options:
+    """Operational tuning for compute pools.
+
+    Groups all operational parameters (timeouts, retries, autoscaling,
+    session settings) into a single object. Sensible defaults mean most
+    users never need to create one explicitly.
+
+    Parameters
+    ----------
+    selection
+        Multi-spec selection strategy.
+    worker
+        Worker configuration (concurrency, executor).
+    provision_timeout
+        Maximum seconds to wait for provisioning.
+    provision_retry_delay
+        Seconds between provision retry attempts.
+    max_provision_attempts
+        Maximum number of provision attempts.
+    ssh_timeout
+        SSH connection timeout in seconds.
+    ssh_retry_interval
+        Seconds between SSH retry attempts.
+    default_compute_timeout
+        Default timeout in seconds for submitted tasks.
+    autoscale_cooldown
+        Seconds between autoscaling decisions.
+    autoscale_idle_timeout
+        Seconds of idle before autoscaler scales down.
+    reconcile_tick_interval
+        Seconds between reconciler ticks.
+    shutdown_timeout
+        Maximum seconds to wait for a graceful shutdown.
+    console
+        Enable the Rich adaptive console spy.
+    logging
+        Logging configuration. ``True`` uses sensible defaults,
+        ``False`` disables logging, or pass a ``LogConfig`` instance.
+
+    Examples
+    --------
+    >>> with sky.Compute(
+    ...     sky.Spec(provider=sky.AWS(), accelerator="A100", nodes=4),
+    ...     options=sky.Options(provision_timeout=600, console=False),
+    ... ) as pool:
+    ...     result = train(data) >> pool
+    """
+
+    selection: SelectionStrategy = "cheapest"
+    worker: Worker | None = None
+    provision_timeout: int = 300
+    provision_retry_delay: float = 5.0
+    max_provision_attempts: int = 3
+    ssh_timeout: int = 300
+    ssh_retry_interval: int = 2
+    default_compute_timeout: float = 300.0
+    autoscale_cooldown: float = 30.0
+    autoscale_idle_timeout: float = 60.0
+    reconcile_tick_interval: float = 15.0
+    shutdown_timeout: float = 120.0
+    console: bool = True
+    logging: LogConfig | bool = True
 
 
 def _detect_skyward_source() -> SkywardSource:
@@ -257,7 +339,7 @@ class Volume:
 
 @dataclass(frozen=True, slots=True)
 class PoolSpec:
-    """Internal pool specification — resolved from user-facing ``ComputePool`` args.
+    """Internal pool specification -- resolved from user-facing ``ComputePool`` args.
 
     Defines the cluster configuration including number of nodes,
     hardware requirements, and instance allocation strategy.
@@ -361,6 +443,11 @@ class PoolSpec:
         return self.min_nodes is not None and self.max_nodes is not None
 
 
+def _default_metrics() -> tuple[Metric, ...]:
+    from skyward.observability.metrics import Default
+    return Default()
+
+
 @dataclass(frozen=True, slots=True)
 class Image:
     """Declarative image specification.
@@ -418,7 +505,7 @@ class Image:
     includes: list[str] | tuple[str, ...] = ()
     excludes: list[str] | tuple[str, ...] = ()
     skyward_source: SkywardSource = "auto"
-    metrics: MetricsConfig = field(default_factory=lambda: DefaultMetrics())
+    metrics: MetricsConfig = field(default_factory=lambda: _default_metrics())
     bootstrap_timeout: int = 300
 
     def __post_init__(self) -> None:
@@ -478,50 +565,6 @@ class Image:
             sort_keys=True,
         )
         return hashlib.sha256(content.encode()).hexdigest()[:12]
-
-    def generate_bootstrap(
-        self,
-        ttl: int = 0,
-        shutdown_command: str = "shutdown -h now",
-        preamble: Op | None = None,
-        postamble: Op | None = None,
-    ) -> str:
-        """Generate bootstrap script for cloud-init/user_data."""
-        ops: list[Op | None] = [
-            instance_timeout(ttl, shutdown_command=shutdown_command) if ttl else None,
-            preamble,
-        ]
-
-        if self.shell_vars or self.env:
-            env_ops: list[Op] = []
-            if self.shell_vars:
-                env_ops.append(shell_vars(**self.shell_vars))
-            if self.env:
-                env_ops.append(env_export(**self.env))
-            ops.append(phase_simple("env", *env_ops))
-
-        ops.extend([
-            phase("apt", apt("curl", "git", *self.apt)),
-            phase_simple(
-                "uv",
-                install_uv(),
-                uv_init(self.python, name="skyward-bootstrap"),
-                uv_configure_indexes(self.pip_indexes),
-            ),
-            phase("deps", uv_add("cloudpickle", "lz4", *self.pip)),
-        ])
-
-        match self.skyward_source:
-            case "github":
-                ops.append(phase("skyward", uv_add("git+https://github.com/gabfssilva/skyward.git")))
-            case "pypi":
-                ops.append(phase("skyward", uv_add("skyward")))
-
-        ops.append(postamble)
-        ops.append(emit_bootstrap_complete())
-        ops.append(start_metrics())
-
-        return bootstrap(*ops, metrics=self.metrics)
 
 
 DEFAULT_IMAGE = Image()

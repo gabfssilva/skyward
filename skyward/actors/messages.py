@@ -17,8 +17,8 @@ from uuid import uuid4
 from casty import ActorRef
 
 if TYPE_CHECKING:
-    from skyward.api.model import Cluster, Instance
-    from skyward.api.spec import PoolSpec
+    from skyward.core.model import Cluster, Instance
+    from skyward.core.spec import PoolSpec
     from skyward.providers.provider import Provider
 
 type RequestId = str

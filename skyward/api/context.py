@@ -4,19 +4,18 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from skyward.api.pool import ComputePool
-    from skyward.api.session import Session
+    pass
 
-_active_pool: ContextVar[ComputePool | None] = ContextVar("active_pool", default=None)
-_active_session: ContextVar[Session | None] = ContextVar("active_session", default=None)
+_active_pool: ContextVar[Any] = ContextVar("active_pool", default=None)
+_active_session: ContextVar[Any] = ContextVar("active_session", default=None)
 
 
-def get_session() -> Session | None:
+def get_session() -> Any | None:
     """Return the active session, or ``None`` if no session is entered."""
     return _active_session.get()
 
 
-def _get_active_pool() -> ComputePool:
+def _get_active_pool() -> Any:
     """Get the active pool from context."""
     pool = _active_pool.get()
     if pool is None:

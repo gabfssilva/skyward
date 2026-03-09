@@ -10,10 +10,10 @@ from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import TYPE_CHECKING, cast
 
-from skyward.api import PoolSpec
-from skyward.api.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
-from skyward.api.spec import Architecture as SpecArchitecture
-from skyward.api.spec import Volume
+from skyward.core import PoolSpec
+from skyward.core.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
+from skyward.core.spec import Architecture as SpecArchitecture
+from skyward.core.spec import Volume
 from skyward.infra.cache import cached
 from skyward.infra.retry import on_exception_message, retry
 from skyward.observability.logger import logger

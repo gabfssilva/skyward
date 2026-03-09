@@ -18,9 +18,9 @@ from skyward.actors.messages import (
 )
 
 if TYPE_CHECKING:
-    from skyward.api.model import Cluster, Instance, Offer
-    from skyward.api.provider import ProviderConfig
-    from skyward.api.spec import PoolSpec
+    from skyward.core.model import Cluster, Instance, Offer
+    from skyward.core.provider import ProviderConfig
+    from skyward.core.spec import PoolSpec
 
 
 @dataclass(frozen=True, slots=True)

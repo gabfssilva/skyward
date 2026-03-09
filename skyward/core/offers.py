@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from skyward.api.model import Offer
-from skyward.api.provider import ProviderConfig
-from skyward.api.spec import Image, PoolSpec, Spec, Volume, Worker
+from skyward.core.model import Offer
+from skyward.core.provider import ProviderConfig
+from skyward.core.spec import Image, PoolSpec, Spec, Volume, Worker
 from skyward.observability.logger import logger
 from skyward.plugins.plugin import Plugin
 

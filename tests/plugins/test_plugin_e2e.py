@@ -9,8 +9,7 @@ from typing import Any
 import pytest
 
 import skyward as sky
-from skyward.api.pool import ComputePool
-from skyward.api.spec import Worker
+from skyward.api.pool import Pool
 from skyward.plugins.plugin import Plugin
 
 pytestmark = [pytest.mark.e2e, pytest.mark.timeout(180), pytest.mark.xdist_group("plugin-e2e")]
@@ -46,16 +45,17 @@ def plugin_test():
 
 @pytest.fixture(scope="module")
 def plugin_pool():
-    with sky.App(console=False), ComputePool(
+    with sky.Compute(
         provider=sky.Container(container_prefix="skyward-plugin-e2e"),
         nodes=1,
         plugins=[plugin_test()],
+        options=sky.Options(console=False),
     ) as p:
         yield p
 
 
 class TestPluginHooksE2E:
-    def test_transform_sets_env_var(self, plugin_pool: ComputePool) -> None:
+    def test_transform_sets_env_var(self, plugin_pool: Pool) -> None:
         @sky.function
         def check():
             import os
@@ -64,7 +64,7 @@ class TestPluginHooksE2E:
 
         assert (check() >> plugin_pool) == "applied"
 
-    def test_decorate_wraps_execution(self, plugin_pool: ComputePool) -> None:
+    def test_decorate_wraps_execution(self, plugin_pool: Pool) -> None:
         @sky.function
         def check():
             import os
@@ -73,7 +73,7 @@ class TestPluginHooksE2E:
 
         assert (check() >> plugin_pool) == "applied"
 
-    def test_around_app_context_entered(self, plugin_pool: ComputePool) -> None:
+    def test_around_app_context_entered(self, plugin_pool: Pool) -> None:
         @sky.function
         def check():
             import os
@@ -82,7 +82,7 @@ class TestPluginHooksE2E:
 
         assert (check() >> plugin_pool) == "entered"
 
-    def test_all_hooks_active(self, plugin_pool: ComputePool) -> None:
+    def test_all_hooks_active(self, plugin_pool: Pool) -> None:
         @sky.function
         def check_all():
             import os
@@ -128,17 +128,17 @@ def process_plugin():
 
 @pytest.fixture(scope="module")
 def process_pool():
-    with sky.App(console=False), ComputePool(
+    with sky.Compute(
         provider=sky.Container(container_prefix="skyward-process-e2e"),
         nodes=1,
-        worker=Worker(executor="process"),
         plugins=[process_plugin()],
+        options=sky.Options(worker=sky.Worker(executor="process"), console=False),
     ) as p:
         yield p
 
 
 class TestAroundProcessE2E:
-    def test_around_process_context_entered(self, process_pool: ComputePool) -> None:
+    def test_around_process_context_entered(self, process_pool: Pool) -> None:
         @sky.function
         def check():
             import os
@@ -149,7 +149,7 @@ class TestAroundProcessE2E:
         assert result is not None
         assert result.startswith("pid-")
 
-    def test_around_process_idempotent(self, process_pool: ComputePool) -> None:
+    def test_around_process_idempotent(self, process_pool: Pool) -> None:
         @sky.function
         def check():
             import os
@@ -160,7 +160,7 @@ class TestAroundProcessE2E:
         r2 = check() >> process_pool
         assert r1 == r2
 
-    def test_around_process_runs_in_subprocess(self, process_pool: ComputePool) -> None:
+    def test_around_process_runs_in_subprocess(self, process_pool: Pool) -> None:
         @sky.function
         def get_pids():
             import os

@@ -17,8 +17,8 @@ from dataclasses import dataclass
 import pytest
 
 import skyward as sky
-from skyward.api.model import Cluster, Instance
-from skyward.api.spec import PoolSpec
+from skyward.core.model import Cluster, Instance
+from skyward.core.spec import PoolSpec
 from skyward.providers.container.config import Container
 from skyward.providers.container.provider import ContainerProvider, ContainerSpecific
 
@@ -105,7 +105,7 @@ class _PartialContainer(Container):
 class TestProvisionRetryPartial:
     def test_partial_then_remaining(self) -> None:
         """Provider returns 1 of 2 on first try, remaining on retry."""
-        with sky.App(console=False), sky.ComputePool(
+        with sky.Compute(
             provider=_PartialContainer(
                 network="skyward",
                 container_prefix="skyward-retry-partial",
@@ -114,8 +114,11 @@ class TestProvisionRetryPartial:
             nodes=2,
             vcpus=0.5,
             memory_gb=0.5,
-            provision_retry_delay=1.0,
-            max_provision_attempts=5,
+            options=sky.Options(
+                provision_retry_delay=1.0,
+                max_provision_attempts=5,
+                console=False,
+            ),
         ) as pool:
             @sky.function
             def ping() -> str:
@@ -130,8 +133,7 @@ class TestProvisionRetryExhausted:
         """Provider returns 0 instances every time, pool raises after max attempts."""
         with (
             pytest.raises(RuntimeError, match="provisioning failed"),
-            sky.App(console=False),
-            sky.ComputePool(
+            sky.Compute(
                 provider=_PartialContainer(
                     network="skyward",
                     container_prefix="skyward-retry-exhausted",
@@ -140,8 +142,11 @@ class TestProvisionRetryExhausted:
                 nodes=2,
                 vcpus=0.5,
                 memory_gb=0.5,
-                provision_retry_delay=0.5,
-                max_provision_attempts=3,
+                options=sky.Options(
+                    provision_retry_delay=0.5,
+                    max_provision_attempts=3,
+                    console=False,
+                ),
             ),
         ):
             pass
@@ -150,7 +155,7 @@ class TestProvisionRetryExhausted:
 class TestProvisionRetryGradual:
     def test_one_per_attempt_accumulates(self) -> None:
         """Provider returns 1 instance per attempt, pool accumulates until complete."""
-        with sky.App(console=False), sky.ComputePool(
+        with sky.Compute(
             provider=_PartialContainer(
                 network="skyward",
                 container_prefix="skyward-retry-gradual",
@@ -159,8 +164,11 @@ class TestProvisionRetryGradual:
             nodes=3,
             vcpus=0.5,
             memory_gb=0.5,
-            provision_retry_delay=1.0,
-            max_provision_attempts=5,
+            options=sky.Options(
+                provision_retry_delay=1.0,
+                max_provision_attempts=5,
+                console=False,
+            ),
         ) as pool:
             @sky.function
             def node_id() -> int:

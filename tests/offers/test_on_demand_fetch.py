@@ -5,7 +5,7 @@ import sqlite3
 import pytest
 
 from skyward.accelerators.spec import Accelerator
-from skyward.api.model import InstanceType, Offer
+from skyward.core.model import InstanceType, Offer
 from skyward.infra.threaded import ThreadPoolRunner
 from skyward.offers.conversion import _offer_from_runtime
 from skyward.offers.repository import OfferRepository, _SCHEMA

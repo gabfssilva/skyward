@@ -19,14 +19,14 @@ type InstanceStatus = Literal[
 ]
 """Lifecycle status of an individual instance.
 
-Progression: ``provisioning`` → ``provisioned`` → ``bootstrapping``
-→ ``bootstrapped`` → ``ready``.
+Progression: ``provisioning`` -> ``provisioned`` -> ``bootstrapping``
+-> ``bootstrapped`` -> ``ready``.
 """
 
 
 @dataclass(frozen=True, slots=True)
 class InstanceType[S]:
-    """Normalized machine type — cacheable, provider-agnostic hardware description.
+    """Normalized machine type -- cacheable, provider-agnostic hardware description.
 
     Parameters
     ----------
@@ -124,14 +124,14 @@ type ClusterStatus = Literal[
 ]
 """Lifecycle status of the cluster as a whole.
 
-Progression: ``setting_up`` → ``provisioning`` → ``bootstrapping``
-→ ``ready`` → ``shutting_down`` → ``destroyed``.
+Progression: ``setting_up`` -> ``provisioning`` -> ``bootstrapping``
+-> ``ready`` -> ``shutting_down`` -> ``destroyed``.
 """
 
 
 @dataclass(frozen=True, slots=True)
 class Cluster[S]:
-    """Full cluster state — spec + offer + instances + provider metadata.
+    """Full cluster state -- spec + offer + instances + provider metadata.
 
     Passed to provider methods and plugin hooks as the authoritative
     view of the current cluster configuration.

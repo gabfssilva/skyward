@@ -526,7 +526,7 @@ class TestSessionActor:
 
 class TestSessionLifecycle:
     def test_session_enter_exit(self) -> None:
-        from skyward.api.session import Session
+        from skyward.core.session import Session
 
         session = Session(console=False, logging=False)
         session.__enter__()
@@ -537,15 +537,15 @@ class TestSessionLifecycle:
         assert not session.is_active
 
     def test_session_context_manager(self) -> None:
-        from skyward.api.session import Session
+        from skyward.core.session import Session
 
         with Session(console=False, logging=False) as session:
             assert session.is_active
         assert not session.is_active
 
     def test_session_sets_contextvar(self) -> None:
-        from skyward.api.context import get_session
-        from skyward.api.session import Session
+        from skyward.core.context import get_session
+        from skyward.core.session import Session
 
         assert get_session() is None
         with Session(console=False, logging=False) as session:
@@ -557,33 +557,17 @@ class TestSessionCompute:
     def test_compute_raises_when_inactive(self) -> None:
         from unittest.mock import MagicMock
 
-        from skyward.api.session import Session
+        from skyward.core.session import Session
+        from skyward.core.spec import Spec
 
         session = Session(console=False, logging=False)
-        provider = MagicMock()
         with pytest.raises(RuntimeError, match="Session is not active"):
-            session.compute(provider=provider, accelerator=MagicMock())
+            session.compute(Spec(provider=MagicMock()))
 
-    def test_compute_validates_both_specs_and_provider(self) -> None:
+    def test_compute_validates_no_specs(self) -> None:
         from unittest.mock import MagicMock
 
-        from skyward.api.session import Session
-        from skyward.api.spec import Spec
-
-        session = Session(console=False, logging=False)
-        session._active = True
-        session._loop = MagicMock()
-        session._system = MagicMock()
-        session._session_ref = MagicMock()
-
-        spec = Spec(provider=MagicMock())
-        with pytest.raises(
-            ValueError, match="Cannot specify both positional Spec args and 'provider'",
-        ):
-            session.compute(spec, provider=MagicMock())
-
-    def test_compute_validates_no_specs_no_provider(self) -> None:
-        from skyward.api.session import Session
+        from skyward.core.session import Session
 
         session = Session(console=False, logging=False)
         session._active = True
@@ -592,7 +576,7 @@ class TestSessionCompute:
         session._session_ref = MagicMock()
 
         with pytest.raises(
-            ValueError, match="Either Spec args or 'provider' must be provided",
+            ValueError, match="At least one Spec must be provided",
         ):
             session.compute()
 
@@ -608,11 +592,11 @@ class TestPoolActorSessionRef:
 
 class TestComputeSugar:
     def test_compute_is_importable(self) -> None:
-        from skyward.api.compute import Compute
+        from skyward.core.compute import Compute
 
         assert callable(Compute)
 
     def test_compute_is_context_manager(self) -> None:
-        from skyward.api.compute import Compute
+        from skyward.core.compute import Compute
 
         assert hasattr(Compute, '__call__')

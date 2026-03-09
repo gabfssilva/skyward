@@ -14,8 +14,8 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from skyward.accelerators import Accelerator
-from skyward.api import PoolSpec
-from skyward.api.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
+from skyward.core import PoolSpec
+from skyward.core.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
 from skyward.observability.logger import logger
 from skyward.providers.provider import Mountable, Provider
 

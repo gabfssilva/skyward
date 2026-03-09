@@ -9,7 +9,7 @@ import typing
 from dataclasses import dataclass
 from typing import Literal
 
-from skyward.api.provider import ProviderConfig
+from skyward.core.provider import ProviderConfig
 
 if typing.TYPE_CHECKING:
     from skyward.providers.aws.provider import AWSProvider

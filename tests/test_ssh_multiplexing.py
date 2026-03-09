@@ -7,7 +7,7 @@ import asyncssh
 import pytest
 
 import skyward as sky
-from skyward import ComputePool, Worker
+from skyward import Options, Worker
 
 pytestmark = [pytest.mark.e2e, pytest.mark.timeout(180), pytest.mark.xdist_group("pool")]
 
@@ -25,16 +25,15 @@ def test_single_ssh_connection_per_node():
 
     with (
         patch("asyncssh.connect", spy),
-        sky.App(console=False),
-        ComputePool(
+        sky.Compute(
             provider=sky.Container(
                 network="skyward",
                 container_prefix="skyward-ssh-mux",
             ),
             nodes=2,
-            worker=Worker(concurrency=1),
             vcpus=1,
             memory_gb=1,
+            options=Options(worker=Worker(concurrency=1), console=False),
         ),
     ):
         assert len(connect_counts) == 2, (

@@ -230,7 +230,7 @@ def _run_in_process(
             os.environ["COMPUTE_POOL"] = json.dumps(pool_data)
 
     if around_process_hooks:
-        from skyward.api.runtime import instance_info
+        from skyward.core.runtime import instance_info
         from skyward.plugins.process_state import ensure_around_process
 
         info = instance_info()
@@ -325,7 +325,7 @@ def worker_behavior(
                             _set_active_registry(registry)
 
                         if process_hooks:
-                            from skyward.api.runtime import instance_info
+                            from skyward.core.runtime import instance_info
                             from skyward.plugins.process_state import ensure_around_process
 
                             info = instance_info()

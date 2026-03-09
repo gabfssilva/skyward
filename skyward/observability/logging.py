@@ -23,13 +23,11 @@ from __future__ import annotations
 
 import logging
 import sys
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
+from skyward.api.logging import LogConfig as LogConfig
+from skyward.api.logging import LogLevel as LogLevel
 from skyward.observability.logger import logger
-
-type LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "TRACE"]
 
 _CONTEXT_KEYS = (
     "actor", "component", "integration", "provider",
@@ -45,31 +43,6 @@ def _format_context(record: logging.LogRecord) -> str:
 
 def _patcher(record: logging.LogRecord) -> None:
     record._ctx = _format_context(record)  # type: ignore[attr-defined]
-
-
-@dataclass(frozen=True, slots=True)
-class LogConfig:
-    """Logging configuration for ComputePool.
-
-    Parameters
-    ----------
-    level
-        Minimum log level.
-    file
-        Path to log file.
-    console
-        Whether to log to stderr.
-    rotation
-        File rotation policy (e.g., "50 MB", "1 day").
-    retention
-        Number of old log files to keep.
-    """
-
-    level: LogLevel = "INFO"
-    file: str = str(Path.home() / ".skyward" / "logs" / "skyward.log")
-    console: bool = True
-    rotation: str = "50 MB"
-    retention: int = 10
 
 
 def setup_logging(config: LogConfig) -> list[int]:

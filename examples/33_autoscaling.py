@@ -3,7 +3,7 @@
 from time import sleep
 
 import skyward as sky
-from skyward.api import Worker
+from skyward.core import Worker
 
 
 @sky.function

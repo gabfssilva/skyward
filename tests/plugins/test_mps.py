@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from skyward.api.spec import Image
+from skyward.core.spec import Image
 from skyward.plugins.mps import mps
 from skyward.providers.bootstrap import resolve
 

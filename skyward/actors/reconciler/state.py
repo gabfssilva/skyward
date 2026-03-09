@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from skyward.api.model import Cluster
+    from skyward.core.model import Cluster
 
 from skyward.actors.messages import NodeId
 

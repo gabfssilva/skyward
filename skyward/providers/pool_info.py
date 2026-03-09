@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from skyward.api.runtime import AcceleratorInfo, InstanceInfo, NetworkInfo, PeerInfo
+from skyward.core.runtime import AcceleratorInfo, InstanceInfo, NetworkInfo, PeerInfo
 
 
 def build_pool_info(

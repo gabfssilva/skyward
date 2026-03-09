@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from skyward.api.spec import Image
+from skyward.core.spec import Image
 from skyward.observability.metrics import GPU, Default
 from skyward.plugins.mig import (
     _GPU_METRIC_NAMES,

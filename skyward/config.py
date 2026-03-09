@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from skyward.api.pool import ComputePool
-    from skyward.api.spec import Image
+    from skyward.core.pool import ComputePool
+    from skyward.core.spec import Image
     from skyward.providers.aws.config import AWS
     from skyward.providers.gcp.config import GCP
     from skyward.providers.hyperstack.config import Hyperstack
@@ -98,7 +98,7 @@ def _build_provider(name: str, raw: RawConfig) -> ProviderConfig:
 
 
 def _build_image(raw: RawConfig) -> Image:
-    from skyward.api.spec import Image, PipIndex
+    from skyward.core.spec import Image, PipIndex
 
     raw = dict(raw)
     if raw_indexes := raw.get("pip_indexes"):
@@ -112,8 +112,8 @@ def resolve_pool(
     project_dir: Path | None = None,
     global_path: Path | None = None,
 ) -> ComputePool:
-    from skyward.api.pool import ComputePool
-    from skyward.api.spec import Image
+    from skyward.core.pool import ComputePool
+    from skyward.core.spec import Image
 
     config = load_config(project_dir=project_dir, global_path=global_path)
 
@@ -141,7 +141,7 @@ def resolve_pool(
     raw_volumes = raw_pool.pop("volumes", None)
     volumes: tuple = ()
     if raw_volumes:
-        from skyward.api.spec import Volume
+        from skyward.core.spec import Volume
 
         volumes = tuple(Volume(**v) for v in raw_volumes)
 

@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Protocol, Self, runtime_checkable
 
-from skyward.api import Cluster, Instance, PoolSpec
-from skyward.api.model import Offer
+from skyward.core import Cluster, Instance, PoolSpec
+from skyward.core.model import Offer
 
 if TYPE_CHECKING:
     from skyward.storage import Storage

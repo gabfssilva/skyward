@@ -19,8 +19,8 @@ from dataclasses import dataclass, field, replace
 import pytest
 
 import skyward as sky
-from skyward.api.model import Cluster, Instance, Offer
-from skyward.api.spec import PoolSpec
+from skyward.core.model import Cluster, Instance, Offer
+from skyward.core.spec import PoolSpec
 from skyward.providers.container.provider import ContainerProvider, ContainerSpecific
 from skyward.providers.ssh_keys import get_local_ssh_key
 
@@ -144,7 +144,7 @@ class TestSSHReconnect:
         """Kill sshd, verify node reconnects transport without replacement."""
         disruptor = _SSHDisruptor(binary="docker", container_prefix=_PREFIX)
 
-        with sky.App(console=False), sky.ComputePool(
+        with sky.Compute(
             provider=_SSHDisruptorContainer(
                 network="skyward",
                 container_prefix=_PREFIX,
@@ -153,8 +153,11 @@ class TestSSHReconnect:
             nodes=1,
             vcpus=0.5,
             memory_gb=0.5,
-            worker=sky.Worker(concurrency=2),
-            default_compute_timeout=30,
+            options=sky.Options(
+                worker=sky.Worker(concurrency=2),
+                default_compute_timeout=30,
+                console=False,
+            ),
         ) as pool:
 
             @sky.function

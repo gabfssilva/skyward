@@ -178,7 +178,10 @@ async def run_bootstrap(
     postamble = postamble_ops if postamble_ops else None
     ttl = spec.ttl or 0
     shutdown_command = cluster.shutdown_command.format(instance_id=ni.instance.id)
-    bootstrap_script = image.generate_bootstrap(
+    from skyward.core.spec import generate_bootstrap
+
+    bootstrap_script = generate_bootstrap(
+        image,
         ttl=ttl,
         shutdown_command=shutdown_command,
         postamble=postamble,
@@ -282,7 +285,7 @@ async def setup_worker_env(
 
             @contextmanager
             def lifecycle() -> Any:
-                from skyward.api.runtime import instance_info
+                from skyward.core.runtime import instance_info
                 from skyward.plugins.state import cleanup, ensure_around_app
 
                 info = instance_info()

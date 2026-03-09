@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 
 from skyward.accelerators import Accelerator
-from skyward.api.model import Cluster, Offer
-from skyward.api.spec import PoolSpec
+from skyward.core.model import Cluster, Offer
+from skyward.core.spec import PoolSpec
 from skyward.providers.hyperstack.config import Hyperstack
 from skyward.providers.hyperstack.provider import (
     HyperstackProvider,

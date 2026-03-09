@@ -12,21 +12,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Generator, Sequence
-from concurrent.futures import Future
-from contextlib import AbstractContextManager
-from types import TracebackType
-from typing import Any, Literal, Self, overload
+from typing import Any
 
 # ── Sub-module namespaces ─────────────────────────────────────
 from skyward import accelerators as accelerators
 from skyward import plugins as plugins
 from skyward import storage as storage
 
-# ── Private imports (for type annotations only) ───────────────
-from skyward.accelerators.spec import Accelerator
-
-# ── Re-exported events (frozen dataclasses, nothing to hide) ──
+# ── Re-exported events (frozen dataclasses — not in api/) ─────
 from skyward.actors.messages import ClusterDestroyed as ClusterDestroyed
 from skyward.actors.messages import ClusterId as ClusterId
 from skyward.actors.messages import ClusterProvisioned as ClusterProvisioned
@@ -54,11 +47,21 @@ from skyward.actors.messages import ShutdownRequested as ShutdownRequested
 from skyward.actors.messages import TaskCompleted as TaskCompleted
 from skyward.actors.messages import TaskStarted as TaskStarted
 
-# ── Re-exported types (nothing to hide) ───────────────────────
+# ── Re-exported from skyward.api ─────────────────────────────
+from skyward.api.app import App as App
+from skyward.api.compute import Compute as Compute
+from skyward.api.context import sky as sky
+from skyward.api.distributed import Consistency as Consistency
+from skyward.api.function import PendingFunction as PendingFunction
+from skyward.api.function import PendingFunctionGroup as PendingFunctionGroup
+from skyward.api.function import function as function
+from skyward.api.function import gather as gather
+from skyward.api.logging import LogConfig as LogConfig
 from skyward.api.model import Cluster as Cluster
 from skyward.api.model import Instance as Instance
 from skyward.api.model import InstanceType as InstanceType
 from skyward.api.model import Offer as Offer
+from skyward.api.pool import Pool as Pool
 from skyward.api.provider import ProviderConfig as ProviderConfig
 from skyward.api.runtime import CallbackWriter as CallbackWriter
 from skyward.api.runtime import InstanceInfo as InstanceInfo
@@ -69,40 +72,35 @@ from skyward.api.runtime import shard as shard
 from skyward.api.runtime import silent as silent
 from skyward.api.runtime import stderr as stderr
 from skyward.api.runtime import stdout as stdout
+from skyward.api.session import Session as Session
 from skyward.api.spec import DEFAULT_IMAGE as DEFAULT_IMAGE
 from skyward.api.spec import AllocationStrategy as AllocationStrategy
-from skyward.api.spec import Architecture
 from skyward.api.spec import Image as Image
+from skyward.api.spec import Options as Options
 from skyward.api.spec import PipIndex as PipIndex
 from skyward.api.spec import PoolSpec as PoolSpec
 from skyward.api.spec import SelectionStrategy as SelectionStrategy
 from skyward.api.spec import Spec as Spec
+from skyward.api.spec import SpecKwargs as SpecKwargs
 from skyward.api.spec import Volume as Volume
 from skyward.api.spec import Worker as Worker
 from skyward.api.spec import WorkerExecutor as WorkerExecutor
-from skyward.distributed import (
-    BarrierProxy,
-    CounterProxy,
-    DictProxy,
-    LockProxy,
-    QueueProxy,
-    SetProxy,
-)
 
-# ── Re-exported distributed factories ─────────────────────────
+# ── Re-exported distributed proxies & factories ──────────────
 from skyward.distributed import barrier as barrier
 from skyward.distributed import counter as counter
 from skyward.distributed import dict as dict
 from skyward.distributed import lock as lock
 from skyward.distributed import queue as queue
 from skyward.distributed import set as set
-from skyward.distributed.types import Consistency
-from skyward.observability import metrics as metrics
-from skyward.observability.logging import LogConfig as LogConfig
-from skyward.offers.repository import OfferRepository as OfferRepository
-from skyward.plugins.plugin import Plugin
 
-# ── Re-exported providers (curated in providers/__init__.pyi) ─
+# ── Observability ────────────────────────────────────────────
+from skyward.observability import metrics as metrics
+
+# ── Offers ───────────────────────────────────────────────────
+from skyward.offers.repository import OfferRepository as OfferRepository
+
+# ── Re-exported providers ────────────────────────────────────
 from skyward.providers import AWS as AWS
 from skyward.providers import GCP as GCP
 from skyward.providers import Container as Container
@@ -111,580 +109,21 @@ from skyward.providers import RunPod as RunPod
 from skyward.providers import TensorDock as TensorDock
 from skyward.providers import VastAI as VastAI
 from skyward.providers import Verda as Verda
+
+# ── Storage ──────────────────────────────────────────────────
 from skyward.storage import Storage as Storage
 
-# ── Version ───────────────────────────────────────────────────
+# ── Version ──────────────────────────────────────────────────
 
 __version__: str
 
-# ── Module re-export ──────────────────────────────────────────
-
-from skyward.api import pool as pool
-
-# ── Curated: function decorator ───────────────────────────────
-
-@overload
-def function[**P, T](fn: Callable[P, T]) -> Callable[P, PendingFunction[T]]:
-    """Mark a function for remote execution (bare decorator)."""
-    ...
-
-@overload
-def function[**P, T](
-    *, timeout: float,
-) -> Callable[[Callable[P, T]], Callable[P, PendingFunction[T]]]:
-    """Mark a function for remote execution (with timeout)."""
-    ...
-
-def function[**P, T](
-    fn: Callable[P, T] | None = None,
-    *,
-    timeout: float | None = None,
-) -> Callable[P, PendingFunction[T]] | Callable[[Callable[P, T]], Callable[P, PendingFunction[T]]]:
-    """Mark a function for remote execution on a compute pool.
-
-    Wrap a function with ``@sky.function`` to make it return a
-    ``PendingFunction[T]`` when called, capturing args without executing.
-    Dispatch via operators: ``>> pool``, ``@ pool``, ``> pool``.
-
-    Parameters
-    ----------
-    fn
-        The function to wrap (used when applied without parentheses).
-    timeout
-        Default per-call timeout in seconds.
-
-    Returns
-    -------
-    Callable[P, PendingFunction[T]]
-        Wrapped function that produces ``PendingFunction`` on each call.
-
-    Examples
-    --------
-    >>> @sky.function
-    ... def train(data):
-    ...     return model.fit(data)
-
-    >>> @sky.function(timeout=600)
-    ... def long_task(data):
-    ...     return heavy_compute(data)
-    """
-    ...
-
-# ── Curated: gather ───────────────────────────────────────────
-
-def gather(
-    *pendings: PendingFunction[Any],
-    stream: bool = False,
-    ordered: bool = True,
-) -> PendingFunctionGroup:
-    """Create a parallel execution group from multiple pending functions.
-
-    Alternative to the ``&`` operator with extra control over streaming
-    and ordering.
-
-    Parameters
-    ----------
-    *pendings
-        Pending functions to execute in parallel.
-    stream
-        If ``True``, ``>> pool`` returns a generator yielding results
-        as they complete instead of blocking until all finish.
-    ordered
-        If ``True`` (default), results match input order.
-        Only meaningful when ``stream=True``.
-
-    Returns
-    -------
-    PendingFunctionGroup
-        Group ready for dispatch via ``>> pool``.
-
-    Examples
-    --------
-    >>> a, b, c = sky.gather(task1(), task2(), task3()) >> pool
-
-    >>> for result in sky.gather(task1(), task2(), stream=True) >> pool:
-    ...     print(result)
-    """
-    ...
-
-# ── Curated: offers ───────────────────────────────────────────
+# ── Offers function ──────────────────────────────────────────
 
 async def offers(providers: list[Any]) -> OfferRepository:
-    """Load the GPU offer catalog into a queryable repository.
-
-    Parameters
-    ----------
-    providers
-        Provider config instances to fetch offers from.
-
-    Returns
-    -------
-    OfferRepository
-        SQLite-backed queryable catalog.
-
-    Examples
-    --------
-    >>> repo = await sky.offers([sky.AWS(), sky.VastAI()])
-    >>> cheapest = repo.accelerator("A100").spot().cheapest()
-    """
+    """Load the GPU offer catalog into a queryable repository."""
     ...
 
-# ── Curated: PendingFunction ─────────────────────────────────
-
-class PendingFunction[T]:
-    """Lazy computation — a frozen snapshot of function + args.
-
-    Created by ``@sky.function`` decorated calls. Nothing executes
-    until dispatched to a pool via an operator.
-
-    Examples
-    --------
-    >>> @sky.function
-    ... def train(data):
-    ...     return model.fit(data)
-
-    >>> pending = train(data)      # PendingFunction — nothing runs yet
-    >>> result = pending >> pool    # execute on one node
-    >>> results = pending @ pool   # broadcast to all nodes
-    >>> future = pending > pool    # async, returns Future[T]
-    """
-
-    def with_timeout(self, timeout: float) -> PendingFunction[T]:
-        """Return a copy with a per-call timeout override.
-
-        Parameters
-        ----------
-        timeout
-            Timeout in seconds for this specific execution.
-
-        Returns
-        -------
-        PendingFunction[T]
-            New instance with the timeout set.
-        """
-        ...
-    def __rshift__(self, target: Any) -> T:
-        """Execute on one node (round-robin) via ``task() >> pool``."""
-        ...
-    def __gt__(self, target: Any) -> Future[T]:
-        """Submit asynchronously via ``task() > pool``."""
-        ...
-    def __matmul__(self, target: Any) -> list[T] | tuple[T, ...]:
-        """Broadcast to all nodes via ``task() @ pool``."""
-        ...
-    def __and__(
-        self, other: PendingFunction[Any] | PendingFunctionGroup,
-    ) -> PendingFunctionGroup:
-        """Compose parallel group via ``task1() & task2()``."""
-        ...
-
-# ── Curated: PendingFunctionGroup ─────────────────────────────
-
-class PendingFunctionGroup:
-    """Group of pending functions for parallel execution.
-
-    Created by chaining ``&`` operators or calling ``sky.gather()``.
-    Dispatch the group with ``>> pool`` to run all tasks concurrently.
-
-    Examples
-    --------
-    >>> a, b = (task1() & task2()) >> pool
-
-    >>> results = sky.gather(task1(), task2(), stream=True) >> pool
-    >>> for result in results:
-    ...     print(result)
-    """
-
-    def with_timeout(self, timeout: float) -> PendingFunctionGroup:
-        """Return a copy with a group-level timeout override.
-
-        Parameters
-        ----------
-        timeout
-            Timeout in seconds for the entire group execution.
-        """
-        ...
-    def __and__(
-        self, other: PendingFunction[Any] | PendingFunctionGroup,
-    ) -> PendingFunctionGroup:
-        """Extend group via ``(a() & b()) & c()``."""
-        ...
-    def __rshift__(self, target: Any) -> tuple[Any, ...] | Any:
-        """Execute all tasks in parallel via ``group >> pool``."""
-        ...
-    def __len__(self) -> int: ...
-    def __iter__(self) -> Any: ...
-
-# ── Curated: ComputePool (return type only, no public constructor) ──
-
-class ComputePool:
-    """A provisioned pool of cloud compute nodes.
-
-    Returned by ``sky.Compute()`` and ``session.compute()``.
-    Not directly constructable — use those APIs instead.
-
-    Dispatch tasks via operators:
-
-    - ``task() >> pool`` — execute on one node (round-robin)
-    - ``task() @ pool`` — broadcast to all nodes
-    - ``(task1() & task2()) >> pool`` — parallel execution
-    - ``task() > pool`` — async, returns ``Future[T]``
-    """
-
-    # ── Execution ─────────────────────────────────────────────
-
-    def run[T](self, pending: PendingFunction[T]) -> T:
-        """Execute a pending function on one node (round-robin).
-
-        This is the method behind ``task() >> pool``.
-
-        Parameters
-        ----------
-        pending
-            A ``PendingFunction`` created by calling a ``@sky.function``.
-
-        Returns
-        -------
-        T
-            The remote function's return value.
-        """
-        ...
-
-    def run_async[T](self, pending: PendingFunction[T]) -> Future[T]:
-        """Submit a pending function asynchronously (non-blocking).
-
-        This is the method behind ``task() > pool``.
-
-        Parameters
-        ----------
-        pending
-            A ``PendingFunction`` created by calling a ``@sky.function``.
-
-        Returns
-        -------
-        Future[T]
-            A future that resolves to the remote return value.
-        """
-        ...
-
-    def broadcast[T](self, pending: PendingFunction[T]) -> list[T]:
-        """Execute a pending function on ALL nodes simultaneously.
-
-        This is the method behind ``task() @ pool``.
-
-        Parameters
-        ----------
-        pending
-            A ``PendingFunction`` created by calling a ``@sky.function``.
-
-        Returns
-        -------
-        list[T]
-            One result per node, in node order.
-        """
-        ...
-
-    def run_parallel(
-        self, group: PendingFunctionGroup,
-    ) -> tuple[Any, ...] | Generator[Any, None, None]:
-        """Execute a group of pending functions concurrently.
-
-        This is the method behind ``(task1() & task2()) >> pool``.
-
-        Parameters
-        ----------
-        group
-            A ``PendingFunctionGroup`` from ``&`` chaining or ``sky.gather()``.
-
-        Returns
-        -------
-        tuple[Any, ...] | Generator
-            Tuple of results if ``stream=False``, generator if ``stream=True``.
-        """
-        ...
-
-    def map[T, R](
-        self,
-        fn: Callable[[T], R],
-        items: Sequence[T],
-    ) -> list[R]:
-        """Apply a function to each item, distributing across nodes.
-
-        Parameters
-        ----------
-        fn
-            Function to apply to each item.
-        items
-            Sequence of inputs.
-
-        Returns
-        -------
-        list[R]
-            Results in the same order as ``items``.
-        """
-        ...
-
-    # ── Distributed collections ───────────────────────────────
-
-    def dict(self, name: str, *, consistency: Consistency | None = None) -> DictProxy:
-        """Get or create a distributed dictionary shared across all nodes."""
-        ...
-
-    def set(self, name: str, *, consistency: Consistency | None = None) -> SetProxy:
-        """Get or create a distributed set shared across all nodes."""
-        ...
-
-    def counter(self, name: str, *, consistency: Consistency | None = None) -> CounterProxy:
-        """Get or create a distributed counter shared across all nodes."""
-        ...
-
-    def queue(self, name: str) -> QueueProxy:
-        """Get or create a distributed FIFO queue shared across all nodes."""
-        ...
-
-    def barrier(self, name: str, n: int) -> BarrierProxy:
-        """Get or create a distributed barrier."""
-        ...
-
-    def lock(self, name: str, timeout: float = 30) -> LockProxy:
-        """Get or create a distributed lock."""
-        ...
-
-    # ── Query ─────────────────────────────────────────────────
-
-    def current_nodes(self) -> int:
-        """Return the number of nodes currently in the ``ready`` state."""
-        ...
-
-    @property
-    def concurrency(self) -> int:
-        """Number of concurrent task slots per node."""
-        ...
-
-    @property
-    def is_active(self) -> bool:
-        """True if pool is ready for execution."""
-        ...
-
-# ── Curated: _Sky singleton ──────────────────────────────────
-
-class _Sky:
-    """Singleton that captures ``>>`` and ``@`` operators.
-
-    Use ``sky`` as the right-hand side of operators inside a
-    ``with Compute(...)`` block. Resolves to the active pool
-    via ``ContextVar``.
-
-    Examples
-    --------
-    >>> with sky.Compute(provider=sky.AWS(), accelerator="A100") as pool:
-    ...     result = train(data) >> sky
-    ...     results = train(data) @ sky
-    """
-
-    def __rrshift__(self, pending: Any) -> Any:
-        """``pending >> sky`` — execute computation(s)."""
-        ...
-    def __rmatmul__(self, pending: Any) -> list[Any]:
-        """``pending @ sky`` — broadcast to all nodes."""
-        ...
-
-sky: _Sky
-
-# ── Curated: Session ──────────────────────────────────────────
-
-class Session:
-    """Infrastructure owner for one or more compute pools.
-
-    Manages the asyncio event loop, background thread, actor system,
-    and session actor.  All pools created via ``session.compute()``
-    share the same infrastructure.
-
-    Parameters
-    ----------
-    console
-        Enable the Rich adaptive console spy.
-    logging
-        Logging configuration.  ``True`` uses sensible defaults,
-        ``False`` disables logging, or pass a ``LogConfig`` instance.
-    shutdown_timeout
-        Maximum seconds to wait for a graceful shutdown of the session
-        actor and actor system.
-
-    Examples
-    --------
-    >>> with sky.Session() as session:
-    ...     slow = session.compute(provider=sky.AWS(), accelerator="T4", nodes=8)
-    ...     fast = session.compute(provider=sky.AWS(), accelerator="A100", nodes=2)
-    ...     result = train(data) >> slow
-    """
-
-    def __init__(
-        self,
-        *,
-        console: bool = True,
-        logging: LogConfig | bool = True,
-        shutdown_timeout: float = 120.0,
-    ) -> None: ...
-    def __enter__(self) -> Self: ...
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: TracebackType | None,
-    ) -> None: ...
-
-    @property
-    def is_active(self) -> bool:
-        """True when the session is entered and the actor system is running."""
-        ...
-
-    def compute(
-        self,
-        *specs: Spec,
-        name: str | None = None,
-        provider: ProviderConfig | None = None,
-        nodes: int | tuple[int, int] = 1,
-        accelerator: Accelerator | None = None,
-        vcpus: float | None = None,
-        memory_gb: float | None = None,
-        architecture: Architecture | None = None,
-        allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
-        selection: SelectionStrategy = "cheapest",
-        image: Image = ...,
-        ttl: int = 600,
-        worker: Worker | None = None,
-        max_hourly_cost: float | None = None,
-        default_compute_timeout: float = 300.0,
-        provision_timeout: int = 300,
-        ssh_timeout: int = 300,
-        ssh_retry_interval: int = 2,
-        provision_retry_delay: float = 5.0,
-        max_provision_attempts: int = 3,
-        volumes: list[Volume] | tuple[Volume, ...] = (),
-        autoscale_cooldown: float = 30.0,
-        autoscale_idle_timeout: float = 60.0,
-        reconcile_tick_interval: float = 15.0,
-        plugins: list[Plugin] | tuple[Plugin, ...] = (),
-    ) -> ComputePool:
-        """Provision a compute pool within this session.
-
-        Parameters
-        ----------
-        *specs
-            One or more ``Spec`` objects for multi-provider fallback.
-            Mutually exclusive with the ``provider`` keyword argument.
-        name
-            Pool name.  Auto-generated as ``pool-<n>`` when ``None``.
-        provider
-            Cloud provider configuration (e.g. ``sky.AWS()``).
-            Mutually exclusive with positional ``specs``.
-        nodes
-            Fixed node count or ``(min, max)`` for autoscaling.
-        accelerator
-            GPU type (e.g. ``"A100"``).  ``None`` for CPU-only.
-
-        Returns
-        -------
-        ComputePool
-            A fully provisioned pool ready for task dispatch.
-        """
-        ...
-
-# ── Curated: Compute ─────────────────────────────────────────
-
-def Compute(
-    *specs: Spec,
-    provider: ProviderConfig | None = None,
-    nodes: int | tuple[int, int] = 1,
-    accelerator: Accelerator | None = None,
-    vcpus: float | None = None,
-    memory_gb: float | None = None,
-    architecture: Literal["x86_64", "arm64"] | None = None,
-    allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
-    selection: SelectionStrategy = "cheapest",
-    image: Image = ...,
-    ttl: int = 600,
-    worker: Worker | None = None,
-    logging: LogConfig | bool = True,
-    max_hourly_cost: float | None = None,
-    default_compute_timeout: float = 300.0,
-    provision_timeout: int = 300,
-    ssh_timeout: int = 300,
-    ssh_retry_interval: int = 2,
-    provision_retry_delay: float = 5.0,
-    max_provision_attempts: int = 3,
-    volumes: list[Volume] | tuple[Volume, ...] = (),
-    autoscale_cooldown: float = 30.0,
-    autoscale_idle_timeout: float = 60.0,
-    reconcile_tick_interval: float = 15.0,
-    plugins: list[Plugin] | tuple[Plugin, ...] = (),
-    shutdown_timeout: float = 120.0,
-    console: bool = True,
-) -> AbstractContextManager[ComputePool]:
-    """Single-pool convenience: creates a Session and provisions one pool.
-
-    Equivalent to::
-
-        with sky.Session(console=console, logging=logging) as session:
-            pool = session.compute(provider=..., accelerator=..., nodes=...)
-            yield pool
-
-    Parameters
-    ----------
-    *specs
-        One or more ``Spec`` objects for multi-provider fallback.
-    provider
-        Cloud provider configuration (e.g. ``sky.AWS()``).
-    nodes
-        Fixed node count or ``(min, max)`` for autoscaling.
-    accelerator
-        GPU type (e.g. ``"A100"``).  ``None`` for CPU-only.
-    console
-        Enable the Rich adaptive console spy.
-    logging
-        Logging configuration.
-    shutdown_timeout
-        Maximum seconds to wait for a graceful shutdown.
-
-    Yields
-    ------
-    ComputePool
-        A fully provisioned pool ready for task dispatch.
-
-    Examples
-    --------
-    >>> with sky.Compute(provider=sky.AWS(), accelerator="A100", nodes=4) as pool:
-    ...     result = train(data) >> pool
-    """
-    ...
-
-# ── Curated: App ──────────────────────────────────────────────
-
-class App:
-    """Application context manager for console lifecycle and spy wiring.
-
-    Provide a Rich adaptive console and optional spy actor for
-    observing pool events. Usually not needed directly — ``Session``
-    manages its own ``App`` internally.
-
-    Parameters
-    ----------
-    console
-        Whether to enable Rich console output.
-
-    Examples
-    --------
-    >>> with sky.App(console=True):
-    ...     with sky.Compute(...) as pool:
-    ...         result = train(data) >> pool
-    """
-
-    def __init__(self, *, console: bool = True) -> None: ...
-    def __enter__(self) -> Self: ...
-    def __exit__(self, *args: Any) -> None: ...
-
-# ── __all__ ───────────────────────────────────────────────────
+# ── __all__ ──────────────────────────────────────────────────
 
 __all__ = [
     "__version__",
@@ -692,7 +131,6 @@ __all__ = [
     "Compute",
     "Session",
     "sky",
-    "pool",
     "function",
     "gather",
     "PendingFunction",
@@ -715,6 +153,7 @@ __all__ = [
     "VastAI",
     "Verda",
     "Image",
+    "Options",
     "PipIndex",
     "DEFAULT_IMAGE",
     "PoolSpec",
@@ -723,6 +162,7 @@ __all__ = [
     "Offer",
     "SelectionStrategy",
     "Spec",
+    "SpecKwargs",
     "Volume",
     "Storage",
     "storage",

@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from joblib import Parallel
 
     from skyward.api.model import Cluster
-    from skyward.api.pool import ComputePool
+    from skyward.api.pool import Pool
     from skyward.api.spec import Image
 
 
@@ -67,7 +67,7 @@ class SkywardBackend(ParallelBackendBase):
     uses_threads = False  # type: ignore[assignment]
     supports_timeout = True  # type: ignore[assignment]
 
-    def __init__(self, pool: ComputePool, nesting_level: int = 0, **kwargs: Any) -> None:
+    def __init__(self, pool: Pool, nesting_level: int = 0, **kwargs: Any) -> None:
         super().__init__(nesting_level=nesting_level, **kwargs)
         self.pool = pool
         self.parallel: Parallel | None = None
@@ -92,7 +92,7 @@ class SkywardBackend(ParallelBackendBase):
     def effective_n_jobs(self, n_jobs: int) -> int:  # type: ignore[override]
         if n_jobs == 0:
             return 0
-        nodes = self.pool._specs[0].nodes
+        nodes = self.pool._specs[0].nodes  # type: ignore[attr-defined]
         n = nodes[0] if isinstance(nodes, tuple) else nodes
         return n * self.pool.concurrency
 
@@ -123,7 +123,7 @@ class SkywardBackend(ParallelBackendBase):
 _backend_registered = False
 
 
-def _setup_backend(pool: ComputePool) -> None:
+def _setup_backend(pool: Pool) -> None:
     global _backend_registered
 
     def backend_factory() -> SkywardBackend:
@@ -152,7 +152,7 @@ def joblib(version: str | None = None) -> Plugin:
         return replace(image, pip=(*image.pip, pkg))
 
     @contextmanager
-    def around_client(pool: ComputePool, cluster: Cluster[Any]) -> Iterator[None]:
+    def around_client(pool: Pool, cluster: Cluster[Any]) -> Iterator[None]:
         _setup_backend(pool)
         _strip_local_warning_filters()
         with parallel_backend("skyward"):

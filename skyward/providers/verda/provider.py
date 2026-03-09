@@ -5,8 +5,8 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 
 from skyward.accelerators import Accelerator
-from skyward.api import PoolSpec
-from skyward.api.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
+from skyward.core import PoolSpec
+from skyward.core.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
 from skyward.observability.logger import logger
 from skyward.providers.provider import Provider
 from skyward.providers.ssh_keys import ensure_ssh_key_on_provider, get_ssh_key_path

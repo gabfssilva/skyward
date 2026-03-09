@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 import skyward as sky
-from skyward import ComputePool, Image
+from skyward import Image, Options
 from skyward.providers.common import build_user_code_tarball
 
 pytestmark = [pytest.mark.e2e, pytest.mark.timeout(180), pytest.mark.xdist_group("image")]
@@ -59,10 +59,11 @@ class TestIncludes:
         module_dir.mkdir()
         (module_dir / "__init__.py").write_text("VERSION = '0.1.0'\n")
 
-        with ComputePool(
+        with sky.Compute(
             provider=sky.Container(),
             nodes=1,
             image=Image(includes=[str(module_dir)]),
+            options=Options(console=False),
         ) as pool:
             @sky.function
             def import_module():

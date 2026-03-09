@@ -7,8 +7,8 @@ import json
 from typing import Any, cast
 
 from skyward.accelerators.spec import Accelerator
-from skyward.api.model import InstanceType, Offer
-from skyward.api.spec import Architecture
+from skyward.core.model import InstanceType, Offer
+from skyward.core.spec import Architecture
 
 from .feed import _make_spec, _Offer
 from .model import CatalogOffer

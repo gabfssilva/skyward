@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
-    from skyward.api.spec import PipIndex, Volume
+    from skyward.core.spec import PipIndex, Volume
     from skyward.storage import Storage
 
 from skyward.providers.bootstrap.compose import SKYWARD_DIR

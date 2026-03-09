@@ -9,8 +9,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from skyward.api.pool import ComputePool
-from skyward.api.spec import Image
+from skyward.core.pool import ComputePool
+from skyward.core.spec import Image
 from skyward.plugins.plugin import Plugin
 from skyward.providers import Container
 
@@ -23,7 +23,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
 
 
 def _make_pool(**kwargs: Any) -> ComputePool:
-    """Create a ComputePool without entering it."""
+    """Create a pool instance without entering it (for unit testing internals)."""
     defaults: dict[str, Any] = {"provider": Container(), "logging": False}
     defaults.update(kwargs)
     return ComputePool(**defaults)

@@ -209,7 +209,7 @@ class TestPresets:
 
 class TestVolumeStorageField:
     def test_volume_accepts_storage(self):
-        from skyward.api.spec import Volume
+        from skyward.core.spec import Volume
         from skyward.storage import Storage
 
         s = Storage(endpoint="https://abc.r2.cloudflarestorage.com", access_key="AK", secret_key="SK")
@@ -217,7 +217,7 @@ class TestVolumeStorageField:
         assert v.storage is s
 
     def test_volume_storage_default_none(self):
-        from skyward.api.spec import Volume
+        from skyward.core.spec import Volume
 
         v = Volume(bucket="b", mount="/data")
         assert v.storage is None
