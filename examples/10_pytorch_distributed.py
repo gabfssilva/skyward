@@ -188,7 +188,7 @@ if __name__ == "__main__":
         nodes=2,
         # accelerator=sky.accelerators.T4(),
         plugins=[sky.plugins.torch()],
-    ) as pool:
+    ) as compute:
         print("=" * 60)
         print("Starting Distributed Training")
         print("=" * 60)
@@ -197,7 +197,7 @@ if __name__ == "__main__":
             epochs=10,
             batch_size=64,
             learning_rate=0.001,
-        ) @ pool
+        ) @ compute
 
         print("\n" + "=" * 60)
         print("Training Results")
@@ -221,7 +221,7 @@ if __name__ == "__main__":
         print("Evaluation")
         print("=" * 60)
 
-        eval_results = evaluate_model(test_x, test_y) @ pool
+        eval_results = evaluate_model(test_x, test_y) @ compute
 
         for r in eval_results:
             if not r.get("skipped"):

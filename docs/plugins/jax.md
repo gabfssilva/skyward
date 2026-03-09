@@ -65,8 +65,8 @@ with sky.Compute(
     accelerator=sky.accelerators.A100(),
     nodes=4,
     plugins=[sky.plugins.jax()],
-) as pool:
-    results = train() @ pool
+) as compute:
+    results = train() @ compute
 ```
 
 The `@` operator broadcasts the function to all nodes. Each node executes `train()`, and by the time the function body runs, `jax.distributed.initialize()` has already been called by the plugin. The function sees the full device mesh and can use JAX's sharding primitives to partition computation.
@@ -84,8 +84,8 @@ with sky.Compute(
         sky.plugins.jax(),
         sky.plugins.keras(backend="jax"),
     ],
-) as pool:
-    results = train() @ pool
+) as compute:
+    results = train() @ compute
 ```
 
 Order matters here. The JAX plugin's `around_process` initializes the distributed runtime, and the Keras plugin sets `KERAS_BACKEND=jax` so Keras uses JAX as its computation backend. Together, they give you multi-node Keras training where JAX handles the distributed device mesh and Keras provides the high-level model API.

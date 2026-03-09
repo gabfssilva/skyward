@@ -43,8 +43,8 @@ with sky.Compute(
     provider=sky.AWS(region="us-east-1"),
     accelerator=sky.accelerators.A100(),
     nodes=2,
-) as pool:
-    result = train(data) >> pool
+) as compute:
+    result = train(data) >> compute
 ```
 
 ### Parameters
@@ -133,8 +133,8 @@ with sky.Compute(
     provider=sky.GCP(zone="us-central1-a"),
     accelerator=sky.accelerators.T4(),
     nodes=2,
-) as pool:
-    result = train(data) >> pool
+) as compute:
+    result = train(data) >> compute
 ```
 
 ### Parameters
@@ -190,8 +190,8 @@ with sky.Compute(
     provider=sky.RunPod(),
     accelerator=sky.accelerators.A100(),
     nodes=2,
-) as pool:
-    result = train(data) >> pool
+) as compute:
+    result = train(data) >> compute
 ```
 
 ### Parameters
@@ -238,8 +238,8 @@ with sky.Compute(
     provider=sky.Verda(),
     accelerator=sky.accelerators.H100(),
     nodes=4,
-) as pool:
-    results = train() @ pool
+) as compute:
+    results = train() @ compute
 ```
 
 ### Parameters
@@ -284,8 +284,8 @@ with sky.Compute(
     provider=sky.VastAI(geolocation="US"),
     accelerator=sky.accelerators.RTX_4090(),
     nodes=2,
-) as pool:
-    result = train(data) >> pool
+) as compute:
+    result = train(data) >> compute
 ```
 
 ### Parameters
@@ -334,8 +334,8 @@ with sky.Compute(
     provider=sky.Hyperstack(region="CANADA-1"),
     accelerator=sky.accelerators.A100(),
     nodes=2,
-) as pool:
-    result = train(data) >> pool
+) as compute:
+    result = train(data) >> compute
 ```
 
 ### Parameters
@@ -386,8 +386,8 @@ with sky.Compute(
     provider=sky.TensorDock(location="us"),
     accelerator=sky.accelerators.RTX_4090(),
     nodes=2,
-) as pool:
-    result = train(data) >> pool
+) as compute:
+    result = train(data) >> compute
 ```
 
 ### Parameters
@@ -423,8 +423,8 @@ with sky.Compute(
     provider=sky.Container(),
     nodes=2,
     image=sky.Image(pip=["numpy"]),
-) as pool:
-    result = train(data) >> pool
+) as compute:
+    result = train(data) >> compute
 ```
 
 ### Parameters

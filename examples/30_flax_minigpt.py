@@ -363,8 +363,8 @@ if __name__ == "__main__":
         ),
         image=sky.Image(pip=["flax", "pandas==2.3.3", "tiktoken"]),
         plugins=[sky.plugins.jax()],
-    ) as pool:
-        results = train_microgpt().with_timeout(2400) @ pool
+    ) as compute:
+        results = train_microgpt().with_timeout(2400) @ compute
 
         print("\nResults:")
         format_results(list(results))

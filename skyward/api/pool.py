@@ -34,11 +34,11 @@ class Pool(Protocol):
 
     Examples
     --------
-    >>> with sky.Compute(provider=sky.AWS(), accelerator="A100", nodes=4) as pool:
-    ...     result = train(data) >> pool        # one node (round-robin)
-    ...     results = train(data) @ pool        # broadcast to ALL nodes
-    ...     a, b = (task1() & task2()) >> pool  # parallel execution
-    ...     future = train(data) > pool         # async, returns Future[T]
+    >>> with sky.Compute(provider=sky.AWS(), accelerator="A100", nodes=4) as compute:
+    ...     result = train(data) >> compute        # one node (round-robin)
+    ...     results = train(data) @ compute        # broadcast to ALL nodes
+    ...     a, b = (task1() & task2()) >> compute  # parallel execution
+    ...     future = train(data) > compute         # async, returns Future[T]
     """
 
     @property
@@ -73,7 +73,7 @@ class Pool(Protocol):
     def run[T](self, pending: PendingFunction[T]) -> T:
         """Execute a pending function on one node (round-robin).
 
-        This is the method behind the ``task() >> pool`` operator.
+        This is the method behind the ``task() >> compute`` operator.
         Blocks until the remote function returns.
 
         Parameters
@@ -96,7 +96,7 @@ class Pool(Protocol):
     def run_async[T](self, pending: PendingFunction[T]) -> Future[T]:
         """Submit a pending function for non-blocking execution.
 
-        This is the method behind the ``task() > pool`` operator.
+        This is the method behind the ``task() > compute`` operator.
         Returns immediately with a ``Future`` that resolves when the
         remote function completes.
 
@@ -115,7 +115,7 @@ class Pool(Protocol):
     def broadcast[T](self, pending: PendingFunction[T]) -> list[T]:
         """Execute a pending function on every node in the pool.
 
-        This is the method behind the ``task() @ pool`` operator.
+        This is the method behind the ``task() @ compute`` operator.
         Blocks until all nodes return. Results are ordered by node index.
 
         Parameters
@@ -135,7 +135,7 @@ class Pool(Protocol):
     ) -> tuple[Any, ...] | Generator[Any, None, None]:
         """Execute a group of pending functions concurrently.
 
-        This is the method behind the ``(a() & b()) >> pool`` operator.
+        This is the method behind the ``(a() & b()) >> compute`` operator.
         Tasks are distributed across available nodes. Blocks until all
         tasks complete.
 

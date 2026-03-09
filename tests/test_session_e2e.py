@@ -18,8 +18,8 @@ class TestComputeSinglePool:
     def test_compute_single_pool(self) -> None:
         with sky.Compute(
             provider=sky.Container(), nodes=1,
-        ) as pool:
-            result = add(2, 3) >> pool
+        ) as compute:
+            result = add(2, 3) >> compute
             assert result == 5
 
     def test_compute_sky_singleton(self) -> None:

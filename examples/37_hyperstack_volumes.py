@@ -108,9 +108,9 @@ if __name__ == "__main__":
         accelerator=sky.accelerators.L4(),
         image=sky.Image(pip=["scikit-learn", "numpy"]),
         volumes=[data_volume, model_volume],
-    ) as pool:
+    ) as compute:
         print("\nTraining...")
-        result = train("/data/iris.csv", "/model") >> pool
+        result = train("/data/iris.csv", "/model") >> compute
         print(f"  {result['samples']} samples, acc={result['accuracy']}, model={result['model_bytes']} bytes")
 
     # ── 3. Download trained model locally ────────────────────────────

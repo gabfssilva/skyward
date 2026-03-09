@@ -119,12 +119,12 @@ class TestProvisionRetryPartial:
                 max_provision_attempts=5,
                 console=False,
             ),
-        ) as pool:
+        ) as compute:
             @sky.function
             def ping() -> str:
                 return "pong"
 
-            results = ping() @ pool
+            results = ping() @ compute
             assert results == ["pong", "pong"]
 
 
@@ -169,11 +169,11 @@ class TestProvisionRetryGradual:
                 max_provision_attempts=5,
                 console=False,
             ),
-        ) as pool:
+        ) as compute:
             @sky.function
             def node_id() -> int:
                 info = sky.instance_info()
                 return info.node if info else -1
 
-            results = sorted(node_id() @ pool)
+            results = sorted(node_id() @ compute)
             assert results == [0, 1, 2]

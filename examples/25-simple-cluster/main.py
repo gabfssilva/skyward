@@ -39,8 +39,8 @@ if __name__ == "__main__":
             pip=['numpy'],
             includes=['lib']
         )
-    ) as pool:
-        results = run_experiment(config) @ pool
+    ) as compute:
+        results = run_experiment(config) @ compute
 
         for r in sorted(results, key=lambda r: r["node"]):
             print(

@@ -16,8 +16,8 @@ with sky.Compute(
     accelerator=sky.accelerators.A100(),
     nodes=(2, 16),  # min 2, max 16
     image=sky.Image(pip=["torch"]),
-) as pool:
-    results = sky.gather(*tasks) >> pool
+) as compute:
+    results = sky.gather(*tasks) >> compute
 ```
 
 The pool starts with the minimum number of nodes (2 in this case) and can grow up to the maximum (16) based on demand. When the workload decreases, it shrinks back down — but never below the minimum.

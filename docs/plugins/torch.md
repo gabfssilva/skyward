@@ -96,8 +96,8 @@ with sky.Compute(
     accelerator=sky.accelerators.A100(),
     nodes=4,
     plugins=[sky.plugins.torch()],
-) as pool:
-    results = train() @ pool
+) as compute:
+    results = train() @ compute
     for r in results:
         print(f"Rank {r['rank']}: loss={r['final_loss']:.4f}")
 ```
@@ -114,8 +114,8 @@ with sky.Compute(
     accelerator=sky.accelerators.A100(),
     nodes=2,
     plugins=[sky.plugins.torch(vision="latest", audio="latest")],
-) as pool:
-    results = train() @ pool
+) as compute:
+    results = train() @ compute
 ```
 
 This installs `torch`, `torchvision`, and `torchaudio` from the CUDA wheel index. Inside the function, you can import `torchvision.models`, `torchvision.transforms`, `torchaudio`, etc.
@@ -135,8 +135,8 @@ with sky.Compute(
     provider=sky.AWS(),
     nodes=4,
     plugins=[sky.plugins.torch(backend="gloo")],
-) as pool:
-    results = train() @ pool
+) as compute:
+    results = train() @ compute
 ```
 
 Without an `accelerator`, the pool uses CPU instances. The plugin detects the absence of a CUDA accelerator and installs the CPU-only PyTorch wheels from `download.pytorch.org/whl/cpu`. The `backend="gloo"` is explicit here — gloo is PyTorch's CPU-compatible collective communication backend.
@@ -152,8 +152,8 @@ with sky.Compute(
         sky.plugins.torch(),
         sky.plugins.huggingface(token="hf_xxx"),
     ],
-) as pool:
-    results = finetune() @ pool
+) as compute:
+    results = finetune() @ compute
 ```
 
 The `torch` plugin handles DDP initialization, and the `huggingface` plugin handles authentication and installs `transformers`, `datasets`, and `tokenizers`. Inside the function, HuggingFace's `Trainer` auto-detects the distributed environment set up by the torch plugin and uses it for distributed training, gradient synchronization, and distributed evaluation.

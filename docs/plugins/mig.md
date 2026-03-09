@@ -167,9 +167,9 @@ with sky.Compute(
     worker=sky.Worker(concurrency=PARTITIONS, executor="process"),
     image=sky.Image(pip=["torch"]),
     plugins=[sky.plugins.mig(profile=PROFILE)],
-) as pool:
+) as compute:
     tasks = [train_on_partition(epochs=10, lr=1e-3) for _ in range(PARTITIONS)]
-    results = list(sky.gather(*tasks, stream=True) >> pool)
+    results = list(sky.gather(*tasks, stream=True) >> compute)
 ```
 
 The concurrency and profile must agree. A `3g.40gb` profile on an A100 supports exactly two partitions, so `concurrency=2`. Setting concurrency to three would fail during bootstrap because the GPU cannot create a third instance of that profile.
@@ -188,9 +188,9 @@ with sky.Compute(
     worker=sky.Worker(concurrency=7, executor="process"),
     image=sky.Image(pip=["torch"]),
     plugins=[sky.plugins.mig(profile="1g.10gb")],
-) as pool:
+) as compute:
     tasks = [evaluate(model_id=i) for i in range(7)]
-    results = list(sky.gather(*tasks, stream=True) >> pool)
+    results = list(sky.gather(*tasks, stream=True) >> compute)
 ```
 
 Seven partitions from a single A100 80GB, each with ~10 GB of memory and 14 SMs. Each partition can run a small model (DistilBERT, ResNet-18, a lightweight diffusion decoder) independently. This is seven times the throughput of running them sequentially on the full card — at the cost of reduced per-partition compute.
@@ -214,9 +214,9 @@ with sky.Compute(
     worker=sky.Worker(concurrency=len(configs), executor="process"),
     image=sky.Image(pip=["torch"]),
     plugins=[sky.plugins.mig(profile="3g.40gb")],
-) as pool:
+) as compute:
     tasks = [train_on_partition(**cfg) for cfg in configs]
-    results = list(sky.gather(*tasks, stream=True) >> pool)
+    results = list(sky.gather(*tasks, stream=True) >> compute)
 
     best = max(results, key=lambda r: r["accuracy"])
     print(f"Best: worker {best['worker']} with acc={best['accuracy']}%")
@@ -236,10 +236,10 @@ with sky.Compute(
     worker=sky.Worker(concurrency=2, executor="process"),
     image=sky.Image(pip=["torch"]),
     plugins=[sky.plugins.mig(profile="3g.40gb")],
-) as pool:
+) as compute:
     # 3 nodes * 2 partitions = 6 independent workers
     tasks = [train_on_partition(epochs=10, lr=lr) for lr in [1e-2, 3e-3, 1e-3, 3e-4, 1e-4, 3e-5]]
-    results = list(sky.gather(*tasks, stream=True) >> pool)
+    results = list(sky.gather(*tasks, stream=True) >> compute)
 ```
 
 Each of the 3 nodes gets its own A100 split into two `3g.40gb` partitions, giving you 6 independent workers total. Tasks are dispatched round-robin across all 6 workers. This is not distributed training — there is no gradient synchronization between partitions. Each task runs independently, which is exactly what you want for sweeps, evaluations, and embarrassingly parallel workloads.

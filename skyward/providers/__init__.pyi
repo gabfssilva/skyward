@@ -32,8 +32,8 @@ class AWS:
 
     Examples
     --------
-    >>> with sky.ComputePool(provider=sky.AWS(), accelerator="A100") as pool:
-    ...     result = train(data) >> pool
+    >>> with sky.ComputePool(provider=sky.AWS(), accelerator="A100") as compute:
+    ...     result = train(data) >> compute
 
     >>> sky.AWS(region="eu-west-1", exclude_burstable=True)
     """
@@ -398,8 +398,8 @@ class Container:
 
     Examples
     --------
-    >>> with sky.ComputePool(provider=sky.Container(), nodes=2) as pool:
-    ...     result = train(data) >> pool
+    >>> with sky.ComputePool(provider=sky.Container(), nodes=2) as compute:
+    ...     result = train(data) >> compute
     """
 
     def __init__(

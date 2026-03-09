@@ -86,8 +86,8 @@ if __name__ == "__main__":
         accelerator=sky.accelerators.L4(),
         image=sky.Image(pip=["scikit-learn", "numpy"]),
         volumes=[data_volume, model_volume],
-    ) as pool:
-        result = train("/data/iris.csv", "/output") >> pool
+    ) as compute:
+        result = train("/data/iris.csv", "/output") >> compute
         print(f"{result['samples']} samples, acc={result['accuracy']}, model={result['model_bytes']} bytes")
 
     model_path = Path("/tmp/trained_model.pkl")

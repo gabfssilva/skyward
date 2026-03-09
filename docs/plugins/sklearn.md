@@ -90,14 +90,14 @@ with sky.Compute(
     nodes=4,
     worker=sky.Worker(concurrency=4),
     plugins=[sky.plugins.sklearn()],
-) as pool:
-    result = run_search() >> pool
+) as compute:
+    result = run_search() >> compute
     print(f"Best: {result['best_params']}, CV={result['best_cv_score']:.2%}")
 ```
 
 This grid has 32 candidates and 5-fold CV, producing 160 fits. With 4 nodes and `concurrency=4`, 16 fits run in parallel. The `n_jobs=-1` inside `GridSearchCV` tells joblib to use all available workers, which the Skyward backend reports as 16.
 
-Note that the `GridSearchCV` call happens inside a `@sky.function` function. The grid search itself runs on a remote worker — it is the grid search's internal `Parallel` calls that distribute across the cluster. The outer `>> pool` dispatches the function to one node; that node's joblib backend then fans out the 160 individual fits across all nodes.
+Note that the `GridSearchCV` call happens inside a `@sky.function` function. The grid search itself runs on a remote worker — it is the grid search's internal `Parallel` calls that distribute across the cluster. The outer `>> compute` dispatches the function to one node; that node's joblib backend then fans out the 160 individual fits across all nodes.
 
 ### Cross-validation
 
@@ -122,8 +122,8 @@ with sky.Compute(
     nodes=3,
     worker=sky.Worker(concurrency=4),
     plugins=[sky.plugins.sklearn()],
-) as pool:
-    result = evaluate_model() >> pool
+) as compute:
+    result = evaluate_model() >> compute
 ```
 
 Ten-fold CV distributes 10 independent fit+evaluate tasks across 12 workers.
@@ -141,8 +141,8 @@ with sky.Compute(
         sky.plugins.cuml(),
         sky.plugins.sklearn(),
     ],
-) as pool:
-    result = train_on_gpu() >> pool
+) as compute:
+    result = train_on_gpu() >> compute
 ```
 
 The `cuml` plugin intercepts sklearn calls and routes them to GPU. The `sklearn` plugin ensures scikit-learn and joblib are installed. See the [cuML plugin documentation](cuml.md) for details.

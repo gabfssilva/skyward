@@ -88,8 +88,8 @@ with sky.Compute(
         sky.plugins.torch(backend="nccl"),
         sky.plugins.huggingface(token="hf_xxx"),
     ],
-) as pool:
-    train() >> pool
+) as compute:
+    train() >> compute
 ```
 
 The `torch` plugin adds PyTorch to pip and initializes DDP via `around_process`. The `huggingface` plugin adds transformers, datasets, and tokenizers to pip, sets `HF_TOKEN`, and runs `huggingface-cli login`. Their image transforms compose (PyTorch packages + HuggingFace packages), and their `around_process` hooks are entered independently in plugin order.
@@ -149,8 +149,8 @@ Use it like any built-in plugin:
 with sky.Compute(
     provider=sky.AWS(),
     plugins=[my_framework()],
-) as pool:
-    my_task() >> pool
+) as compute:
+    my_task() >> compute
 ```
 
 ## Next steps

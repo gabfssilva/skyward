@@ -209,7 +209,7 @@ if __name__ == "__main__":
         vcpus=2,
         memory_gb=4,
         image=sky.Image(skyward_source="local"),
-    ) as pool:
+    ) as compute:
         # -----------------------------------------------------------------
         # Example 1: Shared Cache
         # -----------------------------------------------------------------
@@ -218,7 +218,7 @@ if __name__ == "__main__":
         print("=" * 60)
 
         items = [f"item_{i}" for i in range(100)]
-        cache_results = process_with_cache(items) @ pool
+        cache_results = process_with_cache(items) @ compute
 
         total_hits = sum(r["cache_hits"] for r in cache_results)
         total_misses = sum(r["cache_misses"] for r in cache_results)
@@ -235,7 +235,7 @@ if __name__ == "__main__":
         print("=" * 60)
 
         for batch in range(3):
-            batch_results = accumulate_results(batch) @ pool
+            batch_results = accumulate_results(batch) @ compute
             for r in batch_results:
                 print(f"    Batch {r['batch_id']} node {r['node']}: {r['status']}")
 
@@ -247,7 +247,7 @@ if __name__ == "__main__":
         print("=" * 60)
 
         for epoch in range(3):
-            epoch_results = synchronized_epoch(epoch) @ pool
+            epoch_results = synchronized_epoch(epoch) @ compute
             losses = [r["loss"] for r in epoch_results]
             avg_loss = sum(losses) / len(losses)
             print(f"  Epoch {epoch}: avg_loss={avg_loss:.4f}")
@@ -260,12 +260,12 @@ if __name__ == "__main__":
         print("=" * 60)
 
         for step in range(5):
-            update_results = safe_update_checkpoint(step) @ pool
+            update_results = safe_update_checkpoint(step) @ compute
             updated = [r for r in update_results if r["updated_checkpoint"]]
             if updated:
                 print(f"  Step {step}: checkpoint updated by node {updated[0]['node']}")
 
-        checkpoint = read_checkpoint() >> pool
+        checkpoint = read_checkpoint() >> compute
         best_loss = checkpoint.get("best_loss")
         loss_str = f"{best_loss:.4f}" if best_loss is not None else "N/A"
         print(f"  Final checkpoint: step={checkpoint.get('best_step')}, "
@@ -280,9 +280,9 @@ if __name__ == "__main__":
         print("=" * 60)
 
         tasks = list(range(20))
-        producer_fill_queue(tasks) @ pool
+        producer_fill_queue(tasks) @ compute
 
-        worker_results = worker_from_queue() @ pool
+        worker_results = worker_from_queue() @ compute
 
         total_processed = sum(r["tasks_processed"] for r in worker_results)
         for r in worker_results:

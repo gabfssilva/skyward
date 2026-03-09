@@ -88,7 +88,7 @@ if __name__ == "__main__":
             sky.plugins.mps(active_thread_percentage=100 // CONCURRENCY),
         ],
         image=sky.Image(pip=["torchvision"]),
-    ) as pool:
+    ) as compute:
         total_tasks = CONCURRENCY * 2
 
         print(
@@ -101,7 +101,7 @@ if __name__ == "__main__":
             resnet_inference(i, BATCHES, BATCH_SIZE)
             for i in range(total_tasks)
         ]
-        results = list(sky.gather(*tasks, stream=True) >> pool)
+        results = list(sky.gather(*tasks, stream=True) >> compute)
 
         wall = perf_counter() - start
 

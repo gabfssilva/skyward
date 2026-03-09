@@ -72,9 +72,9 @@ def main():
         volumes=[data_volume, checkpoint_volume],
         image=sky.Image(pip=["numpy"]),
         allocation="spot-if-available",
-    ) as pool:
+    ) as compute:
         # List files in mounted volume
-        files = list_data_files() >> pool
+        files = list_data_files() >> compute
         print("Data files found:")
         for f in files:
             print(f"  {f}")
@@ -83,12 +83,12 @@ def main():
         if files:
             # Extract path from listing
             path = files[0].split(" ")[0]
-            result = process_data_file(path) >> pool
+            result = process_data_file(path) >> compute
             print(f"\nProcessed: {result}")
 
         # Save checkpoint
         checkpoint_data = {"epoch": 10, "loss": 0.01, "accuracy": 0.99}
-        save_path = save_checkpoint(checkpoint_data) >> pool
+        save_path = save_checkpoint(checkpoint_data) >> compute
         print(f"\n{save_path}")
 
 

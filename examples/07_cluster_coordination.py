@@ -114,12 +114,12 @@ if __name__ == "__main__":
         provider=sky.AWS(),
         nodes=4,
         allocation="spot-if-available",
-    ) as pool:
+    ) as compute:
         # =================================================================
         # Get cluster information from all nodes
         # =================================================================
         print("Cluster Information:")
-        cluster_info = get_cluster_info() @ pool
+        cluster_info = get_cluster_info() @ compute
 
         for info in cluster_info:
             role = "HEAD" if info["is_head"] else "WORKER"
@@ -133,7 +133,7 @@ if __name__ == "__main__":
         # =================================================================
         print("\nDistributed Sum:")
         data = list(range(1000))
-        sum_results = distributed_sum(data) @ pool
+        sum_results = distributed_sum(data) @ compute
 
         total = 0
         for r in sum_results:
@@ -149,7 +149,7 @@ if __name__ == "__main__":
         # Different behavior per role
         # =================================================================
         print("\nRole-based behavior:")
-        role_results = worker_with_role(task_id=42) @ pool
+        role_results = worker_with_role(task_id=42) @ compute
 
         for r in role_results:
             if r["role"] == "coordinator":
@@ -162,6 +162,6 @@ if __name__ == "__main__":
         # =================================================================
         print("\nMap-Reduce Pattern:")
         for op in ["sum", "count"]:
-            mr_results = map_reduce_example(list(range(100)), op) @ pool
+            mr_results = map_reduce_example(list(range(100)), op) @ compute
             aggregated = sum(r["local_result"] for r in mr_results)
             print(f"  {op}: {aggregated}")

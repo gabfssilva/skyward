@@ -8,10 +8,10 @@ This module provides the user-facing synchronous API that mirrors v1:
     def train(data):
         return model.fit(data)
 
-    with sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.A100(), nodes=4) as pool:
-        result = train(data) >> pool         # execute on one node
-        results = train(data) @ pool         # broadcast to all nodes
-        a, b = (task1() & task2()) >> pool   # parallel execution
+    with sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.A100(), nodes=4) as compute:
+        result = train(data) >> compute         # execute on one node
+        results = train(data) @ compute         # broadcast to all nodes
+        a, b = (task1() & task2()) >> compute   # parallel execution
 
 Internally, this facade:
 1. Runs v2's async provisioning in a sync context
@@ -85,10 +85,10 @@ class ComputePool:
     --------
     Single provider:
 
-    >>> with ComputePool(provider=AWS(), accelerator=A100(), nodes=4) as pool:
-    ...     result = train(data) >> pool       # one node (round-robin)
-    ...     results = train(data) @ pool       # broadcast to all nodes
-    ...     a, b = (task1() & task2()) >> pool  # parallel execution
+    >>> with ComputePool(provider=AWS(), accelerator=A100(), nodes=4) as compute:
+    ...     result = train(data) >> compute       # one node (round-robin)
+    ...     results = train(data) @ compute       # broadcast to all nodes
+    ...     a, b = (task1() & task2()) >> compute  # parallel execution
 
     Multi-spec with fallback (cheapest across providers):
 
@@ -96,8 +96,8 @@ class ComputePool:
     ...     Spec(provider=VastAI(), accelerator=A100()),
     ...     Spec(provider=AWS(), accelerator=A100()),
     ...     selection="cheapest",
-    ... ) as pool:
-    ...     result = train(data) >> pool
+    ... ) as compute:
+    ...     result = train(data) >> compute
     """
 
     @overload
@@ -440,7 +440,7 @@ class ComputePool:
     def run[T](self, pending: PendingFunction[T]) -> T:
         """Execute a pending function on one node via round-robin scheduling.
 
-        This is the method behind the ``task() >> pool`` operator.
+        This is the method behind the ``task() >> compute`` operator.
 
         Parameters
         ----------
@@ -459,7 +459,7 @@ class ComputePool:
 
         Examples
         --------
-        >>> result = train(data) >> pool
+        >>> result = train(data) >> compute
         """
         system, ref = self._get_system_and_ref()
 
@@ -474,7 +474,7 @@ class ComputePool:
     def run_async[T](self, pending: PendingFunction[T]) -> Future[T]:
         """Submit a pending function for asynchronous execution, returning a future.
 
-        This is the method behind the ``task() > pool`` operator. The function
+        This is the method behind the ``task() > compute`` operator. The function
         is dispatched to one node via round-robin but returns immediately
         without blocking.
 
@@ -495,7 +495,7 @@ class ComputePool:
 
         Examples
         --------
-        >>> future = train(data) > pool
+        >>> future = train(data) > compute
         >>> result = future.result()
         """
         self._assert_active()
@@ -517,7 +517,7 @@ class ComputePool:
     def broadcast[T](self, pending: PendingFunction[T]) -> list[T]:
         """Execute a pending function on ALL nodes simultaneously.
 
-        This is the method behind the ``task() @ pool`` operator. The function
+        This is the method behind the ``task() @ compute`` operator. The function
         is sent to every ready node and all results are collected.
 
         Parameters
@@ -537,7 +537,7 @@ class ComputePool:
 
         Examples
         --------
-        >>> results = train(data) @ pool
+        >>> results = train(data) @ compute
         """
         self._assert_active()
 
@@ -565,7 +565,7 @@ class ComputePool:
     ) -> tuple[Any, ...] | Generator[Any, None, None]:
         """Execute a group of pending functions concurrently across nodes.
 
-        This is the method behind ``(task1() & task2()) >> pool``. Each
+        This is the method behind ``(task1() & task2()) >> compute``. Each
         function in the group is dispatched as a separate task. When
         ``group.stream`` is set, return a generator that yields results
         as they complete instead of waiting for all tasks.
@@ -589,8 +589,8 @@ class ComputePool:
 
         Examples
         --------
-        >>> a, b = (task1() & task2()) >> pool
-        >>> for result in sky.gather(t1(), t2(), stream=True) >> pool:
+        >>> a, b = (task1() & task2()) >> compute
+        >>> for result in sky.gather(t1(), t2(), stream=True) >> compute:
         ...     print(result)
         """
         self._assert_active()
@@ -692,7 +692,7 @@ class ComputePool:
 
         Examples
         --------
-        >>> results = pool.map(process, [chunk1, chunk2, chunk3])
+        >>> results = compute.map(process, [chunk1, chunk2, chunk3])
         """
         self._assert_active()
 
@@ -856,7 +856,7 @@ class ComputePool:
 
         Examples
         --------
-        >>> sync = pool.barrier("epoch-sync", n=pool.current_nodes())
+        >>> sync = pool.barrier("epoch-sync", n=compute.current_nodes())
         >>> sync.wait()
         """
         if self._registry is None:
@@ -913,7 +913,7 @@ class ComputePool:
 
         Examples
         --------
-        >>> pool.current_nodes()
+        >>> compute.current_nodes()
         4
         """
         system, ref = self._get_system_and_ref()
@@ -1059,8 +1059,8 @@ class ComputePool:
 
         Examples
         --------
-        >>> with ComputePool.Named("training") as pool:
-        ...     result = train(data) >> pool
+        >>> with ComputePool.Named("training") as compute:
+        ...     result = train(data) >> compute
         """
         from skyward.config import resolve_pool
         return resolve_pool(name)

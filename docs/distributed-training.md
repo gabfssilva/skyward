@@ -25,8 +25,8 @@ with sky.Compute(
     nodes=4,
     accelerator=sky.accelerators.A100(),
     plugins=[sky.plugins.torch()],
-) as pool:
-    results = train() @ pool  # runs on all 4 nodes
+) as compute:
+    results = train() @ compute  # runs on all 4 nodes
 ```
 
 This is roughly equivalent to running `torchrun --nnodes=4 --nproc_per_node=1 train.py` on a pre-configured cluster — except there's no cluster to pre-configure. Skyward provisions the machines, installs dependencies, configures the distributed environment, runs your function, collects the results, and tears everything down when the `with` block exits.

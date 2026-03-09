@@ -59,8 +59,8 @@ with sky.Compute(
         sky.plugins.cuml(),
         sky.plugins.sklearn(),
     ],
-) as pool:
-    result = train_on_gpu(50000) >> pool
+) as compute:
+    result = train_on_gpu(50000) >> compute
     print(f"Accuracy: {result['accuracy']:.2%}, Time: {result['time']:.1f}s")
 ```
 
@@ -82,8 +82,8 @@ with sky.Compute(
         sky.plugins.cuml(),
         sky.plugins.sklearn(),
     ],
-) as pool:
-    result = run_grid_search() >> pool
+) as compute:
+    result = run_grid_search() >> compute
 ```
 
 Here, `GridSearchCV(n_jobs=-1)` distributes fits across the 4-node cluster, and each fit runs on GPU thanks to cuML. This is particularly effective for large grid searches where both the individual fits and the number of candidates are expensive.
@@ -99,8 +99,8 @@ with sky.Compute(
     nodes=1,
     plugins=[sky.plugins.cuml()],
     image=sky.Image(pip=["scikit-learn"]),
-) as pool:
-    result = train_on_gpu(50000) >> pool
+) as compute:
+    result = train_on_gpu(50000) >> compute
 ```
 
 You need to add `scikit-learn` to the image manually since the `cuml` plugin does not install it. The `cuml` plugin only provides the GPU acceleration layer; the `sklearn` plugin provides the library itself and the distributed joblib backend.

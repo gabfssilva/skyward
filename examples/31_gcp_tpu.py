@@ -94,5 +94,5 @@ if __name__ == "__main__":
             pip=["jax[tpu]"],
         ),
         provision_timeout=600,
-    ) as pool:
-        format_results(tpu_benchmark(matrix_size=4096, iterations=50) >> pool)
+    ) as compute:
+        format_results(tpu_benchmark(matrix_size=4096, iterations=50) >> compute)

@@ -106,8 +106,8 @@ def Compute(
     --------
     Flat kwargs — single provider, single spec:
 
-    >>> with sky.Compute(provider=sky.AWS(), accelerator="A100", nodes=4) as pool:
-    ...     result = train(data) >> pool
+    >>> with sky.Compute(provider=sky.AWS(), accelerator="A100", nodes=4) as compute:
+    ...     result = train(data) >> compute
 
     Multi-provider fallback — cheapest across VastAI and AWS:
 
@@ -115,8 +115,8 @@ def Compute(
     ...     sky.Spec(provider=sky.VastAI(), accelerator="A100"),
     ...     sky.Spec(provider=sky.AWS(), accelerator="A100"),
     ...     options=sky.Options(selection="cheapest"),
-    ... ) as pool:
-    ...     result = train(data) >> pool
+    ... ) as compute:
+    ...     result = train(data) >> compute
 
     Using the ``sky`` singleton instead of the pool variable:
 
@@ -127,8 +127,8 @@ def Compute(
 
     >>> with sky.Compute(
     ...     provider=sky.AWS(), accelerator="A100", nodes=(2, 8),
-    ... ) as pool:
-    ...     result = train(data) >> pool
+    ... ) as compute:
+    ...     result = train(data) >> compute
 
     Notes
     -----

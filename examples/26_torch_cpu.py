@@ -32,6 +32,6 @@ if __name__ == "__main__":
                 ),
             ],
         ),
-    ) as pool:
-        result = matrix_multiply(512) >> pool
+    ) as compute:
+        result = matrix_multiply(512) >> compute
         print(result)

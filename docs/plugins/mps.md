@@ -91,9 +91,9 @@ with sky.Compute(
         sky.plugins.mps(active_thread_percentage=100 // CONCURRENCY),
     ],
     image=sky.Image(pip=["torchvision"]),
-) as pool:
+) as compute:
     tasks = [inference(i, batch_size=1) for i in range(CONCURRENCY * 2)]
-    results = list(sky.gather(*tasks, stream=True) >> pool)
+    results = list(sky.gather(*tasks, stream=True) >> compute)
 ```
 
 The `executor="process"` setting means each concurrent task runs in its own process with its own CUDA context. MPS unifies those contexts into a single shared context on the GPU. The `active_thread_percentage=100 // 8 = 12` ensures fair sharing across 8 concurrent processes.
@@ -117,7 +117,7 @@ with sky.Compute(
             pinned_memory_limit="0=1G",
         ),
     ],
-) as pool:
+) as compute:
     ...
 ```
 

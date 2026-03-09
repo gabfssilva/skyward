@@ -76,12 +76,12 @@ if __name__ == "__main__":
         provider=sky.AWS(),
         accelerator=sky.accelerators.A100(),
         image=sky.Image(pip=["transformers", "datasets", "accelerate", "torch", "scikit-learn"]),
-    ) as pool:
+    ) as compute:
         result = finetune(
             model_name="distilbert-base-uncased",
             epochs=2,
             batch_size=16,
-        ) >> pool
+        ) >> compute
 
         print(f"Model: {result['model']}")
         print(f"Train loss: {result['train_loss']:.4f}")

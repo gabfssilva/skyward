@@ -62,9 +62,9 @@ Currently, all nodes in a pool share the same spec. Heterogeneous pools would al
 with sky.Compute(
     sky.Spec(provider=sky.AWS(), accelerator="A100", nodes=2),
     sky.Spec(provider=sky.AWS(), accelerator="T4", nodes=4),
-) as pool:
-    preprocessed = preprocess(raw) >> pool  # routes to T4s
-    result = train(preprocessed) >> pool    # routes to A100s
+) as compute:
+    preprocessed = preprocess(raw) >> compute  # routes to T4s
+    result = train(preprocessed) >> compute    # routes to A100s
 ```
 
 The API for routing tasks to specific node types is still an open question.

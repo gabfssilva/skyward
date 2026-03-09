@@ -64,14 +64,14 @@ class TestIncludes:
             nodes=1,
             image=Image(includes=[str(module_dir)]),
             options=Options(console=False),
-        ) as pool:
+        ) as compute:
             @sky.function
             def import_module():
                 import my_test_module  # noqa: F811  # pyright: ignore[reportMissingImports]
 
                 return my_test_module.VERSION
 
-            result = import_module() >> pool
+            result = import_module() >> compute
             assert result == "0.1.0"
 
 

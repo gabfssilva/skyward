@@ -21,9 +21,9 @@ if __name__ == "__main__":
     with sky.Compute(
         provider=sky.AWS(),
         nodes=4,
-    ) as pool:
+    ) as compute:
         data = list(range(1000))
-        results = process_partition(data) @ pool
+        results = process_partition(data) @ compute
 
         total = 0
         for r in results:

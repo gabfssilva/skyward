@@ -28,8 +28,8 @@ if __name__ == "__main__":
         sky.Spec(provider=sky.AWS(), accelerator=sky.accelerators.A100()),
         selection="cheapest",
         image=sky.Image(pip=["torch"]),
-    ) as pool:
-        result = train(10) >> pool
+    ) as compute:
+        result = train(10) >> compute
         print(f"Cheapest: {result}")
 
     # First available (priority order)
@@ -38,8 +38,8 @@ if __name__ == "__main__":
         sky.Spec(provider=sky.AWS(), accelerator=sky.accelerators.H100(), nodes=4),
         selection="first",
         image=sky.Image(pip=["torch"]),
-    ) as pool:
-        results = train(10) @ pool
+    ) as compute:
+        results = train(10) @ compute
         print(f"First available: {results}")
 
     # Per-spec constraints
@@ -62,6 +62,6 @@ if __name__ == "__main__":
         ),
         selection="cheapest",
         image=sky.Image(pip=["torch"]),
-    ) as pool:
-        result = train(10) >> pool
+    ) as compute:
+        result = train(10) >> compute
         print(f"Constrained: {result}")

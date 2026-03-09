@@ -93,21 +93,21 @@ if __name__ == "__main__":
         image=sky.Image(pip=["pandas==2.3.3", "numpy"]),
         vcpus=2,
         memory_gb=2
-    ) as pool:
-        print(hello() >> pool)
+    ) as compute:
+        print(hello() >> compute)
 
         # Send full DataFrame, get summary back
-        stats: pd.DataFrame = describe_dataset(df) >> pool
+        stats: pd.DataFrame = describe_dataset(df) >> compute
         print("Remote describe():")
         print(stats.to_string())
 
         # Aggregation on the remote side
-        agg: pd.DataFrame = revenue_by_category(df) >> pool
+        agg: pd.DataFrame = revenue_by_category(df) >> compute
         print("\nRevenue by category:")
         print(agg.to_string())
 
         # Feature engineering round-trip: send df, get enriched df back
-        enriched: pd.DataFrame = add_features(df) >> pool
+        enriched: pd.DataFrame = add_features(df) >> compute
         print(f"\nEnriched DataFrame: {enriched.shape} — new columns: "
               f"{[c for c in enriched.columns if c not in df.columns]}")
         print(enriched.head(10).to_string())

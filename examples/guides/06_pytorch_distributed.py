@@ -79,8 +79,8 @@ if __name__ == "__main__":
         nodes=2,
         accelerator=sky.accelerators.T4(),
         plugins=[sky.plugins.torch()],
-    ) as pool:
-        results = train(epochs=5, batch_size=64, lr=0.001) @ pool
+    ) as compute:
+        results = train(epochs=5, batch_size=64, lr=0.001) @ compute
 
         for r in results:
             role = "HEAD" if r["is_head"] else "WORKER"

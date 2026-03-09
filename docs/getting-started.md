@@ -84,8 +84,8 @@ def hello() -> str:
     return f"Hello from {socket.gethostname()}!"
 
 
-with sky.Compute(provider=sky.AWS()) as pool:
-    result = hello() >> pool
+with sky.Compute(provider=sky.AWS()) as compute:
+    result = hello() >> compute
     print(result)
 ```
 
@@ -141,8 +141,8 @@ with sky.Compute(
     accelerator=sky.accelerators.T4(),
     image=sky.Image(pip=["torch"]),
     allocation="spot",
-) as pool:
-    info = gpu_info() >> pool
+) as compute:
+    info = gpu_info() >> compute
     print(f"GPU: {info['device_name']}")
     print(f"CUDA devices: {info['device_count']}")
 ```
@@ -164,15 +164,15 @@ def square(x: int) -> int:
     return x * x
 
 
-with sky.Compute(provider=sky.AWS()) as pool:
-    results = sky.gather(square(1), square(2), square(3)) >> pool
+with sky.Compute(provider=sky.AWS()) as compute:
+    results = sky.gather(square(1), square(2), square(3)) >> compute
     print(results)  # (1, 4, 9)
 ```
 
 The `&` operator does the same thing with a fixed set of computations and full type inference:
 
 ```python
-    a, b, c = (square(4) & square(5) & square(6)) >> pool
+    a, b, c = (square(4) & square(5) & square(6)) >> compute
     print(a, b, c)  # 16 25 36
 ```
 
@@ -196,8 +196,8 @@ def worker_info() -> dict:
     }
 
 
-with sky.Compute(provider=sky.AWS(), nodes=4) as pool:
-    results = worker_info() @ pool
+with sky.Compute(provider=sky.AWS(), nodes=4) as compute:
+    results = worker_info() @ compute
     for r in results:
         print(f"Node {r['node']}/{r['total']} (head={r['is_head']})")
 ```
@@ -219,8 +219,8 @@ For integration testing with the full Skyward lifecycle (serialization, bootstra
 ```python
 import skyward as sky
 
-with sky.Compute(provider=sky.Container(), nodes=2) as pool:
-    result = hello() >> pool  # runs in local Docker containers
+with sky.Compute(provider=sky.Container(), nodes=2) as compute:
+    result = hello() >> compute  # runs in local Docker containers
 ```
 
 ## Verbose logging

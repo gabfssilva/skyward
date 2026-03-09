@@ -279,8 +279,8 @@ if __name__ == "__main__":
         accelerator=sky.accelerators.T4G(),
         nodes=2,
         plugins=[sky.plugins.jax(), sky.plugins.keras(backend="jax")],
-    ) as pool:
-        results = train_vit() @ pool
+    ) as compute:
+        results = train_vit() @ compute
 
         print("\nResults:")
         for r in results:

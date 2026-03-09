@@ -37,8 +37,8 @@ def train(data):
     return model.fit(data)
 
 
-with sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.A100()) as pool:
-    result = train(my_data) >> pool
+with sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.A100()) as compute:
+    result = train(my_data) >> compute
 # Accelerator terminated automatically
 ```
 
@@ -46,10 +46,10 @@ with sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.A100()) as poo
 
 | Operator | Syntax | Description |
 |----------|--------|-------------|
-| `>>` | `fn() >> pool` | Execute on single worker |
-| `@` | `fn() @ pool` | Broadcast to ALL workers |
-| `&` | `fn1() & fn2() >> pool` | Parallel execution |
-| `gather()` | `gather(fn1(), fn2()) >> pool` | Dynamic parallel execution |
+| `>>` | `fn() >> compute` | Execute on single worker |
+| `@` | `fn() @ compute` | Broadcast to ALL workers |
+| `&` | `fn1() & fn2() >> compute` | Parallel execution |
+| `gather()` | `gather(fn1(), fn2()) >> compute` | Dynamic parallel execution |
 
 ## Next steps
 

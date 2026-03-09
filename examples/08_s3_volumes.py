@@ -103,12 +103,12 @@ if __name__ == "__main__":
                 read_only=False,
             ),
         ],
-    ) as pool:
+    ) as compute:
         # =================================================================
         # Process dataset across nodes
         # =================================================================
         print("Processing dataset from /data:")
-        stats = process_dataset("/data") @ pool
+        stats = process_dataset("/data") @ compute
         for s in stats:
             if "error" in s:
                 print(f"  Node {s['node']}: {s['error']}")
@@ -121,7 +121,7 @@ if __name__ == "__main__":
         print("\nSaving checkpoints:")
         metrics = {"loss": 0.5, "accuracy": 0.85}
 
-        results = save_checkpoint("/checkpoints", epoch=1, metrics=metrics) @ pool
+        results = save_checkpoint("/checkpoints", epoch=1, metrics=metrics) @ compute
         for r in results:
             print(f"  Node {r['node']}: {r['path']} ({r['size']} bytes)")
 
@@ -131,6 +131,6 @@ if __name__ == "__main__":
 
         # Each node lists its own view of /checkpoints
         print("\nCheckpoints visible per node:")
-        all_views = list_files("/checkpoints", "*.json") @ pool
+        all_views = list_files("/checkpoints", "*.json") @ compute
         for i, files in enumerate(all_views):
             print(f"  Node {i}: {files}")

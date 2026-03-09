@@ -7,7 +7,7 @@ Usage:
 
     with sky.ComputePool(
         plugins=[sky.plugins.torch(backend="nccl")],
-    ) as pool:
+    ) as compute:
         ...
 """
 

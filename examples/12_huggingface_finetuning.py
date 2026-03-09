@@ -188,12 +188,12 @@ if __name__ == "__main__":
             "scikit-learn",
         ],
         allocation="spot-if-available",
-    ) as pool:
+    ) as compute:
         print("=" * 60)
         print("Environment Check")
         print("=" * 60)
 
-        env_info = check_environment() >> pool
+        env_info = check_environment() >> compute
         print(f"PyTorch: {env_info['torch_version']}")
         print(f"Transformers: {env_info['transformers_version']}")
         print(f"GPU: {env_info['gpu_name']}")
@@ -211,7 +211,7 @@ if __name__ == "__main__":
             batch_size=16,
             learning_rate=2e-5,
             max_samples=500,  # Small for demo
-        ) @ pool
+        ) @ compute
 
         print("\nTraining Results:")
         for r in results:
@@ -239,7 +239,7 @@ if __name__ == "__main__":
         inference_result = inference_demo(
             model_name="distilbert-base-uncased-finetuned-sst-2-english",
             texts=sample_texts,
-        ) >> pool
+        ) >> compute
 
         print("\nPredictions:")
         for pred in inference_result["predictions"]:

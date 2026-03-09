@@ -57,7 +57,7 @@ Each SSH connection also establishes a **local port forward** — a TCP tunnel f
 
 ### Actor messaging
 
-Task dispatch — the `>>`, `@`, `&` operators — translates to actor messages sent over these TCP tunnels. When you write `train(10) >> pool`, the function and arguments are serialized (cloudpickle + lz4), sent as a Casty message through the SSH tunnel to the remote worker, executed there, and the result flows back through the same path. The client's role is purely routing: serialize, send, wait for response, deserialize.
+Task dispatch — the `>>`, `@`, `&` operators — translates to actor messages sent over these TCP tunnels. When you write `train(10) >> compute`, the function and arguments are serialized (cloudpickle + lz4), sent as a Casty message through the SSH tunnel to the remote worker, executed there, and the result flows back through the same path. The client's role is purely routing: serialize, send, wait for response, deserialize.
 
 ### What's not here
 
@@ -84,8 +84,8 @@ This is also why the actor model fits the orchestration layer. Each node progres
 Despite being fully asynchronous internally, Skyward exposes a **synchronous API**. You write normal, blocking Python:
 
 ```python
-with sky.Compute(provider=sky.AWS(), nodes=4) as pool:
-    result = train(10) >> pool  # blocks until result is ready
+with sky.Compute(provider=sky.AWS(), nodes=4) as compute:
+    result = train(10) >> compute  # blocks until result is ready
 ```
 
 The bridge is simple. When you enter the `Compute` context manager, Skyward starts a background daemon thread running an asyncio event loop. Every public method — `>>`, `@`, `>`, `gather` — calls `asyncio.run_coroutine_threadsafe()` to submit work to that event loop and blocks the calling thread until the result is ready.

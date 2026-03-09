@@ -150,16 +150,16 @@ if __name__ == "__main__":
         image=sky.Image(pip=["torch", "numpy"]),
         accelerator=sky.accelerators.L40S(),
         allocation="spot-if-available",
-    ) as pool:
+    ) as compute:
         # Get GPU information
-        info = instance_information() @ pool
+        info = instance_information() @ compute
         print(f"GPU Info: {info}")
 
         # Heavy benchmark - ~5s on CPU vs ~0.1s on GPU
         print("\n" + "=" * 60)
         print("Heavy Matrix Operations Benchmark")
         print("=" * 60)
-        heavy = heavy_matrix_ops(size=4096, iterations=50) >> pool
+        heavy = heavy_matrix_ops(size=4096, iterations=50) >> compute
         print("\nResults:")
         print(f"  CPU time:  {heavy['cpu_time']:.2f}s")
         if "gpu_time" in heavy:
@@ -170,7 +170,7 @@ if __name__ == "__main__":
         print("\n" + "=" * 60)
         print("Single Matmul 4096x4096")
         print("=" * 60)
-        benchmark = matrix_multiply(4096) >> pool
+        benchmark = matrix_multiply(4096) >> compute
         print(f"  CPU: {benchmark['cpu_time']:.3f}s")
         if "gpu_time" in benchmark:
             print(f"  GPU: {benchmark['gpu_time']:.3f}s")
@@ -180,7 +180,7 @@ if __name__ == "__main__":
         print("\n" + "=" * 60)
         print("Neural Network Training (100 epochs)")
         print("=" * 60)
-        result = train_simple_model(epochs=100) >> pool
+        result = train_simple_model(epochs=100) >> compute
         print(f"  Device: {result['device']}")
         print(f"  Initial loss: {result['initial_loss']:.4f}")
         print(f"  Final loss: {result['final_loss']:.4f}")

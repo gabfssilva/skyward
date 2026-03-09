@@ -8,14 +8,14 @@ Example:
     from skyward import ComputePool, LogConfig
 
     # Simple: enable with defaults
-    with ComputePool(nodes=4, logging=True) as pool:
+    with ComputePool(nodes=4, logging=True) as compute:
         pool.compute(fn, *args)
 
     # Custom: configure level and file output
     with ComputePool(
         nodes=4,
         logging=LogConfig(level="DEBUG", file="skyward.log"),
-    ) as pool:
+    ) as compute:
         pool.compute(fn, *args)
 """
 

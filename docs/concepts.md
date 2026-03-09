@@ -43,8 +43,8 @@ with sky.Compute(
     accelerator=sky.accelerators.A100(),
     nodes=4,
     image=sky.Image(pip=["torch", "transformers"]),
-) as pool:
-    result = train(10) >> pool
+) as compute:
+    result = train(10) >> compute
 # all instances terminated
 ```
 
@@ -58,7 +58,7 @@ Behind the `with` block, the pool orchestrates a hierarchy of components — eac
 
 Internally, this orchestration is built on the **actor model** — specifically on [Casty](https://gabfssilva.github.io/casty/), a lightweight actor framework for Python. Each component in the hierarchy (pool, node, instance) is an actor: an isolated unit of state that communicates exclusively through messages. There are no shared locks, no thread pools coordinating through mutexes, no callbacks mutating global state. An actor receives a message, decides what to do, and optionally sends messages to other actors. This makes the concurrent lifecycle of multiple nodes and instances — each progressing through their own state machines at different speeds — straightforward to reason about. Both Casty and Skyward are built on top of asyncio, so actors are cheap and message passing doesn't block threads — the system scales to hundreds of nodes without requiring proportional memory or CPU on your laptop.
 
-Despite being fully asynchronous internally, Skyward exposes a **synchronous API**. The asyncio event loop runs in a background daemon thread, and every public method bridges into it via `run_coroutine_threadsafe`. This means you write normal, blocking Python — `result = task() >> pool` — while the orchestration underneath remains non-blocking and concurrent.
+Despite being fully asynchronous internally, Skyward exposes a **synchronous API**. The asyncio event loop runs in a background daemon thread, and every public method bridges into it via `run_coroutine_threadsafe`. This means you write normal, blocking Python — `result = task() >> compute` — while the orchestration underneath remains non-blocking and concurrent.
 
 A **pool** actor manages the overall process: it asks the **provider** (AWS, RunPod, VastAI, etc.) to prepare infrastructure and launch instances. Each launched instance becomes a **node** actor, and each node supervises an **instance** actor that handles the low-level work — polling the cloud API until the machine is running, opening an SSH tunnel, bootstrapping the environment, and starting the worker process.
 
@@ -116,8 +116,8 @@ with sky.Compute(
     provider=sky.AWS(),
     nodes=4,
     worker=sky.Worker(concurrency=2),
-) as pool:
-    result = train(10) >> pool
+) as compute:
+    result = train(10) >> compute
 ```
 
 `concurrency` sets the number of task slots per node. Total parallelism across the cluster is `nodes * concurrency` — four nodes with `concurrency=2` means eight tasks running simultaneously.
@@ -130,7 +130,7 @@ For a practical comparison with benchmarks, see the [Worker Executors](guides/wo
 
 ## Operators
 
-Most distributed computing frameworks require you to express execution through configuration files, job submission APIs, or method calls like `pool.submit(fn, args)`. Skyward takes a different approach: it uses Python's operator overloading to create a small vocabulary where the syntax itself communicates intent. The expression `train(10) >> pool` reads as "send this computation to the pool" — and that's exactly what it does.
+Most distributed computing frameworks require you to express execution through configuration files, job submission APIs, or method calls like `pool.submit(fn, args)`. Skyward takes a different approach: it uses Python's operator overloading to create a small vocabulary where the syntax itself communicates intent. The expression `train(10) >> compute` reads as "send this computation to the pool" — and that's exactly what it does.
 
 This works because `@sky.function` returns a `PendingFunction` value, not a result. Operators are defined on `PendingFunction` (via `__rshift__`, `__matmul__`, `__and__`, `__gt__`), and each one triggers a different dispatch strategy on the pool. The pool serializes the function and arguments with cloudpickle, sends the payload to the appropriate worker(s) over SSH, waits for the result, deserializes it, and returns it to the caller.
 
@@ -139,7 +139,7 @@ This works because `@sky.function` returns a `PendingFunction` value, not a resu
 The most common operation. Sends the computation to a single worker and blocks until the result is available:
 
 ```python
-result = train(10) >> pool
+result = train(10) >> compute
 ```
 
 The pool selects the target node using round-robin scheduling. If you send ten tasks with `>>`, they'll be distributed evenly across the available nodes. This is the right operator for independent tasks that don't need to run on every node — hyperparameter trials, inference on different inputs, or any embarrassingly parallel workload.
@@ -149,9 +149,9 @@ The pool selects the target node using round-robin scheduling. If you send ten t
 Sends the same computation to every node in the pool. Returns a list with one result per node:
 
 ```python
-with sky.Compute(provider=sky.AWS(), nodes=4) as pool:
+with sky.Compute(provider=sky.AWS(), nodes=4) as compute:
     # runs on all 4 nodes, returns list of 4 results
-    results = initialize_model(config) @ pool
+    results = initialize_model(config) @ compute
 ```
 
 Broadcast is the foundation for distributed training patterns. When combined with `sky.shard()` inside the function, each node receives the full arguments but operates on its own partition of the data. The function body is identical across nodes — the differentiation happens at runtime based on `sky.instance_info()`.
@@ -163,7 +163,7 @@ This is also the natural way to run setup or teardown operations that must happe
 Combines multiple *different* computations into a group that executes in parallel. Results are returned as a tuple with full type inference:
 
 ```python
-a, b, c = (preprocess() & train() & evaluate()) >> pool
+a, b, c = (preprocess() & train() & evaluate()) >> compute
 ```
 
 The distinction from broadcast is important: `@` runs the *same* function on all nodes, while `&` runs *different* functions concurrently. Each computation in the group may go to a different node (round-robin), and the group blocks until all of them complete. The types are preserved individually — if `preprocess` returns `DataFrame`, `train` returns `Model`, and `evaluate` returns `float`, the destructured result is `tuple[DataFrame, Model, float]`.
@@ -173,7 +173,7 @@ The distinction from broadcast is important: `@` runs the *same* function on all
 Like `>>`, but returns a `Future[T]` immediately instead of blocking. This lets you overlap remote computation with local work:
 
 ```python
-future = train(10) > pool
+future = train(10) > compute
 # ... do local work while the remote computation runs ...
 result = future.result()  # blocks only when you need the result
 ```
@@ -186,7 +186,7 @@ The `Future` follows Python's `concurrent.futures` protocol, so it integrates wi
 
 ```python
 tasks = [process(chunk) for chunk in chunks]
-results = sky.gather(*tasks) >> pool
+results = sky.gather(*tasks) >> compute
 ```
 
 Under the hood, `gather` creates a `PendingFunctionGroup` — the same type that `&` produces — so the dispatch behavior is identical. The difference is purely syntactic: `&` is for a fixed set of typed computations, `gather` is for a dynamic collection.
@@ -194,7 +194,7 @@ Under the hood, `gather` creates a `PendingFunctionGroup` — the same type that
 With `stream=True`, results are yielded as they complete rather than waiting for all of them. This is useful when tasks have variable duration and you want to start processing results early:
 
 ```python
-for result in sky.gather(*tasks, stream=True) >> pool:
+for result in sky.gather(*tasks, stream=True) >> compute:
     save(result)
 ```
 
@@ -213,7 +213,7 @@ image = sky.Image(
     includes=["./my_module/"],
 )
 
-with sky.Compute(provider=sky.AWS(), image=image) as pool:
+with sky.Compute(provider=sky.AWS(), image=image) as compute:
     ...
 ```
 
@@ -262,9 +262,9 @@ def process(full_dataset):
     return analyze(local_data)
 
 
-with sky.Compute(provider=sky.AWS(), nodes=4) as pool:
+with sky.Compute(provider=sky.AWS(), nodes=4) as compute:
     # each node gets 1/4 of the data
-    results = process(dataset) @ pool
+    results = process(dataset) @ compute
 ```
 
 The function receives the *full* dataset as an argument — the serialization cost is paid once — but each node only processes its shard. The sharding algorithm uses modulo striding by default (`indices[node::total_nodes]`), which distributes elements evenly regardless of whether the total is divisible by the node count.
@@ -287,7 +287,7 @@ The `shuffle` parameter randomizes the order before sharding, with a fixed `seed
 
 The patterns above — `>>`, `@`, `&`, `gather` — all follow the same shape: serialize the function and arguments, ship them to a worker, execute, serialize the result, ship it back. The full result materializes on the worker before anything crosses the network. For most workloads this is fine. But some computations produce results incrementally — a training loop that yields metrics every epoch, a data pipeline that emits rows one at a time, a search that finds matches progressively. Waiting for the entire result before returning anything wastes time and memory.
 
-Streaming changes this. If a `@sky.function` function is a generator — it uses `yield` instead of `return` — Skyward streams the values back to the caller as they're produced. The dispatch expression `task() >> pool` returns a synchronous iterator instead of a single value, and each element arrives as soon as the worker yields it:
+Streaming changes this. If a `@sky.function` function is a generator — it uses `yield` instead of `return` — Skyward streams the values back to the caller as they're produced. The dispatch expression `task() >> compute` returns a synchronous iterator instead of a single value, and each element arrives as soon as the worker yields it:
 
 ```python
 @sky.function
@@ -296,8 +296,8 @@ def generate_samples(n: int):
         yield expensive_sample(i)
 
 
-with sky.Compute(provider=sky.AWS(), nodes=1) as pool:
-    for sample in generate_samples(1000) >> pool:
+with sky.Compute(provider=sky.AWS(), nodes=1) as compute:
+    for sample in generate_samples(1000) >> compute:
         save(sample)  # processes each sample as it arrives
 ```
 
@@ -316,7 +316,7 @@ def process(data: Iterator[dict]) -> int:
     return count
 
 
-result = process(iter(huge_dataset)) >> pool
+result = process(iter(huge_dataset)) >> compute
 ```
 
 Both directions can be combined: a function that takes an `Iterator` input and yields results creates a bidirectional stream — data flows in, transformed results flow out, and neither side buffers the full dataset in memory.
@@ -411,8 +411,8 @@ with sky.Compute(
     sky.Spec(provider=sky.VastAI(), accelerator=sky.accelerators.A100()),
     sky.Spec(provider=sky.AWS(), accelerator=sky.accelerators.A100()),
     selection="cheapest",
-) as pool:
-    result = train(data) >> pool
+) as compute:
+    result = train(data) >> compute
 ```
 
 The single-provider form still works — `Compute(provider=sky.AWS(), accelerator=sky.accelerators.A100())` internally creates a single `Spec` and wraps it in a tuple.

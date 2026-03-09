@@ -123,7 +123,7 @@ if __name__ == "__main__":
         nodes=4,
         image=sky.Image(pip=["numpy", "torch"]),
         allocation="spot-if-available",
-    ) as pool:
+    ) as compute:
         # Generate full dataset
         import random
 
@@ -135,7 +135,7 @@ if __name__ == "__main__":
         # Basic sharding with shard()
         # =================================================================
         print("Training on sharded data...")
-        results = train_on_shard(X, Y) @ pool
+        results = train_on_shard(X, Y) @ compute
 
         for r in results:
             print(f"  Node {r['node']}: {r['shard_size']} samples, mean={r['x_mean']:.3f}")
@@ -144,7 +144,7 @@ if __name__ == "__main__":
         # Type preservation demonstration
         # =================================================================
         print("\nType preservation:")
-        type_results = demonstrate_shard_types() @ pool
+        type_results = demonstrate_shard_types() @ compute
 
         for r in type_results:
             print(
@@ -157,7 +157,7 @@ if __name__ == "__main__":
         # DistributedSampler with DataLoader
         # =================================================================
         print("\nTraining with DistributedSampler:")
-        dl_results = train_with_dataloader(epochs=5, batch_size=32) @ pool
+        dl_results = train_with_dataloader(epochs=5, batch_size=32) @ compute
 
         for r in dl_results:
             print(

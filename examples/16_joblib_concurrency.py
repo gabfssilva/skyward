@@ -26,13 +26,13 @@ if __name__ == '__main__':
         plugins=[
             sky.plugins.joblib()
         ]
-    ) as pool:
+    ) as compute:
         # just to warm up
         for _ in range(10):
-            sky.function(lambda: f"pong from {sky.instance_info().node}")() @ pool
+            sky.function(lambda: f"pong from {sky.instance_info().node}")() @ compute
 
         t_ping = perf_counter()
-        pongs = sky.function(lambda: f"pong from {sky.instance_info().node}")() @ pool
+        pongs = sky.function(lambda: f"pong from {sky.instance_info().node}")() @ compute
         ping_elapsed = perf_counter() - t_ping
         print(f"\nBroadcast ping: {pongs} in {ping_elapsed * 1000:.0f}ms")
 

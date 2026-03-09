@@ -82,7 +82,7 @@ if __name__ == "__main__":
         ],
         allocation='spot',
         ttl=600
-    ) as pool:
+    ) as compute:
         print(
             f"Running matmul benchmark on {PARTITIONS} MIG partitions "
             f"({PROFILE}), {ITERATIONS}x {MATRIX_SIZE}x{MATRIX_SIZE}"
@@ -90,7 +90,7 @@ if __name__ == "__main__":
 
         tasks = [matmul_bench(ITERATIONS, MATRIX_SIZE) for _ in range(PARTITIONS)]
         start = perf_counter()
-        results = list(sky.gather(*tasks, stream=True) >> pool)
+        results = list(sky.gather(*tasks, stream=True) >> compute)
         wall = perf_counter() - start
 
         print(f"\n{'worker':>6}  {'device':>40}  {'time':>6}  {'TFLOPS':>7}")

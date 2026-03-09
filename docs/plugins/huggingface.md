@@ -90,8 +90,8 @@ with sky.Compute(
     nodes=1,
     accelerator=sky.accelerators.A100(),
     plugins=[sky.plugins.huggingface(token="hf_...")],
-) as pool:
-    result = finetune("distilbert-base-uncased", epochs=3) >> pool
+) as compute:
+    result = finetune("distilbert-base-uncased", epochs=3) >> compute
     print(result)
 ```
 
@@ -146,8 +146,8 @@ with sky.Compute(
         sky.plugins.torch(backend="nccl"),
         sky.plugins.huggingface(token="hf_..."),
     ],
-) as pool:
-    results = distributed_finetune("gpt2") @ pool
+) as compute:
+    results = distributed_finetune("gpt2") @ compute
 ```
 
 The `torch` plugin initializes the process group before your function runs — it sets `MASTER_ADDR`, `WORLD_SIZE`, `RANK`, and calls `init_process_group()`. The Trainer detects the initialized process group and automatically wraps the model with `DistributedDataParallel`, shards the data across ranks, and synchronizes gradients. The `huggingface` plugin contributes the libraries and authentication. Plugin order in the list does not affect behavior — each plugin's hooks run at their respective lifecycle points.
@@ -174,8 +174,8 @@ with sky.Compute(
     nodes=1,
     accelerator=sky.accelerators.T4(),
     plugins=[sky.plugins.huggingface(token="hf_...")],
-) as pool:
-    predictions = classify(["Great movie!", "Terrible film."]) >> pool
+) as compute:
+    predictions = classify(["Great movie!", "Terrible film."]) >> compute
 ```
 
 ## Next steps

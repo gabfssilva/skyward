@@ -41,8 +41,8 @@ The `[pools]` section defines named pools that reference a provider by name. Poo
 ### Using named pools
 
 ```python
-with sky.Compute.Named("training") as pool:
-    result = train() >> pool
+with sky.Compute.Named("training") as compute:
+    result = train() >> compute
 ```
 
 ## API reference

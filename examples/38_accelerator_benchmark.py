@@ -140,8 +140,8 @@ def _benchmark_target(target: dict[str, object]) -> dict[str, Any]:
         provider=provider,  # type: ignore[arg-type]
         accelerator=accelerator,  # type: ignore[arg-type]
         image=sky.Image(pip=["jax[cuda12]"]),
-    ) as pool:
-        result = run_matmul_benchmark(MATRIX_SIZE, DTYPE, WARMUP, ITERS) >> pool
+    ) as compute:
+        result = run_matmul_benchmark(MATRIX_SIZE, DTYPE, WARMUP, ITERS) >> compute
         result["target"] = name
         return result
 

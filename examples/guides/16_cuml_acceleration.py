@@ -51,10 +51,10 @@ if __name__ == "__main__":
             sky.plugins.cuml(),
             sky.plugins.sklearn()
         ],
-    ) as pool:
+    ) as compute:
         # warm-up
-        _ = train_on_gpu(N_SAMPLES) >> pool
+        _ = train_on_gpu(N_SAMPLES) >> compute
 
-        result = train_on_gpu(N_SAMPLES) >> pool
+        result = train_on_gpu(N_SAMPLES) >> compute
 
     print(f"accuracy: {result['accuracy']:.2%}, time: {result['time']:.1f}s")

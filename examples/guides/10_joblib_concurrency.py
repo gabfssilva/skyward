@@ -19,7 +19,7 @@ if __name__ == "__main__":
         nodes=10,
         worker=sky.Worker(concurrency=10),
         plugins=[sky.plugins.joblib()],
-    ) as pool:
+    ) as compute:
         t0 = perf_counter()
 
         results = Parallel(n_jobs=-1)(

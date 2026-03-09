@@ -131,8 +131,8 @@ class Spec:
     >>> with sky.Compute(
     ...     sky.Spec(provider=sky.VastAI(), accelerator="A100"),
     ...     sky.Spec(provider=sky.AWS(), accelerator="A100"),
-    ... ) as pool:
-    ...     result = train(data) >> pool
+    ... ) as compute:
+    ...     result = train(data) >> compute
     """
     provider: ProviderConfig
     accelerator: Accelerator | None = None
@@ -219,8 +219,8 @@ class Options:
     >>> with sky.Compute(
     ...     sky.Spec(provider=sky.AWS(), accelerator="A100", nodes=4),
     ...     options=sky.Options(provision_timeout=600, console=False),
-    ... ) as pool:
-    ...     result = train(data) >> pool
+    ... ) as compute:
+    ...     result = train(data) >> compute
     """
 
     selection: SelectionStrategy = "cheapest"
@@ -318,7 +318,7 @@ class Volume:
 
     Examples
     --------
-    >>> pool = sky.ComputePool(
+    >>> compute = sky.ComputePool(
     ...     provider=sky.AWS(),
     ...     volumes=[Volume(bucket="my-data", mount="/data")],
     ... )

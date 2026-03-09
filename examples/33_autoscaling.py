@@ -22,16 +22,16 @@ if __name__ == "__main__":
         memory_gb=1,
         autoscale_idle_timeout=10,
         autoscale_cooldown=20
-    ) as pool:
-        print(f"initial: {pool.current_nodes()} node(s)")
+    ) as compute:
+        print(f"initial: {compute.current_nodes()} node(s)")
 
-        futures = [heavy_work(30) > pool for _ in range(50)]
+        futures = [heavy_work(30) > compute for _ in range(50)]
 
         sleep(120)
-        print(f"under load: {pool.current_nodes()} node(s)")
+        print(f"under load: {compute.current_nodes()} node(s)")
 
         nodes_used = {f.result() for f in futures}
         print(f"work ran on: {nodes_used}")
 
         sleep(60)
-        print(f"after idle: {pool.current_nodes()} node(s)")
+        print(f"after idle: {compute.current_nodes()} node(s)")

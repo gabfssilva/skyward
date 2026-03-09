@@ -57,16 +57,16 @@ if __name__ == "__main__":
         nodes=1,
         vcpus=1,
         memory_gb=1,
-    ) as pool:
+    ) as compute:
         #warm up
-        # for val in fibonacci(5) >> pool:
+        # for val in fibonacci(5) >> compute:
         #     pass
         #
         # print("warm up done")
         # print("Fibonacci (first 10):")
 
         for t in range(100):
-            for val in fibonacci(100) >> pool:
+            for val in fibonacci(100) >> compute:
                 print(f"#{t}: {val}")
 
         #
@@ -75,12 +75,12 @@ if __name__ == "__main__":
         # # --- Input streaming ---
         # print("\nRunning mean of 1..5:")
         # data = iter([1.0, 2.0, 3.0, 4.0, 5.0])
-        # means = running_mean(data) >> pool
+        # means = running_mean(data) >> compute
         # for i, m in enumerate(means, 1):
         #     print(f"  after {i} values: {m:.2f}")
         #
         # # --- Bidirectional ---
         # print("\nMoving average (window=3) of 1..6:")
         # data = iter([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
-        # for avg in moving_average(data, window=3) >> pool:
+        # for avg in moving_average(data, window=3) >> compute:
         #     print(f"  {avg:.2f}")

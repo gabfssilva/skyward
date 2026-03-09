@@ -113,8 +113,8 @@ if __name__ == "__main__":
         nodes=2,
         image=sky.Image(pip=["scikit-learn"]),
         plugins=[sky.plugins.jax()],
-    ) as pool:
-        results = train_distributed() @ pool
+    ) as compute:
+        results = train_distributed() @ compute
 
         print("\nResults:")
         for r in results:

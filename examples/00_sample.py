@@ -14,5 +14,5 @@ if __name__ == '__main__':
         provider=sky.AWS(),
         accelerator=sky.accelerators.T4(),
         image=sky.Image(pip=['torch']),
-    ) as pool:
-        print(cuda_available() >> pool)
+    ) as compute:
+        print(cuda_available() >> compute)

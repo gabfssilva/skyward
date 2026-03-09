@@ -26,7 +26,7 @@ def rand_delay() -> float:
     return randint(1, 10) / 10
 
 if __name__ == "__main__":
-    with sky.Compute(provider=sky.AWS()) as pool:
+    with sky.Compute(provider=sky.AWS()) as compute:
         tasks = [
             simulate_work(i, rand_delay()) for i in range(50)
         ]
@@ -36,7 +36,7 @@ if __name__ == "__main__":
         # =================================================================
         print("--- gather (default) ---")
         start = time.monotonic()
-        results = sky.gather(*tasks) >> pool
+        results = sky.gather(*tasks) >> compute
         elapsed = time.monotonic() - start
         print(f"All results at once after {elapsed:.1f}s: {results}")
 
@@ -45,6 +45,6 @@ if __name__ == "__main__":
         # =================================================================
         print("\n--- gather(stream=True) ---")
         start = time.monotonic()
-        for result in sky.gather(*tasks, stream=True) >> pool:
+        for result in sky.gather(*tasks, stream=True) >> compute:
             elapsed = time.monotonic() - start
             print(f"  [{elapsed:.1f}s] Got: {result}")

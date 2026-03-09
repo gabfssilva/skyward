@@ -79,10 +79,10 @@ def main():
         image=sky.Image(env={"NCCL_DEBUG": "INFO"}),
         plugins=[sky.plugins.torch()],
         allocation="spot-if-available",
-    ) as pool:
+    ) as compute:
         # First, verify overlay network is working
         print("Checking overlay network connectivity...")
-        network_info = get_network_info() @ pool  # Broadcast to all nodes
+        network_info = get_network_info() @ compute  # Broadcast to all nodes
 
         for i, info in enumerate(network_info):
             print(f"\nNode {i}:")
@@ -93,7 +93,7 @@ def main():
         print("Running distributed training with NCCL...")
         print("=" * 50 + "\n")
 
-        results = distributed_train([]) @ pool  # Broadcast to all nodes
+        results = distributed_train([]) @ compute  # Broadcast to all nodes
 
         # Check results
         all_working = all(r["nccl_working"] for r in results)
@@ -131,9 +131,9 @@ def main_simple():
         accelerator=sky.accelerators.RTX_3090(),
         nodes=2,
         allocation="spot-if-available",
-    ) as pool:
+    ) as compute:
         # Broadcast to all nodes
-        results = node_info() @ pool
+        results = node_info() @ compute
 
         print("Cluster nodes:")
         for r in results:

@@ -30,9 +30,9 @@ if __name__ == "__main__":
         provider=sky.AWS(),
         worker=sky.Worker(concurrency=2),  # executor="thread" is the default
         nodes=3,
-    ) as pool:
+    ) as compute:
         results = sky.gather(*(cpu_burn(i) for i in range(total)), stream=True)
-        for r in (results >> pool):
+        for r in (results >> compute):
             print(f"[thread] Task {r['task_id']}: {r['iterations']:,} iters in {r['elapsed']}s")
     # --8<-- [end:thread_executor]
 
@@ -43,8 +43,8 @@ if __name__ == "__main__":
         provider=sky.AWS(),
         worker=sky.Worker(concurrency=2, executor="process"),
         nodes=3,
-    ) as pool:
+    ) as compute:
         results = sky.gather(*(cpu_burn(i) for i in range(total)), stream=True)
-        for r in (results >> pool):
+        for r in (results >> compute):
             print(f"[process] Task {r['task_id']}: {r['iterations']:,} iters in {r['elapsed']}s")
     # --8<-- [end:process_executor]

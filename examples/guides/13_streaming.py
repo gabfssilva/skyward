@@ -55,21 +55,21 @@ if __name__ == "__main__":
     with sky.Compute(
         provider=sky.Container(),
         nodes=1,
-    ) as pool:
+    ) as compute:
         # --- Output streaming ---
         print("Fibonacci (first 10):")
-        for val in fibonacci(10) >> pool:
+        for val in fibonacci(10) >> compute:
             print(f"  {val}")
 
         # --- Input streaming ---
         print("\nRunning mean of 1..5:")
         data = iter([1.0, 2.0, 3.0, 4.0, 5.0])
-        means = running_mean(data) >> pool
+        means = running_mean(data) >> compute
         for i, m in enumerate(means, 1):
             print(f"  after {i} values: {m:.2f}")
 
         # --- Bidirectional ---
         print("\nMoving average (window=3) of 1..6:")
         data = iter([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
-        for avg in moving_average(data, window=3) >> pool:
+        for avg in moving_average(data, window=3) >> compute:
             print(f"  {avg:.2f}")

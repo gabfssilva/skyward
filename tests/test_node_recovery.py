@@ -140,14 +140,14 @@ class TestNodeFailureRecovery:
                 ssh_retry_interval=2,
                 console=False,
             ),
-        ) as pool:
+        ) as compute:
 
             @sky.function
             def whoami() -> int:
                 info = sky.instance_info()
                 return info.node if info else -1
 
-            nodes = whoami() @ pool
+            nodes = whoami() @ compute
             assert sorted(nodes) == [0, 1, 2, 3, 4]
 
     def test_tasks_execute_on_replacement_node(self) -> None:
@@ -166,20 +166,20 @@ class TestNodeFailureRecovery:
                 ssh_retry_interval=2,
                 console=False,
             ),
-        ) as pool:
+        ) as compute:
 
             @sky.function
             def ping() -> str:
                 return "pong"
 
-            results = ping() @ pool
+            results = ping() @ compute
             assert results == ["pong", "pong", "pong"]
 
             @sky.function
             def add(a: int, b: int) -> int:
                 return a + b
 
-            result = add(2, 3) >> pool
+            result = add(2, 3) >> compute
             assert result == 5
 
 
@@ -308,14 +308,14 @@ class TestActiveNodeRecovery:
                 default_compute_timeout=15,
                 console=False,
             ),
-        ) as pool:
+        ) as compute:
 
             @sky.function
             def ping() -> str:
                 return "pong"
 
             # 1. Verify all 5 nodes are operational
-            results = ping() @ pool
+            results = ping() @ compute
             assert results == ["pong"] * 5
 
             # 2. Kill node 3's container (0-indexed)
@@ -336,7 +336,7 @@ class TestActiveNodeRecovery:
             nodes: list[int] | tuple[int, ...] = []
             while time.monotonic() < deadline:
                 try:
-                    nodes = whoami() @ pool
+                    nodes = whoami() @ compute
                     if len(nodes) == 5 and all(isinstance(n, int) for n in nodes):
                         break
                 except (RuntimeError, TimeoutError):

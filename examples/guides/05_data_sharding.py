@@ -51,11 +51,11 @@ if __name__ == "__main__":
         provider=sky.AWS(),
         nodes=4,
         image=sky.Image(pip=["numpy"]),
-    ) as pool:
-        results = train_on_shard(X, Y) @ pool
+    ) as compute:
+        results = train_on_shard(X, Y) @ compute
         for r in results:
             print(f"  Node {r['node']}: {r['shard_size']} samples, mean={r['mean']:.3f}")
 
-        types = show_shard_types() @ pool
+        types = show_shard_types() @ compute
         for t in types:
             print(f"  Node {t['node']}: list={t['list']}, tuple={t['tuple']}, array={t['array']}")

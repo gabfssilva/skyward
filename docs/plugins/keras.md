@@ -92,8 +92,8 @@ with sky.Compute(
     nodes=2,
     accelerator=sky.accelerators.T4(),
     plugins=[sky.plugins.jax(), sky.plugins.keras(backend="jax")],
-) as pool:
-    results = train() @ pool
+) as compute:
+    results = train() @ compute
 ```
 
 Each node trains on its shard of the data. The `DataParallel` distribution configured by the plugin handles parameter synchronization across the JAX device mesh.
@@ -108,8 +108,8 @@ with sky.Compute(
     nodes=4,
     accelerator=sky.accelerators.A100(),
     plugins=[sky.plugins.torch(), sky.plugins.keras(backend="torch")],
-) as pool:
-    results = train() @ pool
+) as compute:
+    results = train() @ compute
 ```
 
 Your training function will need to handle distributed wrapping (DDP) and data partitioning (`DistributedSampler` or `sky.shard()`) explicitly, as the Keras plugin does not configure automatic distribution for the PyTorch backend.
@@ -123,8 +123,8 @@ with sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.T4(),
     plugins=[sky.plugins.keras()],
-) as pool:
-    result = train() >> pool
+) as compute:
+    result = train() >> compute
 ```
 
 This uses the default JAX backend on one node. No distributed setup runs, and `model.fit()` behaves exactly as it would on your local machine.

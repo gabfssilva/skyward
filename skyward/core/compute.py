@@ -48,14 +48,14 @@ def Compute(
 
     Examples
     --------
-    >>> with sky.Compute(provider=sky.AWS(), accelerator="A100", nodes=4) as pool:
-    ...     result = train(data) >> pool
+    >>> with sky.Compute(provider=sky.AWS(), accelerator="A100", nodes=4) as compute:
+    ...     result = train(data) >> compute
 
     >>> with sky.Compute(
     ...     sky.Spec(provider=sky.VastAI(), accelerator="A100"),
     ...     sky.Spec(provider=sky.AWS(), accelerator="A100"),
-    ... ) as pool:
-    ...     result = train(data) >> pool
+    ... ) as compute:
+    ...     result = train(data) >> compute
     """
     from skyward.core.context import _active_pool
     from skyward.core.session import Session

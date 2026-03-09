@@ -22,9 +22,9 @@ def process(data: list[int]) -> dict:
 if __name__ == "__main__":
     with sky.Compute(
         provider=sky.AWS(),
-    ) as pool:
-        result = add(2, 3) >> pool
+    ) as compute:
+        result = add(2, 3) >> compute
         print(f"2 + 3 = {result}")
 
-        stats = process([1, 2, 3, 4, 5]) >> pool
+        stats = process([1, 2, 3, 4, 5]) >> compute
         print(f"Stats: {stats}")

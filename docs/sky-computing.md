@@ -24,16 +24,16 @@ All providers implement the same `Provider` protocol — five methods (`prepare`
 
 ```python
 # Development: local containers, zero cost
-with sky.Compute(provider=sky.Container(), nodes=2) as pool:
-    result = train(data) >> pool
+with sky.Compute(provider=sky.Container(), nodes=2) as compute:
+    result = train(data) >> compute
 
 # Production: real GPUs on AWS
-with sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.H100(), nodes=4) as pool:
-    result = train(data) >> pool
+with sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.H100(), nodes=4) as compute:
+    result = train(data) >> compute
 
 # Same code, different cloud
-with sky.Compute(provider=sky.RunPod(), accelerator=sky.accelerators.H100(), nodes=4) as pool:
-    result = train(data) >> pool
+with sky.Compute(provider=sky.RunPod(), accelerator=sky.accelerators.H100(), nodes=4) as compute:
+    result = train(data) >> compute
 ```
 
 The `@sky.function` functions, the operators, the `Image` specification — everything stays identical across providers. Your code doesn't know which cloud it's running on, and it doesn't need to. This is the practical realization of the Sky Computing idea: you're not locked to a single cloud, and moving between them doesn't require rewriting anything.
@@ -53,8 +53,8 @@ With multi-spec pools, Skyward takes this further. You can describe the same har
 While the Berkeley paper focuses on interoperability, Skyward adds a specific philosophy: **ephemeral compute**. Accelerator infrastructure should exist only during your job — not before, not after. The `Compute` context manager guarantees this: provision on enter, destroy on exit, cleanup guaranteed even if your code throws an exception.
 
 ```python
-with sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.H100(), nodes=4) as pool:
-    metrics = train(dataset) @ pool
+with sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.H100(), nodes=4) as compute:
+    metrics = train(dataset) @ compute
 # all instances terminated — no idle costs, no forgotten machines
 ```
 

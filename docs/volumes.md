@@ -45,8 +45,8 @@ with sky.Compute(
         sky.Volume(bucket="my-datasets", mount="/data", read_only=True),
         sky.Volume(bucket="my-experiments", mount="/checkpoints", read_only=False),
     ],
-) as pool:
-    accuracy = train("/data", "/checkpoints") >> pool
+) as compute:
+    accuracy = train("/data", "/checkpoints") >> compute
 ```
 
 The function doesn't know it's reading from S3 or writing to S3. It sees `/data` and `/checkpoints` as local directories. This means existing code — scripts that read from disk, libraries that expect file paths, frameworks that save checkpoints to a directory — works without modification.
@@ -143,8 +143,8 @@ with sky.Compute(
         # This volume uses AWS credentials from the provider
         sky.Volume(bucket="my-s3-output", mount="/output", read_only=False),
     ],
-) as pool:
-    train("/data", "/output") >> pool
+) as compute:
+    train("/data", "/output") >> compute
 ```
 
 This enables heterogeneous volumes — different storage providers in the same pool.

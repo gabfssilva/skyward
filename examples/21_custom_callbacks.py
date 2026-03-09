@@ -105,10 +105,10 @@ def main():
         accelerator=sky.accelerators.T4(),
         image=sky.Image(pip=["numpy"]),
         allocation="spot-if-available",
-    ) as pool:
+    ) as compute:
         # Run some training steps
         for i in range(5):
-            result = train_step(i) >> pool
+            result = train_step(i) >> compute
             print(f"Batch {i}: loss={result['loss']:.4f}")
 
 
@@ -130,8 +130,8 @@ def main_with_pool_callback():
         accelerator=sky.accelerators.T4(),
         allocation="spot-if-available",
         on_event=simple_callback,
-    ) as pool:
-        result = train_step(0) >> pool
+    ) as compute:
+        result = train_step(0) >> compute
         print(f"Result: {result}")
 
 

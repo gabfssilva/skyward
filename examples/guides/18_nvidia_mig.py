@@ -65,9 +65,9 @@ if __name__ == "__main__":
         worker=sky.Worker(concurrency=PARTITIONS, executor="process"),
         image=sky.Image(pip=["torch"]),
         plugins=[sky.plugins.mig(profile=PROFILE)],
-    ) as pool:
+    ) as compute:
         tasks = [train_on_partition(epochs=10, lr=1e-3) for _ in range(PARTITIONS)]
-        results = list(sky.gather(*tasks, stream=True) >> pool)
+        results = list(sky.gather(*tasks, stream=True) >> compute)
 
         for r in sorted(results, key=lambda x: x["worker"]):
             print(

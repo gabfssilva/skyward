@@ -34,10 +34,10 @@ if __name__ == "__main__":
         memory_gb=1,
         vcpus=1,
         image=sky.Image(pip=['torch', 'scipy', 'marimo'])
-    ) as pool:
-        all_results = hello(10) @ pool
+    ) as compute:
+        all_results = hello(10) @ compute
 
-        results = sky.gather(*(hello(i) for i in range(30))) >> pool
+        results = sky.gather(*(hello(i) for i in range(30))) >> compute
 
         for r in all_results:
             print(r)

@@ -34,8 +34,8 @@ class App:
     Examples
     --------
     >>> with sky.App(console=True):
-    ...     with sky.ComputePool(...) as pool:
-    ...         result = train(data) >> pool
+    ...     with sky.ComputePool(...) as compute:
+    ...         result = train(data) >> compute
     """
     console: bool = True
 

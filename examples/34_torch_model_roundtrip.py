@@ -135,9 +135,9 @@ if __name__ == "__main__":
                 ),
             ],
         ),
-    ) as pool:
+    ) as compute:
         print("\nTraining remotely...")
-        trained_model: nn.Module = train(model, x_train, y_train, epochs=10, lr=1e-3) >> pool
+        trained_model: nn.Module = train(model, x_train, y_train, epochs=10, lr=1e-3) >> compute
 
     print("\nAfter training:")
     evaluate(trained_model, x_test, y_test)

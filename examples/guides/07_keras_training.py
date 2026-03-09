@@ -51,8 +51,8 @@ if __name__ == "__main__":
         accelerator=sky.accelerators.T4(),
         nodes=2,
         plugins=[sky.plugins.jax(), sky.plugins.keras(backend="jax")],
-    ) as pool:
-        results = train_mnist() @ pool
+    ) as compute:
+        results = train_mnist() @ compute
 
         for r in results:
             node, samples = r['node'], r['samples']

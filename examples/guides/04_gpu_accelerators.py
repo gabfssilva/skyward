@@ -44,10 +44,10 @@ if __name__ == "__main__":
         provider=sky.VastAI(),
         accelerator=sky.accelerators.L40S(),
         image=sky.Image(pip=["torch"]),
-    ) as pool:
-        info = gpu_info() >> pool
+    ) as compute:
+        info = gpu_info() >> compute
         print(f"Instance: {info}")
 
-        result = matrix_benchmark(4096) >> pool
+        result = matrix_benchmark(4096) >> compute
         cpu_time, gpu_time, speedup = result['cpu'], result['gpu'], result['speedup']
         print(f"CPU: {cpu_time:.3f}s | GPU: {gpu_time:.3f}s | Speedup: {speedup:.0f}x")

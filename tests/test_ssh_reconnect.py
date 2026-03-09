@@ -158,14 +158,14 @@ class TestSSHReconnect:
                 default_compute_timeout=30,
                 console=False,
             ),
-        ) as pool:
+        ) as compute:
 
             @sky.function
             def add(a: int, b: int) -> int:
                 return a + b
 
             # 1) Pool works normally
-            assert add(1, 2) >> pool == 3
+            assert add(1, 2) >> compute == 3
 
             # 2) Kill sshd — breaks all SSH connections.
             #    Respawning entrypoint restarts sshd in ~1s.
@@ -179,7 +179,7 @@ class TestSSHReconnect:
             result = None
             while time.monotonic() < deadline:
                 try:
-                    result = add(10, 20) >> pool
+                    result = add(10, 20) >> compute
                     break
                 except (RuntimeError, TimeoutError):
                     time.sleep(2)

@@ -28,9 +28,9 @@ if __name__ == "__main__":
         provider=sky.AWS(),
         worker=sky.Worker(concurrency=2, executor="process"),
         nodes=5,
-    ) as pool:
+    ) as compute:
         tasks = sky.gather(*(cpu_burn(i) for i in range(total)), stream=True)
-        results = tasks.with_timeout(60 * 10) >> pool
+        results = tasks.with_timeout(60 * 10) >> compute
 
         for r in results:
             print(f"Task {r['task_id']}: {r['iterations']:,} iterations in {r['elapsed']}s")

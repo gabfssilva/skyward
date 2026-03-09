@@ -54,7 +54,7 @@ with sky.Compute(
     nodes=10,
     worker=sky.Worker(concurrency=10),
     plugins=[sky.plugins.joblib()],
-) as pool:
+) as compute:
     results = Parallel(n_jobs=-1)(
         delayed(slow_task)(i) for i in range(2000)
     )
@@ -73,7 +73,7 @@ with sky.Compute(
     vcpus=64,
     worker=sky.Worker(concurrency=120),
     plugins=[sky.plugins.joblib()],
-) as pool:
+) as compute:
     results = Parallel(n_jobs=-1)(
         delayed(slow_task)(i) for i in range(20000)
     )
@@ -91,7 +91,7 @@ with sky.Compute(
     nodes=4,
     worker=sky.Worker(concurrency=4),
     plugins=[sky.plugins.sklearn()],
-) as pool:
+) as compute:
     grid = GridSearchCV(SVC(), param_grid, cv=5, n_jobs=-1)
     grid.fit(X, y)
 ```

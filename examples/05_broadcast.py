@@ -31,10 +31,10 @@ if __name__ == "__main__":
         nodes=4,
         accelerator=sky.accelerators.T4G(),
         image=sky.Image(skyward_source='local'),
-    ) as pool:
+    ) as compute:
         print("\nProcessing data across all nodes...")
         data = list(range(1000))  # Full dataset
-        partition_results = process_partition(data) @ pool
+        partition_results = process_partition(data) @ compute
 
         total_sum = 0
         for result in partition_results:
