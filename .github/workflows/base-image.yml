@@ -17,11 +17,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: arduino/setup-task@v2
-      - uses: docker/login-action@v3
+      - name: Login to GHCR
+        uses: Wandalen/wretry.action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          action: docker/login-action@v3
+          with: |
+            registry: ghcr.io
+            username: ${{ github.actor }}
+            password: ${{ secrets.GITHUB_TOKEN }}
+          attempt_limit: 3
+          attempt_delay: 10000
       - name: Build base image
         run: task docker:build PYTHON_VERSION=${{ matrix.python-version }}
       - name: Push base image
