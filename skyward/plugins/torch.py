@@ -9,8 +9,8 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from skyward.accelerators import Accelerator
+from skyward.api.plugin import Plugin
 from skyward.api.spec import PipIndex
-from skyward.plugins.plugin import Plugin
 
 if TYPE_CHECKING:
     from skyward.api.model import Cluster

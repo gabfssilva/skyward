@@ -11,11 +11,12 @@ Usage:
         ...
 """
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING, Any
 
-from .plugin import Plugin, around_app, around_client, around_process
+from skyward.api.plugin import Plugin as Plugin
+from skyward.api.plugin import around_app as around_app
+from skyward.api.plugin import around_client as around_client
+from skyward.api.plugin import around_process as around_process
 
 if TYPE_CHECKING:
     from .cuml import cuml
@@ -57,14 +58,15 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
 }
 
 
-def __getattr__(name: str) -> Any:
-    if name in _LAZY_IMPORTS:
-        import importlib
-        import sys
+if not TYPE_CHECKING:
+    def __getattr__(name: str) -> Any:
+        if name in _LAZY_IMPORTS:
+            import importlib
+            import sys
 
-        module_path, attr = _LAZY_IMPORTS[name]
-        module = importlib.import_module(module_path)
-        value = getattr(module, attr)
-        setattr(sys.modules[__name__], name, value)
-        return value
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+            module_path, attr = _LAZY_IMPORTS[name]
+            module = importlib.import_module(module_path)
+            value = getattr(module, attr)
+            setattr(sys.modules[__name__], name, value)
+            return value
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

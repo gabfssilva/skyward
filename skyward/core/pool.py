@@ -41,6 +41,7 @@ from skyward.actors.messages import (
     SubmitTask,
     TaskResult,
 )
+from skyward.api.plugin import Plugin
 from skyward.core.provider import ProviderConfig
 from skyward.distributed import (
     BarrierProxy,
@@ -55,7 +56,6 @@ from skyward.distributed import (
 from skyward.distributed.types import Consistency
 from skyward.observability.logger import logger
 from skyward.observability.logging import LogConfig, setup_logging, teardown_logging
-from skyward.plugins.plugin import Plugin
 
 from .context import _active_pool
 from .function import PendingFunction, PendingFunctionGroup
@@ -265,7 +265,7 @@ class ComputePool:
 
     def _decorate_fn(self, fn: Any) -> Any:
         """Wrap fn with plugin decorate chains."""
-        from skyward.plugins.plugin import chain_decorators
+        from skyward.api.plugin import chain_decorators
 
         decorators: list[Any] = [p.decorate for p in self._plugins if p.decorate is not None]
         return chain_decorators(fn, decorators)

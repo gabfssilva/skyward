@@ -10,7 +10,7 @@ import pytest
 
 import skyward as sky
 from skyward.api.pool import Pool
-from skyward.plugins.plugin import Plugin
+from skyward.api.plugin import Plugin
 
 pytestmark = [pytest.mark.e2e, pytest.mark.timeout(180), pytest.mark.xdist_group("plugin-e2e")]
 

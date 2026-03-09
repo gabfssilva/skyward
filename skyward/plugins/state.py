@@ -10,7 +10,7 @@ from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from skyward.plugins.plugin import AppLifecycle
+    from skyward.api.plugin import AppLifecycle
 
 _active_contexts: dict[str, AbstractContextManager[None]] = {}
 

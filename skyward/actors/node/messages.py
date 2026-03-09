@@ -19,7 +19,7 @@ from skyward.infra.ssh_actor import ConnectionFailed, ConnectionLost, Connection
 if TYPE_CHECKING:
     from casty import ClusterClient
 
-    from skyward.plugins.plugin import AppLifecycle, ProcessLifecycle
+    from skyward.api.plugin import AppLifecycle, ProcessLifecycle
 
 
 @dataclass(frozen=True, slots=True)

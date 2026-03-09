@@ -11,7 +11,7 @@ from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from skyward.plugins.plugin import ProcessLifecycle
+    from skyward.api.plugin import ProcessLifecycle
 
 _active_contexts: dict[str, AbstractContextManager[None]] = {}
 _worker_index: int | None = None

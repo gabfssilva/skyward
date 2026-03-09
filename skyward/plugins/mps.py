@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from skyward.plugins.plugin import Plugin
+from skyward.api.plugin import Plugin
 from skyward.providers.bootstrap import phase_simple
 
 if TYPE_CHECKING:

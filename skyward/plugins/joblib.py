@@ -14,8 +14,8 @@ import cloudpickle
 from joblib import parallel_backend
 from joblib.parallel import ParallelBackendBase, register_parallel_backend
 
+from skyward.api.plugin import Plugin
 from skyward.observability.logger import logger
-from skyward.plugins.plugin import Plugin
 
 if TYPE_CHECKING:
     from collections.abc import Callable

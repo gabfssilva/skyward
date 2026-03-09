@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal
 
-from skyward.plugins.plugin import Plugin
+from skyward.api.plugin import Plugin
 
 if TYPE_CHECKING:
     from skyward.api.model import Cluster

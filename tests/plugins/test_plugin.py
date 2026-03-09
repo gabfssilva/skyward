@@ -19,7 +19,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
 
 class TestPluginCreation:
     def test_minimal_plugin(self) -> None:
-        from skyward.plugins.plugin import Plugin
+        from skyward.api.plugin import Plugin
 
         p = Plugin(name="test")
         assert p.name == "test"
@@ -31,7 +31,7 @@ class TestPluginCreation:
         assert p.around_client is None
 
     def test_create_factory(self) -> None:
-        from skyward.plugins.plugin import Plugin
+        from skyward.api.plugin import Plugin
 
         p = Plugin.create("my-plugin")
         assert p.name == "my-plugin"
@@ -39,7 +39,7 @@ class TestPluginCreation:
         assert p.bootstrap is None
 
     def test_direct_construction_with_all_fields(self) -> None:
-        from skyward.plugins.plugin import Plugin
+        from skyward.api.plugin import Plugin
 
         transform = lambda img, cluster: img  # noqa: E731
         bootstrap_factory = lambda cluster: ("echo hello",)  # noqa: E731
@@ -66,7 +66,7 @@ class TestPluginCreation:
         assert p.around_client is around_client
 
     def test_frozen(self) -> None:
-        from skyward.plugins.plugin import Plugin
+        from skyward.api.plugin import Plugin
 
         p = Plugin(name="frozen")
         with pytest.raises(FrozenInstanceError):
@@ -80,7 +80,7 @@ class TestPluginCreation:
 
 class TestBuilderChain:
     def test_with_image_transform(self) -> None:
-        from skyward.plugins.plugin import Plugin
+        from skyward.api.plugin import Plugin
 
         transform = lambda img, cluster: img  # noqa: E731
         p = Plugin.create("t").with_image_transform(transform)
@@ -88,42 +88,42 @@ class TestBuilderChain:
         assert p.name == "t"
 
     def test_with_bootstrap(self) -> None:
-        from skyward.plugins.plugin import Plugin
+        from skyward.api.plugin import Plugin
 
         factory = lambda cluster: ("echo 1",)  # noqa: E731
         p = Plugin.create("b").with_bootstrap(factory)
         assert p.bootstrap is factory
 
     def test_with_decorator(self) -> None:
-        from skyward.plugins.plugin import Plugin
+        from skyward.api.plugin import Plugin
 
         dec = lambda fn: fn  # noqa: E731
         p = Plugin.create("d").with_decorator(dec)
         assert p.decorate is dec
 
     def test_with_around_app(self) -> None:
-        from skyward.plugins.plugin import Plugin
+        from skyward.api.plugin import Plugin
 
         hook = MagicMock()
         p = Plugin.create("a").with_around_app(hook)
         assert p.around_app is hook
 
     def test_with_around_process(self) -> None:
-        from skyward.plugins.plugin import Plugin
+        from skyward.api.plugin import Plugin
 
         hook = MagicMock()
         p = Plugin.create("p").with_around_process(hook)
         assert p.around_process is hook
 
     def test_with_around_client(self) -> None:
-        from skyward.plugins.plugin import Plugin
+        from skyward.api.plugin import Plugin
 
         hook = MagicMock()
         p = Plugin.create("c").with_around_client(hook)
         assert p.around_client is hook
 
     def test_builder_returns_new_instance(self) -> None:
-        from skyward.plugins.plugin import Plugin
+        from skyward.api.plugin import Plugin
 
         original = Plugin.create("immutable")
         with_transform = original.with_image_transform(lambda img, cluster: img)
@@ -138,7 +138,7 @@ class TestBuilderChain:
         assert with_decorator is not original
 
     def test_full_builder_chain(self) -> None:
-        from skyward.plugins.plugin import Plugin
+        from skyward.api.plugin import Plugin
 
         transform = lambda img, cluster: img  # noqa: E731
         bootstrap_factory = lambda cluster: ("echo setup",)  # noqa: E731
@@ -172,7 +172,7 @@ class TestBuilderChain:
 
 class TestTransformComposition:
     def test_single_transform(self) -> None:
-        from skyward.plugins.plugin import Plugin
+        from skyward.api.plugin import Plugin
 
         calls: list[str] = []
 
@@ -190,7 +190,7 @@ class TestTransformComposition:
     def test_transform_can_modify_image(self) -> None:
         from dataclasses import dataclass, replace
 
-        from skyward.plugins.plugin import Plugin
+        from skyward.api.plugin import Plugin
 
         @dataclass(frozen=True)
         class FakeImage:
@@ -209,7 +209,7 @@ class TestTransformComposition:
     def test_chained_transforms_compose(self) -> None:
         from dataclasses import dataclass, replace
 
-        from skyward.plugins.plugin import Plugin
+        from skyward.api.plugin import Plugin
 
         @dataclass(frozen=True)
         class FakeImage:
@@ -240,7 +240,7 @@ class TestTransformComposition:
 
 class TestChainDecorators:
     def test_empty_decorators_returns_fn(self) -> None:
-        from skyward.plugins.plugin import chain_decorators
+        from skyward.api.plugin import chain_decorators
 
         def original(x: int) -> int:
             return x * 2
@@ -249,7 +249,7 @@ class TestChainDecorators:
         assert wrapped is original
 
     def test_single_decorator(self) -> None:
-        from skyward.plugins.plugin import chain_decorators
+        from skyward.api.plugin import chain_decorators
 
         calls: list[str] = []
 
@@ -269,7 +269,7 @@ class TestChainDecorators:
         assert calls == ["decorator", "original"]
 
     def test_multiple_decorators_order(self) -> None:
-        from skyward.plugins.plugin import chain_decorators
+        from skyward.api.plugin import chain_decorators
 
         calls: list[str] = []
 
@@ -299,7 +299,7 @@ class TestChainDecorators:
         assert calls == ["a-before", "b-before", "original", "b-after", "a-after"]
 
     def test_decorator_can_modify_args(self) -> None:
-        from skyward.plugins.plugin import chain_decorators
+        from skyward.api.plugin import chain_decorators
 
         def original(x: int) -> int:
             return x
@@ -313,7 +313,7 @@ class TestChainDecorators:
         assert wrapped(5) == 10
 
     def test_decorator_can_modify_kwargs(self) -> None:
-        from skyward.plugins.plugin import chain_decorators
+        from skyward.api.plugin import chain_decorators
 
         def original(x: int = 0) -> int:
             return x
@@ -327,7 +327,7 @@ class TestChainDecorators:
         assert wrapped() == 42
 
     def test_decorator_can_short_circuit(self) -> None:
-        from skyward.plugins.plugin import chain_decorators
+        from skyward.api.plugin import chain_decorators
 
         calls: list[str] = []
 
@@ -345,7 +345,7 @@ class TestChainDecorators:
         assert calls == []
 
     def test_three_decorators(self) -> None:
-        from skyward.plugins.plugin import chain_decorators
+        from skyward.api.plugin import chain_decorators
 
         calls: list[int] = []
 
@@ -375,7 +375,7 @@ class TestChainDecorators:
         assert calls == [1, 2, 3]
 
     def test_preserves_return_value(self) -> None:
-        from skyward.plugins.plugin import chain_decorators
+        from skyward.api.plugin import chain_decorators
 
         def original() -> dict:
             return {"key": "value"}

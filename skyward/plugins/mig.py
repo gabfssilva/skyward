@@ -30,8 +30,8 @@ from contextlib import contextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from skyward.api.plugin import Plugin
 from skyward.observability.metrics import Metric
-from skyward.plugins.plugin import Plugin
 from skyward.providers.bootstrap import phase_simple
 
 if TYPE_CHECKING:

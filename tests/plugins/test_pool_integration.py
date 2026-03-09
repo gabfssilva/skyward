@@ -11,7 +11,7 @@ import pytest
 
 from skyward.core.pool import ComputePool
 from skyward.core.spec import Image
-from skyward.plugins.plugin import Plugin
+from skyward.api.plugin import Plugin
 from skyward.providers import Container
 
 pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]

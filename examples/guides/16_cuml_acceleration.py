@@ -53,7 +53,7 @@ if __name__ == "__main__":
         ],
     ) as pool:
         # warm-up
-        train_on_gpu(N_SAMPLES) >> pool
+        _ = train_on_gpu(N_SAMPLES) >> pool
 
         result = train_on_gpu(N_SAMPLES) >> pool
 
