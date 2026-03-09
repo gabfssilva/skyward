@@ -121,6 +121,7 @@ nav:
           - Multi-provider selection: guides/multi-provider.md
       - Testing:
           - Local containers: guides/local-containers.md
+          - Worker executors: guides/worker-executors.md
       - Misc:
           - Joblib concurrency: guides/joblib-concurrency.md
           - Scikit grid search: guides/scikit-grid-search.md

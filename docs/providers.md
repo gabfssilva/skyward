@@ -58,6 +58,8 @@ with sky.Compute(
 | `security_group_id` | `str or None` | `None` | Security group. Auto-created if not set. |
 | `instance_profile_arn` | `str or None` | `None` | IAM instance profile. Auto-created if not set. |
 | `username` | `str or None` | `None` | SSH user. Auto-detected from AMI if not set. |
+| `instance_timeout` | `int` | `300` | Safety timeout in seconds (auto-shutdown timer) |
+| `request_timeout` | `int` | `30` | HTTP request timeout in seconds |
 | `allocation_strategy` | `str` | `"price-capacity-optimized"` | EC2 Fleet spot allocation strategy |
 | `exclude_burstable` | `bool` | `False` | Exclude burstable instances (t3, t4g) |
 
@@ -196,13 +198,23 @@ with sky.Compute(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
+| `cluster_mode` | `ClusterMode` | `"individual"` | Cluster mode (`"instant"` or `"individual"`) |
+| `global_networking` | `bool or None` | `None` | Enable global networking |
 | `api_key` | `str or None` | `None` | API key (falls back to `RUNPOD_API_KEY` env var) |
 | `cloud_type` | `CloudType` | `SECURE` | `CloudType.SECURE` or `CloudType.COMMUNITY` |
+| `ubuntu` | `str` | `"newest"` | Ubuntu version (`"20.04"`, `"22.04"`, `"24.04"`, `"newest"`) |
 | `container_disk_gb` | `int` | `50` | Container disk size in GB |
 | `volume_gb` | `int` | `20` | Persistent volume size in GB |
 | `volume_mount_path` | `str` | `"/workspace"` | Volume mount path |
 | `data_center_ids` | `tuple or "global"` | `"global"` | Preferred data centers or `"global"` for auto-selection |
 | `ports` | `tuple[str, ...]` | `("22/tcp",)` | Port mappings |
+| `provision_timeout` | `float` | `300.0` | Instance provision timeout in seconds |
+| `bootstrap_timeout` | `float` | `600.0` | Bootstrap timeout in seconds |
+| `instance_timeout` | `int` | `300` | Auto-shutdown safety timeout in seconds |
+| `request_timeout` | `int` | `30` | HTTP request timeout in seconds |
+| `cpu_clock` | `str` | `"3c"` | CPU clock tier (`"3c"` or `"5c"`) |
+| `bid_multiplier` | `float` | `1` | Multiplier for spot bid price |
+| `registry_auth` | `str or None` | `"docker hub"` | Container registry credential name. `None` to skip. |
 
 ## Verda
 
@@ -238,6 +250,8 @@ with sky.Compute(
 | `client_id` | `str or None` | `None` | OAuth2 client ID (falls back to `VERDA_CLIENT_ID`) |
 | `client_secret` | `str or None` | `None` | OAuth2 client secret (falls back to `VERDA_CLIENT_SECRET`) |
 | `ssh_key_id` | `str or None` | `None` | Specific SSH key ID to use |
+| `instance_timeout` | `int` | `300` | Safety timeout in seconds |
+| `request_timeout` | `int` | `30` | HTTP request timeout in seconds |
 
 ### Available regions
 
@@ -280,12 +294,16 @@ with sky.Compute(
 |-----------|------|---------|-------------|
 | `api_key` | `str or None` | `None` | API key (falls back to `VAST_API_KEY`) |
 | `min_reliability` | `float` | `0.95` | Minimum host reliability score (0.0-1.0) |
+| `verified_only` | `bool` | `True` | Only select offers from verified hosts |
 | `min_cuda` | `float` | `12.0` | Minimum CUDA version |
 | `geolocation` | `str or None` | `None` | Filter by region/country (e.g., `"US"`, `"EU"`) |
 | `bid_multiplier` | `float` | `1.2` | Multiplier for spot bid price |
+| `instance_timeout` | `int` | `300` | Auto-shutdown safety timeout in seconds |
+| `request_timeout` | `int` | `30` | HTTP request timeout in seconds |
 | `docker_image` | `str or None` | `None` | Base Docker image for containers |
 | `disk_gb` | `int` | `100` | Disk space in GB |
 | `use_overlay` | `bool` | `True` | Enable overlay networking for multi-node clusters |
+| `overlay_timeout` | `int` | `120` | Timeout for overlay operations in seconds |
 | `require_direct_port` | `bool` | `False` | Only select offers with direct port access |
 
 VastAI also provides a helper for building NVIDIA CUDA base images:
@@ -325,9 +343,16 @@ with sky.Compute(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `api_key` | `str or None` | `None` | API key (falls back to `HYPERSTACK_API_KEY` env var) |
-| `region` | `str` | `"CANADA-1"` | Deployment region. Options: `CANADA-1`, `NORWAY-1`, `US-1` |
+| `region` | `str or tuple or None` | `None` | Deployment region(s). A single string (e.g. `"CANADA-1"`), a tuple (e.g. `("CANADA-1", "NORWAY-1")`), or `None` to search all regions. |
+| `image` | `str or None` | `None` | OS image name override. Auto-selects newest Ubuntu + CUDA image if not set. |
+| `network_optimised` | `bool` | `False` | Require network-optimised environments with SR-IOV support |
+| `network_optimised_regions` | `tuple[str, ...]` | `("CANADA-1", "US-1")` | Regions known to support network-optimised environments |
+| `object_storage_region` | `str` | `"CANADA-1"` | Region for S3-compatible object storage (volume mounts) |
+| `object_storage_endpoint` | `str` | `"https://ca1.obj.nexgencloud.io"` | Endpoint URL for S3-compatible object storage |
 | `instance_timeout` | `int` | `300` | Auto-shutdown safety timeout in seconds |
 | `request_timeout` | `int` | `30` | HTTP request timeout in seconds |
+| `teardown_timeout` | `int` | `120` | Timeout for teardown operations in seconds |
+| `teardown_poll_interval` | `float` | `2.0` | Poll interval during teardown in seconds |
 
 ### Available regions
 
@@ -371,11 +396,12 @@ with sky.Compute(
 |-----------|------|---------|-------------|
 | `api_key` | `str or None` | `None` | API key (falls back to `TENSORDOCK_API_KEY`) |
 | `api_token` | `str or None` | `None` | API token (falls back to `TENSORDOCK_API_TOKEN`) |
-| `location` | `str or None` | `None` | Country code filter (e.g., `"us"`, `"de"`, `"gb"`). Global if not set. |
+| `location` | `str or None` | `None` | Country filter (e.g., `"United States"`, `"Germany"`). Global if not set. |
+| `tier` | `int or None` | `None` | Hostnode tier (0-4). `None` for any tier. |
 | `storage_gb` | `int` | `100` | Disk storage per VM in GB |
-| `operating_system` | `str` | `"Ubuntu 22.04 LTS"` | OS image |
+| `operating_system` | `str` | `"ubuntu2404"` | OS image ID (e.g., `"ubuntu2404"`, `"ubuntu2204"`) |
 | `instance_timeout` | `int` | `300` | Auto-shutdown in seconds |
-| `request_timeout` | `int` | `30` | HTTP request timeout in seconds |
+| `request_timeout` | `int` | `120` | HTTP request timeout in seconds |
 | `min_ram_gb` | `int or None` | `None` | Minimum RAM per VM in GB |
 | `min_vcpus` | `int or None` | `None` | Minimum vCPUs per VM |
 
@@ -405,7 +431,7 @@ with sky.Compute(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `image` | `str` | `"ubuntu:24.04"` | Docker image |
+| `image` | `str` | `"ghcr.io/gabfssilva/skyward:py{python_version}"` | Docker image (Python version auto-detected) |
 | `ssh_user` | `str` | `"root"` | SSH user inside the container |
 | `binary` | `str` | `"docker"` | Container runtime (`"docker"`, `"podman"`, `"nerdctl"`) |
 | `container_prefix` | `str or None` | `None` | Prefix for container names |

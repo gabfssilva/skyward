@@ -30,9 +30,9 @@ The accelerator detection uses pattern matching on `cluster.spec.accelerator`. I
 
 The packages and index are appended to the existing image using `replace()`, preserving any packages and indexes already defined in the `Image` or added by other plugins.
 
-### Worker lifecycle (`around_app`)
+### Worker lifecycle (`around_process`)
 
-The `around_app` hook initializes PyTorch's distributed process group once per worker process. When the first task arrives, the hook:
+The `around_process` hook initializes PyTorch's distributed process group once per executor subprocess. When the first task arrives, the hook:
 
 1. Imports `torch` and `torch.distributed` (these are remote-only imports — PyTorch does not need to be installed locally).
 2. Reads `instance_info()` from the hook's parameter to get the cluster topology.

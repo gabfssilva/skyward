@@ -18,7 +18,7 @@ When you have a dynamic number of tasks — iterating over a list of chunks, a s
 --8<-- "examples/guides/02_parallel_execution.py:33:35"
 ```
 
-`gather()` collects multiple `PendingCompute` values into a `PendingComputeGroup`. When dispatched with `>>`, all tasks execute concurrently on the pool's nodes (distributed via round-robin) and the results come back as a tuple. The pool handles serialization, dispatch, and collection — you just express which tasks should run in parallel.
+`gather()` collects multiple `PendingFunction` values into a `PendingFunctionGroup`. When dispatched with `>>`, all tasks execute concurrently on the pool's nodes (distributed via round-robin) and the results come back as a tuple. The pool handles serialization, dispatch, and collection — you just express which tasks should run in parallel.
 
 ## Type-safe parallel with `&`
 
@@ -28,7 +28,7 @@ When the number of parallel tasks is fixed and you want full type inference, use
 --8<-- "examples/guides/02_parallel_execution.py:37:39"
 ```
 
-The `&` operator creates the same `PendingComputeGroup` that `gather()` produces, but with a key difference: the types are preserved individually. Here, `a` and `b` are both `int` because `multiply` returns `int`. If you chain three different functions — `preprocess() & train() & evaluate()` — the result type is `tuple[DataFrame, Model, float]`, not `tuple[Any, ...]`.
+The `&` operator creates the same `PendingFunctionGroup` that `gather()` produces, but with a key difference: the types are preserved individually. Here, `a` and `b` are both `int` because `multiply` returns `int`. If you chain three different functions — `preprocess() & train() & evaluate()` — the result type is `tuple[DataFrame, Model, float]`, not `tuple[Any, ...]`.
 
 ## Mixing different computations
 

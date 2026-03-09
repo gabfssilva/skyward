@@ -6,7 +6,7 @@ The key insight is that plugins operate at the pool level, not at the function l
 
 ## The Plugin dataclass
 
-A `Plugin` is a frozen dataclass with five optional hooks. Each hook corresponds to a different phase in the pool and worker lifecycle. You do not need to implement all five — most plugins use two or three.
+A `Plugin` is a frozen dataclass with six optional hooks. Each hook corresponds to a different phase in the pool and worker lifecycle. You do not need to implement all six — most plugins use two or three.
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -16,6 +16,7 @@ class Plugin:
     bootstrap: BootstrapFactory | None = None
     decorate: TaskDecorator | None = None
     around_app: AppLifecycle | None = None
+    around_process: ProcessLifecycle | None = None
     around_client: ClientLifecycle | None = None
 ```
 
@@ -27,9 +28,13 @@ The hooks are:
 
 **`decorate`** wraps each `@sky.function` function at execution time on the remote worker. It is a classic Python decorator: it takes a function and returns a function. This is for per-task logic that must run every time a function executes — things like logging, metrics collection, or framework-specific wrappers that depend on each call's arguments.
 
-**`around_app`** is a context manager that runs once per worker process. It receives an `InstanceInfo` and returns a context manager. The context is entered when the first task arrives and stays active for the lifetime of the worker. This is designed for one-time, process-wide initialization — things that must happen exactly once and persist. The `torch` plugin uses this for `dist.init_process_group()`, the `jax` plugin for `jax.distributed.initialize()`, the `keras` plugin for `DataParallel` distribution setup, and the `cuml` plugin for `cuml.accel.install()`. All are irreversible, process-global operations that should not be repeated per task.
+**`around_app`** is a context manager that runs once in the main worker process. It receives an `InstanceInfo` and returns a context manager. The context is entered at worker startup and stays active for the lifetime of the worker. This is designed for one-time, process-wide initialization — things that must happen exactly once and persist.
 
 The state module (`skyward.plugins.state`) tracks which `around_app` hooks have been entered. It stores the context managers in a module-level dictionary and checks before entering — if the key already exists, it is a no-op. This makes the hook idempotent: even if multiple tasks execute on the same worker, each `around_app` is entered exactly once.
+
+**`around_process`** is a context manager that runs once per executor subprocess. It receives an `InstanceInfo` and returns a context manager. This hook is lazy — it enters on the first task execution in each subprocess, after environment variables are propagated. Only relevant when `executor="process"`. The `torch` plugin uses this for `dist.init_process_group()`, the `jax` plugin for `jax.distributed.initialize()`, the `keras` plugin for `DataParallel` distribution setup, and the `cuml` plugin for `cuml.accel.install()`. All are irreversible, process-global operations that should not be repeated per task.
+
+The process state module (`skyward.plugins.process_state`) tracks which `around_process` hooks have been entered, with the same idempotency guarantees as `around_app`.
 
 **`around_client`** is a context manager that runs on the client side, not the worker. It receives the `Compute` pool and the `Cluster`, and wraps the pool's entire active lifetime. The `joblib` and `sklearn` plugins use this to register the `SkywardBackend` as joblib's parallel backend, so that any `Parallel(n_jobs=-1)` call inside the `with` block dispatches work to the cluster instead of local processes.
 
@@ -60,13 +65,15 @@ When the pool starts (`Compute.__enter__`):
 
 When a task executes on a worker:
 
-4. **`around_app`** hooks are lazily entered on first task execution (idempotent — skipped if already active).
-5. **`decorate`** hooks wrap the function. If multiple plugins have decorators, they are chained: the first plugin's decorator is outermost, the last is innermost. The chaining uses `functools.reduce` over `reversed(decorators)`, so the first plugin listed in `plugins=[...]` runs first and the last runs last.
+4. **`around_app`** hooks are entered at worker startup (idempotent — skipped if already active).
+5. **`around_process`** hooks are lazily entered on first task execution in each executor subprocess (idempotent — skipped if already active). Only relevant when `executor="process"`.
+6. **`decorate`** hooks wrap the function. If multiple plugins have decorators, they are chained: the first plugin's decorator is outermost, the last is innermost. The chaining uses `functools.reduce` over `reversed(decorators)`, so the first plugin listed in `plugins=[...]` runs first and the last runs last.
 
 When the pool stops (`Compute.__exit__`):
 
-6. **`around_client`** contexts are exited in reverse order.
-7. **`around_app`** contexts are exited in reverse order when the worker process shuts down.
+7. **`around_client`** contexts are exited in reverse order.
+8. **`around_process`** contexts are exited in reverse order when executor subprocesses shut down.
+9. **`around_app`** contexts are exited in reverse order when the worker process shuts down.
 
 ## Plugin composition
 
@@ -85,15 +92,15 @@ with sky.Compute(
     train() >> pool
 ```
 
-The `torch` plugin adds PyTorch to pip and initializes DDP via `around_app`. The `huggingface` plugin adds transformers, datasets, and tokenizers to pip, sets `HF_TOKEN`, and runs `huggingface-cli login`. Their image transforms compose (PyTorch packages + HuggingFace packages), and their `around_app` hooks are entered independently in plugin order.
+The `torch` plugin adds PyTorch to pip and initializes DDP via `around_process`. The `huggingface` plugin adds transformers, datasets, and tokenizers to pip, sets `HF_TOKEN`, and runs `huggingface-cli login`. Their image transforms compose (PyTorch packages + HuggingFace packages), and their `around_process` hooks are entered independently in plugin order.
 
-Order can matter. When using Keras with JAX, the JAX plugin should come first because its `around_app` initializes the distributed runtime that Keras's `decorate` depends on:
+Order can matter. When using Keras with JAX, the JAX plugin should come first because its `around_process` initializes the distributed runtime that Keras depends on:
 
 ```python
 plugins=[sky.plugins.jax(), sky.plugins.keras(backend="jax")]
 ```
 
-The JAX plugin's `around_app` calls `jax.distributed.initialize()`, and Keras's `around_app` calls `keras.distribution.set_distribution(DataParallel(...))`. The distribution setup needs JAX's device mesh to already be visible, so JAX must initialize first. Since `around_app` hooks are entered in plugin order, listing JAX first ensures the correct sequence.
+The JAX plugin's `around_process` calls `jax.distributed.initialize()`, and Keras's `around_process` calls `keras.distribution.set_distribution(DataParallel(...))`. The distribution setup needs JAX's device mesh to already be visible, so JAX must initialize first. Since `around_process` hooks are entered in plugin order, listing JAX first ensures the correct sequence.
 
 ## Built-in plugins
 
@@ -101,13 +108,13 @@ Skyward ships with eight plugins:
 
 | Plugin | Primary Hooks | Purpose |
 |--------|--------------|---------|
-| [`torch`](torch.md) | `transform`, `around_app` | PyTorch installation and DDP initialization |
-| [`jax`](jax.md) | `transform`, `around_app` | JAX installation and distributed initialization |
-| [`keras`](keras.md) | `transform`, `around_app` | Keras backend configuration and DataParallel |
+| [`torch`](torch.md) | `transform`, `around_process` | PyTorch installation and DDP initialization |
+| [`jax`](jax.md) | `transform`, `around_process` | JAX installation and distributed initialization |
+| [`keras`](keras.md) | `transform`, `around_process` | Keras backend configuration and DataParallel |
 | [`huggingface`](huggingface.md) | `transform`, `bootstrap` | Transformers, datasets, tokenizers, and auth |
 | [`joblib`](joblib.md) | `transform`, `around_client` | Distributed joblib parallel backend |
 | [`sklearn`](sklearn.md) | `transform`, `around_client` | Scikit-learn with distributed joblib |
-| [`cuml`](cuml.md) | `transform`, `around_app` | GPU-accelerated scikit-learn via RAPIDS cuML |
+| [`cuml`](cuml.md) | `transform`, `around_process` | GPU-accelerated scikit-learn via RAPIDS cuML |
 | [`mps`](mps.md) | `transform`, `bootstrap` | NVIDIA Multi-Process Service for GPU sharing |
 
 ## Custom plugins
@@ -149,7 +156,7 @@ with sky.Compute(
 ## Next steps
 
 - [PyTorch](torch.md) — DDP initialization and CUDA wheel management
-- [JAX](jax.md) — Distributed initialization with `around_app`
+- [JAX](jax.md) — Distributed initialization with `around_process`
 - [Keras](keras.md) — Backend-agnostic training with DataParallel
 - [Distributed Training](../distributed-training.md) — How plugins fit into multi-node training
 - [Getting Started](../getting-started.md) — First steps with Skyward

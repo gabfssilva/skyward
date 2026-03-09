@@ -212,7 +212,7 @@ During development, you'll want to test your functions without provisioning any 
 result = my_function.local(test_data)  # executes immediately, no cloud
 ```
 
-This bypasses the lazy computation entirely — no `PendingCompute`, no serialization, no pool required. It's the fastest way to iterate on function logic before sending it to the cloud.
+This bypasses the lazy computation entirely — no `PendingFunction`, no serialization, no pool required. It's the fastest way to iterate on function logic before sending it to the cloud.
 
 For integration testing with the full Skyward lifecycle (serialization, bootstrap, worker execution) but without cloud costs, use the `Container` provider:
 

@@ -55,9 +55,9 @@ def torch(
         if audio == 'latest':
             torch_packages.append('torchaudio')
         elif audio and (audio.startswith('>') or audio.startswith('==')):
-            torch_packages.append(f'torchaudio{vision}')
+            torch_packages.append(f'torchaudio{audio}')
         elif audio:
-            torch_packages.append(f'torchaudio=={vision}')
+            torch_packages.append(f'torchaudio=={audio}')
 
         pipindex = []
 

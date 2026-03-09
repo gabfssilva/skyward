@@ -6,7 +6,7 @@ This page walks through the concepts that make this possible.
 
 ## Lazy computation
 
-The central abstraction in Skyward is `@sky.function`. It transforms a regular function into a **lazy computation** — calling the function no longer executes it. Instead, it produces a `PendingCompute` object: a frozen, serializable description of *what* to compute, without committing to *where* or *when*.
+The central abstraction in Skyward is `@sky.function`. It transforms a regular function into a **lazy computation** — calling the function no longer executes it. Instead, it produces a `PendingFunction` object: a frozen, serializable description of *what* to compute, without committing to *where* or *when*.
 
 ```python
 import skyward as sky
@@ -18,14 +18,14 @@ def train(epochs: int) -> float:
     return model.fit(epochs=epochs)
 
 
-pending = train(10)  # nothing runs — returns PendingCompute[float]
+pending = train(10)  # nothing runs — returns PendingFunction[float]
 ```
 
 In functional programming, this pattern is known as reifying an **effect**. Calling `train(10)` doesn't produce a result — it produces a *description* of a computation that, when interpreted, will produce a result. The side effects (provisioning a GPU, transferring data, executing remotely) are not performed at the call site. They are deferred to an interpreter — in this case, the pool and its operators. This is the same idea behind `IO` in Haskell, `Effect` in ZIO, or `suspend` in Kotlin: separating the description of a program from its execution so that the runtime can decide how, where, and when to run it.
 
-Because `PendingCompute` is a value — not a running process — it can be serialized, sent over the network, and executed on a remote machine. It can also be composed: combined with other computations via `&`, collected into a `gather()`, or stored and dispatched later. None of this triggers execution. The program you're building is a data structure that only materializes when you commit to a target with `>>` or `@`.
+Because `PendingFunction` is a value — not a running process — it can be serialized, sent over the network, and executed on a remote machine. It can also be composed: combined with other computations via `&`, collected into a `gather()`, or stored and dispatched later. None of this triggers execution. The program you're building is a data structure that only materializes when you commit to a target with `>>` or `@`.
 
-The generic type is preserved throughout — `train(10)` produces `PendingCompute[float]`, and dispatching it returns `float`. Your type checker sees the same types whether the function runs locally or on a remote GPU.
+The generic type is preserved throughout — `train(10)` produces `PendingFunction[float]`, and dispatching it returns `float`. Your type checker sees the same types whether the function runs locally or on a remote GPU.
 
 If you need to bypass this and run the original function directly (for testing, debugging, or local profiling), every decorated function exposes the unwrapped version via `.local`:
 
@@ -122,9 +122,9 @@ with sky.Compute(
 
 `concurrency` sets the number of task slots per node. Total parallelism across the cluster is `nodes * concurrency` — four nodes with `concurrency=2` means eight tasks running simultaneously.
 
-The `executor` field determines *how* those tasks run. The default is `"process"`: each task executes in a separate OS process via `ProcessPoolExecutor`, which means each has its own Python interpreter and its own GIL. CPU-bound Python code saturates all available cores — a 2-vCPU machine with two concurrent tasks reaches 100% utilization. This is the right choice for numerical computation, data transformation, and training loops.
+The `executor` field determines *how* those tasks run. The default is `"auto"`, which resolves to `"thread"`: tasks run as threads inside the worker process. Threads share the GIL, so CPU-bound Python code is limited to one core regardless of concurrency. On a 2-vCPU machine, you'd see ~50% CPU. Threads are the right choice for I/O-bound work (network calls, disk reads) and for C extensions that release the GIL (NumPy, PyTorch inference). Distributed collections (`sky.dict()`, `sky.counter()`, etc.) work with both executors.
 
-The alternative is `"thread"`, which runs tasks as threads inside the worker process. Threads share the GIL, so CPU-bound Python code is limited to one core regardless of concurrency. On the same 2-vCPU machine, you'd see ~50% CPU. Threads are the right choice for I/O-bound work (network calls, disk reads) and for C extensions that release the GIL (NumPy, PyTorch inference). Distributed collections (`sky.dict()`, `sky.counter()`, etc.) work with both executors.
+The alternative is `"process"`, which runs each task in a separate OS process via `ProcessPoolExecutor`, meaning each has its own Python interpreter and its own GIL. CPU-bound Python code saturates all available cores — a 2-vCPU machine with two concurrent tasks reaches 100% utilization. This is the right choice for numerical computation, data transformation, and training loops.
 
 For a practical comparison with benchmarks, see the [Worker Executors](guides/worker-executors.md) guide.
 
@@ -132,7 +132,7 @@ For a practical comparison with benchmarks, see the [Worker Executors](guides/wo
 
 Most distributed computing frameworks require you to express execution through configuration files, job submission APIs, or method calls like `pool.submit(fn, args)`. Skyward takes a different approach: it uses Python's operator overloading to create a small vocabulary where the syntax itself communicates intent. The expression `train(10) >> pool` reads as "send this computation to the pool" — and that's exactly what it does.
 
-This works because `@sky.function` returns a `PendingCompute` value, not a result. Operators are defined on `PendingCompute` (via `__rshift__`, `__matmul__`, `__and__`, `__gt__`), and each one triggers a different dispatch strategy on the pool. The pool serializes the function and arguments with cloudpickle, sends the payload to the appropriate worker(s) over SSH, waits for the result, deserializes it, and returns it to the caller.
+This works because `@sky.function` returns a `PendingFunction` value, not a result. Operators are defined on `PendingFunction` (via `__rshift__`, `__matmul__`, `__and__`, `__gt__`), and each one triggers a different dispatch strategy on the pool. The pool serializes the function and arguments with cloudpickle, sends the payload to the appropriate worker(s) over SSH, waits for the result, deserializes it, and returns it to the caller.
 
 ### `>>` — Execute on one node
 
@@ -189,7 +189,7 @@ tasks = [process(chunk) for chunk in chunks]
 results = sky.gather(*tasks) >> pool
 ```
 
-Under the hood, `gather` creates a `PendingComputeGroup` — the same type that `&` produces — so the dispatch behavior is identical. The difference is purely syntactic: `&` is for a fixed set of typed computations, `gather` is for a dynamic collection.
+Under the hood, `gather` creates a `PendingFunctionGroup` — the same type that `&` produces — so the dispatch behavior is identical. The difference is purely syntactic: `&` is for a fixed set of typed computations, `gather` is for a dynamic collection.
 
 With `stream=True`, results are yielded as they complete rather than waiting for all of them. This is useful when tasks have variable duration and you want to start processing results early:
 

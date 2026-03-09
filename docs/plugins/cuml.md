@@ -10,7 +10,7 @@ Skyward's `cuml` plugin makes this practical without a local GPU. It installs th
 
 **Image transform** — Appends `cuml-cu12` (or the CUDA variant you specify) to the worker's pip dependencies and adds the NVIDIA pip index (`https://pypi.nvidia.com`) configured for that package. The RAPIDS packages are hosted on NVIDIA's own index, not PyPI, so the plugin handles the index configuration that you would otherwise need to set up manually in the `Image`.
 
-**Worker lifecycle (`around_app`)** — When the worker starts, the plugin calls `cuml.accel.install()`. This is cuML's zero-code-change acceleration entry point. It monkey-patches the scikit-learn namespace so that `from sklearn.ensemble import RandomForestClassifier` returns cuML's GPU implementation instead of scikit-learn's CPU one. The patching happens once, at worker startup, before any task runs. Every task on that worker benefits from it.
+**Worker lifecycle (`around_process`)** — When the executor subprocess starts, the plugin calls `cuml.accel.install()`. This is cuML's zero-code-change acceleration entry point. It monkey-patches the scikit-learn namespace so that `from sklearn.ensemble import RandomForestClassifier` returns cuML's GPU implementation instead of scikit-learn's CPU one. The patching happens once, at worker startup, before any task runs. Every task on that worker benefits from it.
 
 ## Parameters
 

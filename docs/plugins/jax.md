@@ -23,9 +23,9 @@ The `transform` hook modifies the worker's `Image` before bootstrap. It does two
 
 This means JAX and its CUDA bindings are installed from Google's official release channel during worker bootstrap. You do not need JAX installed locally — the plugin adds it to the remote environment.
 
-### Worker lifecycle (`around_app`)
+### Worker lifecycle (`around_process`)
 
-The `around_app` hook is a context manager that runs once when the worker process starts, before any task executes. It calls:
+The `around_process` hook is a context manager that runs once per executor subprocess, before any task executes. It calls:
 
 ```python
 jax.distributed.initialize(
@@ -88,7 +88,7 @@ with sky.Compute(
     results = train() @ pool
 ```
 
-Order matters here. The JAX plugin's `around_app` initializes the distributed runtime, and the Keras plugin sets `KERAS_BACKEND=jax` so Keras uses JAX as its computation backend. Together, they give you multi-node Keras training where JAX handles the distributed device mesh and Keras provides the high-level model API.
+Order matters here. The JAX plugin's `around_process` initializes the distributed runtime, and the Keras plugin sets `KERAS_BACKEND=jax` so Keras uses JAX as its computation backend. Together, they give you multi-node Keras training where JAX handles the distributed device mesh and Keras provides the high-level model API.
 
 The [Keras Training guide](../guides/keras-training.md) walks through a complete MNIST example using this combination.
 

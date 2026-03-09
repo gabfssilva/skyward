@@ -2,7 +2,7 @@
 
 Keras 3 is backend-agnostic: the same model definition compiles and runs on JAX, PyTorch, or TensorFlow. But Keras decides which backend to use at import time, reading the `KERAS_BACKEND` environment variable the moment you write `import keras`. If the variable is not set by then, Keras falls back to its default, and there is no way to change the backend after the fact. This makes environment configuration critical, and it is precisely what the `keras` plugin handles.
 
-`sky.plugins.keras()` ensures that `KERAS_BACKEND` is set correctly on every worker before any user code runs. It adds `keras` to the worker's pip dependencies, injects the environment variable into the bootstrap image, and re-sets it at worker startup as a safety net via the `around_app` hook. On multi-node JAX clusters, it goes further: it discovers all available devices, configures Keras's `DataParallel` distribution strategy, and synchronizes the random number generator across nodes so that weight initialization and dropout masks are reproducible across the cluster.
+`sky.plugins.keras()` ensures that `KERAS_BACKEND` is set correctly on every worker before any user code runs. It adds `keras` to the worker's pip dependencies, injects the environment variable into the bootstrap image, and re-sets it at worker startup as a safety net via the `around_process` hook. On multi-node JAX clusters, it goes further: it discovers all available devices, configures Keras's `DataParallel` distribution strategy, and synchronizes the random number generator across nodes so that weight initialization and dropout masks are reproducible across the cluster.
 
 ## Parameters
 
@@ -16,7 +16,7 @@ The default is `"jax"` because JAX offers the tightest integration with Skyward'
 
 ### JAX backend
 
-The JAX backend is the recommended choice for multi-node Keras training on Skyward. When the plugin detects that `total_nodes > 1` and the backend is `"jax"`, it performs three steps inside the `around_app` hook:
+The JAX backend is the recommended choice for multi-node Keras training on Skyward. When the plugin detects that `total_nodes > 1` and the backend is `"jax"`, it performs three steps inside the `around_process` hook:
 
 1. Calls `keras.distribution.list_devices()` to discover all JAX devices visible to this process (after `jax.distributed.initialize()` has been called by the JAX plugin).
 2. Creates a `DataParallel` distribution with the discovered devices and calls `keras.distribution.set_distribution()` to activate it. This tells Keras to shard data and replicate model parameters across all devices automatically.
