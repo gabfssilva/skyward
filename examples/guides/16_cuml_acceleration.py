@@ -43,7 +43,7 @@ def train_on_gpu(n_samples: int):
 if __name__ == "__main__":
     print(f"MNIST subset: {N_SAMPLES:,} samples, 784 features\n")
 
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         accelerator=sky.accelerators.L4(),
         nodes=1,

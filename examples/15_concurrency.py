@@ -17,7 +17,7 @@ def heavy_stuff(x: int, y: int) -> int:
 
 
 if __name__ == "__main__":
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         vcpus=4,
         worker=sky.Worker(concurrency=250),

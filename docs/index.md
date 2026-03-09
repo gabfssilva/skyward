@@ -37,7 +37,7 @@ def train(data):
     return model.fit(data)
 
 
-with sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.A100()) as pool:
+with sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.A100()) as pool:
     result = train(my_data) >> pool
 # Accelerator terminated automatically
 ```

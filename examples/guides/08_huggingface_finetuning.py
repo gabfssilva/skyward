@@ -72,7 +72,7 @@ def finetune(model_name: str, epochs: int, batch_size: int, max_samples: int = 5
 
 
 if __name__ == "__main__":
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         accelerator=sky.accelerators.A100(),
         image=sky.Image(pip=["transformers", "datasets", "accelerate", "torch", "scikit-learn"]),

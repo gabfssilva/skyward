@@ -27,7 +27,7 @@ def matrix_stats(seed: int) -> dict:
 
 
 if __name__ == "__main__":
-    with sky.ComputePool.Named("demo") as pool:
+    with sky.Compute.Named("demo") as pool:
         results = matrix_stats(42) @ pool
 
         for r in sorted(results, key=lambda r: r["node"]):

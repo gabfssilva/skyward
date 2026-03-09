@@ -176,7 +176,7 @@ if __name__ == "__main__":
     # =================================================================
     # Fine-tuning Setup
     # =================================================================
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         nodes=2,
         accelerator=sky.NVIDIA.A100,

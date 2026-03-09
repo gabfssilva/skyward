@@ -91,7 +91,7 @@ def train() -> dict:
     return {"final_loss": loss.item(), "rank": rank}
 
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.A100(),
     nodes=4,
@@ -109,7 +109,7 @@ The `@` operator broadcasts `train()` to all 4 nodes. Each node runs the same fu
 ### With torchvision and torchaudio
 
 ```python
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.A100(),
     nodes=2,
@@ -131,7 +131,7 @@ This pins `torch==2.3.0` and `torchvision==0.18.0`, installed from the CUDA 12.4
 ### CPU-only
 
 ```python
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     nodes=4,
     plugins=[sky.plugins.torch(backend="gloo")],
@@ -144,7 +144,7 @@ Without an `accelerator`, the pool uses CPU instances. The plugin detects the ab
 ### Combining with HuggingFace
 
 ```python
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.A100(),
     nodes=2,

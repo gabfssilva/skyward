@@ -47,7 +47,7 @@ if __name__ == "__main__":
     X = [[random.gauss(0, 1) for _ in range(10)] for _ in range(1000)]
     Y = [random.randint(0, 9) for _ in range(1000)]
 
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         nodes=4,
         image=sky.Image(pip=["numpy"]),

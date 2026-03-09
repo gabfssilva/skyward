@@ -103,7 +103,7 @@ if __name__ == "__main__":
         read_only=False,
     )
 
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.Hyperstack(),
         accelerator=sky.accelerators.L4(),
         image=sky.Image(pip=["scikit-learn", "numpy"]),

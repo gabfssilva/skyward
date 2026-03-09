@@ -1,15 +1,15 @@
 # Accelerators
 
-Every cloud provider has its own naming scheme for GPU instances. AWS calls an A100 machine a `p4d.24xlarge`. RunPod uses a `gpuTypeId`. VastAI filters marketplace offers by GPU model. The `accelerator` parameter on `ComputePool` is Skyward's answer to this fragmentation: you describe the hardware you want, and the provider figures out how to get it.
+Every cloud provider has its own naming scheme for GPU instances. AWS calls an A100 machine a `p4d.24xlarge`. RunPod uses a `gpuTypeId`. VastAI filters marketplace offers by GPU model. The `accelerator` parameter on `Compute` is Skyward's answer to this fragmentation: you describe the hardware you want, and the provider figures out how to get it.
 
 ## Specifying accelerators
 
 Use the factory functions under `sky.accelerators`:
 
 ```python
-sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.A100())
-sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.H100(count=4))
-sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.A100(memory="40GB"))
+sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.A100())
+sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.H100(count=4))
+sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.A100(memory="40GB"))
 ```
 
 Each factory returns an `Accelerator` dataclass — frozen, immutable, with `name`, `memory`, `count`, and optional `metadata` (CUDA versions, form factors). The factory populates defaults from an internal catalog, so `sky.accelerators.H100()` already knows it has 80GB of HBM3 without you specifying it.
@@ -81,7 +81,7 @@ Workstation GPUs like `RTX_A6000()` (48GB), `RTX_6000_Ada()`, and `RTX_PRO_6000(
 AMD's datacenter compute accelerators. Supported through VastAI and other marketplace providers:
 
 ```python
-pool = sky.ComputePool(
+pool = sky.Compute(
     provider=sky.VastAI(),
     accelerator=sky.accelerators.MI300X(),
 )
@@ -101,7 +101,7 @@ pool = sky.ComputePool(
 Custom silicon designed for training. Requires the NeuronX SDK:
 
 ```python
-pool = sky.ComputePool(
+pool = sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.Trainium2(),
     image=sky.Image(pip=["torch-neuronx"]),
@@ -119,7 +119,7 @@ pool = sky.ComputePool(
 Custom silicon for cost-effective inference:
 
 ```python
-pool = sky.ComputePool(
+pool = sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.Inferentia2(),
     image=sky.Image(pip=["torch-neuronx"]),

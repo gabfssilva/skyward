@@ -24,7 +24,7 @@ Validation is immediate: mount paths must be absolute, and system paths (`/`, `/
 
 ## Using volumes
 
-Pass volumes to `ComputePool` as a list. Inside `@sky.function` functions, the mount paths are regular directories:
+Pass volumes to `Compute` as a list. Inside `@sky.function` functions, the mount paths are regular directories:
 
 ```python
 import skyward as sky
@@ -38,7 +38,7 @@ def train(data_dir: str, checkpoint_dir: str) -> float:
     return model.accuracy
 
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(instance_profile_arn="auto"),
     nodes=4,
     volumes=[
@@ -134,7 +134,7 @@ By default, volumes inherit credentials from the pool's provider. The `storage` 
 ```python
 r2 = sky.storage.R2(account_id="...", access_key="...", secret_key="...")
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     accelerator="A100",
     volumes=[

@@ -20,7 +20,7 @@ def process(data: list[int]) -> dict:
 
 
 if __name__ == "__main__":
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
     ) as pool:
         result = add(2, 3) >> pool

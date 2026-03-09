@@ -39,7 +39,7 @@ aws configure
 ```python
 import skyward as sky
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(region="us-east-1"),
     accelerator=sky.accelerators.A100(),
     nodes=2,
@@ -127,7 +127,7 @@ export GOOGLE_CLOUD_PROJECT=your_project_id
 ```python
 import skyward as sky
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.GCP(zone="us-central1-a"),
     accelerator=sky.accelerators.T4(),
     nodes=2,
@@ -184,7 +184,7 @@ export RUNPOD_API_KEY=your_api_key
 ```python
 import skyward as sky
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.RunPod(),
     accelerator=sky.accelerators.A100(),
     nodes=2,
@@ -222,7 +222,7 @@ export VERDA_CLIENT_SECRET=your_client_secret
 ```python
 import skyward as sky
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.Verda(),
     accelerator=sky.accelerators.H100(),
     nodes=4,
@@ -266,7 +266,7 @@ Get your API key at: [https://cloud.vast.ai/account/](https://cloud.vast.ai/acco
 ```python
 import skyward as sky
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.VastAI(geolocation="US"),
     accelerator=sky.accelerators.RTX_4090(),
     nodes=2,
@@ -312,7 +312,7 @@ Get your API key at the [Hyperstack Console](https://infrahub.nexgencloud.com/).
 ```python
 import skyward as sky
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.Hyperstack(region="CANADA-1"),
     accelerator=sky.accelerators.A100(),
     nodes=2,
@@ -357,7 +357,7 @@ Get your credentials at: [https://console.tensordock.com/api](https://console.te
 ```python
 import skyward as sky
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.TensorDock(location="us"),
     accelerator=sky.accelerators.RTX_4090(),
     nodes=2,
@@ -393,7 +393,7 @@ Containers are launched with SSH access, joined to a shared network, and bootstr
 ```python
 import skyward as sky
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.Container(),
     nodes=2,
     image=sky.Image(pip=["numpy"]),

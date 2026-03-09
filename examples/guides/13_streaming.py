@@ -52,7 +52,7 @@ def moving_average(data: Iterator[float], window: int = 3):
 
 
 if __name__ == "__main__":
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.Container(),
         nodes=1,
     ) as pool:

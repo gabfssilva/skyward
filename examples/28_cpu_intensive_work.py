@@ -24,7 +24,7 @@ def cpu_burn(task_id: int) -> dict:
 if __name__ == "__main__":
     total = 50
 
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         worker=sky.Worker(concurrency=2, executor="process"),
         nodes=5,

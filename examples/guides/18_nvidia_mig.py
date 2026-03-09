@@ -58,7 +58,7 @@ def train_on_partition(epochs: int, lr: float) -> dict:
 
 
 if __name__ == "__main__":
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.Verda(),
         nodes=1,
         accelerator=sky.accelerators.A100(),

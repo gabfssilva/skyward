@@ -33,7 +33,7 @@ def factorial(n: int) -> int:
 
 
 if __name__ == "__main__":
-    with sky.ComputePool(provider=sky.AWS(), allocation="spot-if-available") as pool:
+    with sky.Compute(provider=sky.AWS(), allocation="spot-if-available") as pool:
         chunks = [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]
 
         # =================================================================

@@ -23,7 +23,7 @@ def train(epochs: int) -> dict:
 
 if __name__ == "__main__":
     # Cheapest across providers
-    with sky.ComputePool(
+    with sky.Compute(
         sky.Spec(provider=sky.VastAI(), accelerator=sky.accelerators.A100()),
         sky.Spec(provider=sky.AWS(), accelerator=sky.accelerators.A100()),
         selection="cheapest",
@@ -33,7 +33,7 @@ if __name__ == "__main__":
         print(f"Cheapest: {result}")
 
     # First available (priority order)
-    with sky.ComputePool(
+    with sky.Compute(
         sky.Spec(provider=sky.RunPod(), accelerator=sky.accelerators.H100(), nodes=4),
         sky.Spec(provider=sky.AWS(), accelerator=sky.accelerators.H100(), nodes=4),
         selection="first",
@@ -43,7 +43,7 @@ if __name__ == "__main__":
         print(f"First available: {results}")
 
     # Per-spec constraints
-    with sky.ComputePool(
+    with sky.Compute(
         sky.Spec(
             provider=sky.VastAI(),
             accelerator=sky.accelerators.A100(),

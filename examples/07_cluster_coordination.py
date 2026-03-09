@@ -110,7 +110,7 @@ def map_reduce_example(data: list[int], operation: str) -> dict:
 
 
 if __name__ == "__main__":
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         nodes=4,
         allocation="spot-if-available",

@@ -114,7 +114,7 @@ if __name__ == "__main__":
     print("Before training:")
     evaluate(model, x_test, y_test)
 
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.Container(),
         vcpus=4,
         memory_gb=2,

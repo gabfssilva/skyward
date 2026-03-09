@@ -90,5 +90,5 @@ if __name__ == "__main__":
         provider=sky.Hyperstack(),
         accelerator=sky.accelerators.RTX_A4000(),
         image=sky.Image(pip=['jax[cuda12]']),
-    ) as pool:
-        format_results(benchmark(4096, iterations=50) >> pool)
+    ) as compute:
+        format_results(benchmark(4096, iterations=50) >> compute)

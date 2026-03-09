@@ -17,7 +17,7 @@ if __name__ == '__main__':
 
     effective_workers = nodes * concurrency
 
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         nodes=nodes,
         vcpus=2,

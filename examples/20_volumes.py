@@ -66,7 +66,7 @@ def main():
         read_only=False,
     )
 
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         accelerator=sky.accelerators.T4(),
         volumes=[data_volume, checkpoint_volume],

@@ -81,7 +81,7 @@ if __name__ == "__main__":
         storage.upload(DATA_BUCKET, csv_path, key="iris.csv")
         print(f"Uploaded: {storage.ls(DATA_BUCKET)}")
 
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.Hyperstack(),
         accelerator=sky.accelerators.L4(),
         image=sky.Image(pip=["scikit-learn", "numpy"]),

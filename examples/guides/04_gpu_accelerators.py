@@ -40,7 +40,7 @@ def matrix_benchmark(size: int) -> dict:
 
 
 if __name__ == "__main__":
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.VastAI(),
         accelerator=sky.accelerators.L40S(),
         image=sky.Image(pip=["torch"]),

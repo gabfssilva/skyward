@@ -27,7 +27,7 @@ def factorial(n: int) -> int:
 
 
 if __name__ == "__main__":
-    with sky.ComputePool(provider=sky.AWS()) as pool:
+    with sky.Compute(provider=sky.AWS()) as pool:
         chunks = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
 
         # gather() runs all calls in parallel

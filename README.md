@@ -37,7 +37,7 @@ def train(epochs: int) -> dict:
     return {"final_loss": loss.item()}
 
 
-with sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.T4(), image=sky.Image(pip=["torch"])) as pool:
+with sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.T4(), image=sky.Image(pip=["torch"])) as pool:
     result = train(epochs=100) >> pool
     print(result)
 ```

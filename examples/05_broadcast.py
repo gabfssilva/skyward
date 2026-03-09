@@ -26,7 +26,7 @@ def process_partition(data: list[int]) -> dict:
 
 
 if __name__ == "__main__":
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         nodes=4,
         accelerator=sky.accelerators.T4G(),

@@ -118,7 +118,7 @@ def train_with_dataloader(epochs: int, batch_size: int) -> dict:
 
 
 if __name__ == "__main__":
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         nodes=4,
         image=sky.Image(pip=["numpy", "torch"]),

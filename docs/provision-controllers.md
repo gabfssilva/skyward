@@ -11,7 +11,7 @@ Pass a tuple instead of an integer for the `nodes` parameter:
 ```python
 import skyward as sky
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.A100(),
     nodes=(2, 16),  # min 2, max 16
@@ -25,7 +25,7 @@ The pool starts with the minimum number of nodes (2 in this case) and can grow u
 The two tuning knobs are `autoscale_cooldown` and `autoscale_idle_timeout`:
 
 ```python
-sky.ComputePool(
+sky.Compute(
     provider=sky.AWS(),
     nodes=(2, 16),
     autoscale_cooldown=30.0,         # minimum seconds between scaling decisions

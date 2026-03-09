@@ -84,11 +84,11 @@ This is also why the actor model fits the orchestration layer. Each node progres
 Despite being fully asynchronous internally, Skyward exposes a **synchronous API**. You write normal, blocking Python:
 
 ```python
-with sky.ComputePool(provider=sky.AWS(), nodes=4) as pool:
+with sky.Compute(provider=sky.AWS(), nodes=4) as pool:
     result = train(10) >> pool  # blocks until result is ready
 ```
 
-The bridge is simple. When you enter the `ComputePool` context manager, Skyward starts a background daemon thread running an asyncio event loop. Every public method — `>>`, `@`, `>`, `gather` — calls `asyncio.run_coroutine_threadsafe()` to submit work to that event loop and blocks the calling thread until the result is ready.
+The bridge is simple. When you enter the `Compute` context manager, Skyward starts a background daemon thread running an asyncio event loop. Every public method — `>>`, `@`, `>`, `gather` — calls `asyncio.run_coroutine_threadsafe()` to submit work to that event loop and blocks the calling thread until the result is ready.
 
 This gives you the best of both worlds: the efficiency of async orchestration underneath, with the simplicity of synchronous code on top. You don't need to write `async/await` in your application code. You don't need to manage an event loop. The concurrency is an implementation detail of the runtime — invisible unless you want to understand it.
 

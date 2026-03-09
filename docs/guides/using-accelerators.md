@@ -13,8 +13,8 @@ Specify the accelerator when creating a pool:
 Use the factory functions under `sky.accelerators`. They carry catalog metadata — VRAM size, CUDA compatibility, form factor — and provide IDE autocomplete:
 
 ```python
-sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.A100())
-sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.H100(count=4))
+sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.A100())
+sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.H100(count=4))
 ```
 
 Each factory returns an `Accelerator` dataclass — a frozen specification with `name`, `memory`, `count`, and optional metadata. The factory functions look up defaults from an internal catalog, so `sky.accelerators.H100()` already knows it has 80GB of memory without you specifying it.

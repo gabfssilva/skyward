@@ -14,7 +14,7 @@ def slow_task(x):
 
 
 if __name__ == "__main__":
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         nodes=10,
         worker=sky.Worker(concurrency=10),

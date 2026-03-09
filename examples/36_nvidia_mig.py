@@ -71,7 +71,7 @@ if __name__ == "__main__":
     ITERATIONS = 500
     MATRIX_SIZE = 4096
 
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.Verda(),
         nodes=1,
         accelerator=sky.accelerators.A100(memory='80GB'),

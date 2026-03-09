@@ -9,7 +9,6 @@ from .model import Instance as Instance
 from .model import InstanceStatus as InstanceStatus
 from .model import InstanceType as InstanceType
 from .model import Offer as Offer
-from .pool import ComputePool
 from .provider import ProviderConfig
 from .runtime import (
     CallbackWriter,
@@ -39,7 +38,6 @@ from .spec import WorkerExecutor as WorkerExecutor
 __all__ = [
     "PendingFunction",
     "PendingFunctionGroup",
-    "ComputePool",
     "function",
     "gather",
     "sky",

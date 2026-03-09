@@ -86,7 +86,7 @@ if __name__ == "__main__":
     CHECKPOINT_BUCKET = "skyward-example"
     CHECKPOINT_PREFIX = "checkpoints/experiment-001/"
 
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(instance_profile_arn="auto"),
         nodes=2,
         volumes=[

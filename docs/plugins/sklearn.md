@@ -85,7 +85,7 @@ def run_search() -> dict:
     }
 
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     nodes=4,
     worker=sky.Worker(concurrency=4),
@@ -117,7 +117,7 @@ def evaluate_model() -> dict:
     return {"mean": scores.mean(), "std": scores.std()}
 
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     nodes=3,
     worker=sky.Worker(concurrency=4),
@@ -133,7 +133,7 @@ Ten-fold CV distributes 10 independent fit+evaluate tasks across 12 workers.
 For GPU-accelerated scikit-learn, stack the `cuml` plugin with `sklearn`:
 
 ```python
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.L4(),
     nodes=1,

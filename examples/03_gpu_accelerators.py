@@ -145,7 +145,7 @@ def train_simple_model(epochs: int) -> dict:
 
 
 if __name__ == "__main__":
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.VastAI(),
         image=sky.Image(pip=["torch", "numpy"]),
         accelerator=sky.accelerators.L40S(),

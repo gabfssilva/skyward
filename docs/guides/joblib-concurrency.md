@@ -14,7 +14,7 @@ joblib handles its own serialization. The `joblib` plugin intercepts joblib's ta
 
 ## Distributed execution with the Joblib plugin
 
-Wrap your `Parallel` call inside a `ComputePool` with the `joblib` plugin:
+Wrap your `Parallel` call inside a `Compute` pool with the `joblib` plugin:
 
 ```python
 --8<-- "examples/guides/10_joblib_concurrency.py:17:27"

@@ -42,7 +42,7 @@ if __name__ == "__main__":
     print(f"Dataset: {X_train.shape[0]} train, {X_test.shape[0]} test")
     print(f"Total candidates: {n_candidates}, fits: {n_candidates * 5}")
 
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         nodes=3,
         worker=sky.Worker(concurrency=4),

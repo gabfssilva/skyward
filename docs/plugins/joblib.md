@@ -49,7 +49,7 @@ def slow_task(x):
     return x * 2
 
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     nodes=10,
     worker=sky.Worker(concurrency=10),
@@ -67,7 +67,7 @@ With 10 nodes and `concurrency=10`, effective parallelism is 100. The 2000 tasks
 The `Worker(concurrency=N)` parameter controls how many tasks each node handles simultaneously. This is the multiplier that makes joblib-on-Skyward practical:
 
 ```python
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     nodes=2,
     vcpus=64,
@@ -86,7 +86,7 @@ High concurrency works well for I/O-bound or sleep-heavy tasks (API calls, netwo
 If your workload is scikit-learn-based, prefer the `sklearn` plugin instead — it builds on the same `SkywardBackend` but also installs scikit-learn:
 
 ```python
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     nodes=4,
     worker=sky.Worker(concurrency=4),

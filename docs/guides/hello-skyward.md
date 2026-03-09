@@ -16,7 +16,7 @@ This design means `PendingCompute` is a value you can pass around, compose with 
 
 ## The pool
 
-A `ComputePool` is a context manager that provisions cloud infrastructure for the duration of your work:
+A `Compute` pool is a context manager that provisions cloud infrastructure for the duration of your work:
 
 ```python
 --8<-- "examples/guides/01_hello_skyward.py:23:30"
@@ -61,6 +61,6 @@ uv run python examples/guides/01_hello_skyward.py
 **What you learned:**
 
 - **`@sky.function`** transforms a function into a lazy `PendingCompute` — calling it captures the computation without executing it.
-- **`ComputePool`** provisions cloud instances on enter and tears them down on exit — ephemeral, scoped infrastructure.
+- **`Compute`** provisions cloud instances on enter and tears them down on exit — ephemeral, scoped infrastructure.
 - **`>>`** dispatches a computation to the pool: serialize, send, execute remotely, return the result.
 - **`.local`** bypasses remote execution for testing and debugging.

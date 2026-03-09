@@ -87,7 +87,7 @@ if __name__ == "__main__":
     print(f"Dataset: {len(df):,} rows, {len(df.columns)} columns, ~{size_mb:.1f} MB")
     print(f"Columns: {list(df.columns)}\n")
 
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         nodes=1,
         image=sky.Image(pip=["pandas==2.3.3", "numpy"]),

@@ -11,7 +11,7 @@ In a traditional HPC environment, you'd configure the compute environment throug
 ```python
 import skyward as sky
 
-with sky.ComputePool(provider=sky.VastAI(), accelerator=sky.accelerators.A100(), nodes=4) as pool:
+with sky.Compute(provider=sky.VastAI(), accelerator=sky.accelerators.A100(), nodes=4) as pool:
     train() @ pool  # runs on all 4 nodes
 ```
 

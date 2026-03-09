@@ -14,7 +14,7 @@ Both Casty and Skyward are built on asyncio, so actors are cheap and message pas
 
 ## How the cluster forms
 
-When you enter a `ComputePool` context manager, Skyward creates a local Casty actor system on your machine and spawns a **pool actor** — the root of the supervision hierarchy. The pool actor asks the provider to launch instances, and for each one, it spawns a **node actor** to manage that instance's lifecycle.
+When you enter a `Compute` context manager, Skyward creates a local Casty actor system on your machine and spawns a **pool actor** — the root of the supervision hierarchy. The pool actor asks the provider to launch instances, and for each one, it spawns a **node actor** to manage that instance's lifecycle.
 
 Each node actor, in turn, spawns an **instance actor** that handles the low-level work: polling the cloud API until the machine is running, opening an SSH tunnel, transferring the bootstrap script, installing dependencies, and starting the worker process. When the worker is ready, the instance actor reports back to the node actor, which reports back to the pool actor. Once all nodes are ready, the pool is open for business.
 
@@ -22,7 +22,7 @@ On the remote side, each worker runs its own `ClusteredActorSystem` on port 2552
 
 ```mermaid
 graph LR
-    pool["<b>ComputePool</b><br/>(your machine)"]
+    pool["<b>Compute</b><br/>(your machine)"]
     pool --> provider
 
     subgraph provider ["Cloud Provider"]

@@ -20,7 +20,7 @@ def train():
     ...
 
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     nodes=4,
     accelerator=sky.accelerators.A100(),

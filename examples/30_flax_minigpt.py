@@ -355,7 +355,7 @@ def format_results(results: list[dict]) -> None:
 
 
 if __name__ == "__main__":
-    with sky.ComputePool(
+    with sky.Compute(
         sky.Spec(
             provider=sky.RunPod(),
             accelerator=sky.accelerators.RTX_4090(),

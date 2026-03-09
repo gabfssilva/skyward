@@ -51,7 +51,7 @@ def train_on_gpu(n_samples: int) -> dict:
     return {"accuracy": scores.mean(), "time": elapsed}
 
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.L4(),
     nodes=1,
@@ -73,7 +73,7 @@ The data is loaded on the remote worker (`fetch_openml` downloads from the inter
 cuML accelerates individual estimator operations on GPU. The sklearn plugin distributes parallel operations across the cluster. Together, each parallel task (e.g., each fold of cross-validation) runs on GPU:
 
 ```python
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.L4(),
     nodes=4,
@@ -93,7 +93,7 @@ Here, `GridSearchCV(n_jobs=-1)` distributes fits across the 4-node cluster, and 
 If your function does not use scikit-learn's `n_jobs` parallelism, you can use the `cuml` plugin alone:
 
 ```python
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.L4(),
     nodes=1,

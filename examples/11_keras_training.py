@@ -274,7 +274,7 @@ class ViT(keras.Model):
         }
 
 if __name__ == "__main__":
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         accelerator=sky.accelerators.T4G(),
         nodes=2,

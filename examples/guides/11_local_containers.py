@@ -40,11 +40,11 @@ def shard_sum(data: list[int]) -> int:
 
 if __name__ == "__main__":
     # 1. Basic: single container, no dependencies
-    with sky.ComputePool(provider=sky.Container(), nodes=1) as pool:
+    with sky.Compute(provider=sky.Container(), nodes=1) as pool:
         print(hello() >> pool)
 
     # 2. Image with env vars
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.Container(),
         nodes=1,
         image=sky.Image(env={"MY_VAR": "it works"}),
@@ -52,7 +52,7 @@ if __name__ == "__main__":
         print(check_env() >> pool)
 
     # 3. Multi-node: broadcast and shard
-    with sky.ComputePool(provider=sky.Container(), nodes=3) as pool:
+    with sky.Compute(provider=sky.Container(), nodes=3) as pool:
         results = node_info() @ pool
         for r in results:
             print(f"  Node {r['node']}/{r['total_nodes']} (head={r['is_head']})")

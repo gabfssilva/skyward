@@ -1,6 +1,6 @@
 # What are plugins?
 
-Skyward's plugin system is the way you bring third-party frameworks into the compute pool. When you pass `plugins=[sky.plugins.torch()]` to a `ComputePool`, you are telling Skyward: install PyTorch on the remote workers, configure the distributed runtime before my function runs, and clean up when the worker stops. The plugin handles the environment setup, the lifecycle hooks, and the per-task wrapping — things you would otherwise do manually with `Image(pip=[...])`, environment variables, and boilerplate inside your `@sky.function` functions.
+Skyward's plugin system is the way you bring third-party frameworks into the compute pool. When you pass `plugins=[sky.plugins.torch()]` to a `Compute` pool, you are telling Skyward: install PyTorch on the remote workers, configure the distributed runtime before my function runs, and clean up when the worker stops. The plugin handles the environment setup, the lifecycle hooks, and the per-task wrapping — things you would otherwise do manually with `Image(pip=[...])`, environment variables, and boilerplate inside your `@sky.function` functions.
 
 The key insight is that plugins operate at the pool level, not at the function level. A single plugin declaration on the pool affects every task dispatched to it. This is different from the decorator pattern you might be used to, where each function explicitly opts in to framework setup. With plugins, the pool is the unit of configuration: once you declare that a pool uses PyTorch with NCCL, every function dispatched to that pool gets PyTorch's distributed environment configured automatically.
 
@@ -31,7 +31,7 @@ The hooks are:
 
 The state module (`skyward.plugins.state`) tracks which `around_app` hooks have been entered. It stores the context managers in a module-level dictionary and checks before entering — if the key already exists, it is a no-op. This makes the hook idempotent: even if multiple tasks execute on the same worker, each `around_app` is entered exactly once.
 
-**`around_client`** is a context manager that runs on the client side, not the worker. It receives the `ComputePool` and the `Cluster`, and wraps the pool's entire active lifetime. The `joblib` and `sklearn` plugins use this to register the `SkywardBackend` as joblib's parallel backend, so that any `Parallel(n_jobs=-1)` call inside the `with` block dispatches work to the cluster instead of local processes.
+**`around_client`** is a context manager that runs on the client side, not the worker. It receives the `Compute` pool and the `Cluster`, and wraps the pool's entire active lifetime. The `joblib` and `sklearn` plugins use this to register the `SkywardBackend` as joblib's parallel backend, so that any `Parallel(n_jobs=-1)` call inside the `with` block dispatches work to the cluster instead of local processes.
 
 ## Builder API
 
@@ -52,7 +52,7 @@ Each `.with_*` method returns a new `Plugin` instance (immutable — uses `repla
 
 The hooks run at different points in the pool lifecycle, and the order matters.
 
-When the pool starts (`ComputePool.__enter__`):
+When the pool starts (`Compute.__enter__`):
 
 1. **`transform`** hooks run first, in plugin order. Each transform receives the image returned by the previous one. The final image is used to generate the bootstrap script.
 2. **`bootstrap`** hooks run after the standard bootstrap phases complete on each worker. The ops are appended in plugin order.
@@ -63,7 +63,7 @@ When a task executes on a worker:
 4. **`around_app`** hooks are lazily entered on first task execution (idempotent — skipped if already active).
 5. **`decorate`** hooks wrap the function. If multiple plugins have decorators, they are chained: the first plugin's decorator is outermost, the last is innermost. The chaining uses `functools.reduce` over `reversed(decorators)`, so the first plugin listed in `plugins=[...]` runs first and the last runs last.
 
-When the pool stops (`ComputePool.__exit__`):
+When the pool stops (`Compute.__exit__`):
 
 6. **`around_client`** contexts are exited in reverse order.
 7. **`around_app`** contexts are exited in reverse order when the worker process shuts down.
@@ -73,7 +73,7 @@ When the pool stops (`ComputePool.__exit__`):
 Plugins compose naturally because each hook is independent. You can stack multiple plugins and their effects combine:
 
 ```python
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.A100(),
     nodes=4,
@@ -139,7 +139,7 @@ def my_framework() -> Plugin:
 Use it like any built-in plugin:
 
 ```python
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     plugins=[my_framework()],
 ) as pool:

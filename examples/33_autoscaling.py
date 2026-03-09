@@ -14,7 +14,7 @@ def heavy_work(seconds: int) -> str:
 
 
 if __name__ == "__main__":
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         nodes=(1, 4),
         worker=Worker(concurrency=2),

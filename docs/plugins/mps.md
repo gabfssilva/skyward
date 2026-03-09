@@ -81,7 +81,7 @@ def inference(task_id: int, batch_size: int) -> dict:
 
 CONCURRENCY = 8
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     nodes=1,
     accelerator=sky.accelerators.T4(),
@@ -105,7 +105,7 @@ Without MPS, these 8 processes would time-slice on the GPU. With MPS, their kern
 For very high concurrency (many small tasks), increase the worker's concurrency and lower the per-client thread percentage:
 
 ```python
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     nodes=1,
     accelerator=sky.accelerators.A100(),

@@ -31,7 +31,7 @@ if __name__ == "__main__":
 
     config = ExperimentConfig(seed=42, n_samples=500, n_features=5)
 
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         nodes=2,
         logging=sky.LogConfig(level="TRACE"),

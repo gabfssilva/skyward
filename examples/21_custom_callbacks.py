@@ -100,7 +100,7 @@ def main():
     )
 
     # Use callback as context manager
-    with use_callback(combined), sky.ComputePool(
+    with use_callback(combined), sky.Compute(
         provider=sky.AWS(),
         accelerator=sky.accelerators.T4(),
         image=sky.Image(pip=["numpy"]),
@@ -125,7 +125,7 @@ def main_with_pool_callback():
                 pass
 
     # Pass callback via on_event parameter
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         accelerator=sky.accelerators.T4(),
         allocation="spot-if-available",

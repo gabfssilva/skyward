@@ -132,7 +132,7 @@ def on_error(event: sky.Error):
 
 if __name__ == "__main__":
     # Create pool
-    pool = sky.ComputePool(
+    pool = sky.Compute(
         provider=sky.AWS(),
         accelerator=sky.NVIDIA.A100,
         pip=["torch"],

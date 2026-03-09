@@ -22,7 +22,7 @@ The token is passed as a plain string. It ends up in the worker's environment as
 
 ## How it works
 
-When `ComputePool.__enter__` runs, the plugin's image transform modifies the `Image` before bootstrap script generation:
+When `Compute.__enter__` runs, the plugin's image transform modifies the `Image` before bootstrap script generation:
 
 ```python
 Image(
@@ -85,7 +85,7 @@ def finetune(model_name: str, epochs: int) -> dict:
     return trainer.evaluate()
 
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     nodes=1,
     accelerator=sky.accelerators.A100(),
@@ -138,7 +138,7 @@ def distributed_finetune(model_name: str) -> dict:
     return trainer.evaluate()
 
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     nodes=4,
     accelerator=sky.accelerators.A100(),
@@ -169,7 +169,7 @@ def classify(texts: list[str]) -> list[dict]:
     return classifier(texts)
 
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     nodes=1,
     accelerator=sky.accelerators.T4(),

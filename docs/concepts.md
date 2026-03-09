@@ -35,10 +35,10 @@ result = train.local(10)  # executes immediately, returns float
 
 ## The pool
 
-A `ComputePool` is a context manager that represents a set of cloud instances with a defined lifecycle. When you enter the block, Skyward provisions the machines, installs dependencies, and establishes connectivity. When you exit — whether normally or through an exception — everything is torn down.
+A `Compute` pool is a context manager that represents a set of cloud instances with a defined lifecycle. When you enter the block, Skyward provisions the machines, installs dependencies, and establishes connectivity. When you exit — whether normally or through an exception — everything is torn down.
 
 ```python
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.A100(),
     nodes=4,
@@ -112,7 +112,7 @@ The pool is also the dispatch target for computations. You don't configure job q
 Each node in the pool runs a **worker** — a long-lived process that receives serialized tasks, executes them, and sends results back. The `Worker` dataclass controls two things: how many tasks a node handles concurrently, and which execution backend runs them.
 
 ```python
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     nodes=4,
     worker=sky.Worker(concurrency=2),
@@ -149,7 +149,7 @@ The pool selects the target node using round-robin scheduling. If you send ten t
 Sends the same computation to every node in the pool. Returns a list with one result per node:
 
 ```python
-with sky.ComputePool(provider=sky.AWS(), nodes=4) as pool:
+with sky.Compute(provider=sky.AWS(), nodes=4) as pool:
     # runs on all 4 nodes, returns list of 4 results
     results = initialize_model(config) @ pool
 ```
@@ -213,7 +213,7 @@ image = sky.Image(
     includes=["./my_module/"],
 )
 
-with sky.ComputePool(provider=sky.AWS(), image=image) as pool:
+with sky.Compute(provider=sky.AWS(), image=image) as pool:
     ...
 ```
 
@@ -232,7 +232,7 @@ There's also `skyward_source`, which controls how Skyward itself reaches the wor
 
 ## Runtime context
 
-Skyward operates in two worlds. The **client side** is your local machine — where `ComputePool` runs, where operators dispatch tasks, where results come back. The **worker side** is the remote instance — where your `@sky.function` function actually executes. These are separate processes on separate machines, connected by SSH tunnels.
+Skyward operates in two worlds. The **client side** is your local machine — where `Compute` runs, where operators dispatch tasks, where results come back. The **worker side** is the remote instance — where your `@sky.function` function actually executes. These are separate processes on separate machines, connected by SSH tunnels.
 
 Inside a `@sky.function` function, you're in the worker world. The function has access to the remote machine's resources (GPUs, local disk, network), but it doesn't have a reference to the pool object or the client's memory. What it does have is `sky.instance_info()`: a view of the cluster topology from this node's perspective.
 
@@ -262,7 +262,7 @@ def process(full_dataset):
     return analyze(local_data)
 
 
-with sky.ComputePool(provider=sky.AWS(), nodes=4) as pool:
+with sky.Compute(provider=sky.AWS(), nodes=4) as pool:
     # each node gets 1/4 of the data
     results = process(dataset) @ pool
 ```
@@ -296,7 +296,7 @@ def generate_samples(n: int):
         yield expensive_sample(i)
 
 
-with sky.ComputePool(provider=sky.AWS(), nodes=1) as pool:
+with sky.Compute(provider=sky.AWS(), nodes=1) as pool:
     for sample in generate_samples(1000) >> pool:
         save(sample)  # processes each sample as it arrives
 ```
@@ -327,7 +327,7 @@ For a practical walkthrough with code examples, see the [Streaming](guides/strea
 
 ## Providers
 
-Throughout this page, the `provider` parameter has appeared in every `ComputePool` example — `sky.AWS()`, `sky.RunPod()`, `sky.VastAI()`, `sky.Verda()`, `sky.Container()`. The provider is the bridge between Skyward's orchestration model and a specific cloud's API. It knows how to translate abstract requests ("I need 4 machines with A100 GPUs") into the concrete API calls that each cloud requires.
+Throughout this page, the `provider` parameter has appeared in every `Compute` example — `sky.AWS()`, `sky.RunPod()`, `sky.VastAI()`, `sky.Verda()`, `sky.Container()`. The provider is the bridge between Skyward's orchestration model and a specific cloud's API. It knows how to translate abstract requests ("I need 4 machines with A100 GPUs") into the concrete API calls that each cloud requires.
 
 All providers implement the same protocol — `Provider[C, S]` — which defines six operations that map directly to the pool lifecycle discussed earlier:
 
@@ -346,12 +346,12 @@ For details on configuring each provider, see the [Providers](providers.md) page
 
 ## Accelerators
 
-The `accelerator` parameter on `ComputePool` tells the provider what hardware you need. Use the factory functions under `sky.accelerators`, which provide IDE autocomplete and carry catalog metadata like VRAM size and CUDA compatibility:
+The `accelerator` parameter on `Compute` tells the provider what hardware you need. Use the factory functions under `sky.accelerators`, which provide IDE autocomplete and carry catalog metadata like VRAM size and CUDA compatibility:
 
 ```python
-sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.A100())
-sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.H100(count=4))
-sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.A100(memory="40GB"))
+sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.A100())
+sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.H100(count=4))
+sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.A100(memory="40GB"))
 ```
 
 Each factory returns an `Accelerator` dataclass — a frozen, immutable specification with `name`, `memory`, `count`, and optional `metadata`. The factory functions look up defaults from an internal catalog (VRAM sizes, CUDA versions, form factors), so `sky.accelerators.H100()` already knows it has 80GB of memory without you specifying it.
@@ -370,16 +370,16 @@ Skyward exposes this as an `allocation` parameter on the pool:
 
 ```python
 # Try spot instances first, fall back to on-demand if unavailable (default)
-sky.ComputePool(allocation="spot-if-available")
+sky.Compute(allocation="spot-if-available")
 
 # Always use spot — cheaper, but can be interrupted
-sky.ComputePool(allocation="spot")
+sky.Compute(allocation="spot")
 
 # Always on-demand — more expensive, but guaranteed availability
-sky.ComputePool(allocation="on-demand")
+sky.Compute(allocation="on-demand")
 
 # Compare all options and pick the cheapest
-sky.ComputePool(allocation="cheapest")
+sky.Compute(allocation="cheapest")
 ```
 
 Spot instances are typically 60-90% cheaper than on-demand. The trade-off is that the cloud provider can reclaim them with short notice. For fault-tolerant workloads — checkpointed training, idempotent batch jobs, embarrassingly parallel inference — spot is a practical default. For time-sensitive or non-resumable work, on-demand is the safer choice.
@@ -404,10 +404,10 @@ sky.Spec(
 )
 ```
 
-It carries the same fields you'd normally pass to `ComputePool` — `accelerator`, `nodes`, `vcpus`, `memory_gb`, `architecture`, `allocation`, `region`, `max_hourly_cost`, `ttl` — but scoped to a specific provider. `ComputePool` accepts multiple `Spec` objects as positional arguments:
+It carries the same fields you'd normally pass to `Compute` — `accelerator`, `nodes`, `vcpus`, `memory_gb`, `architecture`, `allocation`, `region`, `max_hourly_cost`, `ttl` — but scoped to a specific provider. `Compute` accepts multiple `Spec` objects as positional arguments:
 
 ```python
-with sky.ComputePool(
+with sky.Compute(
     sky.Spec(provider=sky.VastAI(), accelerator=sky.accelerators.A100()),
     sky.Spec(provider=sky.AWS(), accelerator=sky.accelerators.A100()),
     selection="cheapest",
@@ -415,7 +415,7 @@ with sky.ComputePool(
     result = train(data) >> pool
 ```
 
-The single-provider form still works — `ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.A100())` internally creates a single `Spec` and wraps it in a tuple.
+The single-provider form still works — `Compute(provider=sky.AWS(), accelerator=sky.accelerators.A100())` internally creates a single `Spec` and wraps it in a tuple.
 
 ### Offers and instance types
 
@@ -428,14 +428,14 @@ Because different providers produce structurally identical `Offer` objects, Skyw
 
 ### Selection strategies
 
-The `selection` parameter on `ComputePool` controls how Skyward chooses among the offers from multiple specs:
+The `selection` parameter on `Compute` controls how Skyward chooses among the offers from multiple specs:
 
 - **`"cheapest"`** (default) — Queries all specs, collects all available offers, and picks the one with the lowest price. Best when you want cost optimization and don't have a strong provider preference.
 - **`"first"`** — Tries specs in the order you listed them, and stops at the first provider with available offers. Best when you have a preferred provider and want deterministic fallback.
 
 ### The selection flow
 
-Before provisioning anything, `ComputePool` runs a selection phase to determine where to provision:
+Before provisioning anything, `Compute` runs a selection phase to determine where to provision:
 
 ```mermaid
 sequenceDiagram

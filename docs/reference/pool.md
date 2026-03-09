@@ -1,6 +1,6 @@
 # Pool & compute
 
-::: skyward.ComputePool
+::: skyward.Compute
 
 ::: skyward.Spec
 

@@ -26,7 +26,7 @@ def rand_delay() -> float:
     return randint(1, 10) / 10
 
 if __name__ == "__main__":
-    with sky.ComputePool(provider=sky.AWS()) as pool:
+    with sky.Compute(provider=sky.AWS()) as pool:
         tasks = [
             simulate_work(i, rand_delay()) for i in range(50)
         ]

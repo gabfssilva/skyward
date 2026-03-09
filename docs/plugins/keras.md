@@ -87,7 +87,7 @@ def train():
     return accuracy
 
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     nodes=2,
     accelerator=sky.accelerators.T4(),
@@ -103,7 +103,7 @@ Each node trains on its shard of the data. The `DataParallel` distribution confi
 When you prefer PyTorch as the execution engine — perhaps because your pipeline includes PyTorch-specific operations or custom CUDA kernels — use the `torch` backend with both plugins:
 
 ```python
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     nodes=4,
     accelerator=sky.accelerators.A100(),
@@ -119,7 +119,7 @@ Your training function will need to handle distributed wrapping (DDP) and data p
 For experimentation, prototyping, or workloads that fit on a single GPU, the Keras plugin alone is enough:
 
 ```python
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.T4(),
     plugins=[sky.plugins.keras()],

@@ -24,15 +24,15 @@ All providers implement the same `Provider` protocol — five methods (`prepare`
 
 ```python
 # Development: local containers, zero cost
-with sky.ComputePool(provider=sky.Container(), nodes=2) as pool:
+with sky.Compute(provider=sky.Container(), nodes=2) as pool:
     result = train(data) >> pool
 
 # Production: real GPUs on AWS
-with sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.H100(), nodes=4) as pool:
+with sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.H100(), nodes=4) as pool:
     result = train(data) >> pool
 
 # Same code, different cloud
-with sky.ComputePool(provider=sky.RunPod(), accelerator=sky.accelerators.H100(), nodes=4) as pool:
+with sky.Compute(provider=sky.RunPod(), accelerator=sky.accelerators.H100(), nodes=4) as pool:
     result = train(data) >> pool
 ```
 
@@ -50,10 +50,10 @@ With multi-spec pools, Skyward takes this further. You can describe the same har
 
 ## What Skyward adds: ephemeral compute
 
-While the Berkeley paper focuses on interoperability, Skyward adds a specific philosophy: **ephemeral compute**. Accelerator infrastructure should exist only during your job — not before, not after. The `ComputePool` context manager guarantees this: provision on enter, destroy on exit, cleanup guaranteed even if your code throws an exception.
+While the Berkeley paper focuses on interoperability, Skyward adds a specific philosophy: **ephemeral compute**. Accelerator infrastructure should exist only during your job — not before, not after. The `Compute` context manager guarantees this: provision on enter, destroy on exit, cleanup guaranteed even if your code throws an exception.
 
 ```python
-with sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.H100(), nodes=4) as pool:
+with sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.H100(), nodes=4) as pool:
     metrics = train(dataset) @ pool
 # all instances terminated — no idle costs, no forgotten machines
 ```

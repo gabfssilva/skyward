@@ -74,7 +74,7 @@ def train(epochs: int, batch_size: int, lr: float) -> dict:
 
 
 if __name__ == "__main__":
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         nodes=2,
         accelerator=sky.accelerators.T4(),

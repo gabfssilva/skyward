@@ -1,12 +1,8 @@
 """
-MultiPool - Parallel provisioning for multiple pools.
+Multi-pool session - provision multiple pools within one session.
 
 When you need different resource configurations for different stages
-of your workflow, MultiPool provisions them concurrently to minimize
-total setup time.
-
-    Sequential: sum(t_i) = t1 + t2 + t3
-    MultiPool:  max(t_i) = max(t1, t2, t3)
+of your workflow, Session provisions them and shares infrastructure.
 """
 
 import skyward as sky
@@ -35,33 +31,32 @@ def evaluate(data: dict) -> dict:
 
 
 def main():
-    # Define pools with different configurations
-    cpu_pool = sky.ComputePool(
-        provider=sky.AWS(),
-        cpu=8,
-        memory="16GB",
-        allocation="spot-if-available",
-    )
+    with sky.Session(console=False) as session:
+        cpu = session.compute(
+            provider=sky.AWS(),
+            vcpus=8,
+            memory_gb=16,
+            allocation="spot-if-available",
+            name="cpu",
+        )
 
-    gpu_pool = sky.ComputePool(
-        provider=sky.AWS(),
-        accelerator=sky.accelerators.A100(),
-        nodes=2,
-        image=sky.Image(pip=["torch"]),
-        allocation="spot-if-available",
-    )
+        gpu = session.compute(
+            provider=sky.AWS(),
+            accelerator=sky.accelerators.A100(),
+            nodes=2,
+            image=sky.Image(pip=["torch"]),
+            allocation="spot-if-available",
+            name="gpu",
+        )
 
-    eval_pool = sky.ComputePool(
-        provider=sky.AWS(),
-        accelerator=sky.accelerators.T4(),
-        image=sky.Image(pip=["torch"]),
-        allocation="spot-if-available",
-    )
+        eval_ = session.compute(
+            provider=sky.AWS(),
+            accelerator=sky.accelerators.T4(),
+            image=sky.Image(pip=["torch"]),
+            allocation="spot-if-available",
+            name="eval",
+        )
 
-    # MultiPool provisions all pools in parallel
-    # Total setup time = max(cpu_setup, gpu_setup, eval_setup)
-    # Instead of:     = cpu_setup + gpu_setup + eval_setup
-    with sky.MultiPool(cpu_pool, gpu_pool, eval_pool) as (cpu, gpu, eval_):
         # Stage 1: Preprocess on CPU pool
         data = preprocess({"raw": "data"}) >> cpu
         print(f"Preprocessed: {data}")

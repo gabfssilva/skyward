@@ -28,7 +28,7 @@ def hello(n: int) -> str:
             return "hello, 🌏!"
 
 if __name__ == "__main__":
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.Container(),
         nodes=3,
         memory_gb=1,

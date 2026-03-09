@@ -1,4 +1,4 @@
-"""MultiPool: provision multiple pools in parallel, compare T4 vs L4."""
+"""Multi-pool session: provision multiple pools, compare T4 vs L4."""
 
 import skyward as sky
 
@@ -23,9 +23,9 @@ def matmul_bench(size: int) -> float:
 if __name__ == "__main__":
     image = sky.Image(pip=["jax[cuda12]"])
 
-    with sky.MultiPool(
-        sky.ComputePool(provider=sky.AWS(), image=image, accelerator=sky.accelerators.T4()),
-        sky.ComputePool(provider=sky.AWS(), image=image, accelerator=sky.accelerators.L4()),
-    ) as (T4, L4):
+    with sky.Session(console=False) as session:
+        T4 = session.compute(provider=sky.AWS(), image=image, accelerator=sky.accelerators.T4())
+        L4 = session.compute(provider=sky.AWS(), image=image, accelerator=sky.accelerators.L4())
+
         time_t4, time_l4 = matmul_bench(4096) >> T4, matmul_bench(4096) >> L4
         print(f"T4: {time_t4:.2f}s | L4: {time_l4:.2f}s | Speedup: {time_t4 / time_l4:.1f}x")

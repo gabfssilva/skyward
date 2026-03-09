@@ -72,7 +72,7 @@ def main():
         use_overlay=True,  # Enable overlay networking (default)
     )
 
-    with sky.ComputePool(
+    with sky.Compute(
         provider=provider,
         accelerator=sky.accelerators.RTX_4090(),
         nodes=4,  # Multi-node automatically creates overlay
@@ -126,7 +126,7 @@ def main_simple():
         }
 
     # VastAI automatically sets up overlay for nodes > 1
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.VastAI(geolocation="US"),
         accelerator=sky.accelerators.RTX_3090(),
         nodes=2,

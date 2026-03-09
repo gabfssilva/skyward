@@ -15,11 +15,11 @@ sky.Spec(
 )
 ```
 
-It carries the same fields you'd normally pass to `ComputePool` — `accelerator`, `nodes`, `vcpus`, `memory_gb`, `architecture`, `allocation`, `region`, `max_hourly_cost`, `ttl` — but scoped to a specific provider. This separation is what makes cross-provider comparison possible: each `Spec` is a self-contained description of "what I want, from whom."
+It carries the same fields you'd normally pass to `Compute` — `accelerator`, `nodes`, `vcpus`, `memory_gb`, `architecture`, `allocation`, `region`, `max_hourly_cost`, `ttl` — but scoped to a specific provider. This separation is what makes cross-provider comparison possible: each `Spec` is a self-contained description of "what I want, from whom."
 
 ## Cheapest across providers
 
-Pass multiple `Spec` objects to `ComputePool` and Skyward queries each provider's available offers, compares prices, and provisions from the cheapest:
+Pass multiple `Spec` objects to `Compute` and Skyward queries each provider's available offers, compares prices, and provisions from the cheapest:
 
 ```python
 --8<-- "examples/guides/12_multi_provider.py:26:33"
@@ -51,7 +51,7 @@ The first spec tries spot instances on VastAI with a $2.50/hr cap — the cheape
 
 ## How it works
 
-When `ComputePool.__enter__` runs, Skyward iterates through your specs before provisioning anything:
+When `Compute.__enter__` runs, Skyward iterates through your specs before provisioning anything:
 
 1. For each `Spec`, it creates a provider instance and calls `provider.offers(spec)` — an async generator that yields available machine types with pricing.
 2. Based on the `selection` strategy, it either takes the first available offer or collects all offers and picks the cheapest.
@@ -73,8 +73,8 @@ uv run python examples/guides/12_multi_provider.py
 **What you learned:**
 
 - **`sky.Spec`** bundles a provider with hardware preferences into a composable unit — accelerator, nodes, allocation, cost cap, all scoped to one provider.
-- **Multi-spec `ComputePool`** accepts multiple Specs as positional arguments and selects the best offer before provisioning.
+- **Multi-spec `Compute`** accepts multiple Specs as positional arguments and selects the best offer before provisioning.
 - **`selection="cheapest"`** (default) queries all providers and picks the lowest price across all of them.
 - **`selection="first"`** respects your priority ordering — tries specs in sequence, stops at the first with available offers.
 - **Per-spec constraints** let each Spec have its own allocation strategy and cost cap, enabling escalating fallback patterns.
-- **Single-provider mode still works** — `ComputePool(provider=sky.AWS(), ...)` is unchanged and internally wraps a single `Spec`.
+- **Single-provider mode still works** — `Compute(provider=sky.AWS(), ...)` is unchanged and internally wraps a single `Spec`.

@@ -122,7 +122,7 @@ if __name__ == "__main__":
     evaluate(model, x_test, y_test)
 
     # Ship the model to the cloud, train, get it back
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.Container(),
         vcpus=4,
         memory_gb=2,

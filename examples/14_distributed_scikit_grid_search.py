@@ -69,7 +69,7 @@ def main():
     print(f"  Total fits: {n_candidates * cv_folds}")
     print("=" * 60)
 
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         nodes=3,
         worker=sky.Worker(concurrency=4),

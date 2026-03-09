@@ -136,7 +136,7 @@ def _benchmark_target(target: dict[str, object]) -> dict[str, Any]:
     provider = target["provider"]
     accelerator = target["accelerator"]
 
-    with sky.ComputePool(
+    with sky.Compute(
         provider=provider,  # type: ignore[arg-type]
         accelerator=accelerator,  # type: ignore[arg-type]
         image=sky.Image(pip=["jax[cuda12]"]),

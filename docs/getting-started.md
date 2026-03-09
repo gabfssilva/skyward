@@ -84,7 +84,7 @@ def hello() -> str:
     return f"Hello from {socket.gethostname()}!"
 
 
-with sky.ComputePool(provider=sky.AWS()) as pool:
+with sky.Compute(provider=sky.AWS()) as pool:
     result = hello() >> pool
     print(result)
 ```
@@ -136,7 +136,7 @@ def gpu_info() -> dict:
     }
 
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.T4(),
     image=sky.Image(pip=["torch"]),
@@ -164,7 +164,7 @@ def square(x: int) -> int:
     return x * x
 
 
-with sky.ComputePool(provider=sky.AWS()) as pool:
+with sky.Compute(provider=sky.AWS()) as pool:
     results = sky.gather(square(1), square(2), square(3)) >> pool
     print(results)  # (1, 4, 9)
 ```
@@ -196,7 +196,7 @@ def worker_info() -> dict:
     }
 
 
-with sky.ComputePool(provider=sky.AWS(), nodes=4) as pool:
+with sky.Compute(provider=sky.AWS(), nodes=4) as pool:
     results = worker_info() @ pool
     for r in results:
         print(f"Node {r['node']}/{r['total']} (head={r['is_head']})")
@@ -219,7 +219,7 @@ For integration testing with the full Skyward lifecycle (serialization, bootstra
 ```python
 import skyward as sky
 
-with sky.ComputePool(provider=sky.Container(), nodes=2) as pool:
+with sky.Compute(provider=sky.Container(), nodes=2) as pool:
     result = hello() >> pool  # runs in local Docker containers
 ```
 

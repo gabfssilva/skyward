@@ -6,7 +6,7 @@
     def train(data):
         return model.fit(data)
 
-    with sky.ComputePool(provider=sky.AWS(), accelerator=sky.accelerators.A100()) as pool:
+    with sky.Compute(provider=sky.AWS(), accelerator="A100") as pool:
         result = train(data) >> pool
 """
 from typing import Any
@@ -56,7 +56,6 @@ from .api import (
     AllocationStrategy,
     CallbackWriter,
     Compute,
-    ComputePool,
     Image,
     InstanceInfo,
     PendingFunction,
@@ -117,7 +116,6 @@ __all__ = [
     "pool",
     "function",
     "gather",
-    "ComputePool",
     "PendingFunction",
     "PendingFunctionGroup",
     "InstanceInfo",

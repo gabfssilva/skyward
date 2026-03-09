@@ -160,7 +160,7 @@ def train_on_partition(epochs: int, lr: float) -> dict:
 PARTITIONS = 2
 PROFILE = "3g.40gb"
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.Verda(),
     nodes=1,
     accelerator=sky.accelerators.A100(),
@@ -181,7 +181,7 @@ Notice that PyTorch is installed via `Image(pip=["torch"])`, not via `sky.plugin
 For lightweight workloads — small model inference, quick evaluations, data preprocessing with GPU-accelerated libraries — you can maximize the number of partitions with a smaller profile:
 
 ```python
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     nodes=1,
     accelerator=sky.accelerators.A100(memory="80GB"),
@@ -207,7 +207,7 @@ configs = [
     {"epochs": 20, "lr": 3e-4},
 ]
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.Verda(),
     nodes=1,
     accelerator=sky.accelerators.A100(),
@@ -229,7 +229,7 @@ Both configurations run simultaneously with hardware-enforced isolation. Neither
 MIG works per-GPU, not per-cluster. On a multi-node pool, each node independently partitions its own GPU:
 
 ```python
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     nodes=3,
     accelerator=sky.accelerators.A100(),

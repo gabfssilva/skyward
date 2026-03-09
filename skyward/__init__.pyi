@@ -6,7 +6,7 @@
     def train(data):
         return model.fit(data)
 
-    with sky.ComputePool(provider=sky.AWS(), accelerator="A100") as pool:
+    with sky.Compute(provider=sky.AWS(), accelerator="A100") as pool:
         result = train(data) >> pool
 """
 
@@ -315,106 +315,21 @@ class PendingFunctionGroup:
     def __len__(self) -> int: ...
     def __iter__(self) -> Any: ...
 
-# ── Curated: ComputePool ─────────────────────────────────────
+# ── Curated: ComputePool (return type only, no public constructor) ──
 
 class ComputePool:
-    """Provision cloud compute and dispatch functions to remote nodes.
+    """A provisioned pool of cloud compute nodes.
 
-    Use as a context manager: provisions on enter, destroys on exit.
-    Internally runs an asyncio event loop in a background daemon thread;
-    the public API is entirely synchronous.
+    Returned by ``sky.Compute()`` and ``session.compute()``.
+    Not directly constructable — use those APIs instead.
 
-    Two modes:
+    Dispatch tasks via operators:
 
-    - **Single provider** --- pass ``provider=``, ``accelerator=``, ``nodes=``.
-    - **Multi-spec fallback** --- pass ``Spec(...)`` positional args with
-      ``selection=``.
-
-    Examples
-    --------
-    Single provider:
-
-    >>> with sky.ComputePool(provider=sky.AWS(), accelerator="A100", nodes=4) as pool:
-    ...     result = train(data) >> pool
-    ...     results = train(data) @ pool
-    ...     a, b = (task1() & task2()) >> pool
-
-    Multi-spec with fallback (cheapest across providers):
-
-    >>> with sky.ComputePool(
-    ...     sky.Spec(provider=sky.VastAI(), accelerator="A100"),
-    ...     sky.Spec(provider=sky.AWS(), accelerator="A100"),
-    ...     selection="cheapest",
-    ... ) as pool:
-    ...     result = train(data) >> pool
-
-    Elastic autoscaling:
-
-    >>> with sky.ComputePool(
-    ...     provider=sky.AWS(), accelerator="A100", nodes=(2, 8),
-    ... ) as pool:
-    ...     result = train(data) >> pool  # scales between 2 and 8 nodes
+    - ``task() >> pool`` — execute on one node (round-robin)
+    - ``task() @ pool`` — broadcast to all nodes
+    - ``(task1() & task2()) >> pool`` — parallel execution
+    - ``task() > pool`` — async, returns ``Future[T]``
     """
-
-    @overload
-    def __init__(
-        self,
-        *,
-        provider: ProviderConfig,
-        nodes: int | tuple[int, int] = ...,
-        accelerator: Accelerator | None = ...,
-        vcpus: float | None = ...,
-        memory_gb: float | None = ...,
-        architecture: Architecture | None = ...,
-        allocation: Literal["spot", "on-demand", "spot-if-available"] = ...,
-        image: Image = ...,
-        ttl: int = ...,
-        worker: Worker | None = ...,
-        logging: LogConfig | bool = ...,
-        max_hourly_cost: float | None = ...,
-        default_compute_timeout: float = ...,
-        provision_timeout: int = ...,
-        ssh_timeout: int = ...,
-        ssh_retry_interval: int = ...,
-        provision_retry_delay: float = ...,
-        max_provision_attempts: int = ...,
-        volumes: list[Volume] | tuple[Volume, ...] = ...,
-        autoscale_cooldown: float = ...,
-        autoscale_idle_timeout: float = ...,
-        reconcile_tick_interval: float = ...,
-        plugins: list[Plugin] | tuple[Plugin, ...] = ...,
-        shutdown_timeout: float = ...,
-    ) -> None: ...
-
-    @overload
-    def __init__(
-        self,
-        *specs: Spec,
-        selection: SelectionStrategy = ...,
-        image: Image = ...,
-        worker: Worker | None = ...,
-        logging: LogConfig | bool = ...,
-        default_compute_timeout: float = ...,
-        provision_timeout: int = ...,
-        ssh_timeout: int = ...,
-        ssh_retry_interval: int = ...,
-        provision_retry_delay: float = ...,
-        max_provision_attempts: int = ...,
-        volumes: list[Volume] | tuple[Volume, ...] = ...,
-        autoscale_cooldown: float = ...,
-        autoscale_idle_timeout: float = ...,
-        reconcile_tick_interval: float = ...,
-        plugins: list[Plugin] | tuple[Plugin, ...] = ...,
-        shutdown_timeout: float = ...,
-    ) -> None: ...
-
-    def __enter__(self) -> Self: ...
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: TracebackType | None,
-    ) -> None: ...
 
     # ── Execution ─────────────────────────────────────────────
 
@@ -495,9 +410,6 @@ class ComputePool:
     ) -> list[R]:
         """Apply a function to each item, distributing across nodes.
 
-        Each item becomes a separate task dispatched round-robin.
-        All results are collected before returning.
-
         Parameters
         ----------
         fn
@@ -509,30 +421,13 @@ class ComputePool:
         -------
         list[R]
             Results in the same order as ``items``.
-
-        Examples
-        --------
-        >>> results = pool.map(process, [data1, data2, data3])
         """
         ...
 
     # ── Distributed collections ───────────────────────────────
 
     def dict(self, name: str, *, consistency: Consistency | None = None) -> DictProxy:
-        """Get or create a distributed dictionary shared across all nodes.
-
-        Parameters
-        ----------
-        name
-            Unique identifier for this collection.
-        consistency
-            ``"strong"`` or ``"eventual"``. ``None`` uses the system default.
-
-        Returns
-        -------
-        DictProxy
-            Synchronous dict-like proxy backed by the actor system.
-        """
+        """Get or create a distributed dictionary shared across all nodes."""
         ...
 
     def set(self, name: str, *, consistency: Consistency | None = None) -> SetProxy:
@@ -548,41 +443,17 @@ class ComputePool:
         ...
 
     def barrier(self, name: str, n: int) -> BarrierProxy:
-        """Get or create a distributed barrier.
-
-        Parameters
-        ----------
-        name
-            Unique identifier for this barrier.
-        n
-            Number of participants that must call ``wait()`` before
-            any are released.
-        """
+        """Get or create a distributed barrier."""
         ...
 
     def lock(self, name: str, timeout: float = 30) -> LockProxy:
-        """Get or create a distributed lock.
-
-        Parameters
-        ----------
-        name
-            Unique identifier for this lock.
-        timeout
-            Default lock acquisition timeout in seconds.
-        """
+        """Get or create a distributed lock."""
         ...
 
     # ── Query ─────────────────────────────────────────────────
 
     def current_nodes(self) -> int:
-        """Return the number of nodes currently in the ``ready`` state.
-
-        Returns
-        -------
-        int
-            Count of ready nodes. May be less than requested during
-            provisioning or autoscaling.
-        """
+        """Return the number of nodes currently in the ``ready`` state."""
         ...
 
     @property
@@ -595,41 +466,18 @@ class ComputePool:
         """True if pool is ready for execution."""
         ...
 
-    # ── Named constructor ─────────────────────────────────────
-
-    @classmethod
-    def Named(cls, name: str) -> ComputePool:
-        """Create a pool from a named configuration in ``skyward.toml``.
-
-        Parameters
-        ----------
-        name
-            Pool name as defined in the ``[pools.<name>]`` section.
-
-        Returns
-        -------
-        ComputePool
-            Pool configured from the TOML section.
-
-        Examples
-        --------
-        >>> with sky.ComputePool.Named("training") as pool:
-        ...     result = train(data) >> pool
-        """
-        ...
-
 # ── Curated: _Sky singleton ──────────────────────────────────
 
 class _Sky:
     """Singleton that captures ``>>`` and ``@`` operators.
 
     Use ``sky`` as the right-hand side of operators inside a
-    ``with ComputePool(...)`` block. Resolves to the active pool
+    ``with Compute(...)`` block. Resolves to the active pool
     via ``ContextVar``.
 
     Examples
     --------
-    >>> with sky.ComputePool(provider=sky.AWS(), accelerator="A100") as pool:
+    >>> with sky.Compute(provider=sky.AWS(), accelerator="A100") as pool:
     ...     result = train(data) >> sky
     ...     results = train(data) @ sky
     """
@@ -817,7 +665,7 @@ class App:
     """Application context manager for console lifecycle and spy wiring.
 
     Provide a Rich adaptive console and optional spy actor for
-    observing pool events. Usually not needed directly — ``ComputePool``
+    observing pool events. Usually not needed directly — ``Session``
     manages its own ``App`` internally.
 
     Parameters
@@ -828,7 +676,7 @@ class App:
     Examples
     --------
     >>> with sky.App(console=True):
-    ...     with sky.ComputePool(...) as pool:
+    ...     with sky.Compute(...) as pool:
     ...         result = train(data) >> pool
     """
 
@@ -847,7 +695,6 @@ __all__ = [
     "pool",
     "function",
     "gather",
-    "ComputePool",
     "PendingFunction",
     "PendingFunctionGroup",
     "InstanceInfo",

@@ -78,7 +78,7 @@ if __name__ == "__main__":
     BATCHES = 200
     BATCH_SIZE = 1
 
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         nodes=1,
         accelerator=sky.accelerators.T4(),

@@ -60,7 +60,7 @@ def train():
     ...
 
 
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.A100(),
     nodes=4,
@@ -76,7 +76,7 @@ The `@` operator broadcasts the function to all nodes. Each node executes `train
 JAX is the recommended backend for multi-node Keras training. When using Keras with JAX, stack both plugins:
 
 ```python
-with sky.ComputePool(
+with sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.A100(),
     nodes=2,

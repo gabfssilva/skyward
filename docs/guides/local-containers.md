@@ -75,7 +75,7 @@ sky.Container(
 Resource limits (`vcpus` and `memory_gb`) are set on the pool, not the provider:
 
 ```python
-sky.ComputePool(
+sky.Compute(
     provider=sky.Container(),
     nodes=2,
     vcpus=1,
@@ -97,7 +97,7 @@ import skyward as sky
 
 @pytest.fixture(scope="session")
 def pool():
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.Container(network="skyward-ci"),
         nodes=2,
         vcpus=1,

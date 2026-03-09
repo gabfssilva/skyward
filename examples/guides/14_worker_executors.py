@@ -26,7 +26,7 @@ if __name__ == "__main__":
     # --8<-- [start:thread_executor]
     # Thread executor (default) — tasks run as threads in the worker process.
     # Supports streaming, low overhead, ideal for I/O-bound and GIL-releasing workloads.
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         worker=sky.Worker(concurrency=2),  # executor="thread" is the default
         nodes=3,
@@ -39,7 +39,7 @@ if __name__ == "__main__":
     # --8<-- [start:process_executor]
     # Process executor — each task runs in a separate OS process.
     # Bypasses the GIL, so pure-Python CPU-bound work uses all available cores.
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         worker=sky.Worker(concurrency=2, executor="process"),
         nodes=3,

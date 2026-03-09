@@ -203,7 +203,7 @@ def producer_fill_queue(tasks: list[int]) -> dict:
 
 
 if __name__ == "__main__":
-    with sky.ComputePool(
+    with sky.Compute(
         provider=sky.AWS(),
         nodes=4,
         vcpus=2,
