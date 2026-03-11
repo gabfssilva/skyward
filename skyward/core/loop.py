@@ -9,14 +9,6 @@ from typing import Any
 
 from skyward.observability.logger import logger
 
-
-def cancel_pending_tasks() -> None:
-    current = asyncio.current_task()
-    for task in asyncio.all_tasks():
-        if task is not current and not task.done():
-            task.cancel()
-
-
 _FDS_PER_NODE: int = 10
 _FD_BASE_OVERHEAD: int = 50
 
@@ -75,4 +67,28 @@ def cleanup_loop(
 
     if not loop.is_running():
         with suppress(Exception):
+            _drain_pending_tasks(loop)
+        with suppress(Exception):
             loop.close()
+
+
+def _drain_pending_tasks(loop: asyncio.AbstractEventLoop) -> None:
+    """Cancel lingering asyncio tasks and await their cancellation.
+
+    During shutdown, a race between ``_stop_async`` resolving ask-futures
+    and actors finishing their ``_do_stop`` child-cleanup can leave actor
+    ``_run_loop`` tasks still pending when the event loop stops.  Cancelling
+    and draining them here prevents 'Task was destroyed but it is pending'
+    warnings and 'Event loop is closed' errors.
+    """
+
+    async def _cancel_all() -> None:
+        tasks = [
+            t for t in asyncio.all_tasks()
+            if t is not asyncio.current_task()
+        ]
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    loop.run_until_complete(_cancel_all())
