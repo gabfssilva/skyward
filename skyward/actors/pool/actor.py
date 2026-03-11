@@ -205,7 +205,8 @@ def pool_actor(
                                 transformed_image, cluster,
                             )
                     effective_spec = replace(s.spec, image=transformed_image)
-                    cluster = replace(cluster, spec=effective_spec)
+                    prebaked = cluster.prebaked and transformed_image == s.spec.image
+                    cluster = replace(cluster, spec=effective_spec, prebaked=prebaked)
 
                     log.info(
                         "Cluster ready, provisioning {n} instances",
