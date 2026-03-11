@@ -147,7 +147,7 @@ def accelerate(config: AccelerateConfig | None = None) -> Plugin:
         for key, value in env.items():
             os.environ[key] = value
 
-        backend = "nccl" if _torch.cuda.is_available() else "gloo"
+        backend = "nccl" if _torch.cuda.is_available() else "gloo"  # type: ignore[reportAttributeAccessIssue]
         log.info(
             "Initializing process group: backend={be}, rank={rank}, world_size={ws}",
             be=backend, rank=info.node, ws=info.total_nodes,
