@@ -104,10 +104,11 @@ The JAX plugin's `around_process` calls `jax.distributed.initialize()`, and Kera
 
 ## Built-in plugins
 
-Skyward ships with eight plugins:
+Skyward ships with nine plugins:
 
 | Plugin | Primary Hooks | Purpose |
 |--------|--------------|---------|
+| [`accelerate`](accelerate.md) | `transform`, `around_process` | Distributed training with FSDP, DeepSpeed, and mixed precision via Hugging Face Accelerate |
 | [`torch`](torch.md) | `transform`, `around_process` | PyTorch installation and DDP initialization |
 | [`jax`](jax.md) | `transform`, `around_process` | JAX installation and distributed initialization |
 | [`keras`](keras.md) | `transform`, `around_process` | Keras backend configuration and DataParallel |

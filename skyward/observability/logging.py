@@ -55,7 +55,7 @@ def setup_logging(config: LogConfig) -> list[int]:
 
     if config.console:
         hid = logger.add(
-            sys.stderr,
+            sys.stdout,
             level=config.level,
             filter="skyward",
         )

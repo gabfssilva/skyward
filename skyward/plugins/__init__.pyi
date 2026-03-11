@@ -2,12 +2,37 @@
 
 from typing import Literal
 
+from skyward.api.plugin import AccelerateConfig as AccelerateConfig
+from skyward.api.plugin import DeepSpeedConfig as DeepSpeedConfig
+from skyward.api.plugin import FsdpConfig as FsdpConfig
+from skyward.api.plugin import LaunchCommand as LaunchCommand
+from skyward.api.plugin import LaunchContext as LaunchContext
 from skyward.api.plugin import Plugin as Plugin
 from skyward.api.plugin import around_app as around_app
 from skyward.api.plugin import around_client as around_client
 from skyward.api.plugin import around_process as around_process
 
 # ── Plugin factories ──────────────────────────────────────────
+
+def accelerate(config: AccelerateConfig | None = None) -> Plugin:
+    """HuggingFace Accelerate plugin.
+
+    Wrap the worker process with ``accelerate launch`` for distributed
+    training with FSDP, DeepSpeed, mixed precision, and more.
+
+    The ``config`` dict mirrors the YAML structure produced by
+    ``accelerate config``.  Skyward injects topology fields
+    automatically.
+
+    Parameters
+    ----------
+    config
+        Accelerate settings matching the accelerate YAML format.
+        ``num_processes`` means **total** across all nodes; defaults
+        to the cluster node count (1 GPU per node).
+    """
+    ...
+
 
 def torch(
     *,
@@ -74,18 +99,6 @@ def cuml(*, cuda: str = "cu12") -> Plugin:
     """
     ...
 
-def huggingface(token: str) -> Plugin:
-    """HuggingFace Hub plugin.
-
-    Set ``HF_TOKEN`` environment variable for authenticated model access.
-
-    Parameters
-    ----------
-    token
-        HuggingFace API token.
-    """
-    ...
-
 def joblib(*, version: str | None = None) -> Plugin:
     """Joblib parallel backend plugin.
 
@@ -143,12 +156,15 @@ def mps(
 # ── Convenience constructors ─────────────────────────────────
 
 __all__ = [
+    "AccelerateConfig",
+    "LaunchCommand",
+    "LaunchContext",
     "Plugin",
+    "accelerate",
     "torch",
     "jax",
     "keras",
     "cuml",
-    "huggingface",
     "joblib",
     "sklearn",
     "mig",

@@ -12,7 +12,11 @@ session actor.
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
+import sys
 import threading
+from contextlib import suppress
 from contextvars import Token
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Unpack, overload
@@ -68,6 +72,7 @@ class Session:
         self._active: bool = False
         self._context_token: Token[Session | None] | None = None
         self._pools: dict[str, Any] = {}
+        self._original_sigint: Any = None
 
     def __enter__(self) -> Session:
         """Start the session infrastructure."""
@@ -76,13 +81,7 @@ class Session:
                 case True:
                     log_config = LogConfig(console=False)
                 case _:
-                    log_config = LogConfig(
-                        level=self._logging.level,
-                        file=self._logging.file,
-                        console=False,
-                        rotation=self._logging.rotation,
-                        retention=self._logging.retention,
-                    )
+                    log_config = self._logging
             self._log_handler_ids = setup_logging(log_config)
 
         loop = asyncio.new_event_loop()
@@ -113,12 +112,19 @@ class Session:
         exc_tb: TracebackType | None,
     ) -> None:
         """Stop the session and release all resources."""
+        interrupted = exc_type is KeyboardInterrupt
         try:
             if self._context_token is not None:
                 _active_session.reset(self._context_token)
                 self._context_token = None
 
             if self._active and self._loop is not None:
+                if interrupted:
+                    sys.stderr.write(
+                        "\nInterrupted. Shutting down gracefully… "
+                        "(press Ctrl+C again to force exit)\n",
+                    )
+                    self._defer_interrupts()
                 run_sync(
                     self._loop,
                     self._stop_async(),
@@ -129,11 +135,14 @@ class Session:
                 "Session stop timed out after {t}s, forcing cleanup",
                 t=self._shutdown_timeout,
             )
+        except KeyboardInterrupt:
+            logger.warning("Interrupted during shutdown, forcing cleanup")
         except Exception as e:
             logger.warning("Error stopping session: {err}", err=e)
         finally:
             self._active = False
             self._cleanup()
+            self._restore_interrupts()
             logger.info("Session stopped")
 
             if self._log_handler_ids:
@@ -162,7 +171,9 @@ class Session:
         self._session_ref = self._system.spawn(session_behavior, "session")
 
     async def _stop_async(self) -> None:
-        """Ask the session actor to stop and tear down the actor system."""
+        """Stop all pools, then the session actor, then the actor system."""
+        await self._stop_all_pools()
+
         if self._session_ref is not None and self._system is not None:
             from skyward.actors.session.messages import StopSession
 
@@ -175,6 +186,40 @@ class Session:
         if self._system is not None:
             await self._system.__aexit__(None, None, None)
             self._system = None
+
+    async def _stop_all_pools(self) -> None:
+        """Send StopPool to every tracked pool and await termination."""
+        for name, pool in self._pools.items():
+            if not pool.is_active:
+                continue
+            try:
+                await pool._stop_pool_actor()
+            except Exception as e:
+                logger.warning(
+                    "Error stopping pool {name}: {err}", name=name, err=e,
+                )
+
+    def _defer_interrupts(self) -> None:
+        """Replace SIGINT handler so a second Ctrl+C force-exits."""
+        try:
+            self._original_sigint = signal.getsignal(signal.SIGINT)
+        except ValueError:
+            return
+
+        def _force_exit(_signum: int, _frame: Any) -> None:
+            sys.stderr.write("\nForced exit.\n")
+            os._exit(1)
+
+        with suppress(ValueError):
+            signal.signal(signal.SIGINT, _force_exit)
+
+    def _restore_interrupts(self) -> None:
+        """Restore the original SIGINT handler."""
+        if self._original_sigint is None:
+            return
+        with suppress(ValueError):
+            signal.signal(signal.SIGINT, self._original_sigint)
+        self._original_sigint = None
 
     def _cleanup(self) -> None:
         """Stop the event loop and join the background thread."""

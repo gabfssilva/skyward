@@ -92,10 +92,10 @@ nav:
           - For HPC users: hpc.md
   - Plugins:
       - What are plugins?: plugins/index.md
+      - Accelerate: plugins/accelerate.md
       - PyTorch: plugins/torch.md
       - JAX: plugins/jax.md
       - Keras: plugins/keras.md
-      - HuggingFace: plugins/huggingface.md
       - Joblib: plugins/joblib.md
       - Scikit-learn: plugins/sklearn.md
       - cuML: plugins/cuml.md
@@ -115,6 +115,7 @@ nav:
           - Keras training: guides/keras-training.md
           - MicroGPT distributed: guides/microgpt-distributed.md
           - HuggingFace fine-tuning: guides/huggingface-finetuning.md
+          - FSDP with HuggingFace: guides/fsdp-huggingface.md
       - Infrastructure:
           - NVIDIA MIG: guides/nvidia-mig.md
           - S3 volumes: guides/s3-volumes.md

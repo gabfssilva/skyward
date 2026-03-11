@@ -156,7 +156,7 @@ class InstanceInfo(BaseModel):
         return cls.model_validate_json(cluster_info_json)
 
 
-def instance_info() -> InstanceInfo | None:
+def instance_info() -> InstanceInfo:
     """Return information about the current compute instance.
 
     Must be called from within a ``@sky.function`` running on a remote node.
@@ -175,7 +175,9 @@ def instance_info() -> InstanceInfo | None:
     ...         print(f"Head node of {info.total_nodes} nodes")
     ...     return process(data)
     """
-    return InstanceInfo.current()
+    info = InstanceInfo.current()
+    assert info is not None
+    return info
 
 
 def _get_pool_info() -> tuple[int, int]:

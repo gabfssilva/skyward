@@ -51,16 +51,40 @@ async def do_start_worker(
 
     host = private_ip if node_id != 0 else (head_info.head_addr if head_info else private_ip)
 
-    seeds_arg = f"--seeds {seeds} " if seeds else ""
-    casty_cmd = (
-        f'nohup {python_bin} -c "from skyward.infra.worker import cli; cli()" '
-        f"--node-id {node_id} --port {casty_port} "
-        f"--num-nodes {num_nodes} --host {host} "
-        f"--workers-per-node {concurrency} "
-        f"--worker-executor {executor} "
-        f"{seeds_arg}"
-        f"> /var/log/casty.log 2>&1 & echo $!"
+    from skyward.api.plugin import LaunchCommand, LaunchContext
+
+    env_vars: dict[str, str] = {
+        "SKYWARD_NODE_ID": str(node_id),
+        "SKYWARD_PORT": str(casty_port),
+        "SKYWARD_NUM_NODES": str(num_nodes),
+        "SKYWARD_HOST": host,
+        "SKYWARD_WORKERS_PER_NODE": str(concurrency),
+        "SKYWARD_WORKER_EXECUTOR": executor,
+    }
+    if seeds:
+        env_vars["SKYWARD_SEEDS"] = seeds
+
+    launch_cmd = LaunchCommand(
+        entrypoint=f'{python_bin} -c "from skyward.infra.worker import cli; cli()"',
     )
+    launch_ctx = LaunchContext(
+        node_id=node_id,
+        num_nodes=num_nodes,
+        head_addr=head_info.head_addr if head_info else private_ip,
+        casty_port=casty_port,
+        private_ip=private_ip,
+        python_bin=python_bin,
+        venv_dir=venv_dir,
+        concurrency=concurrency,
+        executor=executor,
+    )
+
+    for plugin in spec.plugins:
+        if plugin.launcher is not None:
+            launch_cmd = plugin.launcher(launch_cmd, launch_ctx)
+
+    env_str = " ".join(f"{k}={v}" for k, v in env_vars.items())
+    casty_cmd = f"nohup env {env_str} {launch_cmd.render()} > /var/log/casty.log 2>&1 & echo $!"
     tail_inner = (
         f"source {EMIT_SH_PATH} && "
         f"tail -f /var/log/casty.log 2>/dev/null "
@@ -75,11 +99,15 @@ async def do_start_worker(
         casty_cmd = f"sudo bash -c '{casty_cmd}'"
         tail_cmd = f"sudo {tail_cmd}"
 
+    log.info("Launch command: {cmd}", cmd=launch_cmd.render())
     exit_code, stdout, stderr = await transport_run(transport_ref, casty_cmd, timeout=60.0)
     if exit_code != 0:
         raise RuntimeError(f"Failed to start Casty node {node_id}: {stderr}")
+
+    pid = stdout.strip()
     await transport_run(transport_ref, tail_cmd, timeout=10.0)
-    log.debug("Casty worker started, PID: {pid}", pid=stdout.strip())
+    log.info("Casty worker started, PID: {pid}", pid=pid)
+
 
     if spec.image:
         check_python_version(spec.image.python)

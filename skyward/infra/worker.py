@@ -13,7 +13,6 @@ Architecture:
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import os
 import sys
@@ -540,50 +539,38 @@ def _redirect_stdio_to_log(log_path: str = "/var/log/casty.log") -> None:
 
 
 def cli() -> None:
-    parser = argparse.ArgumentParser(description="Casty worker service")
-    parser.add_argument("--node-id", type=int, required=True)
-    parser.add_argument("--port", type=int, default=25520)
-    parser.add_argument("--num-nodes", type=int, default=1)
-    parser.add_argument("--host", type=str, default="0.0.0.0")
-    parser.add_argument(
-        "--seeds", type=str, default=None,
-        help="Comma-separated seed addresses (host:port)",
-    )
-    parser.add_argument("--workers-per-node", type=int, default=1)
-    parser.add_argument(
-        "--worker-executor", type=str, default="thread",
-        choices=["thread", "process"],
-        help="Execution backend: thread (default) or process (bypasses GIL)",
-    )
-    parser.add_argument(
-        "--log-file", type=str, default="/var/log/casty.log",
-        help="Redirect stdout/stderr to this file",
-    )
-    args = parser.parse_args()
+    _redirect_stdio_to_log(os.environ.get("SKYWARD_LOG_FILE", "/var/log/casty.log"))
 
-    _redirect_stdio_to_log(args.log_file)
+    import logging as _logging
 
-    seeds = _parse_seeds(args.seeds)
+    _fmt = _logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s - %(message)s")
+    _h = _logging.StreamHandler(sys.stderr)
+    _h.setFormatter(_fmt)
+    _h.setLevel(_logging.DEBUG)
+    _logging.getLogger("skyward").addHandler(_h)
+    _logging.getLogger("casty").addHandler(_h)
+
+    node_id = int(os.environ["SKYWARD_NODE_ID"])
+    port = int(os.environ.get("SKYWARD_PORT", "25520"))
+    num_nodes = int(os.environ.get("SKYWARD_NUM_NODES", "1"))
+    host = os.environ.get("SKYWARD_HOST", "0.0.0.0")
+    seeds = _parse_seeds(os.environ.get("SKYWARD_SEEDS"))
+    workers_per_node = int(os.environ.get("SKYWARD_WORKERS_PER_NODE", "1"))
+    worker_executor = os.environ.get("SKYWARD_WORKER_EXECUTOR", "thread")
+
     asyncio.run(main(
-        args.node_id, args.port, seeds, args.num_nodes, args.host,
-        workers_per_node=args.workers_per_node,
-        worker_executor=args.worker_executor,
+        node_id, port, seeds, num_nodes, host,
+        workers_per_node=workers_per_node,
+        worker_executor=worker_executor,
     ))
 
 
 if __name__ == "__main__":
-    # When running as `python -m skyward.infra.worker`, the import chain
-    # (skyward → api.pool → infra.executor → infra.worker) loads this module
-    # as 'skyward.infra.worker' first, then Python re-executes it as __main__.
-    # This creates duplicate class objects: __main__.TaskSucceeded vs
-    # skyward.infra.worker.TaskSucceeded. Pickle stores the __main__ version,
-    # which the client can't resolve (its __main__ is a different module).
-    # Fix: delegate to the properly-imported module so all class references
-    # point to 'skyward.infra.worker', not '__main__'.
-    import sys
+    # Force-import the module under its canonical name so all class
+    # references (TaskSucceeded, EnterContext, etc.) use
+    # 'skyward.infra.worker' — not '__main__'. Without this, pickle
+    # sends __main__.TaskSucceeded which the client can't resolve.
+    import importlib
 
-    _proper = sys.modules.get("skyward.infra.worker")
-    if _proper is not None:
-        _proper.cli()
-    else:
-        cli()
+    _proper = importlib.import_module("skyward.infra.worker")
+    _proper.cli()

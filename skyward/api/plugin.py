@@ -13,7 +13,9 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from functools import reduce
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
+
+from typing_extensions import TypedDict
 
 if TYPE_CHECKING:
     from skyward.api.model import Cluster
@@ -68,6 +70,78 @@ backends or registering cleanup handlers.
 
 
 @dataclass(frozen=True, slots=True)
+class LaunchContext:
+    """Context available to launcher transform hooks.
+
+    Parameters
+    ----------
+    node_id
+        Index of this node in the cluster (0 = head).
+    num_nodes
+        Total number of nodes in the cluster.
+    head_addr
+        IP address of the head node.
+    casty_port
+        Port for the Casty actor system.
+    private_ip
+        Private IP of this node.
+    python_bin
+        Path to the Python binary inside the remote venv.
+    venv_dir
+        Path to the remote venv directory.
+    concurrency
+        Number of workers per node.
+    executor
+        Execution backend (``"thread"`` or ``"process"``).
+    """
+
+    node_id: int
+    num_nodes: int
+    head_addr: str
+    casty_port: int
+    private_ip: str
+    python_bin: str
+    venv_dir: str
+    concurrency: int
+    executor: str
+
+
+@dataclass(frozen=True, slots=True)
+class LaunchCommand:
+    """Structured worker launch command.
+
+    Parameters
+    ----------
+    launcher
+        Wrapper tool that launches the worker process
+        (e.g. ``"accelerate launch --num_machines 4"``).
+        Empty string means no wrapper — Python runs the entrypoint directly.
+    entrypoint
+        Worker script or ``-c`` invocation.
+    args
+        CLI arguments for the worker (``--node-id``, ``--port``, etc.).
+    """
+
+    launcher: str = ""
+    entrypoint: str = ""
+    args: tuple[str, ...] = ()
+
+    def render(self) -> str:
+        """Render to a single shell command string."""
+        parts = filter(None, (self.launcher, self.entrypoint, " ".join(self.args)))
+        return " ".join(parts)
+
+
+type LauncherTransform = Callable[[LaunchCommand, LaunchContext], LaunchCommand]
+"""Hook that transforms the worker launch command.
+
+Receives the default ``LaunchCommand`` and ``LaunchContext``, returns a
+modified command.  Typically used to prepend a process wrapper like
+``accelerate launch`` or ``torchrun``.
+"""
+
+
+@dataclass(frozen=True, slots=True)
 class Plugin:
     """Declarative third-party integration bundle.
 
@@ -96,6 +170,9 @@ class Plugin:
         the first task execution in each subprocess, after env vars are propagated.
     around_client
         Client lifecycle context manager: (Pool, Cluster[S]) -> ContextManager[None].
+    launcher
+        (LaunchCommand, LaunchContext) -> LaunchCommand transformer. Wraps the
+        worker launch command with a process launcher like accelerate or torchrun.
     """
 
     name: str
@@ -105,6 +182,7 @@ class Plugin:
     around_app: AppLifecycle | None = None
     around_process: ProcessLifecycle | None = None
     around_client: ClientLifecycle[Any] | None = None
+    launcher: LauncherTransform | None = None
 
     @staticmethod
     def create(name: str) -> Plugin:
@@ -228,6 +306,23 @@ class Plugin:
         """
         return replace(self, around_client=around)
 
+    def with_launcher(self, launcher: LauncherTransform) -> Plugin:
+        """Attach a worker launch command transform.
+
+        Parameters
+        ----------
+        launcher
+            ``(LaunchCommand, LaunchContext) -> LaunchCommand`` that wraps
+            the worker startup with a process launcher (e.g. ``accelerate
+            launch``, ``torchrun``).
+
+        Returns
+        -------
+        Plugin
+            New plugin instance with the launcher hook attached.
+        """
+        return replace(self, launcher=launcher)
+
 
 def chain_decorators[**P, R](
     fn: Callable[P, R],
@@ -309,3 +404,81 @@ def around_process(name: str, around: ProcessLifecycle) -> Plugin:
         Plugin with the ``around_process`` hook set.
     """
     return Plugin(name=name, around_process=around)
+
+
+class FsdpConfig(TypedDict, total=False):
+    """FSDP section of the accelerate config.
+
+    Keys omit the ``fsdp_`` prefix — the plugin maps them to the
+    correct ``FSDP_*`` environment variables that accelerate reads.
+    """
+
+    sharding_strategy: (
+        Literal[
+            "FULL_SHARD",
+            "SHARD_GRAD_OP",
+            "NO_SHARD",
+            "HYBRID_SHARD",
+            "HYBRID_SHARD_ZERO2",
+        ]
+        | str
+    )
+    auto_wrap_policy: Literal["TRANSFORMER_BASED_WRAP", "SIZE_BASED_WRAP"] | str
+    transformer_layer_cls_to_wrap: str
+    backward_prefetch: Literal["BACKWARD_PRE", "BACKWARD_POST"] | str
+    state_dict_type: (
+        Literal["FULL_STATE_DICT", "SHARDED_STATE_DICT", "LOCAL_STATE_DICT"] | str
+    )
+    forward_prefetch: bool
+    use_orig_params: bool
+    cpu_ram_efficient_loading: bool
+    sync_module_states: bool
+    offload_params: bool
+    min_num_params: int
+    activation_checkpointing: bool
+
+
+class DeepSpeedConfig(TypedDict, total=False):
+    """DeepSpeed section of the accelerate config.
+
+    Keys omit prefixes — the plugin maps them to the correct
+    ``ACCELERATE_DEEPSPEED_*`` environment variables.
+    """
+
+    config_file: str
+    zero_stage: Literal[0, 1, 2, 3] | int
+    offload_optimizer_device: Literal["none", "cpu", "nvme"] | str
+    offload_param_device: Literal["none", "cpu", "nvme"] | str
+    offload_optimizer_nvme_path: str
+    offload_param_nvme_path: str
+    gradient_accumulation_steps: int
+    gradient_clipping: float
+    zero3_save_16bit_model: bool
+
+
+class AccelerateConfig(TypedDict, total=False):
+    """Accelerate config in the same structure as the YAML produced by ``accelerate config``.
+
+    Skyward injects topology fields automatically (``num_machines``,
+    ``machine_rank``, ``main_process_ip``, ``main_process_port``,
+    ``compute_environment``).  ``distributed_type`` is inferred from
+    the presence of ``fsdp`` or ``deepspeed`` when not
+    set explicitly.
+
+    ``num_processes`` means **total** across all nodes (matching
+    accelerate semantics).  Defaults to the cluster node count
+    (1 GPU per node).
+    """
+
+    distributed_type: Literal["FSDP", "DEEPSPEED", "MULTI_GPU", "NO"] | str
+    mixed_precision: Literal["no", "fp16", "bf16", "fp8"] | str
+    num_processes: int
+    num_cpu_threads_per_process: int
+    gpu_ids: str
+    same_network: bool
+    debug: bool
+    downcast_bf16: str
+    rdzv_backend: str
+
+    fsdp: FsdpConfig
+    deepspeed: DeepSpeedConfig

@@ -20,8 +20,8 @@ import sys
 from collections.abc import Callable
 from typing import Any, TextIO
 
-from rich.console import Console
-from rich.logging import RichHandler
+from rich.console import Console  # noqa: F401
+from rich.logging import RichHandler  # noqa: F401
 
 TRACE = 5
 logging.addLevelName(TRACE, "TRACE")
@@ -35,9 +35,14 @@ def _caller_logger(depth: int = 2) -> logging.Logger:
     stack = inspect.stack()
     if depth >= len(stack):
         return _skyward_root
-    frame = stack[depth]
-    module = frame.frame.f_globals.get("__name__", "skyward")
-    return logging.getLogger(module)
+    module = stack[depth].frame.f_globals.get("__name__", "skyward")
+    if module.startswith("skyward"):
+        return logging.getLogger(module)
+    for frame_info in stack[depth:]:
+        name = frame_info.frame.f_globals.get("__name__", "")
+        if name.startswith("skyward"):
+            return logging.getLogger(name)
+    return _skyward_root
 
 
 def _format_message(msg: str, args: tuple[object, ...], kwargs: dict[str, object]) -> str:
@@ -174,7 +179,7 @@ def _make_file_handler(
 
 def _make_console_handler(level: int) -> logging.Handler:
     handler = RichHandler(
-        console=Console(stderr=True),
+        console=Console(stderr=False),
         show_time=True,
         show_path=False,
         markup=False,
