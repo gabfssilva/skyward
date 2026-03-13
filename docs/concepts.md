@@ -107,6 +107,34 @@ If a spot instance is preempted, the node detects the loss, notifies the pool, a
 
 The pool is also the dispatch target for computations. You don't configure job queues or submit YAML — you use Python operators to express how computations should be distributed across the pool's nodes.
 
+### Node specification
+
+The `nodes` parameter controls how many machines the pool provisions and when work can begin. The simplest form is an integer — `nodes=4` provisions four machines and waits for all of them. But Skyward supports two additional modes through the `sky.Nodes` dataclass.
+
+**Partial readiness** lets the pool start working before all nodes are up. An 8-node training job that can make progress with 4 nodes shouldn't wait for the slowest machine to boot:
+
+```python
+with sky.Compute(
+    provider=sky.AWS(),
+    nodes=sky.Nodes(min=8, desired=4),
+) as compute:
+    result = train(data) @ compute  # starts with 4 nodes, grows to 8
+```
+
+The pool becomes operational when `desired` nodes are ready. The remaining nodes join as they come up — tasks dispatched with `>>` pick up new nodes via round-robin, and `@` broadcasts to all currently ready nodes.
+
+**Elastic pools** scale the cluster size based on workload pressure:
+
+```python
+with sky.Compute(
+    provider=sky.AWS(),
+    nodes=sky.Nodes(min=2, max=16),  # or just nodes=(2, 16)
+) as compute:
+    results = sky.gather(*tasks) >> compute  # scales between 2 and 16
+```
+
+Both modes compose — `sky.Nodes(min=4, desired=2, max=16)` creates an elastic pool that starts work with 2 nodes and can scale up to 16. For the full details on how elastic pools make scaling decisions, see [Provision Controllers](provision-controllers.md).
+
 ## Workers
 
 Each node in the pool runs a **worker** — a long-lived process that receives serialized tasks, executes them, and sends results back. The `Worker` dataclass controls two things: how many tasks a node handles concurrently, and which execution backend runs them.

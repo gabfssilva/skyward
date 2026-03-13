@@ -204,6 +204,8 @@ with sky.Compute(provider=sky.AWS(), nodes=4) as compute:
 
 Where `>>` sends work to one node, `@` sends it to all of them. Each node runs the same function independently, but `sky.instance_info()` returns different values on each one — node index, total count, head status — so the function can adapt its behavior based on where it's running. This is the foundation for distributed training, data-parallel processing, and any workload that benefits from multiple machines. See [Broadcast](guides/broadcast.md) for more.
 
+For larger clusters, you can use `sky.Nodes` to start working before all nodes are ready — `nodes=sky.Nodes(min=8, desired=4)` provisions 8 nodes but becomes operational when 4 are up. For elastic pools that scale with demand, use a tuple or `sky.Nodes(min=2, max=16)`. See [Provision Controllers](provision-controllers.md) for details.
+
 ## Local testing
 
 During development, you'll want to test your functions without provisioning any cloud infrastructure. Every `@sky.function` function exposes the original, unwrapped version via `.local`:

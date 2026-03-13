@@ -4,25 +4,71 @@ A fixed-size pool works well when you know in advance how much compute you need.
 
 Skyward handles this with **elastic pools**: pools whose node count adjusts automatically based on workload pressure. Two actors make this work — the **autoscaler** and the **reconciler** — and they are designed around a clean separation: the autoscaler is a pure policy engine that decides *how many* nodes are needed, while the reconciler is the actuator that provisions and terminates cloud instances to match that decision. Neither knows about the other's internals. They communicate through a single message: `DesiredCountChanged`.
 
-## Enabling elastic pools
+## Node specification
 
-Pass a tuple instead of an integer for the `nodes` parameter:
+Before diving into elastic pools, it helps to understand the three ways to specify node counts. All three are different expressions of the same underlying type — `sky.Nodes` — a frozen dataclass with three fields: `min`, `max`, and `desired`.
+
+### Fixed pools
+
+The simplest form: an integer. Skyward provisions exactly that many nodes and waits for all of them before the pool becomes operational.
 
 ```python
-import skyward as sky
-
-with sky.Compute(
-    provider=sky.AWS(),
-    accelerator=sky.accelerators.A100(),
-    nodes=(2, 16),  # min 2, max 16
-    image=sky.Image(pip=["torch"]),
-) as compute:
-    results = sky.gather(*tasks) >> compute
+sky.Compute(provider=sky.AWS(), nodes=4)
 ```
 
-The pool starts with the minimum number of nodes (2 in this case) and can grow up to the maximum (16) based on demand. When the workload decreases, it shrinks back down — but never below the minimum.
+This is equivalent to `sky.Nodes(min=4)`. Four nodes are requested, four must be ready before any work starts.
 
-The two tuning knobs are `autoscale_cooldown` and `autoscale_idle_timeout`:
+### Partial readiness
+
+Sometimes you want a fixed number of nodes but don't need all of them before starting work. A training run that benefits from 8 nodes can still make progress with 4 — waiting for the last few to boot is wasted time.
+
+```python
+sky.Compute(provider=sky.AWS(), nodes=sky.Nodes(min=8, desired=4))
+```
+
+Skyward provisions 8 nodes but marks the pool as operational when 4 are ready. The remaining nodes join as they come up. Tasks dispatched with `>>` use round-robin across whatever nodes are available; `@` broadcasts to ready nodes and automatically includes latecomers as they appear.
+
+`desired` must be `<= min` in fixed pools (you can't start with more nodes than you requested). Omitting `desired` is the same as `desired=min` — wait for all.
+
+### Elastic pools
+
+Pass a tuple or use `sky.Nodes` with a `max` field. The pool scales between `min` and `max` based on workload pressure.
+
+```python
+# Tuple shorthand
+sky.Compute(provider=sky.AWS(), nodes=(2, 16))
+
+# Explicit form
+sky.Compute(provider=sky.AWS(), nodes=sky.Nodes(min=2, max=16))
+```
+
+The pool starts with the minimum (2) and grows up to the maximum (16) when demand increases. When workload decreases, it shrinks back — but never below the minimum.
+
+### Elastic pools with partial readiness
+
+The two concepts compose naturally. You can set `desired` on an elastic pool to start working before all initial nodes are ready:
+
+```python
+sky.Compute(
+    provider=sky.AWS(),
+    nodes=sky.Nodes(min=4, desired=2, max=16),
+)
+```
+
+This provisions at least 4 nodes, starts work when 2 are ready, and can scale up to 16. With autoscaling, `desired` can be up to `max` — the system will scale to meet the readiness threshold.
+
+### Summary
+
+| Form | Equivalent `Nodes` | Behavior |
+|------|-------------------|----------|
+| `nodes=4` | `Nodes(min=4)` | Fixed, wait for all |
+| `nodes=Nodes(min=8, desired=4)` | — | Fixed, start early |
+| `nodes=(2, 16)` | `Nodes(min=2, max=16)` | Elastic, wait for min |
+| `nodes=Nodes(min=4, desired=2, max=16)` | — | Elastic, start early |
+
+## Enabling elastic pools
+
+With the node specification covered, the rest of this page focuses on how elastic pools work internally. The two tuning knobs are `autoscale_cooldown` and `autoscale_idle_timeout`:
 
 ```python
 sky.Compute(
@@ -111,9 +157,11 @@ Periodically (every `reconcile_tick_interval` seconds — 15 by default), the re
 
 ## Always-on reconciliation
 
-The reconciler is spawned for **every** pool — not just elastic ones. In a fixed-size pool (`nodes=4`), the reconciler starts with `min_nodes = max_nodes = 4` and the autoscaler is never created. No `DesiredCountChanged` messages arrive, so the reconciler stays in the `watching` state permanently.
+The reconciler is spawned for **every** pool — not just elastic ones. In a fixed-size pool (`nodes=4`), the reconciler starts with `min = max = 4` and the autoscaler is never created. No `DesiredCountChanged` messages arrive, so the reconciler stays in the `watching` state permanently.
 
 But the reconcile tick still fires, and `ReconcilerNodeLost` messages still arrive. If a node dies in a fixed pool, the reconciler detects that the effective count (3) is below the desired count (4) and provisions a replacement. The pool self-heals without any elastic configuration — the reconciliation loop handles node replacement as a natural consequence of keeping `effective == desired`.
+
+Partial-readiness pools (those with `desired` set) work the same way. The reconciler doesn't know about the readiness threshold — that's the pool actor's concern. The pool actor transitions to operational when `desired` nodes are ready, and the reconciler continues provisioning the remaining nodes in the background. From the reconciler's perspective, it's just a normal fixed or elastic pool converging toward its target count.
 
 ## How they interact
 
