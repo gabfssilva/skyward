@@ -82,7 +82,7 @@ def active(
                 info = PoolInfo(
                     name=name, ref=pool_ref, spec=spec,
                     phase="provisioning", nodes_ready=0,
-                    nodes_total=spec.nodes,
+                    nodes_total=spec.nodes.min,
                 )
                 return active(
                     pools=MappingProxyType({**pools, name: info}),

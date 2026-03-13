@@ -387,7 +387,7 @@ def node_actor(
                 HeadAddressKnown(
                     head_addr=head_private,
                     casty_port=25520,
-                    num_nodes=spec.nodes,
+                    num_nodes=spec.nodes.min,
                     worker_concurrency=spec.worker.concurrency,
                     worker_executor=spec.worker.resolved_executor,
                 )

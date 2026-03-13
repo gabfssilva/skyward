@@ -42,6 +42,7 @@ from skyward.actors.messages import (
     TaskResult,
 )
 from skyward.api.plugin import Plugin
+from skyward.api.spec import Nodes
 from skyward.core.provider import ProviderConfig
 from skyward.distributed import (
     BarrierProxy,
@@ -191,6 +192,8 @@ class ComputePool:
         else:
             assert provider is not None
             match nodes:
+                case Nodes() as n:
+                    self._scaling = (n.min, n.max) if n.auto_scaling else None
                 case (min_n, max_n):
                     self._scaling = (min_n, max_n)
                 case _:
@@ -287,7 +290,21 @@ class ComputePool:
             self._log_handler_ids = setup_logging(log_config)
 
         first = self._specs[0]
+        fd_nodes: int = 1
         match first.nodes:
+            case Nodes() as n:
+                if n.auto_scaling:
+                    logger.info(
+                        "Starting pool with {min}-{max} nodes ({accel})",
+                        min=n.min, max=n.max, accel=first.accelerator,
+                    )
+                    fd_nodes = n.max or n.min
+                else:
+                    logger.info(
+                        "Starting pool with {n} nodes ({accel})",
+                        n=n.min, accel=first.accelerator,
+                    )
+                    fd_nodes = n.min
             case (min_n, max_n):
                 logger.info(
                     "Starting pool with {min}-{max} nodes ({accel})",
@@ -931,7 +948,6 @@ class ComputePool:
         return PoolConfig(
             image=self.image,
             worker=self.worker,
-            scaling=self._scaling,
             ssh_timeout=self.ssh_timeout,
             ssh_retry_interval=self.ssh_retry_interval,
             provision_retry_delay=self.provision_retry_delay,

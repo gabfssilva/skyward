@@ -62,6 +62,48 @@ type WorkerExecutor = Literal["auto", "thread", "process"]
 
 
 @dataclass(frozen=True, slots=True)
+class Nodes:
+    """Node count specification.
+
+    Parameters
+    ----------
+    min
+        Number of nodes to provision. Must be >= 1.
+    max
+        Maximum node count for autoscaling. ``None`` disables autoscaling.
+    desired
+        Minimum nodes needed before pool becomes operational.
+        ``None`` waits for all ``min`` nodes.
+    """
+
+    min: int
+    max: int | None = None
+    desired: int | None = None
+
+    @property
+    def auto_scaling(self) -> bool:
+        """Whether autoscaling is enabled."""
+        return self.max is not None
+
+    def __post_init__(self) -> None:
+        if self.min < 1:
+            raise ValueError(f"min must be >= 1, got {self.min}")
+        if self.max is not None and self.max < self.min:
+            raise ValueError(f"max ({self.max}) must be >= min ({self.min})")
+        upper = self.max if self.max is not None else self.min
+        effective_desired = self.desired if self.desired is not None else self.min
+        if effective_desired > upper:
+            raise ValueError(
+                f"desired ({effective_desired}) must be <= {'max' if self.max is not None else 'min'} ({upper})"
+            )
+        if effective_desired < 1:
+            raise ValueError(f"desired must be >= 1, got {effective_desired}")
+
+
+type NodeSpec = int | tuple[int, int] | Nodes
+
+
+@dataclass(frozen=True, slots=True)
 class Worker:
     """Worker configuration per node.
 
@@ -136,7 +178,7 @@ class Spec:
     """
     provider: ProviderConfig
     accelerator: Accelerator | None = None
-    nodes: int | tuple[int, int] = 1
+    nodes: NodeSpec = 1
     vcpus: float | None = None
     memory_gb: float | None = None
     architecture: Architecture | None = None
@@ -161,7 +203,7 @@ class SpecKwargs(_SpecRequired, total=False):
     """
 
     accelerator: Accelerator | None
-    nodes: int | tuple[int, int]
+    nodes: NodeSpec
     vcpus: float | None
     memory_gb: float | None
     architecture: Architecture | None
@@ -349,7 +391,7 @@ class PoolSpec:
     Parameters
     ----------
     nodes
-        Number of nodes to provision.  Must be ``>= 1``.
+        Node count specification (fixed or autoscaling).
     accelerator
         GPU/accelerator type, or ``None`` for CPU-only.
     region
@@ -382,10 +424,6 @@ class PoolSpec:
         Maximum number of provision attempts before giving up.
     volumes
         S3/GCS volumes to mount on workers.
-    min_nodes
-        Minimum node count for autoscaling.  ``None`` disables autoscaling.
-    max_nodes
-        Maximum node count for autoscaling.  ``None`` disables autoscaling.
     autoscale_cooldown
         Seconds between autoscaling decisions.
     autoscale_idle_timeout
@@ -398,7 +436,7 @@ class PoolSpec:
     Examples
     --------
     >>> spec = PoolSpec(
-    ...     nodes=4,
+    ...     nodes=Nodes(min=4),
     ...     accelerator=H100(),
     ...     region="us-east-1",
     ...     allocation="spot-if-available",
@@ -406,7 +444,7 @@ class PoolSpec:
     ... )
     """
 
-    nodes: int
+    nodes: Nodes
     accelerator: Accelerator | None
     region: str
     vcpus: float | None = None
@@ -423,23 +461,10 @@ class PoolSpec:
     provision_retry_delay: float = 10.0
     max_provision_attempts: int = 10
     volumes: tuple[Volume, ...] = ()
-    min_nodes: int | None = None
-    max_nodes: int | None = None
     autoscale_cooldown: float = 30.0
     autoscale_idle_timeout: float = 60.0
     reconcile_tick_interval: float = 15.0
     plugins: tuple[Plugin, ...] = ()
-
-    def __post_init__(self) -> None:
-        if self.nodes < 1:
-            raise ValueError(f"nodes must be >= 1, got {self.nodes}")
-        if self.min_nodes is not None and self.max_nodes is not None:
-            if self.min_nodes < 1:
-                raise ValueError(f"min_nodes must be >= 1, got {self.min_nodes}")
-            if self.max_nodes < self.min_nodes:
-                raise ValueError(
-                    f"max_nodes ({self.max_nodes}) must be >= min_nodes ({self.min_nodes})"
-                )
 
     @property
     def accelerator_name(self) -> str | None:
@@ -461,19 +486,6 @@ class PoolSpec:
             return 0
         value = int(match.group(1))
         return value * 1024 if match.group(2).upper() == "TB" else value
-
-    @property
-    def auto_scaling(self) -> bool:
-        """Whether autoscaling is enabled for this pool.
-
-        ``True`` when both ``min_nodes`` and ``max_nodes`` are set.
-
-        Returns
-        -------
-        bool
-            ``True`` if the pool should scale elastically.
-        """
-        return self.min_nodes is not None and self.max_nodes is not None
 
 
 def _default_metrics() -> tuple[Metric, ...]:

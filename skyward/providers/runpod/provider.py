@@ -354,14 +354,14 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                 total = lowest.get("totalCount", 0)
                 rented = lowest.get("rentedCount", 0)
                 available_gpus = total - rented
-                if available_gpus < spec.nodes * gpu_count:
+                if available_gpus < spec.nodes.min * gpu_count:
                     log.debug(
                         "Skipping {gpu}: {available} GPUs available, "
                         "need {need} ({nodes} nodes x {gpus} GPUs)",
                         gpu=display or gpu_id,
                         available=available_gpus,
-                        need=spec.nodes * gpu_count,
-                        nodes=spec.nodes,
+                        need=spec.nodes.min * gpu_count,
+                        nodes=spec.nodes.min,
                         gpus=gpu_count,
                     )
                     continue
@@ -443,7 +443,7 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
             case None:
                 effective_global_networking = (
                     self._config.cluster_mode == "individual"
-                    and spec.nodes >= 2
+                    and spec.nodes.min >= 2
                     and gpu_type_id is not None
                 )
 
@@ -451,7 +451,7 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
         pod_ids: tuple[tuple[int, str], ...] = ()
         cluster_ips: tuple[tuple[int, str], ...] = ()
 
-        if self._config.cluster_mode == "instant" and spec.nodes >= 2 and gpu_type_id:
+        if self._config.cluster_mode == "instant" and spec.nodes.min >= 2 and gpu_type_id:
             runpod_cluster_id, pod_ids, cluster_ips = await _create_instant_cluster(
                 self._config, spec, gpu_type_id, image_name,
                 registry_auth_id=registry_auth_id,
@@ -698,14 +698,14 @@ async def _create_instant_cluster(
     tuple[str, tuple[tuple[int, str], ...], tuple[tuple[int, str], ...]]
         (cluster_id, pod_ids as (node_id, pod_id), cluster_ips as (node_id, ip))
     """
-    log.info("Creating Instant Cluster with {n} nodes", n=spec.nodes)
+    log.info("Creating Instant Cluster with {n} nodes", n=spec.nodes.min)
 
     api_key = get_api_key(config.api_key)
 
     params: ClusterCreateParams = {
         "clusterName": f"skyward-{uuid.uuid4().hex[:8]}",
         "gpuTypeId": gpu_type_id,
-        "podCount": spec.nodes,
+        "podCount": spec.nodes.min,
         "gpuCountPerPod": spec.accelerator_count or 1,
         "type": "TRAINING",
         "imageName": image_name,

@@ -133,7 +133,7 @@ def _filter_locations(
             candidates.append((loc["id"], v0_name, gpu_count, vcpus, ram_gb, hourly_rate))
 
     if spec.max_hourly_cost:
-        max_per_instance = spec.max_hourly_cost / spec.nodes
+        max_per_instance = spec.max_hourly_cost / spec.nodes.min
         candidates = [c for c in candidates if c[5] <= max_per_instance]
 
     candidates.sort(key=lambda c: c[5])

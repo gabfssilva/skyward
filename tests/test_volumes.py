@@ -4,7 +4,7 @@ import pytest
 
 import skyward as sky
 from skyward.api.pool import Pool
-from skyward.core.spec import PoolSpec, Volume
+from skyward.core.spec import Nodes, PoolSpec, Volume
 from skyward.providers.aws.config import AWS
 from skyward.providers.provider import Mountable
 
@@ -39,12 +39,12 @@ class TestVolume:
             v.bucket = "other"  # type: ignore[misc]
 
     def test_poolspec_volumes_default_empty(self):
-        spec = PoolSpec(nodes=1, accelerator=None, region="us-east-1")
+        spec = PoolSpec(nodes=Nodes(min=1), accelerator=None, region="us-east-1")
         assert spec.volumes == ()
 
     def test_poolspec_with_volumes(self):
         vols = (Volume(bucket="b", mount="/data"),)
-        spec = PoolSpec(nodes=1, accelerator=None, region="us-east-1", volumes=vols)
+        spec = PoolSpec(nodes=Nodes(min=1), accelerator=None, region="us-east-1", volumes=vols)
         assert len(spec.volumes) == 1
         assert spec.volumes[0].mount == "/data"
 

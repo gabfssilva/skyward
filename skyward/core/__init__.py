@@ -26,6 +26,8 @@ from .spec import DEFAULT_IMAGE as DEFAULT_IMAGE
 from .spec import AllocationStrategy as AllocationStrategy
 from .spec import Architecture as Architecture
 from .spec import Image as Image
+from .spec import Nodes as Nodes
+from .spec import NodeSpec as NodeSpec
 from .spec import Options as Options
 from .spec import PipIndex as PipIndex
 from .spec import PoolSpec as PoolSpec
@@ -64,6 +66,8 @@ __all__ = [
     "Offer",
     "Cluster",
     "ClusterStatus",
+    "NodeSpec",
+    "Nodes",
     "Options",
     "ProviderConfig",
     "SpecKwargs",

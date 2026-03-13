@@ -58,13 +58,13 @@ def _build_pool_info_json(
 
     accel = ni.instance.offer.instance_type.accelerator
     accelerator_count = accel.count if accel else 1
-    total_accelerators = accelerator_count * spec.nodes
+    total_accelerators = accelerator_count * spec.nodes.min
 
     wpn = spec.worker.concurrency if spec.worker.executor == "process" else 1
 
     pool_info = build_pool_info(
         node=node_id,
-        total_nodes=spec.nodes,
+        total_nodes=spec.nodes.min,
         accelerator_count=accelerator_count,
         total_accelerators=total_accelerators,
         head_addr=head_addr,
@@ -160,7 +160,7 @@ def pool_actor(
                     logger.bind(actor="pool").info(
                         "StartPool received: {nodes} nodes, accelerator={acc}, "
                         "offers={n}",
-                        nodes=spec.nodes,
+                        nodes=spec.nodes.min,
                         acc=getattr(spec, "accelerator", None),
                         n=len(offers),
                     )
@@ -210,7 +210,7 @@ def pool_actor(
 
                     log.info(
                         "Cluster ready, provisioning {n} instances",
-                        n=effective_spec.nodes,
+                        n=effective_spec.nodes.min,
                     )
 
                     if effective_spec.volumes and cluster.resolved_volumes is None:
@@ -248,7 +248,7 @@ def pool_actor(
                         return InstancesProvisioned(instances=(), cluster=cluster)
 
                     ctx.pipe_to_self(
-                        s.provider.provision(cluster, effective_spec.nodes),
+                        s.provider.provision(cluster, effective_spec.nodes.min),
                         mapper=lambda result: InstancesProvisioned(
                             instances=result[1], cluster=result[0],
                         ),
@@ -284,7 +284,7 @@ def pool_actor(
                     )
 
                     new_spawned = dict(s.node_refs)
-                    remaining = s.spec.nodes - len(new_spawned)
+                    remaining = s.spec.nodes.min - len(new_spawned)
                     to_spawn = instances[:remaining]
 
                     updated_cluster = replace(
@@ -309,11 +309,11 @@ def pool_actor(
                         ))
                         new_spawned[nid] = ref
 
-                    if len(new_spawned) >= s.spec.nodes:
+                    if len(new_spawned) >= s.spec.nodes.min:
                         log.info(
                             "All {n} instances provisioned, "
                             "spawning task manager",
-                            n=s.spec.nodes,
+                            n=s.spec.nodes.min,
                         )
                         tm_ref = ctx.spawn(
                             task_manager_actor(),
@@ -321,7 +321,7 @@ def pool_actor(
                         )
                         for nbr in s.early_ready:
                             ctx.self.tell(nbr)
-                        _notify_session("provisioning", 0, s.spec.nodes)
+                        _notify_session("provisioning", 0, s.spec.nodes.min)
                         return provisioning(replace(
                             s,
                             cluster=updated_cluster,
@@ -331,12 +331,12 @@ def pool_actor(
                             early_ready=(),
                         ))
 
-                    still_needed = s.spec.nodes - len(new_spawned)
+                    still_needed = s.spec.nodes.min - len(new_spawned)
                     if s.attempt < s.spec.max_provision_attempts:
                         log.info(
                             "Got {got}/{need} nodes, retrying in "
                             "{delay}s (attempt {next}/{max})",
-                            got=len(new_spawned), need=s.spec.nodes,
+                            got=len(new_spawned), need=s.spec.nodes.min,
                             delay=s.spec.provision_retry_delay,
                             next=s.attempt + 1,
                             max=s.spec.max_provision_attempts,
@@ -398,12 +398,12 @@ def pool_actor(
                         "Exhausted {max} provision attempts and all offers, "
                         "only got {got}/{need} nodes",
                         max=s.spec.max_provision_attempts,
-                        got=len(new_spawned), need=s.spec.nodes,
+                        got=len(new_spawned), need=s.spec.nodes.min,
                     )
                     s.reply_to.tell(ProvisionFailed(
                         reason=(
                             f"Only provisioned {len(new_spawned)}"
-                            f"/{s.spec.nodes} nodes after "
+                            f"/{s.spec.nodes.min} nodes after "
                             f"{s.spec.max_provision_attempts} attempts "
                             f"across all offers"
                         ),
@@ -429,7 +429,7 @@ def pool_actor(
                     new_instances = {**s.instances, nid: meta}
                     log.info(
                         "Node {nid} ready ({n}/{total})",
-                        nid=nid, n=len(new_instances), total=s.spec.nodes,
+                        nid=nid, n=len(new_instances), total=s.spec.nodes.min,
                     )
                     effective_head = s.head_addr or msg.private_ip or ""
 
@@ -451,14 +451,22 @@ def pool_actor(
                         node_ref=s.node_refs[nid],
                         slots=s.spec.worker.concurrency,
                     ))
-                    if len(new_instances) == s.spec.nodes:
-                        log.info("All {n} nodes ready, pool is operational", n=s.spec.nodes)
+                    ready_threshold = s.spec.nodes.desired or s.spec.nodes.min
+
+                    if len(new_instances) >= ready_threshold:
+                        if len(new_instances) == s.spec.nodes.min:
+                            log.info("All {n} nodes ready, pool is operational", n=s.spec.nodes.min)
+                        else:
+                            log.info(
+                                "{n}/{total} nodes ready (desired met), pool is operational",
+                                n=len(new_instances), total=s.spec.nodes.min,
+                            )
                         ctx.self.tell(PoolStarted(
                             cluster_id=s.cluster_id,
-                            instances=tuple(new_instances[i] for i in range(s.spec.nodes)),
+                            instances=tuple(new_instances.values()),
                             cluster=s.cluster,
                         ))
-                        _notify_session("ready", len(new_instances), s.spec.nodes)
+                        _notify_session("ready", len(new_instances), s.spec.nodes.min)
                         return ready(replace(
                             s,
                             instances=new_instances,
@@ -496,8 +504,8 @@ def pool_actor(
                     s.reply_to.tell(started)
                     from skyward.actors.reconciler import reconciler_actor
 
-                    min_n = s.spec.min_nodes or s.spec.nodes
-                    max_n = s.spec.max_nodes or s.spec.nodes
+                    min_n = s.spec.nodes.min
+                    max_n = s.spec.nodes.max or s.spec.nodes.min
                     inst_map = {nid: ni.instance.id for nid, ni in s.instances.items()}
                     rec_ref = ctx.spawn(
                         reconciler_actor(
@@ -508,23 +516,22 @@ def pool_actor(
                             max_nodes=max_n,
                             initial_node_ids=frozenset(s.ready_nodes),
                             initial_instance_map=inst_map,
-                            next_node_id=max(s.ready_nodes) + 1 if s.ready_nodes else s.spec.nodes,
+                            next_node_id=max(s.ready_nodes) + 1 if s.ready_nodes else s.spec.nodes.min,
                             tick_interval=s.spec.reconcile_tick_interval,
                         ),
                         "reconciler",
                     )
-                    if s.spec.auto_scaling:
+                    if s.spec.nodes.auto_scaling:
                         from skyward.actors.autoscaler import autoscaler_actor
 
-                        assert s.spec.min_nodes is not None
-                        assert s.spec.max_nodes is not None
+                        assert s.spec.nodes.max is not None
                         as_ref = ctx.spawn(
                             autoscaler_actor(
-                                min_nodes=s.spec.min_nodes,
-                                max_nodes=s.spec.max_nodes,
+                                min_nodes=s.spec.nodes.min,
+                                max_nodes=s.spec.nodes.max,
                                 reconciler=rec_ref,
                                 slots_per_node=s.spec.worker.concurrency + 1,
-                                initial_count=s.spec.nodes,
+                                initial_count=s.spec.nodes.min,
                                 cooldown=s.spec.autoscale_cooldown,
                                 scale_down_idle_seconds=s.spec.autoscale_idle_timeout,
                             ),
@@ -558,7 +565,7 @@ def pool_actor(
                     ))
                     if s.reconciler_ref is not None:
                         s.reconciler_ref.tell(NodeJoined(node_id=nid))
-                    _notify_session("ready", len(s.ready_nodes | {nid}), s.spec.nodes)
+                    _notify_session("ready", len(s.ready_nodes | {nid}), s.spec.nodes.min)
                     return ready(replace(
                         s, ready_nodes=s.ready_nodes | {nid},
                     ))
@@ -576,12 +583,12 @@ def pool_actor(
                         head_msg = HeadAddressKnown(
                             head_addr=s.head_addr,
                             casty_port=25520,
-                            num_nodes=s.spec.max_nodes or s.spec.nodes,
+                            num_nodes=s.spec.nodes.max or s.spec.nodes.min,
                             worker_concurrency=s.spec.worker.concurrency,
                             worker_executor=s.spec.worker.resolved_executor,
                         )
                         s.node_refs[nid].tell(head_msg)
-                    _notify_session("ready", len(s.ready_nodes - {nid}), s.spec.nodes)
+                    _notify_session("ready", len(s.ready_nodes - {nid}), s.spec.nodes.min)
                     return ready(replace(
                         s, ready_nodes=s.ready_nodes - {nid},
                     ))
@@ -612,7 +619,7 @@ def pool_actor(
                         if s.head_addr:
                             ref.tell(HeadAddressKnown(
                                 head_addr=s.head_addr, casty_port=25520,
-                                num_nodes=s.spec.max_nodes or s.spec.nodes,
+                                num_nodes=s.spec.nodes.max or s.spec.nodes.min,
                                 worker_concurrency=s.spec.worker.concurrency,
                                 worker_executor=s.spec.worker.resolved_executor,
                             ))
@@ -661,7 +668,7 @@ def pool_actor(
                         _shutdown(),
                         mapper=lambda _: _ShutdownDone(),
                     )
-                    _notify_session("stopping", 0, s.spec.nodes)
+                    _notify_session("stopping", 0, s.spec.nodes.min)
                     return stopping(stop_reply, s.cluster_id)
             return Behaviors.same()
 

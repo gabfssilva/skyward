@@ -330,7 +330,6 @@ class TestStartAdapter:
     @pytest.mark.asyncio
     async def test_converts_pool_started_to_pool_ready(self, system) -> None:
         import asyncio
-        from casty import ActorSystem
         from unittest.mock import MagicMock
 
         from skyward.actors.pool.messages import PoolStarted
@@ -442,9 +441,11 @@ class TestSessionActor:
         ref = system.spawn(session_actor(), "session-state")
         await asyncio.sleep(0.1)
 
+        from skyward.core.spec import Nodes
+
         pool_ref = MagicMock()
         spec = MagicMock()
-        spec.nodes = 4
+        spec.nodes = Nodes(min=4)
 
         spawn_replies: list[PoolSpawned | PoolSpawnFailed] = []
         spawn_reply_ref = MagicMock()

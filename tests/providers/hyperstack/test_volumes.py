@@ -4,7 +4,7 @@ import pytest
 
 from skyward.accelerators import Accelerator
 from skyward.core.model import Cluster, Offer
-from skyward.core.spec import PoolSpec
+from skyward.core.spec import Nodes, PoolSpec
 from skyward.providers.hyperstack.config import Hyperstack
 from skyward.providers.hyperstack.provider import (
     HyperstackProvider,
@@ -22,7 +22,7 @@ def _dummy_cluster() -> Cluster[HyperstackSpecific]:
     return Cluster(
         id="test-cluster",
         status="ready",
-        spec=PoolSpec(nodes=1, accelerator=Accelerator.from_name("A100"), region="CANADA-1"),
+        spec=PoolSpec(nodes=Nodes(min=1), accelerator=Accelerator.from_name("A100"), region="CANADA-1"),
         offer=Offer(
             id="1",
             instance_type=None,

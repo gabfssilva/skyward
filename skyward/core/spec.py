@@ -10,6 +10,8 @@ from skyward.api.spec import DEFAULT_IMAGE as DEFAULT_IMAGE
 from skyward.api.spec import AllocationStrategy as AllocationStrategy
 from skyward.api.spec import Architecture as Architecture
 from skyward.api.spec import Image as Image
+from skyward.api.spec import Nodes as Nodes
+from skyward.api.spec import NodeSpec as NodeSpec
 from skyward.api.spec import Options as Options
 from skyward.api.spec import PipIndex as PipIndex
 from skyward.api.spec import PoolSpec as PoolSpec

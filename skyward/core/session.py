@@ -302,21 +302,11 @@ class Session:
         pool_name = name or f"pool-{len(self._pools)}"
         built_specs = list(specs)
 
-        scaling: tuple[int, int] | None = None
-        for s in built_specs:
-            match s.nodes:
-                case (min_n, max_n):
-                    scaling = (min_n, max_n)
-                    break
-                case _:
-                    pass
-
         first_spec = built_specs[0]
         effective_worker = options.worker or Worker()
         pool_config = PoolConfig(
             image=first_spec.image,
             worker=effective_worker,
-            scaling=scaling,
             ssh_timeout=options.ssh_timeout,
             ssh_retry_interval=options.ssh_retry_interval,
             provision_retry_delay=options.provision_retry_delay,
@@ -391,7 +381,7 @@ class Session:
             loop, select_offers(built_specs, pool_config),
         )
 
-        check_fd_budget(spec.nodes)
+        check_fd_budget(spec.nodes.max or spec.nodes.min)
 
         def _spawn_factory(
             reply_to: ActorRef[PoolSpawned | PoolSpawnFailed],

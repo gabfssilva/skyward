@@ -207,11 +207,11 @@ def console_actor() -> Behavior[ConsoleInput]:
                     accel_mem = pool_spec.accelerator.memory if pool_spec.accelerator else ""
                     new = replace(
                         _on_start_pool(state),
-                        total_nodes=pool_spec.nodes,
-                        desired_nodes=pool_spec.nodes,
-                        min_nodes=pool_spec.min_nodes,
-                        max_nodes=pool_spec.max_nodes,
-                        is_elastic=pool_spec.auto_scaling,
+                        total_nodes=pool_spec.nodes.min,
+                        desired_nodes=pool_spec.nodes.min,
+                        min_nodes=pool_spec.nodes.min if pool_spec.nodes.auto_scaling else None,
+                        max_nodes=pool_spec.nodes.max,
+                        is_elastic=pool_spec.nodes.auto_scaling,
                         spec_accelerator_memory=accel_mem,
                     )
                     _update_footer(new)

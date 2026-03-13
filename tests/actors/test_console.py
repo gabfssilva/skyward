@@ -401,9 +401,9 @@ class TestSummary:
 class TestConsoleActor:
     @staticmethod
     def _make_spec():
-        from skyward.core.spec import Image, PoolSpec
+        from skyward.core.spec import Image, Nodes, PoolSpec
 
-        return PoolSpec(nodes=2, accelerator=None, region="us-east-1", image=Image())
+        return PoolSpec(nodes=Nodes(min=2), accelerator=None, region="us-east-1", image=Image())
 
     def test_actor_can_be_spawned(self) -> None:
         import asyncio

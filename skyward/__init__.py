@@ -78,6 +78,7 @@ from .core import (
     stdout,
 )
 from .core import InstanceType as InstanceType
+from .core import Nodes as Nodes
 from .core import Offer as Offer
 from .core import SelectionStrategy as SelectionStrategy
 from .core import Spec as Spec
@@ -137,6 +138,7 @@ __all__ = [
     "VastAI",
     "Verda",
     "Image",
+    "Nodes",
     "Options",
     "PipIndex",
     "DEFAULT_IMAGE",

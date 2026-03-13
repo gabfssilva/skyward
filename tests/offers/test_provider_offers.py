@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from skyward.accelerators import Accelerator
-from skyward.core.spec import PoolSpec
+from skyward.core.spec import Nodes, PoolSpec
 
 
 def _gpu_spec(
@@ -18,7 +18,7 @@ def _gpu_spec(
     count: int = 1,
 ) -> PoolSpec:
     return PoolSpec(
-        nodes=1,
+        nodes=Nodes(min=1),
         accelerator=Accelerator(name=accelerator, count=count),
         region=region,
     )
@@ -26,7 +26,7 @@ def _gpu_spec(
 
 def _cpu_spec(region: str = "us-east-1", vcpus: int = 4, memory_gb: float = 8) -> PoolSpec:
     return PoolSpec(
-        nodes=1,
+        nodes=Nodes(min=1),
         accelerator=None,
         region=region,
         vcpus=vcpus,

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from skyward.api.plugin import Plugin
+from skyward.api.spec import Nodes
 from skyward.core.model import Offer
 from skyward.core.provider import ProviderConfig
 from skyward.core.spec import Image, PoolSpec, Spec, Volume, Worker
@@ -14,7 +15,6 @@ from skyward.observability.logger import logger
 class PoolConfig:
     image: Image
     worker: Worker
-    scaling: tuple[int, int] | None
     ssh_timeout: int
     ssh_retry_interval: int
     provision_retry_delay: float
@@ -89,14 +89,12 @@ async def select_offers(
         region = s.region or catalog_offers[0].region
 
         match s.nodes:
+            case Nodes() as spec_nodes:
+                pass
             case (min_n, max_n):
-                spec_nodes = min_n
-                spec_min = min_n
-                spec_max = max_n
+                spec_nodes = Nodes(min=min_n, max=max_n)
             case int(n):
-                spec_nodes = n
-                spec_min = config.scaling[0] if config.scaling else None
-                spec_max = config.scaling[1] if config.scaling else None
+                spec_nodes = Nodes(min=n)
 
         pool_spec = PoolSpec(
             nodes=spec_nodes,
@@ -116,8 +114,6 @@ async def select_offers(
             provision_retry_delay=config.provision_retry_delay,
             max_provision_attempts=config.max_provision_attempts,
             volumes=config.volumes,
-            min_nodes=spec_min,
-            max_nodes=spec_max,
             autoscale_cooldown=config.autoscale_cooldown,
             autoscale_idle_timeout=config.autoscale_idle_timeout,
             reconcile_tick_interval=config.reconcile_tick_interval,

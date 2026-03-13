@@ -165,7 +165,7 @@ class OfferRepository:
         if not self._providers:
             return
 
-        from skyward.core.spec import Image, PoolSpec
+        from skyward.core.spec import Image, Nodes, PoolSpec
         from skyward.offers.conversion import _offer_from_runtime
         from skyward.offers.feed import (
             _serialize_accelerator,
@@ -183,7 +183,7 @@ class OfferRepository:
             accel = Accelerator(name=accel_name)
 
         spec = PoolSpec(
-            nodes=1,
+            nodes=Nodes(min=1),
             accelerator=accel,
             region=filters.get("region", ""),
             vcpus=filters.get("vcpus"),

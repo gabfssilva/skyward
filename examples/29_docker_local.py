@@ -17,7 +17,7 @@ import skyward as sky
 
 @sky.function
 def hello(n: int) -> str:
-    sleep(2)
+    sleep(3)
 
     match n % 3:
         case 0:
@@ -30,14 +30,14 @@ def hello(n: int) -> str:
 if __name__ == "__main__":
     with sky.Compute(
         provider=sky.Container(),
-        nodes=3,
+        nodes=sky.Nodes(min=2, desired=2, max=3),
         memory_gb=1,
         vcpus=1,
         image=sky.Image(pip=['torch', 'scipy', 'marimo'])
     ) as compute:
         all_results = hello(10) @ compute
 
-        results = sky.gather(*(hello(i) for i in range(30))) >> compute
+        results = sky.gather(*(hello(i) for i in range(40))) >> compute
 
         for r in all_results:
             print(r)
