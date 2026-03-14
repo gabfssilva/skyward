@@ -7,6 +7,7 @@ from casty import ActorRef
 
 from skyward.actors.messages import NodeInstance
 from skyward.infra.ssh_actor import transport_run, transport_write_bytes, transport_write_file
+from skyward.infra.tls import CertificateAuthority
 from skyward.observability.logger import logger
 
 from .state import check_python_version
@@ -27,6 +28,7 @@ async def do_start_worker(
     node_id: int,
     cluster: Any,
     spec: Any,
+    ca: CertificateAuthority | None = None,
 ) -> tuple[int, str]:
     import logging as _logging
 
@@ -63,6 +65,28 @@ async def do_start_worker(
     }
     if seeds:
         env_vars["SKYWARD_SEEDS"] = seeds
+
+    if ca is not None:
+        from skyward.infra.tls import issue_node_cert
+
+        sudo = "sudo " if use_sudo else ""
+        cert_pem, key_pem = issue_node_cert(ca, private_ip)
+        tls_dir = f"{SKYWARD_DIR}/tls"
+        await transport_write_bytes(transport_ref, "/tmp/_node.crt", cert_pem)
+        await transport_write_bytes(transport_ref, "/tmp/_node.key", key_pem)
+        await transport_write_bytes(transport_ref, "/tmp/_ca.crt", ca.cert_pem)
+        await transport_run(
+            transport_ref,
+            f"{sudo}mkdir -p {tls_dir} && "
+            f"{sudo}mv /tmp/_node.crt {tls_dir}/node.crt && "
+            f"{sudo}mv /tmp/_node.key {tls_dir}/node.key && "
+            f"{sudo}mv /tmp/_ca.crt {tls_dir}/ca.crt && "
+            f"{sudo}chmod 600 {tls_dir}/node.key",
+        )
+        env_vars["SKYWARD_TLS_CERT"] = f"{tls_dir}/node.crt"
+        env_vars["SKYWARD_TLS_KEY"] = f"{tls_dir}/node.key"
+        env_vars["SKYWARD_TLS_CA"] = f"{tls_dir}/ca.crt"
+        log.info("TLS certificates distributed to node {nid}", nid=node_id)
 
     launch_cmd = LaunchCommand(
         entrypoint=f'{python_bin} -c "from skyward.infra.worker import cli; cli()"',

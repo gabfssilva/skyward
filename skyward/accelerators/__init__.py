@@ -41,6 +41,7 @@ from .factories import (
     A2,
     A10,
     A10G,
+    A16,
     A40,
     # NVIDIA Datacenter - Ampere
     A100,
@@ -194,6 +195,7 @@ __all__ = [
     "A40",
     "A10",
     "A10G",
+    "A16",
     "A2",
     # NVIDIA Datacenter - Ada Lovelace
     "L4",

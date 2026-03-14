@@ -17,7 +17,7 @@ class CatalogOffer:
     instance_type: str
     region: str
     accelerator_name: str
-    accelerator_count: int
+    accelerator_count: float
     accelerator_memory_gb: float
     manufacturer: str
     architecture: str

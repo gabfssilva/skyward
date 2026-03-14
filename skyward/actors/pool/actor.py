@@ -102,6 +102,7 @@ def pool_actor(
 
     async def _create_client(
         private_ip: str, casty_port: int, local_port: int,
+        tls: Any | None = None,
     ) -> ClusterClient:
         from skyward.infra.worker import skyward_serializer
 
@@ -111,6 +112,7 @@ def pool_actor(
             system_name="skyward",
             address_map=address_resolver,
             serializer=skyward_serializer(),
+            tls=tls,
         )
         await client.__aenter__()
         return client
@@ -164,6 +166,12 @@ def pool_actor(
                         acc=getattr(spec, "accelerator", None),
                         n=len(offers),
                     )
+
+                    from skyward.infra.tls import ensure_ca, issue_client_config
+
+                    ca = ensure_ca()
+                    client_tls = issue_client_config(ca)
+
                     ctx.pipe_to_self(
                         provider.prepare(spec, offer),
                         mapper=lambda cluster: ClusterReady(cluster=cluster),
@@ -172,6 +180,7 @@ def pool_actor(
                     s = PoolState(
                         spec=spec, provider=provider, reply_to=reply_to,
                         remaining_offers=tuple(remaining),
+                        ca=ca, client_tls=client_tls,
                     )
                     return requesting(s)
             return Behaviors.same()
@@ -299,6 +308,7 @@ def pool_actor(
                                 node_id=nid, pool=ctx.self,
                                 ssh_timeout=s.spec.ssh_timeout,
                                 ssh_retry_interval=s.spec.ssh_retry_interval,
+                                ca=s.ca,
                             ),
                             f"node-{nid}",
                         )
@@ -436,6 +446,7 @@ def pool_actor(
                     if s.client is None:
                         new_client = await _create_client(
                             msg.private_ip, msg.casty_port, msg.local_port,
+                            tls=s.client_tls,
                         )
                         log.info("ClusterClient created")
                     else:
@@ -609,6 +620,7 @@ def pool_actor(
                                 node_id=nid, pool=ctx.self,
                                 ssh_timeout=s.spec.ssh_timeout,
                                 ssh_retry_interval=s.spec.ssh_retry_interval,
+                                ca=s.ca,
                             ),
                             f"node-{nid}",
                         )

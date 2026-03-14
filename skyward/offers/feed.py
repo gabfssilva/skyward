@@ -126,7 +126,7 @@ class _Spec:
 @dataclass(frozen=True, slots=True)
 class _Offer:
     spec: _Spec
-    accelerator_count: int
+    accelerator_count: float
     instance_type: str
     region: str
     spot_price: float | None = None

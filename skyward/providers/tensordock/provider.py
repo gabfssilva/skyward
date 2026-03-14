@@ -80,7 +80,7 @@ def _filter_locations(
         (location_id, gpu_v0name, gpu_count, vcpus, ram_gb, hourly_rate)
         sorted by price ascending.
     """
-    gpu_count = spec.accelerator_count or 1
+    gpu_count = int(spec.accelerator_count or 1)
     candidates: list[tuple[str, str, int, int, int, float]] = []
 
     for loc in locations:

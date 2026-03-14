@@ -82,7 +82,7 @@ class OfferQuery:
             self._clause_params.append(("memory_range", (exact_or_min, max_gb)))
         return self
 
-    def accelerator_count(self, exact_or_min: int, max_count: int | None = None) -> OfferQuery:
+    def accelerator_count(self, exact_or_min: float, max_count: float | None = None) -> OfferQuery:
         """Filter by accelerator count. Single arg = exact match, two args = range."""
         if max_count is None:
             self._add_filter("accelerator_count = ?", exact_or_min)

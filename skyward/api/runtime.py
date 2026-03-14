@@ -54,7 +54,7 @@ class AcceleratorInfo(TypedDict, total=False):
     """
 
     type: str
-    count: int
+    count: float
     memory_gb: float
     is_trainium: bool
 
@@ -103,10 +103,10 @@ class InstanceInfo(BaseModel):
         default=1,
         description="Number of workers per node (e.g., 2 for MIG 3g.40gb)",
     )
-    accelerators: int = Field(
+    accelerators: float = Field(
         description="Number of accelerators on this node",
     )
-    total_accelerators: int = Field(
+    total_accelerators: float = Field(
         description="Total accelerators in the pool",
     )
     head_addr: str = Field(description="IP address of the head node")
@@ -227,7 +227,7 @@ def _shard_single(data: Any, indices: list[int]) -> Any:
         case "torch.Tensor":
             import torch  # type: ignore[reportMissingImports]
 
-            return data[torch.tensor(indices)]
+            return data[torch.tensor(indices)]  # type: ignore[reportAttributeAccessIssue]
         case _:
             match data:
                 case tuple():
@@ -277,7 +277,7 @@ def shard(
 
 @overload
 def shard(
-    data: torch.Tensor,
+    data: torch.Tensor,  # type: ignore[reportAttributeAccessIssue]
     /,
     *,
     shuffle: bool = False,
@@ -285,7 +285,7 @@ def shard(
     drop_last: bool = False,
     node: int | None = None,
     total_nodes: int | None = None,
-) -> torch.Tensor: ...
+) -> torch.Tensor: ...  # type: ignore[reportAttributeAccessIssue]
 
 
 @overload

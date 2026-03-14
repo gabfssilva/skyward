@@ -76,6 +76,7 @@ SPECS: Final[dict[str, dict[str, Any]]] = {
     "A2": {"memory": "16GB", "cuda": {"min": "11.0", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Ampere"},
     "A10": {"memory": "24GB", "cuda": {"min": "11.0", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Ampere"},
     "A10G": {"memory": "24GB", "cuda": {"min": "11.0", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Ampere"},
+    "A16": {"memory": "16GB", "cuda": {"min": "11.1", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Ampere"},
     "A30": {"memory": "24GB", "cuda": {"min": "11.1", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Ampere"},
     "A40": {"memory": "48GB", "cuda": {"min": "11.1", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Ampere"},
     "A100": {"memory": "80GB", "cuda": {"min": "11.0", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Ampere"},

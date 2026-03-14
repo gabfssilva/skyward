@@ -20,8 +20,9 @@ if TYPE_CHECKING:
     from skyward.providers.tensordock.config import TensorDock
     from skyward.providers.vastai.config import VastAI
     from skyward.providers.verda.config import Verda
+    from skyward.providers.vultr.config import Vultr
 
-    type ProviderConfig = AWS | GCP | Hyperstack | RunPod | TensorDock | VastAI | Verda
+    type ProviderConfig = AWS | GCP | Hyperstack | RunPod | TensorDock | VastAI | Verda | Vultr
 
 type RawConfig = dict[str, Any]
 
@@ -69,6 +70,7 @@ def _get_provider_map() -> dict[str, type]:
     from skyward.providers.tensordock.config import TensorDock
     from skyward.providers.vastai.config import VastAI
     from skyward.providers.verda.config import Verda
+    from skyward.providers.vultr.config import Vultr
 
     return {
         "aws": AWS,
@@ -78,6 +80,7 @@ def _get_provider_map() -> dict[str, type]:
         "vastai": VastAI,
         "runpod": RunPod,
         "verda": Verda,
+        "vultr": Vultr,
     }
 
 

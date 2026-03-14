@@ -437,6 +437,9 @@ async def main(
     host: str = "0.0.0.0",
     workers_per_node: int = 1,
     worker_executor: str = "thread",
+    tls_cert: str | None = None,
+    tls_key: str | None = None,
+    tls_ca: str | None = None,
 ) -> None:
     config = CastyConfig(
         heartbeat=HeartbeatConfig(interval=2.0, availability_check_interval=5.0),
@@ -454,6 +457,13 @@ async def main(
 
     os.environ["SKYWARD_NODE_ID"] = str(node_id)
 
+    tls: Any = None
+    if tls_cert and tls_ca:
+        from casty.remote.tls import Config as TlsConfig
+
+        tls = TlsConfig.from_paths(certfile=tls_cert, cafile=tls_ca, keyfile=tls_key)
+        log.info("mTLS enabled")
+
     async with ClusteredActorSystem(
         name="skyward",
         host=host,
@@ -463,6 +473,7 @@ async def main(
         bind_host="0.0.0.0",
         config=config,
         serializer=skyward_serializer(),
+        tls=tls,
     ) as system:
         from skyward.distributed import _set_active_registry
         from skyward.distributed.proxies import set_system_loop
@@ -557,11 +568,17 @@ def cli() -> None:
     seeds = _parse_seeds(os.environ.get("SKYWARD_SEEDS"))
     workers_per_node = int(os.environ.get("SKYWARD_WORKERS_PER_NODE", "1"))
     worker_executor = os.environ.get("SKYWARD_WORKER_EXECUTOR", "thread")
+    tls_cert = os.environ.get("SKYWARD_TLS_CERT")
+    tls_key = os.environ.get("SKYWARD_TLS_KEY")
+    tls_ca = os.environ.get("SKYWARD_TLS_CA")
 
     asyncio.run(main(
         node_id, port, seeds, num_nodes, host,
         workers_per_node=workers_per_node,
         worker_executor=worker_executor,
+        tls_cert=tls_cert,
+        tls_key=tls_key,
+        tls_ca=tls_ca,
     ))
 
 

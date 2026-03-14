@@ -42,6 +42,7 @@ from skyward.infra.ssh_actor import (
     ssh_transport,
     transport_ask,
 )
+from skyward.infra.tls import CertificateAuthority
 from skyward.observability.logger import logger
 from skyward.providers.provider import WarmableProvider
 
@@ -87,6 +88,7 @@ def node_actor(
     poll_interval: float = 5.0,
     poll_timeout: float = 300.0,
     _skip_monitor: bool = False,
+    ca: CertificateAuthority | None = None,
 ) -> Behavior[NodeMsg]:
     """A merged node tells this story: idle → polling → … → active."""
 
@@ -420,7 +422,7 @@ def node_actor(
         assert ni is not None
         assert tref is not None
         ctx.pipe_to_self(
-            do_start_worker(tref, s.local_port, ni, s.head_info, node_id, s.cluster, s.cluster.spec),
+            do_start_worker(tref, s.local_port, ni, s.head_info, node_id, s.cluster, s.cluster.spec, ca=ca),
             mapper=lambda result: _WorkerStarted(local_port=result[0], private_ip=result[1]),
             on_failure=lambda e: _WorkerFailed(error=str(e)),
         )

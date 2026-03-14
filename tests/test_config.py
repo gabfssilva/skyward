@@ -12,6 +12,7 @@ from skyward.providers.runpod.config import RunPod
 from skyward.providers.tensordock.config import TensorDock
 from skyward.providers.vastai.config import VastAI
 from skyward.providers.verda.config import Verda
+from skyward.providers.vultr.config import Vultr
 
 pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
 
@@ -222,6 +223,33 @@ class TestResolvePool:
         spec = pool._specs[0]
         assert isinstance(spec.provider, Hyperstack)
         assert spec.provider.region == "CANADA-1"
+
+    def test_vultr_pool(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            '[providers.v]\n'
+            'type = "vultr"\n'
+            'region = "ord"\n'
+            '\n'
+            '[pools.gpu]\nprovider = "v"\nnodes = 1\n'
+        )
+        pool = resolve_pool("gpu", project_dir=tmp_path)
+        spec = pool._specs[0]
+        assert isinstance(spec.provider, Vultr)
+        assert spec.provider.region == "ord"
+
+    def test_vultr_bare_metal_pool(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            '[providers.v]\n'
+            'type = "vultr"\n'
+            'mode = "bare-metal"\n'
+            'region = "ewr"\n'
+            '\n'
+            '[pools.gpu]\nprovider = "v"\nnodes = 1\n'
+        )
+        pool = resolve_pool("gpu", project_dir=tmp_path)
+        spec = pool._specs[0]
+        assert isinstance(spec.provider, Vultr)
+        assert spec.provider.mode == "bare-metal"
 
     def test_tensordock_pool(self, tmp_path: Path):
         (tmp_path / "skyward.toml").write_text(

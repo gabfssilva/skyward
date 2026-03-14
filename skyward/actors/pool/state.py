@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from skyward.actors.messages import ClusterId, NodeId
     from skyward.core.model import Offer
     from skyward.core.spec import PoolSpec
+    from skyward.infra.tls import CertificateAuthority
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,3 +32,5 @@ class PoolState:
     instance_map: dict[NodeId, str] | None = None
     attempt: int = 1
     early_ready: tuple[NodeBecameReady, ...] = ()
+    ca: CertificateAuthority | None = None
+    client_tls: Any | None = None

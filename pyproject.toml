@@ -23,7 +23,7 @@ dependencies = [
     "cloudpickle>=3.1.2",
     "lz4>=4.4.0",
     "pydantic>=2.12.5",
-    "casty==0.20.1",
+    "casty==0.21.0",
     "rich>=14.3.2",
     "asyncssh>=2.22.0",
     "httpx>=0.28",
@@ -123,6 +123,7 @@ markers = [
     "gcp: GCP provider tests",
     "hyperstack: Hyperstack provider tests",
     "tensordock: TensorDock provider tests",
+    "vultr: Vultr provider tests",
 ]
 
 [dependency-groups]

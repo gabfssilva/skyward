@@ -36,7 +36,7 @@ CREATE TABLE specs (
 CREATE TABLE offers (
     provider TEXT NOT NULL,
     spec_id TEXT NOT NULL REFERENCES specs(id),
-    accelerator_count INTEGER NOT NULL,
+    accelerator_count REAL NOT NULL,
     instance_type TEXT NOT NULL,
     region TEXT NOT NULL,
     spot_price REAL,

@@ -759,7 +759,7 @@ class GCPProvider(Provider[GCP, GCPSpecific]):
         gcp_accel_types: list[str] = [at.name for at in all_accels]
 
         accel_type = match_accelerator_name(spec.accelerator_name, gcp_accel_types)
-        gpu_count = spec.accelerator_count or 1
+        gpu_count = int(spec.accelerator_count or 1)
         guest_attachable = is_guest_attachable(accel_type)
 
         if guest_attachable:

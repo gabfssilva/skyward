@@ -39,7 +39,7 @@ class Accelerator:
 
     name: str
     memory: str = ""
-    count: int = 1
+    count: float = 1
     metadata: dict[str, Any] | None = None
 
     @classmethod
@@ -84,7 +84,7 @@ class Accelerator:
             metadata=overrides.get("metadata", metadata),
         )
 
-    def with_count(self, count: int) -> Accelerator:
+    def with_count(self, count: float) -> Accelerator:
         """Return a new Accelerator with a different count.
 
         Args:
@@ -108,7 +108,7 @@ class Accelerator:
         """Human-readable representation."""
         if self.count == 1:
             return self.name
-        return f"{self.count}x{self.name}"
+        return f"{self.count:g}x{self.name}"
 
     def __repr__(self) -> str:
         """Detailed representation for debugging."""

@@ -377,6 +377,48 @@ class Verda:
     def type(self) -> str: ...
     async def create_provider(self) -> Any: ...
 
+class Vultr:
+    """Vultr GPU cloud provider.
+
+    Supports two modes: Cloud GPU (virtual instances with ``vcg-*`` plans)
+    and Bare Metal (dedicated servers with ``vbm-*`` plans).
+
+    Parameters
+    ----------
+    api_key
+        API key. ``None`` reads from ``VULTR_API_KEY`` env var.
+    mode
+        ``"cloud"`` for virtual GPU instances (default),
+        ``"bare-metal"`` for dedicated physical servers.
+    region
+        Vultr region ID (e.g., ``"ewr"``, ``"ord"``).
+    os_id
+        OS image ID. Default ``2284`` (Ubuntu 24.04).
+    instance_timeout
+        Safety timeout in seconds.
+    request_timeout
+        HTTP request timeout in seconds.
+
+    Examples
+    --------
+    >>> sky.Vultr(region="ewr")
+    >>> sky.Vultr(mode="bare-metal", region="ord")
+    """
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        mode: Literal["cloud", "bare-metal"] = "cloud",
+        region: str = "ewr",
+        os_id: int = 2284,
+        instance_timeout: int = 300,
+        request_timeout: int = 30,
+    ) -> None: ...
+    @property
+    def type(self) -> str: ...
+    async def create_provider(self) -> Any: ...
+
 class Container:
     """Local/remote container provider for development and testing.
 
@@ -423,5 +465,6 @@ __all__ = [
     "TensorDock",
     "VastAI",
     "Verda",
+    "Vultr",
     "Container",
 ]

@@ -40,7 +40,7 @@ class VerdaSpecific:
     region: str
     hourly_rate: float
     on_demand_rate: float
-    gpu_count: int
+    gpu_count: float
     gpu_model: str
     gpu_vram_gb: int
     vcpus: int

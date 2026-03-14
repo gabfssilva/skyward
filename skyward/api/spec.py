@@ -472,7 +472,7 @@ class PoolSpec:
         return self.accelerator.name if self.accelerator else None
 
     @property
-    def accelerator_count(self) -> int:
+    def accelerator_count(self) -> float:
         """Get the number of accelerators per node."""
         return self.accelerator.count if self.accelerator else 0
 

@@ -274,3 +274,33 @@ class TestTensorDockSanity:
     def test_broadcast(self, pool):
         results = gpu_matmul() @ pool
         _assert_broadcast(results)
+
+
+# ---------------------------------------------------------------------------
+# Vultr
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.sanity
+@pytest.mark.vultr
+@pytest.mark.timeout(TIMEOUT)
+@pytest.mark.xdist_group("vultr")
+class TestVultrSanity:
+    @pytest.fixture(scope="class")
+    def pool(self):
+        with sky.Compute(
+            provider=sky.Vultr(),
+            accelerator=sky.accelerators.A100(),
+            nodes=NODES,
+            image=sky.Image(pip=["torch"]),
+            options=sky.Options(console=False),
+        ) as p:
+            yield p
+
+    def test_single_dispatch(self, pool):
+        result = gpu_matmul() >> pool
+        _assert_single(result)
+
+    def test_broadcast(self, pool):
+        results = gpu_matmul() @ pool
+        _assert_broadcast(results)

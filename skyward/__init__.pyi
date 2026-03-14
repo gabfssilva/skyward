@@ -111,6 +111,7 @@ from skyward.providers import RunPod as RunPod
 from skyward.providers import TensorDock as TensorDock
 from skyward.providers import VastAI as VastAI
 from skyward.providers import Verda as Verda
+from skyward.providers import Vultr as Vultr
 
 # ── Storage ──────────────────────────────────────────────────
 from skyward.storage import Storage as Storage
@@ -154,6 +155,7 @@ __all__ = [
     "TensorDock",
     "VastAI",
     "Verda",
+    "Vultr",
     "Image",
     "Options",
     "PipIndex",

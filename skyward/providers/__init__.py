@@ -30,6 +30,7 @@ from .runpod.config import RunPod
 from .tensordock.config import TensorDock
 from .vastai.config import VastAI
 from .verda.config import Verda
+from .vultr.config import Vultr
 
 __all__ = [
     # Config classes only - handlers must be imported explicitly
@@ -41,4 +42,5 @@ __all__ = [
     "TensorDock",
     "VastAI",
     "Verda",
+    "Vultr",
 ]

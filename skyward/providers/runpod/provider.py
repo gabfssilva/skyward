@@ -706,7 +706,7 @@ async def _create_instant_cluster(
         "clusterName": f"skyward-{uuid.uuid4().hex[:8]}",
         "gpuTypeId": gpu_type_id,
         "podCount": spec.nodes.min,
-        "gpuCountPerPod": spec.accelerator_count or 1,
+        "gpuCountPerPod": int(spec.accelerator_count or 1),
         "type": "TRAINING",
         "imageName": image_name,
         "startSsh": True,
@@ -759,7 +759,7 @@ async def _create_gpu_pod(
     log.debug(
         "Creating GPU pod for node {idx}: gpu={gpu}, count={count}, spot={spot}",
         idx=node_index, gpu=cluster.specific.gpu_type_id,
-        count=cluster.spec.accelerator_count or 1, spot=use_spot,
+        count=int(cluster.spec.accelerator_count or 1), spot=use_spot,
     )
 
     if cluster.specific.global_networking:
@@ -767,7 +767,7 @@ async def _create_gpu_pod(
             "name": f"skyward-{cluster.id}-{node_index}",
             "imageName": image_name,
             "gpuTypeIds": [cluster.specific.gpu_type_id or ""],
-            "gpuCount": cluster.spec.accelerator_count or 1,
+            "gpuCount": int(cluster.spec.accelerator_count or 1),
             "cloudType": config.cloud_type.value.upper(),
             "containerDiskInGb": config.container_disk_gb,
             "volumeInGb": config.volume_gb,
@@ -784,7 +784,7 @@ async def _create_gpu_pod(
         name=f"skyward-{cluster.id}-{node_index}",
         image_name=image_name,
         gpu_type_id=cluster.specific.gpu_type_id or "",
-        gpu_count=cluster.spec.accelerator_count or 1,
+        gpu_count=int(cluster.spec.accelerator_count or 1),
         cloud_type=config.cloud_type.value.upper(),
         container_disk_gb=config.container_disk_gb,
         volume_gb=config.volume_gb,

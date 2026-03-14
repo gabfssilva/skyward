@@ -87,8 +87,8 @@ def format_results(r: dict) -> None:
 
 if __name__ == "__main__":
     with sky.Compute(
-        provider=sky.Hyperstack(),
-        accelerator=sky.accelerators.RTX_A4000(),
+        provider=sky.Vultr(),
+        accelerator=sky.accelerators.A16(),
         image=sky.Image(pip=['jax[cuda12]']),
     ) as compute:
         format_results(benchmark(4096, iterations=50) >> compute)

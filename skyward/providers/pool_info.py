@@ -10,8 +10,8 @@ from skyward.core.runtime import AcceleratorInfo, InstanceInfo, NetworkInfo, Pee
 def build_pool_info(
     node: int,
     total_nodes: int,
-    accelerator_count: int,
-    total_accelerators: int,
+    accelerator_count: float,
+    total_accelerators: float,
     head_addr: str,
     head_port: int,
     job_id: str,

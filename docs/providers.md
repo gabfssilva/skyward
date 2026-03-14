@@ -1,18 +1,18 @@
 # Cloud providers
 
-Skyward supports eight providers. Seven are cloud services — AWS, GCP, Hyperstack, RunPod, TensorDock, Verda, VastAI — and one is local containers for development and CI. All implement the same `Provider` protocol, so the orchestration layer (actor system, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
+Skyward supports nine providers. Eight are cloud services — AWS, GCP, Hyperstack, RunPod, TensorDock, Verda, VastAI, Vultr — and one is local containers for development and CI. All implement the same `Provider` protocol, so the orchestration layer (actor system, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
 
 Provider configs are lightweight frozen dataclasses. They hold configuration — region, API keys, disk sizes — but don't import any cloud SDK at module level. The SDK is loaded lazily when the pool starts, so `import skyward` stays fast regardless of which providers are installed.
 
 ## Provider comparison
 
-| Feature | AWS | GCP | Hyperstack | RunPod | TensorDock | Verda | VastAI | Container |
-|---------|-----|-----|------------|--------|------------|-------|--------|-----------|
-| **GPUs** | H100, A100, T4, L4, Trainium, Inferentia | H100, A100, T4, L4, V100, H200 | A100, H100, RTX series | H100, A100, A40, RTX series | H100, A100, L40, RTX series, V100 | H100, A100, H200, GB200 | Marketplace (varies) | None (CPU) |
-| **Spot Instances** | Yes (60-90% savings) | Yes (preemptible/spot) | No (on-demand only) | Yes | No (on-demand only) | Yes | Yes (bid-based) | N/A |
-| **Regions** | 20+ | 40+ zones | Canada, Norway, US | Global (Secure + Community) | 100+ locations, 20+ countries | FIN, ICL, ISR | Global marketplace | Local |
-| **Auth** | AWS credentials | Application Default Credentials | API key | API key | API key + token | Client ID + Secret | API key | None |
-| **Billing** | Per-second | Per-second | Per-second | Per-second | Per-second | Per-second | Per-minute | Free |
+| Feature | AWS | GCP | Hyperstack | RunPod | TensorDock | Verda | VastAI | Vultr | Container |
+|---------|-----|-----|------------|--------|------------|-------|--------|-------|-----------|
+| **GPUs** | H100, A100, T4, L4, Trainium, Inferentia | H100, A100, T4, L4, V100, H200 | A100, H100, RTX series | H100, A100, A40, RTX series | H100, A100, L40, RTX series, V100 | H100, A100, H200, GB200 | Marketplace (varies) | A16, A40, A100, L40S (cloud); H100, B200, MI300X (bare metal) | None (CPU) |
+| **Spot Instances** | Yes (60-90% savings) | Yes (preemptible/spot) | No (on-demand only) | Yes | No (on-demand only) | Yes | Yes (bid-based) | No (on-demand only) | N/A |
+| **Regions** | 20+ | 40+ zones | Canada, Norway, US | Global (Secure + Community) | 100+ locations, 20+ countries | FIN, ICL, ISR | Global marketplace | EWR, ORD, DFW, LAX + more | Local |
+| **Auth** | AWS credentials | Application Default Credentials | API key | API key | API key + token | Client ID + Secret | API key | API key | None |
+| **Billing** | Per-second | Per-second | Per-second | Per-second | Per-second | Per-second | Per-minute | Hourly | Free |
 
 ## AWS
 
@@ -408,6 +408,53 @@ with sky.Compute(
 !!! note "Port forwarding"
     TensorDock maps internal ports to random external ports. SSH is never on port 22 externally. Skyward reads the port mapping from the deploy response and configures SSH tunnels accordingly — no manual port configuration needed.
 
+## Vultr
+
+Vultr offers GPU instances in two modes: **Cloud GPU** (virtual instances with vGPU/passthrough, faster provisioning, fractional GPU support) and **Bare Metal** (dedicated physical servers with no virtualization overhead). Cloud GPU is the default.
+
+Cloud GPU supports NVIDIA A16, A40, A100, and L40S. Bare Metal adds H100, GH200, HGX B200, and AMD MI300X/MI355X. All instances are billed hourly.
+
+### Setup
+
+```bash
+export VULTR_API_KEY=your_api_key
+```
+
+Generate an API key from the [Vultr customer portal](https://my.vultr.com/settings/#settingsapi).
+
+### Usage
+
+```python
+import skyward as sky
+
+# Cloud GPU (default)
+with sky.Compute(
+    provider=sky.Vultr(region="ewr"),
+    accelerator=sky.accelerators.A100(),
+    nodes=2,
+) as compute:
+    result = train(data) >> compute
+
+# Bare Metal
+with sky.Compute(
+    provider=sky.Vultr(mode="bare-metal", region="ewr"),
+    accelerator=sky.accelerators.H100(),
+    nodes=2,
+) as compute:
+    result = train(data) >> compute
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `api_key` | `str or None` | `None` | API key. Falls back to `VULTR_API_KEY` env var. |
+| `mode` | `"cloud" or "bare-metal"` | `"cloud"` | Cloud GPU (virtual) or bare metal (dedicated). |
+| `region` | `str` | `"ewr"` | Vultr region ID (e.g., `"ewr"`, `"ord"`, `"dfw"`). |
+| `os_id` | `int` | `2284` | OS image ID. Default is Ubuntu 24.04. |
+| `instance_timeout` | `int` | `300` | Safety timeout in seconds. |
+| `request_timeout` | `int` | `30` | HTTP request timeout in seconds. |
+
 ## Container
 
 The Container provider runs compute nodes as local containers — Docker, podman, nerdctl, or Apple's container CLI. No cloud credentials, no costs. Useful for development, CI testing, and validating your code before deploying to real hardware.
@@ -452,6 +499,8 @@ with sky.Compute(
 **TensorDock** — Bare-metal VMs across 100+ locations with per-second billing. Good for RTX 4090, A100, H100 workloads without spot complexity. On-demand only.
 
 **VastAI** — Maximum cost savings through marketplace pricing. Consumer GPUs (RTX 4090, 3090) available alongside datacenter hardware. Overlay networks for multi-node training.
+
+**Vultr** — Two modes in one provider: Cloud GPU for fast virtual instances with fractional GPU support, and Bare Metal for dedicated servers with H100, B200, and AMD MI300X/MI355X. Hourly billing, simple API key auth.
 
 **Container** — Local development and CI. Zero cost, instant provisioning. Validates your code end-to-end before deploying to a real provider.
 
