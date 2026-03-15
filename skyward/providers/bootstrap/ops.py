@@ -405,17 +405,13 @@ def grid_driver() -> Op:
         >>> grid_driver()()
         '# Install NVIDIA GRID driver...'
     """
-    return lambda: """# Install NVIDIA GRID driver for fractional GPU
-apt-get update -qq
-apt-get install -y -qq gcc-12 make linux-modules-extra-$(uname -r) awscli
-update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100
-ln -sf /usr/bin/gcc /usr/bin/cc
-
-NVIDIA_URL=s3://ec2-linux-nvidia-drivers/latest
-NVIDIA_PKG=NVIDIA-Linux-x86_64-580.105.08-grid-aws.run
-aws s3 cp $NVIDIA_URL/$NVIDIA_PKG /tmp/nvidia-grid.run
+    return lambda: """# Install NVIDIA GRID driver for fractional GPU (vGPU)
+apt-get -o DPkg::Lock::Timeout=-1 update -qq
+apt-get -o DPkg::Lock::Timeout=-1 install -y -qq gcc make linux-headers-$(uname -r)
+DRIVER_KEY=$(curl -s 'https://ec2-linux-nvidia-drivers.s3.amazonaws.com/?prefix=latest/NVIDIA&list-type=2' | grep -oP '(?<=<Key>)[^<]+')
+curl -o /tmp/nvidia-grid.run "https://ec2-linux-nvidia-drivers.s3.amazonaws.com/$DRIVER_KEY"
 chmod +x /tmp/nvidia-grid.run
-/tmp/nvidia-grid.run --silent --dkms
+sudo /tmp/nvidia-grid.run --no-questions --ui=none -m=kernel
 rm -f /tmp/nvidia-grid.run"""
 
 

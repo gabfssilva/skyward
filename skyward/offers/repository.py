@@ -180,7 +180,8 @@ class OfferRepository:
         if accel_name:
             from skyward.accelerators.spec import Accelerator
 
-            accel = Accelerator(name=accel_name)
+            accel_count = filters.get("accelerator_count", 0)
+            accel = Accelerator(name=accel_name, count=accel_count)
 
         spec = PoolSpec(
             nodes=Nodes(min=1),

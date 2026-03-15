@@ -207,13 +207,17 @@ def pool_actor(
                     s.reply_to.tell(pf)
                     return Behaviors.stopped()
                 case ClusterReady(cluster=cluster):
-                    transformed_image = s.spec.image
-                    for plugin in s.spec.plugins:
+                    spec_with_provider_plugins = replace(
+                        s.spec, plugins=cluster.spec.plugins,
+                    ) if cluster.spec.plugins != s.spec.plugins else s.spec
+
+                    transformed_image = spec_with_provider_plugins.image
+                    for plugin in spec_with_provider_plugins.plugins:
                         if plugin.transform is not None:
                             transformed_image = plugin.transform(
                                 transformed_image, cluster,
                             )
-                    effective_spec = replace(s.spec, image=transformed_image)
+                    effective_spec = replace(spec_with_provider_plugins, image=transformed_image)
                     prebaked = cluster.prebaked and transformed_image == s.spec.image
                     cluster = replace(cluster, spec=effective_spec, prebaked=prebaked)
 

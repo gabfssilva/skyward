@@ -10,6 +10,19 @@ from .types import _GPU_MODEL_BY_MANUFACTURER, InstanceResources, InstanceSpec
 
 log = logger.bind(component="aws-instances")
 
+_FRACTIONAL_GPU_FAMILIES: dict[str, str] = {
+    "g6f.": "L4",
+    "gr6f.": "L4",
+}
+
+_FRACTIONAL_GPU_VRAM_MB: dict[str, int] = {
+    "g6f.large": 3072,
+    "g6f.xlarge": 3072,
+    "g6f.2xlarge": 6144,
+    "g6f.4xlarge": 12288,
+    "gr6f.4xlarge": 12288,
+}
+
 
 def _parse_instance_type(raw: dict[str, Any]) -> InstanceResources:
     itype = raw["InstanceType"]
@@ -19,7 +32,7 @@ def _parse_instance_type(raw: dict[str, Any]) -> InstanceResources:
     archs = raw.get("ProcessorInfo", {}).get("SupportedArchitectures", [])
     architecture = archs[0] if archs else "x86_64"
 
-    gpu_count = 0
+    gpu_count: float = 0
     gpu_model = ""
     gpu_vram_mb = 0
     for gpu in raw.get("GpuInfo", {}).get("Gpus", []):
@@ -29,7 +42,7 @@ def _parse_instance_type(raw: dict[str, Any]) -> InstanceResources:
         gpu_model = _GPU_MODEL_BY_MANUFACTURER.get(
             manufacturer, {},
         ).get(name, gpu.get("Name", "") or "")
-        gpu_vram_mb += gpu.get("MemoryInfo", {}).get("SizeInMiB", 0) * gpu.get("Count", 1)
+        gpu_vram_mb += gpu.get("MemoryInfo", {}).get("SizeInMiB", 0) * max(gpu.get("Count", 1), 1)
 
     for acc in raw.get("InferenceAcceleratorInfo", {}).get("Accelerators", []):
         gpu_count += acc.get("Count", 0)
@@ -45,6 +58,28 @@ def _parse_instance_type(raw: dict[str, Any]) -> InstanceResources:
         gpu_model = _GPU_MODEL_BY_MANUFACTURER.get("aws", {}).get(name, acc.get("Name", "") or "")
         core_count = acc.get("CoreInfo", {}).get("Count", 1)
         gpu_vram_mb += acc.get("MemoryInfo", {}).get("SizeInMiB", 0) * core_count
+
+    if gpu_count == 0 and (gpu_model or gpu_vram_mb > 0):
+        from skyward.accelerators.catalog import SPECS
+
+        if not gpu_model:
+            for prefix, model in _FRACTIONAL_GPU_FAMILIES.items():
+                if itype.startswith(prefix):
+                    gpu_model = model
+                    break
+
+        if not gpu_vram_mb:
+            gpu_vram_mb = (
+                _FRACTIONAL_GPU_VRAM_MB.get(itype, 0)
+                or raw.get("GpuInfo", {}).get("TotalGpuMemoryInMiB", 0)
+            )
+
+        if gpu_model and gpu_vram_mb > 0:
+            spec_entry = SPECS.get(gpu_model, {})
+            mem_str = spec_entry.get("memory", "")
+            if mem_str.endswith("GB"):
+                full_vram_mb = int(mem_str.removesuffix("GB")) * 1024
+                gpu_count = round(gpu_vram_mb / full_vram_mb * 8) / 8
 
     net_info = raw.get("NetworkInfo", {})
     net_bw = net_info.get("NetworkPerformance", "")

@@ -50,7 +50,7 @@ def benchmark(matrix_size: int, iterations: int) -> dict:
     a = random.normal(k1, (matrix_size, matrix_size))
     b = random.normal(k2, (matrix_size, matrix_size))
 
-    results = {"matrix_size": matrix_size, "iterations": iterations}
+    results: dict[str, object] = {"matrix_size": matrix_size, "iterations": iterations}
 
     cpu = jax.devices("cpu")[0]
     gpu = jax.devices("gpu")[0]
@@ -88,7 +88,7 @@ def format_results(r: dict) -> None:
 if __name__ == "__main__":
     with sky.Compute(
         provider=sky.Vultr(),
-        accelerator=sky.accelerators.A16(),
+        accelerator=sky.accelerators.A100(count=1/4),
         image=sky.Image(pip=['jax[cuda12]']),
     ) as compute:
         format_results(benchmark(4096, iterations=50) >> compute)

@@ -117,6 +117,7 @@ nav:
           - HuggingFace fine-tuning: guides/huggingface-finetuning.md
           - FSDP with HuggingFace: guides/fsdp-huggingface.md
       - Infrastructure:
+          - Fractional GPUs: guides/fractional-gpus.md
           - NVIDIA MIG: guides/nvidia-mig.md
           - S3 volumes: guides/s3-volumes.md
           - Multi-provider selection: guides/multi-provider.md

@@ -17,7 +17,7 @@ import skyward as sky
 
 @sky.function
 def hello(n: int) -> str:
-    sleep(3)
+    sleep(5)
 
     match n % 3:
         case 0:
@@ -37,7 +37,7 @@ if __name__ == "__main__":
     ) as compute:
         all_results = hello(10) @ compute
 
-        results = sky.gather(*(hello(i) for i in range(40))) >> compute
+        results = sky.gather(*(hello(i) for i in range(30))) >> compute
 
         for r in all_results:
             print(r)

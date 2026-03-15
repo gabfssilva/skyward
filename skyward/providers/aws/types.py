@@ -40,7 +40,7 @@ class InstanceResources:
     vcpus: int
     memory_mb: int
     architecture: str
-    gpu_count: int = 0
+    gpu_count: float = 0
     gpu_model: str = ""
     gpu_vram_mb: int = 0
     network_bandwidth_gbps: float = 0.0
@@ -63,7 +63,7 @@ class InstanceSpec:
     vcpus: int
     memory_gb: float
     architecture: str
-    gpu_count: int = 0
+    gpu_count: float = 0
     gpu_model: str = ""
     gpu_vram_gb: float = 0.0
     network_bandwidth_gbps: float = 0.0

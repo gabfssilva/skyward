@@ -62,6 +62,9 @@ async def select_offers(
             else repo.provider(ptype).cpu_only()
         )
 
+        if accel and accel.count:
+            query = query.accelerator_count(accel.count)
+
         if accel and accel.memory:
             mem = accel.memory.upper().removesuffix("GB")
             if mem.isdigit():

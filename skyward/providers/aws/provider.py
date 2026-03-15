@@ -31,6 +31,7 @@ type Architecture = str
 log = logger.bind(provider="aws")
 
 
+
 @dataclass(frozen=True, slots=True)
 class _InstanceConfig:
     instance_type: str
@@ -86,7 +87,13 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
         if not candidates:
             return
 
-        ami_lookup = _get_dlami if spec.accelerator_name is not None else _get_ubuntu_ami
+        fractional_gpu = spec.accelerator_count and 0 < spec.accelerator_count < 1
+        if fractional_gpu:
+            ami_lookup = _get_ubuntu_ami
+        elif spec.accelerator_name is not None:
+            ami_lookup = _get_dlami
+        else:
+            ami_lookup = _get_ubuntu_ami
         if self._config.ami:
             ami_by_arch: dict[str, str] = {arch: self._config.ami for _, arch in candidates}
         else:
@@ -139,6 +146,8 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
     async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[AWSSpecific]:
         log.info("Setting up AWS infrastructure")
 
+        fractional_gpu = spec.accelerator_count and 0 < spec.accelerator_count < 1
+
         auto_profile_arn: str | None = None
         if self._config.instance_profile_arn == "auto" and spec.volumes:
             prefix = f"skyward-{uuid.uuid4().hex[:8]}"
@@ -147,6 +156,24 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
                 self._config.region, statements, prefix,
             )
             self._auto_profile_prefix = prefix
+
+        if fractional_gpu:
+            from skyward.api.plugin import Plugin
+            from skyward.providers.bootstrap import grid_driver, phase
+
+            grid_plugin = Plugin(
+                name="nvidia-grid",
+                bootstrap=lambda _cluster: (phase("grid", grid_driver()),),
+            )
+            extended_image = replace(
+                spec.image,
+                bootstrap_timeout=max(spec.image.bootstrap_timeout, 600),
+            )
+            spec = replace(
+                spec,
+                plugins=(*spec.plugins, grid_plugin),
+                image=extended_image,
+            )
 
         resources, (ssh_key_name, ssh_key_path) = await asyncio.gather(
             _ensure_infrastructure(self._config, self._ec2, profile_arn=auto_profile_arn),
@@ -677,11 +704,37 @@ async def _select_instances(
         "BareMetal": "excluded",
     }
 
+    fractional = spec.accelerator_name and 0 < (spec.accelerator_count or 1) < 1
+
+    if fractional:
+        from .instances import _fetch_all_instance_types
+
+        all_types = await _fetch_all_instance_types(config.region)
+        target = spec.accelerator_name.lower()  # type: ignore[union-attr]
+        requested = spec.accelerator_count
+
+        candidate_arch: dict[str, Architecture] = {}
+        for itype, resources in all_types.items():
+            if (
+                resources.gpu_model.lower() == target
+                and 0 < resources.gpu_count < 1
+                and abs(resources.gpu_count - requested) < 0.05
+            ):
+                candidate_arch[itype] = resources.architecture
+
+        if not candidate_arch:
+            return []
+
+        session = aioboto3.Session()
+        async with session.client("ec2", region_name=config.region) as client:  # type: ignore[union-attr]
+            offered = await _get_offered_types(client, list(candidate_arch.keys()))
+            return [(t, a) for t, a in candidate_arch.items() if t in offered]
+
     if spec.accelerator_name:
         requirements["AcceleratorTypes"] = ["gpu"]
         requirements["AcceleratorNames"] = [spec.accelerator_name.lower()]
         count = spec.accelerator_count or 1
-        requirements["AcceleratorCount"] = {"Min": count, "Max": count}
+        requirements["AcceleratorCount"] = {"Min": int(count), "Max": int(count)}
         if spec.accelerator_memory_gb > 0:
             requirements["AcceleratorTotalMemoryMiB"] = {
                 "Min": spec.accelerator_memory_gb * 1024,
@@ -701,7 +754,7 @@ async def _select_instances(
             return {r["InstanceType"]: a for r in response.get("InstanceTypes", [])}
 
         arch_results = await asyncio.gather(*(_query_arch(a) for a in archs))
-        candidate_arch: dict[str, Architecture] = {}
+        candidate_arch = {}
         for arch_map in arch_results:
             candidate_arch.update(arch_map)
 
@@ -765,6 +818,7 @@ async def _get_dlami(config: AWS, arch: Architecture) -> str:
         ami = response["Parameter"]["Value"]
         log.debug("Resolved DLAMI {ami} for {arch}", ami=ami, arch=arch)
         return ami
+
 
 
 async def _launch_fleet(

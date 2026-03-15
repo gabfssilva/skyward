@@ -40,7 +40,7 @@ class Vultr(ProviderConfig):
 
     api_key: str | None = None
     mode: VultrMode = "cloud"
-    region: str = "ewr"
+    region: str | None = None
     os_id: int = 2284
     instance_timeout: int = 300
     request_timeout: int = 30

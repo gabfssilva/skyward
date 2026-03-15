@@ -163,6 +163,7 @@ class OfferQuery:
 
     _FILTER_MAP: dict[str, str] = {
         "accelerator_name = ?": "accelerator",
+        "accelerator_count = ?": "accelerator_count",
         "provider = ?": "provider",
         "vcpus = ?": "vcpus",
         "memory_gb = ?": "memory_gb",

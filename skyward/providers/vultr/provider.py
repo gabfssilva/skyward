@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
@@ -46,6 +47,17 @@ def _extract_gpu_count_from_plan_id(plan_id: str) -> int:
         if part.endswith("x") and part[:-1].isdigit():
             return int(part[:-1])
     return 1
+
+
+def _extract_vram_from_plan_id(plan_id: str) -> int:
+    """Extract allocated VRAM from cloud GPU plan ID.
+
+    Vultr cloud GPU plan IDs encode the allocated VRAM:
+    ``vcg-a40-2c-10g-4vram`` → 4 (GB).
+    """
+    if m := re.search(r"(\d+)vram$", plan_id):
+        return int(m.group(1))
+    return 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,15 +111,23 @@ class VultrProvider(Provider[Vultr, VultrSpecific]):
                 continue
 
             normalized = _GPU_NAME_MAP.get(gpu_type, gpu_type)
-            vram = plan.get("gpu_vram_gb") or _GPU_MEMORY_MAP.get(normalized, 0)
+            vram = (
+                _extract_vram_from_plan_id(plan["id"])
+                or plan.get("gpu_vram_gb")
+                or _GPU_MEMORY_MAP.get(normalized, 0)
+            )
 
             score = _gpu_match_score(requested, normalized)
             if score < _MIN_GPU_MATCH:
                 continue
             if spec.accelerator_memory_gb > 0 and vram < spec.accelerator_memory_gb:
                 continue
-            if self._config.region not in plan.get("locations", []):
-                continue
+
+            locations = plan.get("locations", [])
+            if self._config.region:
+                if self._config.region not in locations:
+                    continue
+                locations = [self._config.region]
 
             hourly = plan.get("hourly_cost") or (
                 round(plan.get("monthly_cost", 0) / 730, 4)
@@ -132,14 +152,15 @@ class VultrProvider(Provider[Vultr, VultrSpecific]):
                 architecture="x86_64",
                 specific=None,
             )
-            candidates.append((score, Offer(
-                id=f"vultr-{plan['id']}-{self._config.region}",
-                instance_type=it,
-                spot_price=None,
-                on_demand_price=hourly,
-                billing_unit="hour",
-                specific=None,
-            )))
+            for region in locations:
+                candidates.append((score, Offer(
+                    id=f"vultr-{region}-{plan['id']}",
+                    instance_type=it,
+                    spot_price=None,
+                    on_demand_price=hourly,
+                    billing_unit="hour",
+                    specific=None,
+                )))
 
         if not candidates:
             return
@@ -171,8 +192,12 @@ class VultrProvider(Provider[Vultr, VultrSpecific]):
                 continue
             if spec.accelerator_memory_gb > 0 and vram < spec.accelerator_memory_gb:
                 continue
-            if self._config.region not in plan.get("locations", []):
-                continue
+
+            locations = plan.get("locations", [])
+            if self._config.region:
+                if self._config.region not in locations:
+                    continue
+                locations = [self._config.region]
 
             monthly = plan.get("monthly_cost", 0)
             hourly = round(monthly / 730, 4) if monthly else None
@@ -190,14 +215,15 @@ class VultrProvider(Provider[Vultr, VultrSpecific]):
                 architecture="x86_64",
                 specific=None,
             )
-            candidates.append((score, Offer(
-                id=f"vultr-{plan['id']}-{self._config.region}",
-                instance_type=it,
-                spot_price=None,
-                on_demand_price=hourly,
-                billing_unit="hour",
-                specific=None,
-            )))
+            for region in locations:
+                candidates.append((score, Offer(
+                    id=f"vultr-{region}-{plan['id']}",
+                    instance_type=it,
+                    spot_price=None,
+                    on_demand_price=hourly,
+                    billing_unit="hour",
+                    specific=None,
+                )))
 
         if not candidates:
             return
@@ -231,7 +257,7 @@ class VultrProvider(Provider[Vultr, VultrSpecific]):
             specific=VultrSpecific(
                 ssh_key_id=ssh_key_id,
                 plan_id=offer.instance_type.name,
-                region=self._config.region,
+                region=_region_from_offer(offer),
                 is_bare_metal=self._is_bare_metal,
             ),
         )
@@ -349,6 +375,11 @@ class VultrProvider(Provider[Vultr, VultrSpecific]):
 # =============================================================================
 # Helpers
 # =============================================================================
+
+
+def _region_from_offer(offer: Offer) -> str:
+    """Extract region from offer ID (``vultr-{region}-{plan_id}``)."""
+    return offer.id.removeprefix("vultr-").split("-", 1)[0]
 
 
 def _has_ip(ip: str) -> bool:
