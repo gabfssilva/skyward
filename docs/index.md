@@ -13,6 +13,10 @@
   <a href="https://github.com/gabfssilva/skyward/blob/main/LICENSE"><img src="https://img.shields.io/github/license/gabfssilva/skyward.svg" alt="License"></a>
 </p>
 
+<p align="center">
+  <img src="demo.gif" alt="Skyward Demo" width="800">
+</p>
+
 Skyward is a Python library for ephemeral accelerator compute. Spin up cloud accelerators (GPUs, TPUs, Trainium, and more), run your ML training code, and tear them down automatically. No infrastructure to manage.
 
 ---

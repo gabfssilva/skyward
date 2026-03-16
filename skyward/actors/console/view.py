@@ -89,6 +89,7 @@ def _is_dark_background() -> bool:
 _DARK = _is_dark_background()
 _BADGE_L = 0.55 if _DARK else 0.35
 _BADGE_FG = "rgb(0,0,0)" if _DARK else "rgb(255,255,255)"
+WARNING_STYLE = "yellow" if _DARK else "dark_orange"
 
 
 # --- Badge styling ---
@@ -610,7 +611,7 @@ def _render_summary(state: _State, now: float | None = None) -> RenderableType:
         fail_text = Text(str(fails), style="red bold") if fails else Text("0", style="bright_black")
         breakdown.add_row(
             Text(fn_name), Text(str(calls)), Text(avg),
-            Text(mn, style="green"), Text(mx, style="yellow"), fail_text,
+            Text(mn, style="green"), Text(mx, style=WARNING_STYLE), fail_text,
         )
 
     if state.tasks_per_instance:

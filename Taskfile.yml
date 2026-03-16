@@ -240,3 +240,28 @@ tasks:
       - rm -rf dist/ site/ .pytest_cache/ .ruff_cache/
       - find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
       - find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
+
+  # ── Demo ────────────────────────────────────────────────
+
+  demo:
+    desc: "Record demo video, speedup provisioning, and downscale to 1080p"
+    dir: demo
+    vars:
+      CUT_START: '{{.CUT_START | default "20"}}'
+      CUT_END: '{{.CUT_END | default "15"}}'
+      SPEED: '{{.SPEED | default "10"}}'
+    cmds:
+      - vhs test.tape
+      - |
+        DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 test.mp4 | cut -d. -f1)
+        TAIL_START=$((DURATION - {{.CUT_END}}))
+        PTS=$(awk "BEGIN{printf \"%.4f\", 1/{{.SPEED}}}")
+        echo "test.mp4 (${DURATION}s) → 0-{{.CUT_START}}s normal | {{.CUT_START}}-${TAIL_START}s {{.SPEED}}x | ${TAIL_START}-${DURATION}s normal"
+        ffmpeg -y -i test.mp4 -filter_complex \
+          "[0:v]trim=0:{{.CUT_START}},setpts=PTS-STARTPTS[v1]; \
+           [0:v]trim={{.CUT_START}}:${TAIL_START},setpts=${PTS}*(PTS-STARTPTS)[v2]; \
+           [0:v]trim=${TAIL_START},setpts=PTS-STARTPTS[v3]; \
+           [v1][v2][v3]concat=n=3:v=1:a=0,scale=1920:1080:flags=lanczos[out]" \
+          -map "[out]" demo.mp4 2>/dev/null
+        ffmpeg -y -i demo.mp4 -filter_complex "[0:v]split[a][b];[a]palettegen=max_colors=256:stats_mode=diff[p];[b][p]paletteuse=dither=floyd_steinberg" demo.gif 2>/dev/null
+        echo "Done: demo.mp4 + demo.gif"

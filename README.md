@@ -15,6 +15,10 @@
 
 ---
 
+<p align="center">
+  <img src="https://github.com/gabfssilva/skyward/blob/main/docs/demo.gif?raw=true" alt="Skyward Demo" width="800">
+</p>
+
 Skyward is a Python library for ephemeral accelerator compute. Spin up cloud accelerators, run your code, and tear them down automatically. No infrastructure to manage, no idle costs.
 
 ## Quick Example

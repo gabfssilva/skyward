@@ -11,5 +11,6 @@ docs/guides/ignored/
 examples/guides/ignored/
 PLANNED_PROVIDERS.md
 site/
+demo/
 paper/
 .DS_Store

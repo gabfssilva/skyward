@@ -80,6 +80,7 @@ from .model import (
 from .state import _Phase, _State
 from .view import (
     DIM,
+    WARNING_STYLE,
     _emit,
     _emit_task,
     _format_task,
@@ -235,7 +236,7 @@ def console_actor() -> Behavior[ConsoleInput]:
 
                 case SpyEvent(event=StopPool()):
                     _stop_live()
-                    _emit(console, "skyward", "Shutting down...", "yellow")
+                    _emit(console, "skyward", "Shutting down...", WARNING_STYLE)
                     summary = _render_summary(state)
                     console.print(summary)
                     return observing(replace(state, phase=_Phase.STOPPING))
@@ -448,7 +449,7 @@ def console_actor() -> Behavior[ConsoleInput]:
 
                 case SpyEvent(event=ShutdownRequested()):
                     _stop_live()
-                    _emit(console, "skyward", "Shutting down...", "yellow")
+                    _emit(console, "skyward", "Shutting down...", WARNING_STYLE)
                     summary = _render_summary(state)
                     console.print(summary)
                     return observing(replace(state, phase=_Phase.STOPPING))
