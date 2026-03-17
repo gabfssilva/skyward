@@ -344,6 +344,7 @@ def _collect_badges(state: _State) -> tuple[list[Text], list[Text], list[Text]]:
         accel = itype.accelerator
         if accel:
             total = accel.count * n
+            total_str = str(int(total)) if total == int(total) else f"{total:.1f}"
             mem = accel.memory or state.spec_accelerator_memory
             if not mem:
                 vram_vals = _collect_metric_vals(state, "gpu_mem_total_mb")
@@ -351,7 +352,7 @@ def _collect_badges(state: _State) -> tuple[list[Text], list[Text], list[Text]]:
                     per_gpu = sum(vram_vals) / len(vram_vals)
                     mem = f"{per_gpu / 1024:.0f}GB" if per_gpu >= 1024 else f"{per_gpu:.0f}MB"
             mem_str = f" {mem}" if mem else ""
-            infra.append(_inline_badge(f"\u26a1 {total}\u00d7 {accel.name}{mem_str}"))
+            infra.append(_inline_badge(f"\u26a1 {total_str}\u00d7 {accel.name}{mem_str}"))
 
     # --- Line 2: Status (phase + workers + metrics + reconciler + cost) ---
     match state.phase:
@@ -521,8 +522,9 @@ def _render_summary(state: _State, now: float | None = None) -> RenderableType:
         accel = state.instances[0].offer.instance_type.accelerator
         if accel:
             total = accel.count * len(state.instances)
+            total_str = str(int(total)) if total == int(total) else f"{total:.1f}"
             mem = f" {accel.memory}" if accel.memory else ""
-            overview.add_row("Accelerator", Text(f"{total}\u00d7 {accel.name}{mem}"))
+            overview.add_row("Accelerator", Text(f"{total_str}\u00d7 {accel.name}{mem}"))
 
     overview.add_row("Duration", Text(_format_duration(duration)))
 

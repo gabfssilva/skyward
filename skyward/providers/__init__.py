@@ -10,11 +10,12 @@ Each provider implements the Provider[C, S] protocol:
 Available providers:
 - AWS: Amazon Web Services (EC2 Fleet, spot instances)
 - GCP: Google Cloud Platform (Compute Engine, instance templates, bulk_insert)
+- Hyperstack: GPU cloud (bare-metal, environment-scoped resources)
+- JarvisLabs: Jarvis Labs GPU cloud (India/Europe, per-minute billing, SSH key auto-registration)
 - RunPod: GPU cloud (pods, serverless endpoints)
 - TensorDock: GPU marketplace (bare-metal VMs, per-second billing)
 - VastAI: GPU marketplace (Docker containers, spot/bid pricing)
 - Verda: GPU cloud (dedicated instances, spot pricing)
-- Hyperstack: GPU cloud (bare-metal, environment-scoped resources)
 
 NOTE: Only config classes are imported at module level to avoid pulling in
 SDK dependencies (aioboto3, google-cloud-compute, etc.).
@@ -26,6 +27,7 @@ from .aws.config import AWS
 from .container.config import Container
 from .gcp.config import GCP
 from .hyperstack.config import Hyperstack
+from .jarvislabs.config import JarvisLabs
 from .runpod.config import RunPod
 from .tensordock.config import TensorDock
 from .vastai.config import VastAI
@@ -38,6 +40,7 @@ __all__ = [
     "Container",
     "GCP",
     "Hyperstack",
+    "JarvisLabs",
     "RunPod",
     "TensorDock",
     "VastAI",

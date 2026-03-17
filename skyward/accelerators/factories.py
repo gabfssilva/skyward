@@ -727,6 +727,11 @@ def RTX_A5000(*, count: float = 1) -> Accelerator:
     return Accelerator.from_name("RTX A5000", count=count)
 
 
+def RTX_A5000_Pro(*, count: float = 1) -> Accelerator:
+    """NVIDIA RTX A5000 Pro - Ampere workstation variant (2021)."""
+    return Accelerator.from_name("RTX A5000 Pro", count=count)
+
+
 def RTX_A4000(*, count: float = 1) -> Accelerator:
     """NVIDIA RTX A4000 - Ampere workstation (2021)."""
     return Accelerator.from_name("RTX A4000", count=count)
@@ -745,6 +750,11 @@ def RTX_A2000(*, count: float = 1) -> Accelerator:
 def Quadro_RTX_8000(*, count: float = 1) -> Accelerator:
     """NVIDIA Quadro RTX 8000 - Turing workstation (2018)."""
     return Accelerator.from_name("Quadro RTX 8000", count=count)
+
+
+def Quadro_RTX_5000(*, count: float = 1) -> Accelerator:
+    """NVIDIA Quadro RTX 5000 - Turing workstation (2018)."""
+    return Accelerator.from_name("Quadro RTX 5000", count=count)
 
 
 def Quadro_RTX_6000(*, count: float = 1) -> Accelerator:

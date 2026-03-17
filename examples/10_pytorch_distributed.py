@@ -182,10 +182,10 @@ def evaluate_model(test_data: list, test_labels: list) -> dict:
 
 if __name__ == "__main__":
     with sky.Compute(
-        # provider=sky.Hyperstack(),
-        # accelerator=sky.accelerators.RTX_A4000(),
-        provider=sky.AWS(),
-        accelerator=sky.accelerators.T4(),
+        provider=sky.JarvisLabs(),
+        accelerator=sky.accelerators.RTX_A6000(),
+        # provider=sky.AWS(),
+        # accelerator=sky.accelerators.T4(),
         nodes=2,
         plugins=[sky.plugins.torch()],
     ) as compute:

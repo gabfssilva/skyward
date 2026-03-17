@@ -375,6 +375,13 @@ class NodeBecameReady:
 
 
 @dataclass(frozen=True, slots=True)
+class NodeActivated:
+    node_id: NodeId
+    node_ref: ActorRef[Any]
+    slots: int
+
+
+@dataclass(frozen=True, slots=True)
 class NodeLost:
     node_id: NodeId
     reason: str

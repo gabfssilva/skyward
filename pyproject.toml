@@ -41,7 +41,8 @@ gcp = [
     "google-auth>=2.0.0",
     "google-cloud-tpu>=1.25.0",
 ]
-providers = ["skyward[aws,gcp]"]
+jarvis = ["jarvislabs"]
+providers = ["skyward[aws,gcp,jarvis]"]
 # ML frameworks
 pytorch = [
     "torch==2.8.0",
@@ -122,6 +123,7 @@ markers = [
     "verda: Verda provider tests",
     "gcp: GCP provider tests",
     "hyperstack: Hyperstack provider tests",
+    "jarvislabs: Jarvis Labs provider tests",
     "tensordock: TensorDock provider tests",
     "vultr: Vultr provider tests",
 ]

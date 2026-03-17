@@ -23,6 +23,7 @@ from skyward.actors.messages import (
     ExecuteOnNode,
     Log,
     Metric,
+    NodeActivated,
     NodeBecameReady,
     NodeJoined,
     NodeLost,
@@ -244,7 +245,7 @@ def console_actor() -> Behavior[ConsoleInput]:
                 case SpyEvent(event=PoolStopped() | _ShutdownDone()):
                     return Behaviors.same()
 
-                case SpyEvent(event=Provision() | NodeBecameReady() | _PollResult()):
+                case SpyEvent(event=Provision() | NodeBecameReady() | NodeActivated() | _PollResult()):
                     return Behaviors.same()
 
                 case SpyEvent(event=NodeLost(node_id=nid, reason=reason)):

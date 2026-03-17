@@ -17,6 +17,7 @@ from skyward.actors.messages import (
     DrainNode,
     GetCurrentNodes,
     HeadAddressKnown,
+    NodeActivated,
     NodeAvailable,
     NodeBecameReady,
     NodeInstance,
@@ -107,14 +108,18 @@ def pool_actor(
         from skyward.infra.worker import skyward_serializer
 
         tunnel_map[(private_ip, casty_port)] = ("127.0.0.1", local_port)
-        client = ClusterClient(
-            contact_points=[(private_ip, casty_port)],
-            system_name="skyward",
-            address_map=address_resolver,
-            serializer=skyward_serializer(),
-            tls=tls,
-        )
-        await client.__aenter__()
+        try:
+            client = ClusterClient(
+                contact_points=[(private_ip, casty_port)],
+                system_name="skyward",
+                address_map=address_resolver,
+                serializer=skyward_serializer(),
+                tls=tls,
+            )
+            await client.__aenter__()
+        except Exception:
+            logger.exception("ClusterClient creation failed")
+            raise
         return client
 
     def _update_tunnel(nbr: NodeBecameReady) -> None:
@@ -260,8 +265,9 @@ def pool_actor(
                         log.warning("Provision failed: {err}", err=err)
                         return InstancesProvisioned(instances=(), cluster=cluster)
 
+                    remaining = effective_spec.nodes.min - len(s.node_refs)
                     ctx.pipe_to_self(
-                        s.provider.provision(cluster, effective_spec.nodes.min),
+                        s.provider.provision(cluster, remaining),
                         mapper=lambda result: InstancesProvisioned(
                             instances=result[1], cluster=result[0],
                         ),
@@ -346,7 +352,12 @@ def pool_actor(
                         ))
 
                     still_needed = s.spec.nodes.min - len(new_spawned)
-                    if s.attempt < s.spec.max_provision_attempts:
+                    got_partial = len(instances) > 0
+
+                    if (
+                        not got_partial
+                        and s.attempt < s.spec.max_provision_attempts
+                    ):
                         log.info(
                             "Got {got}/{need} nodes, retrying in "
                             "{delay}s (attempt {next}/{max})",
@@ -391,12 +402,22 @@ def pool_actor(
 
                     if s.remaining_offers:
                         offer, *rest = s.remaining_offers
-                        log.warning(
-                            "Exhausted {max} attempts, trying next offer "
-                            "({n} remaining)",
-                            max=s.spec.max_provision_attempts,
-                            n=len(s.remaining_offers),
-                        )
+                        if got_partial:
+                            log.info(
+                                "Got {got}/{need} nodes from this offer, "
+                                "trying next offer for remaining "
+                                "({n} offers left)",
+                                got=len(new_spawned),
+                                need=s.spec.nodes.min,
+                                n=len(s.remaining_offers),
+                            )
+                        else:
+                            log.warning(
+                                "Exhausted {max} attempts, trying next "
+                                "offer ({n} remaining)",
+                                max=s.spec.max_provision_attempts,
+                                n=len(s.remaining_offers),
+                            )
                         ctx.pipe_to_self(
                             s.provider.prepare(s.spec, offer),
                             mapper=lambda c: ClusterReady(cluster=c),
@@ -405,23 +426,56 @@ def pool_actor(
                             ),
                         )
                         return requesting(replace(
-                            s, remaining_offers=tuple(rest),
+                            s,
+                            remaining_offers=tuple(rest),
+                            attempt=1,
                         ))
 
                     log.error(
                         "Exhausted {max} provision attempts and all offers, "
-                        "only got {got}/{need} nodes",
+                        "only got {got}/{need} nodes — cleaning up",
                         max=s.spec.max_provision_attempts,
                         got=len(new_spawned), need=s.spec.nodes.min,
                     )
-                    s.reply_to.tell(ProvisionFailed(
-                        reason=(
-                            f"Only provisioned {len(new_spawned)}"
-                            f"/{s.spec.nodes.min} nodes after "
-                            f"{s.spec.max_provision_attempts} attempts "
-                            f"across all offers"
-                        ),
-                    ))
+
+                    instance_ids = tuple(
+                        inst.id for inst in updated_cluster.instances
+                    )
+                    provider = s.provider
+                    reply_to = s.reply_to
+                    reason = (
+                        f"Only provisioned {len(new_spawned)}"
+                        f"/{s.spec.nodes.min} nodes after "
+                        f"{s.spec.max_provision_attempts} attempts "
+                        f"across all offers"
+                    )
+
+                    async def _cleanup_and_fail() -> None:
+                        if instance_ids:
+                            with suppress(Exception):
+                                await provider.terminate(
+                                    updated_cluster, instance_ids,
+                                )
+                        with suppress(Exception):
+                            await provider.teardown(updated_cluster)
+
+                    ctx.pipe_to_self(
+                        _cleanup_and_fail(),
+                        mapper=lambda _: ProvisionFailed(reason=reason),
+                    )
+                    return _cleanup_awaiting(reply_to)
+            return Behaviors.same()
+        return Behaviors.receive(receive)
+
+    def _cleanup_awaiting(reply_to: ActorRef) -> Behavior[PoolMsg]:
+        """Wait for cleanup to finish, then report failure and stop."""
+        clog = logger.bind(actor="pool", state="cleanup")
+
+        async def receive(_ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
+            match msg:
+                case ProvisionFailed() as pf:
+                    clog.info("Cleanup complete, reporting failure")
+                    reply_to.tell(pf)
                     return Behaviors.stopped()
             return Behaviors.same()
         return Behaviors.receive(receive)
@@ -461,39 +515,34 @@ def pool_actor(
                         new_client, msg, s.node_refs[nid],
                         s.spec, s.cluster, effective_head,
                     )
-                    tm.tell(NodeAvailable(
-                        node_id=nid,
-                        node_ref=s.node_refs[nid],
-                        slots=s.spec.worker.concurrency,
-                    ))
-                    ready_threshold = s.spec.nodes.desired or s.spec.nodes.min
-
-                    if len(new_instances) >= ready_threshold:
-                        if len(new_instances) == s.spec.nodes.min:
-                            log.info("All {n} nodes ready, pool is operational", n=s.spec.nodes.min)
-                        else:
-                            log.info(
-                                "{n}/{total} nodes ready (desired met), pool is operational",
-                                n=len(new_instances), total=s.spec.nodes.min,
-                            )
-                        ctx.self.tell(PoolStarted(
-                            cluster_id=s.cluster_id,
-                            instances=tuple(new_instances.values()),
-                            cluster=s.cluster,
-                        ))
-                        _notify_session("ready", len(new_instances), s.spec.nodes.min)
-                        return ready(replace(
-                            s,
-                            instances=new_instances,
-                            client=new_client,
-                            ready_nodes=frozenset(new_instances.keys()),
-                            head_addr=effective_head,
-                        ))
                     return provisioning(replace(
                         s,
                         instances=new_instances,
                         client=new_client,
+                        head_addr=effective_head,
                     ))
+                case NodeActivated(node_id=nid, node_ref=nref, slots=slots):
+                    log.info("Node {nid} activated", nid=nid)
+                    tm.tell(NodeAvailable(node_id=nid, node_ref=nref, slots=slots))
+                    new_ready = s.ready_nodes | {nid}
+                    ready_threshold = s.spec.nodes.desired or s.spec.nodes.min
+
+                    if len(new_ready) >= ready_threshold:
+                        if len(new_ready) == s.spec.nodes.min:
+                            log.info("All {n} nodes active, pool is operational", n=s.spec.nodes.min)
+                        else:
+                            log.info(
+                                "{n}/{total} nodes active (desired met), pool is operational",
+                                n=len(new_ready), total=s.spec.nodes.min,
+                            )
+                        ctx.self.tell(PoolStarted(
+                            cluster_id=s.cluster_id,
+                            instances=tuple(s.instances.values()),
+                            cluster=s.cluster,
+                        ))
+                        _notify_session("ready", len(new_ready), s.spec.nodes.min)
+                        return ready(replace(s, ready_nodes=new_ready))
+                    return provisioning(replace(s, ready_nodes=new_ready))
                 case StopPool():
                     log.debug("StopPool received while provisioning")
             return Behaviors.same()
@@ -529,9 +578,9 @@ def pool_actor(
                             cluster=s.cluster,
                             min_nodes=min_n,
                             max_nodes=max_n,
-                            initial_node_ids=frozenset(s.ready_nodes),
+                            initial_node_ids=frozenset(s.instances.keys()),
                             initial_instance_map=inst_map,
-                            next_node_id=max(s.ready_nodes) + 1 if s.ready_nodes else s.spec.nodes.min,
+                            next_node_id=max(s.instances.keys()) + 1 if s.instances else s.spec.nodes.min,
                             tick_interval=s.spec.reconcile_tick_interval,
                         ),
                         "reconciler",
@@ -573,17 +622,13 @@ def pool_actor(
                         client, nbr, s.node_refs[nid],
                         s.spec, s.cluster, effective_head,
                     )
-                    tm.tell(NodeAvailable(
-                        node_id=nid,
-                        node_ref=s.node_refs[nid],
-                        slots=s.spec.worker.concurrency,
-                    ))
                     if s.reconciler_ref is not None:
                         s.reconciler_ref.tell(NodeJoined(node_id=nid))
+                case NodeActivated(node_id=nid, node_ref=nref, slots=slots):
+                    log.info("Node {nid} activated", nid=nid)
+                    tm.tell(NodeAvailable(node_id=nid, node_ref=nref, slots=slots))
                     _notify_session("ready", len(s.ready_nodes | {nid}), s.spec.nodes.min)
-                    return ready(replace(
-                        s, ready_nodes=s.ready_nodes | {nid},
-                    ))
+                    return ready(replace(s, ready_nodes=s.ready_nodes | {nid}))
                 case NodeLost(node_id=nid):
                     log.warning(
                         "Node {nid} lost, {remaining} nodes remaining",

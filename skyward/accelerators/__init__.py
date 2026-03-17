@@ -1,4 +1,4 @@
-"""Accelerator specifications for Skyward v2.
+"""Accelerator specifications for Skyward.
 
 Provides type-safe accelerator configurations with full IDE autocomplete.
 Each accelerator factory returns an immutable Accelerator dataclass
@@ -7,18 +7,12 @@ with defaults from the catalog.
 Usage:
     import skyward as sky
 
-    # Via namespace (recommended)
     sky.accelerators.H100()              # Default: 80GB, count=1
     sky.accelerators.H100(count=4)       # 4x H100
     sky.accelerators.A100(memory="40GB") # A100 40GB variant
 
-    # Direct import
-    from skyward.accelerators import H100, A100, T4
-    h100 = H100(count=8)
-
     # Custom accelerator
-    from skyward.accelerators import Custom
-    my_gpu = Custom("My-GPU", memory="48GB")
+    my_gpu = sky.accelerators.Custom("My-GPU", memory="48GB")
 
 Available accelerators:
     - NVIDIA Datacenter: H100, H200, GH200, B100, B200, GB200,
@@ -123,6 +117,7 @@ from .factories import (
     Instinct_MI25,
     Quadro_P4000,
     Quadro_RTX_4000,
+    Quadro_RTX_5000,
     Quadro_RTX_6000,
     # NVIDIA Workstation - Turing
     Quadro_RTX_8000,
@@ -151,6 +146,7 @@ from .factories import (
     RTX_5880_Ada,
     # NVIDIA Workstation - Ada Lovelace
     RTX_6000_Ada,
+    RTX_A5000_Pro,
     Titan_V,
     Titan_Xp,
     # Google TPU
@@ -268,11 +264,13 @@ __all__ = [
     # NVIDIA Workstation - Ampere
     "RTX_A6000",
     "RTX_A5000",
+    "RTX_A5000_Pro",
     "RTX_A4000",
     "RTX_A2000",
     # NVIDIA Workstation - Turing
     "Quadro_RTX_8000",
     "Quadro_RTX_6000",
+    "Quadro_RTX_5000",
     "Quadro_RTX_4000",
     "Quadro_P4000",
     # AMD Instinct

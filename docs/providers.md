@@ -1,18 +1,18 @@
 # Cloud providers
 
-Skyward supports nine providers. Eight are cloud services — AWS, GCP, Hyperstack, RunPod, TensorDock, Verda, VastAI, Vultr — and one is local containers for development and CI. All implement the same `Provider` protocol, so the orchestration layer (actor system, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
+Skyward supports ten providers. Nine are cloud services — AWS, GCP, Hyperstack, JarvisLabs, RunPod, TensorDock, Verda, VastAI, Vultr — and one is local containers for development and CI. All implement the same `Provider` protocol, so the orchestration layer (actor system, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
 
 Provider configs are lightweight frozen dataclasses. They hold configuration — region, API keys, disk sizes — but don't import any cloud SDK at module level. The SDK is loaded lazily when the pool starts, so `import skyward` stays fast regardless of which providers are installed.
 
 ## Provider comparison
 
-| Feature | AWS | GCP | Hyperstack | RunPod | TensorDock | Verda | VastAI | Vultr | Container |
-|---------|-----|-----|------------|--------|------------|-------|--------|-------|-----------|
-| **GPUs** | H100, A100, T4, L4, Trainium, Inferentia | H100, A100, T4, L4, V100, H200 | A100, H100, RTX series | H100, A100, A40, RTX series | H100, A100, L40, RTX series, V100 | H100, A100, H200, GB200 | Marketplace (varies) | A16, A40, A100, L40S (cloud); H100, B200, MI300X (bare metal) | None (CPU) |
-| **Spot Instances** | Yes (60-90% savings) | Yes (preemptible/spot) | No (on-demand only) | Yes | No (on-demand only) | Yes | Yes (bid-based) | No (on-demand only) | N/A |
-| **Regions** | 20+ | 40+ zones | Canada, Norway, US | Global (Secure + Community) | 100+ locations, 20+ countries | FIN, ICL, ISR | Global marketplace | EWR, ORD, DFW, LAX + more | Local |
-| **Auth** | AWS credentials | Application Default Credentials | API key | API key | API key + token | Client ID + Secret | API key | API key | None |
-| **Billing** | Per-second | Per-second | Per-second | Per-second | Per-second | Per-second | Per-minute | Hourly | Free |
+| Feature | AWS | GCP | Hyperstack | JarvisLabs | RunPod | TensorDock | Verda | VastAI | Vultr | Container |
+|---------|-----|-----|------------|------------|--------|------------|-------|--------|-------|-----------|
+| **GPUs** | H100, A100, T4, L4, Trainium, Inferentia | H100, A100, T4, L4, V100, H200 | A100, H100, RTX series | H200, H100, A100, A100-80GB, A6000, RTX6000Ada, L4 | H100, A100, A40, RTX series | H100, A100, L40, RTX series, V100 | H100, A100, H200, GB200 | Marketplace (varies) | A16, A40, A100, L40S (cloud); H100, B200, MI300X (bare metal) | None (CPU) |
+| **Spot Instances** | Yes (60-90% savings) | Yes (preemptible/spot) | No (on-demand only) | No (on-demand only) | Yes | No (on-demand only) | Yes | Yes (bid-based) | No (on-demand only) | N/A |
+| **Regions** | 20+ | 40+ zones | Canada, Norway, US | IN1, IN2 (India), EU1 (Finland) | Global (Secure + Community) | 100+ locations, 20+ countries | FIN, ICL, ISR | Global marketplace | EWR, ORD, DFW, LAX + more | Local |
+| **Auth** | AWS credentials | Application Default Credentials | API key | API token | API key | API key + token | Client ID + Secret | API key | API key | None |
+| **Billing** | Per-second | Per-second | Per-second | Per-minute | Per-second | Per-second | Per-second | Per-minute | Hourly | Free |
 
 ## AWS
 
@@ -455,6 +455,62 @@ with sky.Compute(
 | `instance_timeout` | `int` | `300` | Safety timeout in seconds. |
 | `request_timeout` | `int` | `30` | HTTP request timeout in seconds. |
 
+## Jarvis Labs
+
+Jarvis Labs is a GPU cloud platform offering instances in India (IN1, IN2) and Europe/Finland (EU1). Per-minute billing with a prepaid wallet model. SSH keys are auto-registered by Skyward via the SDK. The provider uses the `jarvislabs` Python SDK (sync calls dispatched to a thread pool).
+
+EU1 region only supports H100 and H200 GPUs with either 1 or 8 GPUs, and requires minimum 100GB storage.
+
+### Setup
+
+```bash
+export JL_API_KEY=your_api_token
+```
+
+Get your token from [jarvislabs.ai/settings/api-keys](https://jarvislabs.ai/settings/api-keys).
+
+Install the SDK:
+
+```bash
+uv add "skyward[jarvis]"
+```
+
+### Usage
+
+```python
+import skyward as sky
+
+with sky.Compute(
+    provider=sky.JarvisLabs(region="IN2"),
+    accelerator=sky.accelerators.L4(),
+    nodes=2,
+) as compute:
+    result = train(data) >> compute
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `api_key` | `str or None` | `None` | API token. Falls back to `JL_API_KEY` env var. |
+| `region` | `str or None` | `None` | Region: `IN1`, `IN2`, `EU1`. Auto-selects if not set. |
+| `template` | `str` | `"pytorch"` | Framework template: `pytorch`, `tensorflow`, `jax`, `vm`. |
+| `storage_gb` | `int` | `50` | Disk storage in GB. Minimum 100 for EU1/VM. |
+| `instance_timeout` | `int` | `300` | Auto-shutdown safety timer in seconds. |
+| `thread_pool_size` | `int` | `8` | Max threads for SDK calls. |
+
+### GPU availability
+
+| GPU | VRAM | Price/hr | Regions |
+|-----|------|----------|---------|
+| H200 SXM | 141 GB | $3.80 | EU1 |
+| H100 SXM | 80 GB | $2.99 | EU1 |
+| A100-80GB | 80 GB | $1.49 | IN2 |
+| A100 | 40 GB | $1.29 | IN1, IN2 |
+| RTX 6000 Ada | 48 GB | $0.99 | IN1 |
+| A6000 | 48 GB | $0.79 | IN1 |
+| L4 | 24 GB | $0.44 | IN2 |
+
 ## Container
 
 The Container provider runs compute nodes as local containers — Docker, podman, nerdctl, or Apple's container CLI. No cloud credentials, no costs. Useful for development, CI testing, and validating your code before deploying to real hardware.
@@ -493,6 +549,8 @@ with sky.Compute(
 **RunPod** — Fast provisioning, competitive pricing, minimal setup. Both Secure Cloud (dedicated) and Community Cloud (cheaper) tiers. Good for A100/H100/RTX workloads.
 
 **Hyperstack** — Bare-metal GPU cloud with environment-scoped resource management. On-demand only, regions in Canada, Norway, and US.
+
+**JarvisLabs** — GPU cloud with data centers in India and Finland. Per-minute billing with a prepaid wallet model. Good for A100, H100, H200 workloads. On-demand only.
 
 **Verda** — European data residency (Finland, Iceland, Israel). H100/A100/H200/GB200 availability with automatic region selection.
 

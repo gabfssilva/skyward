@@ -184,6 +184,7 @@ SPECS: Final[dict[str, dict[str, Any]]] = {
     # NVIDIA Workstation - Turing (CC 7.5)
     # =========================================================================
     "Quadro RTX 4000": {"memory": "8GB", "cuda": {"min": "10.0", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Turing"},
+    "Quadro RTX 5000": {"memory": "16GB", "cuda": {"min": "10.0", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Turing"},
     "Quadro RTX 6000": {"memory": "24GB", "cuda": {"min": "10.0", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Turing"},
     "Quadro RTX 8000": {"memory": "48GB", "cuda": {"min": "10.0", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Turing"},
     # =========================================================================
@@ -193,6 +194,7 @@ SPECS: Final[dict[str, dict[str, Any]]] = {
     "RTX A4000": {"memory": "16GB", "cuda": {"min": "11.1", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Ampere"},
     "RTX A4500": {"memory": "20GB", "cuda": {"min": "11.1", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Ampere"},
     "RTX A5000": {"memory": "24GB", "cuda": {"min": "11.1", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Ampere"},
+    "RTX A5000 Pro": {"memory": "24GB", "cuda": {"min": "11.1", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Ampere"},
     "RTX A6000": {"memory": "48GB", "cuda": {"min": "11.1", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Ampere"},
     # =========================================================================
     # NVIDIA Workstation - Ada Lovelace (CC 8.9)

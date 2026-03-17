@@ -95,7 +95,7 @@ from .distributed import (
     set,
 )
 from .offers.repository import OfferRepository
-from .providers import AWS, GCP, Container, Hyperstack, RunPod, TensorDock, VastAI, Verda, Vultr
+from .providers import AWS, GCP, Container, Hyperstack, JarvisLabs, RunPod, TensorDock, VastAI, Verda, Vultr
 
 
 async def offers(providers: list[Any]) -> OfferRepository:
@@ -133,6 +133,7 @@ __all__ = [
     "Container",
     "GCP",
     "Hyperstack",
+    "JarvisLabs",
     "RunPod",
     "TensorDock",
     "VastAI",

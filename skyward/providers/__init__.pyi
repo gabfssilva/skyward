@@ -149,6 +149,51 @@ class Hyperstack:
     def type(self) -> str: ...
     async def create_provider(self) -> Any: ...
 
+class JarvisLabs:
+    """Jarvis Labs GPU cloud provider.
+
+    Uses the ``jarvislabs`` Python SDK (sync calls dispatched via
+    ``ThreadPoolExecutor``). Supports IN1, IN2, and EU1 regions
+    with per-minute billing. SSH keys auto-registered.
+
+    Parameters
+    ----------
+    api_key
+        API token. ``None`` reads from ``JL_API_KEY`` env var.
+    region
+        Preferred region (``"IN1"``, ``"IN2"``, ``"EU1"``).
+        ``None`` auto-selects from GPU availability.
+    template
+        Framework template: ``"pytorch"``, ``"tensorflow"``,
+        ``"jax"``, ``"vm"``.
+    storage_gb
+        Disk storage per instance in GB. EU1 and VM require
+        minimum 100 GB.
+    instance_timeout
+        Auto-shutdown safety timeout in seconds.
+    thread_pool_size
+        Max worker threads for SDK calls.
+
+    Examples
+    --------
+    >>> sky.JarvisLabs(region="IN2")
+    >>> sky.JarvisLabs(template="vm", storage_gb=100)
+    """
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        region: str | None = None,
+        template: str = "pytorch",
+        storage_gb: int = 50,
+        instance_timeout: int = 300,
+        thread_pool_size: int = 8,
+    ) -> None: ...
+    @property
+    def type(self) -> str: ...
+    async def create_provider(self) -> Any: ...
+
 class RunPod:
     """RunPod serverless GPU provider.
 
@@ -461,6 +506,7 @@ __all__ = [
     "AWS",
     "GCP",
     "Hyperstack",
+    "JarvisLabs",
     "RunPod",
     "TensorDock",
     "VastAI",

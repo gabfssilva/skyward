@@ -8,6 +8,7 @@ from skyward.core.pool import ComputePool
 from skyward.providers.aws.config import AWS
 from skyward.providers.gcp.config import GCP
 from skyward.providers.hyperstack.config import Hyperstack
+from skyward.providers.jarvislabs.config import JarvisLabs
 from skyward.providers.runpod.config import RunPod
 from skyward.providers.tensordock.config import TensorDock
 from skyward.providers.vastai.config import VastAI
@@ -250,6 +251,22 @@ class TestResolvePool:
         spec = pool._specs[0]
         assert isinstance(spec.provider, Vultr)
         assert spec.provider.mode == "bare-metal"
+
+    def test_jarvislabs_pool(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            '[providers.jl]\n'
+            'type = "jarvislabs"\n'
+            'region = "EU1"\n'
+            'storage_gb = 100\n'
+            '\n'
+            '[pools.gpu]\nprovider = "jl"\nnodes = 1\n'
+        )
+        pool = resolve_pool("gpu", project_dir=tmp_path)
+        assert isinstance(pool, ComputePool)
+        spec = pool._specs[0]
+        assert isinstance(spec.provider, JarvisLabs)
+        assert spec.provider.region == "EU1"
+        assert spec.provider.storage_gb == 100
 
     def test_tensordock_pool(self, tmp_path: Path):
         (tmp_path / "skyward.toml").write_text(

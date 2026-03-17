@@ -24,6 +24,7 @@ from skyward.actors.messages import (
     BootstrapDone,
     ExecuteOnNode,
     HeadAddressKnown,
+    NodeActivated,
     NodeBecameReady,
     NodeLost,
     Preempted,
@@ -476,6 +477,14 @@ def node_actor(
                     ))
                 case PortReForwarded(old_port=_, new_port=new_port):
                     log.info("Port re-forwarded to {port} while ready", port=new_port)
+                    pool.tell(
+                        NodeBecameReady(
+                            node_id=node_id,
+                            instance=ni,
+                            local_port=new_port,
+                            private_ip=ni.instance.private_ip or ni.instance.ip or "",
+                        )
+                    )
                     return ready(replace(s, local_port=new_port))
                 case ConnectionLost():
                     log.warning("Connection lost while ready, transport reconnecting")
@@ -549,6 +558,11 @@ def node_actor(
             new_inflight[tid] = pt.reply_to
             counter += 1
 
+        pool.tell(NodeActivated(
+            node_id=node_id,
+            node_ref=ctx.self,
+            slots=s.cluster.spec.worker.concurrency,
+        ))
         return active(replace(s, inflight=new_inflight, task_counter=counter, pending_tasks=()))
 
     def _dispatch_task(
@@ -599,6 +613,32 @@ def node_actor(
                         on_failure=lambda e: _WorkerDiscoveryFailed(error=str(e)),
                     )
                     return active(replace(s, client=client))
+                case _WorkerDiscovered(worker_ref=wref):
+                    log.info("Worker re-discovered on node {nid}", nid=node_id)
+                    ctx.pipe_to_self(
+                        setup_worker_env(
+                            s.client, wref, s.pool_info_json,
+                            s.env_vars, s.around_app_hooks, s.around_process_hooks,
+                        ),
+                        mapper=lambda _: _EnvSetupDone(),
+                        on_failure=lambda e: _EnvSetupFailed(error=str(e)),
+                    )
+                    return active(replace(s, worker_ref=wref))
+                case _WorkerDiscoveryFailed(error=error):
+                    log.warning(
+                        "Worker re-discovery failed on node {nid}: {error}",
+                        nid=node_id, error=error,
+                    )
+                    return Behaviors.same()
+                case _EnvSetupDone():
+                    log.info("Worker env re-setup complete on node {nid}", nid=node_id)
+                    return Behaviors.same()
+                case _EnvSetupFailed(error=error):
+                    log.warning(
+                        "Worker env re-setup failed on node {nid}: {error}",
+                        nid=node_id, error=error,
+                    )
+                    return Behaviors.same()
                 case ExecuteOnNode() as ex:
                     local_tid = ex.task_id or str(s.task_counter)
                     log.debug("Node {nid} dispatching task {tid}", nid=node_id, tid=local_tid)
@@ -662,6 +702,16 @@ def node_actor(
                     return _start_replacing(ctx, s)
                 case PortReForwarded(old_port=_, new_port=new_port):
                     log.info("Port re-forwarded to {port}", port=new_port)
+                    ni = s.ni
+                    if ni:
+                        pool.tell(
+                            NodeBecameReady(
+                                node_id=node_id,
+                                instance=ni,
+                                local_port=new_port,
+                                private_ip=ni.instance.private_ip or ni.instance.ip or "",
+                            )
+                        )
                     return active(replace(s, local_port=new_port))
                 case Preempted(reason=reason):
                     log.warning("Preempted while active: {reason}", reason=reason)
