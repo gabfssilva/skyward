@@ -557,7 +557,7 @@ def cli() -> None:
     _fmt = _logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s - %(message)s")
     _h = _logging.StreamHandler(sys.stderr)
     _h.setFormatter(_fmt)
-    _h.setLevel(_logging.DEBUG)
+    _h.setLevel(_logging.WARNING)
     _logging.getLogger("skyward").addHandler(_h)
     _logging.getLogger("casty").addHandler(_h)
 

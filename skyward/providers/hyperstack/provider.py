@@ -554,7 +554,10 @@ def _to_offer(
     """Convert a Hyperstack flavor to a Skyward Offer."""
     gpu_name = flavor.get("gpu", "")
     gpu_count = flavor.get("gpu_count", 0)
-    accel = Accelerator(name=gpu_name, count=gpu_count) if gpu_name else None
+    is_spot = gpu_name.lower().endswith("-spot")
+    base_gpu = gpu_name.removesuffix("-spot").removesuffix("-Spot").removesuffix("-SPOT") if is_spot else gpu_name
+
+    accel = Accelerator(name=base_gpu, count=gpu_count) if gpu_name else None
 
     it = InstanceType(
         name=flavor["name"],
@@ -566,7 +569,7 @@ def _to_offer(
     )
 
     gpu_upper = gpu_name.upper()
-    per_gpu = price_map.get(gpu_upper, 0.0)
+    per_gpu = price_map.get(gpu_upper, 0.0) or price_map.get(base_gpu.upper(), 0.0)
     hourly = per_gpu * gpu_count
     region = flavor.get("region_name", "")
 
@@ -581,8 +584,8 @@ def _to_offer(
     return Offer(
         id=str(flavor["id"]),
         instance_type=it,
-        spot_price=None,
-        on_demand_price=hourly if hourly > 0 else None,
+        spot_price=hourly if hourly > 0 and is_spot else None,
+        on_demand_price=hourly if hourly > 0 and not is_spot else None,
         billing_unit="hour",
         specific=specific,
     )
@@ -599,7 +602,7 @@ def _build_instance(
         ip=info.get("floating_ip") or "",
         private_ip=info.get("fixed_ip"),
         ssh_port=22,
-        spot=False,
+        spot=cluster.offer.spot_price is not None,
         region=cluster.specific.region,
     )
 

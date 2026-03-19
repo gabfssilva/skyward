@@ -13,7 +13,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - uses: arduino/setup-task@v2
+      - name: Install Task
+        uses: Wandalen/wretry.action@v3
+        with:
+          action: arduino/setup-task@v2
+          attempt_limit: 3
+          attempt_delay: 10000
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:

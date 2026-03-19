@@ -136,7 +136,7 @@ class AccessKeyResponse(TypedDict):
 # =============================================================================
 
 
-_GPU_SUFFIXES = ("-PCIe", "-SXM", "-SXM4", "-80G", "-40G", "-80GB", "-40GB")
+_GPU_SUFFIXES = ("-SXM4", "-SXM5", "-80GB", "-40GB", "-PCIe", "-NVLink", "-SXM", "-80G", "-40G", "-spot")
 
 
 def normalize_gpu_name(gpu: str) -> str:
@@ -145,6 +145,8 @@ def normalize_gpu_name(gpu: str) -> str:
     Examples
     --------
     >>> normalize_gpu_name("A100-80G-PCIe")
+    'A100'
+    >>> normalize_gpu_name("A100-80G-PCIe-spot")
     'A100'
     >>> normalize_gpu_name("RTX-4090")
     'RTX_4090'

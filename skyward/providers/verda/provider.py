@@ -80,32 +80,25 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
         use_spot = spec.allocation in ("spot", "spot-if-available")
 
         instance_types = await self._client.list_instance_types()
-        availability = await self._client.get_availability(is_spot=use_spot)
-        log.debug(
-            "Offers query: {n} regions, {t} instance types",
-            n=len(availability), t=len(instance_types),
-        )
-
-        available_types = {t for region_types in availability.values() for t in region_types}
+        log.debug("Offers query: {t} instance types", t=len(instance_types))
 
         def _matches(itype: InstanceTypeResponse) -> bool:
-            if itype["instance_type"] not in available_types:
-                return False
             if spec.vcpus and get_vcpu(itype) < spec.vcpus:
                 return False
             if spec.memory_gb and get_memory_gb(itype) < spec.memory_gb:
                 return False
             accel = get_accelerator(itype)
-            if not spec.accelerator_name:
-                return accel is None
-            if not accel:
-                return False
-            if not (
-                accel.upper() in spec.accelerator_name.upper()
-                or spec.accelerator_name.upper() in accel.upper()
-            ):
-                return False
-            return spec.accelerator_memory_gb == 0 or get_accelerator_memory_gb(itype) >= spec.accelerator_memory_gb
+            if spec.accelerator_name:
+                if not accel:
+                    return False
+                if not (
+                    accel.upper() in spec.accelerator_name.upper()
+                    or spec.accelerator_name.upper() in accel.upper()
+                ):
+                    return False
+                if spec.accelerator_memory_gb and get_accelerator_memory_gb(itype) < spec.accelerator_memory_gb:
+                    return False
+            return True
 
         candidates = [itype for itype in instance_types if _matches(itype)]
 
@@ -119,7 +112,8 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
             itype_name = itype_data["instance_type"]
             gpu_name = get_accelerator(itype_data)
             gpu_count = get_accelerator_count(itype_data)
-            gpu_vram_gb = int(get_accelerator_memory_gb(itype_data))
+            total_vram = get_accelerator_memory_gb(itype_data)
+            gpu_vram_gb = int(total_vram / gpu_count) if gpu_count else 0
 
             accel = (
                 Accelerator(

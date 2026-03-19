@@ -16,7 +16,12 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - uses: arduino/setup-task@v2
+    - name: Install Task
+      uses: Wandalen/wretry.action@v3
+      with:
+        action: arduino/setup-task@v2
+        attempt_limit: 3
+        attempt_delay: 10000
     - name: Install uv
       uses: astral-sh/setup-uv@v5
       with:
@@ -44,7 +49,12 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - uses: arduino/setup-task@v2
+    - name: Install Task
+      uses: Wandalen/wretry.action@v3
+      with:
+        action: arduino/setup-task@v2
+        attempt_limit: 3
+        attempt_delay: 10000
     - name: Login to GHCR
       uses: Wandalen/wretry.action@v3
       with:
@@ -55,10 +65,14 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
         attempt_limit: 3
         attempt_delay: 10000
-    - name: Build and push base image
-      run: |
-        task docker:build PYTHON_VERSION=${{ matrix.python-version }}
-        task docker:push PYTHON_VERSION=${{ matrix.python-version }}
+    - name: Build base image
+      run: task docker:build PYTHON_VERSION=${{ matrix.python-version }}
+    - name: Push base image
+      uses: Wandalen/wretry.action@v3
+      with:
+        command: task docker:push PYTHON_VERSION=${{ matrix.python-version }}
+        attempt_limit: 3
+        attempt_delay: 10000
 
   e2e:
     needs: [build-image]
@@ -75,7 +89,12 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - uses: arduino/setup-task@v2
+    - name: Install Task
+      uses: Wandalen/wretry.action@v3
+      with:
+        action: arduino/setup-task@v2
+        attempt_limit: 3
+        attempt_delay: 10000
     - name: Login to GHCR
       uses: Wandalen/wretry.action@v3
       with:

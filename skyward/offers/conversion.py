@@ -137,10 +137,21 @@ def _serialize_specific(specific: Any) -> dict[str, Any] | None:
     return None
 
 
+def _parse_accel_memory(accel: Accelerator | None) -> float:
+    """Extract VRAM in GB from Accelerator.memory (e.g. '40GB' -> 40.0)."""
+    if not accel or not accel.memory:
+        return 0.0
+    import re
+    if m := re.search(r"(\d+)", accel.memory):
+        return float(m.group(1))
+    return 0.0
+
+
 def _offer_from_runtime(offer: Offer, provider: str) -> _Offer:
     accel = offer.instance_type.accelerator
     gpu_name = accel.name if accel else ""
     gpu_count = accel.count if accel else 0
+    gpu_vram = _parse_accel_memory(accel)
 
     prefix = f"{provider}-"
     suffix = f"-{offer.instance_type.name}"
@@ -151,7 +162,7 @@ def _offer_from_runtime(offer: Offer, provider: str) -> _Offer:
 
     return _Offer(
         spec=_make_spec(
-            gpu_name, 0,
+            gpu_name, gpu_vram,
             vcpus=offer.instance_type.vcpus,
             memory_gb=offer.instance_type.memory_gb,
             cpu_architecture=offer.instance_type.architecture,

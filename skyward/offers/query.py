@@ -24,8 +24,10 @@ class OfferQuery:
         self._clauses: list[str] = []
         self._params: list[Any] = []
         self._clause_params: list[tuple[str, Any | None]] = []
+        self._order_by: str | None = None
+        self._limit: int | None = None
 
-    # ── chainable filters ────────────────────────────────────
+    # ── chainable filters ─────────────────────────────────────
 
     def _add_filter(self, clause: str, param: Any) -> None:
         self._clauses.append(clause)
@@ -131,7 +133,19 @@ class OfferQuery:
         self._params.extend(params)
         return self
 
-    # ── terminals ────────────────────────────────────────────
+    # ── ordering and limiting ─────────────────────────────────
+
+    def order_by(self, expr: str) -> OfferQuery:
+        """Set the ORDER BY expression for this query."""
+        self._order_by = expr
+        return self
+
+    def limit(self, n: int) -> OfferQuery:
+        """Set the maximum number of rows to return."""
+        self._limit = n
+        return self
+
+    # ── terminals ─────────────────────────────────────────────
 
     @overload
     async def cheapest(self) -> CatalogOffer | None: ...
@@ -159,7 +173,16 @@ class OfferQuery:
         rows = await self._execute(limit=1)
         return rows[0] if rows else None
 
-    # ── internals ────────────────────────────────────────────
+    async def count(self) -> int:
+        """Return the total number of matching offers (ignores limit/order)."""
+        sql = "SELECT COUNT(*) FROM catalog"
+        if self._clauses:
+            sql += " WHERE " + " AND ".join(self._clauses)
+        params = tuple(self._params)
+        rows = self._db.execute(sql, params).fetchone()
+        return rows[0] if rows else 0
+
+    # ── internals ─────────────────────────────────────────────
 
     _FILTER_MAP: dict[str, str] = {
         "accelerator_name = ?": "accelerator",
@@ -180,13 +203,16 @@ class OfferQuery:
         return filters
 
     async def _execute(self, *, order_by: str | None = None, limit: int | None = None) -> list[CatalogOffer]:
+        effective_order = order_by or self._order_by
+        effective_limit = limit or self._limit
+
         sql = "SELECT * FROM catalog"
         if self._clauses:
             sql += " WHERE " + " AND ".join(self._clauses)
-        if order_by:
-            sql += f" ORDER BY {order_by}"
-        if limit:
-            sql += f" LIMIT {limit}"
+        if effective_order:
+            sql += f" ORDER BY {effective_order}"
+        if effective_limit:
+            sql += f" LIMIT {effective_limit}"
         params = tuple(self._params)
         rows = await self._repo._run_query(sql, params)
         if not rows:

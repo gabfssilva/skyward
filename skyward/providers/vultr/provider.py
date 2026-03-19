@@ -101,8 +101,6 @@ class VultrProvider(Provider[Vultr, VultrSpecific]):
         self, plans: list[PlanResponse], spec: PoolSpec,
     ) -> AsyncIterator[Offer]:
         requested = spec.accelerator_name
-        if not requested:
-            return
 
         candidates: list[tuple[float, Offer]] = []
         for plan in plans:
@@ -117,9 +115,12 @@ class VultrProvider(Provider[Vultr, VultrSpecific]):
                 or _GPU_MEMORY_MAP.get(normalized, 0)
             )
 
-            score = _gpu_match_score(requested, normalized)
-            if score < _MIN_GPU_MATCH:
-                continue
+            if requested:
+                score = _gpu_match_score(requested, normalized)
+                if score < _MIN_GPU_MATCH:
+                    continue
+            else:
+                score = 1.0
             if spec.accelerator_memory_gb > 0 and vram < spec.accelerator_memory_gb:
                 continue
 
@@ -174,8 +175,6 @@ class VultrProvider(Provider[Vultr, VultrSpecific]):
         self, plans: list[MetalPlanResponse], spec: PoolSpec,
     ) -> AsyncIterator[Offer]:
         requested = spec.accelerator_name
-        if not requested:
-            return
 
         candidates: list[tuple[float, Offer]] = []
         for plan in plans:
@@ -187,9 +186,12 @@ class VultrProvider(Provider[Vultr, VultrSpecific]):
             vram = plan.get("gpu_vram_gb") or _GPU_MEMORY_MAP.get(normalized, 0)
             gpu_count = _extract_gpu_count_from_plan_id(plan["id"])
 
-            score = _gpu_match_score(requested, normalized)
-            if score < _MIN_GPU_MATCH:
-                continue
+            if requested:
+                score = _gpu_match_score(requested, normalized)
+                if score < _MIN_GPU_MATCH:
+                    continue
+            else:
+                score = 1.0
             if spec.accelerator_memory_gb > 0 and vram < spec.accelerator_memory_gb:
                 continue
 

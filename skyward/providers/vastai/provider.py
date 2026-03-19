@@ -296,13 +296,19 @@ async def _search_offers(
 def _to_offer(raw: OfferResponse) -> Offer:
     gpu_name = raw.get("gpu_name", "")
     num_gpus = raw.get("num_gpus", 0)
-    accel = Accelerator(name=gpu_name, count=num_gpus) if gpu_name else None
+    gpu_ram_mb = raw.get("gpu_ram", 0)
+    per_gpu_gb = int(gpu_ram_mb / 1024 / num_gpus) if num_gpus and gpu_ram_mb else 0
+    accel = Accelerator(
+        name=gpu_name,
+        memory=f"{per_gpu_gb}GB" if per_gpu_gb else "",
+        count=num_gpus,
+    ) if gpu_name else None
 
     it = InstanceType(
         name=gpu_name or "unknown",
         accelerator=accel,
-        vcpus=float(raw.get("cpu_cores", 0)),
-        memory_gb=raw.get("cpu_ram", 0) / 1024,
+        vcpus=float(raw.get("cpu_cores") or 0),
+        memory_gb=(raw.get("cpu_ram") or 0) / 1024,
         architecture="x86_64",
         specific=None,
     )
@@ -313,7 +319,17 @@ def _to_offer(raw: OfferResponse) -> Offer:
         spot_price=raw.get("min_bid"),
         on_demand_price=raw.get("dph_total"),
         billing_unit="hour",
-        specific=raw["id"],
+        specific={
+            "id": raw["id"],
+            "cuda": raw.get("cuda_max_good"),
+            "reliability": round(raw["reliability"], 3) if raw.get("reliability") else None,
+            "geolocation": raw.get("geolocation"),
+            "inet_down": raw.get("inet_down"),
+            "inet_up": raw.get("inet_up"),
+            "disk_bw": raw.get("disk_bw"),
+            "driver": raw.get("driver_version"),
+            "verification": raw.get("verification"),
+        },
     )
 
 

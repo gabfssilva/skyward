@@ -6,8 +6,7 @@ import sqlite3
 import pytest
 
 from skyward.infra.threaded import ThreadPoolRunner
-from skyward.offers.query import OfferQuery
-from skyward.offers.repository import OfferRepository, _SCHEMA
+from skyward.offers.repository import OfferRepository, _SCHEMA, _open_db
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +83,7 @@ def repo() -> OfferRepository:
 class TestCPUOffers:
     @pytest.mark.asyncio
     async def test_cpu_offers_have_zero_accelerator_count(self, repo: OfferRepository) -> None:
-        offers = await OfferQuery(repo._db, repo).where("accelerator_count = 0").all()
+        offers = await repo.select().where("accelerator_count = 0").all()
         assert len(offers) == 5
         for o in offers:
             assert o.accelerator_count == 0
@@ -93,7 +92,7 @@ class TestCPUOffers:
 
     @pytest.mark.asyncio
     async def test_cpu_offers_filtered_by_vcpus_exact(self, repo: OfferRepository) -> None:
-        offers = await OfferQuery(repo._db, repo).where("accelerator_count = 0").vcpus(8).all()
+        offers = await repo.select().where("accelerator_count = 0").vcpus(8).all()
         assert all(o.vcpus == 8 for o in offers)
         instance_types = {o.instance_type for o in offers}
         assert "c5.xlarge" not in instance_types
@@ -101,7 +100,7 @@ class TestCPUOffers:
 
     @pytest.mark.asyncio
     async def test_cpu_offers_filtered_by_vcpus_range(self, repo: OfferRepository) -> None:
-        offers = await OfferQuery(repo._db, repo).where("accelerator_count = 0").vcpus(8, 96).all()
+        offers = await repo.select().where("accelerator_count = 0").vcpus(8, 96).all()
         assert all(8 <= o.vcpus <= 96 for o in offers)
         instance_types = {o.instance_type for o in offers}
         assert "c5.xlarge" not in instance_types
@@ -110,26 +109,26 @@ class TestCPUOffers:
 
     @pytest.mark.asyncio
     async def test_cpu_offers_filtered_by_memory_exact(self, repo: OfferRepository) -> None:
-        offers = await OfferQuery(repo._db, repo).where("accelerator_count = 0").memory(192).all()
+        offers = await repo.select().where("accelerator_count = 0").memory(192).all()
         assert len(offers) == 1
         assert offers[0].instance_type == "c5.24xlarge"
 
     @pytest.mark.asyncio
     async def test_cpu_offers_filtered_by_memory_range(self, repo: OfferRepository) -> None:
-        offers = await OfferQuery(repo._db, repo).where("accelerator_count = 0").memory(64, 192).all()
+        offers = await repo.select().where("accelerator_count = 0").memory(64, 192).all()
         assert len(offers) == 1
         assert offers[0].instance_type == "c5.24xlarge"
 
     @pytest.mark.asyncio
     async def test_cpu_cheapest(self, repo: OfferRepository) -> None:
-        cheapest = await OfferQuery(repo._db, repo).where("accelerator_count = 0").cheapest()
+        cheapest = await repo.select().where("accelerator_count = 0").cheapest()
         assert cheapest is not None
         assert cheapest.instance_type == "c5.xlarge-spot-only"
         assert cheapest.spot_price == 0.05
 
     @pytest.mark.asyncio
     async def test_cpu_cheapest_n(self, repo: OfferRepository) -> None:
-        top3 = await OfferQuery(repo._db, repo).where("accelerator_count = 0").cheapest(3)
+        top3 = await repo.select().where("accelerator_count = 0").cheapest(3)
         assert len(top3) == 3
         prices: list[float] = [
             o.spot_price if o.spot_price is not None else (o.on_demand_price or 0.0)
@@ -139,19 +138,19 @@ class TestCPUOffers:
 
     @pytest.mark.asyncio
     async def test_cpu_spot_only(self, repo: OfferRepository) -> None:
-        offers = await OfferQuery(repo._db, repo).where("accelerator_count = 0").spot().all()
+        offers = await repo.select().where("accelerator_count = 0").spot().all()
         assert all(o.spot_price is not None for o in offers)
         assert len(offers) == 5
 
     @pytest.mark.asyncio
     async def test_cpu_on_demand_only(self, repo: OfferRepository) -> None:
-        offers = await OfferQuery(repo._db, repo).where("accelerator_count = 0").on_demand().all()
+        offers = await repo.select().where("accelerator_count = 0").on_demand().all()
         assert all(o.on_demand_price is not None for o in offers)
         assert "c5.xlarge-spot-only" not in {o.instance_type for o in offers}
 
     @pytest.mark.asyncio
     async def test_cpu_max_price(self, repo: OfferRepository) -> None:
-        offers = await OfferQuery(repo._db, repo).where("accelerator_count = 0").max_price(0.10).all()
+        offers = await repo.select().where("accelerator_count = 0").max_price(0.10).all()
         for o in offers:
             effective = o.spot_price if o.spot_price is not None else o.on_demand_price
             assert effective is not None
@@ -159,7 +158,7 @@ class TestCPUOffers:
 
     @pytest.mark.asyncio
     async def test_cpu_region_filter(self, repo: OfferRepository) -> None:
-        offers = await OfferQuery(repo._db, repo).where("accelerator_count = 0").all()
+        offers = await repo.select().where("accelerator_count = 0").all()
         eu_offers = [o for o in offers if o.region == "eu-west-1"]
         assert len(eu_offers) == 1
         assert eu_offers[0].instance_type == "m5.2xlarge"
@@ -179,7 +178,7 @@ class TestCPUOffers:
 class TestGPUOffers:
     @pytest.mark.asyncio
     async def test_gpu_offers_have_positive_accelerator_count(self, repo: OfferRepository) -> None:
-        offers = await OfferQuery(repo._db, repo).where("accelerator_count > 0").all()
+        offers = await repo.select().where("accelerator_count > 0").all()
         assert len(offers) == 4
         for o in offers:
             assert o.accelerator_count > 0
@@ -199,7 +198,7 @@ class TestGPUOffers:
 
     @pytest.mark.asyncio
     async def test_vram_filter(self, repo: OfferRepository) -> None:
-        offers = await OfferQuery(repo._db, repo).accelerator_memory(80).all()
+        offers = await repo.select().accelerator_memory(80).all()
         assert all(o.accelerator_memory_gb >= 80 for o in offers)
         assert "g4dn.2xlarge" not in {o.instance_type for o in offers}
 
@@ -212,7 +211,7 @@ class TestGPUOffers:
 class TestMixedQueries:
     @pytest.mark.asyncio
     async def test_all_offers_returned(self, repo: OfferRepository) -> None:
-        offers = await OfferQuery(repo._db, repo).all()
+        offers = await repo.select().all()
         assert len(offers) == len(_OFFERS)
 
     @pytest.mark.asyncio
@@ -222,7 +221,7 @@ class TestMixedQueries:
 
     @pytest.mark.asyncio
     async def test_cheapest_across_gpu_and_cpu(self, repo: OfferRepository) -> None:
-        cheapest = await OfferQuery(repo._db, repo).cheapest()
+        cheapest = await repo.select().cheapest()
         assert cheapest is not None
         assert cheapest.accelerator_count == 0
 
@@ -235,7 +234,7 @@ class TestMixedQueries:
 
     @pytest.mark.asyncio
     async def test_vcpus_filter_mixed(self, repo: OfferRepository) -> None:
-        offers = await OfferQuery(repo._db, repo).vcpus(96).all()
+        offers = await repo.select().vcpus(96).all()
         types = {o.instance_type for o in offers}
         assert "p4d.24xlarge" in types
         assert "c5.24xlarge" in types
@@ -243,7 +242,7 @@ class TestMixedQueries:
 
     @pytest.mark.asyncio
     async def test_max_price_mixed(self, repo: OfferRepository) -> None:
-        offers = await OfferQuery(repo._db, repo).max_price(0.50).all()
+        offers = await repo.select().max_price(0.50).all()
         gpu = [o for o in offers if o.accelerator_count > 0]
         cpu = [o for o in offers if o.accelerator_count == 0]
         assert len(gpu) == 1
@@ -281,19 +280,104 @@ class TestRawSQL:
 
 class TestExtractFilters:
     def test_extract_accelerator_filter(self, repo: OfferRepository) -> None:
-        q = OfferQuery(repo._db, repo).accelerator("A100")
+        q = repo.select().accelerator("A100")
         assert q._extract_filters() == {"accelerator": "A100"}
 
     def test_extract_provider_filter(self, repo: OfferRepository) -> None:
-        q = OfferQuery(repo._db, repo).provider("aws")
+        q = repo.select().provider("aws")
         assert q._extract_filters() == {"provider": "aws"}
 
     def test_extract_multiple_filters(self, repo: OfferRepository) -> None:
-        q = OfferQuery(repo._db, repo).accelerator("H100").region("us-east-1").vcpus(96)
+        q = repo.select().accelerator("H100").region("us-east-1").vcpus(96)
         filters = q._extract_filters()
         assert filters == {"accelerator": "H100", "region": "us-east-1", "vcpus": 96}
 
     def test_extract_ignores_unknown_clauses(self, repo: OfferRepository) -> None:
-        q = OfferQuery(repo._db, repo).where("accelerator_count > 0").accelerator("A100")
+        q = repo.select().where("accelerator_count > 0").accelerator("A100")
         filters = q._extract_filters()
         assert filters == {"accelerator": "A100"}
+
+
+# ---------------------------------------------------------------------------
+# order_by / limit
+# ---------------------------------------------------------------------------
+
+
+class TestOrderByLimit:
+    @pytest.mark.asyncio
+    async def test_order_by(self, repo: OfferRepository) -> None:
+        offers = await repo.select().order_by("vcpus ASC").all()
+        vcpus = [o.vcpus for o in offers]
+        assert vcpus == sorted(vcpus)
+
+    @pytest.mark.asyncio
+    async def test_limit(self, repo: OfferRepository) -> None:
+        offers = await repo.select().limit(3).all()
+        assert len(offers) == 3
+
+    @pytest.mark.asyncio
+    async def test_order_by_and_limit(self, repo: OfferRepository) -> None:
+        offers = await repo.select().order_by("vcpus DESC").limit(2).all()
+        assert len(offers) == 2
+        assert offers[0].vcpus >= offers[1].vcpus
+
+    @pytest.mark.asyncio
+    async def test_cheapest_overrides_order(self, repo: OfferRepository) -> None:
+        offer = await repo.select().order_by("vcpus DESC").cheapest()
+        assert offer is not None
+        assert offer.spot_price == 0.05
+
+
+# ---------------------------------------------------------------------------
+# _open_db idempotency
+# ---------------------------------------------------------------------------
+
+
+class TestOpenDb:
+    def test_open_memory_db(self) -> None:
+        db = _open_db(":memory:")
+        row = db.execute("SELECT COUNT(*) FROM offers").fetchone()
+        assert row[0] == 0
+        db.close()
+
+    def test_open_idempotent(self, tmp_path) -> None:
+        db_path = tmp_path / "test.db"
+        db1 = _open_db(db_path)
+        db1.execute(
+            "INSERT INTO accelerators VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("test", "TestGPU", 16.0, "", "", "", ""),
+        )
+        db1.commit()
+        db1.close()
+
+        db2 = _open_db(db_path)
+        row = db2.execute("SELECT COUNT(*) FROM accelerators").fetchone()
+        assert row[0] == 1
+        db2.close()
+
+    def test_creates_parent_dirs(self, tmp_path) -> None:
+        db_path = tmp_path / "deep" / "nested" / "offers.db"
+        db = _open_db(db_path)
+        db.close()
+        assert db_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# summary
+# ---------------------------------------------------------------------------
+
+
+class TestSummary:
+    def test_summary_all(self, repo: OfferRepository) -> None:
+        rows = repo.summary()
+        assert len(rows) >= 2
+        assert all("gpu" in row for row in rows)
+        assert all("provider" in row for row in rows)
+
+    def test_summary_filtered(self, repo: OfferRepository) -> None:
+        rows = repo.summary(accelerator="A100")
+        assert all(row["gpu"] == "A100" for row in rows)
+
+    def test_summary_empty(self, repo: OfferRepository) -> None:
+        rows = repo.summary(accelerator="NONEXISTENT")
+        assert rows == []

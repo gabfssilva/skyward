@@ -59,8 +59,8 @@ echo $! > /var/run/casty.pid
 # tr converts CR (tqdm progress-bar updates) into separate lines.
 # sed strips ANSI escape sequences and control chars for valid JSON.
 (tail -f /var/log/casty.log 2>/dev/null \\
-    | tr '\\r' '\\n' \\
-    | sed '{sanitize}' \\
+    | stdbuf -oL tr '\\r' '\\n' \\
+    | stdbuf -oL sed '{sanitize}' \\
     | while IFS= read -r line; do
     [ -n "$line" ] && emit_console "[casty] $line"
 done) &"""

@@ -1,27 +1,15 @@
-"""Catalog feed utilities — GPU normalization, internal models, and cache I/O.
+"""Catalog feed utilities — GPU normalization, internal models, and serialization.
 
 Shared helpers used by the offer repository and conversion layer.  Provider
 offers are now fetched directly via ``provider.offers()`` instead of the
 per-provider fetchers that previously lived here.
-
-Cache structure::
-
-    ~/.skyward/cache/catalog/
-    ├── accelerators.json     # shared accelerator metadata
-    ├── specs.json            # shared spec (accelerator + vcpus + memory_gb)
-    └── offers/
-        ├── aws.json          # per-provider offers (references spec_id)
-        ├── tensordock.json
-        └── ...
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from skyward.infra.cache import CACHE_DIR
@@ -31,7 +19,6 @@ from skyward.infra.cache import CACHE_DIR
 # ---------------------------------------------------------------------------
 
 CATALOG_DIR = CACHE_DIR / "catalog"
-_OFFERS_DIR = CATALOG_DIR / "offers"
 
 # ---------------------------------------------------------------------------
 # GPU name normalization
@@ -228,42 +215,3 @@ def _serialize_offer(offer: _Offer) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-    tmp.rename(path)
-
-
-def _merge_globals(fresh: dict[str, list[_Offer]]) -> None:
-    """Merge new accelerators/specs from freshly-fetched offers into global files."""
-    accels: dict[str, dict[str, Any]] = {}
-    specs: dict[str, dict[str, Any]] = {}
-
-    accels_file = CATALOG_DIR / "accelerators.json"
-    if accels_file.exists():
-        for a in json.loads(accels_file.read_text()):
-            accels[a["id"]] = a
-
-    specs_file = CATALOG_DIR / "specs.json"
-    if specs_file.exists():
-        for s in json.loads(specs_file.read_text()):
-            specs[s["id"]] = s
-
-    for offers in fresh.values():
-        for offer in offers:
-            aid = _accel_id(offer.spec.accelerator)
-            sid = _spec_id(offer.spec)
-            if aid and aid not in accels:
-                accels[aid] = _serialize_accelerator(offer.spec.accelerator)
-            if sid not in specs:
-                specs[sid] = _serialize_spec(offer.spec)
-
-    _write_json(
-        accels_file,
-        sorted(accels.values(), key=lambda a: (a["manufacturer"], a["name"])),
-    )
-    _write_json(
-        specs_file,
-        sorted(specs.values(), key=lambda s: (s["accelerator_id"], s["vcpus"])),
-    )
