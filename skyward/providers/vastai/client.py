@@ -74,6 +74,8 @@ def build_search_query(
     use_interruptible: bool = False,
     with_cluster_id: bool = False,
     require_direct_port: bool = False,
+    min_inet_down: float | None = None,
+    min_inet_up: float | None = None,
 ) -> dict[str, Any]:
     """Build VastAI search query dict."""
     query: dict[str, Any] = {
@@ -111,6 +113,10 @@ def build_search_query(
         query["verified"] = {"eq": True}
     if require_direct_port:
         query["direct_port_count"] = {"gte": 1}
+    if min_inet_down is not None:
+        query["inet_down"] = {"gte": min_inet_down}
+    if min_inet_up is not None:
+        query["inet_up"] = {"gte": min_inet_up}
 
     return query
 
@@ -313,6 +319,8 @@ class VastAIClient:
             use_interruptible=use_interruptible,
             with_cluster_id=with_cluster_id,
             require_direct_port=direct_port,
+            min_inet_down=self.config.min_inet_down,
+            min_inet_up=self.config.min_inet_up,
         )
         query["limit"] = limit
 

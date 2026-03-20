@@ -267,7 +267,7 @@ class Options:
 
     selection: SelectionStrategy = "cheapest"
     worker: Worker | None = None
-    provision_timeout: int = 300
+    provision_timeout: int = 600
     provision_retry_delay: float = 5.0
     max_provision_attempts: int = 3
     ssh_timeout: int = 300

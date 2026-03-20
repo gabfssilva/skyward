@@ -29,6 +29,7 @@ from .gcp.config import GCP
 from .hyperstack.config import Hyperstack
 from .jarvislabs.config import JarvisLabs
 from .runpod.config import RunPod
+from .scaleway.config import Scaleway
 from .tensordock.config import TensorDock
 from .vastai.config import VastAI
 from .verda.config import Verda
@@ -42,6 +43,7 @@ __all__ = [
     "Hyperstack",
     "JarvisLabs",
     "RunPod",
+    "Scaleway",
     "TensorDock",
     "VastAI",
     "Verda",

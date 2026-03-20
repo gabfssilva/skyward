@@ -164,7 +164,7 @@ class ComputePool:
         allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
         selection: SelectionStrategy = "cheapest",
         image: Image = DEFAULT_IMAGE,
-        ttl: int = 600,
+        ttl: int = 1200,
         worker: Worker | None = None,
         logging: LogConfig | bool = True,
         max_hourly_cost: float | None = None,

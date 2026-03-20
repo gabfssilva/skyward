@@ -334,6 +334,10 @@ class VastAI:
         Seconds to wait for overlay network setup.
     require_direct_port
         Require direct SSH port (no NAT).
+    min_inet_down
+        Minimum download speed in Mbps. ``None`` disables filter.
+    min_inet_up
+        Minimum upload speed in Mbps. ``None`` disables filter.
 
     Examples
     --------
@@ -356,6 +360,8 @@ class VastAI:
         use_overlay: bool = True,
         overlay_timeout: int = 120,
         require_direct_port: bool = False,
+        min_inet_down: float | None = None,
+        min_inet_up: float | None = None,
     ) -> None: ...
     @property
     def type(self) -> str: ...
@@ -415,6 +421,46 @@ class Verda:
         client_id: str | None = None,
         client_secret: str | None = None,
         ssh_key_id: str | None = None,
+        instance_timeout: int = 300,
+        request_timeout: int = 30,
+    ) -> None: ...
+    @property
+    def type(self) -> str: ...
+    async def create_provider(self) -> Any: ...
+
+class Scaleway:
+    """Scaleway GPU cloud provider.
+
+    Scaleway provides GPU instances (L4, L40S, H100, B300) in European
+    zones. Auth uses a secret key passed via ``X-Auth-Token`` header.
+
+    Parameters
+    ----------
+    secret_key
+        Scaleway secret key (UUID). ``None`` reads from ``SCW_SECRET_KEY`` env var.
+    project_id
+        Scaleway project ID (UUID). ``None`` reads from ``SCW_DEFAULT_PROJECT_ID`` env var.
+    zone
+        Availability zone. ``None`` searches all GPU zones automatically.
+    image
+        OS image UUID override. ``None`` auto-selects Ubuntu GPU image.
+    instance_timeout
+        Auto-shutdown safety timeout in seconds.
+    request_timeout
+        HTTP request timeout in seconds.
+
+    Examples
+    --------
+    >>> sky.Scaleway(zone="fr-par-2")
+    """
+
+    def __init__(
+        self,
+        *,
+        secret_key: str | None = None,
+        project_id: str | None = None,
+        zone: str | None = None,
+        image: str | None = None,
         instance_timeout: int = 300,
         request_timeout: int = 30,
     ) -> None: ...
@@ -508,6 +554,7 @@ __all__ = [
     "Hyperstack",
     "JarvisLabs",
     "RunPod",
+    "Scaleway",
     "TensorDock",
     "VastAI",
     "Verda",

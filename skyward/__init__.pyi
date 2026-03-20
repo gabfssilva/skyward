@@ -109,6 +109,7 @@ from skyward.providers import Container as Container
 from skyward.providers import Hyperstack as Hyperstack
 from skyward.providers import JarvisLabs as JarvisLabs
 from skyward.providers import RunPod as RunPod
+from skyward.providers import Scaleway as Scaleway
 from skyward.providers import TensorDock as TensorDock
 from skyward.providers import VastAI as VastAI
 from skyward.providers import Verda as Verda
@@ -154,6 +155,7 @@ __all__ = [
     "Hyperstack",
     "JarvisLabs",
     "RunPod",
+    "Scaleway",
     "TensorDock",
     "VastAI",
     "Verda",

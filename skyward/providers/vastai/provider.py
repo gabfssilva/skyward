@@ -5,7 +5,7 @@ import random
 import string
 import uuid
 from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from skyward.accelerators import Accelerator
 from skyward.core import PoolSpec
@@ -208,7 +208,18 @@ def _self_destruction_script(ttl: int, shutdown_command: str) -> str:
     from skyward.providers.bootstrap.compose import resolve
     from skyward.providers.bootstrap.ops import instance_timeout
 
-    lines = ["#!/bin/bash", "set -e", "tail -f /dev/null &"]
+    lines = [
+        "#!/bin/bash",
+        "set -e",
+        # Some Vast.ai hosts use non-POSIX network volumes that clobber SSH permissions
+        "mkdir -p /root/.ssh",
+        "chmod 700 /root/.ssh",
+        "touch /root/.ssh/authorized_keys",
+        "chmod 600 /root/.ssh/authorized_keys",
+        "chown -R root:root /root/.ssh",
+        "mkdir -p /opt/skyward",
+        "tail -f /dev/null &",
+    ]
     if ttl:
         lines.append(resolve(instance_timeout(ttl, shutdown_command=shutdown_command)))
     return "\n".join(lines) + "\n"
@@ -228,6 +239,15 @@ def _build_vastai_instance(
             ssh_host = info.get("ssh_host", "")
             ssh_port = info.get("ssh_port", 22)
 
+    is_bid = info.get("is_bid", False)
+    actual_dph = info.get("dph_total")
+    if actual_dph is not None:
+        offer = replace(
+            offer,
+            spot_price=actual_dph if is_bid else offer.spot_price,
+            on_demand_price=actual_dph if not is_bid else offer.on_demand_price,
+        )
+
     return Instance(
         id=str_id,
         status=status,
@@ -235,7 +255,7 @@ def _build_vastai_instance(
         ip=ssh_host,
         private_ip=info.get("public_ipaddr") or ssh_host or None,
         ssh_port=ssh_port,
-        spot=info.get("is_bid", False),
+        spot=is_bid,
     )
 
 

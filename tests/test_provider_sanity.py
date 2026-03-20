@@ -307,6 +307,31 @@ class TestJarvisLabsSanity:
 
 
 @pytest.mark.sanity
+@pytest.mark.scaleway
+@pytest.mark.timeout(TIMEOUT)
+@pytest.mark.xdist_group("scaleway")
+class TestScalewaySanity:
+    @pytest.fixture(scope="class")
+    def pool(self):
+        with sky.Compute(
+            provider=sky.Scaleway(),
+            accelerator=sky.accelerators.L4(),
+            nodes=NODES,
+            image=sky.Image(pip=["torch"]),
+            options=sky.Options(console=False),
+        ) as p:
+            yield p
+
+    def test_single_dispatch(self, pool):
+        result = gpu_matmul() >> pool
+        _assert_single(result)
+
+    def test_broadcast(self, pool):
+        results = gpu_matmul() @ pool
+        _assert_broadcast(results)
+
+
+@pytest.mark.sanity
 @pytest.mark.vultr
 @pytest.mark.timeout(TIMEOUT)
 @pytest.mark.xdist_group("vultr")

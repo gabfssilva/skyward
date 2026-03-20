@@ -1,18 +1,18 @@
 # Cloud providers
 
-Skyward supports ten providers. Nine are cloud services — AWS, GCP, Hyperstack, JarvisLabs, RunPod, TensorDock, Verda, VastAI, Vultr — and one is local containers for development and CI. All implement the same `Provider` protocol, so the orchestration layer (actor system, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
+Skyward supports eleven providers. Ten are cloud services — AWS, GCP, Hyperstack, JarvisLabs, RunPod, Scaleway, TensorDock, Verda, VastAI, Vultr — and one is local containers for development and CI. All implement the same `Provider` protocol, so the orchestration layer (actor system, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
 
 Provider configs are lightweight frozen dataclasses. They hold configuration — region, API keys, disk sizes — but don't import any cloud SDK at module level. The SDK is loaded lazily when the pool starts, so `import skyward` stays fast regardless of which providers are installed.
 
 ## Provider comparison
 
-| Feature | AWS | GCP | Hyperstack | JarvisLabs | RunPod | TensorDock | Verda | VastAI | Vultr | Container |
-|---------|-----|-----|------------|------------|--------|------------|-------|--------|-------|-----------|
-| **GPUs** | H100, A100, T4, L4, Trainium, Inferentia | H100, A100, T4, L4, V100, H200 | A100, H100, RTX series | H200, H100, A100, A100-80GB, A6000, RTX6000Ada, L4 | H100, A100, A40, RTX series | H100, A100, L40, RTX series, V100 | H100, A100, H200, GB200 | Marketplace (varies) | A16, A40, A100, L40S (cloud); H100, B200, MI300X (bare metal) | None (CPU) |
-| **Spot Instances** | Yes (60-90% savings) | Yes (preemptible/spot) | No (on-demand only) | No (on-demand only) | Yes | No (on-demand only) | Yes | Yes (bid-based) | No (on-demand only) | N/A |
-| **Regions** | 20+ | 40+ zones | Canada, Norway, US | IN1, IN2 (India), EU1 (Finland) | Global (Secure + Community) | 100+ locations, 20+ countries | FIN, ICL, ISR | Global marketplace | EWR, ORD, DFW, LAX + more | Local |
-| **Auth** | AWS credentials | Application Default Credentials | API key | API token | API key | API key + token | Client ID + Secret | API key | API key | None |
-| **Billing** | Per-second | Per-second | Per-second | Per-minute | Per-second | Per-second | Per-second | Per-minute | Hourly | Free |
+| Feature | AWS | GCP | Hyperstack | JarvisLabs | RunPod | Scaleway | TensorDock | Verda | VastAI | Vultr | Container |
+|---------|-----|-----|------------|------------|--------|----------|------------|-------|--------|-------|-----------|
+| **GPUs** | H100, A100, T4, L4, Trainium, Inferentia | H100, A100, T4, L4, V100, H200 | A100, H100, RTX series | H200, H100, A100, A100-80GB, A6000, RTX6000Ada, L4 | H100, A100, A40, RTX series | L4, L40S, H100, H100 SXM, B300 | H100, A100, L40, RTX series, V100 | H100, A100, H200, GB200 | Marketplace (varies) | A16, A40, A100, L40S (cloud); H100, B200, MI300X (bare metal) | None (CPU) |
+| **Spot Instances** | Yes (60-90% savings) | Yes (preemptible/spot) | No (on-demand only) | No (on-demand only) | Yes | No (on-demand only) | No (on-demand only) | Yes | Yes (bid-based) | No (on-demand only) | N/A |
+| **Regions** | 20+ | 40+ zones | Canada, Norway, US | IN1, IN2 (India), EU1 (Finland) | Global (Secure + Community) | fr-par-1, fr-par-2, fr-par-3, nl-ams, pl-waw | 100+ locations, 20+ countries | FIN, ICL, ISR | Global marketplace | EWR, ORD, DFW, LAX + more | Local |
+| **Auth** | AWS credentials | Application Default Credentials | API key | API token | API key | Secret key | API key + token | Client ID + Secret | API key | API key | None |
+| **Billing** | Per-second | Per-second | Per-second | Per-minute | Per-second | Per-hour | Per-second | Per-second | Per-minute | Hourly | Free |
 
 ## AWS
 
@@ -455,6 +455,41 @@ with sky.Compute(
 | `instance_timeout` | `int` | `300` | Safety timeout in seconds. |
 | `request_timeout` | `int` | `30` | HTTP request timeout in seconds. |
 
+## Scaleway
+
+Scaleway provides GPU instances in European data centers (Paris, Amsterdam, Warsaw). GPU instances range from L4 (24 GB) to H100 SXM (80 GB) and B300 (288 GB). Pricing is per-hour, on-demand only (no spot).
+
+### Setup
+
+```bash
+export SCW_SECRET_KEY=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+export SCW_DEFAULT_PROJECT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+```
+
+### Usage
+
+```python
+import skyward as sky
+
+with sky.Compute(
+    provider=sky.Scaleway(zone="fr-par-2"),
+    accelerator=sky.accelerators.H100(),
+    nodes=2,
+) as compute:
+    result = train(data) >> compute
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `secret_key` | `str \| None` | `None` | API secret key. Falls back to `SCW_SECRET_KEY` env var. |
+| `project_id` | `str \| None` | `None` | Project ID. Falls back to `SCW_DEFAULT_PROJECT_ID` env var. |
+| `zone` | `str \| None` | `None` | Availability zone. `None` searches all GPU zones automatically. |
+| `image` | `str \| None` | `None` | OS image UUID override. Auto-selects Ubuntu GPU image when None. |
+| `instance_timeout` | `int` | `300` | Auto-shutdown safety timeout in seconds. |
+| `request_timeout` | `int` | `30` | HTTP request timeout in seconds. |
+
 ## Jarvis Labs
 
 Jarvis Labs is a GPU cloud platform offering instances in India (IN1, IN2) and Europe/Finland (EU1). Per-minute billing with a prepaid wallet model. SSH keys are auto-registered by Skyward via the SDK. The provider uses the `jarvislabs` Python SDK (sync calls dispatched to a thread pool).
@@ -557,6 +592,8 @@ with sky.Compute(
 **TensorDock** — Bare-metal VMs across 100+ locations with per-second billing. Good for RTX 4090, A100, H100 workloads without spot complexity. On-demand only.
 
 **VastAI** — Maximum cost savings through marketplace pricing. Consumer GPUs (RTX 4090, 3090) available alongside datacenter hardware. Overlay networks for multi-node training.
+
+**Scaleway** — European GPU cloud with instances in Paris, Amsterdam, and Warsaw. L4 through H100 SXM and B300. On-demand only, per-hour billing. Good for EU data residency requirements.
 
 **Vultr** — Two modes in one provider: Cloud GPU for fast virtual instances with fractional GPU support, and Bare Metal for dedicated servers with H100, B200, and AMD MI300X/MI355X. Hourly billing, simple API key auth.
 

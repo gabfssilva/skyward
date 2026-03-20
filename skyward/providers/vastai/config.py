@@ -46,6 +46,8 @@ class VastAI(ProviderConfig):
         overlay_timeout: Timeout for overlay operations in seconds.
         require_direct_port: Only select offers with direct port access (no SSH proxy).
         verified_only: Only select offers from verified hosts (default True).
+        min_inet_down: Minimum download speed in Mbps. None disables filter.
+        min_inet_up: Minimum upload speed in Mbps. None disables filter.
     """
 
     api_key: str | None = None
@@ -61,6 +63,8 @@ class VastAI(ProviderConfig):
     use_overlay: bool = True
     overlay_timeout: int = 120
     require_direct_port: bool = False
+    min_inet_down: float | None = None
+    min_inet_up: float | None = None
 
     async def create_provider(self) -> VastAIProvider:
         from skyward.providers.vastai.provider import VastAIProvider

@@ -129,6 +129,7 @@ markers = [
     "hyperstack: Hyperstack provider tests",
     "jarvislabs: Jarvis Labs provider tests",
     "tensordock: TensorDock provider tests",
+    "scaleway: Scaleway provider tests",
     "vultr: Vultr provider tests",
 ]
 

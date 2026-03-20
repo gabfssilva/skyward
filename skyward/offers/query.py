@@ -59,9 +59,14 @@ class OfferQuery:
         self._add_filter("manufacturer = ?", name)
         return self
 
-    def accelerator_memory(self, min_gb: float) -> OfferQuery:
-        """Filter by minimum accelerator memory in GB."""
-        self._add_filter("accelerator_memory_gb >= ?", min_gb)
+    def accelerator_memory(self, min_gb: float, max_gb: float | None = None) -> OfferQuery:
+        """Filter by accelerator memory in GB. Single arg = minimum, two args = range."""
+        if max_gb is None:
+            self._add_filter("accelerator_memory_gb >= ?", min_gb)
+        else:
+            self._clauses.append("accelerator_memory_gb >= ? AND accelerator_memory_gb <= ?")
+            self._params.extend([min_gb, max_gb])
+            self._clause_params.append(("accelerator_memory_range", (min_gb, max_gb)))
         return self
 
     def vcpus(self, exact_or_min: float, max_vcpus: float | None = None) -> OfferQuery:

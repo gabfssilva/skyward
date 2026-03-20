@@ -68,7 +68,8 @@ async def select_offers(
         if accel and accel.memory:
             mem = accel.memory.upper().removesuffix("GB")
             if mem.isdigit():
-                query = query.accelerator_memory(int(mem))
+                gb = int(mem)
+                query = query.accelerator_memory(gb * 0.9, gb * 1.1)
 
         if s.vcpus:
             query = query.vcpus(s.vcpus)

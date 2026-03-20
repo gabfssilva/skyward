@@ -10,6 +10,7 @@ from skyward.providers.gcp.config import GCP
 from skyward.providers.hyperstack.config import Hyperstack
 from skyward.providers.jarvislabs.config import JarvisLabs
 from skyward.providers.runpod.config import RunPod
+from skyward.providers.scaleway.config import Scaleway
 from skyward.providers.tensordock.config import TensorDock
 from skyward.providers.vastai.config import VastAI
 from skyward.providers.verda.config import Verda
@@ -224,6 +225,31 @@ class TestResolvePool:
         spec = pool._specs[0]
         assert isinstance(spec.provider, Hyperstack)
         assert spec.provider.region == "CANADA-1"
+
+    def test_scaleway_pool(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            '[providers.scw]\n'
+            'type = "scaleway"\n'
+            'zone = "fr-par-2"\n'
+            '\n'
+            '[pools.gpu]\nprovider = "scw"\nnodes = 1\n'
+        )
+        pool = resolve_pool("gpu", project_dir=tmp_path)
+        spec = pool._specs[0]
+        assert isinstance(spec.provider, Scaleway)
+        assert spec.provider.zone == "fr-par-2"
+
+    def test_scaleway_pool_auto_zone(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            '[providers.scw]\n'
+            'type = "scaleway"\n'
+            '\n'
+            '[pools.gpu]\nprovider = "scw"\nnodes = 1\n'
+        )
+        pool = resolve_pool("gpu", project_dir=tmp_path)
+        spec = pool._specs[0]
+        assert isinstance(spec.provider, Scaleway)
+        assert spec.provider.zone is None
 
     def test_vultr_pool(self, tmp_path: Path):
         (tmp_path / "skyward.toml").write_text(
