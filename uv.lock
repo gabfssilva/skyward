@@ -3227,6 +3227,7 @@ pytorch = [
 [package.dev-dependencies]
 dev = [
     { name = "aioboto3" },
+    { name = "cyclopts" },
     { name = "jax" },
     { name = "keras" },
     { name = "mkdocs" },
@@ -3304,6 +3305,7 @@ provides-extras = ["all", "aws", "cli", "dev", "gcp", "huggingface", "jarvis", "
 [package.metadata.requires-dev]
 dev = [
     { name = "aioboto3", specifier = ">=13.0.0" },
+    { name = "cyclopts", specifier = ">=4.7" },
     { name = "jax", specifier = ">=0.8.2" },
     { name = "keras", specifier = ">=3.13.0" },
     { name = "mkdocs", specifier = ">=1.6.1" },

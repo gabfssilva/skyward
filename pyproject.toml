@@ -156,4 +156,5 @@ dev = [
     "mkdocstrings>=1.0.3",
     "mkdocstrings-python>=2.0.2",
     "aioboto3>=13.0.0",
+    "cyclopts>=4.7",
 ]
