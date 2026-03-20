@@ -272,7 +272,7 @@ class TensorDockProvider(Provider[TensorDock, TensorDockSpecific]):
                         gpu_count=offer_data.gpu_count,
                         vcpus=offer_data.vcpus,
                         ram_gb=offer_data.ram_gb,
-                        storage_gb=self._config.storage_gb,
+                        storage_gb=cluster.spec.disk_gb or self._config.storage_gb,
                         location_id=specific.location_id,
                         ssh_key=specific.ssh_public_key,
                         port_forwards=[

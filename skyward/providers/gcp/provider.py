@@ -297,6 +297,7 @@ class GCPProvider(Provider[GCP, GCPSpecific]):
             uses_guest_accelerators=resolved.uses_guest_accelerators,
             accelerator_type=resolved.accelerator_type,
             gpu_count=resolved.gpu_count,
+            disk_gb=spec.disk_gb,
         )
         log.info("Created instance template: {name}", name=template_name)
 
@@ -869,6 +870,7 @@ class GCPProvider(Provider[GCP, GCPSpecific]):
         uses_guest_accelerators: bool,
         accelerator_type: str,
         gpu_count: int,
+        disk_gb: int | None = None,
     ) -> None:
         from google.cloud import compute_v1  # type: ignore[reportMissingImports]
 
@@ -877,7 +879,7 @@ class GCPProvider(Provider[GCP, GCPSpecific]):
             boot=True,
             initialize_params=compute_v1.AttachedDiskInitializeParams(
                 source_image=image,
-                disk_size_gb=self._config.disk_size_gb,
+                disk_size_gb=disk_gb or self._config.disk_size_gb,
                 disk_type=self._config.disk_type,
             ),
         )

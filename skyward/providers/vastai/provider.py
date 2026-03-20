@@ -388,7 +388,7 @@ async def _try_create_from_offers(
             instance_id = await client.create_instance(
                 offer_id=offer_id,
                 image=docker_image,
-                disk=config.disk_gb,
+                disk=cluster.spec.disk_gb or config.disk_gb,
                 label=label,
                 onstart_cmd=minimal_onstart,
                 overlay_name=cluster.specific.overlay_name,

@@ -181,6 +181,7 @@ class Spec:
     nodes: NodeSpec = 1
     vcpus: float | None = None
     memory_gb: float | None = None
+    disk_gb: int | None = None
     architecture: Architecture | None = None
     allocation: AllocationStrategy = "spot-if-available"
     image: Image = field(default_factory=lambda: Image())
@@ -206,6 +207,7 @@ class SpecKwargs(_SpecRequired, total=False):
     nodes: NodeSpec
     vcpus: float | None
     memory_gb: float | None
+    disk_gb: int | None
     architecture: Architecture | None
     allocation: AllocationStrategy
     image: Image
@@ -449,6 +451,7 @@ class PoolSpec:
     region: str
     vcpus: float | None = None
     memory_gb: float | None = None
+    disk_gb: int | None = None
     architecture: Architecture | None = None
     allocation: AllocationStrategy = "spot-if-available"
     image: Image = field(default_factory=lambda: Image())

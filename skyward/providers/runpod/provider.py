@@ -710,7 +710,7 @@ async def _create_instant_cluster(
         "type": "TRAINING",
         "imageName": image_name,
         "startSsh": True,
-        "containerDiskInGb": config.container_disk_gb,
+        "containerDiskInGb": spec.disk_gb or config.container_disk_gb,
         "volumeInGb": config.volume_gb,
         "volumeMountPath": config.volume_mount_path,
         "ports": ",".join(config.ports),
@@ -769,7 +769,7 @@ async def _create_gpu_pod(
             "gpuTypeIds": [cluster.specific.gpu_type_id or ""],
             "gpuCount": int(cluster.spec.accelerator_count or 1),
             "cloudType": config.cloud_type.value.upper(),
-            "containerDiskInGb": config.container_disk_gb,
+            "containerDiskInGb": cluster.spec.disk_gb or config.container_disk_gb,
             "volumeInGb": config.volume_gb,
             "volumeMountPath": config.volume_mount_path,
             "ports": list(config.ports),
@@ -786,7 +786,7 @@ async def _create_gpu_pod(
         gpu_type_id=cluster.specific.gpu_type_id or "",
         gpu_count=int(cluster.spec.accelerator_count or 1),
         cloud_type=config.cloud_type.value.upper(),
-        container_disk_gb=config.container_disk_gb,
+        container_disk_gb=cluster.spec.disk_gb or config.container_disk_gb,
         volume_gb=config.volume_gb,
         volume_mount_path=config.volume_mount_path,
         ports=",".join(config.ports),
@@ -806,7 +806,7 @@ async def _create_cpu_pod(
 ) -> PodResponse:
     vcpus = cluster.spec.vcpus or 2
     memory_gb = cluster.spec.memory_gb or 4
-    disk_gb = min(config.container_disk_gb, 20)
+    disk_gb = min(cluster.spec.disk_gb or config.container_disk_gb, 20)
     instance_id = f"cpu{config.cpu_clock}-{vcpus}-{memory_gb}"
 
     params: CpuPodCreateParams = {

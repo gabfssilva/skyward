@@ -232,6 +232,7 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
             user_data=user_data,
             n=count,
             pinned_az=cluster.specific.pinned_az,
+            disk_gb=cluster.spec.disk_gb,
         )
 
         details = await _get_instance_details(self._ec2, instance_ids)
@@ -832,6 +833,7 @@ async def _launch_fleet(
     n: int,
     allocation_strategy: AllocationStrategy | None = None,
     pinned_az: str | None = None,
+    disk_gb: int | None = None,
 ) -> list[str]:
     strategy = allocation_strategy or config.allocation_strategy
     spot = instances[0].spot if instances else False
@@ -854,7 +856,7 @@ async def _launch_fleet(
             }],
             "BlockDeviceMappings": [{
                 "DeviceName": "/dev/sda1",
-                "Ebs": {"VolumeSize": 100, "VolumeType": "gp3", "DeleteOnTermination": True},
+                "Ebs": {"VolumeSize": disk_gb or 100, "VolumeType": "gp3", "DeleteOnTermination": True},
             }],
             "TagSpecifications": [{
                 "ResourceType": "instance",

@@ -106,6 +106,7 @@ async def select_offers(
             region=region,
             vcpus=s.vcpus,
             memory_gb=s.memory_gb,
+            disk_gb=s.disk_gb,
             architecture=s.architecture,
             allocation=s.allocation,
             image=config.image,

@@ -289,7 +289,7 @@ class JarvisLabsProvider(Provider[JarvisLabs, JarvisLabsSpecific]):
                 ssh_user = "root"
                 use_sudo = False
 
-        storage_gb = self._config.storage_gb
+        storage_gb = spec.disk_gb or self._config.storage_gb
         if offer_data.region == "europe-01" or template == "vm":
             storage_gb = max(storage_gb, 100)
 
@@ -315,7 +315,7 @@ class JarvisLabsProvider(Provider[JarvisLabs, JarvisLabsSpecific]):
     ) -> tuple[Cluster[JarvisLabsSpecific], Sequence[Instance]]:
         specific = cluster.specific
         num_gpus = int(cluster.spec.accelerator_count or 1)
-        storage_gb = self._config.storage_gb
+        storage_gb = cluster.spec.disk_gb or self._config.storage_gb
         if specific.region == "europe-01" or specific.template == "vm":
             storage_gb = max(storage_gb, 100)
 

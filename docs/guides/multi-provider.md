@@ -15,7 +15,7 @@ sky.Spec(
 )
 ```
 
-It carries the same fields you'd normally pass to `Compute` — `accelerator`, `nodes`, `vcpus`, `memory_gb`, `architecture`, `allocation`, `region`, `max_hourly_cost`, `ttl` — but scoped to a specific provider. This separation is what makes cross-provider comparison possible: each `Spec` is a self-contained description of "what I want, from whom."
+It carries the same fields you'd normally pass to `Compute` — `accelerator`, `nodes`, `vcpus`, `memory_gb`, `disk_gb`, `architecture`, `allocation`, `region`, `max_hourly_cost`, `ttl` — but scoped to a specific provider. This separation is what makes cross-provider comparison possible: each `Spec` is a self-contained description of "what I want, from whom."
 
 ## Cheapest across providers
 

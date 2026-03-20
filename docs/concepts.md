@@ -432,7 +432,7 @@ sky.Spec(
 )
 ```
 
-It carries the same fields you'd normally pass to `Compute` — `accelerator`, `nodes`, `vcpus`, `memory_gb`, `architecture`, `allocation`, `region`, `max_hourly_cost`, `ttl` — but scoped to a specific provider. `Compute` accepts multiple `Spec` objects as positional arguments:
+It carries the same fields you'd normally pass to `Compute` — `accelerator`, `nodes`, `vcpus`, `memory_gb`, `disk_gb`, `architecture`, `allocation`, `region`, `max_hourly_cost`, `ttl` — but scoped to a specific provider. `Compute` accepts multiple `Spec` objects as positional arguments:
 
 ```python
 with sky.Compute(

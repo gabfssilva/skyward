@@ -4,6 +4,16 @@ Skyward supports eleven providers. Ten are cloud services — AWS, GCP, Hypersta
 
 Provider configs are lightweight frozen dataclasses. They hold configuration — region, API keys, disk sizes — but don't import any cloud SDK at module level. The SDK is loaded lazily when the pool starts, so `import skyward` stays fast regardless of which providers are installed.
 
+### Disk size
+
+You can set disk size uniformly across providers using `disk_gb` on `Spec` or directly on `Compute`:
+
+```python
+sky.Compute(provider=sky.AWS(), disk_gb=500)
+```
+
+When set, `disk_gb` overrides the provider's own default. When omitted (`None`), each provider uses its built-in default (e.g., 100 GB for AWS, 200 GB for GCP, 50 GB for RunPod). Providers where disk is determined by the instance plan (Vultr, Hyperstack) ignore this parameter.
+
 ## Provider comparison
 
 | Feature | AWS | GCP | Hyperstack | JarvisLabs | RunPod | Scaleway | TensorDock | Verda | VastAI | Vultr | Container |
