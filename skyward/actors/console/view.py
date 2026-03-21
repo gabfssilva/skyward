@@ -4,7 +4,7 @@ import time
 from types import MappingProxyType
 
 from rich.align import Align
-from rich.console import Console, Group, RenderableType
+from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
 from rich.style import Style
 from rich.table import Table
 from rich.text import Text
@@ -169,6 +169,21 @@ def _gauge_badge(_label: str, pct: float) -> Style:
 
 # --- Stream emitters ---
 
+_SPINNER_FRAMES = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
+_spinner_tick: list[int] = [0]
+
+_PHASE_EMOJI: dict[str, str] = {
+    "connecting": "\U0001f50c",
+    "bootstrap": "\U0001f680",
+    "env": "\U0001f4cb",
+    "apt": "\U0001f4e6",
+    "uv": "\U0001f4e6",
+    "deps": "\U0001f4e6",
+    "skyward": "\u2601\ufe0f",
+    "volumes": "\U0001f4be",
+    "worker": "\u2699\ufe0f",
+}
+
 
 def _badge_text(label: str, link: str = "") -> Text:
     short = label[:8].center(8) if len(label) > 8 else label.center(8)
@@ -309,7 +324,14 @@ def _collect_badges(state: _State) -> tuple[list[Text], list[Text], list[Text]]:
     tasks: list[Text] = []
 
     # --- Line 1: Infra ---
-    infra.append(_inline_badge("skyward"))
+    match state.phase:
+        case _Phase.READY | _Phase.STOPPING:
+            infra.append(_inline_badge("skyward"))
+        case _:
+            frame = _SPINNER_FRAMES[_spinner_tick[0] % len(_SPINNER_FRAMES)]
+            spinner_badge = Text()
+            spinner_badge.append(f" {frame} skyward ", style=_badge_style("skyward"))
+            infra.append(spinner_badge)
 
     if state.instances:
         first = state.instances[0]
@@ -460,17 +482,53 @@ def _join_badges(badges: list[Text]) -> Text:
     return combined
 
 
-def _render_footer(state: _State) -> RenderableType:
-    infra, status, tasks = _collect_badges(state)
-    if not infra and not status and not tasks:
-        return Text()
+def _render_spinners(state: _State) -> list[Text]:
+    if not state.bootstrap_spinners:
+        return []
+    frame = _SPINNER_FRAMES[_spinner_tick[0] % len(_SPINNER_FRAMES)]
+    lines: list[Text] = []
+    for iid, (phase, last_output) in state.bootstrap_spinners.items():
+        emoji = _PHASE_EMOJI.get(phase, "\U0001f527")
+        line = _badge_text(iid)
+        line.append(f"  {frame} {emoji} ", style=YELLOW)
+        match phase:
+            case "worker":
+                line.append("Joining... ", style=MEDIUM)
+            case "connecting":
+                line.append("Connecting... ", style=MEDIUM)
+            case _:
+                pass
+        if last_output:
+            line.append(last_output[:80], style=DIM)
+        lines.append(line)
+    return lines
 
-    lines: list[Align] = []
-    for group in (infra, status, tasks):
-        if group:
-            lines.append(Align.center(_join_badges(group)))
 
-    return Group(Text(), *lines)
+class _LiveFooter:
+    def __init__(self) -> None:
+        self.state: _State = _State(total_nodes=0)
+
+    def __rich_console__(
+        self, console: Console, options: ConsoleOptions,
+    ) -> RenderResult:
+        _spinner_tick[0] += 1
+        infra, status, tasks = _collect_badges(self.state)
+        spinner_lines = _render_spinners(self.state)
+
+        if not infra and not status and not tasks and not spinner_lines:
+            yield Text()
+            return
+
+        parts: list[RenderableType] = [Text()]
+        for line in spinner_lines:
+            parts.append(line)
+        if spinner_lines:
+            parts.append(Text())
+        for group in (infra, status, tasks):
+            if group:
+                parts.append(Align.center(_join_badges(group)))
+
+        yield Group(*parts)
 
 
 # --- Session summary ---

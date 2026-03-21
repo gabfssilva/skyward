@@ -64,3 +64,5 @@ class _State:
     tasks_per_instance: MappingProxyType[str, int] = MappingProxyType({})
     ssh_user: str = ""
     ssh_key_path: str = ""
+    bootstrap_spinners: MappingProxyType[str, tuple[str, str]] = MappingProxyType({})
+    bootstrap_started: MappingProxyType[str, float] = MappingProxyType({})

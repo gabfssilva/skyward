@@ -69,6 +69,8 @@ from .model import (
     _on_node_joined,
     _on_reconciler_node_lost,
     _on_spawn_nodes,
+    _on_spinner_remove,
+    _on_spinner_update,
     _on_ssh_connected,
     _on_start_pool,
     _on_task_assigned,
@@ -85,12 +87,11 @@ from .view import (
     _emit,
     _emit_task,
     _format_task,
+    _LiveFooter,
     _make_badge,
     _node_id_from_path,
-    _render_footer,
     _render_summary,
     _resolve_instance_id,
-    _ssh_command,
     _ssh_url,
 )
 
@@ -144,21 +145,20 @@ def console_actor() -> Behavior[ConsoleInput]:
 
     live: Live | None = None
     live_stopped = False
+    footer = _LiveFooter()
 
     def _update_footer(state: _State) -> None:
         nonlocal live
         if live_stopped:
             return
-        renderable = _render_footer(state)
+        footer.state = state
         if live is None:
             live = Live(
-                renderable, console=console,
+                footer, console=console,
                 refresh_per_second=8, screen=False,
                 redirect_stdout=False, redirect_stderr=False,
             )
             live.start()
-        else:
-            live.update(renderable)
 
     def _stop_live() -> None:
         nonlocal live, live_stopped
@@ -230,7 +230,6 @@ def console_actor() -> Behavior[ConsoleInput]:
                     return observing(new)
 
                 case SpyEvent(event=PoolStarted()):
-                    _emit(console, "skyward", "\u2713 Pool ready", "green bold")
                     new = replace(state, phase=_Phase.READY)
                     _update_footer(new)
                     return observing(new)
@@ -295,12 +294,10 @@ def console_actor() -> Behavior[ConsoleInput]:
                             )
                     iid = _resolve_instance_id(current, node_id=nid)
                     if iid:
-                        link = _ssh_url(current, iid)
-                        _emit(console, iid, "\u2713 SSH connected", "green", link=link)
-                        cmd = _ssh_command(current, iid)
-                        if cmd:
-                            _emit(console, iid, cmd, "dim", link=link)
-                        new = _on_ssh_connected(current, iid)
+                        new = _on_spinner_update(
+                            _on_ssh_connected(current, iid),
+                            iid, "connecting", "",
+                        )
                         _update_footer(new)
                         return observing(new)
                     return Behaviors.same()
@@ -315,41 +312,51 @@ def console_actor() -> Behavior[ConsoleInput]:
 
                 case SpyEvent(event=BootstrapConsole() as ev):
                     content = ev.content.strip()
-                    if content and not content.startswith("#"):
-                        iid = ev.instance.instance.id
-                        _emit(console, iid, content[:120], link=_ssh_url(state, iid))
+                    if not content or content.startswith("#"):
+                        return Behaviors.same()
+                    iid = ev.instance.instance.id
+                    if iid in state.bootstrap_spinners:
+                        current_phase = state.bootstrap_spinners[iid][0]
+                        new = _on_spinner_update(state, iid, current_phase, content[:80])
+                        _update_footer(new)
+                        return observing(new)
+                    _emit(console, iid, content[:120], link=_ssh_url(state, iid))
                     return Behaviors.same()
 
                 case SpyEvent(event=BootstrapPhase() as ev):
                     iid = ev.instance.instance.id
-                    link = _ssh_url(state, iid)
+                    if iid not in state.bootstrap_spinners:
+                        return Behaviors.same()
                     match ev.event:
                         case "started":
-                            _emit(console, iid, f"\u25b8 {ev.phase}...", link=link)
+                            new = _on_spinner_update(state, iid, ev.phase, "")
+                            _update_footer(new)
+                            return observing(new)
                         case "completed":
-                            elapsed = f" ({ev.elapsed:.1f}s)" if ev.elapsed else ""
-                            _emit(console, iid, f"\u2713 {ev.phase}{elapsed}", "green", link=link)
+                            return Behaviors.same()
                         case "failed":
+                            new = _on_spinner_remove(state, iid)
+                            link = _ssh_url(new, iid)
                             _emit(console, iid, f"\u2717 {ev.phase}: {ev.error}", "red", link=link)
+                            return observing(new)
                     return Behaviors.same()
 
-                case SpyEvent(event=BootstrapCommand() as ev):
-                    cmd = ev.command.strip()
-                    if cmd:
-                        iid = ev.instance.instance.id
-                        display = f"$ {cmd[:80]}..." if len(cmd) > 80 else f"$ {cmd}"
-                        _emit(console, iid, display, "dim", link=_ssh_url(state, iid))
+                case SpyEvent(event=BootstrapCommand()):
                     return Behaviors.same()
 
                 case SpyEvent(event=BootstrapDone(instance=inst, success=ok, error=err)):
                     iid = inst.instance.id
-                    link = _ssh_url(state, iid)
                     if ok:
-                        new = _on_bootstrap_done(state, iid)
+                        new = _on_spinner_update(
+                            _on_bootstrap_done(state, iid),
+                            iid, "worker", "",
+                        )
                         _update_footer(new)
                         return observing(new)
+                    new = _on_spinner_remove(state, iid)
+                    link = _ssh_url(new, iid)
                     _emit(console, iid, f"\u2717 Bootstrap failed: {err}", "red", link=link)
-                    return Behaviors.same()
+                    return observing(new)
 
                 case SpyEvent(event=_LocalInstallDone() | _UserCodeSyncDone()):
                     return Behaviors.same()
@@ -362,8 +369,11 @@ def console_actor() -> Behavior[ConsoleInput]:
                     nid = _node_id_from_path(path)
                     iid = _resolve_instance_id(state, node_id=nid)
                     if iid:
-                        _emit(console, iid, "\u2713 Worker joined", "green", link=_ssh_url(state, iid))
-                        new = _on_worker_started(state, iid)
+                        started_at = state.bootstrap_started.get(iid)
+                        elapsed = f" ({time.monotonic() - started_at:.1f}s)" if started_at else ""
+                        new = _on_worker_started(_on_spinner_remove(state, iid), iid)
+                        link = _ssh_url(new, iid)
+                        _emit(console, iid, f"\u2713 Joined{elapsed}", "green bold", link=link)
                         _update_footer(new)
                         return observing(new)
                     return Behaviors.same()
@@ -432,7 +442,7 @@ def console_actor() -> Behavior[ConsoleInput]:
                     line = ev.line.strip()
                     if line:
                         iid = ev.instance.instance.id
-                        _emit(console, iid, line[:120], link=_ssh_url(state, iid))
+                        _emit(console, iid, line, link=_ssh_url(state, iid))
                     return Behaviors.same()
 
                 case SpyEvent(event=Metric() as ev):

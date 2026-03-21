@@ -37,6 +37,20 @@ def _advance(current: _Phase, candidate: _Phase) -> _Phase:
     return candidate if candidate.value > current.value else current
 
 
+def _on_spinner_update(state: _State, instance_id: str, phase: str, output: str) -> _State:
+    spinners = MappingProxyType({**state.bootstrap_spinners, instance_id: (phase, output)})
+    started = state.bootstrap_started
+    if instance_id not in started:
+        started = MappingProxyType({**started, instance_id: time.monotonic()})
+    return replace(state, bootstrap_spinners=spinners, bootstrap_started=started)
+
+
+def _on_spinner_remove(state: _State, instance_id: str) -> _State:
+    spinners = MappingProxyType({k: v for k, v in state.bootstrap_spinners.items() if k != instance_id})
+    started = MappingProxyType({k: v for k, v in state.bootstrap_started.items() if k != instance_id})
+    return replace(state, bootstrap_spinners=spinners, bootstrap_started=started)
+
+
 def _on_ssh_connected(state: _State, instance_id: str) -> _State:
     nodes = MappingProxyType({**state.nodes, instance_id: _NodeStatus.SSH})
     ssh_count = sum(1 for s in nodes.values() if s.value >= _NodeStatus.SSH.value)

@@ -229,6 +229,7 @@ def ssh_transport(
     retry_max_attempts: int = 150,
     retry_delay: float = 2.0,
     connect_timeout: float = 30.0,
+    reconnect_max_attempts: int | None = None,
     parent: ActorRef | None = None,
     connect_fn: Callable[[], Awaitable[Any]] | None = None,
 ) -> Behavior[TransportMsg]:
@@ -455,7 +456,8 @@ def ssh_transport(
         attempts: int = 0,
         pending: tuple[TransportMsg, ...] = (),
     ) -> Behavior[TransportMsg]:
-        if attempts >= retry_max_attempts:
+        _reconnect_limit = reconnect_max_attempts if reconnect_max_attempts is not None else retry_max_attempts
+        if attempts >= _reconnect_limit:
             log.error("Reconnection permanently failed after {n} attempts", n=attempts)
             if parent:
                 parent.tell(ConnectionFailed(error="max reconnection attempts"))
