@@ -276,45 +276,45 @@ class TestEmit:
 class TestFooter:
     def test_provisioning_footer_single_line(self) -> None:
         from skyward.actors.console.state import _Phase, _State
-        from skyward.actors.console.view import _render_footer
+        from skyward.actors.console.view import _LiveFooter
 
         console, buf = _capture_console()
-        state = _State(total_nodes=4, phase=_Phase.PROVISIONING)
-        result = _render_footer(state)
-        console.print(result)
+        footer = _LiveFooter()
+        footer.state = _State(total_nodes=4, phase=_Phase.PROVISIONING)
+        console.print(footer)
         output = buf.getvalue()
         assert "provisioning" in output.lower()
 
     def test_bootstrap_footer_shows_progress(self) -> None:
         from skyward.actors.console.state import _NodeStatus, _Phase, _State
-        from skyward.actors.console.view import _render_footer
+        from skyward.actors.console.view import _LiveFooter
 
         console, buf = _capture_console()
-        state = _State(
+        footer = _LiveFooter()
+        footer.state = _State(
             total_nodes=3, phase=_Phase.BOOTSTRAP,
             nodes=MappingProxyType({
                 "i-abc": _NodeStatus.BOOTSTRAPPING,
                 "i-def": _NodeStatus.SSH,
             }),
         )
-        result = _render_footer(state)
-        console.print(result)
+        console.print(footer)
         output = buf.getvalue()
         assert "bootstrap" in output.lower()
         assert "1/3" in output
 
     def test_ready_footer_shows_task_counts(self) -> None:
         from skyward.actors.console.state import _Phase, _State
-        from skyward.actors.console.view import _render_footer
+        from skyward.actors.console.view import _LiveFooter
 
         console, buf = _capture_console()
-        state = _State(
+        footer = _LiveFooter()
+        footer.state = _State(
             total_nodes=2, phase=_Phase.READY,
             tasks_running=3, tasks_done=12,
             first_task_at=100.0, pool_started_at=0.0,
         )
-        result = _render_footer(state)
-        console.print(result)
+        console.print(footer)
         output = buf.getvalue()
         assert "ready" in output.lower()
         assert "3 running" in output
@@ -322,12 +322,12 @@ class TestFooter:
 
     def test_stopping_footer(self) -> None:
         from skyward.actors.console.state import _Phase, _State
-        from skyward.actors.console.view import _render_footer
+        from skyward.actors.console.view import _LiveFooter
 
         console, buf = _capture_console()
-        state = _State(total_nodes=2, phase=_Phase.STOPPING)
-        result = _render_footer(state)
-        console.print(result)
+        footer = _LiveFooter()
+        footer.state = _State(total_nodes=2, phase=_Phase.STOPPING)
+        console.print(footer)
         assert "shutting down" in buf.getvalue().lower()
 
 
@@ -833,8 +833,10 @@ class TestCollectBadges:
         from rich.console import Group
 
         from skyward.actors.console.state import _Phase, _State
-        from skyward.actors.console.view import _render_footer
+        from skyward.actors.console.view import _LiveFooter
 
-        state = _State(total_nodes=2, phase=_Phase.READY)
-        result = _render_footer(state)
-        assert isinstance(result, Group)
+        footer = _LiveFooter()
+        footer.state = _State(total_nodes=2, phase=_Phase.READY)
+        console, _ = _capture_console()
+        results = list(footer.__rich_console__(console, console.options))
+        assert any(isinstance(r, Group) for r in results)

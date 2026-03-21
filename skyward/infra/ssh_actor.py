@@ -312,6 +312,7 @@ def ssh_transport(
         state: TransportState,
         pending: tuple[TransportMsg, ...],
     ) -> Behavior[TransportMsg]:
+        ctx.on_stop(lambda: _cleanup(state))
         for msg in pending:
             ctx.self.tell(msg)
         return connected(state)

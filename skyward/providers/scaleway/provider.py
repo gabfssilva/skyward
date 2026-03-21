@@ -237,6 +237,7 @@ class ScalewayProvider(Provider[Scaleway, ScalewaySpecific]):
         secret_key = get_secret_key(self._config)
 
         async with ScalewayClient(secret_key, cluster.specific.zone, config=self._config) as client:
+            volume_ids = await _collect_volume_ids(client, instance_ids)
 
             async def _kill(sid: str) -> None:
                 try:
@@ -246,6 +247,7 @@ class ScalewayProvider(Provider[Scaleway, ScalewaySpecific]):
                         log.error("Failed to terminate server {sid}: {err}", sid=sid, err=e)
 
             await asyncio.gather(*(_kill(sid) for sid in instance_ids))
+            await _delete_volumes(client, volume_ids)
 
         return cluster
 
@@ -255,13 +257,18 @@ class ScalewayProvider(Provider[Scaleway, ScalewaySpecific]):
     ) -> Cluster[ScalewaySpecific]:
         secret_key = get_secret_key(self._config)
         specific = cluster.specific
+        ids = tuple(inst.id for inst in cluster.instances)
 
         async with ScalewayClient(secret_key, specific.zone, config=self._config) as client:
+            volume_ids = await _collect_volume_ids(client, ids)
+
             for inst in cluster.instances:
                 try:
                     await client.server_action(inst.id, "terminate")
                 except Exception as e:
                     log.error("Failed to terminate server {sid}: {err}", sid=inst.id, err=e)
+
+            await _delete_volumes(client, volume_ids)
 
         return cluster
 
@@ -297,6 +304,59 @@ def _build_instance(
         spot=False,
         region=cluster.specific.zone,
     )
+
+
+async def _collect_volume_ids(
+    client: ScalewayClient,
+    server_ids: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Fetch SBS volume IDs attached to servers before termination."""
+
+    async def _get_volumes(sid: str) -> list[str]:
+        info = await client.get_server(sid)
+        if not info:
+            return []
+        return [
+            vol["id"]
+            for vol in (info.get("volumes") or {}).values()
+            if vol.get("volume_type", "").startswith("sbs")
+        ]
+
+    results = await asyncio.gather(*(_get_volumes(sid) for sid in server_ids))
+    return tuple(vid for vids in results for vid in vids)
+
+
+async def _delete_volumes(
+    client: ScalewayClient,
+    volume_ids: tuple[str, ...],
+    *,
+    max_attempts: int = 8,
+    base_delay: float = 2.0,
+) -> None:
+    """Delete orphaned SBS volumes after server termination.
+
+    Retries with exponential backoff because the Scaleway terminate action
+    is async — volumes remain ``in_use`` (HTTP 412) until the server is
+    fully gone.
+    """
+    if not volume_ids:
+        return
+
+    async def _del(vid: str) -> None:
+        for attempt in range(max_attempts):
+            try:
+                await client.delete_block_volume(vid)
+                log.info("Deleted SBS volume {vid}", vid=vid)
+                return
+            except ScalewayError as e:
+                if e.status != 412 or attempt == max_attempts - 1:
+                    log.warning("Failed to delete SBS volume {vid}: {err}", vid=vid, err=e)
+                    return
+                delay = base_delay * (2 ** attempt)
+                log.debug("Volume {vid} still in_use, retrying in {d}s", vid=vid, d=delay)
+                await asyncio.sleep(delay)
+
+    await asyncio.gather(*(_del(vid) for vid in volume_ids))
 
 
 async def _ensure_ssh_key(

@@ -46,6 +46,17 @@ class ServerIpResponse(TypedDict):
     state: NotRequired[str]
 
 
+class ServerVolumeResponse(TypedDict):
+    """Volume info nested in a server response."""
+
+    id: str
+    name: NotRequired[str]
+    volume_type: NotRequired[str]
+    size: NotRequired[int]
+    state: NotRequired[str]
+    boot: NotRequired[bool]
+
+
 class ServerResponse(TypedDict):
     """Server from the Instance API."""
 
@@ -57,6 +68,7 @@ class ServerResponse(TypedDict):
     public_ips: NotRequired[list[ServerIpResponse]]
     private_ip: NotRequired[str]
     image: NotRequired[ServerImageResponse]
+    volumes: NotRequired[dict[str, ServerVolumeResponse]]
     arch: NotRequired[str]
     project: NotRequired[str]
     tags: NotRequired[list[str]]

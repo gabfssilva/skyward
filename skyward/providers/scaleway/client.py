@@ -97,6 +97,10 @@ class ScalewayClient:
         """Build zone-scoped Instance API path."""
         return f"/instance/v1/zones/{self._zone}{path}"
 
+    def _block_path(self, path: str) -> str:
+        """Build zone-scoped Block Storage API path."""
+        return f"/block/v1alpha1/zones/{self._zone}{path}"
+
     # =========================================================================
     # Server types (discovery)
     # =========================================================================
@@ -159,6 +163,18 @@ class ScalewayClient:
     async def delete_server(self, server_id: str) -> None:
         """Delete a server."""
         await self._request("DELETE", self._instance_path(f"/servers/{server_id}"))
+
+    # =========================================================================
+    # Block Storage (SBS) volumes
+    # =========================================================================
+
+    async def delete_block_volume(self, volume_id: str) -> None:
+        """Delete an SBS volume via the Block Storage API."""
+        try:
+            await self._request("DELETE", self._block_path(f"/volumes/{volume_id}"))
+        except ScalewayError as e:
+            if e.status != 404:
+                raise
 
     # =========================================================================
     # Images
