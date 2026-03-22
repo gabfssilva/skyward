@@ -204,6 +204,22 @@ with sky.Compute(
     result = train(data) >> compute
 ```
 
+### Standalone mode
+
+RunPod's individual pods don't share a private network — each pod gets its own IP, but pods can't reach each other directly. For multi-node workloads that don't require inter-node communication (hyperparameter sweeps, batch inference), use standalone mode:
+
+```python
+with sky.Compute(
+    provider=sky.RunPod(),
+    accelerator=sky.accelerators.A100(),
+    nodes=4,
+    options=sky.Options(cluster=False),
+) as compute:
+    results = sky.gather(*tasks) >> compute
+```
+
+This disables Casty cluster formation and connects to each worker independently via SSH. Distributed collections and distributed training are not available in this mode. See the [Standalone Workers](guides/standalone-workers.md) guide for details.
+
 ### Parameters
 
 | Parameter | Type | Default | Description |

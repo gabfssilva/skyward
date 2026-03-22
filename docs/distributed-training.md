@@ -4,6 +4,8 @@ Distributed training across multiple machines requires solving two problems simu
 
 Skyward handles the first problem automatically. When you provision a multi-node pool and broadcast a function with `@`, every worker receives the same function and arguments, but each one sees a different `instance_info()` — its own position in the cluster. Plugins like `sky.plugins.torch()` and `sky.plugins.jax()` read this topology and configure the framework's distributed environment before your function runs. The second problem — data partitioning — is handled either by `sky.shard()` or by the framework's own distributed sampler.
 
+Both of these capabilities — topology-aware environment configuration and inter-node communication — require cluster mode (the default). If you're using a provider without private networking and need standalone workers (`Options(cluster=False)`), distributed training frameworks won't be able to initialize their communication backends. Standalone mode is designed for embarrassingly parallel workloads, not distributed training. See [Standalone Workers](guides/standalone-workers.md) for that pattern.
+
 This page explains the concepts. For step-by-step tutorials with runnable code, see the guides: [PyTorch Distributed](guides/pytorch-distributed.md), [Keras Training](guides/keras-training.md), and [HuggingFace Fine-tuning](guides/huggingface-finetuning.md).
 
 ## How it works

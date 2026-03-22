@@ -121,6 +121,7 @@ nav:
           - NVIDIA MIG: guides/nvidia-mig.md
           - S3 volumes: guides/s3-volumes.md
           - Multi-provider selection: guides/multi-provider.md
+          - Standalone workers: guides/standalone-workers.md
       - Testing:
           - Local containers: guides/local-containers.md
           - Worker executors: guides/worker-executors.md

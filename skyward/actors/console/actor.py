@@ -70,13 +70,15 @@ from .model import (
     _on_reconciler_node_lost,
     _on_spawn_nodes,
     _on_spinner_remove,
-    _on_spinner_update,
     _on_ssh_connected,
     _on_start_pool,
     _on_task_assigned,
     _on_task_done,
     _on_task_failed,
     _on_task_submitted,
+    _on_timeline_output,
+    _on_timeline_phase_completed,
+    _on_timeline_phase_started,
     _on_worker_started,
     _update_instance,
 )
@@ -294,9 +296,9 @@ def console_actor() -> Behavior[ConsoleInput]:
                             )
                     iid = _resolve_instance_id(current, node_id=nid)
                     if iid:
-                        new = _on_spinner_update(
+                        new = _on_timeline_phase_started(
                             _on_ssh_connected(current, iid),
-                            iid, "connecting", "",
+                            iid, "connecting",
                         )
                         _update_footer(new)
                         return observing(new)
@@ -316,8 +318,7 @@ def console_actor() -> Behavior[ConsoleInput]:
                         return Behaviors.same()
                     iid = ev.instance.instance.id
                     if iid in state.bootstrap_spinners:
-                        current_phase = state.bootstrap_spinners[iid][0]
-                        new = _on_spinner_update(state, iid, current_phase, content[:80])
+                        new = _on_timeline_output(state, iid, content[:80])
                         _update_footer(new)
                         return observing(new)
                     _emit(console, iid, content[:120], link=_ssh_url(state, iid))
@@ -328,12 +329,14 @@ def console_actor() -> Behavior[ConsoleInput]:
                     if iid not in state.bootstrap_spinners:
                         return Behaviors.same()
                     match ev.event:
-                        case "started":
-                            new = _on_spinner_update(state, iid, ev.phase, "")
+                        case "started" if ev.phase != "bootstrap":
+                            new = _on_timeline_phase_started(state, iid, ev.phase)
                             _update_footer(new)
                             return observing(new)
-                        case "completed":
-                            return Behaviors.same()
+                        case "completed" if ev.phase != "bootstrap":
+                            new = _on_timeline_phase_completed(state, iid, ev.phase)
+                            _update_footer(new)
+                            return observing(new)
                         case "failed":
                             new = _on_spinner_remove(state, iid)
                             link = _ssh_url(new, iid)
@@ -347,9 +350,9 @@ def console_actor() -> Behavior[ConsoleInput]:
                 case SpyEvent(event=BootstrapDone(instance=inst, success=ok, error=err)):
                     iid = inst.instance.id
                     if ok:
-                        new = _on_spinner_update(
+                        new = _on_timeline_phase_started(
                             _on_bootstrap_done(state, iid),
-                            iid, "worker", "",
+                            iid, "worker",
                         )
                         _update_footer(new)
                         return observing(new)

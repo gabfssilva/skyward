@@ -156,6 +156,21 @@ The alternative is `"process"`, which runs each task in a separate OS process vi
 
 For a practical comparison with benchmarks, see the [Worker Executors](guides/worker-executors.md) guide.
 
+### Standalone mode
+
+By default, workers form a Casty cluster — a peer-to-peer actor system that enables distributed collections and inter-node coordination. Some providers (RunPod individual pods, some VastAI configurations) don't provide private networking between instances, which prevents cluster formation. For these cases, standalone mode runs each worker independently:
+
+```python
+with sky.Compute(
+    provider=sky.RunPod(),
+    nodes=4,
+    options=sky.Options(cluster=False),
+) as compute:
+    results = sky.gather(*tasks) >> compute
+```
+
+In standalone mode, the client connects to each worker directly via its own SSH tunnel. Task dispatch works identically — `>>`, `@`, `&`, and `gather()` behave the same — but distributed collections (`sky.dict()`, `sky.barrier()`, etc.) are not available. For a detailed walkthrough, see the [Standalone Workers](guides/standalone-workers.md) guide.
+
 ## Operators
 
 Most distributed computing frameworks require you to express execution through configuration files, job submission APIs, or method calls like `pool.submit(fn, args)`. Skyward takes a different approach: it uses Python's operator overloading to create a small vocabulary where the syntax itself communicates intent. The expression `train(10) >> compute` reads as "send this computation to the pool" — and that's exactly what it does.

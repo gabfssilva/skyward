@@ -61,6 +61,25 @@ Skyward needs a runtime that can form ad-hoc clusters from ephemeral cloud insta
 
 The alternative would be running a separate coordination service on every ephemeral cluster — Redis for state, a message broker for task routing, a custom protocol for function execution. That's more moving parts, more dependencies to install on each worker, and more failure modes to handle during the brief life of a training job. Casty collapses all of these into a single actor system that starts in milliseconds and communicates over plain TCP. For a cluster that might live for ten minutes to run a training job, that simplicity matters.
 
+## Standalone mode
+
+The cluster architecture described above assumes nodes can reach each other on private IPs. Some providers — RunPod's individual pods, certain VastAI marketplace hosts — don't provide this. When you set `Options(cluster=False)`, Skyward skips cluster formation entirely.
+
+Each worker runs its own `ClusteredActorSystem` without seed nodes, so it never discovers peers and operates in isolation. The pool actor on your laptop creates a separate `ClusterClient` for each worker, each connected through its own SSH tunnel:
+
+```mermaid
+graph LR
+    pool["<b>Compute</b><br/>(your machine)"]
+    pool --> w0["Worker 0"]
+    pool --> w1["Worker 1"]
+    pool --> w2["Worker 2"]
+    pool --> w3["Worker 3"]
+```
+
+Task dispatch is unchanged — the task manager still uses round-robin, backpressure still works, spot preemption recovery still replaces individual nodes. What's lost is everything that depends on inter-node communication: distributed collections (`sky.dict`, `sky.counter`, `sky.barrier`, etc.) raise `RuntimeError`, and distributed training frameworks that require NCCL or similar backends won't be able to initialize.
+
+This is a deliberate trade-off. For embarrassingly parallel workloads — hyperparameter sweeps, batch inference, independent data processing — standalone mode works on any provider without requiring private networking. See the [Standalone Workers](guides/standalone-workers.md) guide for a walkthrough.
+
 ## Further reading
 
 - [Casty Documentation](https://gabfssilva.github.io/casty/) — Full reference for the actor framework

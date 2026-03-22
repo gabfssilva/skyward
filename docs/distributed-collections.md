@@ -4,6 +4,8 @@ When compute functions run across multiple nodes, they sometimes need to share s
 
 Skyward provides distributed data structures for these cases. They look like their Python counterparts — `dict`, `set`, `counter`, `queue`, `barrier`, `lock` — but they're backed by Casty's distributed actor system and replicated across the [cluster](architecture.md). Any node can read and write to them, and the cluster handles synchronization automatically.
 
+Distributed collections require cluster mode (the default). If the pool is created with `Options(cluster=False)`, all collection constructors — `sky.dict()`, `sky.set()`, `sky.counter()`, `sky.queue()`, `sky.barrier()`, `sky.lock()` — raise `RuntimeError`. Collections are backed by Casty's distributed actor system, which needs inter-node communication to replicate state. For workloads that need standalone workers (providers without private networking), see the [Standalone Workers](guides/standalone-workers.md) guide.
+
 Collections are created lazily by name. Calling `sky.dict("cache")` on any node returns a proxy to the same shared dict — if the collection doesn't exist yet, the cluster creates it; if it already exists, you get a reference to the existing one. Inside `@sky.function` functions, use the module-level shortcuts (`sky.dict`, `sky.counter`, `sky.set`, etc.) which resolve the active pool automatically through a `ContextVar`. You can also access them via the pool directly: `pool.dict("cache")`, `pool.counter("steps")`, etc.
 
 ## Dict
