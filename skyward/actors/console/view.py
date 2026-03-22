@@ -496,6 +496,18 @@ def _render_spinners(state: _State) -> list[Text]:
                 line.append("Joining... ", style=MEDIUM)
             case "connecting":
                 line.append("Connecting... ", style=MEDIUM)
+            case "apt":
+                line.append("Installing system packages... ", style=MEDIUM)
+            case "env":
+                line.append("Configuring environment... ", style=MEDIUM)
+            case "uv":
+                line.append("Setting up uv... ", style=MEDIUM)
+            case "deps":
+                line.append("Installing dependencies... ", style=MEDIUM)
+            case "skyward":
+                line.append("Installing Skyward... ", style=MEDIUM)
+            case "volumes":
+                line.append("Mounting volumes... ", style=MEDIUM)
             case _:
                 pass
         if last_output:
