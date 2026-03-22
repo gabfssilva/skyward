@@ -440,6 +440,7 @@ async def main(
     tls_cert: str | None = None,
     tls_key: str | None = None,
     tls_ca: str | None = None,
+    cluster_mode: bool = True,
 ) -> None:
     config = CastyConfig(
         heartbeat=HeartbeatConfig(interval=2.0, availability_check_interval=5.0),
@@ -477,7 +478,6 @@ async def main(
     ) as system:
         from skyward.distributed import _set_active_registry
         from skyward.distributed.proxies import set_system_loop
-        from skyward.distributed.registry import DistributedRegistry
 
         loop = asyncio.get_running_loop()
         ipc_queue: Any = None
@@ -505,7 +505,14 @@ async def main(
                 task_executor = ThreadPoolExecutor(max_workers=pool_size)
                 loop.set_default_executor(task_executor)
         set_system_loop(loop)
-        registry = DistributedRegistry(system, loop=loop)
+        if cluster_mode:
+            from skyward.distributed.registry import DistributedRegistry
+
+            registry = DistributedRegistry(system, loop=loop)
+        else:
+            from skyward.distributed.disabled import DisabledRegistry
+
+            registry = DisabledRegistry()
         _set_active_registry(registry)
 
         if ipc_queue is not None:
@@ -565,7 +572,8 @@ def cli() -> None:
     port = int(os.environ.get("SKYWARD_PORT", "25520"))
     num_nodes = int(os.environ.get("SKYWARD_NUM_NODES", "1"))
     host = os.environ.get("SKYWARD_HOST", "0.0.0.0")
-    seeds = _parse_seeds(os.environ.get("SKYWARD_SEEDS"))
+    cluster_mode = os.environ.get("SKYWARD_CLUSTER", "true").lower() != "false"
+    seeds = _parse_seeds(os.environ.get("SKYWARD_SEEDS")) if cluster_mode else None
     workers_per_node = int(os.environ.get("SKYWARD_WORKERS_PER_NODE", "1"))
     worker_executor = os.environ.get("SKYWARD_WORKER_EXECUTOR", "thread")
     tls_cert = os.environ.get("SKYWARD_TLS_CERT")
@@ -579,6 +587,7 @@ def cli() -> None:
         tls_cert=tls_cert,
         tls_key=tls_key,
         tls_ca=tls_ca,
+        cluster_mode=cluster_mode,
     ))
 
 

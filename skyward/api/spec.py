@@ -257,6 +257,10 @@ class Options:
     logging
         Logging configuration. ``True`` uses sensible defaults,
         ``False`` disables logging, or pass a ``LogConfig`` instance.
+    cluster
+        Whether workers form a Casty cluster.  ``True`` (default) enables
+        distributed collections and cluster-aware coordination.  ``False``
+        runs each worker independently.
 
     Examples
     --------
@@ -281,6 +285,7 @@ class Options:
     shutdown_timeout: float = 120.0
     console: bool = True
     logging: LogConfig | bool = True
+    cluster: bool = True
 
 
 def _detect_skyward_source() -> SkywardSource:
@@ -434,6 +439,10 @@ class PoolSpec:
         Seconds between reconciler ticks (provision/drain evaluation).
     plugins
         Composable plugins applied to this pool.
+    cluster
+        Whether workers form a Casty cluster.  ``True`` (default) enables
+        distributed collections and cluster-aware coordination.  ``False``
+        runs each worker independently.
 
     Examples
     --------
@@ -468,6 +477,7 @@ class PoolSpec:
     autoscale_idle_timeout: float = 60.0
     reconcile_tick_interval: float = 15.0
     plugins: tuple[Plugin, ...] = ()
+    cluster: bool = True
 
     @property
     def accelerator_name(self) -> str | None:

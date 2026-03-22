@@ -24,6 +24,7 @@ class PoolConfig:
     autoscale_idle_timeout: float
     reconcile_tick_interval: float
     plugins: tuple[Plugin, ...]
+    cluster: bool = True
 
 
 async def select_offers(
@@ -123,6 +124,7 @@ async def select_offers(
             autoscale_idle_timeout=config.autoscale_idle_timeout,
             reconcile_tick_interval=config.reconcile_tick_interval,
             plugins=config.plugins,
+            cluster=config.cluster,
         )
 
         for co in catalog_offers:

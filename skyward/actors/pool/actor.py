@@ -125,6 +125,29 @@ def pool_actor(
     def _update_tunnel(nbr: NodeBecameReady) -> None:
         tunnel_map[(nbr.private_ip, nbr.casty_port)] = ("127.0.0.1", nbr.local_port)
 
+    async def _create_standalone_client(
+        private_ip: str, casty_port: int, local_port: int,
+        tls: Any | None = None,
+    ) -> ClusterClient:
+        from skyward.infra.worker import skyward_serializer
+
+        local_map: dict[tuple[str, int], tuple[str, int]] = {
+            (private_ip, casty_port): ("127.0.0.1", local_port),
+        }
+        try:
+            client = ClusterClient(
+                contact_points=[(private_ip, casty_port)],
+                system_name="skyward",
+                address_map=lambda addr, _m=local_map: _m.get(addr, addr),
+                serializer=skyward_serializer(),
+                tls=tls,
+            )
+            await client.__aenter__()
+        except Exception:
+            logger.exception("Standalone ClusterClient creation failed")
+            raise
+        return client
+
     def _send_join_cluster(
         client: ClusterClient,
         nbr: NodeBecameReady,
@@ -488,6 +511,8 @@ def pool_actor(
         async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
             match msg:
                 case HeadAddressKnown() as h:
+                    if not s.spec.cluster:
+                        return Behaviors.same()
                     log.info("Head address known: {addr}", addr=h.head_addr)
                     for nid, node_ref in s.node_refs.items():
                         if nid != 0:
@@ -501,26 +526,43 @@ def pool_actor(
                     )
                     effective_head = s.head_addr or msg.private_ip or ""
 
-                    if s.client is None:
-                        new_client = await _create_client(
+                    if s.spec.cluster:
+                        if s.client is None:
+                            new_client = await _create_client(
+                                msg.private_ip, msg.casty_port, msg.local_port,
+                                tls=s.client_tls,
+                            )
+                            log.info("ClusterClient created")
+                        else:
+                            _update_tunnel(msg)
+                            new_client = s.client
+
+                        _send_join_cluster(
+                            new_client, msg, s.node_refs[nid],
+                            s.spec, s.cluster, effective_head,
+                        )
+                        return provisioning(replace(
+                            s,
+                            instances=new_instances,
+                            client=new_client,
+                            head_addr=effective_head,
+                        ))
+                    else:
+                        node_client = await _create_standalone_client(
                             msg.private_ip, msg.casty_port, msg.local_port,
                             tls=s.client_tls,
                         )
-                        log.info("ClusterClient created")
-                    else:
-                        _update_tunnel(msg)
-                        new_client = s.client
-
-                    _send_join_cluster(
-                        new_client, msg, s.node_refs[nid],
-                        s.spec, s.cluster, effective_head,
-                    )
-                    return provisioning(replace(
-                        s,
-                        instances=new_instances,
-                        client=new_client,
-                        head_addr=effective_head,
-                    ))
+                        log.info("Standalone client created for node {nid}", nid=nid)
+                        _send_join_cluster(
+                            node_client, msg, s.node_refs[nid],
+                            s.spec, s.cluster, effective_head,
+                        )
+                        return provisioning(replace(
+                            s,
+                            instances=new_instances,
+                            clients={**s.clients, nid: node_client},
+                            head_addr=effective_head,
+                        ))
                 case NodeActivated(node_id=nid, node_ref=nref, slots=slots):
                     log.info("Node {nid} activated", nid=nid)
                     tm.tell(NodeAvailable(node_id=nid, node_ref=nref, slots=slots))
@@ -557,7 +599,7 @@ def pool_actor(
 
     def ready(s: PoolState) -> Behavior[PoolMsg]:
         assert s.tm_ref is not None
-        assert s.client is not None
+        assert s.client is not None or s.clients
         tm = s.tm_ref
         client = s.client
         log = logger.bind(actor="pool", state="ready")
@@ -616,14 +658,33 @@ def pool_actor(
                     tm.tell(bcast)
                     return Behaviors.same()
                 case NodeBecameReady(node_id=nid) as nbr:
-                    _update_tunnel(nbr)
-                    effective_head = s.head_addr or nbr.private_ip or ""
-                    _send_join_cluster(
-                        client, nbr, s.node_refs[nid],
-                        s.spec, s.cluster, effective_head,
-                    )
-                    if s.reconciler_ref is not None:
-                        s.reconciler_ref.tell(NodeJoined(node_id=nid))
+                    if s.spec.cluster:
+                        assert client is not None
+                        _update_tunnel(nbr)
+                        effective_head = s.head_addr or nbr.private_ip or ""
+                        _send_join_cluster(
+                            client, nbr, s.node_refs[nid],
+                            s.spec, s.cluster, effective_head,
+                        )
+                        if s.reconciler_ref is not None:
+                            s.reconciler_ref.tell(NodeJoined(node_id=nid))
+                    else:
+                        node_client = await _create_standalone_client(
+                            nbr.private_ip, nbr.casty_port, nbr.local_port,
+                            tls=s.client_tls,
+                        )
+                        effective_head = nbr.private_ip or ""
+                        _send_join_cluster(
+                            node_client, nbr, s.node_refs[nid],
+                            s.spec, s.cluster, effective_head,
+                        )
+                        old = s.clients.get(nid)
+                        if old:
+                            with suppress(Exception):
+                                await old.__aexit__(None, None, None)
+                        if s.reconciler_ref is not None:
+                            s.reconciler_ref.tell(NodeJoined(node_id=nid))
+                        return ready(replace(s, clients={**s.clients, nid: node_client}))
                 case NodeActivated(node_id=nid, node_ref=nref, slots=slots):
                     log.info("Node {nid} activated", nid=nid)
                     tm.tell(NodeAvailable(node_id=nid, node_ref=nref, slots=slots))
@@ -639,7 +700,7 @@ def pool_actor(
                         s.reconciler_ref.tell(ReconcilerNodeLost(
                             node_id=nid, reason="node lost",
                         ))
-                    if s.head_addr:
+                    if s.spec.cluster and s.head_addr:
                         head_msg = HeadAddressKnown(
                             head_addr=s.head_addr,
                             casty_port=25520,
@@ -648,6 +709,17 @@ def pool_actor(
                             worker_executor=s.spec.worker.resolved_executor,
                         )
                         s.node_refs[nid].tell(head_msg)
+                    elif not s.spec.cluster:
+                        old_client = s.clients.get(nid)
+                        if old_client:
+                            with suppress(Exception):
+                                await old_client.__aexit__(None, None, None)
+                        _notify_session("ready", len(s.ready_nodes - {nid}), s.spec.nodes.min)
+                        return ready(replace(
+                            s,
+                            ready_nodes=s.ready_nodes - {nid},
+                            clients={k: v for k, v in s.clients.items() if k != nid},
+                        ))
                     _notify_session("ready", len(s.ready_nodes - {nid}), s.spec.nodes.min)
                     return ready(replace(
                         s, ready_nodes=s.ready_nodes - {nid},
@@ -677,7 +749,7 @@ def pool_actor(
                             cluster=upd_cluster, provider=s.provider,
                             instance=inst,
                         ))
-                        if s.head_addr:
+                        if s.spec.cluster and s.head_addr:
                             ref.tell(HeadAddressKnown(
                                 head_addr=s.head_addr, casty_port=25520,
                                 num_nodes=s.spec.nodes.max or s.spec.nodes.min,
@@ -734,8 +806,12 @@ def pool_actor(
             return Behaviors.same()
 
         async def _close_client(_ctx: ActorContext[PoolMsg]) -> None:
-            with suppress(Exception):
-                await client.__aexit__(None, None, None)
+            if client is not None:
+                with suppress(Exception):
+                    await client.__aexit__(None, None, None)
+            for c in s.clients.values():
+                with suppress(Exception):
+                    await c.__aexit__(None, None, None)
 
         return Behaviors.with_lifecycle(
             Behaviors.receive(receive),

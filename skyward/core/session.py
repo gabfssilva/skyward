@@ -316,6 +316,7 @@ class Session:
             autoscale_idle_timeout=options.autoscale_idle_timeout,
             reconcile_tick_interval=options.reconcile_tick_interval,
             plugins=tuple(first_spec.plugins),
+            cluster=options.cluster,
         )
 
         pool_ref, spec, cid, cluster, instances = self._spawn_pool(

@@ -51,7 +51,16 @@ async def do_start_worker(
     ssh_user, _ = resolve_ssh_user(ni, cluster)
     use_sudo = ssh_user != "root"
 
-    host = private_ip if node_id != 0 else (head_info.head_addr if head_info else private_ip)
+    if not spec.cluster:
+        import ipaddress as _ipa
+
+        try:
+            _ipa.ip_address(private_ip)
+            host = private_ip
+        except ValueError:
+            host = "0.0.0.0"
+    else:
+        host = private_ip if node_id != 0 else (head_info.head_addr if head_info else private_ip)
 
     from skyward.api.plugin import LaunchCommand, LaunchContext
 
@@ -65,6 +74,9 @@ async def do_start_worker(
     }
     if seeds:
         env_vars["SKYWARD_SEEDS"] = seeds
+
+    if not spec.cluster:
+        env_vars["SKYWARD_CLUSTER"] = "false"
 
     if ca is not None:
         from skyward.infra.tls import issue_node_cert
@@ -277,7 +289,11 @@ async def terminate_and_replace(provider: Any, cluster: Any, dead_id: str) -> An
     return instances[0]
 
 
-async def discover_own_worker(client: Any, ni: NodeInstance | None) -> Any:
+async def discover_own_worker(
+    client: Any,
+    ni: NodeInstance | None,
+    standalone: bool = False,
+) -> Any:
     from skyward.infra.worker import WORKER_KEY
 
     private_ip = ni.instance.private_ip or ni.instance.ip or "" if ni else ""
@@ -286,7 +302,7 @@ async def discover_own_worker(client: Any, ni: NodeInstance | None) -> Any:
     while asyncio.get_event_loop().time() < deadline:
         listing = client.lookup(WORKER_KEY)
         for instance in listing.instances:
-            if instance.node.host == private_ip:
+            if standalone or instance.node.host == private_ip:
                 return instance.ref
         await asyncio.sleep(1.0)
 

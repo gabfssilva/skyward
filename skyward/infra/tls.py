@@ -82,6 +82,13 @@ def ensure_ca(*, tls_dir: Path = _DEFAULT_TLS_DIR) -> CertificateAuthority:
     return CertificateAuthority(cert=cert, key=key, cert_pem=cert_pem)
 
 
+def _san_for(addr: str) -> x509.IPAddress | x509.DNSName:
+    try:
+        return x509.IPAddress(ipaddress.ip_address(addr))
+    except ValueError:
+        return x509.DNSName(addr)
+
+
 def issue_node_cert(ca: CertificateAuthority, ip: str) -> tuple[bytes, bytes]:
     key = generate_private_key(SECP256R1())
     subject = x509.Name([
@@ -98,7 +105,7 @@ def issue_node_cert(ca: CertificateAuthority, ip: str) -> tuple[bytes, bytes]:
         .not_valid_after(now + datetime.timedelta(days=_NODE_VALIDITY_DAYS))
         .add_extension(
             x509.SubjectAlternativeName([
-                x509.IPAddress(ipaddress.ip_address(ip)),
+                _san_for(ip),
             ]),
             critical=False,
         )

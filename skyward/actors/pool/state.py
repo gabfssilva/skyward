@@ -27,6 +27,7 @@ class PoolState:
     tm_ref: ActorRef | None = None
     head_addr: str | None = None
     client: ClusterClient | None = None
+    clients: dict[NodeId, ClusterClient] = field(default_factory=dict)
     ready_nodes: frozenset[int] = frozenset()
     reconciler_ref: ActorRef | None = None
     instance_map: dict[NodeId, str] | None = None

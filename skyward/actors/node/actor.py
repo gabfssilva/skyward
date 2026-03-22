@@ -383,6 +383,11 @@ def node_actor(
         ni = s.ni
         assert ni is not None
         spec = s.cluster.spec
+
+        if not spec.cluster:
+            log.info("Starting worker (standalone mode)")
+            return _start_worker_process(ctx, s)
+
         is_head = node_id == 0
 
         if is_head:
@@ -467,7 +472,7 @@ def node_actor(
                 ):
                     log.info("JoinCluster received, discovering worker")
                     ctx.pipe_to_self(
-                        discover_own_worker(client, ni),
+                        discover_own_worker(client, ni, standalone=not s.cluster.spec.cluster),
                         mapper=lambda ref: _WorkerDiscovered(worker_ref=ref),
                         on_failure=lambda e: _WorkerDiscoveryFailed(error=str(e)),
                     )
@@ -609,7 +614,7 @@ def node_actor(
                         log.error("Cannot re-join: no node instance")
                         return Behaviors.same()
                     ctx.pipe_to_self(
-                        discover_own_worker(client, ni),
+                        discover_own_worker(client, ni, standalone=not s.cluster.spec.cluster),
                         mapper=lambda ref: _WorkerDiscovered(worker_ref=ref),
                         on_failure=lambda e: _WorkerDiscoveryFailed(error=str(e)),
                     )
