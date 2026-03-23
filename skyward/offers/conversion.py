@@ -96,10 +96,10 @@ def _runpod_specific(raw: dict[str, Any] | None) -> Any:
     from skyward.providers.runpod.provider import RunPodOfferData
 
     if raw is None:
-        return RunPodOfferData(gpu_type_id="", min_cuda=None)
+        return RunPodOfferData(gpu_type_id="", proven_cuda=None)
     return RunPodOfferData(
         gpu_type_id=raw.get("gpu_type_id", ""),
-        min_cuda=raw.get("min_cuda"),
+        proven_cuda=raw.get("proven_cuda") or raw.get("min_cuda"),
     )
 
 

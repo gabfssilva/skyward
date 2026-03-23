@@ -153,6 +153,9 @@ def node_actor(
         instance: Any,
     ) -> Behavior[NodeMsg]:
         instance_id = instance.id
+        provider_name = s.cluster.spec.provider or "aws"
+        ni = _bind_to_node(instance, node_id, provider_name, s.cluster)
+        s = replace(s, ni=ni)
         start_time = asyncio.get_event_loop().time()
 
         async def _do_poll() -> _PollResult:

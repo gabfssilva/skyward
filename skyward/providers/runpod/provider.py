@@ -44,6 +44,10 @@ _RUNPOD_S3_DATACENTERS = frozenset({
 })
 _TOKEN_SPLIT = re.compile(r"[\s\-/]+")
 _MIN_GPU_MATCH = 0.5
+_KNOWN_CUDA_VERSIONS = [
+    "11.8", "12.0", "12.1", "12.2", "12.3", "12.4",
+    "12.5", "12.6", "12.7", "12.8", "12.9", "13.0", "13.1",
+]
 
 
 def _gpu_match_score(requested: str, display: str, gpu_id: str) -> float:
@@ -189,7 +193,7 @@ def _select_best_image(
 
 
 async def _resolve_image(
-    spec: PoolSpec, config: RunPod, *, min_cuda: str | None = None,
+    spec: PoolSpec, config: RunPod, *, proven_cuda: str | None = None,
 ) -> str:
     """Resolve the best RunPod container image for the given spec.
 
@@ -199,33 +203,36 @@ async def _resolve_image(
         Pool specification with accelerator CUDA range.
     config
         RunPod provider config (ubuntu preference).
-    min_cuda
-        Minimum CUDA version with confirmed stock on RunPod hosts.
-        When provided, overrides the catalog min so the image matches
-        what machines actually support.
+    proven_cuda
+        Highest CUDA version with confirmed stock on RunPod hosts.
+        When provided, caps the image selection so the container
+        doesn't require a newer driver than the host provides.
     """
     if config.container_image:
         return config.container_image
 
-    cuda_catalog_min, cuda_max = _get_cuda_range(spec)
+    cuda_catalog_min, cuda_catalog_max = _get_cuda_range(spec)
     if cuda_catalog_min is None:
         return _FALLBACK_IMAGE
 
-    cuda_min = min_cuda or cuda_catalog_min
-    min_ver = _parse_cuda_version(cuda_min)
-    max_ver = _parse_cuda_version(cuda_max) if cuda_max else (99, 99)
+    min_ver = _parse_cuda_version(cuda_catalog_min)
+    max_ver = (
+        _parse_cuda_version(proven_cuda)
+        if proven_cuda
+        else _parse_cuda_version(cuda_catalog_max) if cuda_catalog_max else (99, 99)
+    )
 
     tags = await _fetch_docker_tags()
     if image := _select_best_image(tags, min_ver, max_ver, config.ubuntu):
         log.info(
             "Selected image {image} for CUDA {min}-{max}",
-            image=image, min=cuda_min, max=cuda_max,
+            image=image, min=cuda_catalog_min, max=proven_cuda or cuda_catalog_max,
         )
         return image
 
     log.warning(
         "No matching image for CUDA {min}-{max}, using fallback",
-        min=cuda_min, max=cuda_max,
+        min=cuda_catalog_min, max=proven_cuda or cuda_catalog_max,
     )
     return _FALLBACK_IMAGE
 
@@ -235,7 +242,7 @@ class RunPodOfferData:
     """Carried in Offer.specific — includes probed CUDA availability."""
 
     gpu_type_id: str
-    min_cuda: str | None
+    proven_cuda: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,25 +288,24 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
         requested = spec.accelerator_name
 
         cuda_min, cuda_max = _get_cuda_range(spec)
-        if cuda_min and cuda_max:
-            min_major = _parse_cuda_version(cuda_min)[0]
-            max_major = _parse_cuda_version(cuda_max)[0]
-            cuda_majors = [f"{m}.0" for m in range(max_major, min_major - 1, -1)]
-        else:
-            cuda_majors = [None]
+        cuda_probes = list(reversed(
+            _build_allowed_cuda_versions(cuda_min, cuda_max)
+            if cuda_min and cuda_max
+            else _KNOWN_CUDA_VERSIONS
+        ))
 
         async with RunPodClient(api_key, config=self._config) as client:
             results = await asyncio.gather(*(
                 client.get_gpu_types(
                     min_cuda_version=cv, secure_cloud=is_secure,
                 )
-                for cv in cuda_majors
+                for cv in cuda_probes
             ))
 
         seen: set[str] = set()
         candidates: list[tuple[float, Offer]] = []
 
-        for cuda_ver, gpu_types in zip(cuda_majors, results, strict=True):
+        for cuda_ver, gpu_types in zip(cuda_probes, results, strict=True):
             available = [
                 g for g in gpu_types
                 if (is_secure and g.get("secureCloud"))
@@ -404,18 +410,18 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                     )
 
         match offer.specific:
-            case RunPodOfferData(gpu_type_id=gid, min_cuda=min_cuda):
+            case RunPodOfferData(gpu_type_id=gid, proven_cuda=proven_cuda):
                 gpu_type_id: str | None = gid
             case _:
                 gpu_type_id = None
-                min_cuda = None
+                proven_cuda = None
 
         gpu_vram_gb = 0
         if offer.instance_type.accelerator:
             mem = offer.instance_type.accelerator.memory
             gpu_vram_gb = int(mem.replace("GB", "")) if mem else 0
 
-        image_name = await _resolve_image(spec, self._config, min_cuda=min_cuda)
+        image_name = await _resolve_image(spec, self._config, proven_cuda=proven_cuda)
 
         match self._config.global_networking:
             case True:
