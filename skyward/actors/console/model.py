@@ -27,9 +27,12 @@ def _on_instances_provisioned(
 
 
 def _update_instance(state: _State, resolved: Instance) -> _State:
-    updated = tuple(
-        resolved if i.id == resolved.id else i for i in state.instances
-    )
+    if any(i.id == resolved.id for i in state.instances):
+        updated = tuple(
+            resolved if i.id == resolved.id else i for i in state.instances
+        )
+    else:
+        updated = (*state.instances, resolved)
     return replace(state, instances=updated)
 
 

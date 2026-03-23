@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 from casty import ActorRef
 
 from skyward.actors.pool.messages import PoolMsg
+from skyward.actors.snapshot import PoolSnapshot
 
 if TYPE_CHECKING:
     from skyward.core.model import Cluster, Offer
@@ -76,7 +77,13 @@ class GetSessionSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class SessionSnapshot:
-    pools: tuple[PoolInfo, ...]
+    pools: tuple[PoolSnapshot, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _SnapshotReady:
+    snapshots: tuple[PoolSnapshot, ...]
+    reply_to: ActorRef[SessionSnapshot]
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +106,7 @@ type SessionMsg = (
     | StopSession
     | PoolStateChanged
     | GetSessionSnapshot
+    | _SnapshotReady
     | _PoolReady
     | _PoolFailed
 )

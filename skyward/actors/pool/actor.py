@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging as _logging
+import time
 from contextlib import suppress
 from dataclasses import replace
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors, ClusterClient
@@ -16,6 +18,7 @@ from skyward.actors.messages import (
     DrainComplete,
     DrainNode,
     GetCurrentNodes,
+    GetPoolSnapshot,
     HeadAddressKnown,
     NodeActivated,
     NodeAvailable,
@@ -32,6 +35,7 @@ from skyward.actors.messages import (
 )
 from skyward.actors.node import node_actor
 from skyward.actors.node.messages import JoinCluster
+from skyward.actors.snapshot import NodeStatus, PoolPhase, ScalingSnapshot
 from skyward.actors.task_manager import task_manager_actor
 from skyward.observability.logger import logger
 
@@ -45,7 +49,7 @@ from .messages import (
     StopPool,
     _ShutdownDone,
 )
-from .state import PoolState
+from .state import PoolState, build_pool_snapshot
 
 _logging.getLogger("casty").setLevel(_logging.ERROR)
 
@@ -208,6 +212,7 @@ def pool_actor(
                         spec=spec, provider=provider, reply_to=reply_to,
                         remaining_offers=tuple(remaining),
                         ca=ca, client_tls=client_tls,
+                        pool_started_at=time.monotonic(),
                     )
                     return requesting(s)
             return Behaviors.same()
@@ -298,6 +303,9 @@ def pool_actor(
                     return provisioning_instances(replace(
                         s, spec=effective_spec, cluster=cluster,
                     ))
+                case GetPoolSnapshot(reply_to=snap_reply):
+                    snap_reply.tell(build_pool_snapshot(s, pool_name))
+                    return Behaviors.same()
             return Behaviors.same()
         return Behaviors.receive(receive)
 
@@ -324,7 +332,7 @@ def pool_actor(
                         max=s.spec.max_provision_attempts,
                     )
 
-                    new_spawned = dict(s.node_refs)
+                    new_spawned = s.node_refs
                     remaining = s.spec.nodes.min - len(new_spawned)
                     to_spawn = instances[:remaining]
 
@@ -349,7 +357,7 @@ def pool_actor(
                             provider=s.provider,
                             instance=instance,
                         ))
-                        new_spawned[nid] = ref
+                        new_spawned = MappingProxyType({**new_spawned, nid: ref})
 
                     if len(new_spawned) >= s.spec.nodes.min:
                         log.info(
@@ -486,6 +494,9 @@ def pool_actor(
                         mapper=lambda _: ProvisionFailed(reason=reason),
                     )
                     return _cleanup_awaiting(reply_to)
+                case GetPoolSnapshot(reply_to=snap_reply):
+                    snap_reply.tell(build_pool_snapshot(s, pool_name))
+                    return Behaviors.same()
             return Behaviors.same()
         return Behaviors.receive(receive)
 
@@ -518,11 +529,13 @@ def pool_actor(
                             node_ref.tell(h)
                     return provisioning(replace(s, head_addr=h.head_addr))
                 case NodeBecameReady(node_id=nid, instance=meta):
-                    new_instances = {**s.instances, nid: meta}
+                    new_instances = MappingProxyType({**s.instances, nid: meta})
                     log.info(
                         "Node {nid} ready ({n}/{total})",
                         nid=nid, n=len(new_instances), total=s.spec.nodes.min,
                     )
+                    iid = meta.instance.id
+                    new_statuses = MappingProxyType({**s.node_statuses, iid: NodeStatus.SSH})
                     effective_head = s.head_addr or msg.private_ip or ""
 
                     if s.spec.cluster:
@@ -545,6 +558,7 @@ def pool_actor(
                             instances=new_instances,
                             client=new_client,
                             head_addr=effective_head,
+                            node_statuses=new_statuses,
                         ))
                     else:
                         node_client = await _create_standalone_client(
@@ -559,13 +573,19 @@ def pool_actor(
                         return provisioning(replace(
                             s,
                             instances=new_instances,
-                            clients={**s.clients, nid: node_client},
+                            clients=MappingProxyType({**s.clients, nid: node_client}),
                             head_addr=effective_head,
+                            node_statuses=new_statuses,
                         ))
                 case NodeActivated(node_id=nid, node_ref=nref, slots=slots):
                     log.info("Node {nid} activated", nid=nid)
                     tm.tell(NodeAvailable(node_id=nid, node_ref=nref, slots=slots))
                     new_ready = s.ready_nodes | {nid}
+                    ni = s.instances.get(nid)
+                    new_statuses = s.node_statuses
+                    if ni:
+                        iid = ni.instance.id
+                        new_statuses = MappingProxyType({**s.node_statuses, iid: NodeStatus.READY})
                     ready_threshold = s.spec.nodes.desired or s.spec.nodes.min
 
                     if len(new_ready) >= ready_threshold:
@@ -582,10 +602,18 @@ def pool_actor(
                             cluster=s.cluster,
                         ))
                         _notify_session("ready", len(new_ready), s.spec.nodes.min)
-                        return ready(replace(s, ready_nodes=new_ready))
-                    return provisioning(replace(s, ready_nodes=new_ready))
+                        return ready(replace(
+                            s, ready_nodes=new_ready, node_statuses=new_statuses,
+                            phase=PoolPhase.WORKERS,
+                        ))
+                    return provisioning(replace(
+                        s, ready_nodes=new_ready, node_statuses=new_statuses,
+                    ))
                 case StopPool():
                     log.debug("StopPool received while provisioning")
+                case GetPoolSnapshot(reply_to=snap_reply):
+                    snap_reply.tell(build_pool_snapshot(s, pool_name))
+                    return Behaviors.same()
             return Behaviors.same()
 
         behavior: Behavior[PoolMsg] = Behaviors.receive(receive)
@@ -611,7 +639,7 @@ def pool_actor(
 
                     min_n = s.spec.nodes.min
                     max_n = s.spec.nodes.max or s.spec.nodes.min
-                    inst_map = {nid: ni.instance.id for nid, ni in s.instances.items()}
+                    inst_map = MappingProxyType({nid: ni.instance.id for nid, ni in s.instances.items()})
                     rec_ref = ctx.spawn(
                         reconciler_actor(
                             pool=ctx.self,
@@ -626,7 +654,8 @@ def pool_actor(
                         ),
                         "reconciler",
                     )
-                    if s.spec.nodes.auto_scaling:
+                    is_elastic = s.spec.nodes.auto_scaling
+                    if is_elastic:
                         from skyward.actors.autoscaler import autoscaler_actor
 
                         assert s.spec.nodes.max is not None
@@ -643,20 +672,33 @@ def pool_actor(
                             "autoscaler",
                         )
                         tm.tell(RegisterPressureObserver(observer=as_ref))
+                    new_scaling = ScalingSnapshot(
+                        desired_nodes=min_n,
+                        is_elastic=is_elastic,
+                        min_nodes=min_n if is_elastic else None,
+                        max_nodes=s.spec.nodes.max if is_elastic else None,
+                    )
                     return ready(replace(
                         s,
                         reconciler_ref=rec_ref,
                         instance_map=inst_map,
+                        phase=PoolPhase.READY,
+                        scaling=new_scaling,
                     ))
                 case SubmitTask() as task:
                     log.debug("Task submitted")
                     tm.tell(task)
-                    return Behaviors.same()
+                    new_counters = replace(s.task_counters, queued=s.task_counters.queued + 1)
+                    return ready(replace(s, task_counters=new_counters))
                 case SubmitBroadcast() as bcast:
                     log.debug("Broadcast submitted to {n} nodes", n=len(s.ready_nodes))
                     tm.tell(bcast)
-                    return Behaviors.same()
-                case NodeBecameReady(node_id=nid) as nbr:
+                    new_counters = replace(s.task_counters, queued=s.task_counters.queued + 1)
+                    return ready(replace(s, task_counters=new_counters))
+                case NodeBecameReady(node_id=nid, instance=meta) as nbr:
+                    iid = meta.instance.id
+                    new_statuses = MappingProxyType({**s.node_statuses, iid: NodeStatus.SSH})
+                    new_instances = MappingProxyType({**s.instances, nid: meta})
                     if s.spec.cluster:
                         assert client is not None
                         _update_tunnel(nbr)
@@ -667,6 +709,9 @@ def pool_actor(
                         )
                         if s.reconciler_ref is not None:
                             s.reconciler_ref.tell(NodeJoined(node_id=nid))
+                        return ready(replace(
+                            s, node_statuses=new_statuses, instances=new_instances,
+                        ))
                     else:
                         node_client = await _create_standalone_client(
                             nbr.private_ip, nbr.casty_port, nbr.local_port,
@@ -683,12 +728,24 @@ def pool_actor(
                                 await old.__aexit__(None, None, None)
                         if s.reconciler_ref is not None:
                             s.reconciler_ref.tell(NodeJoined(node_id=nid))
-                        return ready(replace(s, clients={**s.clients, nid: node_client}))
+                        return ready(replace(
+                            s,
+                            clients=MappingProxyType({**s.clients, nid: node_client}),
+                            node_statuses=new_statuses,
+                            instances=new_instances,
+                        ))
                 case NodeActivated(node_id=nid, node_ref=nref, slots=slots):
                     log.info("Node {nid} activated", nid=nid)
                     tm.tell(NodeAvailable(node_id=nid, node_ref=nref, slots=slots))
+                    ni = s.instances.get(nid)
+                    new_statuses = s.node_statuses
+                    if ni:
+                        iid = ni.instance.id
+                        new_statuses = MappingProxyType({**s.node_statuses, iid: NodeStatus.READY})
                     _notify_session("ready", len(s.ready_nodes | {nid}), s.spec.nodes.min)
-                    return ready(replace(s, ready_nodes=s.ready_nodes | {nid}))
+                    return ready(replace(
+                        s, ready_nodes=s.ready_nodes | {nid}, node_statuses=new_statuses,
+                    ))
                 case NodeLost(node_id=nid):
                     log.warning(
                         "Node {nid} lost, {remaining} nodes remaining",
@@ -713,7 +770,7 @@ def pool_actor(
                         return ready(replace(
                             s,
                             ready_nodes=s.ready_nodes - {nid},
-                            clients={k: v for k, v in s.clients.items() if k != nid},
+                            clients=MappingProxyType({k: v for k, v in s.clients.items() if k != nid}),
                         ))
                     _notify_session("ready", len(s.ready_nodes - {nid}), s.spec.nodes.min)
                     return ready(replace(
@@ -727,8 +784,8 @@ def pool_actor(
                         "Spawning {n} dynamic nodes from id {sid}",
                         n=len(new_instances), sid=start_id,
                     )
-                    new_node_refs = dict(s.node_refs)
-                    new_inst_map = dict(s.instance_map or {})
+                    new_node_refs = s.node_refs
+                    new_inst_map = s.instance_map
                     for i, inst in enumerate(new_instances):
                         nid = start_id + i
                         ref = ctx.spawn(
@@ -751,30 +808,44 @@ def pool_actor(
                                 worker_concurrency=s.spec.worker.concurrency,
                                 worker_executor=s.spec.worker.resolved_executor,
                             ))
-                        new_node_refs[nid] = ref
-                        new_inst_map[nid] = inst.id
+                        new_node_refs = MappingProxyType({**new_node_refs, nid: ref})
+                        new_inst_map = MappingProxyType({**new_inst_map, nid: inst.id})
+                    new_scaling = replace(
+                        s.scaling,
+                        pending_nodes=s.scaling.pending_nodes + len(new_instances),
+                    )
                     return ready(replace(
                         s,
                         node_refs=new_node_refs,
                         instance_map=new_inst_map,
+                        scaling=new_scaling,
                     ))
 
                 case DrainNode(node_id=nid, reply_to=drain_reply):
                     log.info("Draining node {nid}", nid=nid)
                     tm.tell(NodeUnavailable(node_id=nid))
-                    iid = (s.instance_map or {}).get(nid, "")
+                    iid = s.instance_map.get(nid, "")
                     drain_reply.tell(DrainComplete(node_id=nid, instance_id=iid))
-                    new_node_refs = {k: v for k, v in s.node_refs.items() if k != nid}
+                    new_node_refs = MappingProxyType({k: v for k, v in s.node_refs.items() if k != nid})
+                    new_scaling = replace(
+                        s.scaling,
+                        draining_nodes=s.scaling.draining_nodes + 1,
+                    )
                     return ready(replace(
                         s,
                         node_refs=new_node_refs,
                         ready_nodes=s.ready_nodes - {nid},
+                        scaling=new_scaling,
                     ))
 
                 case GetCurrentNodes(reply_to=query_reply):
                     query_reply.tell(CurrentNodeCount(
                         count=len(s.node_refs), ready=len(s.ready_nodes),
                     ))
+                    return Behaviors.same()
+
+                case GetPoolSnapshot(reply_to=snap_reply):
+                    snap_reply.tell(build_pool_snapshot(s, pool_name))
                     return Behaviors.same()
 
                 case StopPool(reply_to=stop_reply):
@@ -797,7 +868,10 @@ def pool_actor(
                         mapper=lambda _: _ShutdownDone(),
                     )
                     _notify_session("stopping", 0, s.spec.nodes.min)
-                    return stopping(stop_reply, s.cluster_id)
+                    return stopping(
+                        stop_reply, s.cluster_id,
+                        replace(s, phase=PoolPhase.STOPPING), pool_name,
+                    )
             return Behaviors.same()
 
         async def _close_client(_ctx: ActorContext[PoolMsg]) -> None:
@@ -813,7 +887,10 @@ def pool_actor(
             post_stop=_close_client,
         )
 
-    def stopping(stop_reply: ActorRef, cluster_id: str) -> Behavior[PoolMsg]:
+    def stopping(
+        stop_reply: ActorRef, cluster_id: str,
+        s: PoolState | None = None, name: str = "",
+    ) -> Behavior[PoolMsg]:
         log = logger.bind(actor="pool", state="stopping")
 
         async def receive(_ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
@@ -823,6 +900,9 @@ def pool_actor(
                     log.info("Cluster {cid} shutdown confirmed", cid=cluster_id)
                     stop_reply.tell(PoolStopped())
                     return Behaviors.stopped()
+                case GetPoolSnapshot(reply_to=snap_reply) if s is not None:
+                    snap_reply.tell(build_pool_snapshot(s, name))
+                    return Behaviors.same()
             return Behaviors.same()
         return Behaviors.receive(receive)
 

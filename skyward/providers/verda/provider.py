@@ -158,7 +158,11 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
         ssh_key_path = get_ssh_key_path()
 
         instance_type = offer.instance_type.name
-        os_image = offer.specific if isinstance(offer.specific, str) else "ubuntu-22.04"
+        match offer.specific:
+            case str() as os_image:
+                pass
+            case _:
+                os_image = "ubuntu-22.04"
 
         use_spot = spec.allocation in ("spot", "spot-if-available")
         hourly_rate = (

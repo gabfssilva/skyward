@@ -17,6 +17,7 @@ from uuid import uuid4
 from casty import ActorRef
 
 if TYPE_CHECKING:
+    from skyward.actors.snapshot import PoolSnapshot
     from skyward.core.model import Cluster, Instance
     from skyward.core.spec import PoolSpec
     from skyward.providers.provider import Provider
@@ -521,6 +522,11 @@ class GetCurrentNodes:
 class CurrentNodeCount:
     count: int
     ready: int
+
+
+@dataclass(frozen=True, slots=True)
+class GetPoolSnapshot:
+    reply_to: ActorRef[PoolSnapshot]
 
 
 @dataclass(frozen=True, slots=True)

@@ -16,6 +16,7 @@ import asyncio
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace
+from types import MappingProxyType
 from typing import Any
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors, Terminated
@@ -497,7 +498,7 @@ def node_actor(
                     )
                     return joining(replace(
                         s, client=client, pool_info_json=pij,
-                        env_vars=ev, around_app_hooks=hooks,
+                        env_vars=MappingProxyType(ev), around_app_hooks=hooks,
                         around_process_hooks=phooks,
                     ))
                 case PortReForwarded(old_port=_, new_port=new_port):
@@ -575,12 +576,12 @@ def node_actor(
     # ── active ────────────────────────────────────────────────────────
 
     def _enter_active(ctx: ActorContext[NodeMsg], s: NodeState) -> Behavior[NodeMsg]:
-        new_inflight: dict[str, ActorRef] = {}
+        new_inflight: MappingProxyType[str, ActorRef] = MappingProxyType({})
         counter = 0
         for pt in s.pending_tasks:
             tid = pt.task_id or str(counter)
             _dispatch_task(ctx, s, tid, pt.fn, pt.args, pt.kwargs, pt.timeout)
-            new_inflight[tid] = pt.reply_to
+            new_inflight = MappingProxyType({**new_inflight, tid: pt.reply_to})
             counter += 1
 
         pool.tell(NodeActivated(
@@ -668,7 +669,7 @@ def node_actor(
                     local_tid = ex.task_id or str(s.task_counter)
                     log.debug("Node {nid} dispatching task {tid}", nid=node_id, tid=local_tid)
                     _dispatch_task(ctx, s, local_tid, ex.fn, ex.args, ex.kwargs, ex.timeout)
-                    new_inflight = {**s.inflight, local_tid: ex.reply_to}
+                    new_inflight = MappingProxyType({**s.inflight, local_tid: ex.reply_to})
                     return active(replace(s, inflight=new_inflight, task_counter=s.task_counter + 1))
                 case _RemoteTaskDone(task_id=tid, value=value, error=is_err, connection_error=conn_err):
                     log.debug("Node {nid} received task result (tid={tid})", nid=node_id, tid=tid)
@@ -690,9 +691,9 @@ def node_actor(
                                         value=conn_error, node_id=node_id, task_id=other_tid, error=True,
                                     )
                                 )
-                        return active(replace(s, inflight={}, pending_tasks=()))
+                        return active(replace(s, inflight=MappingProxyType({}), pending_tasks=()))
                     if caller:
-                        new_inflight = {k: v for k, v in s.inflight.items() if k != tid}
+                        new_inflight = MappingProxyType({k: v for k, v in s.inflight.items() if k != tid})
                         return active(replace(s, inflight=new_inflight))
                     return Behaviors.same()
                 case ConnectionLost(error=error):

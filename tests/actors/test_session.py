@@ -278,6 +278,7 @@ class TestSessionMsgTypeAlias:
             StopSession,
             _PoolFailed,
             _PoolReady,
+            _SnapshotReady,
         )
 
         args = set(get_args(SessionMsg.__value__))
@@ -286,6 +287,7 @@ class TestSessionMsgTypeAlias:
             StopSession,
             PoolStateChanged,
             GetSessionSnapshot,
+            _SnapshotReady,
             _PoolReady,
             _PoolFailed,
         }
@@ -427,6 +429,9 @@ class TestSessionActor:
     async def test_pool_state_changed_updates_aggregate(self, system) -> None:
         import asyncio
 
+        from casty import Behaviors
+
+        from skyward.actors.messages import GetPoolSnapshot
         from skyward.actors.session.actor import session_actor
         from skyward.actors.session.messages import (
             GetSessionSnapshot,
@@ -437,13 +442,37 @@ class TestSessionActor:
             SpawnPool,
             _PoolReady,
         )
+        from skyward.actors.snapshot import (
+            PoolPhase,
+            PoolSnapshot,
+            ScalingSnapshot,
+            TaskCounters,
+        )
+
+        stub_snapshot = PoolSnapshot(
+            name="train",
+            phase=PoolPhase.READY,
+            nodes=(),
+            tasks=TaskCounters(),
+            scaling=ScalingSnapshot(),
+        )
+
+        def _stub_pool():
+            async def handle(ctx, msg):
+                match msg:
+                    case GetPoolSnapshot(reply_to=reply_to):
+                        reply_to.tell(stub_snapshot)
+                return Behaviors.same()
+            return Behaviors.receive(handle)
+
+        pool_ref = system.spawn(_stub_pool(), "stub-pool")
+        await asyncio.sleep(0.1)
 
         ref = system.spawn(session_actor(), "session-state")
         await asyncio.sleep(0.1)
 
         from skyward.core.spec import Nodes
 
-        pool_ref = MagicMock()
         spec = MagicMock()
         spec.nodes = Nodes(min=4)
 
@@ -491,15 +520,13 @@ class TestSessionActor:
         snap_ref = MagicMock()
         snap_ref.tell = lambda msg: snapshots.append(msg)
         ref.tell(GetSessionSnapshot(reply_to=snap_ref))
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.5)
 
         assert len(snapshots) == 1
         assert len(snapshots[0].pools) == 1
         pool = snapshots[0].pools[0]
         assert pool.name == "train"
-        assert pool.phase == "ready"
-        assert pool.nodes_ready == 4
-        assert pool.nodes_total == 4
+        assert pool.phase == PoolPhase.READY
 
     @pytest.mark.asyncio
     async def test_stop_session(self, system) -> None:

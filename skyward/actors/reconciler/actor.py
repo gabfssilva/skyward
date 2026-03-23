@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
@@ -40,7 +41,7 @@ def reconciler_actor(
     min_nodes: int,
     max_nodes: int,
     initial_node_ids: frozenset[NodeId],
-    initial_instance_map: dict[NodeId, str],
+    initial_instance_map: MappingProxyType[NodeId, str] | dict[NodeId, str],
     next_node_id: int,
     tick_interval: float = 15.0,
 ) -> Behavior[ReconcilerMsg]:
@@ -67,7 +68,7 @@ def reconciler_actor(
             pending=frozenset(),
             draining=frozenset(),
             next_node_id=next_node_id,
-            instance_map=dict(initial_instance_map),
+            instance_map=MappingProxyType(dict(initial_instance_map)),
             cluster=cluster,
         )
         log.info(
@@ -176,11 +177,11 @@ def reconciler_actor(
 
                     start_id = s.next_node_id
                     new_pending_ids: list[NodeId] = []
-                    new_map = dict(s.instance_map)
+                    new_map: MappingProxyType[NodeId, str] = s.instance_map
                     for i, inst in enumerate(instances):
                         nid = start_id + i
                         new_pending_ids.append(nid)
-                        new_map[nid] = inst.id
+                        new_map = MappingProxyType({**new_map, nid: inst.id})
 
                     log.info(
                         "Provisioned {n} instances (ids {start}..{end})",

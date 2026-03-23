@@ -39,7 +39,8 @@ def ensure_ca(*, tls_dir: Path = _DEFAULT_TLS_DIR) -> CertificateAuthority:
     if cert_path.exists() and key_path.exists():
         cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
         key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
-        assert isinstance(key, EllipticCurvePrivateKey)
+        if not isinstance(key, EllipticCurvePrivateKey):
+            raise TypeError(f"Expected EllipticCurvePrivateKey, got {type(key).__name__}")
         return CertificateAuthority(cert=cert, key=key, cert_pem=cert_path.read_bytes())
 
     key = generate_private_key(SECP256R1())

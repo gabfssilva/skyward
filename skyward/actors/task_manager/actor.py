@@ -1,4 +1,5 @@
 from dataclasses import replace
+from types import MappingProxyType
 
 from casty import ActorContext, Behavior, Behaviors
 
@@ -43,57 +44,70 @@ def task_manager_actor() -> Behavior[TaskManagerMsg]:
                         "Node {nid} available ({slots} slots, buffered={buf})",
                         nid=node_id, slots=slots, buf=buffered,
                     )
-                    new_nodes = {
+                    new_nodes = MappingProxyType({
                         **s.nodes,
                         node_id: NodeSlots(ref=node_ref, total=buffered, used=0),
-                    }
-                    remaining, new_nodes, rr = _drain_queue(
+                    })
+                    remaining, new_nodes, rr, new_inflight = _drain_queue(
                         s.queue, new_nodes, s.round_robin, ctx.self, s.inflight,
                     )
                     if len(remaining) < len(s.queue):
                         log.debug("Drained {n} queued tasks", n=len(s.queue) - len(remaining))
-                    new_s = replace(s, nodes=new_nodes, queue=remaining, round_robin=rr)
+                    new_s = replace(s, nodes=new_nodes, queue=remaining, round_robin=rr, inflight=new_inflight)
                     _emit_pressure(new_s)
                     return active(new_s)
 
                 case NodeUnavailable(node_id):
                     log.info("Node {nid} unavailable", nid=node_id)
-                    new_nodes = {k: v for k, v in s.nodes.items() if k != node_id}
-                    for bc in s.broadcasts.values():
-                        if node_id in bc.pending:
-                            bc.pending.discard(node_id)
-                            bc.results[node_id] = RuntimeError(
-                                f"Node {node_id} lost during broadcast",
-                            )
-                    new_s = replace(s, nodes=new_nodes)
+                    new_nodes = MappingProxyType({k: v for k, v in s.nodes.items() if k != node_id})
+                    new_broadcasts = MappingProxyType({
+                        bid: replace(
+                            bc,
+                            pending=bc.pending - {node_id},
+                            results=MappingProxyType({
+                                **bc.results,
+                                node_id: RuntimeError(f"Node {node_id} lost during broadcast"),
+                            }),
+                        ) if node_id in bc.pending else bc
+                        for bid, bc in s.broadcasts.items()
+                    })
+                    new_s = replace(s, nodes=new_nodes, broadcasts=new_broadcasts)
                     _emit_pressure(new_s)
                     return _check_broadcasts(new_s)
 
                 case TaskResult(value, node_id, task_id=tid, error=err):
                     broadcast_hit = False
-                    for bc in s.broadcasts.values():
+                    new_broadcasts = s.broadcasts
+                    for bid, bc in s.broadcasts.items():
                         if node_id in bc.pending:
-                            bc.pending.discard(node_id)
-                            bc.results[node_id] = value
+                            new_bc = replace(
+                                bc,
+                                pending=bc.pending - {node_id},
+                                results=MappingProxyType({**bc.results, node_id: value}),
+                            )
+                            new_broadcasts = MappingProxyType({**s.broadcasts, bid: new_bc})
                             broadcast_hit = True
                             break
 
+                    new_inflight = s.inflight
                     if not broadcast_hit:
-                        caller = s.inflight.pop(tid, None)
+                        caller = s.inflight.get(tid)
                         if caller:
                             caller.tell(TaskResult(
                                 value=value, node_id=node_id, task_id=tid, error=err,
                             ))
+                            new_inflight = MappingProxyType({k: v for k, v in s.inflight.items() if k != tid})
 
                     if node_id not in s.nodes:
-                        return _check_broadcasts(s) if broadcast_hit else Behaviors.same()
+                        new_s = replace(s, broadcasts=new_broadcasts, inflight=new_inflight)
+                        return _check_broadcasts(new_s) if broadcast_hit else active(new_s)
                     slot = s.nodes[node_id]
                     new_used = max(0, slot.used - 1)
-                    new_nodes = {**s.nodes, node_id: NodeSlots(slot.ref, slot.total, new_used)}
-                    remaining, new_nodes, rr = _drain_queue(
-                        s.queue, new_nodes, s.round_robin, ctx.self, s.inflight,
+                    new_nodes = MappingProxyType({**s.nodes, node_id: NodeSlots(slot.ref, slot.total, new_used)})
+                    remaining, new_nodes, rr, new_inflight = _drain_queue(
+                        s.queue, new_nodes, s.round_robin, ctx.self, new_inflight,
                     )
-                    new_s = replace(s, nodes=new_nodes, queue=remaining, round_robin=rr)
+                    new_s = replace(s, nodes=new_nodes, queue=remaining, round_robin=rr, inflight=new_inflight, broadcasts=new_broadcasts)
                     _emit_pressure(new_s)
                     return _check_broadcasts(new_s) if broadcast_hit else active(new_s)
 
@@ -108,17 +122,17 @@ def task_manager_actor() -> Behavior[TaskManagerMsg]:
                         _emit_pressure(new_s)
                         return active(new_s)
                     log.debug("Dispatching task to node {nid}", nid=nid)
-                    new_nodes = _dispatch(
+                    new_nodes, new_inflight = _dispatch(
                         nid, task.task_id, task.fn, task.args, task.kwargs,
                         task.reply_to, s.nodes, ctx.self, s.inflight,
                         timeout=task.timeout,
                     )
-                    return active(replace(s, nodes=new_nodes, round_robin=s.round_robin + 1))
+                    return active(replace(s, nodes=new_nodes, inflight=new_inflight, round_robin=s.round_robin + 1))
 
                 case SubmitBroadcast() as bcast:
                     n = len(s.nodes)
                     log.debug("Broadcasting task to {n} nodes", n=n)
-                    pending_nodes: set[NodeId] = set()
+                    pending_nodes: frozenset[NodeId] = frozenset()
                     new_nodes = dict(s.nodes)
                     for nid, slot in s.nodes.items():
                         ctx.self.tell(TaskSubmitted(task_id=bcast.task_id, node_id=nid))
@@ -128,11 +142,14 @@ def task_manager_actor() -> Behavior[TaskManagerMsg]:
                             timeout=bcast.timeout,
                         ))
                         new_nodes[nid] = NodeSlots(slot.ref, slot.total, slot.used + 1)
-                        pending_nodes.add(nid)
-                    s.broadcasts[bcast.task_id] = PendingBroadcast(
-                        caller=bcast.reply_to, pending=pending_nodes,
-                    )
-                    return active(replace(s, nodes=new_nodes))
+                        pending_nodes = pending_nodes | {nid}
+                    new_broadcasts = MappingProxyType({
+                        **s.broadcasts,
+                        bcast.task_id: PendingBroadcast(
+                            caller=bcast.reply_to, pending=pending_nodes,
+                        ),
+                    })
+                    return active(replace(s, nodes=MappingProxyType(new_nodes), broadcasts=new_broadcasts))
 
                 case RegisterPressureObserver(observer=observer):
                     log.info("Pressure observer registered")
@@ -144,17 +161,19 @@ def task_manager_actor() -> Behavior[TaskManagerMsg]:
         return Behaviors.receive(receive)
 
     def _check_broadcasts(s: _State) -> Behavior[TaskManagerMsg]:
-        done_ids: list[str] = []
+        new_broadcasts = dict(s.broadcasts)
         for bid, bc in s.broadcasts.items():
             if not bc.pending:
                 ordered = [bc.results[nid] for nid in sorted(bc.results)]
                 bc.caller.tell(ordered)
-                done_ids.append(bid)
-        for bid in done_ids:
-            del s.broadcasts[bid]
-        return active(s)
+                del new_broadcasts[bid]
+        return active(replace(s, broadcasts=MappingProxyType(new_broadcasts)))
 
     log.info("Task manager started")
     return active(_State(
-        nodes={}, queue=(), round_robin=0, inflight={}, broadcasts={},
+        nodes=MappingProxyType({}),
+        queue=(),
+        round_robin=0,
+        inflight=MappingProxyType({}),
+        broadcasts=MappingProxyType({}),
     ))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -16,5 +17,5 @@ class _State:
     pending: frozenset[NodeId]
     draining: frozenset[NodeId]
     next_node_id: int
-    instance_map: dict[NodeId, str]
+    instance_map: MappingProxyType[NodeId, str]
     cluster: Cluster

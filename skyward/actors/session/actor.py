@@ -21,6 +21,7 @@ from .messages import (
     StopSession,
     _PoolFailed,
     _PoolReady,
+    _SnapshotReady,
 )
 
 log = logger.bind(actor="session")
@@ -149,7 +150,28 @@ def active(
                 return Behaviors.same()
 
             case GetSessionSnapshot(reply_to=reply_to):
-                reply_to.tell(SessionSnapshot(pools=tuple(pools.values())))
+                pool_refs = tuple(info.ref for info in pools.values())
+
+                async def _gather_snapshots() -> _SnapshotReady:
+                    import asyncio
+
+                    from skyward.actors.messages import GetPoolSnapshot
+
+                    snapshots = await asyncio.gather(*(
+                        ctx.system.ask(ref, lambda r: GetPoolSnapshot(reply_to=r), timeout=2.0)
+                        for ref in pool_refs
+                    ))
+                    return _SnapshotReady(snapshots=tuple(snapshots), reply_to=reply_to)
+
+                ctx.pipe_to_self(
+                    _gather_snapshots(),
+                    mapper=lambda r: r,
+                    on_failure=lambda _: _SnapshotReady(snapshots=(), reply_to=reply_to),
+                )
+                return Behaviors.same()
+
+            case _SnapshotReady(snapshots=snaps, reply_to=snap_reply):
+                snap_reply.tell(SessionSnapshot(pools=snaps))
                 return Behaviors.same()
 
             case StopSession(reply_to=reply_to):

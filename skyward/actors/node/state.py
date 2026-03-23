@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Final
 
 from casty import ActorRef
@@ -51,8 +52,8 @@ class NodeState:
     client: Any = None
     worker_ref: ActorRef | None = None
     pool_info_json: str = ""
-    env_vars: dict[str, str] = field(default_factory=dict)
+    env_vars: MappingProxyType[str, str] = MappingProxyType({})
     around_app_hooks: tuple[tuple[str, Any], ...] = ()
     around_process_hooks: tuple[tuple[str, Any], ...] = ()
-    inflight: dict[str, ActorRef] = field(default_factory=dict)
+    inflight: MappingProxyType[str, ActorRef] = MappingProxyType({})
     task_counter: int = 0

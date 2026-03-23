@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import MappingProxyType
 from typing import Any
 
 from casty import ActorRef
@@ -324,7 +325,7 @@ async def setup_worker_env(
     client: Any,
     worker_ref: Any,
     pool_info_json: str,
-    env_vars: dict[str, str],
+    env_vars: dict[str, str] | MappingProxyType[str, str],
     around_app_hooks: tuple[tuple[str, Any], ...] = (),
     around_process_hooks: tuple[tuple[str, Any], ...] = (),
 ) -> None:

@@ -34,8 +34,7 @@ class S3ObjectStore:
                 kwargs["ContinuationToken"] = continuation_token
 
             response = await self._s3.list_objects_v2(**kwargs)
-            for obj in response.get("Contents", []):
-                keys.append(obj["Key"])
+            keys.extend(obj["Key"] for obj in response.get("Contents", []))
 
             if not response.get("IsTruncated"):
                 break

@@ -526,8 +526,16 @@ def mount_volumes(
             key = (vol.bucket, storage.endpoint)
             needs_write = not vol.read_only
             mount_key_rw[key] = mount_key_rw.get(key, False) or needs_write
-            ak = storage.access_key if isinstance(storage.access_key, str) else None
-            sk = storage.secret_key if isinstance(storage.secret_key, str) else None
+            match storage.access_key:
+                case str() as ak:
+                    pass
+                case _:
+                    ak = None
+            match storage.secret_key:
+                case str() as sk:
+                    pass
+                case _:
+                    sk = None
             endpoint_info[storage.endpoint] = (ak, sk, storage.path_style)
 
         # 3. Write credential files per unique endpoint

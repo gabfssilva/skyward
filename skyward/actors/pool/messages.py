@@ -9,6 +9,7 @@ from skyward.actors.messages import (
     ClusterReady,
     DrainNode,
     GetCurrentNodes,
+    GetPoolSnapshot,
     HeadAddressKnown,
     NodeActivated,
     NodeBecameReady,
@@ -85,4 +86,5 @@ type PoolMsg = (
     | SpawnNodes
     | DrainNode
     | GetCurrentNodes
+    | GetPoolSnapshot
 )

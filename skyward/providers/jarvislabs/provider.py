@@ -255,7 +255,11 @@ class JarvisLabsProvider(Provider[JarvisLabs, JarvisLabsSpecific]):
     async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[JarvisLabsSpecific]:
         ssh_key_path = get_ssh_key_path()
         raw = offer.specific
-        offer_data = raw if isinstance(raw, JarvisLabsOfferData) else JarvisLabsOfferData(**raw)
+        match raw:
+            case JarvisLabsOfferData():
+                offer_data = raw
+            case _:
+                offer_data = JarvisLabsOfferData(**raw)
 
         async def _list_keys() -> list[dict[str, Any]]:
             keys = await self._run(self._client.ssh_keys.list)

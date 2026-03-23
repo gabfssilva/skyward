@@ -93,7 +93,13 @@ class SkywardBackend(ParallelBackendBase):
         if n_jobs == 0:
             return 0
         nodes = self.pool._specs[0].nodes  # type: ignore[attr-defined]
-        n = nodes[0] if isinstance(nodes, tuple) else nodes
+        match nodes:
+            case (first, *_):
+                n = first
+            case int() as n:
+                n = n
+            case _:
+                n = 1
         return n * self.pool.concurrency
 
     def submit(

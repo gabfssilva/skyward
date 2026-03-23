@@ -71,8 +71,9 @@ class _SyncSource[T]:
             raise StopIteration from None
         if item is _SENTINEL:
             raise StopIteration
-        if isinstance(item, BaseException):
-            raise item
+        match item:
+            case BaseException():
+                raise item
         return item  # type: ignore[return-value]
 
 

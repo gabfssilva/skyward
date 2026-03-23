@@ -161,7 +161,7 @@ class Session:
         session_behavior = session_actor()
 
         if self._console:
-            from skyward.actors.console import console_actor
+            from skyward.actors.console import _SetSession, console_actor
 
             spy_ref = self._system.spawn(console_actor(), "console")
             session_behavior = Behaviors.spy(
@@ -169,6 +169,9 @@ class Session:
             )
 
         self._session_ref = self._system.spawn(session_behavior, "session")
+
+        if self._console:
+            spy_ref.tell(_SetSession(ref=self._session_ref))  # type: ignore[possibly-undefined]
 
     async def _stop_async(self) -> None:
         """Stop all pools, then the session actor, then the actor system."""
