@@ -110,6 +110,8 @@ class LowestPriceResponse(TypedDict):
     stockStatus: NotRequired[str | None]
     totalCount: NotRequired[int]
     rentedCount: NotRequired[int]
+    minVcpu: NotRequired[int | None]
+    minMemory: NotRequired[int | None]
 
 
 class GpuTypeResponse(TypedDict):

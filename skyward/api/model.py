@@ -16,6 +16,7 @@ type InstanceStatus = Literal[
     "bootstrapping",
     "bootstrapped",
     "ready",
+    "exited",
 ]
 """Lifecycle status of an individual instance.
 
@@ -27,6 +28,7 @@ Progression: ``provisioning`` → ``provisioned`` → ``bootstrapping``
 - ``"bootstrapping"`` — SSH connected, bootstrap script executing.
 - ``"bootstrapped"`` — environment ready, worker starting.
 - ``"ready"`` — worker process healthy, accepting tasks.
+- ``"exited"`` — instance process/container stopped; needs terminate and replace.
 """
 
 

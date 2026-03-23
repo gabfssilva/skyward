@@ -25,7 +25,6 @@ from skyward.actors.messages import (
     NodeLost,
     NodeUnavailable,
     Provision,
-    ReconcilerNodeLost,
     RegisterPressureObserver,
     SpawnNodes,
     SubmitBroadcast,
@@ -696,10 +695,6 @@ def pool_actor(
                         nid=nid, remaining=len(s.ready_nodes) - 1,
                     )
                     tm.tell(NodeUnavailable(node_id=nid))
-                    if s.reconciler_ref is not None:
-                        s.reconciler_ref.tell(ReconcilerNodeLost(
-                            node_id=nid, reason="node lost",
-                        ))
                     if s.spec.cluster and s.head_addr:
                         head_msg = HeadAddressKnown(
                             head_addr=s.head_addr,

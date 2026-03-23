@@ -204,11 +204,8 @@ async def _resolve_image(
         When provided, overrides the catalog min so the image matches
         what machines actually support.
     """
-    match getattr(spec.image, "container_image", None):
-        case str() as img:
-            return img
-        case _:
-            pass
+    if config.container_image:
+        return config.container_image
 
     cuda_catalog_min, cuda_max = _get_cuda_range(spec)
     if cuda_catalog_min is None:
@@ -281,28 +278,7 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
     async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
         api_key = get_api_key(self._config.api_key)
         is_secure = self._config.cloud_type == CloudType.SECURE
-
-        if not spec.accelerator_name:
-            vcpus = spec.vcpus or 2
-            memory_gb = spec.memory_gb or 4
-            instance_id = f"cpu{self._config.cpu_clock}-{vcpus}-{memory_gb}"
-            it = InstanceType(
-                name=instance_id,
-                accelerator=None,
-                vcpus=float(vcpus),
-                memory_gb=float(memory_gb),
-                architecture="x86_64",
-                specific=None,
-            )
-            yield Offer(
-                id=f"runpod-cpu-{instance_id}",
-                instance_type=it,
-                spot_price=None,
-                on_demand_price=None,
-                billing_unit="hour",
-                specific=None,
-            )
-            return
+        requested = spec.accelerator_name
 
         cuda_min, cuda_max = _get_cuda_range(spec)
         if cuda_min and cuda_max:
@@ -320,7 +296,6 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                 for cv in cuda_majors
             ))
 
-        requested = spec.accelerator_name
         seen: set[str] = set()
         candidates: list[tuple[float, Offer]] = []
 
@@ -334,9 +309,14 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
             for gpu in available:
                 display = gpu.get("displayName", "")
                 gpu_id = gpu.get("id", "")
-                score = _gpu_match_score(requested, display, gpu_id)
-                if score < _MIN_GPU_MATCH:
-                    continue
+
+                if requested:
+                    score = _gpu_match_score(requested, display, gpu_id)
+                    if score < _MIN_GPU_MATCH:
+                        continue
+                else:
+                    score = 1.0
+
                 if gpu_id in seen:
                     continue
 
@@ -373,11 +353,13 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                     memory=f"{vram_gb}GB" if vram_gb else "",
                     count=gpu_count,
                 )
+                min_vcpu = lowest.get("minVcpu") or 0
+                min_memory = lowest.get("minMemory") or 0
                 it = InstanceType(
                     name=gpu_id,
                     accelerator=accel,
-                    vcpus=0.0,
-                    memory_gb=0.0,
+                    vcpus=float(min_vcpu),
+                    memory_gb=float(min_memory),
                     architecture="x86_64",
                     specific=None,
                 )
@@ -535,8 +517,10 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
             ip=pod.get("publicIp"),
         )
         match pod.get("desiredStatus"):
-            case "TERMINATED" | "EXITED":
+            case "TERMINATED":
                 return cluster, None
+            case "EXITED":
+                return cluster, _build_runpod_instance(pod, "exited", cluster)
             case "RUNNING" if pod.get("publicIp"):
                 return cluster, _build_runpod_instance(pod, "provisioned", cluster)
             case _:
@@ -746,11 +730,10 @@ async def _create_gpu_pod(
 ) -> PodResponse:
     use_spot = _is_spot(cluster.spec.allocation, cluster.offer)
     image_name = cluster.specific.image_name
-    image_cuda = _extract_image_cuda(image_name)
-    _, cuda_max = _get_cuda_range(cluster.spec)
+    cuda_min, cuda_max = _get_cuda_range(cluster.spec)
     allowed_cuda = (
-        _build_allowed_cuda_versions(image_cuda, cuda_max)
-        if image_cuda else None
+        _build_allowed_cuda_versions(cuda_min, cuda_max)
+        if cuda_min else None
     )
 
     min_bid = cluster.offer.spot_price or 0.0

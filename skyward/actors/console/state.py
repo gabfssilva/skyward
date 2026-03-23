@@ -24,6 +24,14 @@ class _NodeStatus(Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class _BootstrapTimeline:
+    phases: tuple[str, ...]
+    completed: frozenset[str]
+    active: str
+    output: str
+
+
+@dataclass(frozen=True, slots=True)
 class _TaskEntry:
     task_id: str
     name: str
@@ -64,5 +72,6 @@ class _State:
     tasks_per_instance: MappingProxyType[str, int] = MappingProxyType({})
     ssh_user: str = ""
     ssh_key_path: str = ""
-    bootstrap_spinners: MappingProxyType[str, tuple[str, str]] = MappingProxyType({})
+    bootstrap_spinners: MappingProxyType[str, _BootstrapTimeline] = MappingProxyType({})
     bootstrap_started: MappingProxyType[str, float] = MappingProxyType({})
+    progress_lines: MappingProxyType[str, str] = MappingProxyType({})

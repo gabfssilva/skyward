@@ -581,7 +581,7 @@ def ssh_transport(
 
                 tail_offset = start_line + 1
                 async with state.conn.create_process(
-                    f"tail -n +{tail_offset} -F /opt/skyward/events.jsonl"
+                    f"stdbuf -oL tail -s 0.1 -n +{tail_offset} -F /opt/skyward/events.jsonl"
                 ) as proc:
                     buffer = ""
                     lines_read = start_line

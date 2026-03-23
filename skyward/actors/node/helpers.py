@@ -121,13 +121,24 @@ async def do_start_worker(
 
     env_str = " ".join(f"{k}={v}" for k, v in env_vars.items())
     casty_cmd = f"nohup env {env_str} {launch_cmd.render()} > /var/log/casty.log 2>&1 & echo $!"
+    sanitize = (
+        r"s/\x1b\[[0-9;?]*[a-zA-Z]//g; "
+        r"s/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]//g"
+    )
     tail_inner = (
         f"source {EMIT_SH_PATH} && "
-        f"tail -f /var/log/casty.log 2>/dev/null "
-        f'| stdbuf -oL tr "\\r" "\\n" '
-        f'| stdbuf -oL sed "s/\\x1b\\[[0-9;?]*[a-zA-Z]//g; s/[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]//g" '
-        f"| while IFS= read -r line; do "
-        f'[ -n "$line" ] && emit_console "$line"; done'
+        f'_cr=$(printf "\\r") && _nl=$(printf "\\nx"); _nl=${{_nl%x}} && '
+        f"stdbuf -o0 tail -s 0.1 -f /var/log/casty.log 2>/dev/null "
+        f'| while IFS= read -r -d "" -n 1 _c || [ -n "$_c" ]; do '
+        f'if [ "$_c" = "$_cr" ]; then '
+        f'if [ -n "$_b" ]; then '
+        f'_b=$(printf "%s" "$_b" | sed "{sanitize}"); '
+        f'[ -n "$_b" ] && emit_console "$_b" "stdout" "true"; fi; _b=""; '
+        f'elif [ "$_c" = "$_nl" ]; then '
+        f'if [ -n "$_b" ]; then '
+        f'_b=$(printf "%s" "$_b" | sed "{sanitize}"); '
+        f'[ -n "$_b" ] && emit_console "$_b" "stdout" "false"; fi; _b=""; '
+        f'else _b+="$_c"; fi; done'
     )
     tail_cmd = f"nohup bash -c '{tail_inner}' </dev/null >/dev/null 2>&1 &"
 

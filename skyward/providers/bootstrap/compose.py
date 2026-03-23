@@ -88,7 +88,7 @@ emit_phase() {{{{
 }}}}
 
 emit_console() {{{{
-    local content="$1" stream="${{{{2:-stdout}}}}"
+    local content="$1" stream="${{{{2:-stdout}}}}" overwrite="${{{{3:-false}}}}"
     # Escape for JSON: backslash first, then quotes, then control chars
     content="${{{{content//\\\\/\\\\\\\\}}}}"
     content="${{{{content//\\"/\\\\\\"}}}}"
@@ -98,7 +98,8 @@ emit_console() {{{{
     local json
     json="{{{{\\\"type\\\":\\\"console\\\""
     json="$json,\\\"content\\\":\\\"$content\\\""
-    json="$json,\\\"stream\\\":\\\"$stream\\\"}}}}"
+    json="$json,\\\"stream\\\":\\\"$stream\\\""
+    json="$json,\\\"overwrite\\\":$overwrite}}}}"
     emit "$json"
 }}}}
 
@@ -134,10 +135,11 @@ run_phase() {{{{
 
     set +e
     script -qefc "$(printf '%q ' "$@")" /dev/null 2>&1 \\
-        | stdbuf -oL tr '\\r' '\\n' \\
-        | stdbuf -oL sed 's/\\x1b\\[[0-9;?]*[a-zA-Z]//g; s/[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]//g' \\
+        | stdbuf -oL sed 's/\\x1b\\[[0-9;?]*[a-zA-Z]//g; s/[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]//g; s/\\r/\\n__CR__\\n/g' \\
         | while IFS= read -r line; do
-        [ -n "$line" ] && emit_console "$line"
+        if [ "$line" = "__CR__" ]; then _ow=true; continue; fi
+        [ -n "$line" ] && emit_console "$line" "stdout" "${{{{_ow:-false}}}}"
+        _ow=false
     done
     local exit_code=${{{{PIPESTATUS[0]}}}}
     set -e

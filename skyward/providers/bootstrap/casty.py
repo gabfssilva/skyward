@@ -56,13 +56,13 @@ def casty_service(
 echo $! > /var/run/casty.pid
 
 # Stream Casty logs to events.jsonl in background
-# tr converts CR (tqdm progress-bar updates) into separate lines.
-# sed strips ANSI escape sequences and control chars for valid JSON.
+# sed strips ANSI escapes/control chars then converts CR to sentinel for overwrite detection.
 (tail -f /var/log/casty.log 2>/dev/null \\
-    | stdbuf -oL tr '\\r' '\\n' \\
-    | stdbuf -oL sed '{sanitize}' \\
+    | stdbuf -oL sed '{sanitize}; s/\\r/\\n__CR__\\n/g' \\
     | while IFS= read -r line; do
-    [ -n "$line" ] && emit_console "[casty] $line"
+    if [ "$line" = "__CR__" ]; then _ow=true; continue; fi
+    [ -n "$line" ] && emit_console "[casty] $line" "stdout" "${{_ow:-false}}"
+    _ow=false
 done) &"""
 
     return generate

@@ -29,14 +29,14 @@ class TestEmitAtomicity:
 
 
 class TestRunPhaseCarriageReturn:
-    """run_phase() must split \\r into separate lines for tqdm compatibility."""
+    """run_phase() uses __CR__ sentinel to detect \\r for overwrite support."""
 
-    def test_run_phase_pipes_through_tr(self) -> None:
+    def test_run_phase_uses_cr_sentinel(self) -> None:
         header = make_header(metrics=None)
         lines = header.splitlines()
         run_phase_body = _extract_function_body(lines, "run_phase")
-        tr_lines = [l for l in run_phase_body if "tr" in l and "\\r" in l]
-        assert len(tr_lines) >= 1, "run_phase must pipe through tr to split \\r"
+        body_text = "\n".join(run_phase_body)
+        assert "__CR__" in body_text, "run_phase must use __CR__ sentinel for \\r detection"
 
     def test_run_phase_filters_empty_lines(self) -> None:
         header = make_header(metrics=None)
@@ -56,6 +56,22 @@ class TestParseJsonlWithCarriageReturn:
         event = _parse_jsonl_line(line)
         assert isinstance(event, RawBootstrapConsole)
         assert "50%" in event.content
+
+    def test_parse_console_with_overwrite_flag(self) -> None:
+        from skyward.infra.ssh import RawBootstrapConsole, _parse_jsonl_line
+
+        line = '{"type":"console","content":"50%|█████","stream":"stdout","overwrite":true}'
+        event = _parse_jsonl_line(line)
+        assert isinstance(event, RawBootstrapConsole)
+        assert event.overwrite is True
+
+    def test_parse_console_overwrite_defaults_false(self) -> None:
+        from skyward.infra.ssh import RawBootstrapConsole, _parse_jsonl_line
+
+        line = '{"type":"console","content":"some log","stream":"stdout"}'
+        event = _parse_jsonl_line(line)
+        assert isinstance(event, RawBootstrapConsole)
+        assert event.overwrite is False
 
     def test_parse_console_with_multiple_escaped_cr(self) -> None:
         from skyward.infra.ssh import RawBootstrapConsole, _parse_jsonl_line

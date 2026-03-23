@@ -31,6 +31,7 @@ class RawBootstrapConsole:
 
     content: str
     stream: Literal["stdout", "stderr"] = "stdout"
+    overwrite: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +66,7 @@ class RawLogEvent:
 
     content: str
     stream: Literal["stdout", "stderr"] = "stdout"
+    overwrite: bool = False
 
 
 type RawStreamEvent = (
@@ -561,6 +563,7 @@ def _parse_jsonl_line(line: str) -> RawStreamEvent | None:
             return RawBootstrapConsole(
                 content=data.get("content", ""),
                 stream=data.get("stream", "stdout"),
+                overwrite=bool(data.get("overwrite", False)),
             )
         case "phase":
             return RawBootstrapPhase(
@@ -587,6 +590,7 @@ def _parse_jsonl_line(line: str) -> RawStreamEvent | None:
             return RawLogEvent(
                 content=data.get("content", ""),
                 stream=data.get("stream", "stdout"),
+                overwrite=bool(data.get("overwrite", False)),
             )
         case _:
             return None

@@ -44,6 +44,8 @@ query GpuTypes($minCudaVersion: String, $secureCloud: Boolean) {
       stockStatus
       totalCount
       rentedCount
+      minVcpu
+      minMemory
     }
   }
 }

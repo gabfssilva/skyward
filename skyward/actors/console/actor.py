@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import replace
+from types import MappingProxyType
 from typing import Any
 
 from casty import ActorContext, Behavior, Behaviors, SpyEvent, Terminated
@@ -237,7 +238,10 @@ def console_actor() -> Behavior[ConsoleInput]:
                     return observing(new)
 
                 case SpyEvent(event=StopPool()):
+                    for iid, content in state.progress_lines.items():
+                        _emit(console, iid, content, link=_ssh_url(state, iid))
                     _stop_live()
+
                     _emit(console, "skyward", "Shutting down...", WARNING_STYLE)
                     summary = _render_summary(state)
                     console.print(summary)
@@ -251,6 +255,7 @@ def console_actor() -> Behavior[ConsoleInput]:
 
                 case SpyEvent(event=NodeLost(node_id=nid, reason=reason)):
                     _emit(console, "error", f"Node {nid} lost: {reason}", "red")
+
                     return Behaviors.same()
 
                 case SpyEvent(event=DesiredCountChanged(desired=desired)):
@@ -306,10 +311,12 @@ def console_actor() -> Behavior[ConsoleInput]:
 
                 case SpyEvent(event=_ConnectionFailed(error=error)):
                     _emit(console, "error", f"SSH failed: {error}", "red")
+
                     return Behaviors.same()
 
                 case SpyEvent(event=Preempted(reason=reason)):
                     _emit(console, "error", f"Preempted: {reason}", "red")
+
                     return Behaviors.same()
 
                 case SpyEvent(event=BootstrapConsole() as ev):
@@ -321,30 +328,50 @@ def console_actor() -> Behavior[ConsoleInput]:
                         new = _on_timeline_output(state, iid, content[:80])
                         _update_footer(new)
                         return observing(new)
+                    if ev.overwrite:
+                        progress = MappingProxyType({
+                            **state.progress_lines, iid: content[:120],
+                        })
+                        new = replace(state, progress_lines=progress)
+                        _update_footer(new)
+                        return observing(new)
+                    if iid in state.progress_lines:
+                        _emit(console, iid, state.progress_lines[iid], link=_ssh_url(state, iid))
+                        progress = MappingProxyType({
+                            k: v for k, v in state.progress_lines.items() if k != iid
+                        })
+                        new = replace(state, progress_lines=progress)
+                    else:
+                        new = state
                     _emit(console, iid, content[:120], link=_ssh_url(state, iid))
-                    return Behaviors.same()
+                    return observing(new)
 
                 case SpyEvent(event=BootstrapPhase() as ev):
                     iid = ev.instance.instance.id
-                    if iid not in state.bootstrap_spinners:
-                        return Behaviors.same()
                     match ev.event:
                         case "started" if ev.phase != "bootstrap":
                             new = _on_timeline_phase_started(state, iid, ev.phase)
                             _update_footer(new)
                             return observing(new)
                         case "completed" if ev.phase != "bootstrap":
-                            new = _on_timeline_phase_completed(state, iid, ev.phase)
-                            _update_footer(new)
-                            return observing(new)
+                            if iid in state.bootstrap_spinners:
+                                new = _on_timeline_phase_completed(state, iid, ev.phase)
+                                _update_footer(new)
+                                return observing(new)
                         case "failed":
                             new = _on_spinner_remove(state, iid)
                             link = _ssh_url(new, iid)
                             _emit(console, iid, f"\u2717 {ev.phase}: {ev.error}", "red", link=link)
+
                             return observing(new)
                     return Behaviors.same()
 
-                case SpyEvent(event=BootstrapCommand()):
+                case SpyEvent(event=BootstrapCommand() as ev):
+                    iid = ev.instance.instance.id
+                    if iid in state.bootstrap_spinners:
+                        new = _on_timeline_output(state, iid, ev.command[:80])
+                        _update_footer(new)
+                        return observing(new)
                     return Behaviors.same()
 
                 case SpyEvent(event=BootstrapDone(instance=inst, success=ok, error=err)):
@@ -359,6 +386,7 @@ def console_actor() -> Behavior[ConsoleInput]:
                     new = _on_spinner_remove(state, iid)
                     link = _ssh_url(new, iid)
                     _emit(console, iid, f"\u2717 Bootstrap failed: {err}", "red", link=link)
+
                     return observing(new)
 
                 case SpyEvent(event=_LocalInstallDone() | _UserCodeSyncDone()):
@@ -366,6 +394,7 @@ def console_actor() -> Behavior[ConsoleInput]:
 
                 case SpyEvent(event=_PostBootstrapFailed(error=err)):
                     _emit(console, "error", f"Post-bootstrap failed: {err}", "red")
+
                     return Behaviors.same()
 
                 case SpyEvent(actor_path=path, event=_WorkerStarted()):
@@ -377,17 +406,20 @@ def console_actor() -> Behavior[ConsoleInput]:
                         new = _on_worker_started(_on_spinner_remove(state, iid), iid)
                         link = _ssh_url(new, iid)
                         _emit(console, iid, f"\u2713 Joined{elapsed}", "green bold", link=link)
+
                         _update_footer(new)
                         return observing(new)
                     return Behaviors.same()
 
                 case SpyEvent(event=_WorkerFailed(error=error)):
                     _emit(console, "error", f"Worker failed: {error}", "red")
+
                     return Behaviors.same()
 
                 case SpyEvent(event=SubmitTask(task_id=tid) as ev) if tid not in state.inflight:
                     name = _format_task(ev.fn, ev.args, ev.kwargs)
                     _emit_task(console, "skyward", "queued", name)
+
                     new = _on_task_submitted(state, tid, name, "single")
                     _update_footer(new)
                     return observing(new)
@@ -398,6 +430,7 @@ def console_actor() -> Behavior[ConsoleInput]:
                     name = _format_task(ev.fn, ev.args, ev.kwargs)
                     n = len(state.instances)
                     _emit_task(console, "skyward", "queued", f"{name} \u2192 all {n} nodes")
+
                     new = _on_task_submitted(state, tid, name, "broadcast")
                     _update_footer(new)
                     return observing(new)
@@ -411,6 +444,7 @@ def console_actor() -> Behavior[ConsoleInput]:
                         entry = state.inflight.get(tid)
                         if entry:
                             _emit_task(console, iid, "running", entry.name, link=_ssh_url(state, iid))
+
                     new = _on_task_assigned(state, tid, iid)
                     return observing(new)
 
@@ -427,6 +461,7 @@ def console_actor() -> Behavior[ConsoleInput]:
                             if updated and updated.broadcast_done >= updated.broadcast_total:
                                 elapsed = time.monotonic() - entry.started_at
                                 _emit_task(console, iid, "done", f"{entry.name} in {elapsed:.1f}s", link=link)
+
                                 new = _on_task_done(new, tid, elapsed)
                             _update_footer(new)
                             return observing(new)
@@ -438,6 +473,7 @@ def console_actor() -> Behavior[ConsoleInput]:
                             else:
                                 _emit_task(console, iid, "done", f"{entry.name} in {elapsed:.1f}s", link=link)
                                 new = _on_task_done(state, tid, elapsed)
+
                             _update_footer(new)
                             return observing(new)
 
@@ -445,7 +481,23 @@ def console_actor() -> Behavior[ConsoleInput]:
                     line = ev.line.strip()
                     if line:
                         iid = ev.instance.instance.id
+                        if ev.overwrite:
+                            progress = MappingProxyType({
+                                **state.progress_lines, iid: line,
+                            })
+                            new = replace(state, progress_lines=progress)
+                            _update_footer(new)
+                            return observing(new)
+                        if iid in state.progress_lines:
+                            _emit(console, iid, state.progress_lines[iid], link=_ssh_url(state, iid))
+                            progress = MappingProxyType({
+                                k: v for k, v in state.progress_lines.items() if k != iid
+                            })
+                            new = replace(state, progress_lines=progress)
+                        else:
+                            new = state
                         _emit(console, iid, line, link=_ssh_url(state, iid))
+                        return observing(new)
                     return Behaviors.same()
 
                 case SpyEvent(event=Metric() as ev):
@@ -459,10 +511,12 @@ def console_actor() -> Behavior[ConsoleInput]:
                 case SpyEvent(event=Error() as ev):
                     style = "red bold" if ev.fatal else "red"
                     _emit(console, "error", ev.message, style)
+
                     return Behaviors.same()
 
                 case SpyEvent(event=ShutdownRequested()):
                     _stop_live()
+
                     _emit(console, "skyward", "Shutting down...", WARNING_STYLE)
                     summary = _render_summary(state)
                     console.print(summary)
@@ -471,6 +525,7 @@ def console_actor() -> Behavior[ConsoleInput]:
                 case LocalOutput(line=line):
                     if stripped := line.rstrip():
                         _emit(console, "local", stripped)
+
                     return Behaviors.same()
 
                 case _:

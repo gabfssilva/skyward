@@ -550,10 +550,37 @@ def _parse_seeds(seeds_str: str | None) -> list[tuple[str, int]] | None:
     ]
 
 
+class _UnbufferedWriter:
+    """Text file writer that flushes after every write."""
+
+    __slots__ = ("_f",)
+
+    def __init__(self, path: str) -> None:
+        self._f = open(path, "a")  # noqa: SIM115
+
+    def write(self, s: str) -> int:
+        n = self._f.write(s)
+        self._f.flush()
+        return n
+
+    def flush(self) -> None:
+        self._f.flush()
+
+    @property
+    def encoding(self) -> str:
+        return self._f.encoding
+
+    def fileno(self) -> int:
+        return self._f.fileno()
+
+    def isatty(self) -> bool:
+        return False
+
+
 def _redirect_stdio_to_log(log_path: str = "/var/log/casty.log") -> None:
-    log_file = open(log_path, "a", buffering=1)  # noqa: SIM115
-    sys.stdout = log_file
-    sys.stderr = log_file
+    log_file = _UnbufferedWriter(path=log_path)
+    sys.stdout = log_file  # type: ignore[assignment]
+    sys.stderr = log_file  # type: ignore[assignment]
 
 
 def cli() -> None:

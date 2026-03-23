@@ -128,8 +128,8 @@ def _convert(raw_event: object, info: NodeInstance) -> Event | None:
     )
 
     match raw_event:
-        case RawBootstrapConsole(content=content, stream=stream):
-            return BootstrapConsole(instance=info, content=content, stream=stream)
+        case RawBootstrapConsole(content=content, stream=stream, overwrite=ow):
+            return BootstrapConsole(instance=info, content=content, stream=stream, overwrite=ow)
         case RawBootstrapPhase(event=event, phase=phase, elapsed=elapsed, error=error):
             if event == "failed":
                 return BootstrapFailed(instance=info, phase=phase, error=error or "unknown")
@@ -144,7 +144,7 @@ def _convert(raw_event: object, info: NodeInstance) -> Event | None:
                 return Metric(instance=info, name=name, value=float(value), timestamp=ts)
             except (ValueError, TypeError):
                 return None
-        case RawLogEvent(content=content, stream=stream):
-            return Log(instance=info, line=content, stream=stream)
+        case RawLogEvent(content=content, stream=stream, overwrite=ow):
+            return Log(instance=info, line=content, stream=stream, overwrite=ow)
         case _:
             return None

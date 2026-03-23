@@ -6,7 +6,7 @@ from types import MappingProxyType
 
 from skyward.core.model import Cluster, Instance
 
-from .state import _NodeStatus, _Phase, _State, _TaskEntry
+from .state import _BootstrapTimeline, _NodeStatus, _Phase, _State, _TaskEntry
 
 
 def _on_start_pool(state: _State) -> _State:
@@ -37,12 +37,64 @@ def _advance(current: _Phase, candidate: _Phase) -> _Phase:
     return candidate if candidate.value > current.value else current
 
 
-def _on_spinner_update(state: _State, instance_id: str, phase: str, output: str) -> _State:
-    spinners = MappingProxyType({**state.bootstrap_spinners, instance_id: (phase, output)})
+_KNOWN_PHASE_ORDER: tuple[str, ...] = (
+    "connecting", "env", "apt", "uv", "deps", "skyward", "volumes", "worker",
+)
+_DEFAULT_PHASES: tuple[str, ...] = ("connecting", "apt", "uv", "deps", "worker")
+
+
+def _insert_phase(phases: tuple[str, ...], new_phase: str) -> tuple[str, ...]:
+    if new_phase in phases:
+        return phases
+    known_idx = {p: i for i, p in enumerate(_KNOWN_PHASE_ORDER)}
+    if new_phase in known_idx:
+        pos = known_idx[new_phase]
+        for i, p in enumerate(phases):
+            if p in known_idx and known_idx[p] > pos:
+                return (*phases[:i], new_phase, *phases[i:])
+        return (*phases, new_phase)
+    for i, p in enumerate(phases):
+        if p == "worker":
+            return (*phases[:i], new_phase, *phases[i:])
+    return (*phases, new_phase)
+
+
+def _on_timeline_phase_started(state: _State, instance_id: str, phase: str) -> _State:
     started = state.bootstrap_started
     if instance_id not in started:
         started = MappingProxyType({**started, instance_id: time.monotonic()})
+    timeline = state.bootstrap_spinners.get(instance_id)
+    if timeline is None:
+        phases = _insert_phase(_DEFAULT_PHASES, phase)
+        new_tl = _BootstrapTimeline(
+            phases=phases, completed=frozenset(), active=phase, output="",
+        )
+    else:
+        completed = timeline.completed | {timeline.active} if timeline.active else timeline.completed
+        phases = _insert_phase(timeline.phases, phase)
+        new_tl = _BootstrapTimeline(
+            phases=phases, completed=completed, active=phase, output="",
+        )
+    spinners = MappingProxyType({**state.bootstrap_spinners, instance_id: new_tl})
     return replace(state, bootstrap_spinners=spinners, bootstrap_started=started)
+
+
+def _on_timeline_phase_completed(state: _State, instance_id: str, phase: str) -> _State:
+    timeline = state.bootstrap_spinners.get(instance_id)
+    if timeline is None:
+        return state
+    new_tl = replace(timeline, completed=timeline.completed | {phase})
+    spinners = MappingProxyType({**state.bootstrap_spinners, instance_id: new_tl})
+    return replace(state, bootstrap_spinners=spinners)
+
+
+def _on_timeline_output(state: _State, instance_id: str, output: str) -> _State:
+    timeline = state.bootstrap_spinners.get(instance_id)
+    if timeline is None:
+        return state
+    new_tl = replace(timeline, output=output)
+    spinners = MappingProxyType({**state.bootstrap_spinners, instance_id: new_tl})
+    return replace(state, bootstrap_spinners=spinners)
 
 
 def _on_spinner_remove(state: _State, instance_id: str) -> _State:

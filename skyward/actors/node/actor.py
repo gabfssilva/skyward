@@ -180,6 +180,25 @@ def node_actor(
                     ni = _bind_to_node(inst, node_id, provider_name, c)
                     log.info("Instance ready at {ip}", ip=inst.ip)
                     return _start_connecting(ctx, replace(s, cluster=c, ni=ni))
+                case _PollResult(instance=inst, cluster=updated) if (
+                    inst and inst.status == "exited"
+                ):
+                    c = updated or s.cluster
+                    log.warning(
+                        "Instance {iid} exited, terminating and replacing",
+                        iid=instance_id,
+                    )
+                    pool.tell(NodeLost(
+                        node_id=node_id,
+                        reason=f"Instance {instance_id} exited",
+                    ))
+                    ctx.pipe_to_self(
+                        terminate_and_replace(s.provider, c, instance_id),
+                        mapper=lambda new_inst: Provision(
+                            cluster=c, provider=s.provider, instance=new_inst,
+                        ),
+                    )
+                    return replacing(replace(s, cluster=c))
                 case _PollResult(cluster=updated):
                     c = updated or s.cluster
                     elapsed = asyncio.get_event_loop().time() - start_time

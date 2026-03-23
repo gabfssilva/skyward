@@ -5,6 +5,8 @@ from types import MappingProxyType
 
 from rich.align import Align
 from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
+from rich.control import Control
+from rich.segment import ControlType
 from rich.style import Style
 from rich.table import Table
 from rich.text import Text
@@ -172,17 +174,18 @@ def _gauge_badge(_label: str, pct: float) -> Style:
 _SPINNER_FRAMES = "\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
 _spinner_tick: list[int] = [0]
 
-_PHASE_EMOJI: dict[str, str] = {
-    "connecting": "\U0001f50c",
-    "bootstrap": "\U0001f680",
-    "env": "\U0001f4cb",
-    "apt": "\U0001f4e6",
-    "uv": "\U0001f4e6",
-    "deps": "\U0001f4e6",
-    "skyward": "\u2601\ufe0f",
-    "volumes": "\U0001f4be",
-    "worker": "\u2699\ufe0f",
+_PHASE_LABELS: dict[str, str] = {
+    "connecting": "ssh",
+    "env": "set env",
+    "apt": "apt install",
+    "uv": "setup uv",
+    "deps": "install deps",
+    "skyward": "install skyward",
+    "volumes": "mount volumes",
+    "worker": "start worker",
 }
+
+GREEN_DIM = Style(color="green")
 
 
 def _badge_text(label: str, link: str = "") -> Text:
@@ -236,6 +239,23 @@ def _emit_task(console: Console, badge: str, status: str, text: str, link: str =
     text_style = Style(link=link) if link else None
     line.append(f" {text}", style=text_style)
     console.print(line)
+
+
+def _emit_overwrite(
+    console: Console, badge: str, text: str,
+    style: str = "", link: str = "", offset: int = 0,
+) -> None:
+    line = _badge_text(badge, link=link)
+    text_style = Style.parse(style) + Style(link=link) if link else (style or None)
+    line.append(f"  {text}", style=text_style)
+    up = offset + 1
+    parts: list[RenderableType] = [
+        Control((ControlType.CURSOR_UP, up), (ControlType.ERASE_IN_LINE, 2)),
+        line,
+    ]
+    if offset > 0:
+        parts.append(Control((ControlType.CURSOR_DOWN, offset)))
+    console.print(Group(*parts))
 
 
 # --- Metric helpers ---
@@ -485,33 +505,28 @@ def _join_badges(badges: list[Text]) -> Text:
 def _render_spinners(state: _State) -> list[Text]:
     if not state.bootstrap_spinners:
         return []
-    frame = _SPINNER_FRAMES[_spinner_tick[0] % len(_SPINNER_FRAMES)]
+    tick = _spinner_tick[0]
+    frame = _SPINNER_FRAMES[tick % len(_SPINNER_FRAMES)]
     lines: list[Text] = []
-    for iid, (phase, last_output) in state.bootstrap_spinners.items():
-        emoji = _PHASE_EMOJI.get(phase, "\U0001f527")
+    for iid, timeline in state.bootstrap_spinners.items():
         line = _badge_text(iid)
-        line.append(f"  {frame} {emoji} ", style=YELLOW)
-        match phase:
-            case "worker":
-                line.append("Joining... ", style=MEDIUM)
-            case "connecting":
-                line.append("Connecting... ", style=MEDIUM)
-            case "apt":
-                line.append("Installing system packages... ", style=MEDIUM)
-            case "env":
-                line.append("Configuring environment... ", style=MEDIUM)
-            case "uv":
-                line.append("Setting up uv... ", style=MEDIUM)
-            case "deps":
-                line.append("Installing dependencies... ", style=MEDIUM)
-            case "skyward":
-                line.append("Installing Skyward... ", style=MEDIUM)
-            case "volumes":
-                line.append("Mounting volumes... ", style=MEDIUM)
-            case _:
-                pass
-        if last_output:
-            line.append(last_output[:80], style=DIM)
+        phase_label = _PHASE_LABELS.get(timeline.active, timeline.active) if timeline.active else "waiting"
+        spinner_badge = Text()
+        spinner_badge.append(f" {frame} {phase_label} ", style=_badge_style(timeline.active or "bootstrap"))
+        line.append_text(spinner_badge)
+        if timeline.output:
+            line.append(f"  {timeline.output[:80]}", style=DIM)
+        lines.append(line)
+    return lines
+
+
+def _render_progress(state: _State) -> list[Text]:
+    if not state.progress_lines:
+        return []
+    lines: list[Text] = []
+    for iid, content in state.progress_lines.items():
+        line = _badge_text(iid)
+        line.append(f"  {content}", style=MEDIUM)
         lines.append(line)
     return lines
 
@@ -527,7 +542,9 @@ class _LiveFooter:
         infra, status, tasks = _collect_badges(self.state)
         spinner_lines = _render_spinners(self.state)
 
-        if not infra and not status and not tasks and not spinner_lines:
+        progress_lines = _render_progress(self.state)
+
+        if not infra and not status and not tasks and not spinner_lines and not progress_lines:
             yield Text()
             return
 
@@ -535,6 +552,10 @@ class _LiveFooter:
         for line in spinner_lines:
             parts.append(line)
         if spinner_lines:
+            parts.append(Text())
+        for line in progress_lines:
+            parts.append(line)
+        if progress_lines:
             parts.append(Text())
         for group in (infra, status, tasks):
             if group:

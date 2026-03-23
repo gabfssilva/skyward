@@ -243,6 +243,7 @@ class Log:
     instance: NodeInstance
     line: str
     stream: Literal["stdout", "stderr"] = "stdout"
+    overwrite: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,6 +253,7 @@ class BootstrapConsole:
     instance: NodeInstance
     content: str
     stream: Literal["stdout", "stderr"] = "stdout"
+    overwrite: bool = False
 
 
 @dataclass(frozen=True, slots=True)

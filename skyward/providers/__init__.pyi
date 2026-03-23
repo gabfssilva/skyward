@@ -227,6 +227,9 @@ class RunPod:
         Max seconds to wait for bootstrap completion.
     bid_multiplier
         Multiplier for spot bid price.
+    container_image
+        Override the container image for pods. Skips automatic image
+        resolution from Docker Hub when set.
 
     Examples
     --------
@@ -252,6 +255,7 @@ class RunPod:
         request_timeout: int = 30,
         cpu_clock: Literal["3c", "5c"] | str = "3c",
         bid_multiplier: float = 1,
+        container_image: str | None = None,
         registry_auth: str | None = "docker hub",
     ) -> None: ...
     @property
