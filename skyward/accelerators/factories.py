@@ -711,6 +711,10 @@ def RTX_PRO_4000(*, count: float = 1) -> Accelerator:
     """NVIDIA RTX PRO 4000 - Blackwell workstation (2025)."""
     return Accelerator.from_name("RTX PRO 4000", count=count)
 
+def RTX_PRO_4500(*, count: float = 1) -> Accelerator:
+    """NVIDIA RTX PRO 4000 - Blackwell workstation (2025)."""
+    return Accelerator.from_name("RTX PRO 4500", count=count)
+
 
 # =============================================================================
 # NVIDIA Workstation - Ampere

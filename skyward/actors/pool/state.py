@@ -53,6 +53,32 @@ class PoolState:
     pool_started_at: float = 0.0
 
 
+def _derive_phase(s: PoolState) -> PoolPhase:
+    """Derive pool phase from node statuses.
+
+    Explicit phase (READY, WORKERS, STOPPING) takes priority — those are
+    set by the pool actor's state machine. For earlier phases, derive from
+    the minimum progress across all tracked nodes. Only advances past
+    PROVISIONING when all expected nodes have reported in.
+    """
+    match s.phase:
+        case PoolPhase.READY | PoolPhase.WORKERS | PoolPhase.STOPPING:
+            return s.phase
+    statuses = tuple(s.node_statuses.values())
+    if not statuses or len(statuses) < s.spec.nodes.min:
+        return PoolPhase.PROVISIONING
+    min_status = min(statuses, key=lambda v: v.value)
+    match min_status:
+        case NodeStatus.READY:
+            return PoolPhase.WORKERS
+        case NodeStatus.BOOTSTRAPPING:
+            return PoolPhase.BOOTSTRAP
+        case NodeStatus.SSH:
+            return PoolPhase.SSH
+        case _:
+            return PoolPhase.PROVISIONING
+
+
 def build_pool_snapshot(s: PoolState, name: str) -> PoolSnapshot:
     nodes = tuple(
         NodeSnapshot(
@@ -70,7 +96,7 @@ def build_pool_snapshot(s: PoolState, name: str) -> PoolSnapshot:
     )
     return PoolSnapshot(
         name=name,
-        phase=s.phase,
+        phase=_derive_phase(s),
         nodes=nodes,
         tasks=s.task_counters,
         scaling=s.scaling,

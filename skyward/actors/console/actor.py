@@ -23,6 +23,7 @@ from skyward.actors.messages import (
     Metric,
     NodeActivated,
     NodeBecameReady,
+    NodeConnected,
     NodeLost,
     Preempted,
     Provision,
@@ -51,6 +52,7 @@ from skyward.actors.snapshot import PoolPhase, PoolSnapshot
 
 from .messages import ConsoleInput, LocalOutput, _PollTick, _SetSession, _SnapshotReceived
 from .model import (
+    _advance,
     _on_bootstrap_done,
     _on_broadcast_partial,
     _on_metric,
@@ -105,7 +107,7 @@ def _apply_snapshot(state: _State, snap: PoolSnapshot) -> _State:
             accel_mem = accel.memory
     return replace(
         state,
-        phase=_PHASE_MAP.get(snap.phase, state.phase),
+        phase=_advance(state.phase, _PHASE_MAP.get(snap.phase, state.phase)),
         total_nodes=len(snap.nodes) or len(instances) or state.total_nodes,
         desired_nodes=snap.scaling.desired_nodes,
         pending_nodes=snap.scaling.pending_nodes,
@@ -235,7 +237,7 @@ def console_actor() -> Behavior[ConsoleInput]:
             case SpyEvent(event=PoolStopped() | _ShutdownDone()):
                 return state
 
-            case SpyEvent(event=Provision() | NodeBecameReady() | NodeActivated() | _PollResult()):
+            case SpyEvent(event=Provision() | NodeBecameReady() | NodeActivated() | NodeConnected() | _PollResult()):
                 return state
 
             case SpyEvent(event=NodeLost(node_id=nid, reason=reason)):

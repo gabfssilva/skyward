@@ -52,6 +52,8 @@ class RunPod(ProviderConfig):
         registry_auth: Name of the container registry credential registered in RunPod
             account settings. Authenticates Docker Hub pulls to avoid rate limits.
             Set to None to skip. Default: "docker hub".
+        min_inet_down: Minimum download speed in Mbps. None disables filter.
+        min_inet_up: Minimum upload speed in Mbps. None disables filter.
     """
 
     cluster_mode: ClusterMode = "individual"
@@ -72,6 +74,8 @@ class RunPod(ProviderConfig):
     bid_multiplier: float = 1
     container_image: str | None = None
     registry_auth: str | None = "docker hub"
+    min_inet_down: float | None = None
+    min_inet_up: float | None = None
 
     async def create_provider(self) -> RunPodProvider:
         from skyward.providers.runpod.provider import RunPodProvider

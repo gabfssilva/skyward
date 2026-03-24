@@ -94,6 +94,7 @@ from .factories import (
     # NVIDIA Workstation - Ampere
     RTX_A6000,
     RTX_PRO_4000,
+    RTX_PRO_4500,
     # NVIDIA Workstation - Blackwell
     RTX_PRO_6000,
     # NVIDIA Datacenter - Legacy
@@ -261,6 +262,7 @@ __all__ = [
     # NVIDIA Workstation - Blackwell
     "RTX_PRO_6000",
     "RTX_PRO_4000",
+    "RTX_PRO_4500",
     # NVIDIA Workstation - Ampere
     "RTX_A6000",
     "RTX_A5000",

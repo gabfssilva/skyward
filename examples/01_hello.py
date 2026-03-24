@@ -88,7 +88,8 @@ def format_results(r: dict) -> None:
 if __name__ == "__main__":
     with sky.Compute(
         provider=sky.RunPod(cloud_type='community'),
-        accelerator=sky.accelerators.RTX_3090(),
-        image=sky.Image(pip=['jax[cuda12]']),
+        accelerator=sky.accelerators.RTX_3080_Ti(),
+        image=sky.Image(pip=['jax[cuda13]']),
+        allocation='spot'
     ) as compute:
         format_results(benchmark(4096, iterations=50) >> compute)

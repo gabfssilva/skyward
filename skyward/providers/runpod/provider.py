@@ -4,7 +4,7 @@ import asyncio
 import re
 import uuid
 from collections.abc import AsyncIterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from typing import TYPE_CHECKING
 
@@ -165,14 +165,22 @@ def _extract_tag_version(tag: str) -> tuple[int, int, int]:
     return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else (0, 0, 0)
 
 
-def _select_best_image(
+def _select_image_candidates(
     tags: list[str],
     cuda_min: tuple[int, int],
     cuda_max: tuple[int, int],
     ubuntu: str,
-) -> str | None:
-    """Select the newest image within the CUDA version range."""
-    candidates: list[tuple[tuple[int, int, int], tuple[int, int], tuple[int, int], str]] = []
+) -> tuple[str, ...]:
+    """Select best image per CUDA version within range, sorted highest first.
+
+    For each distinct CUDA major.minor in the Docker Hub tags, picks the
+    newest image tag. Returns them highest-CUDA-first so the deploy retry
+    can walk the list top-down until a host accepts.
+    """
+    best_per_cuda: dict[
+        tuple[int, int],
+        tuple[tuple[int, int, int], tuple[int, int], str],
+    ] = {}
     for tag in tags:
         if tag.endswith("-test") or "-dev-" in tag or "ubuntu" not in tag:
             continue
@@ -182,20 +190,24 @@ def _select_best_image(
         if not m:
             continue
         cuda_ver = (int(m.group(1)), int(m.group(2)))
-        if cuda_min <= cuda_ver <= cuda_max:
-            candidates.append((_extract_tag_version(tag), cuda_ver, _extract_ubuntu(tag), tag))
+        if not (cuda_min <= cuda_ver <= cuda_max):
+            continue
+        tag_ver = _extract_tag_version(tag)
+        ubuntu_ver = _extract_ubuntu(tag)
+        prev = best_per_cuda.get(cuda_ver)
+        if not prev or (tag_ver, ubuntu_ver) > (prev[0], prev[1]):
+            best_per_cuda[cuda_ver] = (tag_ver, ubuntu_ver, tag)
 
-    if not candidates:
-        return None
+    return tuple(
+        f"{_DOCKER_HUB_REPO}:{entry[2]}"
+        for _, entry in sorted(best_per_cuda.items(), reverse=True)
+    )
 
-    candidates.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
-    return f"{_DOCKER_HUB_REPO}:{candidates[0][3]}"
 
-
-async def _resolve_image(
-    spec: PoolSpec, config: RunPod, *, proven_cuda: str | None = None,
-) -> str:
-    """Resolve the best RunPod container image for the given spec.
+async def _resolve_image_candidates(
+    spec: PoolSpec, config: RunPod,
+) -> tuple[str, ...]:
+    """Resolve candidate RunPod container images, sorted highest CUDA first.
 
     Parameters
     ----------
@@ -203,38 +215,30 @@ async def _resolve_image(
         Pool specification with accelerator CUDA range.
     config
         RunPod provider config (ubuntu preference).
-    proven_cuda
-        Highest CUDA version with confirmed stock on RunPod hosts.
-        When provided, caps the image selection so the container
-        doesn't require a newer driver than the host provides.
     """
     if config.container_image:
-        return config.container_image
+        return (config.container_image,)
 
     cuda_catalog_min, cuda_catalog_max = _get_cuda_range(spec)
     if cuda_catalog_min is None:
-        return _FALLBACK_IMAGE
+        return (_FALLBACK_IMAGE,)
 
     min_ver = _parse_cuda_version(cuda_catalog_min)
-    max_ver = (
-        _parse_cuda_version(proven_cuda)
-        if proven_cuda
-        else _parse_cuda_version(cuda_catalog_max) if cuda_catalog_max else (99, 99)
-    )
+    max_ver = _parse_cuda_version(cuda_catalog_max) if cuda_catalog_max else (99, 99)
 
     tags = await _fetch_docker_tags()
-    if image := _select_best_image(tags, min_ver, max_ver, config.ubuntu):
+    if candidates := _select_image_candidates(tags, min_ver, max_ver, config.ubuntu):
         log.info(
-            "Selected image {image} for CUDA {min}-{max}",
-            image=image, min=cuda_catalog_min, max=proven_cuda or cuda_catalog_max,
+            "Resolved {n} image candidates for CUDA {min}-{max}",
+            n=len(candidates), min=cuda_catalog_min, max=cuda_catalog_max,
         )
-        return image
+        return candidates
 
     log.warning(
-        "No matching image for CUDA {min}-{max}, using fallback",
-        min=cuda_catalog_min, max=proven_cuda or cuda_catalog_max,
+        "No matching images for CUDA {min}-{max}, using fallback",
+        min=cuda_catalog_min, max=cuda_catalog_max,
     )
-    return _FALLBACK_IMAGE
+    return (_FALLBACK_IMAGE,)
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +258,7 @@ class RunPodSpecific:
     cloud_type: str
     gpu_vram_gb: int = 0
     image_name: str = _FALLBACK_IMAGE
+    image_candidates: tuple[str, ...] = ()
     registry_auth_id: str | None = None
     global_networking: bool = False
     runpod_cluster_id: str | None = None
@@ -419,18 +424,18 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                     )
 
         match offer.specific:
-            case RunPodOfferData(gpu_type_id=gid, proven_cuda=proven_cuda):
+            case RunPodOfferData(gpu_type_id=gid):
                 gpu_type_id: str | None = gid
             case _:
                 gpu_type_id = None
-                proven_cuda = None
 
         gpu_vram_gb = 0
         if offer.instance_type.accelerator:
             mem = offer.instance_type.accelerator.memory
             gpu_vram_gb = int(mem.replace("GB", "")) if mem else 0
 
-        image_name = await _resolve_image(spec, self._config, proven_cuda=proven_cuda)
+        image_candidates = await _resolve_image_candidates(spec, self._config)
+        image_name = image_candidates[0]
 
         match self._config.global_networking:
             case True:
@@ -460,11 +465,22 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
             "runpodctl remove pod $RUNPOD_POD_ID"
         )
 
+        effective_offer = offer
+        if (
+            self._config.bid_multiplier != 1
+            and _is_spot(spec.allocation, offer)
+            and offer.spot_price is not None
+        ):
+            effective_offer = replace(
+                offer,
+                spot_price=round(offer.spot_price * self._config.bid_multiplier, 4),
+            )
+
         return Cluster(
             id=f"runpod-{uuid.uuid4().hex[:8]}",
             status="setting_up",
             spec=spec,
-            offer=offer,
+            offer=effective_offer,
             ssh_key_path=ssh_key_path,
             ssh_user="root",
             use_sudo=False,
@@ -474,6 +490,7 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                 cloud_type=self._config.cloud_type,
                 gpu_vram_gb=gpu_vram_gb,
                 image_name=image_name,
+                image_candidates=image_candidates,
                 registry_auth_id=registry_auth_id,
                 global_networking=effective_global_networking,
                 runpod_cluster_id=runpod_cluster_id,
@@ -743,64 +760,94 @@ async def _create_gpu_pod(
     cluster: Cluster[RunPodSpecific],
     node_index: int,
 ) -> PodResponse:
+    specific = cluster.specific
     use_spot = _is_spot(cluster.spec.allocation, cluster.offer)
-    image_name = cluster.specific.image_name
-    cuda_min, cuda_max = _get_cuda_range(cluster.spec)
-    allowed_cuda = (
-        _build_allowed_cuda_versions(cuda_min, cuda_max)
-        if cuda_min else None
-    )
+    _, cuda_max = _get_cuda_range(cluster.spec)
 
-    min_bid = cluster.offer.spot_price or 0.0
-    bid = round(min_bid * config.bid_multiplier, 4) if use_spot else None
+    bid = cluster.offer.spot_price if use_spot else None
+    candidates = specific.image_candidates or (specific.image_name,)
 
-    log.debug(
-        "Creating GPU pod for node {idx}: gpu={gpu}, count={count}, spot={spot}",
-        idx=node_index, gpu=cluster.specific.gpu_type_id,
-        count=int(cluster.spec.accelerator_count or 1), spot=use_spot,
-    )
+    if specific.global_networking:
+        return await _create_gpu_pod_rest(
+            client, config, cluster, node_index,
+            image_name=candidates[0], use_spot=use_spot,
+        )
 
-    if cluster.specific.global_networking:
-        params: PodCreateParams = {
-            "name": f"skyward-{cluster.id}-{node_index}",
-            "imageName": image_name,
-            "gpuTypeIds": [cluster.specific.gpu_type_id or ""],
-            "gpuCount": int(cluster.spec.accelerator_count or 1),
-            "cloudType": config.cloud_type.upper(),
-            "containerDiskInGb": cluster.spec.disk_gb or config.container_disk_gb,
-            "volumeInGb": config.volume_gb,
-            "volumeMountPath": config.volume_mount_path,
-            "ports": list(config.ports),
-            "interruptible": use_spot,
-            "globalNetworking": True,
-        }
-        if config.data_center_ids != "global":
-            params["dataCenterIds"] = list(config.data_center_ids)
-        if config.min_inet_down is not None:
-            params["minDownload"] = int(config.min_inet_down)
-        if config.min_inet_up is not None:
-            params["minUpload"] = int(config.min_inet_up)
-        return await client.create_pod(params)
+    last_error: RunPodError | None = None
+    for image_name in candidates:
+        image_cuda = _extract_image_cuda(image_name)
+        allowed_cuda = (
+            _build_allowed_cuda_versions(image_cuda, cuda_max)
+            if image_cuda and cuda_max else None
+        )
 
-    return await client.deploy_gpu_pod(
-        name=f"skyward-{cluster.id}-{node_index}",
-        image_name=image_name,
-        gpu_type_id=cluster.specific.gpu_type_id or "",
-        gpu_count=int(cluster.spec.accelerator_count or 1),
-        cloud_type=config.cloud_type.upper(),
-        container_disk_gb=cluster.spec.disk_gb or config.container_disk_gb,
-        volume_gb=config.volume_gb,
-        volume_mount_path=config.volume_mount_path,
-        ports=",".join(config.ports),
-        interruptible=use_spot,
-        data_center_id=config.data_center_ids[0] if config.data_center_ids != "global" else None,
-        deploy_cost=cluster.spec.max_hourly_cost,
-        spot_price=bid,
-        allowed_cuda_versions=allowed_cuda,
-        container_registry_auth_id=cluster.specific.registry_auth_id,
-        min_download=int(config.min_inet_down) if config.min_inet_down is not None else None,
-        min_upload=int(config.min_inet_up) if config.min_inet_up is not None else None,
-    )
+        log.debug(
+            "Trying pod for node {idx}: image={image}, cuda={cuda}, spot={spot}",
+            idx=node_index, image=image_name, cuda=image_cuda, spot=use_spot,
+        )
+
+        try:
+            return await client.deploy_gpu_pod(
+                name=f"skyward-{cluster.id}-{node_index}",
+                image_name=image_name,
+                gpu_type_id=specific.gpu_type_id or "",
+                gpu_count=int(cluster.spec.accelerator_count or 1),
+                cloud_type=config.cloud_type.upper(),
+                container_disk_gb=cluster.spec.disk_gb or config.container_disk_gb,
+                volume_gb=config.volume_gb,
+                volume_mount_path=config.volume_mount_path,
+                ports=",".join(config.ports),
+                interruptible=use_spot,
+                data_center_id=config.data_center_ids[0] if config.data_center_ids != "global" else None,
+                deploy_cost=cluster.spec.max_hourly_cost,
+                spot_price=bid,
+                allowed_cuda_versions=allowed_cuda,
+                container_registry_auth_id=specific.registry_auth_id,
+                min_download=int(config.min_inet_down) if config.min_inet_down is not None else None,
+                min_upload=int(config.min_inet_up) if config.min_inet_up is not None else None,
+            )
+        except RunPodError as e:
+            if "SUPPLY_CONSTRAINT" not in str(e):
+                raise
+            log.info(
+                "No hosts for CUDA {cuda}, trying next candidate",
+                cuda=image_cuda,
+            )
+            last_error = e
+
+    raise last_error or RunPodError("All image candidates exhausted")
+
+
+async def _create_gpu_pod_rest(
+    client: RunPodClient,
+    config: RunPod,
+    cluster: Cluster[RunPodSpecific],
+    node_index: int,
+    *,
+    image_name: str,
+    use_spot: bool,
+) -> PodResponse:
+    params: PodCreateParams = {
+        "name": f"skyward-{cluster.id}-{node_index}",
+        "imageName": image_name,
+        "gpuTypeIds": [cluster.specific.gpu_type_id or ""],
+        "gpuCount": int(cluster.spec.accelerator_count or 1),
+        "cloudType": config.cloud_type.upper(),
+        "containerDiskInGb": cluster.spec.disk_gb or config.container_disk_gb,
+        "volumeInGb": config.volume_gb,
+        "volumeMountPath": config.volume_mount_path,
+        "ports": list(config.ports),
+        "interruptible": use_spot,
+        "globalNetworking": True,
+        "supportPublicIp": True,
+    }
+    if config.data_center_ids != "global":
+        params["dataCenterIds"] = list(config.data_center_ids)
+    if config.min_inet_down is not None:
+        params["minDownload"] = int(config.min_inet_down)
+    if config.min_inet_up is not None:
+        params["minUpload"] = int(config.min_inet_up)
+    return await client.create_pod(params)
 
 
 async def _create_cpu_pod(

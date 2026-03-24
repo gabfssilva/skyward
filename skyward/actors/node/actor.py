@@ -27,6 +27,7 @@ from skyward.actors.messages import (
     HeadAddressKnown,
     NodeActivated,
     NodeBecameReady,
+    NodeConnected,
     NodeLost,
     Preempted,
     Provision,
@@ -278,8 +279,10 @@ def node_actor(
     def connecting(s: NodeState) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
             match msg:
-                case _Connected(transport_ref=tref, local_port=lp):
+                case _Connected(transport_ref=tref, local_port=lp, instance=ni):
                     log.info("SSH tunnel established (port={port})", port=lp)
+                    if ni is not None:
+                        pool.tell(NodeConnected(node_id=node_id, instance=ni))
                     return _start_bootstrapping(ctx, replace(s, transport_ref=tref, local_port=lp))
                 case _ConnectionFailed(error=error):
                     log.error("SSH connection failed: {error}", error=error)

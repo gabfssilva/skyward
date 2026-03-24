@@ -99,7 +99,10 @@ class PodCreateParams(TypedDict, total=False):
     dataCenterIds: list[str]
     minVCPUPerGPU: int
     minRAMPerGPU: int
+    minDownload: int
+    minUpload: int
     globalNetworking: bool
+    supportPublicIp: bool
 
 
 class LowestPriceResponse(TypedDict):

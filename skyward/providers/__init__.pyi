@@ -230,6 +230,10 @@ class RunPod:
     container_image
         Override the container image for pods. Skips automatic image
         resolution from Docker Hub when set.
+    min_inet_down
+        Minimum download speed in Mbps. ``None`` disables filter.
+    min_inet_up
+        Minimum upload speed in Mbps. ``None`` disables filter.
 
     Examples
     --------
@@ -257,6 +261,8 @@ class RunPod:
         bid_multiplier: float = 1,
         container_image: str | None = None,
         registry_auth: str | None = "docker hub",
+        min_inet_down: float | None = None,
+        min_inet_up: float | None = None,
     ) -> None: ...
     @property
     def type(self) -> str: ...

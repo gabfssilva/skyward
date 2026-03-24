@@ -369,6 +369,14 @@ class TaskResult:
 
 
 @dataclass(frozen=True, slots=True)
+class NodeConnected:
+    """Node established SSH tunnel — instance is provisioned and reachable."""
+
+    node_id: NodeId
+    instance: NodeInstance
+
+
+@dataclass(frozen=True, slots=True)
 class NodeBecameReady:
     node_id: NodeId
     instance: NodeInstance

@@ -23,6 +23,7 @@ from skyward.actors.messages import (
     NodeActivated,
     NodeAvailable,
     NodeBecameReady,
+    NodeConnected,
     NodeInstance,
     NodeJoined,
     NodeLost,
@@ -314,6 +315,10 @@ def pool_actor(
 
         async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
             match msg:
+                case NodeConnected(instance=meta):
+                    iid = meta.instance.id
+                    new_statuses = MappingProxyType({**s.node_statuses, iid: NodeStatus.SSH})
+                    return provisioning_instances(replace(s, node_statuses=new_statuses))
                 case NodeBecameReady() as nbr:
                     log.debug(
                         "Node {nid} ready early (buffered)",
@@ -530,6 +535,11 @@ def pool_actor(
                         if nid != 0:
                             node_ref.tell(h)
                     return provisioning(replace(s, head_addr=h.head_addr))
+                case NodeConnected(node_id=nid, instance=meta):
+                    iid = meta.instance.id
+                    new_statuses = MappingProxyType({**s.node_statuses, iid: NodeStatus.SSH})
+                    log.debug("Node {nid} SSH connected", nid=nid)
+                    return provisioning(replace(s, node_statuses=new_statuses))
                 case NodeBecameReady(node_id=nid, instance=meta):
                     new_instances = MappingProxyType({**s.instances, nid: meta})
                     log.info(
@@ -537,7 +547,7 @@ def pool_actor(
                         nid=nid, n=len(new_instances), total=s.spec.nodes.min,
                     )
                     iid = meta.instance.id
-                    new_statuses = MappingProxyType({**s.node_statuses, iid: NodeStatus.SSH})
+                    new_statuses = MappingProxyType({**s.node_statuses, iid: NodeStatus.BOOTSTRAPPING})
                     effective_head = s.head_addr or msg.private_ip or ""
 
                     if s.spec.cluster:
@@ -697,9 +707,13 @@ def pool_actor(
                     tm.tell(bcast)
                     new_counters = replace(s.task_counters, queued=s.task_counters.queued + 1)
                     return ready(replace(s, task_counters=new_counters))
-                case NodeBecameReady(node_id=nid, instance=meta) as nbr:
+                case NodeConnected(node_id=nid, instance=meta):
                     iid = meta.instance.id
                     new_statuses = MappingProxyType({**s.node_statuses, iid: NodeStatus.SSH})
+                    return ready(replace(s, node_statuses=new_statuses))
+                case NodeBecameReady(node_id=nid, instance=meta) as nbr:
+                    iid = meta.instance.id
+                    new_statuses = MappingProxyType({**s.node_statuses, iid: NodeStatus.BOOTSTRAPPING})
                     new_instances = MappingProxyType({**s.instances, nid: meta})
                     if s.spec.cluster:
                         assert client is not None

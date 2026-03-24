@@ -217,6 +217,8 @@ class RunPodClient:
         spot_price: float | None = None,
         allowed_cuda_versions: list[str] | None = None,
         container_registry_auth_id: str | None = None,
+        min_download: int | None = None,
+        min_upload: int | None = None,
     ) -> PodResponse:
         """Deploy a GPU pod via GraphQL."""
         input_vars: dict[str, Any] = {
@@ -230,6 +232,7 @@ class RunPodClient:
             "volumeMountPath": volume_mount_path,
             "ports": ports,
             "startSsh": True,
+            "supportPublicIp": True,
         }
 
         if data_center_id:
@@ -238,6 +241,10 @@ class RunPodClient:
             input_vars["allowedCudaVersions"] = allowed_cuda_versions
         if container_registry_auth_id:
             input_vars["containerRegistryAuthId"] = container_registry_auth_id
+        if min_download is not None:
+            input_vars["minDownload"] = min_download
+        if min_upload is not None:
+            input_vars["minUpload"] = min_upload
 
         if interruptible:
             input_vars["bidPerGpu"] = deploy_cost or spot_price or 0.0

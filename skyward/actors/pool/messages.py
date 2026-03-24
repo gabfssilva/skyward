@@ -13,6 +13,7 @@ from skyward.actors.messages import (
     HeadAddressKnown,
     NodeActivated,
     NodeBecameReady,
+    NodeConnected,
     NodeLost,
     SpawnNodes,
     SubmitBroadcast,
@@ -77,6 +78,7 @@ type PoolMsg = (
     | HeadAddressKnown
     | NodeActivated
     | NodeBecameReady
+    | NodeConnected
     | NodeLost
     | SubmitTask
     | SubmitBroadcast
