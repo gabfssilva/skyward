@@ -15,7 +15,9 @@ from skyward.observability.logger import logger
 class PoolConfig:
     image: Image
     worker: Worker
-    ssh_timeout: int
+    provision_timeout: float
+    ssh_timeout: float
+    bootstrap_timeout: float
     ssh_retry_interval: int
     provision_retry_delay: float
     max_provision_attempts: int
@@ -115,7 +117,9 @@ async def select_offers(
             worker=config.worker,
             provider=provider_config.type,  # type: ignore[arg-type]
             max_hourly_cost=s.max_hourly_cost,
-            ssh_timeout=float(config.ssh_timeout),
+            provision_timeout=config.provision_timeout,
+            ssh_timeout=config.ssh_timeout,
+            bootstrap_timeout=config.bootstrap_timeout,
             ssh_retry_interval=float(config.ssh_retry_interval),
             provision_retry_delay=config.provision_retry_delay,
             max_provision_attempts=config.max_provision_attempts,

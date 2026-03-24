@@ -119,6 +119,7 @@ class ComputePool:
         default_compute_timeout: float = ...,
         provision_timeout: int = ...,
         ssh_timeout: int = ...,
+        bootstrap_timeout: int = ...,
         ssh_retry_interval: int = ...,
         provision_retry_delay: float = ...,
         max_provision_attempts: int = ...,
@@ -141,6 +142,7 @@ class ComputePool:
         default_compute_timeout: float = ...,
         provision_timeout: int = ...,
         ssh_timeout: int = ...,
+        bootstrap_timeout: int = ...,
         ssh_retry_interval: int = ...,
         provision_retry_delay: float = ...,
         max_provision_attempts: int = ...,
@@ -171,6 +173,7 @@ class ComputePool:
         default_compute_timeout: float = 300.0,
         provision_timeout: int = 300,
         ssh_timeout: int = 300,
+        bootstrap_timeout: int = 300,
         ssh_retry_interval: int = 2,
         provision_retry_delay: float = 5.0,
         max_provision_attempts: int = 3,
@@ -218,6 +221,7 @@ class ComputePool:
         self.default_compute_timeout = default_compute_timeout
         self.provision_timeout = provision_timeout
         self.ssh_timeout = ssh_timeout
+        self.bootstrap_timeout = bootstrap_timeout
         self.ssh_retry_interval = ssh_retry_interval
         self.provision_retry_delay = provision_retry_delay
         self.max_provision_attempts = max_provision_attempts
@@ -948,7 +952,9 @@ class ComputePool:
         return PoolConfig(
             image=self.image,
             worker=self.worker,
+            provision_timeout=float(self.provision_timeout),
             ssh_timeout=self.ssh_timeout,
+            bootstrap_timeout=float(self.bootstrap_timeout),
             ssh_retry_interval=self.ssh_retry_interval,
             provision_retry_delay=self.provision_retry_delay,
             max_provision_attempts=self.max_provision_attempts,
@@ -965,7 +971,7 @@ class ComputePool:
             self._build_specs(),
             self._pool_config(),
             f"pool-{id(self)}",
-            float(self.provision_timeout),
+            float(self.provision_timeout + self.ssh_timeout + self.bootstrap_timeout + 30),
         )
 
         self._spec = spec
@@ -1029,6 +1035,7 @@ class ComputePool:
         pool.default_compute_timeout = default_compute_timeout
         pool.provision_timeout = 300
         pool.ssh_timeout = 300
+        pool.bootstrap_timeout = 300
         pool.ssh_retry_interval = 2
         pool.provision_retry_delay = 5.0
         pool.max_provision_attempts = 3

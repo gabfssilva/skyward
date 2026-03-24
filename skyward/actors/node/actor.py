@@ -89,6 +89,7 @@ def node_actor(
     ssh_retry_interval: float = 5.0,
     poll_interval: float = 5.0,
     poll_timeout: float = 300.0,
+    bootstrap_timeout: float = 300.0,
     _skip_monitor: bool = False,
     ca: CertificateAuthority | None = None,
 ) -> Behavior[NodeMsg]:
@@ -298,6 +299,7 @@ def node_actor(
         assert ni is not None
         assert tref is not None
         log.info("Starting bootstrap")
+        bs_start = asyncio.get_event_loop().time()
 
         if not _skip_monitor:
             monitor_ref = ctx.spawn(
@@ -313,17 +315,28 @@ def node_actor(
 
         if s.cluster.prebaked:
             log.info("Prebaked image detected, skipping bootstrap")
-            return _enter_post_bootstrap(ctx, s)
+            return _enter_post_bootstrap(ctx, s, bs_start)
 
         ctx.pipe_to_self(
             run_bootstrap(tref, ni, s.cluster, s.cluster.spec),
             mapper=lambda _: _BootstrapUploaded(),
             on_failure=lambda e: _BootstrapUploadFailed(error=str(e)),
         )
-        return bootstrapping(s)
+        return bootstrapping(s, bs_start)
 
-    def bootstrapping(s: NodeState) -> Behavior[NodeMsg]:
+    def _check_bootstrap_timeout(
+        ctx: ActorContext[NodeMsg], s: NodeState, bs_start: float,
+    ) -> Behavior[NodeMsg] | None:
+        elapsed = asyncio.get_event_loop().time() - bs_start
+        if elapsed > bootstrap_timeout:
+            log.error("Bootstrap timed out after {t:.0f}s", t=elapsed)
+            return _fail_and_replace(ctx, s, f"Bootstrap timed out after {elapsed:.0f}s")
+        return None
+
+    def bootstrapping(s: NodeState, bs_start: float) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
+            if timeout_behavior := _check_bootstrap_timeout(ctx, s, bs_start):
+                return timeout_behavior
             match msg:
                 case BootstrapDone(success=True, instance=done_info):
                     log.info("Bootstrap completed successfully")
@@ -336,7 +349,7 @@ def node_actor(
                                 mapper=lambda _: _SnapshotSaved(),
                                 on_failure=lambda e: _SnapshotFailed(error=str(e)),
                             )
-                    return _enter_post_bootstrap(ctx, replace(s, ni=final_ni))
+                    return _enter_post_bootstrap(ctx, replace(s, ni=final_ni), bs_start)
                 case BootstrapDone(success=False, error=error):
                     log.error("Bootstrap failed: {error}", error=error)
                     return _fail_and_replace(ctx, s, error or "bootstrap failed")
@@ -346,13 +359,15 @@ def node_actor(
                 case _BootstrapUploadFailed(error=error):
                     log.error("Bootstrap upload failed: {error}", error=error)
                     return _fail_and_replace(ctx, s, error)
-            return _common(ctx, msg, s, bootstrapping)
+            return _common(ctx, msg, s, lambda ns: bootstrapping(ns, bs_start))
 
         return Behaviors.receive(receive)
 
     # ── post_bootstrap ────────────────────────────────────────────────
 
-    def _enter_post_bootstrap(ctx: ActorContext[NodeMsg], s: NodeState) -> Behavior[NodeMsg]:
+    def _enter_post_bootstrap(
+        ctx: ActorContext[NodeMsg], s: NodeState, bs_start: float,
+    ) -> Behavior[NodeMsg]:
         ni = s.ni
         tref = s.transport_ref
         assert ni is not None
@@ -365,7 +380,7 @@ def node_actor(
                 mapper=lambda _, m=ni: _LocalInstallDone(instance=m),
                 on_failure=lambda e: _PostBootstrapFailed(error=str(e)),
             )
-            return post_bootstrap(s)
+            return post_bootstrap(s, bs_start)
 
         if spec.image and getattr(spec.image, "includes", None):
             ctx.pipe_to_self(
@@ -373,12 +388,14 @@ def node_actor(
                 mapper=lambda _, m=ni: _UserCodeSyncDone(instance=m),
                 on_failure=lambda e: _PostBootstrapFailed(error=str(e)),
             )
-            return post_bootstrap(s)
+            return post_bootstrap(s, bs_start)
 
-        return _enter_ready(ctx, s)
+        return _enter_ready(ctx, s, bs_start)
 
-    def post_bootstrap(s: NodeState) -> Behavior[NodeMsg]:
+    def post_bootstrap(s: NodeState, bs_start: float) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
+            if timeout_behavior := _check_bootstrap_timeout(ctx, s, bs_start):
+                return timeout_behavior
             tref = s.transport_ref
             assert tref is not None
             match msg:
@@ -391,25 +408,27 @@ def node_actor(
                             on_failure=lambda e: _PostBootstrapFailed(error=str(e)),
                         )
                         return Behaviors.same()
-                    return _enter_ready(ctx, s)
+                    return _enter_ready(ctx, s, bs_start)
                 case _UserCodeSyncDone():
-                    return _enter_ready(ctx, s)
+                    return _enter_ready(ctx, s, bs_start)
                 case _PostBootstrapFailed(error=err):
                     return _fail_and_replace(ctx, s, err)
-            return _common(ctx, msg, s, post_bootstrap)
+            return _common(ctx, msg, s, lambda ns: post_bootstrap(ns, bs_start))
 
         return Behaviors.receive(receive)
 
     # ── ready (worker started, waiting for JoinCluster) ───────────────
 
-    def _enter_ready(ctx: ActorContext[NodeMsg], s: NodeState) -> Behavior[NodeMsg]:
+    def _enter_ready(
+        ctx: ActorContext[NodeMsg], s: NodeState, bs_start: float,
+    ) -> Behavior[NodeMsg]:
         ni = s.ni
         assert ni is not None
         spec = s.cluster.spec
 
         if not spec.cluster:
             log.info("Starting worker (standalone mode)")
-            return _start_worker_process(ctx, s)
+            return _start_worker_process(ctx, s, bs_start)
 
         is_head = node_id == 0
 
@@ -425,28 +444,32 @@ def node_actor(
                 )
             )
             log.info("Starting worker (role=head)")
-            return _start_worker_process(ctx, s)
+            return _start_worker_process(ctx, s, bs_start)
 
         if s.head_info is not None:
             log.info("Starting worker (role=worker)")
-            return _start_worker_process(ctx, s)
+            return _start_worker_process(ctx, s, bs_start)
 
         log.info("Waiting for head address before starting worker")
-        return waiting_for_head(s)
+        return waiting_for_head(s, bs_start)
 
-    def waiting_for_head(s: NodeState) -> Behavior[NodeMsg]:
+    def waiting_for_head(s: NodeState, bs_start: float) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
+            if timeout_behavior := _check_bootstrap_timeout(ctx, s, bs_start):
+                return timeout_behavior
             match msg:
                 case HeadAddressKnown() as h:
                     log.info("Head address received, starting worker")
-                    return _start_worker_process(ctx, replace(s, head_info=h))
-            return _common(ctx, msg, s, waiting_for_head)
+                    return _start_worker_process(ctx, replace(s, head_info=h), bs_start)
+            return _common(ctx, msg, s, lambda ns: waiting_for_head(ns, bs_start))
 
         return Behaviors.receive(receive)
 
     # ── starting worker ───────────────────────────────────────────────
 
-    def _start_worker_process(ctx: ActorContext[NodeMsg], s: NodeState) -> Behavior[NodeMsg]:
+    def _start_worker_process(
+        ctx: ActorContext[NodeMsg], s: NodeState, bs_start: float,
+    ) -> Behavior[NodeMsg]:
         ni = s.ni
         tref = s.transport_ref
         assert ni is not None
@@ -456,10 +479,12 @@ def node_actor(
             mapper=lambda result: _WorkerStarted(local_port=result[0], private_ip=result[1]),
             on_failure=lambda e: _WorkerFailed(error=str(e)),
         )
-        return starting_worker(s)
+        return starting_worker(s, bs_start)
 
-    def starting_worker(s: NodeState) -> Behavior[NodeMsg]:
+    def starting_worker(s: NodeState, bs_start: float) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
+            if timeout_behavior := _check_bootstrap_timeout(ctx, s, bs_start):
+                return timeout_behavior
             ni = s.ni
             assert ni is not None
             match msg:
@@ -477,7 +502,7 @@ def node_actor(
                 case _WorkerFailed(error=error):
                     log.error("Worker failed to start: {error}", error=error)
                     return _fail_and_replace(ctx, s, error)
-            return _common(ctx, msg, s, starting_worker)
+            return _common(ctx, msg, s, lambda ns: starting_worker(ns, bs_start))
 
         return Behaviors.receive(receive)
 

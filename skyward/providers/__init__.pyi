@@ -242,7 +242,7 @@ class RunPod:
         cluster_mode: Literal["instant", "individual"] = "individual",
         global_networking: bool | None = None,
         api_key: str | None = None,
-        cloud_type: str = "secure",
+        cloud_type: Literal["community", "secure"] = "secure",
         ubuntu: Literal["20.04", "22.04", "24.04", "newest"] | str = "newest",
         container_disk_gb: int = 50,
         volume_gb: int = 20,

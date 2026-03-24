@@ -310,7 +310,9 @@ class Session:
         pool_config = PoolConfig(
             image=first_spec.image,
             worker=effective_worker,
-            ssh_timeout=options.ssh_timeout,
+            provision_timeout=float(options.provision_timeout),
+            ssh_timeout=float(options.ssh_timeout),
+            bootstrap_timeout=float(options.bootstrap_timeout),
             ssh_retry_interval=options.ssh_retry_interval,
             provision_retry_delay=options.provision_retry_delay,
             max_provision_attempts=options.max_provision_attempts,
@@ -322,8 +324,11 @@ class Session:
             cluster=options.cluster,
         )
 
+        envelope = float(
+            options.provision_timeout + options.ssh_timeout + options.bootstrap_timeout + 30,
+        )
         pool_ref, spec, cid, cluster, instances = self._spawn_pool(
-            built_specs, pool_config, pool_name, float(options.provision_timeout),
+            built_specs, pool_config, pool_name, envelope,
         )
 
         from .pool import ComputePool as _ComputePool

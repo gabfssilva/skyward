@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import typing
 from dataclasses import dataclass
-from enum import Enum
 from typing import Literal
 
 from skyward.core.provider import ProviderConfig
@@ -16,18 +15,6 @@ type ClusterMode = Literal["instant", "individual"]
 
 if typing.TYPE_CHECKING:
     from skyward.providers.runpod.provider import RunPodProvider
-
-# =============================================================================
-# Cloud Type Enum
-# =============================================================================
-
-
-class CloudType(Enum):
-    """RunPod cloud type options."""
-
-    SECURE = "secure"
-    COMMUNITY = "community"
-
 
 # =============================================================================
 # Configuration
@@ -70,7 +57,7 @@ class RunPod(ProviderConfig):
     cluster_mode: ClusterMode = "individual"
     global_networking: bool | None = None
     api_key: str | None = None
-    cloud_type: CloudType = CloudType.SECURE
+    cloud_type: Literal["community", "secure"] = "secure"
     ubuntu: Literal["20.04", "22.04", "24.04", "newest"] | str = "newest"
     container_disk_gb: int = 50
     volume_gb: int = 20

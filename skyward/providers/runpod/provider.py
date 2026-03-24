@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
 
 from .client import RunPodClient, RunPodError, get_api_key
-from .config import CloudType, RunPod
+from .config import RunPod
 from .types import (
     ClusterCreateParams,
     CpuPodCreateParams,
@@ -284,7 +284,7 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
 
     async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
         api_key = get_api_key(self._config.api_key)
-        is_secure = self._config.cloud_type == CloudType.SECURE
+        is_secure = self._config.cloud_type == 'secure'
         requested = spec.accelerator_name
 
         cuda_min, cuda_max = _get_cuda_range(spec)
@@ -462,7 +462,7 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
             shutdown_command=shutdown_command,
             specific=RunPodSpecific(
                 gpu_type_id=gpu_type_id,
-                cloud_type=self._config.cloud_type.value,
+                cloud_type=self._config.cloud_type,
                 gpu_vram_gb=gpu_vram_gb,
                 image_name=image_name,
                 registry_auth_id=registry_auth_id,
@@ -639,7 +639,7 @@ async def _resolve_gpu_type(config: RunPod, spec: PoolSpec) -> tuple[str | None,
     async with RunPodClient(api_key, config=config) as client:
         gpu_types = await client.get_gpu_types()
 
-    is_secure = config.cloud_type == CloudType.SECURE
+    is_secure = config.cloud_type == 'secure'
     available = [
         g for g in gpu_types
         if (is_secure and g.get("secureCloud")) or (not is_secure and g.get("communityCloud"))
@@ -647,7 +647,7 @@ async def _resolve_gpu_type(config: RunPod, spec: PoolSpec) -> tuple[str | None,
     log.debug(
         "GPU types: {total} total, {avail} available for cloud_type={cloud}",
         total=len(gpu_types), avail=len(available),
-        cloud=config.cloud_type.value,
+        cloud=config.cloud_type,
     )
 
     requested = spec.accelerator_name
@@ -757,7 +757,7 @@ async def _create_gpu_pod(
             "imageName": image_name,
             "gpuTypeIds": [cluster.specific.gpu_type_id or ""],
             "gpuCount": int(cluster.spec.accelerator_count or 1),
-            "cloudType": config.cloud_type.value.upper(),
+            "cloudType": config.cloud_type.upper(),
             "containerDiskInGb": cluster.spec.disk_gb or config.container_disk_gb,
             "volumeInGb": config.volume_gb,
             "volumeMountPath": config.volume_mount_path,
@@ -774,7 +774,7 @@ async def _create_gpu_pod(
         image_name=image_name,
         gpu_type_id=cluster.specific.gpu_type_id or "",
         gpu_count=int(cluster.spec.accelerator_count or 1),
-        cloud_type=config.cloud_type.value.upper(),
+        cloud_type=config.cloud_type.upper(),
         container_disk_gb=cluster.spec.disk_gb or config.container_disk_gb,
         volume_gb=config.volume_gb,
         volume_mount_path=config.volume_mount_path,
@@ -800,7 +800,7 @@ async def _create_cpu_pod(
 
     params: CpuPodCreateParams = {
         "instanceId": instance_id,
-        "cloudType": config.cloud_type.value.upper(),
+        "cloudType": config.cloud_type.upper(),
         "containerDiskInGb": disk_gb,
         "startSsh": True,
         "templateId": "runpod-ubuntu",

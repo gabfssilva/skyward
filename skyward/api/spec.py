@@ -233,13 +233,17 @@ class Options:
     worker
         Worker configuration (concurrency, executor).
     provision_timeout
-        Maximum seconds to wait for provisioning.
+        Maximum seconds to wait for cloud instance provisioning (polling
+        until the instance is running with an IP).
+    ssh_timeout
+        SSH connection timeout in seconds.
+    bootstrap_timeout
+        Maximum seconds for bootstrap script, post-bootstrap steps, and
+        worker startup to complete.
     provision_retry_delay
         Seconds between provision retry attempts.
     max_provision_attempts
         Maximum number of provision attempts.
-    ssh_timeout
-        SSH connection timeout in seconds.
     ssh_retry_interval
         Seconds between SSH retry attempts.
     default_compute_timeout
@@ -273,10 +277,11 @@ class Options:
 
     selection: SelectionStrategy = "cheapest"
     worker: Worker | None = None
-    provision_timeout: int = 600
+    provision_timeout: int = 300
+    ssh_timeout: int = 300
+    bootstrap_timeout: int = 300
     provision_retry_delay: float = 5.0
     max_provision_attempts: int = 3
-    ssh_timeout: int = 300
     ssh_retry_interval: int = 2
     default_compute_timeout: float = 300.0
     autoscale_cooldown: float = 30.0
@@ -421,8 +426,14 @@ class PoolSpec:
         Override provider name (usually inferred from the ``Spec``).
     max_hourly_cost
         Cost cap per node per hour in USD.  ``None`` means no cap.
+    provision_timeout
+        Maximum seconds to wait for cloud instance provisioning (polling
+        until the instance is running with an IP).
     ssh_timeout
         Maximum seconds to wait for an SSH connection to a node.
+    bootstrap_timeout
+        Maximum seconds for bootstrap script, post-bootstrap steps, and
+        worker startup to complete.
     ssh_retry_interval
         Seconds between SSH connection retry attempts.
     provision_retry_delay
@@ -468,7 +479,9 @@ class PoolSpec:
     worker: Worker = field(default_factory=Worker)
     provider: ProviderName | None = None
     max_hourly_cost: float | None = None
+    provision_timeout: float = 300.0
     ssh_timeout: float = 300.0
+    bootstrap_timeout: float = 300.0
     ssh_retry_interval: float = 5.0
     provision_retry_delay: float = 10.0
     max_provision_attempts: int = 10
