@@ -329,6 +329,40 @@ class TestOrderByLimit:
 
 
 # ---------------------------------------------------------------------------
+# specific JSON filter
+# ---------------------------------------------------------------------------
+
+
+class TestSpecificFilter:
+    @pytest.mark.asyncio
+    async def test_specific_filters_by_json_key(self, repo: OfferRepository) -> None:
+        offers = await repo.select().specific("architecture", "x86_64").all()
+        assert len(offers) == 8  # all AWS offers with architecture in specific
+
+    @pytest.mark.asyncio
+    async def test_specific_excludes_null_specific(self, repo: OfferRepository) -> None:
+        offers = await repo.select().specific("architecture", "x86_64").all()
+        types = {o.instance_type for o in offers}
+        assert "c5.xlarge-spot-only" not in types  # has specific=None
+
+    @pytest.mark.asyncio
+    async def test_specific_no_match(self, repo: OfferRepository) -> None:
+        offers = await repo.select().specific("cloud_type", "community").all()
+        assert len(offers) == 0
+
+    @pytest.mark.asyncio
+    async def test_specific_chainable(self, repo: OfferRepository) -> None:
+        offers = await (
+            repo.accelerator("A100")
+            .specific("architecture", "x86_64")
+            .spot()
+            .all()
+        )
+        assert len(offers) == 1
+        assert offers[0].instance_type == "p4d.24xlarge"
+
+
+# ---------------------------------------------------------------------------
 # _open_db idempotency
 # ---------------------------------------------------------------------------
 

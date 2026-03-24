@@ -100,6 +100,7 @@ def _runpod_specific(raw: dict[str, Any] | None) -> Any:
     return RunPodOfferData(
         gpu_type_id=raw.get("gpu_type_id", ""),
         proven_cuda=raw.get("proven_cuda") or raw.get("min_cuda"),
+        cloud_type=raw.get("cloud_type", "secure"),
     )
 
 

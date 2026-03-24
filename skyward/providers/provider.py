@@ -83,6 +83,13 @@ class Provider[C, S](Protocol):
 
 
 @runtime_checkable
+class FilterableProvider[C, S](Provider[C, S], Protocol):
+    """Provider that declares specific-JSON filters for catalog queries."""
+
+    def offer_filters(self) -> dict[str, str]: ...
+
+
+@runtime_checkable
 class WarmableProvider[C, S](Provider[C, S], Protocol):
     async def save(self, cluster: Cluster[S]) -> Cluster[S]:
         """Save a prebaked image from the current cluster state."""

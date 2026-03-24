@@ -138,6 +138,12 @@ class OfferQuery:
         self._params.extend(params)
         return self
 
+    def specific(self, key: str, value: str) -> OfferQuery:
+        """Filter by a key inside the specific JSON column."""
+        self._clauses.append(f"json_extract(specific, '$.{key}') = ?")
+        self._params.append(value)
+        return self
+
     # ── ordering and limiting ─────────────────────────────────
 
     def order_by(self, expr: str) -> OfferQuery:

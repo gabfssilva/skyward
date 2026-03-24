@@ -82,6 +82,11 @@ async def select_offers(
             query = query.max_price(s.max_hourly_cost)
 
         query = query.allocation(s.allocation)
+        from skyward.providers.provider import FilterableProvider
+        match provider_instances[ptype]:
+            case FilterableProvider() as fp:
+                for key, value in fp.offer_filters().items():
+                    query = query.specific(key, value)
         use_spot = s.allocation in ("spot", "spot-if-available")
 
         catalog_offers = await query.cheapest(20)

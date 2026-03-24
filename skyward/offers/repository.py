@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS offers (
     spot_price REAL,
     on_demand_price REAL,
     billing_unit TEXT NOT NULL DEFAULT 'hour',
-    specific TEXT
+    specific JSON
 );
 
 CREATE VIEW IF NOT EXISTS catalog AS

@@ -243,6 +243,7 @@ class RunPodOfferData:
 
     gpu_type_id: str
     proven_cuda: str | None
+    cloud_type: str = "secure"
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,7 +285,6 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
 
     async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
         api_key = get_api_key(self._config.api_key)
-        is_secure = self._config.cloud_type == 'secure'
         requested = spec.accelerator_name
 
         cuda_min, cuda_max = _get_cuda_range(spec)
@@ -295,88 +295,94 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
         ))
 
         async with RunPodClient(api_key, config=self._config) as client:
-            results = await asyncio.gather(*(
-                client.get_gpu_types(
-                    min_cuda_version=cv, secure_cloud=is_secure,
-                )
-                for cv in cuda_probes
-            ))
+            all_results = []
+            for cloud in ("community", "secure"):
+                results = await asyncio.gather(*(
+                    client.get_gpu_types(
+                        min_cuda_version=cv,
+                        secure_cloud=(cloud == "secure"),
+                    )
+                    for cv in cuda_probes
+                ))
+                all_results.append((cloud, results))
 
-        seen: set[str] = set()
+        seen: set[tuple[str, str]] = set()
         candidates: list[tuple[float, Offer]] = []
 
-        for cuda_ver, gpu_types in zip(cuda_probes, results, strict=True):
-            available = [
-                g for g in gpu_types
-                if (is_secure and g.get("secureCloud"))
-                or (not is_secure and g.get("communityCloud"))
-            ]
+        for cloud, results in all_results:
+            is_secure = cloud == "secure"
+            for cuda_ver, gpu_types in zip(cuda_probes, results, strict=True):
+                available = [
+                    g for g in gpu_types
+                    if (is_secure and g.get("secureCloud"))
+                    or (not is_secure and g.get("communityCloud"))
+                ]
 
-            for gpu in available:
-                display = gpu.get("displayName", "")
-                gpu_id = gpu.get("id", "")
+                for gpu in available:
+                    display = gpu.get("displayName", "")
+                    gpu_id = gpu.get("id", "")
 
-                if requested:
-                    score = _gpu_match_score(requested, display, gpu_id)
-                    if score < _MIN_GPU_MATCH:
+                    if requested:
+                        score = _gpu_match_score(requested, display, gpu_id)
+                        if score < _MIN_GPU_MATCH:
+                            continue
+                    else:
+                        score = 1.0
+
+                    if (gpu_id, cloud) in seen:
                         continue
-                else:
-                    score = 1.0
 
-                if gpu_id in seen:
-                    continue
+                    vram_gb = gpu.get("memoryInGb", 0)
+                    if spec.accelerator_memory_gb > 0 and vram_gb < spec.accelerator_memory_gb:
+                        continue
 
-                vram_gb = gpu.get("memoryInGb", 0)
-                if spec.accelerator_memory_gb > 0 and vram_gb < spec.accelerator_memory_gb:
-                    continue
+                    lowest = gpu.get("lowestPrice") or {}
+                    spot_price = lowest.get("minimumBidPrice")
+                    on_demand_price = lowest.get("uninterruptablePrice")
+                    if spot_price is None and on_demand_price is None:
+                        continue
 
-                lowest = gpu.get("lowestPrice") or {}
-                spot_price = lowest.get("minimumBidPrice")
-                on_demand_price = lowest.get("uninterruptablePrice")
-                if spot_price is None and on_demand_price is None:
-                    continue
+                    gpu_count = spec.accelerator_count or 1
+                    total = lowest.get("totalCount", 0)
+                    rented = lowest.get("rentedCount", 0)
+                    available_gpus = total - rented
+                    if available_gpus < spec.nodes.min * gpu_count:
+                        log.debug(
+                            "Skipping {gpu} ({cloud}): {available} GPUs available, "
+                            "need {need} ({nodes} nodes x {gpus} GPUs)",
+                            gpu=display or gpu_id, cloud=cloud,
+                            available=available_gpus,
+                            need=spec.nodes.min * gpu_count,
+                            nodes=spec.nodes.min,
+                            gpus=gpu_count,
+                        )
+                        continue
 
-                gpu_count = spec.accelerator_count or 1
-                total = lowest.get("totalCount", 0)
-                rented = lowest.get("rentedCount", 0)
-                available_gpus = total - rented
-                if available_gpus < spec.nodes.min * gpu_count:
-                    log.debug(
-                        "Skipping {gpu}: {available} GPUs available, "
-                        "need {need} ({nodes} nodes x {gpus} GPUs)",
-                        gpu=display or gpu_id,
-                        available=available_gpus,
-                        need=spec.nodes.min * gpu_count,
-                        nodes=spec.nodes.min,
-                        gpus=gpu_count,
+                    seen.add((gpu_id, cloud))
+                    vram_gb = gpu.get("memoryInGb", 0)
+                    accel = Accelerator(
+                        name=display or gpu_id,
+                        memory=f"{vram_gb}GB" if vram_gb else "",
+                        count=gpu_count,
                     )
-                    continue
-
-                seen.add(gpu_id)
-                vram_gb = gpu.get("memoryInGb", 0)
-                accel = Accelerator(
-                    name=display or gpu_id,
-                    memory=f"{vram_gb}GB" if vram_gb else "",
-                    count=gpu_count,
-                )
-                min_vcpu = lowest.get("minVcpu") or 0
-                min_memory = lowest.get("minMemory") or 0
-                it = InstanceType(
-                    name=gpu_id,
-                    accelerator=accel,
-                    vcpus=float(min_vcpu),
-                    memory_gb=float(min_memory),
-                    architecture="x86_64",
-                    specific=None,
-                )
-                candidates.append((score, Offer(
-                    id=f"runpod-{gpu_id}-cuda{cuda_ver or 'any'}",
-                    instance_type=it,
-                    spot_price=spot_price,
-                    on_demand_price=on_demand_price,
-                    billing_unit="hour",
-                    specific=RunPodOfferData(gpu_id, cuda_ver),
-                )))
+                    min_vcpu = lowest.get("minVcpu") or 0
+                    min_memory = lowest.get("minMemory") or 0
+                    it = InstanceType(
+                        name=gpu_id,
+                        accelerator=accel,
+                        vcpus=float(min_vcpu),
+                        memory_gb=float(min_memory),
+                        architecture="x86_64",
+                        specific=None,
+                    )
+                    candidates.append((score, Offer(
+                        id=f"runpod-{gpu_id}-{cloud}-cuda{cuda_ver or 'any'}",
+                        instance_type=it,
+                        spot_price=spot_price,
+                        on_demand_price=on_demand_price,
+                        billing_unit="hour",
+                        specific=RunPodOfferData(gpu_id, cuda_ver, cloud),
+                    )))
 
         if not candidates:
             return
@@ -385,6 +391,9 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
         for score, offer in candidates:
             if score >= best - 1e-9:
                 yield offer
+
+    def offer_filters(self) -> dict[str, str]:
+        return {"cloud_type": self._config.cloud_type}
 
     async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[RunPodSpecific]:
         api_key = get_api_key(self._config.api_key)
@@ -767,6 +776,10 @@ async def _create_gpu_pod(
         }
         if config.data_center_ids != "global":
             params["dataCenterIds"] = list(config.data_center_ids)
+        if config.min_inet_down is not None:
+            params["minDownload"] = int(config.min_inet_down)
+        if config.min_inet_up is not None:
+            params["minUpload"] = int(config.min_inet_up)
         return await client.create_pod(params)
 
     return await client.deploy_gpu_pod(
@@ -785,6 +798,8 @@ async def _create_gpu_pod(
         spot_price=bid,
         allowed_cuda_versions=allowed_cuda,
         container_registry_auth_id=cluster.specific.registry_auth_id,
+        min_download=int(config.min_inet_down) if config.min_inet_down is not None else None,
+        min_upload=int(config.min_inet_up) if config.min_inet_up is not None else None,
     )
 
 
