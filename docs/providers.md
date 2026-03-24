@@ -227,7 +227,7 @@ This disables Casty cluster formation and connects to each worker independently 
 | `cluster_mode` | `ClusterMode` | `"individual"` | Cluster mode (`"instant"` or `"individual"`) |
 | `global_networking` | `bool or None` | `None` | Enable global networking |
 | `api_key` | `str or None` | `None` | API key (falls back to `RUNPOD_API_KEY` env var) |
-| `cloud_type` | `CloudType` | `SECURE` | `CloudType.SECURE` or `CloudType.COMMUNITY` |
+| `cloud_type` | `Literal["community", "secure"]` | `"secure"` | Cloud type: `"secure"` or `"community"` |
 | `ubuntu` | `str` | `"newest"` | Ubuntu version (`"20.04"`, `"22.04"`, `"24.04"`, `"newest"`) |
 | `container_disk_gb` | `int` | `50` | Container disk size in GB |
 | `volume_gb` | `int` | `20` | Persistent volume size in GB |
