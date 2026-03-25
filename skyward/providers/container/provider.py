@@ -10,6 +10,7 @@ from pathlib import Path
 
 from skyward.core import PoolSpec
 from skyward.core.model import Cluster, Instance, InstanceType, Offer
+from skyward.core.spec import Architecture
 from skyward.observability.logger import logger
 from skyward.providers.container.cli import run, run_json
 from skyward.providers.container.config import Container
@@ -32,6 +33,13 @@ _DOCKERFILE = (
 )
 
 _CONTAINER_PREFIX = "skyward"
+_VCPU_OPTIONS = (0.25, 0.5, 1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64)
+_MEMORY_OPTIONS = (0.25, 0.5, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512)
+
+
+def _host_arch() -> Architecture:
+    import platform
+    return "arm64" if platform.machine() in ("arm64", "aarch64") else "x86_64"
 
 
 def _make_entrypoint(ttl: int) -> str:
@@ -66,22 +74,25 @@ class ContainerProvider(WarmableProvider[Container, ContainerSpecific]):
         return cls(config)
 
     async def offers(self) -> AsyncIterator[Offer]:
-        it = InstanceType(
-            name="container",
-            accelerator=None,
-            vcpus=0,
-            memory_gb=0,
-            architecture="x86_64",
-            specific=None,
-        )
-        yield Offer(
-            id="container-local",
-            instance_type=it,
-            spot_price=None,
-            on_demand_price=0.0,
-            billing_unit="second",
-            specific=None,
-        )
+        arch = _host_arch()
+        for vcpus in _VCPU_OPTIONS:
+            for mem in _MEMORY_OPTIONS:
+                it = InstanceType(
+                    name=f"container-{vcpus}c-{mem}g",
+                    accelerator=None,
+                    vcpus=vcpus,
+                    memory_gb=mem,
+                    architecture=arch,
+                    specific=None,
+                )
+                yield Offer(
+                    id=f"container-local-{vcpus}c-{mem}g",
+                    instance_type=it,
+                    spot_price=None,
+                    on_demand_price=0.0,
+                    billing_unit="second",
+                    specific=None,
+                )
 
     async def _is_prebaked(self, pool: PoolSpec) -> bool:
         try:
