@@ -9,7 +9,7 @@ This guide walks through the full cycle: build locally, train remotely, evaluate
 A standard `nn.Module` — nothing special required for serialization:
 
 ```python
---8<-- "examples/guides/15_torch_model_roundtrip.py:18:32"
+--8<-- "guides/15_torch_model_roundtrip.py:18:32"
 ```
 
 When cloudpickle serializes this object, it captures both the class definition and the instance state (all parameter tensors). On the remote side, it reconstructs the exact same object with the exact same weights.
@@ -19,7 +19,7 @@ When cloudpickle serializes this object, it captures both the class definition a
 MNIST is loaded on the local machine and sent as tensors to the remote worker. The worker doesn't need `torchvision` — it only needs `torch` to work with the tensors it receives:
 
 ```python
---8<-- "examples/guides/15_torch_model_roundtrip.py:35:47"
+--8<-- "guides/15_torch_model_roundtrip.py:35:47"
 ```
 
 The 60k training images (each 28x28) are flattened to 784-d vectors and normalized. Both `x_train` and `y_train` are regular tensors — cloudpickle handles them the same way it handles any Python object.
@@ -29,7 +29,7 @@ The 60k training images (each 28x28) are flattened to 784-d vectors and normaliz
 The `@sky.function` function receives the model as an argument and returns it after training:
 
 ```python
---8<-- "examples/guides/15_torch_model_roundtrip.py:50:94"
+--8<-- "guides/15_torch_model_roundtrip.py:50:94"
 ```
 
 The type signature tells the story: `nn.Module` goes in, `nn.Module` comes out. The optimizer modifies the model's parameters in-place during training. The final `model.cpu()` ensures all tensors are on CPU before serialization — this matters when training on GPU, since CUDA tensors can't deserialize on a machine without a GPU.
@@ -39,11 +39,11 @@ The type signature tells the story: `nn.Module` goes in, `nn.Module` comes out. 
 Torch tensors use pickle's `__reduce_ex__` protocol to serialize their raw storage. The binary format can change between torch versions — a tensor pickled with torch 2.10 may not deserialize correctly on torch 2.8 (or vice versa). Since the model travels both directions through cloudpickle, the local and remote torch versions must match:
 
 ```python
---8<-- "examples/guides/15_torch_model_roundtrip.py:15:15"
+--8<-- "guides/15_torch_model_roundtrip.py:15:15"
 ```
 
 ```python
---8<-- "examples/guides/15_torch_model_roundtrip.py:121:129"
+--8<-- "guides/15_torch_model_roundtrip.py:121:129"
 ```
 
 `TORCH_VERSION` strips the build suffix (e.g. `+cpu`, `+cu128`) so the version pin works across wheel variants. The `PipIndex` scopes the PyTorch wheel index to the `torch` package only, preventing it from affecting other dependencies.
@@ -53,7 +53,7 @@ Torch tensors use pickle's `__reduce_ex__` protocol to serialize their raw stora
 Build the model locally, evaluate it (random accuracy), train remotely, evaluate again:
 
 ```python
---8<-- "examples/guides/15_torch_model_roundtrip.py:109:135"
+--8<-- "guides/15_torch_model_roundtrip.py:109:135"
 ```
 
 The untrained model starts at ~10% accuracy (random chance for 10 classes). After `>> pool` dispatches the training to the remote worker and returns the trained model, local evaluation shows the learned accuracy — proving the weights survived the roundtrip.
@@ -63,7 +63,7 @@ The untrained model starts at ~10% accuracy (random chance for 10 classes). Afte
 The `evaluate` function runs on your local machine using the model that came back from the cloud:
 
 ```python
---8<-- "examples/guides/15_torch_model_roundtrip.py:97:106"
+--8<-- "guides/15_torch_model_roundtrip.py:97:106"
 ```
 
 No reconstruction, no `load_state_dict` — the returned object is a regular `MNISTClassifier` instance with trained weights, ready for inference.
@@ -73,7 +73,7 @@ No reconstruction, no `load_state_dict` — the returned object is a regular `MN
 ```bash
 git clone https://github.com/gabfssilva/skyward.git
 cd skyward
-uv run python examples/guides/15_torch_model_roundtrip.py
+uv run python guides/15_torch_model_roundtrip.py
 ```
 
 ---

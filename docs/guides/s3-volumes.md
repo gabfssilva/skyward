@@ -9,7 +9,7 @@ A `Storage` object represents an S3-compatible endpoint. Presets like `sky.stora
 A `Volume` maps an S3 bucket (or a prefix within it) to a local path on every worker. You declare two: one read-only for input data, one writable for output artifacts.
 
 ```python
---8<-- "examples/guides/17_s3_volumes.py:55:69"
+--8<-- "guides/17_s3_volumes.py:55:69"
 ```
 
 The `prefix` scopes each volume to a subfolder within its bucket. `read_only=True` on the data volume prevents accidental writes to the dataset. The model volume is writable so the training function can persist its output to S3.
@@ -19,7 +19,7 @@ The `prefix` scopes each volume to a subfolder within its bucket. `read_only=Tru
 The remote function reads from `/data` and writes to `/output` — regular filesystem paths. It doesn't know about S3, buckets, or object stores. Libraries that expect file paths work without modification.
 
 ```python
---8<-- "examples/guides/17_s3_volumes.py:22:48"
+--8<-- "guides/17_s3_volumes.py:22:48"
 ```
 
 Imports happen inside the function body because they only need to exist on the remote worker.
@@ -29,7 +29,7 @@ Imports happen inside the function body because they only need to exist on the r
 Before the cluster starts, you upload your dataset from the local machine directly to S3. `Storage` is a context manager that opens an S3 connection. `upload` puts a local file into the bucket at the given key. `ls` lists objects in the bucket. You can also use `download`, `exists`, and `rm`.
 
 ```python
---8<-- "examples/guides/17_s3_volumes.py:80:82"
+--8<-- "guides/17_s3_volumes.py:80:82"
 ```
 
 ## Training on the cluster
@@ -37,7 +37,7 @@ Before the cluster starts, you upload your dataset from the local machine direct
 With data in S3, you provision a pool with both volumes mounted and dispatch the training function.
 
 ```python
---8<-- "examples/guides/17_s3_volumes.py:84:91"
+--8<-- "guides/17_s3_volumes.py:84:91"
 ```
 
 The pool mounts both volumes on every worker during bootstrap. When the `with` block exits, the instances are destroyed — but the model checkpoint is already in S3.
@@ -47,7 +47,7 @@ The pool mounts both volumes on every worker during bootstrap. When the `with` b
 After the pool is torn down, the model persists in the output bucket. A second `Storage` session downloads it back to your local machine.
 
 ```python
---8<-- "examples/guides/17_s3_volumes.py:93:107"
+--8<-- "guides/17_s3_volumes.py:93:107"
 ```
 
 The downloaded model is a standard pickle file. You can load it locally and verify it works against the original data — no cluster required.
@@ -85,7 +85,7 @@ The rule of thumb: if it fits comfortably in a return value (a metric, a small d
 ```bash
 git clone https://github.com/gabfssilva/skyward.git
 cd skyward
-uv run python examples/guides/17_s3_volumes.py
+uv run python guides/17_s3_volumes.py
 ```
 
 ---

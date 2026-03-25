@@ -7,7 +7,7 @@ joblib's `Parallel` is the standard way to parallelize work in Python — scikit
 Any regular Python function works with joblib — the plugin handles serialization and dispatch internally:
 
 ```python
---8<-- "examples/guides/10_joblib_concurrency.py:10:13"
+--8<-- "guides/10_joblib_concurrency.py:10:13"
 ```
 
 joblib handles its own serialization. The `joblib` plugin intercepts joblib's task batches, wraps them internally, and dispatches them to the cluster.
@@ -17,7 +17,7 @@ joblib handles its own serialization. The `joblib` plugin intercepts joblib's ta
 Wrap your `Parallel` call inside a `Compute` pool with the `joblib` plugin:
 
 ```python
---8<-- "examples/guides/10_joblib_concurrency.py:17:27"
+--8<-- "guides/10_joblib_concurrency.py:17:27"
 ```
 
 When you enter the pool block, Skyward provisions the instances and the `joblib` plugin registers a custom joblib backend. Every `Parallel(n_jobs=-1)` call inside the block distributes tasks across the cluster. The `worker` parameter accepts a `Worker` dataclass that controls per-node execution — `Worker(concurrency=10)` means each node runs 10 tasks simultaneously. With 10 nodes and `concurrency=10`, you get 100 effective workers.
@@ -29,7 +29,7 @@ When you exit the block, the instances are terminated and the default joblib bac
 Compare actual time against the theoretical ideal:
 
 ```python
---8<-- "examples/guides/10_joblib_concurrency.py:29:36"
+--8<-- "guides/10_joblib_concurrency.py:29:36"
 ```
 
 With 2000 tasks, 100 effective workers, and 5 seconds per task, the ideal time is `2000 / 100 * 5 = 100s`. Efficiency measures how close you get to that ideal — the ratio of ideal time to actual time.
@@ -56,7 +56,7 @@ This also illustrates the cost model: 10 `t4g.micro` instances at ~$0.008/hour e
 ```bash
 git clone https://github.com/gabfssilva/skyward.git
 cd skyward
-uv run python examples/guides/10_joblib_concurrency.py
+uv run python guides/10_joblib_concurrency.py
 ```
 
 ---

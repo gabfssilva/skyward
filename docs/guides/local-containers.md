@@ -19,11 +19,11 @@ You need a container runtime installed and running:
 The `Container` provider is a drop-in replacement for any cloud provider. The only change is the `provider` parameter:
 
 ```python
---8<-- "examples/guides/11_local_containers.py:1:13"
+--8<-- "guides/11_local_containers.py:1:13"
 ```
 
 ```python
---8<-- "examples/guides/11_local_containers.py:42:45"
+--8<-- "guides/11_local_containers.py:42:45"
 ```
 
 Behind the scenes, Skyward builds a lightweight Docker image with SSH access, starts a container, opens an SSH tunnel, bootstraps the environment, and runs the worker — the same pipeline that runs on a real cloud instance. The function is serialized with cloudpickle, sent over the tunnel, executed inside the container, and the result comes back.
@@ -33,11 +33,11 @@ Behind the scenes, Skyward builds a lightweight Docker image with SSH access, st
 One of the most common sources of failures in cloud runs is a misconfigured `Image`: a missing pip package, a wrong environment variable, a Python version mismatch. The Container provider lets you validate all of this locally before spending time and money on cloud provisioning.
 
 ```python
---8<-- "examples/guides/11_local_containers.py:15:21"
+--8<-- "guides/11_local_containers.py:15:21"
 ```
 
 ```python
---8<-- "examples/guides/11_local_containers.py:47:53"
+--8<-- "guides/11_local_containers.py:47:53"
 ```
 
 If the function returns `"it works"`, you know the `env` field in your Image is being injected correctly. The same applies to `pip` (install packages and import them inside the function), `apt` (install system tools and shell out to them), and `includes` (sync local modules and import them).
@@ -47,11 +47,11 @@ If the function returns `"it works"`, you know the `env` field in your Image is 
 The Container provider supports `nodes > 1`. Each node becomes a separate container, and they form a real Casty cluster — with a head node, peer discovery, and inter-node networking via a Docker bridge network. This lets you test broadcast, data sharding, and distributed collections without any cloud infrastructure.
 
 ```python
---8<-- "examples/guides/11_local_containers.py:23:40"
+--8<-- "guides/11_local_containers.py:23:40"
 ```
 
 ```python
---8<-- "examples/guides/11_local_containers.py:55:63"
+--8<-- "guides/11_local_containers.py:55:63"
 ```
 
 Each container gets its own `instance_info()` with the correct `node`, `total_nodes`, and `is_head` values. `sky.shard()` works as expected — each node processes its portion of the data. This is the same behavior you'd see on a 3-node AWS cluster, just running on `localhost`.
@@ -143,7 +143,7 @@ The general pattern: test logic and integration locally with `Container`, test p
 ```bash
 git clone https://github.com/gabfssilva/skyward.git
 cd skyward
-uv run python examples/guides/11_local_containers.py
+uv run python guides/11_local_containers.py
 ```
 
 ---

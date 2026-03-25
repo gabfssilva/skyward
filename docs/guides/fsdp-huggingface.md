@@ -9,7 +9,7 @@ Skyward's `accelerate` plugin configures the entire FSDP environment — topolog
 Add `sky.plugins.accelerate()` to your pool's plugins with an FSDP config:
 
 ```python
---8<-- "examples/guides/19_fsdp_huggingface.py:102:114"
+--8<-- "guides/19_fsdp_huggingface.py:102:114"
 ```
 
 The plugin does two things before any task runs. First, it sets the distributed topology env vars (`RANK`, `WORLD_SIZE`, `MASTER_ADDR`, `MASTER_PORT`) and calls `torch.distributed.init_process_group()`. Second, it sets `ACCELERATE_USE_FSDP=true` and translates the `fsdp` dict into the `FSDP_*` environment variables that HuggingFace Accelerate reads.
@@ -35,13 +35,13 @@ The `fsdp` dict maps directly to Accelerate's FSDP environment variables:
 The function is a standard `@sky.function` — no FSDP imports, no process group setup, no sharding logic:
 
 ```python
---8<-- "examples/guides/19_fsdp_huggingface.py:6:13"
+--8<-- "guides/19_fsdp_huggingface.py:6:13"
 ```
 
 All imports happen inside the function body:
 
 ```python
---8<-- "examples/guides/19_fsdp_huggingface.py:15:18"
+--8<-- "guides/19_fsdp_huggingface.py:15:18"
 ```
 
 This is intentional — `torch`, `transformers`, and `datasets` are only installed on the remote workers (via the Image's `pip` field), not on your local machine. Skyward serializes the function with cloudpickle and ships it over SSH, so remote imports keep your local environment clean.
@@ -49,7 +49,7 @@ This is intentional — `torch`, `transformers`, and `datasets` are only install
 ## Loading the tokenizer
 
 ```python
---8<-- "examples/guides/19_fsdp_huggingface.py:23:25"
+--8<-- "guides/19_fsdp_huggingface.py:23:25"
 ```
 
 GPT-2 doesn't have a pad token by default — it was trained as a pure autoregressive model with no padding. Setting `pad_token = eos_token` is the standard workaround for fine-tuning, where batches need uniform sequence lengths.
@@ -57,7 +57,7 @@ GPT-2 doesn't have a pad token by default — it was trained as a pure autoregre
 ## Preparing the dataset
 
 ```python
---8<-- "examples/guides/19_fsdp_huggingface.py:27:40"
+--8<-- "guides/19_fsdp_huggingface.py:27:40"
 ```
 
 The dataset is loaded and tokenized on each node independently. The filter removes short texts (under 50 characters) that would produce mostly padding. `max_length=256` with `padding="max_length"` produces fixed-length sequences — required for efficient batching. The final `map` copies `input_ids` to `labels`, which is how causal language models learn: predict the next token from the previous ones.
@@ -67,7 +67,7 @@ Note that every node loads and tokenizes the full dataset. FSDP shards the *mode
 ## Loading the model
 
 ```python
---8<-- "examples/guides/19_fsdp_huggingface.py:42:43"
+--8<-- "guides/19_fsdp_huggingface.py:42:43"
 ```
 
 `low_cpu_mem_usage=True` loads weights progressively instead of allocating the full model in CPU memory first. For GPT-2 XL (1.5B parameters, ~6 GB in fp32), this avoids a memory spike during initialization. Combined with `cpu_ram_efficient_loading` in the FSDP config, the model goes from disk to CPU to GPU shard without ever fully materializing on a single device.
@@ -75,7 +75,7 @@ Note that every node loads and tokenizes the full dataset. FSDP shards the *mode
 ## Configuring the Trainer
 
 ```python
---8<-- "examples/guides/19_fsdp_huggingface.py:45:64"
+--8<-- "guides/19_fsdp_huggingface.py:45:64"
 ```
 
 The `TrainingArguments` are standard HuggingFace — nothing FSDP-specific. A few settings worth noting:
@@ -90,7 +90,7 @@ The Trainer detects FSDP from the `ACCELERATE_USE_FSDP` environment variable the
 ## Training and results
 
 ```python
---8<-- "examples/guides/19_fsdp_huggingface.py:66:76"
+--8<-- "guides/19_fsdp_huggingface.py:66:76"
 ```
 
 `trainer.train()` runs the full training loop — forward, backward, gradient sync, optimizer step — across all FSDP-sharded nodes. Each node reports back its peak GPU memory and the final training loss. `trainer.is_fsdp_enabled` confirms that FSDP actually activated — useful for debugging configuration issues.
@@ -109,7 +109,7 @@ If your model fits on a single GPU and you just want data parallelism, `torch()`
 The main block provisions 3 spot T4 instances with 32 GB RAM each, broadcasts `train_fsdp()` to all nodes via `@ compute`, and collects the results:
 
 ```python
---8<-- "examples/guides/19_fsdp_huggingface.py:82:133"
+--8<-- "guides/19_fsdp_huggingface.py:82:133"
 ```
 
 `@ compute` sends the function to every node in the pool. Each node runs the same Trainer code, FSDP coordinates the parameter sharding across them, and results come back as a list — one dict per node with loss, memory usage, and whether FSDP was active.
@@ -119,7 +119,7 @@ The main block provisions 3 spot T4 instances with 32 GB RAM each, broadcasts `t
 ```bash
 git clone https://github.com/gabfssilva/skyward.git
 cd skyward
-uv run python examples/guides/19_fsdp_huggingface.py
+uv run python guides/19_fsdp_huggingface.py
 ```
 
 ---

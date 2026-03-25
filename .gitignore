@@ -8,7 +8,8 @@ skyward/_version.py
 
 docs/plans/
 docs/guides/ignored/
-examples/guides/ignored/
+guides/ignored/
+.playground/
 PLANNED_PROVIDERS.md
 site/
 demo/

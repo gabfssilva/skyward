@@ -7,7 +7,7 @@ Keras 3 is backend-agnostic — the same model code runs on JAX, TensorFlow, or 
 Add `sky.plugins.keras(backend="jax")` to your pool's plugins. When using the JAX backend, also include `sky.plugins.jax()` for distributed initialization:
 
 ```python
---8<-- "examples/guides/07_keras_training.py:49:54"
+--8<-- "guides/07_keras_training.py:49:54"
 ```
 
 The `backend` parameter sets `KERAS_BACKEND` on the remote worker before Keras is imported. This is critical — Keras reads the backend at import time, so the environment variable must be set first.
@@ -15,7 +15,7 @@ The `backend` parameter sets `KERAS_BACKEND` on the remote worker before Keras i
 The function itself just uses `@sky.function` — the backend and distributed setup are handled by the plugins:
 
 ```python
---8<-- "examples/guides/07_keras_training.py:11:13"
+--8<-- "guides/07_keras_training.py:11:13"
 ```
 
 ## Loading and sharding data
@@ -23,7 +23,7 @@ The function itself just uses `@sky.function` — the backend and distributed se
 Load the full dataset inside the function, then use `shard()` to get this node's portion:
 
 ```python
---8<-- "examples/guides/07_keras_training.py:17:21"
+--8<-- "guides/07_keras_training.py:17:21"
 ```
 
 `keras.datasets.mnist.load_data()` downloads the dataset on the remote worker. `shard()` then splits the training data so each node trains on a different subset — with 2 nodes, each gets half. The `shuffle=True` and `seed=42` parameters ensure a deterministic, randomized split so both nodes agree on who gets which samples.
@@ -35,7 +35,7 @@ Note that sharding happens *inside* the function, after the data is loaded. The 
 Define a standard Keras model — nothing Skyward-specific here:
 
 ```python
---8<-- "examples/guides/07_keras_training.py:23:29"
+--8<-- "guides/07_keras_training.py:23:29"
 ```
 
 This is the same Keras `Sequential` API you'd use locally. The model runs on whatever backend the plugin configured — JAX in this case. If you switch to `backend="torch"`, the same model definition produces a PyTorch-backed model.
@@ -45,7 +45,7 @@ This is the same Keras `Sequential` API you'd use locally. The model runs on wha
 Compile and fit as usual:
 
 ```python
---8<-- "examples/guides/07_keras_training.py:31:38"
+--8<-- "guides/07_keras_training.py:31:38"
 ```
 
 `model.fit()` runs on the remote GPU. Each node trains independently on its shard of the data, so training time scales inversely with the number of nodes (minus overhead). The evaluation runs on the full test set — each node evaluates independently and reports its own accuracy.
@@ -57,7 +57,7 @@ For synchronized multi-node training with gradient averaging (similar to PyTorch
 ```bash
 git clone https://github.com/gabfssilva/skyward.git
 cd skyward
-uv run python examples/guides/07_keras_training.py
+uv run python guides/07_keras_training.py
 ```
 
 ---

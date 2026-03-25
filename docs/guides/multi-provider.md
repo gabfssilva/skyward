@@ -22,7 +22,7 @@ It carries the same fields you'd normally pass to `Compute` — `accelerator`, `
 Pass multiple `Spec` objects to `Compute` and Skyward queries each provider's available offers, compares prices, and provisions from the cheapest:
 
 ```python
---8<-- "examples/guides/12_multi_provider.py:26:33"
+--8<-- "guides/12_multi_provider.py:26:33"
 ```
 
 With `selection="cheapest"` (the default), Skyward calls `offers()` on every provider in the list, collects all available machine types with their pricing, and picks the one with the lowest cost. The pool then provisions from that provider — the rest of the lifecycle (SSH, bootstrap, task dispatch) is unchanged.
@@ -34,7 +34,7 @@ This is useful when you don't have a strong provider preference and want cost op
 When you have a preferred provider but want a fallback, use `selection="first"`:
 
 ```python
---8<-- "examples/guides/12_multi_provider.py:36:43"
+--8<-- "guides/12_multi_provider.py:36:43"
 ```
 
 Specs are tried in order. Skyward queries RunPod first — if it has H100 offers available, that's where the pool provisions. If RunPod has no capacity, Skyward moves to AWS. This gives you deterministic priority ordering while still avoiding manual retries when your preferred provider is out of stock.
@@ -44,7 +44,7 @@ Specs are tried in order. Skyward queries RunPod first — if it has H100 offers
 Each `Spec` can have its own allocation strategy, cost cap, and region. This enables escalating fallback patterns — start aggressive, fall back to safer options:
 
 ```python
---8<-- "examples/guides/12_multi_provider.py:46:66"
+--8<-- "guides/12_multi_provider.py:46:66"
 ```
 
 The first spec tries spot instances on VastAI with a $2.50/hr cap — the cheapest option if available. If that fails (no capacity, or prices exceed the cap), the second spec tries Verda with spot-if-available. The third spec is the safety net: on-demand AWS, which is more expensive but virtually always available. Skyward evaluates all three and picks the cheapest viable option.
@@ -65,7 +65,7 @@ The key insight is that offer querying is fast (API calls to check availability 
 ```bash
 git clone https://github.com/gabfssilva/skyward.git
 cd skyward
-uv run python examples/guides/12_multi_provider.py
+uv run python guides/12_multi_provider.py
 ```
 
 ---

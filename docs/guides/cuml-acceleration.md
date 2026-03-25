@@ -9,7 +9,7 @@ Skyward makes this practical even if you don't have a local GPU. Provision a GPU
 A 20,000-sample subset of MNIST, downloaded directly on the remote worker — no need to serialize and ship 784-dimensional arrays over the wire:
 
 ```python
---8<-- "examples/guides/16_cuml_acceleration.py:14:22"
+--8<-- "guides/16_cuml_acceleration.py:14:22"
 ```
 
 `load_mnist` is a plain function (not `@sky.function`) that the GPU task calls. Since it's defined at module level, cloudpickle captures it alongside the decorated functions. The data is fetched from OpenML on the remote machine.
@@ -19,7 +19,7 @@ A 20,000-sample subset of MNIST, downloaded directly on the remote worker — no
 The GPU version uses standard scikit-learn imports — cuML's zero-code-change acceleration intercepts sklearn calls and routes them to the GPU:
 
 ```python
---8<-- "examples/guides/16_cuml_acceleration.py:25:40"
+--8<-- "guides/16_cuml_acceleration.py:25:40"
 ```
 
 All sklearn imports are inside the function because `@sky.function` serializes the function and sends it to a remote worker. The worker needs to resolve imports in its own environment. The function returns both accuracy and wall-clock time so we can compare against a CPU baseline.
@@ -29,7 +29,7 @@ All sklearn imports are inside the function because `@sky.function` serializes t
 The `cuml` plugin handles installing `cuml-cu12` and configuring the RAPIDS pip indexes. Combined with the `sklearn` plugin, which adds `scikit-learn` and `joblib`:
 
 ```python
---8<-- "examples/guides/16_cuml_acceleration.py:46:54"
+--8<-- "guides/16_cuml_acceleration.py:46:54"
 ```
 
 The plugins handle all dependency management — no need to manually specify pip packages or index URLs in the Image. The `cuml` plugin knows which RAPIDS indexes to configure for the CUDA 12 packages.
@@ -37,7 +37,7 @@ The plugins handle all dependency management — no need to manually specify pip
 ## Results
 
 ```python
---8<-- "examples/guides/16_cuml_acceleration.py:58:60"
+--8<-- "guides/16_cuml_acceleration.py:58:60"
 ```
 
 Expect accuracy to be roughly equivalent between CPU and GPU — cuML implements the same algorithms, not approximations. The wall-clock time is where the difference shows: cuML on an L4 can be significantly faster depending on the algorithm and dataset size.
@@ -47,7 +47,7 @@ Expect accuracy to be roughly equivalent between CPU and GPU — cuML implements
 ```bash
 git clone https://github.com/gabfssilva/skyward.git
 cd skyward
-uv run python examples/guides/16_cuml_acceleration.py
+uv run python guides/16_cuml_acceleration.py
 ```
 
 ---

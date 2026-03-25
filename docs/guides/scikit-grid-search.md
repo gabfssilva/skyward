@@ -7,7 +7,7 @@ Hyperparameter search is embarrassingly parallel — each candidate configuratio
 Load digits and split into train/test:
 
 ```python
---8<-- "examples/guides/09_scikit_grid_search.py:15:16"
+--8<-- "guides/09_scikit_grid_search.py:15:16"
 ```
 
 ## Defining the search space
@@ -15,7 +15,7 @@ Load digits and split into train/test:
 Use a Pipeline with a list-of-dicts `param_grid` to search over both estimators and their hyperparameters:
 
 ```python
---8<-- "examples/guides/09_scikit_grid_search.py:18:36"
+--8<-- "guides/09_scikit_grid_search.py:18:36"
 ```
 
 Each dict defines a grid for one estimator family. The `"clf"` key swaps the estimator itself (RandomForest, GradientBoosting, SVC), while `"clf__param"` tunes its hyperparameters. scikit-learn expands all combinations — this grid produces 21 candidates, each cross-validated 5 times, for 105 total fits. On a single machine, these run sequentially or across a few cores. On a cluster, they run across dozens of workers simultaneously.
@@ -25,7 +25,7 @@ Each dict defines a grid for one estimator family. The `"clf"` key swaps the est
 The `sklearn` plugin replaces joblib's default backend so that `Parallel(n_jobs=-1)` — which `GridSearchCV` uses internally — distributes work across cloud instances:
 
 ```python
---8<-- "examples/guides/09_scikit_grid_search.py:45:59"
+--8<-- "guides/09_scikit_grid_search.py:45:59"
 ```
 
 Inside the pool block, every joblib `Parallel` call is intercepted and routed to the Skyward cluster. Each fit is serialized with cloudpickle, sent to a worker, executed, and the result returned. The `worker` parameter accepts a `Worker` dataclass that controls per-node execution — `Worker(concurrency=4)` means each node runs 4 fits simultaneously. With 3 nodes and `concurrency=4`, you get 12 parallel fits.
@@ -49,7 +49,7 @@ The grid search object behaves exactly as it would in a local run — `best_para
 ```bash
 git clone https://github.com/gabfssilva/skyward.git
 cd skyward
-uv run python examples/guides/09_scikit_grid_search.py
+uv run python guides/09_scikit_grid_search.py
 ```
 
 ---

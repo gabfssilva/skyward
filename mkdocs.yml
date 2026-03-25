@@ -113,7 +113,6 @@ nav:
       - Distributed training:
           - PyTorch distributed: guides/pytorch-distributed.md
           - Keras training: guides/keras-training.md
-          - MicroGPT distributed: guides/microgpt-distributed.md
           - HuggingFace fine-tuning: guides/huggingface-finetuning.md
           - FSDP with HuggingFace: guides/fsdp-huggingface.md
       - Infrastructure:

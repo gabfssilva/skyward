@@ -37,7 +37,7 @@ There is no head election, no seed broadcasting, no cluster join. Each worker ru
 Your compute function does not change. The `@sky.function` decorator, lazy evaluation, and operator dispatch all work identically in standalone mode:
 
 ```python
---8<-- "examples/guides/21_standalone_workers.py:function"
+--8<-- "guides/21_standalone_workers.py:function"
 ```
 
 The function runs on a single node, receives its arguments via cloudpickle, and returns its result over SSH. `sky.instance_info()` still works — each worker knows its own node index, accelerator info, and total node count. The difference is purely in how workers relate to each other: they don't.
@@ -47,7 +47,7 @@ The function runs on a single node, receives its arguments via cloudpickle, and 
 Pass `Options(cluster=False)` to your `Compute` context manager:
 
 ```python
---8<-- "examples/guides/21_standalone_workers.py:pool"
+--8<-- "guides/21_standalone_workers.py:pool"
 ```
 
 Behind the scenes, this changes two things. First, each worker starts its `ClusteredActorSystem` without seed nodes, so it never joins a cluster and operates in isolation. There is no head election and no seed broadcast — every node is an island. Second, the pool actor creates a separate `ClusterClient` per worker, each connected through its own SSH tunnel, rather than sharing one client across the cluster.
@@ -75,7 +75,7 @@ Standalone mode disables all features that require inter-node communication:
 ```bash
 git clone https://github.com/gabfssilva/skyward.git
 cd skyward
-uv run python examples/guides/21_standalone_workers.py
+uv run python guides/21_standalone_workers.py
 ```
 
 ---

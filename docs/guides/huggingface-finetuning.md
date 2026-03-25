@@ -7,7 +7,7 @@ Fine-tuning a pre-trained transformer is one of the most common ML workflows: ta
 Load a pre-trained model inside the compute function:
 
 ```python
---8<-- "examples/guides/08_huggingface_finetuning.py:23:29"
+--8<-- "guides/08_huggingface_finetuning.py:23:29"
 ```
 
 `AutoModelForSequenceClassification.from_pretrained()` downloads the base model and adds a classification head. The download happens on the remote instance, which typically has faster internet than a laptop and avoids transferring multi-GB model weights over the SSH tunnel. The `id2label` and `label2id` mappings configure the model for binary sentiment classification.
@@ -17,7 +17,7 @@ Load a pre-trained model inside the compute function:
 Load IMDB, tokenize, and prepare for training — all on the remote instance:
 
 ```python
---8<-- "examples/guides/08_huggingface_finetuning.py:31:39"
+--8<-- "guides/08_huggingface_finetuning.py:31:39"
 ```
 
 `load_dataset("imdb")` downloads the dataset on the worker. The `select(range(max_samples))` call limits the dataset size for faster iteration during development — remove it for a full fine-tuning run. Tokenization runs remotely too, so you don't need `transformers` or `datasets` installed locally.
@@ -29,7 +29,7 @@ This is one of the key advantages of remote execution: heavy data processing and
 Configure training arguments and launch the Trainer:
 
 ```python
---8<-- "examples/guides/08_huggingface_finetuning.py:45:63"
+--8<-- "guides/08_huggingface_finetuning.py:45:63"
 ```
 
 The `Trainer` manages the training loop, evaluation, gradient accumulation, and mixed-precision (fp16) when a GPU is available. `eval_strategy="epoch"` runs evaluation after each epoch. `save_strategy="no"` disables checkpointing — since the instance is ephemeral, saved checkpoints would be lost on teardown. For production fine-tuning, you'd save checkpoints to a persistent location (S3, HuggingFace Hub, or a mounted volume).
@@ -55,7 +55,7 @@ The HuggingFace Trainer handles device placement and mixed-precision internally.
 ```bash
 git clone https://github.com/gabfssilva/skyward.git
 cd skyward
-uv run python examples/guides/08_huggingface_finetuning.py
+uv run python guides/08_huggingface_finetuning.py
 ```
 
 ---

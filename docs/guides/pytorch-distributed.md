@@ -9,7 +9,7 @@ Skyward's `torch` plugin does all of this automatically. It reads the cluster to
 Add `sky.plugins.torch()` to your pool's plugins:
 
 ```python
---8<-- "examples/guides/06_pytorch_distributed.py:77:82"
+--8<-- "guides/06_pytorch_distributed.py:77:82"
 ```
 
 The plugin is specified on the pool, not on the function — it configures the *cluster*, not the *task*. It reads `instance_info()` and sets `MASTER_ADDR` to the head node's private IP, `MASTER_PORT` to the coordination port, `WORLD_SIZE` to the total number of nodes, and `RANK` to this node's index. It then calls `torch.distributed.init_process_group()` with the configured backend (defaulting to `nccl` for GPU, `gloo` for CPU). By the time your function body runs, the distributed environment is fully initialized.
@@ -17,7 +17,7 @@ The plugin is specified on the pool, not on the function — it configures the *
 The function itself just uses `@sky.function` — the distributed setup is handled by the plugin:
 
 ```python
---8<-- "examples/guides/06_pytorch_distributed.py:6:8"
+--8<-- "guides/06_pytorch_distributed.py:6:8"
 ```
 
 ## Model with DDP
@@ -25,7 +25,7 @@ The function itself just uses `@sky.function` — the distributed setup is handl
 Define a standard model and wrap it with `DistributedDataParallel`:
 
 ```python
---8<-- "examples/guides/06_pytorch_distributed.py:20:27"
+--8<-- "guides/06_pytorch_distributed.py:20:27"
 ```
 
 DDP replicates the model on each node and synchronizes gradients during `backward()`. Each node trains on its own shard of the data, but the model parameters stay in sync because gradients are averaged across all nodes before each optimizer step. The `if dist.is_initialized()` guard lets the same code work in both single-node and multi-node contexts.
@@ -35,7 +35,7 @@ DDP replicates the model on each node and synchronizes gradients during `backwar
 Use `DistributedSampler` to ensure each node gets a unique subset of the data:
 
 ```python
---8<-- "examples/guides/06_pytorch_distributed.py:29:33"
+--8<-- "guides/06_pytorch_distributed.py:29:33"
 ```
 
 The sampler reads the rank and world size from the process group and partitions the dataset indices accordingly. Unlike `sky.shard()`, which operates on raw data, `DistributedSampler` integrates with PyTorch's `DataLoader` and handles shuffling per-epoch. Call `sampler.set_epoch(epoch)` before each epoch so the shuffling pattern changes — without this, every epoch sees the same order.
@@ -47,7 +47,7 @@ Both approaches — `sky.shard()` and `DistributedSampler` — achieve the same 
 During training, each node computes local metrics (loss, accuracy). To get global metrics — averaged across all nodes — use `all_reduce`:
 
 ```python
---8<-- "examples/guides/06_pytorch_distributed.py:60:63"
+--8<-- "guides/06_pytorch_distributed.py:60:63"
 ```
 
 `all_reduce` with `ReduceOp.SUM` sums the tensor across all nodes in-place. After the operation, every node holds the same aggregated values. Dividing by the number of nodes (or total samples) gives you the global average. This is how the head node can log consistent, cluster-wide metrics.
@@ -57,7 +57,7 @@ During training, each node computes local metrics (loss, accuracy). To get globa
 ```bash
 git clone https://github.com/gabfssilva/skyward.git
 cd skyward
-uv run python examples/guides/06_pytorch_distributed.py
+uv run python guides/06_pytorch_distributed.py
 ```
 
 ---

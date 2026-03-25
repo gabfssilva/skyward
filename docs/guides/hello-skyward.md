@@ -7,7 +7,7 @@ This guide walks you through running your first function on a remote cloud insta
 Any Python function can run on the cloud. The only change is adding the `@sky.function` decorator:
 
 ```python
---8<-- "examples/guides/01_hello_skyward.py:6:19"
+--8<-- "guides/01_hello_skyward.py:6:19"
 ```
 
 This decorator doesn't execute anything. Calling `add(2, 3)` no longer returns `5` — it returns a `PendingFunction[int]`, a frozen description of the computation. The arguments are captured, the function is recorded, but nothing runs. This is **lazy computation**: you're building a description of work, not performing it. The actual execution — serializing the function, sending it to a remote machine, running it there — doesn't happen until you dispatch the computation with an operator like `>>`.
@@ -19,7 +19,7 @@ This design means `PendingFunction` is a value you can pass around, compose with
 A `Compute` pool is a context manager that provisions cloud infrastructure for the duration of your work:
 
 ```python
---8<-- "examples/guides/01_hello_skyward.py:23:30"
+--8<-- "guides/01_hello_skyward.py:23:30"
 ```
 
 When you enter the `with` block, Skyward asks the provider (AWS, in this case) to launch an instance, waits for it to boot, opens an SSH tunnel, installs dependencies via an idempotent bootstrap script, and starts a worker process. When you exit the block — whether normally or through an exception — the instance is terminated and all infrastructure is torn down.
@@ -53,7 +53,7 @@ This bypasses the lazy computation entirely — no `PendingFunction`, no seriali
 ```bash
 git clone https://github.com/gabfssilva/skyward.git
 cd skyward
-uv run python examples/guides/01_hello_skyward.py
+uv run python guides/01_hello_skyward.py
 ```
 
 ---

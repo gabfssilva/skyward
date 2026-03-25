@@ -7,7 +7,7 @@ A single `>>` sends one computation to one node. But many workloads consist of m
 Define the functions you want to run remotely. Each one is independent — they can execute in any order, on the same or different nodes:
 
 ```python
---8<-- "examples/guides/02_parallel_execution.py:8:26"
+--8<-- "guides/02_parallel_execution.py:8:26"
 ```
 
 ## Parallel with `gather()`
@@ -15,7 +15,7 @@ Define the functions you want to run remotely. Each one is independent — they 
 When you have a dynamic number of tasks — iterating over a list of chunks, a set of configurations, or any collection whose size isn't known at write time — use `gather()`:
 
 ```python
---8<-- "examples/guides/02_parallel_execution.py:33:35"
+--8<-- "guides/02_parallel_execution.py:33:35"
 ```
 
 `gather()` collects multiple `PendingFunction` values into a `PendingFunctionGroup`. When dispatched with `>>`, all tasks execute concurrently on the pool's nodes (distributed via round-robin) and the results come back as a tuple. The pool handles serialization, dispatch, and collection — you just express which tasks should run in parallel.
@@ -25,7 +25,7 @@ When you have a dynamic number of tasks — iterating over a list of chunks, a s
 When the number of parallel tasks is fixed and you want full type inference, use the `&` operator:
 
 ```python
---8<-- "examples/guides/02_parallel_execution.py:37:39"
+--8<-- "guides/02_parallel_execution.py:37:39"
 ```
 
 The `&` operator creates the same `PendingFunctionGroup` that `gather()` produces, but with a key difference: the types are preserved individually. Here, `a` and `b` are both `int` because `multiply` returns `int`. If you chain three different functions — `preprocess() & train() & evaluate()` — the result type is `tuple[DataFrame, Model, float]`, not `tuple[Any, ...]`.
@@ -35,7 +35,7 @@ The `&` operator creates the same `PendingFunctionGroup` that `gather()` produce
 Since `&` preserves types per-position, you can compose completely different functions in a single parallel batch:
 
 ```python
---8<-- "examples/guides/02_parallel_execution.py:41:43"
+--8<-- "guides/02_parallel_execution.py:41:43"
 ```
 
 Each computation may go to a different node (round-robin scheduling), and the group blocks until all of them complete. The destructured variables `s`, `p`, `f` each carry their correct type.
@@ -47,7 +47,7 @@ The distinction from broadcast (`@`) is important: `@` runs the *same* function 
 By default, `gather()` waits for all tasks to finish before returning. With `stream=True`, results are yielded as they complete — useful when tasks have variable duration and you want to start processing early:
 
 ```python
---8<-- "examples/guides/02_parallel_execution.py:45:50"
+--8<-- "guides/02_parallel_execution.py:45:50"
 ```
 
 Streaming changes the return type from a tuple to a generator. Results arrive in **completion order**, not submission order — the fastest tasks come first. This is ideal for displaying progress, feeding partial results into a downstream pipeline, or reducing time-to-first-result when tasks have uneven durations.
@@ -59,7 +59,7 @@ If you need results in the original submission order even while streaming, pass 
 ```bash
 git clone https://github.com/gabfssilva/skyward.git
 cd skyward
-uv run python examples/guides/02_parallel_execution.py
+uv run python guides/02_parallel_execution.py
 ```
 
 ---

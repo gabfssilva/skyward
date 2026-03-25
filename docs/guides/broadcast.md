@@ -7,7 +7,7 @@ Some operations need to run on every node in the pool — not just one. Distribu
 Define a compute function that uses `shard()` to get its portion of the data:
 
 ```python
---8<-- "examples/guides/03_broadcast.py:6:17"
+--8<-- "guides/03_broadcast.py:6:17"
 ```
 
 The function receives the *full* dataset as its argument, but `shard()` returns only the portion assigned to the current node. This means the serialization cost is paid once (the full dataset is sent to every node), but each node processes a different slice. The sharding is automatic — `shard()` reads the node's position from `instance_info()` and uses modulo striding (`indices[node::total_nodes]`) to divide the data evenly.
@@ -19,7 +19,7 @@ The function receives the *full* dataset as its argument, but `shard()` returns 
 Use `@` instead of `>>` to run the function on every node:
 
 ```python
---8<-- "examples/guides/03_broadcast.py:21:26"
+--8<-- "guides/03_broadcast.py:21:26"
 ```
 
 Where `>>` sends work to a single node (round-robin), `@` sends it to *all* nodes. The pool serializes the function and arguments once, dispatches a copy to each worker, waits for every node to complete, and collects the results. The return type is `list[T]` — one entry per node, in node order.
@@ -31,7 +31,7 @@ This is the foundation for distributed patterns in Skyward. When every node runs
 Each node returns a partial result. Since broadcast returns a list, you combine them locally on the client side:
 
 ```python
---8<-- "examples/guides/03_broadcast.py:28:33"
+--8<-- "guides/03_broadcast.py:28:33"
 ```
 
 This map-reduce pattern — broadcast a function, shard the data inside, aggregate the results — is the simplest form of distributed computation in Skyward. More complex patterns (distributed training with gradient synchronization, for example) build on the same foundation but use framework plugins to handle the inter-node communication.
@@ -41,7 +41,7 @@ This map-reduce pattern — broadcast a function, shard the data inside, aggrega
 ```bash
 git clone https://github.com/gabfssilva/skyward.git
 cd skyward
-uv run python examples/guides/03_broadcast.py
+uv run python guides/03_broadcast.py
 ```
 
 ---

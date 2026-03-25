@@ -7,7 +7,7 @@ Most ML workloads need GPUs. Skyward abstracts GPU selection across providers �
 Specify the accelerator when creating a pool:
 
 ```python
---8<-- "examples/guides/04_gpu_accelerators.py:43:47"
+--8<-- "guides/04_gpu_accelerators.py:43:47"
 ```
 
 Use the factory functions under `sky.accelerators`. They carry catalog metadata — VRAM size, CUDA compatibility, form factor — and provide IDE autocomplete:
@@ -26,7 +26,7 @@ The translation from a logical accelerator name to a provider-specific resource 
 Inside a `@sky.function` function, `instance_info()` tells you what hardware is available:
 
 ```python
---8<-- "examples/guides/04_gpu_accelerators.py:6:9"
+--8<-- "guides/04_gpu_accelerators.py:6:9"
 ```
 
 `InstanceInfo` includes the node index, cluster size, head status, and the number and type of accelerators. This is useful for conditional logic — running a GPU path when CUDA is available, falling back to CPU otherwise.
@@ -36,7 +36,7 @@ Inside a `@sky.function` function, `instance_info()` tells you what hardware is 
 A matrix multiplication benchmark illustrates the GPU advantage. The function runs on the remote instance, where the accelerator is available:
 
 ```python
---8<-- "examples/guides/04_gpu_accelerators.py:12:39"
+--8<-- "guides/04_gpu_accelerators.py:12:39"
 ```
 
 The first `torch.matmul` on GPU is a warmup call — it triggers CUDA kernel compilation, which is a one-time cost. After warmup, GPU matmul on a 4096x4096 matrix is typically 20-50x faster than CPU. The exact speedup depends on the GPU model, matrix size, and data type (fp32 vs fp16).
@@ -48,7 +48,7 @@ Note that imports happen *inside* the function. This is intentional — the func
 ```bash
 git clone https://github.com/gabfssilva/skyward.git
 cd skyward
-uv run python examples/guides/04_gpu_accelerators.py
+uv run python guides/04_gpu_accelerators.py
 ```
 
 ---

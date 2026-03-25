@@ -7,7 +7,7 @@ The most common pattern in distributed computing is sending the same function to
 Pass the full dataset to the compute function. Inside, call `shard()` to get this node's portion:
 
 ```python
---8<-- "examples/guides/05_data_sharding.py:8:22"
+--8<-- "guides/05_data_sharding.py:8:22"
 ```
 
 The function receives the *full* dataset as arguments — `full_x` and `full_y` are the complete arrays. `shard()` divides them using modulo striding: with 4 nodes and 1000 samples, node 0 gets indices `[0, 4, 8, ...]`, node 1 gets `[1, 5, 9, ...]`, and so on. Each node ends up with ~250 samples, evenly distributed regardless of whether the total is divisible by the node count.
@@ -19,7 +19,7 @@ The `shuffle=True` parameter randomizes the order before sharding, with a fixed 
 When you pass multiple arrays to `shard()`, the same indices are selected from each one — so paired data stays consistent:
 
 ```python
---8<-- "examples/guides/05_data_sharding.py:13:13"
+--8<-- "guides/05_data_sharding.py:13:13"
 ```
 
 This is critical for supervised learning: features and labels, inputs and targets, questions and answers. After sharding, `x[i]` still corresponds to `y[i]` because the same positions were selected from both arrays. You can pass any number of arrays to a single `shard()` call, and they'll all be split at the same indices.
@@ -29,7 +29,7 @@ This is critical for supervised learning: features and labels, inputs and target
 `shard()` returns the same type it receives. Lists produce lists, tuples produce tuples, NumPy arrays produce arrays, PyTorch tensors produce tensors:
 
 ```python
---8<-- "examples/guides/05_data_sharding.py:25:42"
+--8<-- "guides/05_data_sharding.py:25:42"
 ```
 
 This means you can shard a tensor and immediately pass it to a model without type conversions or wrapping. The sharding operation is transparent to downstream code — it doesn't know (or care) that it's working with a subset.
@@ -49,7 +49,7 @@ This switches from striding to contiguous blocks and discards leftover elements,
 ```bash
 git clone https://github.com/gabfssilva/skyward.git
 cd skyward
-uv run python examples/guides/05_data_sharding.py
+uv run python guides/05_data_sharding.py
 ```
 
 ---

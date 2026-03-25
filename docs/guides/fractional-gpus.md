@@ -9,11 +9,11 @@ Cloud providers implement fractional GPUs at the hypervisor level. AWS offers th
 Pass a fractional `count` to any accelerator factory:
 
 ```python
---8<-- "examples/guides/20_fractional_gpus.py:1:4"
+--8<-- "guides/20_fractional_gpus.py:1:4"
 ```
 
 ```python
---8<-- "examples/guides/20_fractional_gpus.py:39:46"
+--8<-- "guides/20_fractional_gpus.py:39:46"
 ```
 
 `sky.accelerators.L4(count=0.5)` tells Skyward to find an instance with half an L4 — 12 GB of the L4's 24 GB VRAM. On AWS, this resolves to a `g6f.4xlarge` instance. The `count` parameter accepts any float: `0.125` for 1/8 of a GPU, `0.25` for a quarter, `0.5` for half. When a provider doesn't have a plan that matches the exact fraction, Skyward skips it — there's no rounding up to a full GPU.
@@ -35,7 +35,7 @@ sky.Compute(
 The function itself doesn't know or care that it's running on a fractional GPU. CUDA presents the slice as the only visible device:
 
 ```python
---8<-- "examples/guides/20_fractional_gpus.py:6:29"
+--8<-- "guides/20_fractional_gpus.py:6:29"
 ```
 
 `torch.cuda.get_device_properties(0).total_memory` reports the VRAM available to this slice, not the full physical GPU. On a `g6f.4xlarge` (half L4), this is approximately 12 GB. The HuggingFace pipeline loads the model, tokenizes the input, runs forward passes on the GPU, and returns predictions — identical to running on a full card, just with less memory headroom.
@@ -43,11 +43,11 @@ The function itself doesn't know or care that it's running on a fractional GPU. 
 `instance_info().accelerators` returns the fractional count (0.5 in this case), so your code can introspect how much GPU it was allocated if needed.
 
 ```python
---8<-- "examples/guides/20_fractional_gpus.py:32:36"
+--8<-- "guides/20_fractional_gpus.py:32:36"
 ```
 
 ```python
---8<-- "examples/guides/20_fractional_gpus.py:46:51"
+--8<-- "guides/20_fractional_gpus.py:46:51"
 ```
 
 ## Fractional GPUs vs MIG
@@ -80,7 +80,7 @@ The trade-off is capacity. A 1/8 L4 slice has about 3 GB of VRAM — enough for 
 ```bash
 git clone https://github.com/gabfssilva/skyward.git
 cd skyward
-uv run python examples/guides/20_fractional_gpus.py
+uv run python guides/20_fractional_gpus.py
 ```
 
 ---

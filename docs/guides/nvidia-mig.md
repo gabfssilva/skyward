@@ -15,11 +15,11 @@ Each partition gets its own MIG UUID, visible through `nvidia-smi -L`. When a pr
 Add `sky.plugins.mig()` to your pool and set the worker concurrency to match the number of partitions:
 
 ```python
---8<-- "examples/guides/18_nvidia_mig.py:5:6"
+--8<-- "guides/18_nvidia_mig.py:5:6"
 ```
 
 ```python
---8<-- "examples/guides/18_nvidia_mig.py:61:68"
+--8<-- "guides/18_nvidia_mig.py:61:68"
 ```
 
 Three things happen here. First, the `mig` plugin's `profile` parameter tells Skyward which MIG profile to create — in this case, `3g.40gb`, which splits the GPU into two partitions. Second, `Worker(concurrency=2, executor="process")` creates two loky subprocesses on the node, one per partition. Third, `Image(pip=["torch"])` installs PyTorch on the worker — we're not using `sky.plugins.torch()` here because the torch plugin is designed for multi-node distributed training (DDP), and MIG partitions on a single GPU are independent workloads, not a distributed cluster.
@@ -37,7 +37,7 @@ For the technical details on how each hook works, see the [MIG plugin reference]
 The function itself doesn't know about MIG — it just sees a CUDA device:
 
 ```python
---8<-- "examples/guides/18_nvidia_mig.py:9:57"
+--8<-- "guides/18_nvidia_mig.py:9:57"
 ```
 
 There are no `if torch.cuda.is_available()` guards — this code runs on a GPU node with MIG partitions, so CUDA is always present. `torch.device("cuda")` resolves to the MIG partition assigned by the plugin. The function trains a small feedforward network on synthetic data and returns the final metrics along with the worker index and partition UUID.
@@ -49,7 +49,7 @@ There are no `if torch.cuda.is_available()` guards — this code runs on a GPU n
 Dispatch one task per partition using `gather()`:
 
 ```python
---8<-- "examples/guides/18_nvidia_mig.py:69:70"
+--8<-- "guides/18_nvidia_mig.py:69:70"
 ```
 
 Both tasks execute simultaneously — worker 0 on partition 0, worker 1 on partition 1. Since MIG provides hardware-level isolation, neither task impacts the other's performance. The wall time should be close to the time of a single task, not the sum.
@@ -65,7 +65,7 @@ See [NVIDIA's supported GPUs page](https://docs.nvidia.com/datacenter/tesla/mig-
 ```bash
 git clone https://github.com/gabfssilva/skyward.git
 cd skyward
-uv run python examples/guides/18_nvidia_mig.py
+uv run python guides/18_nvidia_mig.py
 ```
 
 ---
