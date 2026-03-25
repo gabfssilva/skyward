@@ -92,6 +92,7 @@ SPECS: Final[dict[str, dict[str, Any]]] = {
     # NVIDIA Datacenter - Hopper
     # =========================================================================
     "H100": {"memory": "80GB", "cuda": {"min": "11.8", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Hopper"},
+    "H100-NVL": {"memory": "94GB", "cuda": {"min": "11.8", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Hopper"},
     "H200": {"memory": "141GB", "cuda": {"min": "11.8", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Hopper"},
     "H200-NVL": {"memory": "141GB", "cuda": {"min": "11.8", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Hopper"},
     "GH200": {"memory": "96GB", "cuda": {"min": "11.8", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Hopper"},
@@ -208,9 +209,9 @@ SPECS: Final[dict[str, dict[str, Any]]] = {
     # =========================================================================
     # NVIDIA Workstation - Blackwell (CC 10.0)
     # =========================================================================
-    "RTX PRO 4000": {"memory": "20GB", "cuda": {"min": "12.8", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Blackwell"},
-    "RTX PRO 4500": {"memory": "24GB", "cuda": {"min": "12.8", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Blackwell"},
-    "RTX PRO 5000": {"memory": "32GB", "cuda": {"min": "12.8", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Blackwell"},
+    "RTX PRO 4000": {"memory": "24GB", "cuda": {"min": "12.8", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Blackwell"},
+    "RTX PRO 4500": {"memory": "32GB", "cuda": {"min": "12.8", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Blackwell"},
+    "RTX PRO 5000": {"memory": "48GB", "cuda": {"min": "12.8", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Blackwell"},
     "RTX PRO 6000": {"memory": "96GB", "cuda": {"min": "12.8", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Blackwell"},
     "RTX PRO 6000 MaxQ": {"memory": "96GB", "cuda": {"min": "12.8", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Blackwell"},
     "RTX PRO 6000 S": {"memory": "96GB", "cuda": {"min": "12.8", "max": "13.1"}, "manufacturer": "NVIDIA", "architecture": "Blackwell"},

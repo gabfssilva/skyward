@@ -46,7 +46,7 @@ def H100(
     actual_memory = memory
 
     if form_factor == "NVL":
-        name = "H200-NVL"
+        name = "H100-NVL"
         actual_memory = "94GB"
 
     return Accelerator(
