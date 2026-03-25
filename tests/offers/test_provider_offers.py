@@ -8,31 +8,6 @@ from __future__ import annotations
 
 import pytest
 
-from skyward.accelerators import Accelerator
-from skyward.core.spec import Nodes, PoolSpec
-
-
-def _gpu_spec(
-    accelerator: str = "A100",
-    region: str = "us-east-1",
-    count: int = 1,
-) -> PoolSpec:
-    return PoolSpec(
-        nodes=Nodes(min=1),
-        accelerator=Accelerator(name=accelerator, count=count),
-        region=region,
-    )
-
-
-def _cpu_spec(region: str = "us-east-1", vcpus: int = 4, memory_gb: float = 8) -> PoolSpec:
-    return PoolSpec(
-        nodes=Nodes(min=1),
-        accelerator=None,
-        region=region,
-        vcpus=vcpus,
-        memory_gb=memory_gb,
-    )
-
 
 def _assert_offers(
     offers: list,
@@ -62,7 +37,7 @@ async def test_aws_offers_cpu_only() -> None:
     from skyward.providers.aws.config import AWS
 
     provider = await AWS().create_provider()
-    offers = [o async for o in provider.offers(_cpu_spec("us-east-1", vcpus=4, memory_gb=8))]
+    offers = [o async for o in provider.offers()]
     _assert_offers(offers, require_accelerator=False)
 
 
@@ -73,7 +48,7 @@ async def test_aws_offers_t4() -> None:
     from skyward.providers.aws.config import AWS
 
     provider = await AWS().create_provider()
-    offers = [o async for o in provider.offers(_gpu_spec("T4", "us-east-1"))]
+    offers = [o async for o in provider.offers()]
     _assert_offers(offers)
 
 
@@ -84,7 +59,7 @@ async def test_aws_offers_a100_8x() -> None:
     from skyward.providers.aws.config import AWS
 
     provider = await AWS().create_provider()
-    offers = [o async for o in provider.offers(_gpu_spec("A100", "us-east-1", count=8))]
+    offers = [o async for o in provider.offers()]
     _assert_offers(offers)
 
 
@@ -95,7 +70,7 @@ async def test_aws_offers_a10g() -> None:
     from skyward.providers.aws.config import AWS
 
     provider = await AWS().create_provider()
-    offers = [o async for o in provider.offers(_gpu_spec("A10G", "us-east-1"))]
+    offers = [o async for o in provider.offers()]
     _assert_offers(offers)
 
 
@@ -106,7 +81,7 @@ async def test_aws_offers_h100() -> None:
     from skyward.providers.aws.config import AWS
 
     provider = await AWS().create_provider()
-    offers = [o async for o in provider.offers(_gpu_spec("H100", "us-east-1", count=8))]
+    offers = [o async for o in provider.offers()]
     _assert_offers(offers)
 
 
@@ -120,7 +95,7 @@ async def test_gcp_offers_cpu_only() -> None:
     from skyward.providers.gcp.config import GCP
 
     provider = await GCP().create_provider()
-    offers = [o async for o in provider.offers(_cpu_spec("us-central1", vcpus=4, memory_gb=16))]
+    offers = [o async for o in provider.offers()]
     _assert_offers(offers, require_pricing=False, require_accelerator=False)
 
 
@@ -131,7 +106,7 @@ async def test_gcp_offers_l4() -> None:
     from skyward.providers.gcp.config import GCP
 
     provider = await GCP().create_provider()
-    offers = [o async for o in provider.offers(_gpu_spec("L4", "us-central1"))]
+    offers = [o async for o in provider.offers()]
     _assert_offers(offers, require_pricing=False)
 
 
@@ -142,7 +117,7 @@ async def test_gcp_offers_t4() -> None:
     from skyward.providers.gcp.config import GCP
 
     provider = await GCP().create_provider()
-    offers = [o async for o in provider.offers(_gpu_spec("T4", "us-central1"))]
+    offers = [o async for o in provider.offers()]
     _assert_offers(offers, require_pricing=False)
 
 
@@ -156,7 +131,7 @@ async def test_vastai_offers_a100() -> None:
     from skyward.providers.vastai.config import VastAI
 
     provider = await VastAI().create_provider()
-    offers = [o async for o in provider.offers(_gpu_spec("A100"))]
+    offers = [o async for o in provider.offers()]
     _assert_offers(offers)
 
 
@@ -167,7 +142,7 @@ async def test_vastai_offers_h100() -> None:
     from skyward.providers.vastai.config import VastAI
 
     provider = await VastAI().create_provider()
-    offers = [o async for o in provider.offers(_gpu_spec("H100"))]
+    offers = [o async for o in provider.offers()]
     _assert_offers(offers)
 
 
@@ -181,7 +156,7 @@ async def test_runpod_offers_a100() -> None:
     from skyward.providers.runpod.config import RunPod
 
     provider = await RunPod().create_provider()
-    offers = [o async for o in provider.offers(_gpu_spec("A100"))]
+    offers = [o async for o in provider.offers()]
     _assert_offers(offers)
 
 
@@ -192,7 +167,7 @@ async def test_runpod_offers_h100() -> None:
     from skyward.providers.runpod.config import RunPod
 
     provider = await RunPod().create_provider()
-    offers = [o async for o in provider.offers(_gpu_spec("H100"))]
+    offers = [o async for o in provider.offers()]
     _assert_offers(offers)
 
 
@@ -206,7 +181,7 @@ async def test_hyperstack_offers_a100() -> None:
     from skyward.providers.hyperstack.config import Hyperstack
 
     provider = await Hyperstack().create_provider()
-    offers = [o async for o in provider.offers(_gpu_spec("A100"))]
+    offers = [o async for o in provider.offers()]
     _assert_offers(offers)
 
 
@@ -220,7 +195,7 @@ async def test_tensordock_offers_a100() -> None:
     from skyward.providers.tensordock.config import TensorDock
 
     provider = await TensorDock().create_provider()
-    offers = [o async for o in provider.offers(_gpu_spec("A100"))]
+    offers = [o async for o in provider.offers()]
     _assert_offers(offers)
 
 
@@ -231,7 +206,7 @@ async def test_tensordock_offers_h100() -> None:
     from skyward.providers.tensordock.config import TensorDock
 
     provider = await TensorDock().create_provider()
-    offers = [o async for o in provider.offers(_gpu_spec("H100"))]
+    offers = [o async for o in provider.offers()]
     _assert_offers(offers)
 
 
@@ -245,7 +220,7 @@ async def test_verda_offers_a100() -> None:
     from skyward.providers.verda.config import Verda
 
     provider = await Verda().create_provider()
-    offers = [o async for o in provider.offers(_gpu_spec("A100"))]
+    offers = [o async for o in provider.offers()]
     _assert_offers(offers)
 
 
@@ -256,5 +231,5 @@ async def test_verda_offers_h100() -> None:
     from skyward.providers.verda.config import Verda
 
     provider = await Verda().create_provider()
-    offers = [o async for o in provider.offers(_gpu_spec("H100"))]
+    offers = [o async for o in provider.offers()]
     _assert_offers(offers)

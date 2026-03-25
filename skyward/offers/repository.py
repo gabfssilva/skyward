@@ -209,17 +209,15 @@ class OfferRepository:
         if not stale:
             return 0
 
-        from skyward.core.spec import Image, Nodes, PoolSpec
         from skyward.offers.conversion import _offer_from_runtime
 
-        spec = PoolSpec(nodes=Nodes(min=1), image=Image(), region="", accelerator=None)
         total = 0
 
         for name in stale:
             provider_instance = self._providers[name]
             feed_offers = []
             try:
-                async for offer in provider_instance.offers(spec):
+                async for offer in provider_instance.offers():
                     feed_offers.append(_offer_from_runtime(offer, name))
             except Exception:
                 continue
@@ -245,16 +243,14 @@ class OfferRepository:
         if not self._providers:
             return 0
 
-        from skyward.core.spec import Image, Nodes, PoolSpec
         from skyward.offers.conversion import _offer_from_runtime
 
-        spec = PoolSpec(nodes=Nodes(min=1), image=Image(), region="", accelerator=None)
         total = 0
 
         for name, provider_instance in self._providers.items():
             feed_offers = []
             try:
-                async for offer in provider_instance.offers(spec):
+                async for offer in provider_instance.offers():
                     feed_offers.append(_offer_from_runtime(offer, name))
             except Exception:
                 continue
@@ -281,27 +277,9 @@ class OfferRepository:
         if not self._providers:
             return
 
-        from skyward.core.spec import Image, Nodes, PoolSpec
         from skyward.offers.conversion import _offer_from_runtime
 
         provider_filter = filters.get("provider")
-        accel_name = filters.get("accelerator")
-
-        accel: Accelerator | None = None
-        if accel_name:
-            from skyward.accelerators.spec import Accelerator
-
-            accel_count = filters.get("accelerator_count", 0)
-            accel = Accelerator(name=accel_name, count=accel_count)
-
-        spec = PoolSpec(
-            nodes=Nodes(min=1),
-            accelerator=accel,
-            region=filters.get("region", ""),
-            vcpus=filters.get("vcpus"),
-            memory_gb=filters.get("memory_gb"),
-            image=Image(),
-        )
 
         targets = (
             {provider_filter: self._providers[provider_filter]}
@@ -312,7 +290,7 @@ class OfferRepository:
         for name, provider_instance in targets.items():
             feed_offers = []
             try:
-                async for offer in provider_instance.offers(spec):
+                async for offer in provider_instance.offers():
                     feed_offers.append(_offer_from_runtime(offer, name))
             except Exception:
                 continue

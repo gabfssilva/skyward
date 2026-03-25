@@ -24,7 +24,6 @@ from .types import (
     ImageResponse,
     ServerResponse,
     ServerTypeResponse,
-    normalize_gpu_name,
 )
 
 log = logger.bind(provider="scaleway")
@@ -55,7 +54,7 @@ class ScalewayProvider(Provider[Scaleway, ScalewaySpecific]):
     async def create(cls, config: Scaleway) -> ScalewayProvider:
         return cls(config)
 
-    async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
+    async def offers(self) -> AsyncIterator[Offer]:
         secret_key = get_secret_key(self._config)
         zones = (self._config.zone,) if self._config.zone else GPU_ZONES
 
@@ -71,23 +70,10 @@ class ScalewayProvider(Provider[Scaleway, ScalewaySpecific]):
                 gpu_info = st.get("gpu_info")
 
                 gpu_name = gpu_info.get("gpu_name", "") if gpu_info else ""
-                if spec.accelerator_name:
-                    req_norm = normalize_gpu_name(spec.accelerator_name)
-                    offer_norm = normalize_gpu_name(gpu_name)
-                    if req_norm != offer_norm:
-                        continue
-
-                if spec.accelerator_count and gpu_count != spec.accelerator_count:
-                    continue
-
                 vcpus = float(st.get("ncpus", 0))
-                if spec.vcpus and vcpus < spec.vcpus:
-                    continue
 
                 ram_bytes = st.get("ram", 0)
                 memory_gb = ram_bytes / (1024 ** 3) if ram_bytes > 1000 else float(ram_bytes)
-                if spec.memory_gb and memory_gb < spec.memory_gb:
-                    continue
 
                 vram_bytes = gpu_info.get("gpu_memory", 0) if gpu_info else 0
                 vram_gb = vram_bytes / (1024 ** 3) if vram_bytes > 1000 else 0

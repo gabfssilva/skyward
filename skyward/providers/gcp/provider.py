@@ -30,13 +30,17 @@ from .instances import (
     default_n1_for_gpus,
     estimate_vram,
     is_guest_attachable,
-    is_tpu_accelerator,
-    match_accelerator_name,
     parse_builtin_gpu_count,
-    resolve_tpu_type,
     select_image_family,
 )
-from .types import GCPSpecific, ResolvedMachine
+from .types import (
+    _BUILTIN_FAMILY_ACCELERATOR,
+    _BUILTIN_GPU_FAMILIES,
+    _CPU_FAMILIES,
+    _KNOWN_TPU_TYPES,
+    GCPSpecific,
+    ResolvedMachine,
+)
 
 log = logger.bind(provider="gcp")
 
@@ -115,88 +119,144 @@ class GCPProvider(Provider[GCP, GCPSpecific]):
             thread_pool=thread_pool,
         )
 
-    async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
-        if spec.accelerator_name and is_tpu_accelerator(spec.accelerator_name):
-            async for offer in self._tpu_offers(spec):
-                yield offer
+    async def offers(self) -> AsyncIterator[Offer]:
+        from google.cloud import compute_v1  # type: ignore[reportMissingImports]
+
+        project = self._project
+        zone = self._config.zone
+
+        accel_pager = self._accelerators.list(  # type: ignore[union-attr]
+            request=compute_v1.ListAcceleratorTypesRequest(
+                project=project, zone=zone,
+            ),
+        )
+        machine_pager = self._machines.list(  # type: ignore[union-attr]
+            request=compute_v1.ListMachineTypesRequest(
+                project=project, zone=zone,
+            ),
+        )
+        all_accels, all_machines = await asyncio.gather(
+            self._run(_collect_pager, accel_pager),
+            self._run(_collect_pager, machine_pager),
+        )
+
+        async for offer in self._gpu_offers(zone, all_accels, all_machines):
+            yield offer
+
+        async for offer in self._cpu_offers(zone, all_machines):
+            yield offer
+
+        async for offer in self._tpu_offers(zone):
+            yield offer
+
+    async def _gpu_offers(
+        self,
+        zone: str,
+        all_accels: list[object],
+        all_machines: list[object],
+    ) -> AsyncIterator[Offer]:
+        gcp_accel_names: list[str] = [at.name for at in all_accels]  # type: ignore[union-attr]
+
+        for accel_name in gcp_accel_names:
+            gpu_model = re.sub(r"^nvidia-tesla-|^nvidia-", "", accel_name).upper()
+            gpu_vram = estimate_vram(accel_name)
+            guest_attachable = is_guest_attachable(accel_name)
+
+            if guest_attachable:
+                for gpu_count in (1, 2, 4, 8):
+                    machine_type = default_n1_for_gpus(gpu_count)
+                    matched = next(
+                        (mt for mt in all_machines if mt.name == machine_type),  # type: ignore[union-attr]
+                        None,
+                    )
+                    vcpus = matched.guest_cpus if matched else 0  # type: ignore[union-attr]
+                    memory_gb = round(matched.memory_mb / 1024, 1) if matched else 0.0  # type: ignore[union-attr]
+
+                    resolved = ResolvedMachine(
+                        machine_type=machine_type,
+                        uses_guest_accelerators=True,
+                        accelerator_type=accel_name,
+                        gpu_count=gpu_count,
+                        gpu_model=gpu_model,
+                        gpu_vram_gb=gpu_vram,
+                        vcpus=vcpus,
+                        memory_gb=memory_gb,
+                    )
+                    yield _resolved_to_offer(zone, resolved)
+
+            else:
+                builtin_machines = [
+                    mt for mt in all_machines
+                    if mt.name.split("-")[0] in _BUILTIN_GPU_FAMILIES  # type: ignore[union-attr]
+                    and _BUILTIN_FAMILY_ACCELERATOR.get(mt.name.split("-")[0], "") == accel_name  # type: ignore[union-attr]
+                ]
+                for mt in builtin_machines:
+                    gpu_count = parse_builtin_gpu_count(mt.name)  # type: ignore[union-attr]
+                    resolved = ResolvedMachine(
+                        machine_type=mt.name,  # type: ignore[union-attr]
+                        uses_guest_accelerators=False,
+                        accelerator_type=accel_name,
+                        gpu_count=gpu_count,
+                        gpu_model=gpu_model,
+                        gpu_vram_gb=gpu_vram,
+                        vcpus=mt.guest_cpus,  # type: ignore[union-attr]
+                        memory_gb=round(mt.memory_mb / 1024, 1),  # type: ignore[union-attr]
+                    )
+                    yield _resolved_to_offer(zone, resolved)
+
+    async def _cpu_offers(
+        self, zone: str, all_machines: list[object],
+    ) -> AsyncIterator[Offer]:
+        for mt in all_machines:
+            family = mt.name.split("-")[0]  # type: ignore[union-attr]
+            if family not in _CPU_FAMILIES:
+                continue
+
+            resolved = ResolvedMachine(
+                machine_type=mt.name,  # type: ignore[union-attr]
+                uses_guest_accelerators=False,
+                accelerator_type="",
+                gpu_count=0,
+                gpu_model="",
+                gpu_vram_gb=0,
+                vcpus=mt.guest_cpus,  # type: ignore[union-attr]
+                memory_gb=round(mt.memory_mb / 1024, 1),  # type: ignore[union-attr]
+            )
+            yield _resolved_to_offer(zone, resolved)
+
+    async def _tpu_offers(self, zone: str) -> AsyncIterator[Offer]:
+        if not self._tpu:
             return
 
-        resolved = await self._resolve_machine(spec)
-        log.info(
-            "Resolved machine: {mt} (gpu={gpu}x{model})",
-            mt=resolved.machine_type,
-            gpu=resolved.gpu_count,
-            model=resolved.gpu_model,
-        )
-
-        accelerator = (
-            Accelerator(
-                name=resolved.gpu_model,
-                memory=f"{resolved.gpu_vram_gb}GB" if resolved.gpu_vram_gb else "",
-                count=resolved.gpu_count,
-            )
-            if resolved.gpu_count > 0
-            else None
-        )
-
-        it = InstanceType(
-            name=resolved.machine_type,
-            accelerator=accelerator,
-            vcpus=resolved.vcpus,
-            memory_gb=resolved.memory_gb,
-            architecture="x86_64",
-            specific=None,
-        )
-
-        zone = self._config.zone
-        yield Offer(
-            id=f"gcp-{zone}-{resolved.machine_type}",
-            instance_type=it,
-            spot_price=None,
-            on_demand_price=None,
-            billing_unit="second",
-            specific=resolved,
-        )
-
-    async def _tpu_offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
-        if not self._tpu:
-            raise RuntimeError(
-                "TPU support requires google-cloud-tpu. "
-                "Install with: uv add 'skyward[gcp]'"
+        for tpu_type in _KNOWN_TPU_TYPES:
+            resolved = ResolvedMachine(
+                machine_type=f"tpu-{tpu_type}",
+                uses_guest_accelerators=False,
+                accelerator_type=tpu_type,
+                gpu_count=0,
+                gpu_model=tpu_type,
+                gpu_vram_gb=0,
+                vcpus=0,
+                memory_gb=0.0,
             )
 
-        tpu_type = resolve_tpu_type(spec.accelerator_name or "")
-        log.info("Resolved TPU type: {tpu_type}", tpu_type=tpu_type)
+            it = InstanceType(
+                name=f"tpu-{tpu_type}",
+                accelerator=Accelerator(name=tpu_type, count=1),
+                vcpus=0,
+                memory_gb=0.0,
+                architecture="x86_64",
+                specific=None,
+            )
 
-        resolved = ResolvedMachine(
-            machine_type=f"tpu-{tpu_type}",
-            uses_guest_accelerators=False,
-            accelerator_type=tpu_type,
-            gpu_count=0,
-            gpu_model=tpu_type,
-            gpu_vram_gb=0,
-            vcpus=0,
-            memory_gb=0.0,
-        )
-
-        it = InstanceType(
-            name=f"tpu-{tpu_type}",
-            accelerator=Accelerator(name=tpu_type, count=1),
-            vcpus=0,
-            memory_gb=0.0,
-            architecture="x86_64",
-            specific=None,
-        )
-
-        zone = self._config.zone
-        yield Offer(
-            id=f"gcp-{zone}-tpu-{tpu_type}",
-            instance_type=it,
-            spot_price=None,
-            on_demand_price=None,
-            billing_unit="second",
-            specific=resolved,
-        )
+            yield Offer(
+                id=f"gcp-{zone}-tpu-{tpu_type}",
+                instance_type=it,
+                spot_price=None,
+                on_demand_price=None,
+                billing_unit="second",
+                specific=resolved,
+            )
 
     async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[GCPSpecific]:
         log.info("Preparing GCP cluster infrastructure")
@@ -713,116 +773,6 @@ class GCPProvider(Provider[GCP, GCPSpecific]):
             except Exception as e:
                 log.warning("Operation wait returned error: {err}", err=e)
 
-    async def _resolve_machine(self, spec: PoolSpec) -> ResolvedMachine:
-        from google.cloud import compute_v1  # type: ignore[reportMissingImports]
-
-        project = self._project
-        zone = self._config.zone
-
-        if not spec.accelerator_name:
-            min_vcpus = int(spec.vcpus or 2)
-            min_memory = spec.memory_gb or 4.0
-            machine_type = f"n1-standard-{max(min_vcpus, 2)}"
-
-            pager = self._machines.list(  # type: ignore[union-attr]
-                request=compute_v1.ListMachineTypesRequest(
-                    project=project, zone=zone,
-                ),
-            )
-            all_machines = await self._run(_collect_pager, pager)
-
-            candidates = [
-                mt for mt in all_machines
-                if mt.guest_cpus >= min_vcpus and mt.memory_mb / 1024 >= min_memory
-            ]
-
-            if best := min(candidates, key=lambda m: m.guest_cpus, default=None):
-                machine_type = best.name
-
-            return ResolvedMachine(
-                machine_type=machine_type,
-                uses_guest_accelerators=False,
-                accelerator_type="",
-                gpu_count=0,
-                gpu_model="",
-                gpu_vram_gb=0,
-                vcpus=best.guest_cpus if best else min_vcpus,
-                memory_gb=round(best.memory_mb / 1024, 1) if best else min_memory,
-            )
-
-        pager = self._accelerators.list(  # type: ignore[union-attr]
-            request=compute_v1.ListAcceleratorTypesRequest(
-                project=project, zone=zone,
-            ),
-        )
-        all_accels = await self._run(_collect_pager, pager)
-
-        gcp_accel_types: list[str] = [at.name for at in all_accels]
-
-        accel_type = match_accelerator_name(spec.accelerator_name, gcp_accel_types)
-        gpu_count = int(spec.accelerator_count or 1)
-        guest_attachable = is_guest_attachable(accel_type)
-
-        if guest_attachable:
-            machine_type = default_n1_for_gpus(gpu_count)
-        else:
-            pager = self._machines.list(  # type: ignore[union-attr]
-                request=compute_v1.ListMachineTypesRequest(
-                    project=project, zone=zone,
-                ),
-            )
-            all_machines = await self._run(_collect_pager, pager)
-
-            builtin_candidates = [
-                mt for mt in all_machines
-                if mt.name.split("-")[0] in ("a2", "a3", "a4", "g2")
-                and parse_builtin_gpu_count(mt.name) == gpu_count
-            ]
-
-            if builtin_candidates:
-                best_builtin = min(builtin_candidates, key=lambda m: m.guest_cpus)  # type: ignore[union-attr]
-                machine_type = best_builtin.name  # type: ignore[union-attr]
-            else:
-                machine_type = default_n1_for_gpus(gpu_count)
-                guest_attachable = True
-
-        pager = self._machines.list(  # type: ignore[union-attr]
-            request=compute_v1.ListMachineTypesRequest(
-                project=project, zone=zone,
-                filter=f"name = {machine_type}",
-            ),
-        )
-        machine_details = await self._run(_collect_pager, pager)
-
-        matched = next((mt for mt in machine_details if mt.name == machine_type), None)
-        vcpus = matched.guest_cpus if matched else 0
-        memory_gb = round(matched.memory_mb / 1024, 1) if matched else 0.0
-
-        gpu_model = re.sub(r"^nvidia-tesla-|^nvidia-", "", accel_type).upper()
-        gpu_vram = estimate_vram(accel_type)
-
-        if spec.accelerator_memory_gb > 0 and gpu_vram < spec.accelerator_memory_gb:
-            raise RuntimeError(
-                f"GCP accelerator '{accel_type}' has {gpu_vram}GB VRAM, "
-                f"but {spec.accelerator_memory_gb}GB was requested"
-            )
-
-        log.debug(
-            "Resolved: {mt} accel={accel} guest={guest} gpus={n}",
-            mt=machine_type, accel=accel_type, guest=guest_attachable, n=gpu_count,
-        )
-
-        return ResolvedMachine(
-            machine_type=machine_type,
-            uses_guest_accelerators=guest_attachable,
-            accelerator_type=accel_type,
-            gpu_count=gpu_count,
-            gpu_model=gpu_model,
-            gpu_vram_gb=gpu_vram,
-            vcpus=vcpus,
-            memory_gb=memory_gb,
-        )
-
     async def _ensure_firewall(self, rule_name: str) -> None:
         from google.cloud import compute_v1  # type: ignore[reportMissingImports]
 
@@ -994,6 +944,41 @@ class GCPProvider(Provider[GCP, GCPSpecific]):
 # =============================================================================
 # Pure helper functions (no GCP API calls)
 # =============================================================================
+
+
+def _resolved_to_offer(zone: str, resolved: ResolvedMachine) -> Offer:
+    """Build an Offer from a ResolvedMachine."""
+    accelerator = (
+        Accelerator(
+            name=resolved.gpu_model,
+            memory=f"{resolved.gpu_vram_gb}GB" if resolved.gpu_vram_gb else "",
+            count=resolved.gpu_count,
+        )
+        if resolved.gpu_count > 0
+        else None
+    )
+
+    it = InstanceType(
+        name=resolved.machine_type,
+        accelerator=accelerator,
+        vcpus=resolved.vcpus,
+        memory_gb=resolved.memory_gb,
+        architecture="x86_64",
+        specific=None,
+    )
+
+    offer_id = f"gcp-{zone}-{resolved.machine_type}"
+    if resolved.accelerator_type:
+        offer_id = f"{offer_id}-{resolved.accelerator_type}-x{resolved.gpu_count}"
+
+    return Offer(
+        id=offer_id,
+        instance_type=it,
+        spot_price=None,
+        on_demand_price=None,
+        billing_unit="second",
+        specific=resolved,
+    )
 
 
 def _is_tpu_cluster(cluster: Cluster[GCPSpecific]) -> bool:

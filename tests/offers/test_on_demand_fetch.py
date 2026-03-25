@@ -99,7 +99,7 @@ class FakeProvider:
         self._offers = offers or []
         self.call_count = 0
 
-    async def offers(self, spec: object) -> object:
+    async def offers(self) -> object:
         self.call_count += 1
         for o in self._offers:
             yield o

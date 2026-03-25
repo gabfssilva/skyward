@@ -88,8 +88,8 @@ class _SSHDisruptorProvider:
     def name(self) -> str:
         return self._inner.name
 
-    async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
-        async for offer in self._inner.offers(spec):
+    async def offers(self) -> AsyncIterator[Offer]:
+        async for offer in self._inner.offers():
             yield offer
 
     async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[ContainerSpecific]:

@@ -25,7 +25,7 @@ from skyward.providers.ssh_keys import generate_key_name, get_local_ssh_key, get
 
 from .client import HYPERSTACK_API_BASE, HyperstackClient, get_api_key
 from .config import Hyperstack
-from .types import FlavorResponse, PricebookEntry, VMResponse, normalize_gpu_name
+from .types import FlavorResponse, PricebookEntry, VMResponse
 
 log = logger.bind(provider="hyperstack")
 
@@ -61,15 +61,9 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific], Mountable[Hyp
     async def create(cls, config: Hyperstack) -> HyperstackProvider:
         return cls(config)
 
-    async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
+    async def offers(self) -> AsyncIterator[Offer]:
         api_key = get_api_key(self._config)
         regions = self._config.region
-        has_volumes = bool(spec.volumes)
-
-        if has_volumes:
-            regions = _constrain_region_for_volumes(
-                regions, self._config.object_storage_region,
-            )
 
         if self._config.network_optimised:
             regions = _constrain_region_for_network(
@@ -104,9 +98,8 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific], Mountable[Hyp
 
         gpu_names = {f.get("gpu", "") for f in flavors if f.get("gpu")}
         log.debug(
-            "Available GPUs: {gpus}, spec={spec}, price_map_sample={sample}",
+            "Available GPUs: {gpus}, price_map_sample={sample}",
             gpus=gpu_names,
-            spec=spec.accelerator_name,
             sample=dict(list(price_map.items())[:5]),
         )
 
@@ -114,8 +107,6 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific], Mountable[Hyp
             r.upper() for r in self._config.network_optimised_regions
         )
         for flavor in flavors:
-            if not _matches_spec(flavor, spec):
-                continue
             region = flavor.get("region_name", "")
             yield _to_offer(flavor, price_map, net_regions, image_by_region.get(region))
 
@@ -529,20 +520,6 @@ def _build_price_map(pricebook: list[PricebookEntry]) -> dict[str, float]:
         if name and price > 0:
             prices[name.upper()] = price
     return prices
-
-
-def _matches_spec(flavor: FlavorResponse, spec: PoolSpec) -> bool:
-    """Check if a flavor matches the requested spec."""
-    if spec.accelerator_name:
-        req_norm = normalize_gpu_name(spec.accelerator_name)
-        flavor_gpu = normalize_gpu_name(flavor.get("gpu", ""))
-        if req_norm not in flavor_gpu and flavor_gpu not in req_norm:
-            return False
-    if spec.vcpus and flavor.get("cpu", 0) < spec.vcpus:
-        return False
-    if spec.memory_gb and flavor.get("ram", 0) < spec.memory_gb:
-        return False
-    return not (spec.accelerator_count and flavor.get("gpu_count", 0) != spec.accelerator_count)
 
 
 def _to_offer(

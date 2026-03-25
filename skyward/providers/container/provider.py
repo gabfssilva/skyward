@@ -65,12 +65,12 @@ class ContainerProvider(WarmableProvider[Container, ContainerSpecific]):
     async def create(cls, config: Container) -> ContainerProvider:
         return cls(config)
 
-    async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
+    async def offers(self) -> AsyncIterator[Offer]:
         it = InstanceType(
             name="container",
             accelerator=None,
-            vcpus=spec.vcpus or 0.5,
-            memory_gb=spec.memory_gb or 0.5,
+            vcpus=0,
+            memory_gb=0,
             architecture="x86_64",
             specific=None,
         )

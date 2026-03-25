@@ -67,12 +67,6 @@ def _resolve_canonical(raw: str) -> str:
     return raw
 
 
-def _gpu_matches(jl_gpu_type: str, requested: str) -> bool:
-    """Check if a Jarvis Labs GPU type matches a requested name."""
-    canonical = _resolve_canonical(jl_gpu_type)
-    return _normalize(canonical) == _normalize(requested)
-
-
 def _parse_ssh_command(ssh_command: str) -> tuple[str, int]:
     """Parse SSH command string to extract host and port.
 
@@ -186,9 +180,8 @@ class JarvisLabsProvider(Provider[JarvisLabs, JarvisLabsSpecific]):
         client = Client(api_key=token)
         return cls(config=config, client=client, thread_pool=thread_pool)
 
-    async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
+    async def offers(self) -> AsyncIterator[Offer]:
         gpu_list = await self._run(self._client.account.gpu_availability)
-        num_gpus = int(spec.accelerator_count or 1)
 
         log.debug(
             "GPU availability: {gpus}",
@@ -200,22 +193,17 @@ class JarvisLabsProvider(Provider[JarvisLabs, JarvisLabsSpecific]):
 
         candidates: list[tuple[Any, float]] = []
         for gpu in gpu_list:
-            jl_type = gpu.gpu_type
             free = gpu.num_free_devices
             price = gpu.price_per_hour or 0.0
             region = gpu.region
-            vram_gb = int(gpu.vram) if gpu.vram else 0
+            gpu_count = free or 1
 
-            if free < num_gpus:
+            if free < 1:
                 continue
             if self._config.region and not _region_matches(region, self._config.region):
                 continue
-            if spec.accelerator_name and not _gpu_matches(jl_type, spec.accelerator_name):
-                continue
-            if spec.accelerator_memory_gb > 0 and vram_gb < spec.accelerator_memory_gb:
-                continue
 
-            hourly = price * num_gpus
+            hourly = price * gpu_count
             candidates.append((gpu, hourly))
 
         candidates.sort(key=lambda c: c[1])
@@ -226,17 +214,18 @@ class JarvisLabsProvider(Provider[JarvisLabs, JarvisLabsSpecific]):
             vram_gb = int(gpu.vram) if gpu.vram else 0
             cpus = gpu.cpus_per_gpu or 0
             ram = gpu.ram_per_gpu or 0
+            gpu_count = gpu.num_free_devices or 1
             display = _resolve_canonical(jl_type)
             accel = Accelerator(
                 name=display,
                 memory=f"{vram_gb}GB" if vram_gb else "",
-                count=num_gpus,
+                count=gpu_count,
             )
             it = InstanceType(
                 name=display,
                 accelerator=accel,
-                vcpus=float(cpus * num_gpus),
-                memory_gb=float(ram * num_gpus),
+                vcpus=float(cpus * gpu_count),
+                memory_gb=float(ram * gpu_count),
                 architecture="x86_64",
                 specific=None,
             )

@@ -53,7 +53,7 @@ The first spec tries spot instances on VastAI with a $2.50/hr cap — the cheape
 
 When `Compute.__enter__` runs, Skyward iterates through your specs before provisioning anything:
 
-1. For each `Spec`, it creates a provider instance and calls `provider.offers(spec)` — an async generator that yields available machine types with pricing.
+1. For each `Spec`, it creates a provider instance and calls `provider.offers()` — an async generator that yields the provider's full catalog of available machine types with pricing. The spec-based filtering (accelerator, region, cost cap, etc.) happens in the OfferRepository SQL layer.
 2. Based on the `selection` strategy, it either takes the first available offer or collects all offers and picks the cheapest.
 3. The winning offer — which carries the selected provider, machine type, and pricing — is passed to `provider.prepare(spec, offer)` to set up infrastructure.
 4. From there, the lifecycle proceeds normally: provision instances, bootstrap, start workers.

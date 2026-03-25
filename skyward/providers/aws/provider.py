@@ -74,7 +74,7 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
 
         return cls(config, EC2ClientFactory(ec2_factory))
 
-    async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
+    async def offers(self) -> AsyncIterator[Offer]:
         from skyward.accelerators import Accelerator
 
         from .instances import (
@@ -83,29 +83,41 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
             _fetch_spot_prices_batch,
         )
 
-        candidates = await _select_instances(self._config, spec)
-        if not candidates:
+        all_resources = await _fetch_all_instance_types(self._config.region)
+        if not all_resources:
             return
 
-        fractional_gpu = spec.accelerator_count and 0 < spec.accelerator_count < 1
-        if fractional_gpu:
-            ami_lookup = _get_ubuntu_ami
-        elif spec.accelerator_name is not None:
-            ami_lookup = _get_dlami
-        else:
-            ami_lookup = _get_ubuntu_ami
         if self._config.ami:
-            ami_by_arch: dict[str, str] = {arch: self._config.ami for _, arch in candidates}
+            ami_cache: dict[tuple[str, bool], str] = {}
+            for res in all_resources.values():
+                has_gpu = res.gpu_count > 0 and bool(res.gpu_model)
+                ami_cache[(res.architecture, has_gpu)] = self._config.ami
         else:
-            unique_archs: list[str] = list({arch for _, arch in candidates})
-            ami_results = await asyncio.gather(*(ami_lookup(self._config, a) for a in unique_archs))
-            ami_by_arch = dict(zip(unique_archs, ami_results, strict=True))
+            ami_keys: set[tuple[str, bool]] = set()
+            for res in all_resources.values():
+                has_gpu = res.gpu_count > 0 and bool(res.gpu_model)
+                ami_keys.add((res.architecture, has_gpu))
 
-        itypes = [itype for itype, _ in candidates]
-        all_resources, spot_prices = await asyncio.gather(
-            _fetch_all_instance_types(self._config.region),
-            _fetch_spot_prices_batch(itypes, self._config.region),
+            async def _resolve_ami(arch: str, gpu: bool) -> tuple[tuple[str, bool], str]:
+                lookup = _get_dlami if gpu else _get_ubuntu_ami
+                ami = await lookup(self._config, arch)
+                return (arch, gpu), ami
+
+            resolved = await asyncio.gather(
+                *(_resolve_ami(arch, gpu) for arch, gpu in ami_keys),
+            )
+            ami_cache = dict(resolved)
+
+        itypes = list(all_resources.keys())
+
+        spot_batch_size = 100
+        spot_batches = [itypes[i:i + spot_batch_size] for i in range(0, len(itypes), spot_batch_size)]
+        spot_results = await asyncio.gather(
+            *(_fetch_spot_prices_batch(batch, self._config.region) for batch in spot_batches),
         )
+        spot_prices: dict[str, float] = {}
+        for batch_result in spot_results:
+            spot_prices.update(batch_result)
 
         sem = asyncio.Semaphore(10)
 
@@ -117,30 +129,33 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
             *(_bounded_ondemand(itype) for itype in itypes),
         )
 
-        for (itype, arch), ondemand in zip(candidates, ondemand_prices, strict=True):
-            resources = all_resources.get(itype)
+        for itype, ondemand in zip(itypes, ondemand_prices, strict=True):
+            resources = all_resources[itype]
 
             accelerator: Accelerator | None = None
-            if resources and resources.gpu_count > 0 and resources.gpu_model:
+            has_gpu = resources.gpu_count > 0 and bool(resources.gpu_model)
+            if has_gpu:
                 accelerator = Accelerator(
                     name=resources.gpu_model,
                     count=resources.gpu_count,
                 )
+
+            ami_key = (resources.architecture, has_gpu)
 
             yield Offer(
                 id=f"aws-{self._config.region}-{itype}",
                 instance_type=InstanceType(
                     name=itype,
                     accelerator=accelerator,
-                    vcpus=float(resources.vcpus) if resources else 0.0,
-                    memory_gb=resources.memory_gb if resources else 0.0,
-                    architecture=cast(SpecArchitecture, arch),
+                    vcpus=float(resources.vcpus),
+                    memory_gb=resources.memory_gb,
+                    architecture=cast(SpecArchitecture, resources.architecture),
                     specific=None,
                 ),
                 spot_price=spot_prices.get(itype),
                 on_demand_price=ondemand,
                 billing_unit="second",
-                specific=AWSOfferSpecific(ami=ami_by_arch[arch]),
+                specific=AWSOfferSpecific(ami=ami_cache[ami_key]),
             )
 
     async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[AWSSpecific]:
@@ -657,127 +672,6 @@ async def _delete_instance_profile(
             await iam.delete_role(RoleName=role_name)
 
         log.info("Cleaned up IAM resources for {prefix}", prefix=prefix)
-
-
-def _select_instances_cache_key(config: AWS, spec: PoolSpec) -> str:
-    import hashlib
-
-    parts = (
-        config.region,
-        config.exclude_burstable,
-        spec.vcpus,
-        spec.memory_gb,
-        spec.architecture,
-        spec.accelerator_name,
-        spec.accelerator_count,
-        spec.accelerator_memory_gb,
-    )
-    return hashlib.sha256(str(parts).encode()).hexdigest()[:16]
-
-
-@cached(namespace="aws-instances", ttl=timedelta(hours=6), key_func=_select_instances_cache_key)
-async def _select_instances(
-    config: AWS, spec: PoolSpec,
-) -> list[tuple[str, Architecture]]:
-    import aioboto3
-
-    archs = [spec.architecture] if spec.architecture else ["x86_64", "arm64"]
-
-    if spec.vcpus:
-        vcpu_filter: dict[str, object] = {"Min": int(spec.vcpus), "Max": int(spec.vcpus)}
-    elif spec.accelerator_name:
-        vcpu_filter = {"Min": 2}
-    else:
-        vcpu_filter = {"Min": 2, "Max": 8}
-
-    if spec.memory_gb:
-        mem_filter: dict[str, object] = {"Min": int(spec.memory_gb * 1024), "Max": int(spec.memory_gb * 1024)}
-    elif spec.accelerator_name:
-        mem_filter = {"Min": 1024}
-    else:
-        mem_filter = {"Min": 1024, "Max": 32768}
-
-    requirements: dict[str, object] = {
-        "VCpuCount": vcpu_filter,
-        "MemoryMiB": mem_filter,
-        "InstanceGenerations": ["current"],
-        "BurstablePerformance": "excluded" if config.exclude_burstable else "included",
-        "BareMetal": "excluded",
-    }
-
-    fractional = spec.accelerator_name and 0 < (spec.accelerator_count or 1) < 1
-
-    if fractional:
-        from .instances import _fetch_all_instance_types
-
-        all_types = await _fetch_all_instance_types(config.region)
-        target = spec.accelerator_name.lower()  # type: ignore[union-attr]
-        requested = spec.accelerator_count
-
-        candidate_arch: dict[str, Architecture] = {}
-        for itype, resources in all_types.items():
-            if (
-                resources.gpu_model.lower() == target
-                and 0 < resources.gpu_count < 1
-                and abs(resources.gpu_count - requested) < 0.05
-            ):
-                candidate_arch[itype] = resources.architecture
-
-        if not candidate_arch:
-            return []
-
-        session = aioboto3.Session()
-        async with session.client("ec2", region_name=config.region) as client:  # type: ignore[union-attr]
-            offered = await _get_offered_types(client, list(candidate_arch.keys()))
-            return [(t, a) for t, a in candidate_arch.items() if t in offered]
-
-    if spec.accelerator_name:
-        requirements["AcceleratorTypes"] = ["gpu"]
-        requirements["AcceleratorNames"] = [spec.accelerator_name.lower()]
-        count = spec.accelerator_count or 1
-        requirements["AcceleratorCount"] = {"Min": int(count), "Max": int(count)}
-        if spec.accelerator_memory_gb > 0:
-            requirements["AcceleratorTotalMemoryMiB"] = {
-                "Min": spec.accelerator_memory_gb * 1024,
-            }
-    else:
-        requirements["AcceleratorCount"] = {"Max": 0}
-
-    session = aioboto3.Session()
-    async with session.client("ec2", region_name=config.region) as client:  # type: ignore[union-attr]
-
-        async def _query_arch(a: str) -> dict[str, Architecture]:
-            response = await client.get_instance_types_from_instance_requirements(
-                ArchitectureTypes=[a],
-                VirtualizationTypes=["hvm"],
-                InstanceRequirements=requirements,
-            )
-            return {r["InstanceType"]: a for r in response.get("InstanceTypes", [])}
-
-        arch_results = await asyncio.gather(*(_query_arch(a) for a in archs))
-        candidate_arch = {}
-        for arch_map in arch_results:
-            candidate_arch.update(arch_map)
-
-        if not candidate_arch:
-            return []
-
-        offered = await _get_offered_types(client, list(candidate_arch.keys()))
-        return [(t, a) for t, a in candidate_arch.items() if t in offered]
-
-
-async def _get_offered_types(client: object, instance_types: list[str]) -> set[str]:
-    offered: set[str] = set()
-    batches = [instance_types[i:i + 100] for i in range(0, len(instance_types), 100)]
-    for batch in batches:
-        response = await client.describe_instance_type_offerings(  # type: ignore[union-attr]
-            LocationType="availability-zone",
-            Filters=[{"Name": "instance-type", "Values": batch}],
-        )
-        offered.update(o["InstanceType"] for o in response.get("InstanceTypeOfferings", []))
-    return offered
-
-
 
 
 @cached(namespace="aws-amis", ttl=timedelta(hours=24))

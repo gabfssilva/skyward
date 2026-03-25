@@ -25,8 +25,11 @@ class Provider[C, S](Protocol):
         """Create a new instance of the provider."""
         ...
 
-    def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
-        """Query available offers matching the spec.
+    def offers(self) -> AsyncIterator[Offer]:
+        """List all available offers from this provider.
+
+        Yields the complete catalog — no filtering. Filtering is handled
+        by the OfferRepository query layer.
 
         Yields
         ------

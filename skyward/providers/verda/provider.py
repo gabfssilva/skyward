@@ -15,7 +15,6 @@ from .client import VerdaClient, VerdaError, _OAuth2
 from .config import Verda
 from .types import (
     InstanceResponse,
-    InstanceTypeResponse,
     get_accelerator,
     get_accelerator_count,
     get_accelerator_memory_gb,
@@ -76,39 +75,11 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
         client = VerdaClient(http_client)
         return cls(config, client)
 
-    async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
-        use_spot = spec.allocation in ("spot", "spot-if-available")
-
+    async def offers(self) -> AsyncIterator[Offer]:
         instance_types = await self._client.list_instance_types()
         log.debug("Offers query: {t} instance types", t=len(instance_types))
 
-        def _matches(itype: InstanceTypeResponse) -> bool:
-            if spec.vcpus and get_vcpu(itype) < spec.vcpus:
-                return False
-            if spec.memory_gb and get_memory_gb(itype) < spec.memory_gb:
-                return False
-            accel = get_accelerator(itype)
-            if spec.accelerator_name:
-                if not accel:
-                    return False
-                if not (
-                    accel.upper() in spec.accelerator_name.upper()
-                    or spec.accelerator_name.upper() in accel.upper()
-                ):
-                    return False
-                if spec.accelerator_memory_gb and get_accelerator_memory_gb(itype) < spec.accelerator_memory_gb:
-                    return False
-            return True
-
-        candidates = [itype for itype in instance_types if _matches(itype)]
-
-        def sort_key(it: InstanceTypeResponse) -> float:
-            price = get_price_spot(it) if use_spot else get_price_on_demand(it)
-            return price if price is not None else float("inf")
-
-        candidates.sort(key=sort_key)
-
-        for itype_data in candidates:
+        for itype_data in instance_types:
             itype_name = itype_data["instance_type"]
             gpu_name = get_accelerator(itype_data)
             gpu_count = get_accelerator_count(itype_data)

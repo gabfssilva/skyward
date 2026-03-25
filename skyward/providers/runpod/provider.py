@@ -288,16 +288,10 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
     async def create(cls, config: RunPod) -> RunPodProvider:
         return cls(config)
 
-    async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
+    async def offers(self) -> AsyncIterator[Offer]:
         api_key = get_api_key(self._config.api_key)
-        requested = spec.accelerator_name
 
-        cuda_min, cuda_max = _get_cuda_range(spec)
-        cuda_probes = list(reversed(
-            _build_allowed_cuda_versions(cuda_min, cuda_max)
-            if cuda_min and cuda_max
-            else _KNOWN_CUDA_VERSIONS
-        ))
+        cuda_probes = list(reversed(_KNOWN_CUDA_VERSIONS))
 
         async with RunPodClient(api_key, config=self._config) as client:
             all_results = []
@@ -312,7 +306,6 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                 all_results.append((cloud, results))
 
         seen: set[tuple[str, str]] = set()
-        candidates: list[tuple[float, Offer]] = []
 
         for cloud, results in all_results:
             is_secure = cloud == "secure"
@@ -327,18 +320,7 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                     display = gpu.get("displayName", "")
                     gpu_id = gpu.get("id", "")
 
-                    if requested:
-                        score = _gpu_match_score(requested, display, gpu_id)
-                        if score < _MIN_GPU_MATCH:
-                            continue
-                    else:
-                        score = 1.0
-
                     if (gpu_id, cloud) in seen:
-                        continue
-
-                    vram_gb = gpu.get("memoryInGb", 0)
-                    if spec.accelerator_memory_gb > 0 and vram_gb < spec.accelerator_memory_gb:
                         continue
 
                     lowest = gpu.get("lowestPrice") or {}
@@ -347,28 +329,12 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                     if spot_price is None and on_demand_price is None:
                         continue
 
-                    gpu_count = spec.accelerator_count or 1
-                    total = lowest.get("totalCount", 0)
-                    rented = lowest.get("rentedCount", 0)
-                    available_gpus = total - rented
-                    if available_gpus < spec.nodes.min * gpu_count:
-                        log.debug(
-                            "Skipping {gpu} ({cloud}): {available} GPUs available, "
-                            "need {need} ({nodes} nodes x {gpus} GPUs)",
-                            gpu=display or gpu_id, cloud=cloud,
-                            available=available_gpus,
-                            need=spec.nodes.min * gpu_count,
-                            nodes=spec.nodes.min,
-                            gpus=gpu_count,
-                        )
-                        continue
-
                     seen.add((gpu_id, cloud))
                     vram_gb = gpu.get("memoryInGb", 0)
                     accel = Accelerator(
                         name=display or gpu_id,
                         memory=f"{vram_gb}GB" if vram_gb else "",
-                        count=gpu_count,
+                        count=1,
                     )
                     min_vcpu = lowest.get("minVcpu") or 0
                     min_memory = lowest.get("minMemory") or 0
@@ -380,22 +346,14 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                         architecture="x86_64",
                         specific=None,
                     )
-                    candidates.append((score, Offer(
+                    yield Offer(
                         id=f"runpod-{gpu_id}-{cloud}-cuda{cuda_ver or 'any'}",
                         instance_type=it,
                         spot_price=spot_price,
                         on_demand_price=on_demand_price,
                         billing_unit="hour",
                         specific=RunPodOfferData(gpu_id, cuda_ver, cloud),
-                    )))
-
-        if not candidates:
-            return
-
-        best = max(s for s, _ in candidates)
-        for score, offer in candidates:
-            if score >= best - 1e-9:
-                yield offer
+                    )
 
     def offer_filters(self) -> dict[str, str]:
         return {"cloud_type": self._config.cloud_type}

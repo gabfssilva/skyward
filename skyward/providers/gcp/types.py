@@ -74,3 +74,24 @@ _TPU_PATTERNS = frozenset({
     "v2", "v3", "v4", "v5", "v5e", "v5p", "v5lite", "v5litepod",
     "v6", "v6e", "tpu",
 })
+
+_BUILTIN_FAMILY_ACCELERATOR: dict[str, str] = {
+    "a2": "nvidia-tesla-a100",
+    "a3": "nvidia-h100-80gb",
+    "g2": "nvidia-l4",
+}
+
+_KNOWN_TPU_TYPES: tuple[str, ...] = (
+    "v2-8", "v2-32", "v2-128", "v2-256", "v2-512",
+    "v3-8", "v3-32", "v3-128", "v3-256", "v3-512",
+    "v5litepod-1", "v5litepod-4", "v5litepod-8", "v5litepod-16",
+    "v5litepod-32", "v5litepod-64", "v5litepod-128", "v5litepod-256",
+    "v5p-8", "v5p-16", "v5p-32", "v5p-64", "v5p-128", "v5p-256",
+    "v6e-1", "v6e-4", "v6e-8", "v6e-16", "v6e-32", "v6e-64",
+    "v6e-128", "v6e-256",
+)
+
+_CPU_FAMILIES = frozenset({
+    "n1", "n2", "n2d", "n4", "c2", "c2d", "c3", "c3d", "c4",
+    "e2", "m1", "m2", "m3", "t2d", "t2a",
+})

@@ -28,7 +28,6 @@ from .types import (
     V2InstanceResponse,
     get_gpu_memory_gb,
     get_ssh_port_v2,
-    gpu_matches_v2,
     normalize_gpu_name,
     resolve_v2_image,
 )
@@ -67,12 +66,11 @@ class TensorDockSpecific:
     location_id: str
 
 
-def _filter_locations(
+def _collect_location_gpus(
     locations: list[Location],
-    spec: PoolSpec,
     config: TensorDock,
 ) -> list[tuple[str, str, int, int, int, float]]:
-    """Filter and rank location GPUs by match, availability, and price.
+    """Collect all available GPUs across locations, sorted by price.
 
     Returns
     -------
@@ -80,7 +78,6 @@ def _filter_locations(
         (location_id, gpu_v0name, gpu_count, vcpus, ram_gb, hourly_rate)
         sorted by price ascending.
     """
-    gpu_count = int(spec.accelerator_count or 1)
     candidates: list[tuple[str, str, int, int, int, float]] = []
 
     for loc in locations:
@@ -94,16 +91,8 @@ def _filter_locations(
         for gpu in loc.get("gpus", []):
             v0_name = gpu.get("v0Name", "")
             available = gpu.get("max_count", 0)
-            if available < gpu_count:
+            if available < 1:
                 continue
-
-            if spec.accelerator_name and not gpu_matches_v2(gpu, spec.accelerator_name):
-                continue
-
-            if spec.accelerator_memory_gb > 0:
-                vram = get_gpu_memory_gb(v0_name)
-                if vram < spec.accelerator_memory_gb:
-                    continue
 
             gpu_price = gpu.get("price_per_hr", 0.0)
             pricing = gpu.get("pricing", {})
@@ -111,8 +100,8 @@ def _filter_locations(
 
             min_ram = config.min_ram_gb or 16
             min_vcpus = config.min_vcpus or 4
-            ram_gb = int(max(min_ram, spec.memory_gb or 0))
-            vcpus = max(min_vcpus, int(spec.vcpus or 0))
+            ram_gb = int(min_ram)
+            vcpus = min_vcpus
 
             max_vcpus = resources.get("max_vcpus", 0)
             max_ram = resources.get("max_ram_gb", 0)
@@ -124,17 +113,13 @@ def _filter_locations(
             storage_price = pricing.get("per_gb_storage_hr", 0.0)
 
             hourly_rate = (
-                gpu_price * gpu_count
+                gpu_price * available
                 + ram_price * ram_gb
                 + cpu_price * vcpus
                 + storage_price * config.storage_gb
             )
 
-            candidates.append((loc["id"], v0_name, gpu_count, vcpus, ram_gb, hourly_rate))
-
-    if spec.max_hourly_cost:
-        max_per_instance = spec.max_hourly_cost / spec.nodes.min
-        candidates = [c for c in candidates if c[5] <= max_per_instance]
+            candidates.append((loc["id"], v0_name, available, vcpus, ram_gb, hourly_rate))
 
     candidates.sort(key=lambda c: c[5])
     return candidates
@@ -152,13 +137,13 @@ class TensorDockProvider(Provider[TensorDock, TensorDockSpecific]):
     async def create(cls, config: TensorDock) -> TensorDockProvider:
         return cls(config)
 
-    async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
+    async def offers(self) -> AsyncIterator[Offer]:
         token = _get_token(self._config)
 
         async with TensorDockClient(token, timeout=self._config.request_timeout) as client:
             locations = await client.list_locations()
 
-        candidates = _filter_locations(locations, spec, self._config)
+        candidates = _collect_location_gpus(locations, self._config)
 
         if not candidates:
             log.debug("No matching locations found")

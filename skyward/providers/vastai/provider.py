@@ -59,13 +59,11 @@ class VastAIProvider(Provider[VastAI, VastAISpecific]):
     async def create(cls, config: VastAI) -> VastAIProvider:
         return cls(config)
 
-    async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
+    async def offers(self) -> AsyncIterator[Offer]:
         api_key = get_api_key()
 
         async with VastAIClient(api_key, config=self._config) as client:
-            raw_offers = await _search_offers(
-                client, self._config, spec, overlay_cluster_id=None,
-            )
+            raw_offers = await _catalog_offers(client, self._config)
 
         for raw in raw_offers:
             yield _to_offer(raw)
@@ -257,6 +255,22 @@ def _build_vastai_instance(
         ssh_port=ssh_port,
         spot=is_bid,
     )
+
+
+async def _catalog_offers(
+    client: VastAIClient,
+    config: VastAI,
+) -> list[OfferResponse]:
+    """Fetch all available offers without spec-based filtering."""
+    offers = await client.search_offers(
+        gpu_name=None,
+        min_reliability=config.min_reliability,
+        geolocation=config.geolocation,
+        verified_only=config.verified_only,
+        use_interruptible=True,
+        with_cluster_id=False,
+    )
+    return offers
 
 
 async def _search_offers(

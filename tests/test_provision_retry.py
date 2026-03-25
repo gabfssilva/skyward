@@ -50,8 +50,8 @@ class _PartialContainerProvider:
     def name(self) -> str:
         return self._inner.name
 
-    async def offers(self, spec: PoolSpec) -> AsyncIterator[sky.Offer]:
-        async for offer in self._inner.offers(spec):
+    async def offers(self) -> AsyncIterator[sky.Offer]:
+        async for offer in self._inner.offers():
             yield offer
 
     async def prepare(self, spec: PoolSpec, offer: sky.Offer) -> Cluster[ContainerSpecific]:

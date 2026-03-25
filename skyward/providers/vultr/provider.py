@@ -7,7 +7,6 @@ import re
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 
 from skyward.accelerators import Accelerator
 from skyward.core import PoolSpec
@@ -30,16 +29,6 @@ from .types import (
 )
 
 log = logger.bind(provider="vultr")
-
-_MIN_GPU_MATCH = 0.5
-
-
-def _gpu_match_score(requested: str, plan_gpu: str) -> float:
-    """Score how well a plan's GPU matches the requested name (0.0-1.0)."""
-    if not requested or not plan_gpu:
-        return 0.0
-    return SequenceMatcher(None, requested.upper(), plan_gpu.upper()).ratio()
-
 
 def _extract_gpu_count_from_plan_id(plan_id: str) -> int:
     """Extract GPU count from plan ID (e.g., 'vbm-8x-gpu-a100' -> 8)."""
@@ -86,23 +75,21 @@ class VultrProvider(Provider[Vultr, VultrSpecific]):
     def _is_bare_metal(self) -> bool:
         return self._config.mode == "bare-metal"
 
-    async def offers(self, spec: PoolSpec) -> AsyncIterator[Offer]:
+    async def offers(self) -> AsyncIterator[Offer]:
         api_key = get_api_key(self._config.api_key)
         async with VultrClient(api_key, timeout=self._config.request_timeout) as client:
-            if self._is_bare_metal:
-                plans_iter = self._offers_bare_metal(await client.list_metal_plans(), spec)
-            else:
-                plans_iter = self._offers_cloud(await client.list_gpu_plans(), spec)
+            plans_iter = (
+                self._offers_bare_metal(await client.list_metal_plans())
+                if self._is_bare_metal
+                else self._offers_cloud(await client.list_gpu_plans())
+            )
 
         async for offer in plans_iter:
             yield offer
 
     async def _offers_cloud(
-        self, plans: list[PlanResponse], spec: PoolSpec,
+        self, plans: list[PlanResponse],
     ) -> AsyncIterator[Offer]:
-        requested = spec.accelerator_name
-
-        candidates: list[tuple[float, Offer]] = []
         for plan in plans:
             gpu_type = plan.get("gpu_type", "")
             if not gpu_type:
@@ -114,15 +101,6 @@ class VultrProvider(Provider[Vultr, VultrSpecific]):
                 or plan.get("gpu_vram_gb")
                 or _GPU_MEMORY_MAP.get(normalized, 0)
             )
-
-            if requested:
-                score = _gpu_match_score(requested, normalized)
-                if score < _MIN_GPU_MATCH:
-                    continue
-            else:
-                score = 1.0
-            if spec.accelerator_memory_gb > 0 and vram < spec.accelerator_memory_gb:
-                continue
 
             locations = plan.get("locations", [])
             if self._config.region:
@@ -137,8 +115,6 @@ class VultrProvider(Provider[Vultr, VultrSpecific]):
 
             full_vram = _GPU_MEMORY_MAP.get(normalized, 0)
             gpu_count = vram / full_vram if full_vram else 1
-            if spec.accelerator_count and gpu_count != spec.accelerator_count:
-                continue
 
             accel = Accelerator(
                 name=normalized,
@@ -154,29 +130,18 @@ class VultrProvider(Provider[Vultr, VultrSpecific]):
                 specific=None,
             )
             for region in locations:
-                candidates.append((score, Offer(
+                yield Offer(
                     id=f"vultr-{region}-{plan['id']}",
                     instance_type=it,
                     spot_price=None,
                     on_demand_price=hourly,
                     billing_unit="hour",
                     specific=None,
-                )))
-
-        if not candidates:
-            return
-
-        best = max(s for s, _ in candidates)
-        for score, offer in candidates:
-            if score >= best - 1e-9:
-                yield offer
+                )
 
     async def _offers_bare_metal(
-        self, plans: list[MetalPlanResponse], spec: PoolSpec,
+        self, plans: list[MetalPlanResponse],
     ) -> AsyncIterator[Offer]:
-        requested = spec.accelerator_name
-
-        candidates: list[tuple[float, Offer]] = []
         for plan in plans:
             gpu_type = plan.get("gpu_type", "")
             if not gpu_type:
@@ -185,15 +150,6 @@ class VultrProvider(Provider[Vultr, VultrSpecific]):
             normalized = _GPU_NAME_MAP.get(gpu_type, gpu_type)
             vram = plan.get("gpu_vram_gb") or _GPU_MEMORY_MAP.get(normalized, 0)
             gpu_count = _extract_gpu_count_from_plan_id(plan["id"])
-
-            if requested:
-                score = _gpu_match_score(requested, normalized)
-                if score < _MIN_GPU_MATCH:
-                    continue
-            else:
-                score = 1.0
-            if spec.accelerator_memory_gb > 0 and vram < spec.accelerator_memory_gb:
-                continue
 
             locations = plan.get("locations", [])
             if self._config.region:
@@ -218,22 +174,14 @@ class VultrProvider(Provider[Vultr, VultrSpecific]):
                 specific=None,
             )
             for region in locations:
-                candidates.append((score, Offer(
+                yield Offer(
                     id=f"vultr-{region}-{plan['id']}",
                     instance_type=it,
                     spot_price=None,
                     on_demand_price=hourly,
                     billing_unit="hour",
                     specific=None,
-                )))
-
-        if not candidates:
-            return
-
-        best = max(s for s, _ in candidates)
-        for score, offer in candidates:
-            if score >= best - 1e-9:
-                yield offer
+                )
 
     async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[VultrSpecific]:
         api_key = get_api_key(self._config.api_key)

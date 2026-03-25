@@ -73,7 +73,7 @@ sequenceDiagram
     participant Instance
 
     User->>Pool: __enter__
-    Pool->>Provider: offers(spec)
+    Pool->>Provider: offers()
     Provider-->>Pool: Offer (selected)
     Pool->>Provider: prepare(spec, offer)
     Provider-->>Pool: Cluster
@@ -374,7 +374,7 @@ Throughout this page, the `provider` parameter has appeared in every `Compute` e
 
 All providers implement the same protocol — `Provider[C, S]` — which defines six operations that map directly to the pool lifecycle discussed earlier:
 
-- `offers(spec)` — Query available machine types and pricing that match the spec. Returns an async iterator of `Offer` objects — normalized descriptions of hardware and pricing that can be compared across providers. This is what enables cross-provider selection.
+- `offers()` — Query available machine types and pricing. Returns an async iterator of `Offer` objects — the provider's full unfiltered catalog of hardware and pricing. Filtering by accelerator, region, cost cap, and other spec constraints happens in the OfferRepository SQL layer, which enables cross-provider selection.
 - `prepare(spec, offer)` — Set up cluster-level infrastructure for the selected offer: register SSH keys, create VPCs and security groups (AWS), resolve GPU types, configure overlay networks. Returns an immutable `Cluster` context that flows through all subsequent calls.
 - `provision(cluster, count)` — Launch the requested number of instances. Returns them in a "provisioning" state — the machines exist, but may not be running yet.
 - `get_instance(cluster, id)` — Poll the status of a single instance. The instance actor calls this repeatedly until the machine is running and has an IP address.
