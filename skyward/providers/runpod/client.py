@@ -34,6 +34,9 @@ query GpuTypes($minCudaVersion: String, $secureCloud: Boolean) {
     memoryInGb
     secureCloud
     communityCloud
+    maxGpuCount
+    maxGpuCountSecureCloud
+    maxGpuCountCommunityCloud
     lowestPrice(input: {
       gpuCount: 1,
       minCudaVersion: $minCudaVersion,

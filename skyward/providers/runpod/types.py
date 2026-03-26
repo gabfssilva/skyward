@@ -125,6 +125,9 @@ class GpuTypeResponse(TypedDict):
     memoryInGb: int
     secureCloud: bool
     communityCloud: bool
+    maxGpuCount: NotRequired[int]
+    maxGpuCountSecureCloud: NotRequired[int]
+    maxGpuCountCommunityCloud: NotRequired[int]
     lowestPrice: NotRequired[LowestPriceResponse]
 
 

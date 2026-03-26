@@ -25,6 +25,7 @@ from .config import RunPod
 from .types import (
     ClusterCreateParams,
     CpuPodCreateParams,
+    GpuTypeResponse,
     PodCreateParams,
     PodResponse,
     get_ssh_port,
@@ -288,13 +289,19 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
     async def create(cls, config: RunPod) -> RunPodProvider:
         return cls(config)
 
-    async def offers(self) -> AsyncIterator[Offer]:
-        api_key = get_api_key(self._config.api_key)
+    async def _fetch_gpu_types(self) -> list[tuple[GpuTypeResponse, str, str]]:
+        """Fetch and deduplicate GPU types across clouds and CUDA probes.
 
+        Returns
+        -------
+        list[tuple[GpuTypeResponse, str, str]]
+            Triples of (gpu_data, cloud_type, proven_cuda_version).
+        """
+        api_key = get_api_key(self._config.api_key)
         cuda_probes = list(reversed(_KNOWN_CUDA_VERSIONS))
 
         async with RunPodClient(api_key, config=self._config) as client:
-            all_results = []
+            all_results: list[tuple[str, list[list[GpuTypeResponse]]]] = []
             for cloud in ("community", "secure"):
                 results = await asyncio.gather(*(
                     client.get_gpu_types(
@@ -306,6 +313,7 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                 all_results.append((cloud, results))
 
         seen: set[tuple[str, str]] = set()
+        triples: list[tuple[GpuTypeResponse, str, str]] = []
 
         for cloud, results in all_results:
             is_secure = cloud == "secure"
@@ -315,45 +323,64 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                     if (is_secure and g.get("secureCloud"))
                     or (not is_secure and g.get("communityCloud"))
                 ]
-
                 for gpu in available:
-                    display = gpu.get("displayName", "")
                     gpu_id = gpu.get("id", "")
-
                     if (gpu_id, cloud) in seen:
                         continue
 
                     lowest = gpu.get("lowestPrice") or {}
-                    spot_price = lowest.get("minimumBidPrice")
-                    on_demand_price = lowest.get("uninterruptablePrice")
-                    if spot_price is None and on_demand_price is None:
+                    if lowest.get("minimumBidPrice") is None and lowest.get("uninterruptablePrice") is None:
                         continue
 
                     seen.add((gpu_id, cloud))
-                    vram_gb = gpu.get("memoryInGb", 0)
-                    accel = Accelerator(
-                        name=display or gpu_id,
-                        memory=f"{vram_gb}GB" if vram_gb else "",
-                        count=1,
-                    )
-                    min_vcpu = lowest.get("minVcpu") or 0
-                    min_memory = lowest.get("minMemory") or 0
-                    it = InstanceType(
-                        name=gpu_id,
-                        accelerator=accel,
-                        vcpus=float(min_vcpu),
-                        memory_gb=float(min_memory),
-                        architecture="x86_64",
-                        specific=None,
-                    )
-                    yield Offer(
-                        id=f"runpod-{gpu_id}-{cloud}-cuda{cuda_ver or 'any'}",
-                        instance_type=it,
-                        spot_price=spot_price,
-                        on_demand_price=on_demand_price,
-                        billing_unit="hour",
-                        specific=RunPodOfferData(gpu_id, cuda_ver, cloud),
-                    )
+                    triples.append((gpu, cloud, cuda_ver))
+
+        return triples
+
+    async def offers(self) -> AsyncIterator[Offer]:
+        triples = await self._fetch_gpu_types()
+
+        for gpu, cloud, cuda_ver in triples:
+            display = gpu.get("displayName", "")
+            gpu_id = gpu.get("id", "")
+            vram_gb = gpu.get("memoryInGb", 0)
+            lowest = gpu.get("lowestPrice") or {}
+            base_spot = lowest.get("minimumBidPrice")
+            base_on_demand = lowest.get("uninterruptablePrice")
+            base_vcpu = float(lowest.get("minVcpu") or 0)
+            base_memory = float(lowest.get("minMemory") or 0)
+            is_secure = cloud == "secure"
+
+            max_gpu = (
+                gpu.get("maxGpuCountSecureCloud" if is_secure else "maxGpuCountCommunityCloud")
+                or gpu.get("maxGpuCount")
+                or 1
+            )
+
+            for gpu_count in range(1, max_gpu + 1):
+                spot_price = round(base_spot * gpu_count, 4) if base_spot is not None else None
+                on_demand_price = round(base_on_demand * gpu_count, 4) if base_on_demand is not None else None
+                accel = Accelerator(
+                    name=display or gpu_id,
+                    memory=f"{vram_gb}GB" if vram_gb else "",
+                    count=gpu_count,
+                )
+                it = InstanceType(
+                    name=gpu_id,
+                    accelerator=accel,
+                    vcpus=base_vcpu * gpu_count,
+                    memory_gb=base_memory * gpu_count,
+                    architecture="x86_64",
+                    specific=None,
+                )
+                yield Offer(
+                    id=f"runpod-{gpu_id}-{cloud}-{gpu_count}x-cuda{cuda_ver or 'any'}",
+                    instance_type=it,
+                    spot_price=spot_price,
+                    on_demand_price=on_demand_price,
+                    billing_unit="hour",
+                    specific=RunPodOfferData(gpu_id, cuda_ver, cloud),
+                )
 
     def offer_filters(self) -> dict[str, str]:
         return {"cloud_type": self._config.cloud_type}
@@ -722,7 +749,12 @@ async def _create_gpu_pod(
     use_spot = _is_spot(cluster.spec.allocation, cluster.offer)
     _, cuda_max = _get_cuda_range(cluster.spec)
 
-    bid = cluster.offer.spot_price if use_spot else None
+    gpu_count = int(cluster.spec.accelerator_count or 1)
+    bid_per_gpu = (
+        round(cluster.offer.spot_price / gpu_count, 4)
+        if use_spot and cluster.offer.spot_price is not None
+        else None
+    )
     candidates = specific.image_candidates or (specific.image_name,)
 
     if specific.global_networking:
@@ -758,7 +790,7 @@ async def _create_gpu_pod(
                 interruptible=use_spot,
                 data_center_id=config.data_center_ids[0] if config.data_center_ids != "global" else None,
                 deploy_cost=cluster.spec.max_hourly_cost,
-                spot_price=bid,
+                spot_price=bid_per_gpu,
                 allowed_cuda_versions=allowed_cuda,
                 container_registry_auth_id=specific.registry_auth_id,
                 min_download=int(config.min_inet_down) if config.min_inet_down is not None else None,
