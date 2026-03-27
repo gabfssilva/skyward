@@ -440,6 +440,7 @@ pool = sky.Compute(
 
 ## Related topics
 
+- **[Compare accelerators](compare.md)** — interactive side-by-side comparison with charts
 - **[Providers](providers.md)** — AWS, RunPod, VastAI, Verda, and Container configuration
 - **[Distributed Training](distributed-training.md)** — multi-node training guides
 - **[API Reference](reference/accelerators.md)** — complete accelerator API

@@ -34,6 +34,11 @@ theme:
 
 extra_css:
   - stylesheets/extra.css
+  - stylesheets/gpu-compare.css
+
+extra_javascript:
+  - https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js
+  - javascripts/gpu-compare.js
 
 plugins:
   - search
@@ -88,6 +93,7 @@ nav:
           - Distributed training: distributed-training.md
           - Distributed collections: distributed-collections.md
       - Misc:
+          - Compare accelerators: compare.md
           - Sky computing: sky-computing.md
           - For HPC users: hpc.md
   - Plugins:
