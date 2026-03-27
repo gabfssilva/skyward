@@ -37,7 +37,7 @@ class _TaskEntry:
     name: str
     kind: str
     started_at: float
-    instance_id: str = ""
+    node_id: int = -1
     broadcast_total: int = 0
     broadcast_done: int = 0
 
@@ -46,7 +46,7 @@ class _TaskEntry:
 class _State:
     total_nodes: int
     phase: _Phase = _Phase.PROVISIONING
-    nodes: MappingProxyType[str, _NodeStatus] = MappingProxyType({})
+    nodes: MappingProxyType[int, _NodeStatus] = MappingProxyType({})
     tasks_queued: int = 0
     tasks_running: int = 0
     tasks_done: int = 0
@@ -54,7 +54,7 @@ class _State:
     first_task_at: float = 0.0
     cluster: Cluster | None = None
     instances: tuple[Instance, ...] = ()
-    metrics: MappingProxyType[str, MappingProxyType[str, float]] = MappingProxyType({})
+    metrics: MappingProxyType[int, MappingProxyType[str, float]] = MappingProxyType({})
     pool_started_at: float = 0.0
     task_latencies: tuple[float, ...] = ()
     inflight: MappingProxyType[str, _TaskEntry] = MappingProxyType({})
@@ -69,9 +69,10 @@ class _State:
     max_nodes: int | None = None
     is_elastic: bool = False
     spec_accelerator_memory: str = ""
-    tasks_per_instance: MappingProxyType[str, int] = MappingProxyType({})
+    tasks_per_node: MappingProxyType[int, int] = MappingProxyType({})
     ssh_user: str = ""
     ssh_key_path: str = ""
-    bootstrap_spinners: MappingProxyType[str, _BootstrapTimeline] = MappingProxyType({})
-    bootstrap_started: MappingProxyType[str, float] = MappingProxyType({})
-    progress_lines: MappingProxyType[str, str] = MappingProxyType({})
+    bootstrap_spinners: MappingProxyType[int, _BootstrapTimeline] = MappingProxyType({})
+    bootstrap_started: MappingProxyType[int, float] = MappingProxyType({})
+    progress_lines: MappingProxyType[int, str] = MappingProxyType({})
+    provision_error_shown: bool = False

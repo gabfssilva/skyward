@@ -10,6 +10,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Unpack
 
+from skyward.core.errors import NoOffersError, ProvisioningError
 from skyward.core.spec import Options, Spec, SpecKwargs
 
 if TYPE_CHECKING:
@@ -72,7 +73,21 @@ def Compute(
         logging=options.logging,
         shutdown_timeout=options.shutdown_timeout,
     ) as session:
-        pool = session.compute(*built_specs, options=options)
+        try:
+            pool = session.compute(*built_specs, options=options)
+        except NoOffersError as e:
+            from rich.console import Console as RichConsole
+
+            from skyward.actors.console.view import _print_no_offers_error
+
+            _print_no_offers_error(RichConsole(stderr=True), e)
+            raise SystemExit(1) from None
+        except ProvisioningError as e:
+            if not options.console:
+                import sys
+
+                sys.stderr.write(f"\nProvisioning failed: {e.reason}\n")
+            raise SystemExit(1) from None
         token = _active_pool.set(pool)
         try:
             yield pool

@@ -145,7 +145,17 @@ async def select_offers(
     repo.close()
 
     if not ranked:
-        raise RuntimeError("No offers found across all specs")
+        from skyward.core.errors import NoOffersError, _SpecSummary
+
+        summaries = tuple(
+            _SpecSummary(
+                provider=s.provider.type,
+                accelerator=s.accelerator.name if s.accelerator else "CPU",
+                allocation=s.allocation,
+            )
+            for s in specs
+        )
+        raise NoOffersError(summaries)
 
     ranked.sort(key=lambda x: x[0])
     offers = tuple(r[1] for r in ranked)

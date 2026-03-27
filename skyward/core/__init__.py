@@ -2,6 +2,8 @@
 
 from .compute import Compute
 from .context import sky
+from .errors import NoOffersError as NoOffersError
+from .errors import ProvisioningError
 from .function import PendingFunction, PendingFunctionGroup, function, gather
 from .model import Cluster as Cluster
 from .model import ClusterStatus as ClusterStatus
@@ -78,5 +80,7 @@ __all__ = [
     "Worker",
     "WorkerExecutor",
     "Compute",
+    "NoOffersError",
+    "ProvisioningError",
     "Session",
 ]

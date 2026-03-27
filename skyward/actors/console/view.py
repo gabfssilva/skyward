@@ -198,17 +198,27 @@ def _badge_text(label: str, link: str = "") -> Text:
     return t
 
 
-def _ssh_url(state: _State, instance_id: str) -> str:
-    inst = next((i for i in state.instances if i.id == instance_id), None)
-    if not inst or not inst.ip or not state.ssh_user:
+def _node_label(state: _State, node_id: int) -> str:
+    if 0 <= node_id < len(state.instances):
+        return state.instances[node_id].id
+    return f"node-{node_id}"
+
+
+def _ssh_url(state: _State, node_id: int) -> str:
+    if node_id < 0 or node_id >= len(state.instances):
+        return ""
+    inst = state.instances[node_id]
+    if not inst.ip or not state.ssh_user:
         return ""
     port = f":{inst.ssh_port}" if inst.ssh_port != 22 else ""
     return f"ssh://{state.ssh_user}@{inst.ip}{port}"
 
 
-def _ssh_command(state: _State, instance_id: str) -> str:
-    inst = next((i for i in state.instances if i.id == instance_id), None)
-    if not inst or not inst.ip or not state.ssh_user:
+def _ssh_command(state: _State, node_id: int) -> str:
+    if node_id < 0 or node_id >= len(state.instances):
+        return ""
+    inst = state.instances[node_id]
+    if not inst.ip or not state.ssh_user:
         return ""
     parts = ["ssh"]
     if state.ssh_key_path:
@@ -223,6 +233,45 @@ def _inline_badge(label: str) -> Text:
     t = Text()
     t.append(f" {label} ", style=_badge_style(label))
     return t
+
+
+def _print_provisioning_error(console: Console, reason: str) -> None:
+    from rich.panel import Panel
+
+    body = Text()
+    body.append(reason)
+    body.append("\n\n")
+    body.append("Suggestions:\n", style="bold")
+    body.append("  \u2022 Try a different accelerator or provider\n")
+    body.append("  \u2022 Try multiple specs")
+    console.print()
+    console.print(Panel(body, title="Provisioning Failed", border_style="red"))
+    console.print()
+
+
+def _print_no_offers_error(console: Console, error: object) -> None:
+    from rich.panel import Panel
+
+    from skyward.core.errors import NoOffersError
+
+    if not isinstance(error, NoOffersError):
+        return
+
+    body = Text()
+    body.append("No matching offers found.\n\n")
+    body.append("Searched:\n", style="bold")
+    for spec in error.specs:
+        body.append(f"  \u2022 {spec.provider}", style="cyan")
+        body.append(f"  {spec.accelerator}", style="white bold")
+        body.append(f"  ({spec.allocation})\n", style=DIM)
+    body.append("\n")
+    body.append("Suggestions:\n", style="bold")
+    body.append("  \u2022 Check if the accelerator name is correct\n")
+    body.append("  \u2022 Try a different provider or allocation strategy\n")
+    body.append("  \u2022 Use multiple specs for fallback across providers")
+    console.print()
+    console.print(Panel(body, title="No Offers Found", border_style="yellow"))
+    console.print()
 
 
 def _emit(console: Console, badge: str, text: str, style: str = "", link: str = "") -> None:
@@ -400,10 +449,16 @@ def _collect_badges(state: _State) -> tuple[list[Text], list[Text], list[Text]]:
     match state.phase:
         case _Phase.PROVISIONING:
             status.append(_inline_badge("provisioning"))
+            cost = _cost_badges(state)
+            if cost:
+                status.extend(cost)
         case _Phase.SSH:
             count = sum(1 for s in state.nodes.values() if s.value >= _NodeStatus.SSH.value)
             status.append(_inline_badge("connecting"))
             status.append(_styled_badge(f"ssh {count}/{state.total_nodes}", "connecting"))
+            cost = _cost_badges(state)
+            if cost:
+                status.extend(cost)
         case _Phase.BOOTSTRAP | _Phase.WORKERS:
             phase_name = "bootstrap" if state.phase == _Phase.BOOTSTRAP else "workers"
             target = (
@@ -413,6 +468,9 @@ def _collect_badges(state: _State) -> tuple[list[Text], list[Text], list[Text]]:
             count = sum(1 for s in state.nodes.values() if s.value >= target.value)
             status.append(_inline_badge(phase_name))
             status.append(_styled_badge(f"{count}/{state.total_nodes} ready", phase_name))
+            cost = _cost_badges(state)
+            if cost:
+                status.extend(cost)
         case _Phase.READY:
             status.append(_inline_badge("ready"))
             ready_count = sum(1 for s in state.nodes.values() if s == _NodeStatus.READY)
@@ -508,8 +566,9 @@ def _render_spinners(state: _State) -> list[Text]:
     tick = _spinner_tick[0]
     frame = _SPINNER_FRAMES[tick % len(_SPINNER_FRAMES)]
     lines: list[Text] = []
-    for iid, timeline in state.bootstrap_spinners.items():
-        line = _badge_text(iid)
+    for nid, timeline in state.bootstrap_spinners.items():
+        label = _node_label(state, nid)
+        line = _badge_text(label)
         phase_label = _PHASE_LABELS.get(timeline.active, timeline.active) if timeline.active else "waiting"
         spinner_badge = Text()
         spinner_badge.append(f" {frame} {phase_label} ", style=_badge_style(timeline.active or "bootstrap"))
@@ -524,8 +583,9 @@ def _render_progress(state: _State) -> list[Text]:
     if not state.progress_lines:
         return []
     lines: list[Text] = []
-    for iid, content in state.progress_lines.items():
-        line = _badge_text(iid)
+    for nid, content in state.progress_lines.items():
+        label = _node_label(state, nid)
+        line = _badge_text(label)
         line.append(f"  {content}", style=MEDIUM)
         lines.append(line)
     return lines
@@ -707,8 +767,8 @@ def _render_summary(state: _State, now: float | None = None) -> RenderableType:
             Text(mn, style="green"), Text(mx, style=WARNING_STYLE), fail_text,
         )
 
-    if state.tasks_per_instance:
-        counts = list(state.tasks_per_instance.values())
+    if state.tasks_per_node:
+        counts = list(state.tasks_per_node.values())
         lo, hi = min(counts), max(counts)
         avg_n = sum(counts) / len(counts)
         dist_text = Text()

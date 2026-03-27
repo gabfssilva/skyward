@@ -45,6 +45,7 @@ from skyward.actors.node.messages import (
 )
 from skyward.actors.pool.messages import (
     PoolStopped,
+    ProvisionFailed,
     StopPool,
     _ShutdownDone,
 )
@@ -56,6 +57,7 @@ from .model import (
     _on_bootstrap_done,
     _on_broadcast_partial,
     _on_metric,
+    _on_node_lost,
     _on_spinner_remove,
     _on_ssh_connected,
     _on_task_assigned,
@@ -78,8 +80,9 @@ from .view import (
     _LiveFooter,
     _make_badge,
     _node_id_from_path,
+    _node_label,
+    _print_provisioning_error,
     _render_summary,
-    _resolve_instance_id,
     _ssh_url,
 )
 
@@ -189,10 +192,12 @@ def console_actor() -> Behavior[ConsoleInput]:
             )
             live.start()
 
-    def _stop_live() -> None:
+    def _stop_live(*, clear: bool = False) -> None:
         nonlocal live, live_stopped
         live_stopped = True
         if live is not None:
+            if clear:
+                live.update(Text())
             live.stop()
             live = None
 
@@ -237,15 +242,25 @@ def console_actor() -> Behavior[ConsoleInput]:
             case SpyEvent(event=PoolStopped() | _ShutdownDone()):
                 return state
 
+            case SpyEvent(event=ProvisionFailed(reason=reason)) if not state.provision_error_shown:
+                _stop_live(clear=True)
+                _print_provisioning_error(console, reason)
+                return replace(state, provision_error_shown=True)
+
             case SpyEvent(event=Provision() | NodeBecameReady() | NodeActivated() | NodeConnected() | _PollResult()):
                 return state
 
             case SpyEvent(event=NodeLost(node_id=nid, reason=reason)):
+                label = _node_label(state, nid)
                 _emit(console, "error", f"Node {nid} lost: {reason}", "red")
-                return state
+                new = _on_node_lost(state, nid)
+                _update_footer(new)
+                return new
 
             case SpyEvent(actor_path=path, event=_Connected(instance=ni)):
                 nid = _node_id_from_path(path)
+                if nid is None:
+                    return state
                 current = state
                 if ni is not None:
                     current = _update_instance(current, ni.instance)
@@ -255,15 +270,12 @@ def console_actor() -> Behavior[ConsoleInput]:
                             ssh_user=ni.ssh_user,
                             ssh_key_path=ni.ssh_key_path,
                         )
-                iid = _resolve_instance_id(current, node_id=nid)
-                if iid:
-                    new = _on_timeline_phase_started(
-                        _on_ssh_connected(current, iid),
-                        iid, "connecting",
-                    )
-                    _update_footer(new)
-                    return new
-                return state
+                new = _on_timeline_phase_started(
+                    _on_ssh_connected(current, nid),
+                    nid, "connecting",
+                )
+                _update_footer(new)
+                return new
 
             case SpyEvent(event=_ConnectionFailed(error=error)):
                 _emit(console, "error", f"SSH failed: {error}", "red")
@@ -277,68 +289,71 @@ def console_actor() -> Behavior[ConsoleInput]:
                 content = ev.content.strip()
                 if not content or content.startswith("#"):
                     return state
-                iid = ev.instance.instance.id
-                if iid in state.bootstrap_spinners:
-                    new = _on_timeline_output(state, iid, content[:80])
+                nid = ev.instance.node
+                label = _node_label(state, nid)
+                if nid in state.bootstrap_spinners:
+                    new = _on_timeline_output(state, nid, content)
                     _update_footer(new)
                     return new
                 if ev.overwrite:
                     progress = MappingProxyType({
-                        **state.progress_lines, iid: content[:120],
+                        **state.progress_lines, nid: content,
                     })
                     new = replace(state, progress_lines=progress)
                     _update_footer(new)
                     return new
-                if iid in state.progress_lines:
-                    _emit(console, iid, state.progress_lines[iid], link=_ssh_url(state, iid))
+                if nid in state.progress_lines:
+                    _emit(console, label, state.progress_lines[nid], link=_ssh_url(state, nid))
                     progress = MappingProxyType({
-                        k: v for k, v in state.progress_lines.items() if k != iid
+                        k: v for k, v in state.progress_lines.items() if k != nid
                     })
                     new = replace(state, progress_lines=progress)
                 else:
                     new = state
-                _emit(console, iid, content[:120], link=_ssh_url(state, iid))
+                _emit(console, label, content, link=_ssh_url(state, nid))
                 return new
 
             case SpyEvent(event=BootstrapPhase() as ev):
-                iid = ev.instance.instance.id
+                nid = ev.instance.node
+                label = _node_label(state, nid)
                 match ev.event:
                     case "started" if ev.phase != "bootstrap":
-                        new = _on_timeline_phase_started(state, iid, ev.phase)
+                        new = _on_timeline_phase_started(state, nid, ev.phase)
                         _update_footer(new)
                         return new
                     case "completed" if ev.phase != "bootstrap":
-                        if iid in state.bootstrap_spinners:
-                            new = _on_timeline_phase_completed(state, iid, ev.phase)
+                        if nid in state.bootstrap_spinners:
+                            new = _on_timeline_phase_completed(state, nid, ev.phase)
                             _update_footer(new)
                             return new
                     case "failed":
-                        new = _on_spinner_remove(state, iid)
-                        link = _ssh_url(new, iid)
-                        _emit(console, iid, f"\u2717 {ev.phase}: {ev.error}", "red", link=link)
+                        new = _on_spinner_remove(state, nid)
+                        link = _ssh_url(new, nid)
+                        _emit(console, label, f"\u2717 {ev.phase}: {ev.error}", "red", link=link)
                         return new
                 return state
 
             case SpyEvent(event=BootstrapCommand() as ev):
-                iid = ev.instance.instance.id
-                if iid in state.bootstrap_spinners:
-                    new = _on_timeline_output(state, iid, ev.command[:80])
+                nid = ev.instance.node
+                if nid in state.bootstrap_spinners:
+                    new = _on_timeline_output(state, nid, ev.command[:80])
                     _update_footer(new)
                     return new
                 return state
 
             case SpyEvent(event=BootstrapDone(instance=inst, success=ok, error=err)):
-                iid = inst.instance.id
+                nid = inst.node
+                label = _node_label(state, nid)
                 if ok:
                     new = _on_timeline_phase_started(
-                        _on_bootstrap_done(state, iid),
-                        iid, "worker",
+                        _on_bootstrap_done(state, nid),
+                        nid, "worker",
                     )
                     _update_footer(new)
                     return new
-                new = _on_spinner_remove(state, iid)
-                link = _ssh_url(new, iid)
-                _emit(console, iid, f"\u2717 Bootstrap failed: {err}", "red", link=link)
+                new = _on_spinner_remove(state, nid)
+                link = _ssh_url(new, nid)
+                _emit(console, label, f"\u2717 Bootstrap failed: {err}", "red", link=link)
                 return new
 
             case SpyEvent(event=_LocalInstallDone() | _UserCodeSyncDone()):
@@ -350,13 +365,13 @@ def console_actor() -> Behavior[ConsoleInput]:
 
             case SpyEvent(actor_path=path, event=_WorkerStarted()):
                 nid = _node_id_from_path(path)
-                iid = _resolve_instance_id(state, node_id=nid)
-                if iid:
-                    started_at = state.bootstrap_started.get(iid)
+                if nid is not None:
+                    label = _node_label(state, nid)
+                    started_at = state.bootstrap_started.get(nid)
                     elapsed = f" ({time.monotonic() - started_at:.1f}s)" if started_at else ""
-                    new = _on_worker_started(_on_spinner_remove(state, iid), iid)
-                    link = _ssh_url(new, iid)
-                    _emit(console, iid, f"\u2713 Joined{elapsed}", "green bold", link=link)
+                    new = _on_worker_started(_on_spinner_remove(state, nid), nid)
+                    link = _ssh_url(new, nid)
+                    _emit(console, label, f"\u2713 Joined{elapsed}", "green bold", link=link)
                     _update_footer(new)
                     return new
                 return state
@@ -386,37 +401,37 @@ def console_actor() -> Behavior[ConsoleInput]:
                 return state
 
             case SpyEvent(event=TaskSubmitted(task_id=tid, node_id=nid)):
-                iid = _resolve_instance_id(state, node_id=nid) or ""
-                if iid:
-                    entry = state.inflight.get(tid)
-                    if entry:
-                        _emit_task(console, iid, "running", entry.name, link=_ssh_url(state, iid))
-                new = _on_task_assigned(state, tid, iid)
+                label = _node_label(state, nid)
+                entry = state.inflight.get(tid)
+                if entry:
+                    _emit_task(console, label, "running", entry.name, link=_ssh_url(state, nid))
+                new = _on_task_assigned(state, tid, nid)
                 return new
 
             case SpyEvent(event=TaskResult(task_id=tid, node_id=nid, error=is_err)):
                 entry = state.inflight.get(tid)
                 if entry is None:
                     return state
-                iid = entry.instance_id or _resolve_instance_id(state, node_id=nid) or "skyward"
-                link = _ssh_url(state, iid)
+                resolved_nid = entry.node_id if entry.node_id >= 0 else nid
+                label = _node_label(state, resolved_nid)
+                link = _ssh_url(state, resolved_nid)
                 match entry.kind:
                     case "broadcast":
                         new = _on_broadcast_partial(state, tid)
                         updated = new.inflight.get(tid)
                         if updated and updated.broadcast_done >= updated.broadcast_total:
                             elapsed = time.monotonic() - entry.started_at
-                            _emit_task(console, iid, "done", f"{entry.name} in {elapsed:.1f}s", link=link)
+                            _emit_task(console, label, "done", f"{entry.name} in {elapsed:.1f}s", link=link)
                             new = _on_task_done(new, tid, elapsed)
                         _update_footer(new)
                         return new
                     case _:
                         elapsed = time.monotonic() - entry.started_at
                         if is_err:
-                            _emit_task(console, iid, "failed", entry.name, link=link)
+                            _emit_task(console, label, "failed", entry.name, link=link)
                             new = _on_task_failed(state, tid)
                         else:
-                            _emit_task(console, iid, "done", f"{entry.name} in {elapsed:.1f}s", link=link)
+                            _emit_task(console, label, "done", f"{entry.name} in {elapsed:.1f}s", link=link)
                             new = _on_task_done(state, tid, elapsed)
                         _update_footer(new)
                         return new
@@ -424,28 +439,29 @@ def console_actor() -> Behavior[ConsoleInput]:
             case SpyEvent(event=Log() as ev):
                 line = ev.line.strip()
                 if line:
-                    iid = ev.instance.instance.id
+                    nid = ev.instance.node
+                    label = _node_label(state, nid)
                     if ev.overwrite:
                         progress = MappingProxyType({
-                            **state.progress_lines, iid: line,
+                            **state.progress_lines, nid: line,
                         })
                         new = replace(state, progress_lines=progress)
                         _update_footer(new)
                         return new
-                    if iid in state.progress_lines:
-                        _emit(console, iid, state.progress_lines[iid], link=_ssh_url(state, iid))
+                    if nid in state.progress_lines:
+                        _emit(console, label, state.progress_lines[nid], link=_ssh_url(state, nid))
                         progress = MappingProxyType({
-                            k: v for k, v in state.progress_lines.items() if k != iid
+                            k: v for k, v in state.progress_lines.items() if k != nid
                         })
                         new = replace(state, progress_lines=progress)
                     else:
                         new = state
-                    _emit(console, iid, line, link=_ssh_url(state, iid))
+                    _emit(console, label, line, link=_ssh_url(state, nid))
                     return new
                 return state
 
             case SpyEvent(event=Metric() as ev):
-                new = _on_metric(state, ev.instance.instance.id, ev.name, ev.value)
+                new = _on_metric(state, ev.instance.node, ev.name, ev.value)
                 _update_footer(new)
                 return new
 
@@ -465,8 +481,9 @@ def console_actor() -> Behavior[ConsoleInput]:
                 return replace(state, phase=_Phase.STOPPING)
 
             case SpyEvent(event=StopPool()):
-                for iid, content in state.progress_lines.items():
-                    _emit(console, iid, content, link=_ssh_url(state, iid))
+                for nid, content in state.progress_lines.items():
+                    label = _node_label(state, nid)
+                    _emit(console, label, content, link=_ssh_url(state, nid))
                 _stop_live()
                 _emit(console, "skyward", "Shutting down...", WARNING_STYLE)
                 summary = _render_summary(state)

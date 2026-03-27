@@ -412,7 +412,9 @@ class Session:
 
         match result:
             case PoolSpawnFailed(name=n, reason=reason):
-                raise RuntimeError(f"Pool '{n}' provisioning failed: {reason}")
+                from skyward.core.errors import ProvisioningError
+
+                raise ProvisioningError(pool_name=n, reason=reason)
             case PoolSpawned(
                 pool_ref=pool_ref,
                 cluster_id=cid,

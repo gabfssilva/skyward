@@ -69,8 +69,8 @@ class TestStateTransitions:
         from skyward.actors.console.state import _NodeStatus, _Phase, _State
 
         state = _State(total_nodes=2, phase=_Phase.SSH)
-        new = _on_ssh_connected(state, "i-abc")
-        assert new.nodes["i-abc"] == _NodeStatus.SSH
+        new = _on_ssh_connected(state, 0)
+        assert new.nodes[0] == _NodeStatus.SSH
         assert new.phase == _Phase.SSH
 
     def test_ssh_all_connected_advances_to_bootstrap(self) -> None:
@@ -78,7 +78,7 @@ class TestStateTransitions:
         from skyward.actors.console.state import _Phase, _State
 
         state = _State(total_nodes=1, phase=_Phase.SSH)
-        new = _on_ssh_connected(state, "i-abc")
+        new = _on_ssh_connected(state, 0)
         assert new.phase == _Phase.BOOTSTRAP
 
     def test_bootstrap_done_advances_node(self) -> None:
@@ -86,16 +86,16 @@ class TestStateTransitions:
         from skyward.actors.console.state import _NodeStatus, _Phase, _State
 
         state = _State(total_nodes=2, phase=_Phase.BOOTSTRAP)
-        new = _on_bootstrap_done(state, "i-abc")
-        assert new.nodes["i-abc"] == _NodeStatus.BOOTSTRAPPING
+        new = _on_bootstrap_done(state, 0)
+        assert new.nodes[0] == _NodeStatus.BOOTSTRAPPING
 
     def test_worker_started_advances_node(self) -> None:
         from skyward.actors.console.model import _on_worker_started
         from skyward.actors.console.state import _NodeStatus, _Phase, _State
 
         state = _State(total_nodes=2, phase=_Phase.WORKERS)
-        new = _on_worker_started(state, "i-abc")
-        assert new.nodes["i-abc"] == _NodeStatus.READY
+        new = _on_worker_started(state, 0)
+        assert new.nodes[0] == _NodeStatus.READY
         assert new.phase == _Phase.WORKERS
 
     def test_worker_all_started_advances_to_ready(self) -> None:
@@ -103,7 +103,7 @@ class TestStateTransitions:
         from skyward.actors.console.state import _Phase, _State
 
         state = _State(total_nodes=1, phase=_Phase.WORKERS)
-        new = _on_worker_started(state, "i-abc")
+        new = _on_worker_started(state, 0)
         assert new.phase == _Phase.READY
 
     def test_phase_never_regresses_during_scaling(self) -> None:
@@ -118,21 +118,21 @@ class TestStateTransitions:
 
         state = _State(
             total_nodes=1, phase=_Phase.READY,
-            nodes=MappingProxyType({"i-0": _NodeStatus.READY}),
+            nodes=MappingProxyType({0: _NodeStatus.READY}),
         )
         insts = tuple(MagicMock() for _ in range(2))
         state = _on_spawn_nodes(state, insts)
         assert state.total_nodes == 3
         assert state.phase == _Phase.READY
 
-        state = _on_ssh_connected(state, "i-1")
+        state = _on_ssh_connected(state, 1)
         assert state.phase == _Phase.READY
 
-        state = _on_worker_started(state, "i-1")
+        state = _on_worker_started(state, 1)
         assert state.phase == _Phase.READY
 
-        state = _on_ssh_connected(state, "i-2")
-        state = _on_worker_started(state, "i-2")
+        state = _on_ssh_connected(state, 2)
+        state = _on_worker_started(state, 2)
         assert state.phase == _Phase.READY
 
     def test_record_task_submitted(self) -> None:
@@ -151,7 +151,7 @@ class TestStateTransitions:
 
         state = _State(total_nodes=1)
         state = _on_task_submitted(state, "t1", "train", "single")
-        new = _on_task_assigned(state, "t1", "i-abc")
+        new = _on_task_assigned(state, "t1", 0)
         assert new.tasks_queued == 0
         assert new.tasks_running == 1
 
@@ -165,13 +165,13 @@ class TestStateTransitions:
 
         state = _State(total_nodes=1)
         state = _on_task_submitted(state, "t1", "train", "single")
-        state = _on_task_assigned(state, "t1", "i-abc")
+        state = _on_task_assigned(state, "t1", 0)
         new = _on_task_done(state, "t1", elapsed=2.5)
         assert new.tasks_running == 0
         assert new.tasks_done == 1
         assert new.task_latencies == (2.5,)
 
-    def test_task_done_tracks_per_instance(self) -> None:
+    def test_task_done_tracks_per_node(self) -> None:
         from skyward.actors.console.model import (
             _on_task_assigned,
             _on_task_done,
@@ -181,16 +181,16 @@ class TestStateTransitions:
 
         state = _State(total_nodes=2)
         state = _on_task_submitted(state, "t1", "train", "single")
-        state = _on_task_assigned(state, "t1", "i-abc")
+        state = _on_task_assigned(state, "t1", 0)
         state = _on_task_done(state, "t1", elapsed=1.0)
         state = _on_task_submitted(state, "t2", "train", "single")
-        state = _on_task_assigned(state, "t2", "i-abc")
+        state = _on_task_assigned(state, "t2", 0)
         state = _on_task_done(state, "t2", elapsed=1.0)
         state = _on_task_submitted(state, "t3", "train", "single")
-        state = _on_task_assigned(state, "t3", "i-def")
+        state = _on_task_assigned(state, "t3", 1)
         state = _on_task_done(state, "t3", elapsed=1.0)
-        assert state.tasks_per_instance["i-abc"] == 2
-        assert state.tasks_per_instance["i-def"] == 1
+        assert state.tasks_per_node[0] == 2
+        assert state.tasks_per_node[1] == 1
 
     def test_record_task_failed(self) -> None:
         from skyward.actors.console.model import _on_task_failed, _on_task_submitted
@@ -207,8 +207,8 @@ class TestStateTransitions:
         from skyward.actors.console.state import _State
 
         state = _State(total_nodes=1)
-        new = _on_metric(state, "i-abc", "gpu_util", 87.5)
-        assert new.metrics["i-abc"]["gpu_util"] == 87.5
+        new = _on_metric(state, 0, "gpu_util", 87.5)
+        assert new.metrics[0]["gpu_util"] == 87.5
 
     def test_throughput(self) -> None:
         from skyward.actors.console.model import _throughput
@@ -294,8 +294,8 @@ class TestFooter:
         footer.state = _State(
             total_nodes=3, phase=_Phase.BOOTSTRAP,
             nodes=MappingProxyType({
-                "i-abc": _NodeStatus.BOOTSTRAPPING,
-                "i-def": _NodeStatus.SSH,
+                0: _NodeStatus.BOOTSTRAPPING,
+                1: _NodeStatus.SSH,
             }),
         )
         console.print(footer)
@@ -370,8 +370,8 @@ class TestSummary:
         console, buf = _capture_console()
         state = _State(
             total_nodes=3, tasks_done=30, pool_started_at=0.0,
-            tasks_per_instance=MappingProxyType({
-                "i-abc": 12, "i-def": 10, "i-ghi": 8,
+            tasks_per_node=MappingProxyType({
+                0: 12, 1: 10, 2: 8,
             }),
         )
         result = _render_summary(state, now=60.0)
@@ -487,6 +487,30 @@ class TestFormatTask:
         assert "\u2026" in result
 
 
+class TestNodeLabel:
+    def test_resolves_from_instances(self) -> None:
+        from unittest.mock import MagicMock
+
+        from skyward.actors.console.state import _State
+        from skyward.actors.console.view import _node_label
+
+        inst0 = MagicMock()
+        inst0.id = "i-abc"
+        inst1 = MagicMock()
+        inst1.id = "i-def"
+        state = _State(total_nodes=2, instances=(inst0, inst1))
+        assert _node_label(state, 0) == "i-abc"
+        assert _node_label(state, 1) == "i-def"
+
+    def test_fallback_for_missing_instance(self) -> None:
+        from skyward.actors.console.state import _State
+        from skyward.actors.console.view import _node_label
+
+        state = _State(total_nodes=2)
+        assert _node_label(state, 0) == "node-0"
+        assert _node_label(state, 5) == "node-5"
+
+
 class TestInstanceIdResolution:
     def test_resolve_from_nodes_by_index(self) -> None:
         from skyward.actors.console.state import _State
@@ -537,10 +561,10 @@ class TestUpdateInstance:
         inst_with_ip.ssh_port = 22
 
         state = _State(total_nodes=1, instances=(inst_no_ip,), ssh_user="ubuntu")
-        assert _ssh_url(state, "i-abc") == ""
+        assert _ssh_url(state, 0) == ""
 
         updated = _update_instance(state, inst_with_ip)
-        assert _ssh_url(updated, "i-abc") == "ssh://ubuntu@10.0.0.1"
+        assert _ssh_url(updated, 0) == "ssh://ubuntu@10.0.0.1"
 
     def test_ssh_url_with_custom_port(self) -> None:
         from unittest.mock import MagicMock
@@ -554,7 +578,7 @@ class TestUpdateInstance:
         inst.ssh_port = 2222
 
         state = _State(total_nodes=1, instances=(inst,), ssh_user="root")
-        assert _ssh_url(state, "i-abc") == "ssh://root@10.0.0.1:2222"
+        assert _ssh_url(state, 0) == "ssh://root@10.0.0.1:2222"
 
 
 class TestNodeIdFromPath:
@@ -588,7 +612,7 @@ class TestElasticStateTransitions:
 
         state = _State(
             total_nodes=8, desired_nodes=8, is_elastic=True,
-            nodes=MappingProxyType({f"i-{i}": _NodeStatus.READY for i in range(8)}),
+            nodes=MappingProxyType(dict.fromkeys(range(8), _NodeStatus.READY)),
         )
         new = _on_desired_changed(state, 4)
         assert new.desired_nodes == 4
@@ -641,15 +665,15 @@ class TestElasticStateTransitions:
         state = _State(
             total_nodes=4, draining_nodes=1, reconciler_state="draining",
             nodes=MappingProxyType({
-                "i-0": _NodeStatus.READY, "i-1": _NodeStatus.READY,
-                "i-2": _NodeStatus.READY, "i-3": _NodeStatus.READY,
+                0: _NodeStatus.READY, 1: _NodeStatus.READY,
+                2: _NodeStatus.READY, 3: _NodeStatus.READY,
             }),
         )
-        new = _on_drain_complete(state, "i-3")
+        new = _on_drain_complete(state, 3)
         assert new.draining_nodes == 0
         assert new.reconciler_state == "watching"
         assert new.total_nodes == 3
-        assert "i-3" not in new.nodes
+        assert 3 not in new.nodes
         assert len(new.nodes) == 3
 
     def test_reconciler_node_lost_decrements_pending(self) -> None:
@@ -706,7 +730,7 @@ class TestCollectBadges:
 
         state = _State(
             total_nodes=4, phase=_Phase.READY,
-            nodes=MappingProxyType({f"i-{i}": _NodeStatus.READY for i in range(4)}),
+            nodes=MappingProxyType(dict.fromkeys(range(4), _NodeStatus.READY)),
         )
         plain = self._badges_plain(state)
         assert "ready" in plain
@@ -717,7 +741,7 @@ class TestCollectBadges:
 
         state = _State(
             total_nodes=4, phase=_Phase.READY,
-            nodes=MappingProxyType({f"i-{i}": _NodeStatus.READY for i in range(4)}),
+            nodes=MappingProxyType(dict.fromkeys(range(4), _NodeStatus.READY)),
             reconciler_state="watching",
         )
         plain = self._badges_plain(state)
@@ -730,7 +754,7 @@ class TestCollectBadges:
 
         state = _State(
             total_nodes=4, phase=_Phase.READY,
-            nodes=MappingProxyType({f"i-{i}": _NodeStatus.READY for i in range(3)}),
+            nodes=MappingProxyType(dict.fromkeys(range(3), _NodeStatus.READY)),
             reconciler_state="scaling_up", desired_nodes=4, pending_nodes=1,
         )
         plain = self._badges_plain(state)
@@ -742,7 +766,7 @@ class TestCollectBadges:
 
         state = _State(
             total_nodes=4, phase=_Phase.READY,
-            nodes=MappingProxyType({f"i-{i}": _NodeStatus.READY for i in range(4)}),
+            nodes=MappingProxyType(dict.fromkeys(range(4), _NodeStatus.READY)),
             is_elastic=True, desired_nodes=4, min_nodes=2, max_nodes=10,
             reconciler_state="watching",
         )
@@ -756,7 +780,7 @@ class TestCollectBadges:
 
         state = _State(
             total_nodes=4, phase=_Phase.READY,
-            nodes=MappingProxyType({f"i-{i}": _NodeStatus.READY for i in range(4)}),
+            nodes=MappingProxyType(dict.fromkeys(range(4), _NodeStatus.READY)),
             is_elastic=True, desired_nodes=8, pending_nodes=4,
             min_nodes=2, max_nodes=10, reconciler_state="scaling_up",
         )
@@ -770,7 +794,7 @@ class TestCollectBadges:
 
         state = _State(
             total_nodes=2, phase=_Phase.READY,
-            nodes=MappingProxyType({f"i-{i}": _NodeStatus.READY for i in range(2)}),
+            nodes=MappingProxyType(dict.fromkeys(range(2), _NodeStatus.READY)),
             tasks_queued=5, tasks_running=3, tasks_done=12, tasks_failed=1,
         )
         plain = self._badges_plain(state)
@@ -784,9 +808,9 @@ class TestCollectBadges:
 
         state = _State(
             total_nodes=1, phase=_Phase.READY,
-            nodes=MappingProxyType({"i-abc": _NodeStatus.READY}),
+            nodes=MappingProxyType({0: _NodeStatus.READY}),
             metrics=MappingProxyType({
-                "i-abc": MappingProxyType({
+                0: MappingProxyType({
                     "cpu": 77.0, "mem": 65.0,
                     "gpu_util": 82.0,
                     "gpu_mem_mb": 7200.0,

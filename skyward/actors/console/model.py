@@ -62,11 +62,11 @@ def _insert_phase(phases: tuple[str, ...], new_phase: str) -> tuple[str, ...]:
     return (*phases, new_phase)
 
 
-def _on_timeline_phase_started(state: _State, instance_id: str, phase: str) -> _State:
+def _on_timeline_phase_started(state: _State, node_id: int, phase: str) -> _State:
     started = state.bootstrap_started
-    if instance_id not in started:
-        started = MappingProxyType({**started, instance_id: time.monotonic()})
-    timeline = state.bootstrap_spinners.get(instance_id)
+    if node_id not in started:
+        started = MappingProxyType({**started, node_id: time.monotonic()})
+    timeline = state.bootstrap_spinners.get(node_id)
     if timeline is None:
         phases = _insert_phase(_DEFAULT_PHASES, phase)
         new_tl = _BootstrapTimeline(
@@ -78,50 +78,50 @@ def _on_timeline_phase_started(state: _State, instance_id: str, phase: str) -> _
         new_tl = _BootstrapTimeline(
             phases=phases, completed=completed, active=phase, output="",
         )
-    spinners = MappingProxyType({**state.bootstrap_spinners, instance_id: new_tl})
+    spinners = MappingProxyType({**state.bootstrap_spinners, node_id: new_tl})
     return replace(state, bootstrap_spinners=spinners, bootstrap_started=started)
 
 
-def _on_timeline_phase_completed(state: _State, instance_id: str, phase: str) -> _State:
-    timeline = state.bootstrap_spinners.get(instance_id)
+def _on_timeline_phase_completed(state: _State, node_id: int, phase: str) -> _State:
+    timeline = state.bootstrap_spinners.get(node_id)
     if timeline is None:
         return state
     new_tl = replace(timeline, completed=timeline.completed | {phase})
-    spinners = MappingProxyType({**state.bootstrap_spinners, instance_id: new_tl})
+    spinners = MappingProxyType({**state.bootstrap_spinners, node_id: new_tl})
     return replace(state, bootstrap_spinners=spinners)
 
 
-def _on_timeline_output(state: _State, instance_id: str, output: str) -> _State:
-    timeline = state.bootstrap_spinners.get(instance_id)
+def _on_timeline_output(state: _State, node_id: int, output: str) -> _State:
+    timeline = state.bootstrap_spinners.get(node_id)
     if timeline is None:
         return state
     new_tl = replace(timeline, output=output)
-    spinners = MappingProxyType({**state.bootstrap_spinners, instance_id: new_tl})
+    spinners = MappingProxyType({**state.bootstrap_spinners, node_id: new_tl})
     return replace(state, bootstrap_spinners=spinners)
 
 
-def _on_spinner_remove(state: _State, instance_id: str) -> _State:
-    spinners = MappingProxyType({k: v for k, v in state.bootstrap_spinners.items() if k != instance_id})
-    started = MappingProxyType({k: v for k, v in state.bootstrap_started.items() if k != instance_id})
+def _on_spinner_remove(state: _State, node_id: int) -> _State:
+    spinners = MappingProxyType({k: v for k, v in state.bootstrap_spinners.items() if k != node_id})
+    started = MappingProxyType({k: v for k, v in state.bootstrap_started.items() if k != node_id})
     return replace(state, bootstrap_spinners=spinners, bootstrap_started=started)
 
 
-def _on_ssh_connected(state: _State, instance_id: str) -> _State:
-    nodes = MappingProxyType({**state.nodes, instance_id: _NodeStatus.SSH})
+def _on_ssh_connected(state: _State, node_id: int) -> _State:
+    nodes = MappingProxyType({**state.nodes, node_id: _NodeStatus.SSH})
     ssh_count = sum(1 for s in nodes.values() if s.value >= _NodeStatus.SSH.value)
     phase = _advance(state.phase, _Phase.BOOTSTRAP) if ssh_count >= state.total_nodes else state.phase
     return replace(state, nodes=nodes, phase=phase)
 
 
-def _on_bootstrap_done(state: _State, instance_id: str) -> _State:
-    nodes = MappingProxyType({**state.nodes, instance_id: _NodeStatus.BOOTSTRAPPING})
+def _on_bootstrap_done(state: _State, node_id: int) -> _State:
+    nodes = MappingProxyType({**state.nodes, node_id: _NodeStatus.BOOTSTRAPPING})
     done = sum(1 for s in nodes.values() if s.value >= _NodeStatus.BOOTSTRAPPING.value)
     phase = _advance(state.phase, _Phase.WORKERS) if done >= state.total_nodes else state.phase
     return replace(state, nodes=nodes, phase=phase)
 
 
-def _on_worker_started(state: _State, instance_id: str) -> _State:
-    nodes = MappingProxyType({**state.nodes, instance_id: _NodeStatus.READY})
+def _on_worker_started(state: _State, node_id: int) -> _State:
+    nodes = MappingProxyType({**state.nodes, node_id: _NodeStatus.READY})
     ready = sum(1 for s in nodes.values() if s.value >= _NodeStatus.READY.value)
     phase = _advance(state.phase, _Phase.READY) if ready >= state.total_nodes else state.phase
     ready_at = time.monotonic() if phase == _Phase.READY and not state.ready_at else state.ready_at
@@ -143,13 +143,13 @@ def _on_task_submitted(
     )
 
 
-def _on_task_assigned(state: _State, task_id: str, instance_id: str) -> _State:
+def _on_task_assigned(state: _State, task_id: str, node_id: int) -> _State:
     if task_id not in state.inflight:
         return state
     entry = state.inflight[task_id]
-    already_assigned = bool(entry.instance_id)
-    started = time.monotonic() if not entry.instance_id else entry.started_at
-    updated = replace(entry, instance_id=instance_id, started_at=started)
+    already_assigned = entry.node_id >= 0
+    started = time.monotonic() if entry.node_id < 0 else entry.started_at
+    updated = replace(entry, node_id=node_id, started_at=started)
     return replace(
         state,
         tasks_queued=max(0, state.tasks_queued - 1) if not already_assigned else state.tasks_queued,
@@ -165,16 +165,16 @@ def _on_task_done(state: _State, task_id: str, elapsed: float) -> _State:
     fn_stats[fn_name] = (*fn_stats.get(fn_name, ()), elapsed)
     inflight = dict(state.inflight)
     inflight.pop(task_id, None)
-    per_inst = dict(state.tasks_per_instance)
-    if entry and entry.instance_id:
-        per_inst[entry.instance_id] = per_inst.get(entry.instance_id, 0) + 1
+    per_node = dict(state.tasks_per_node)
+    if entry and entry.node_id >= 0:
+        per_node[entry.node_id] = per_node.get(entry.node_id, 0) + 1
     return replace(
         state, tasks_running=max(0, state.tasks_running - 1),
         tasks_done=state.tasks_done + 1,
         task_latencies=(*state.task_latencies, elapsed),
         inflight=MappingProxyType(inflight),
         task_fn_stats=MappingProxyType(fn_stats),
-        tasks_per_instance=MappingProxyType(per_inst),
+        tasks_per_node=MappingProxyType(per_node),
     )
 
 
@@ -201,11 +201,11 @@ def _on_broadcast_partial(state: _State, task_id: str) -> _State:
     return replace(state, inflight=MappingProxyType({**state.inflight, task_id: updated}))
 
 
-def _on_metric(state: _State, instance_id: str, name: str, value: float) -> _State:
-    inst_metrics = dict(state.metrics.get(instance_id, MappingProxyType({})))
-    inst_metrics[name] = value
+def _on_metric(state: _State, node_id: int, name: str, value: float) -> _State:
+    node_metrics = dict(state.metrics.get(node_id, MappingProxyType({})))
+    node_metrics[name] = value
     new_metrics = MappingProxyType({
-        **state.metrics, instance_id: MappingProxyType(inst_metrics),
+        **state.metrics, node_id: MappingProxyType(node_metrics),
     })
     return replace(state, metrics=new_metrics)
 
@@ -243,18 +243,34 @@ def _on_drain_node(state: _State) -> _State:
     return replace(state, draining_nodes=state.draining_nodes + 1, reconciler_state="draining")
 
 
-def _on_drain_complete(state: _State, instance_id: str = "") -> _State:
+def _on_drain_complete(state: _State, node_id: int = -1) -> _State:
     draining = max(0, state.draining_nodes - 1)
     reconciler = "watching" if draining == 0 else state.reconciler_state
     nodes = state.nodes
-    if instance_id and instance_id in nodes:
-        nodes = MappingProxyType({k: v for k, v in nodes.items() if k != instance_id})
+    if node_id >= 0 and node_id in nodes:
+        nodes = MappingProxyType({k: v for k, v in nodes.items() if k != node_id})
     return replace(
         state,
         draining_nodes=draining,
         reconciler_state=reconciler,
         nodes=nodes,
         total_nodes=max(0, state.total_nodes - 1),
+    )
+
+
+def _on_node_lost(state: _State, node_id: int) -> _State:
+    spinners = MappingProxyType({k: v for k, v in state.bootstrap_spinners.items() if k != node_id})
+    started = MappingProxyType({k: v for k, v in state.bootstrap_started.items() if k != node_id})
+    progress = MappingProxyType({k: v for k, v in state.progress_lines.items() if k != node_id})
+    nodes = MappingProxyType({k: v for k, v in state.nodes.items() if k != node_id})
+    metrics = MappingProxyType({k: v for k, v in state.metrics.items() if k != node_id})
+    return replace(
+        state,
+        bootstrap_spinners=spinners,
+        bootstrap_started=started,
+        progress_lines=progress,
+        nodes=nodes,
+        metrics=metrics,
     )
 
 
