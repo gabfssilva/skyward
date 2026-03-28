@@ -106,10 +106,11 @@ class ComputePool:
     def __init__(
         self, *,
         provider: ProviderConfig,
-        nodes: int | tuple[int, int] = ...,
+        nodes: int | tuple[int, int] | Nodes = ...,
         accelerator: Accelerator | None = ...,
         vcpus: float | None = ...,
         memory_gb: float | None = ...,
+        disk_gb: int | None = ...,
         architecture: Literal["x86_64", "arm64"] | None = ...,
         allocation: Literal["spot", "on-demand", "spot-if-available"] = ...,
         image: Image = ...,
@@ -159,10 +160,11 @@ class ComputePool:
         self,
         *specs: Spec,
         provider: ProviderConfig | None = None,
-        nodes: int | tuple[int, int] = 1,
+        nodes: int | tuple[int, int] | Nodes = 1,
         accelerator: Accelerator | None = None,
         vcpus: float | None = None,
         memory_gb: float | None = None,
+        disk_gb: int | None = None,
         architecture: Literal["x86_64", "arm64"] | None = None,
         allocation: Literal["spot", "on-demand", "spot-if-available"] = "spot-if-available",
         selection: SelectionStrategy = "cheapest",
@@ -196,8 +198,10 @@ class ComputePool:
         else:
             assert provider is not None
             match nodes:
-                case Nodes() as n:
-                    self._scaling = (n.min, n.max) if n.auto_scaling else None
+                case Nodes(max=int(max_n)) as n:
+                    self._scaling = (n.min, max_n)
+                case Nodes():
+                    self._scaling = None
                 case (min_n, max_n):
                     self._scaling = (min_n, max_n)
                 case _:
@@ -208,6 +212,7 @@ class ComputePool:
                 nodes=nodes,
                 vcpus=vcpus,
                 memory_gb=memory_gb,
+                disk_gb=disk_gb,
                 architecture=architecture,
                 allocation=allocation,
                 region=getattr(provider, "region", None),

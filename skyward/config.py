@@ -12,6 +12,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from skyward.api.logging import LogConfig
+    from skyward.api.metrics import MetricsConfig
+    from skyward.api.plugin import Plugin
+    from skyward.api.spec import Nodes, Volume, Worker
     from skyward.core.pool import ComputePool
     from skyward.core.spec import Image
     from skyward.providers.aws.config import AWS
@@ -24,6 +30,7 @@ if TYPE_CHECKING:
     from skyward.providers.vastai.config import VastAI
     from skyward.providers.verda.config import Verda
     from skyward.providers.vultr.config import Vultr
+    from skyward.storage import Storage
 
     type ProviderConfig = AWS | GCP | Hyperstack | JarvisLabs | RunPod | Scaleway | TensorDock | VastAI | Verda | Vultr
 
@@ -115,7 +122,130 @@ def _build_image(raw: RawConfig) -> Image:
     raw = dict(raw)
     if raw_indexes := raw.get("pip_indexes"):
         raw["pip_indexes"] = [PipIndex(**idx) for idx in raw_indexes]
+    if "metrics" in raw:
+        raw["metrics"] = _build_metrics(raw["metrics"])
     return Image(**raw)
+
+
+def _build_worker(raw: RawConfig) -> Worker:
+    from skyward.api.spec import Worker
+
+    return Worker(**raw)
+
+
+def _build_nodes(raw: int | list[int] | RawConfig) -> int | tuple[int, int] | Nodes:
+    from skyward.api.spec import Nodes
+
+    match raw:
+        case int():
+            return raw
+        case [int(min_n), int(max_n)]:
+            return (min_n, max_n)
+        case dict():
+            return Nodes(**raw)
+        case _:
+            raise ValueError(
+                f"Invalid nodes: {raw!r}. "
+                "Expected int, [min, max], or {min, max, desired} table."
+            )
+
+
+def _build_logging(raw: bool | RawConfig) -> LogConfig | bool:
+    match raw:
+        case bool():
+            return raw
+        case dict():
+            from skyward.api.logging import LogConfig
+
+            return LogConfig(**raw)
+        case _:
+            raise ValueError(
+                f"Invalid logging: {raw!r}. Expected true, false, or table."
+            )
+
+
+def _build_metrics(raw: bool | list[RawConfig]) -> MetricsConfig:
+    from skyward.api.metrics import Metric
+
+    match raw:
+        case False:
+            return None
+        case True:
+            from skyward.observability.metrics import Default
+
+            return Default()
+        case list():
+            return tuple(Metric(**m) for m in raw)
+        case _:
+            raise ValueError(
+                f"Invalid metrics: {raw!r}. "
+                "Expected false, true, or array of tables."
+            )
+
+
+def _build_storage(raw: RawConfig) -> Storage:
+    from skyward.storage import Storage
+
+    return Storage(**raw)
+
+
+def _build_volumes(raw_volumes: list[RawConfig]) -> tuple[Volume, ...]:
+    from skyward.core.spec import Volume
+
+    volumes: list[Volume] = []
+    for v in raw_volumes:
+        v = dict(v)
+        if raw_storage := v.get("storage"):
+            v["storage"] = _build_storage(raw_storage)
+        volumes.append(Volume(**v))
+    return tuple(volumes)
+
+
+def _get_plugin_map() -> dict[str, Callable[..., Plugin]]:
+    from skyward.plugins.accelerate import accelerate
+    from skyward.plugins.cuml import cuml
+    from skyward.plugins.jax import jax
+    from skyward.plugins.joblib import joblib
+    from skyward.plugins.keras import keras
+    from skyward.plugins.mig import mig
+    from skyward.plugins.mps import mps
+    from skyward.plugins.sklearn import sklearn
+    from skyward.plugins.torch import torch
+
+    return {
+        "accelerate": accelerate,
+        "torch": torch,
+        "jax": jax,
+        "keras": keras,
+        "cuml": cuml,
+        "joblib": joblib,
+        "sklearn": sklearn,
+        "mig": mig,
+        "mps": mps,
+    }
+
+
+def _build_plugins(raw: RawConfig) -> tuple[Plugin, ...]:
+    plugin_map = _get_plugin_map()
+    plugins: list[Plugin] = []
+    for name, params in raw.items():
+        factory = plugin_map.get(name)
+        if factory is None:
+            valid = ", ".join(sorted(plugin_map))
+            raise ValueError(
+                f"Unknown plugin '{name}'. Valid: {valid}"
+            )
+        match params:
+            case True:
+                plugins.append(factory())
+            case dict():
+                plugins.append(factory(**params))
+            case _:
+                raise ValueError(
+                    f"Invalid config for plugin '{name}': {params!r}. "
+                    "Expected true or a table of parameters."
+                )
+    return tuple(plugins)
 
 
 def _build_pool_from_raw(name: str, raw_pool: RawConfig, config: RawConfig) -> ComputePool:
@@ -140,17 +270,35 @@ def _build_pool_from_raw(name: str, raw_pool: RawConfig, config: RawConfig) -> C
     image = _build_image(raw_image) if raw_image else Image()
 
     raw_volumes = raw_pool.pop("volumes", None)
-    volumes: tuple = ()
-    if raw_volumes:
-        from skyward.core.spec import Volume
+    volumes = _build_volumes(raw_volumes) if raw_volumes else ()
 
-        volumes = tuple(Volume(**v) for v in raw_volumes)
+    raw_worker = raw_pool.pop("worker", None)
+    worker = _build_worker(raw_worker) if raw_worker else None
+
+    raw_nodes = raw_pool.pop("nodes", 1)
+    nodes = _build_nodes(raw_nodes)
+
+    raw_logging = raw_pool.pop("logging", None)
+    logging = _build_logging(raw_logging) if raw_logging is not None else True
+
+    raw_plugins = raw_pool.pop("plugins", None)
+    plugins = _build_plugins(raw_plugins) if raw_plugins else ()
 
     if "accelerator" in raw_pool and isinstance(raw_pool["accelerator"], str):
         from skyward.accelerators import Accelerator
+
         raw_pool["accelerator"] = Accelerator.from_name(raw_pool["accelerator"])
 
-    return ComputePool(provider=provider, image=image, volumes=volumes, **raw_pool)
+    return ComputePool(
+        provider=provider,
+        image=image,
+        volumes=volumes,
+        worker=worker,
+        nodes=nodes,
+        logging=logging,
+        plugins=plugins,
+        **raw_pool,
+    )
 
 
 def resolve_pool(

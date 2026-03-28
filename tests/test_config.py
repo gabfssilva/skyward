@@ -3,7 +3,16 @@ from pathlib import Path
 import pytest
 
 from skyward.accelerators import Accelerator
-from skyward.config import _deep_merge, load_config, resolve_pool
+from skyward.api.logging import LogConfig
+from skyward.api.metrics import Metric
+from skyward.api.spec import Nodes, Worker
+from skyward.config import (
+    _build_nodes,
+    _build_plugins,
+    _deep_merge,
+    load_config,
+    resolve_pool,
+)
 from skyward.core.pool import ComputePool
 from skyward.providers.aws.config import AWS
 from skyward.providers.gcp.config import GCP
@@ -372,3 +381,358 @@ class TestResolvePoolNamed:
         spec = pool._specs[0]
         assert spec.nodes == 2
         assert spec.accelerator == Accelerator.from_name("T4")
+
+
+_PROVIDER_PREAMBLE = '[providers.a]\ntype = "aws"\n\n'
+
+
+class TestBuildNodes:
+    def test_int(self):
+        assert _build_nodes(4) == 4
+
+    def test_list_pair(self):
+        assert _build_nodes([2, 8]) == (2, 8)
+
+    def test_dict_full(self):
+        result = _build_nodes({"min": 4, "desired": 2, "max": 16})
+        assert isinstance(result, Nodes)
+        assert result.min == 4
+        assert result.desired == 2
+        assert result.max == 16
+
+    def test_dict_min_only(self):
+        result = _build_nodes({"min": 8})
+        assert isinstance(result, Nodes)
+        assert result.min == 8
+        assert result.max is None
+        assert result.desired is None
+
+    def test_invalid_raises(self):
+        with pytest.raises(ValueError, match="Invalid nodes"):
+            _build_nodes("bad")  # type: ignore[arg-type]
+
+
+class TestBuildPlugins:
+    def test_torch_defaults(self):
+        plugins = _build_plugins({"torch": True})
+        assert len(plugins) == 1
+        assert plugins[0].name == "torch"
+
+    def test_torch_with_params(self):
+        plugins = _build_plugins({"torch": {"backend": "nccl", "cuda": "cu121"}})
+        assert len(plugins) == 1
+        assert plugins[0].name == "torch"
+
+    def test_multiple_plugins(self):
+        plugins = _build_plugins({"torch": True, "keras": {"backend": "torch"}})
+        assert len(plugins) == 2
+        names = {p.name for p in plugins}
+        assert names == {"torch", "keras"}
+
+    def test_unknown_plugin_raises(self):
+        with pytest.raises(ValueError, match="Unknown plugin 'nonexistent'"):
+            _build_plugins({"nonexistent": True})
+
+    def test_invalid_params_raises(self):
+        with pytest.raises(ValueError, match="Invalid config for plugin"):
+            _build_plugins({"torch": 42})
+
+
+class TestResolvePoolWithWorker:
+    def test_worker_from_toml(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            _PROVIDER_PREAMBLE +
+            '[pools.ml]\n'
+            'provider = "a"\n'
+            'nodes = 1\n'
+            '\n'
+            '[pools.ml.worker]\n'
+            'concurrency = 4\n'
+            'executor = "process"\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        assert pool.worker.concurrency == 4
+        assert pool.worker.resolved_executor == "process"
+
+    def test_worker_default(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            _PROVIDER_PREAMBLE +
+            '[pools.ml]\nprovider = "a"\nnodes = 1\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        assert isinstance(pool.worker, Worker)
+        assert pool.worker.concurrency == 1
+
+
+class TestResolvePoolWithNodes:
+    def test_nodes_int(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            _PROVIDER_PREAMBLE +
+            '[pools.ml]\nprovider = "a"\nnodes = 4\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        assert pool._specs[0].nodes == 4
+
+    def test_nodes_tuple(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            _PROVIDER_PREAMBLE +
+            '[pools.ml]\nprovider = "a"\nnodes = [2, 8]\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        assert pool._specs[0].nodes == (2, 8)
+
+    def test_nodes_table(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            _PROVIDER_PREAMBLE +
+            '[pools.ml]\n'
+            'provider = "a"\n'
+            '\n'
+            '[pools.ml.nodes]\n'
+            'min = 4\n'
+            'desired = 2\n'
+            'max = 16\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        nodes = pool._specs[0].nodes
+        assert isinstance(nodes, Nodes)
+        assert nodes.min == 4
+        assert nodes.desired == 2
+        assert nodes.max == 16
+
+    def test_nodes_table_min_only(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            _PROVIDER_PREAMBLE +
+            '[pools.ml]\n'
+            'provider = "a"\n'
+            '\n'
+            '[pools.ml.nodes]\n'
+            'min = 8\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        nodes = pool._specs[0].nodes
+        assert isinstance(nodes, Nodes)
+        assert nodes.min == 8
+
+
+class TestResolvePoolWithLogging:
+    def test_logging_true(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            _PROVIDER_PREAMBLE +
+            '[pools.ml]\nprovider = "a"\nnodes = 1\nlogging = true\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        assert pool.logging is True
+
+    def test_logging_false(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            _PROVIDER_PREAMBLE +
+            '[pools.ml]\nprovider = "a"\nnodes = 1\nlogging = false\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        assert pool.logging is False
+
+    def test_logging_table(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            _PROVIDER_PREAMBLE +
+            '[pools.ml]\n'
+            'provider = "a"\n'
+            'nodes = 1\n'
+            '\n'
+            '[pools.ml.logging]\n'
+            'level = "DEBUG"\n'
+            'rotation = "100 MB"\n'
+            'retention = 5\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        assert isinstance(pool.logging, LogConfig)
+        assert pool.logging.level == "DEBUG"
+        assert pool.logging.rotation == "100 MB"
+        assert pool.logging.retention == 5
+
+    def test_logging_default(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            _PROVIDER_PREAMBLE +
+            '[pools.ml]\nprovider = "a"\nnodes = 1\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        assert pool.logging is True
+
+
+class TestResolvePoolWithPlugins:
+    def test_torch_plugin(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            _PROVIDER_PREAMBLE +
+            '[pools.ml]\n'
+            'provider = "a"\n'
+            'nodes = 1\n'
+            '\n'
+            '[pools.ml.plugins.torch]\n'
+            'backend = "nccl"\n'
+            'cuda = "cu121"\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        assert len(pool._plugins) == 1
+        assert pool._plugins[0].name == "torch"
+
+    def test_torch_defaults(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            _PROVIDER_PREAMBLE +
+            '[pools.ml]\n'
+            'provider = "a"\n'
+            'nodes = 1\n'
+            '\n'
+            '[pools.ml.plugins]\n'
+            'torch = true\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        assert len(pool._plugins) == 1
+        assert pool._plugins[0].name == "torch"
+
+    def test_multiple_plugins(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            _PROVIDER_PREAMBLE +
+            '[pools.ml]\n'
+            'provider = "a"\n'
+            'nodes = 1\n'
+            '\n'
+            '[pools.ml.plugins]\n'
+            'jax = true\n'
+            '\n'
+            '[pools.ml.plugins.keras]\n'
+            'backend = "jax"\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        assert len(pool._plugins) == 2
+        names = {p.name for p in pool._plugins}
+        assert names == {"jax", "keras"}
+
+    def test_mig_plugin(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            _PROVIDER_PREAMBLE +
+            '[pools.ml]\n'
+            'provider = "a"\n'
+            'nodes = 1\n'
+            '\n'
+            '[pools.ml.plugins.mig]\n'
+            'profile = "3g.40gb"\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        assert len(pool._plugins) == 1
+        assert pool._plugins[0].name == "mig"
+
+    def test_unknown_plugin_raises(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            _PROVIDER_PREAMBLE +
+            '[pools.ml]\n'
+            'provider = "a"\n'
+            'nodes = 1\n'
+            '\n'
+            '[pools.ml.plugins]\n'
+            'nonexistent = true\n'
+        )
+        with pytest.raises(ValueError, match="Unknown plugin 'nonexistent'"):
+            resolve_pool("ml", project_dir=tmp_path)
+
+    def test_no_plugins_default(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            _PROVIDER_PREAMBLE +
+            '[pools.ml]\nprovider = "a"\nnodes = 1\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        assert pool._plugins == ()
+
+
+class TestResolvePoolWithMetrics:
+    def test_metrics_disabled(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            _PROVIDER_PREAMBLE +
+            '[pools.ml]\n'
+            'provider = "a"\n'
+            'nodes = 1\n'
+            '\n'
+            '[pools.ml.image]\n'
+            'metrics = false\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        assert pool.image.metrics is None
+
+    def test_metrics_custom(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            _PROVIDER_PREAMBLE +
+            '[pools.ml]\n'
+            'provider = "a"\n'
+            'nodes = 1\n'
+            '\n'
+            '[[pools.ml.image.metrics]]\n'
+            'name = "gpu_util"\n'
+            'command = "nvidia-smi"\n'
+            'interval = 5\n'
+            'multi = true\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        assert len(pool.image.metrics) == 1
+        m = pool.image.metrics[0]
+        assert isinstance(m, Metric)
+        assert m.name == "gpu_util"
+        assert m.command == "nvidia-smi"
+        assert m.interval == 5
+        assert m.multi is True
+
+    def test_metrics_default(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            _PROVIDER_PREAMBLE +
+            '[pools.ml]\nprovider = "a"\nnodes = 1\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        assert pool.image.metrics is not None
+        assert len(pool.image.metrics) > 0
+
+
+class TestResolvePoolWithStorage:
+    def test_volume_with_storage(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            _PROVIDER_PREAMBLE +
+            '[pools.ml]\n'
+            'provider = "a"\n'
+            'nodes = 1\n'
+            '\n'
+            '[[pools.ml.volumes]]\n'
+            'bucket = "my-data"\n'
+            'mount = "/data"\n'
+            '\n'
+            '[pools.ml.volumes.storage]\n'
+            'endpoint = "https://s3.us-west-2.amazonaws.com"\n'
+            'access_key = "AKIATEST"\n'
+            'secret_key = "secret123"\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        assert len(pool.volumes) == 1
+        assert pool.volumes[0].storage is not None
+        assert pool.volumes[0].storage.endpoint == "https://s3.us-west-2.amazonaws.com"
+        assert pool.volumes[0].storage.access_key == "AKIATEST"
+        assert pool.volumes[0].storage.secret_key == "secret123"
+
+    def test_volume_without_storage(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            _PROVIDER_PREAMBLE +
+            '[[pools.ml.volumes]]\n'
+            'bucket = "my-data"\n'
+            'mount = "/data"\n'
+            '\n'
+            '[pools.ml]\nprovider = "a"\nnodes = 1\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        assert pool.volumes[0].storage is None
+
+
+class TestResolvePoolWithDiskGb:
+    def test_disk_gb_from_toml(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            _PROVIDER_PREAMBLE +
+            '[pools.ml]\n'
+            'provider = "a"\n'
+            'nodes = 1\n'
+            'disk_gb = 200\n'
+        )
+        pool = resolve_pool("ml", project_dir=tmp_path)
+        assert pool._specs[0].disk_gb == 200
