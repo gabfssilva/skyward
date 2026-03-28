@@ -7,6 +7,7 @@ merges them, and resolves named pools into ComputePool instances.
 from __future__ import annotations
 
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -115,22 +116,11 @@ def _build_image(raw: RawConfig) -> Image:
     return Image(**raw)
 
 
-def resolve_pool(
-    name: str,
-    *,
-    project_dir: Path | None = None,
-    global_path: Path | None = None,
-) -> ComputePool:
+def _build_pool_from_raw(name: str, raw_pool: RawConfig, config: RawConfig) -> ComputePool:
     from skyward.core.pool import ComputePool
     from skyward.core.spec import Image
 
-    config = load_config(project_dir=project_dir, global_path=global_path)
-
-    pools = config["pools"]
-    if name not in pools:
-        raise KeyError(f"Pool '{name}' not found. Available: {', '.join(pools) or 'none'}")
-
-    raw_pool = dict(pools[name])
+    raw_pool = dict(raw_pool)
 
     provider_ref = raw_pool.pop("provider", None)
     if provider_ref is None:
@@ -159,3 +149,45 @@ def resolve_pool(
         raw_pool["accelerator"] = Accelerator.from_name(raw_pool["accelerator"])
 
     return ComputePool(provider=provider, image=image, volumes=volumes, **raw_pool)
+
+
+def resolve_pool(
+    name: str,
+    *,
+    project_dir: Path | None = None,
+    global_path: Path | None = None,
+) -> ComputePool:
+    config = load_config(project_dir=project_dir, global_path=global_path)
+
+    pools = config["pools"]
+    if name not in pools:
+        raise KeyError(f"Pool '{name}' not found. Available: {', '.join(pools) or 'none'}")
+
+    return _build_pool_from_raw(name, dict(pools[name]), config)
+
+
+@dataclass(frozen=True, slots=True)
+class PoolResolution:
+    """Result of resolving a named pool from TOML."""
+    pool: ComputePool
+    daemon: bool = False
+
+
+def resolve_pool_config(
+    name: str,
+    *,
+    project_dir: Path | None = None,
+    global_path: Path | None = None,
+) -> PoolResolution:
+    """Resolve a named pool, extracting the daemon flag."""
+    config = load_config(project_dir=project_dir, global_path=global_path)
+
+    pools = config["pools"]
+    if name not in pools:
+        raise KeyError(f"Pool '{name}' not found. Available: {', '.join(pools) or 'none'}")
+
+    raw_pool = dict(pools[name])
+    daemon = raw_pool.pop("daemon", False)
+
+    pool = _build_pool_from_raw(name, raw_pool, config)
+    return PoolResolution(pool=pool, daemon=daemon)
