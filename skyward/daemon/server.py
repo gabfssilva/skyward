@@ -74,9 +74,13 @@ class DaemonServer:
         self._ttl_tasks: dict[str, asyncio.Task[None]] = {}  # name -> TTL timer
         self._pool_ttls: dict[str, int] = {}  # name -> TTL seconds
         self._session: Any = None
-        self._journal = journal or SqliteJournal(str(_STATE_DIR / "daemon.db"))
+        if journal is None:
+            _STATE_DIR.mkdir(parents=True, exist_ok=True)
+            journal = SqliteJournal(str(_STATE_DIR / "daemon.db"))
+        self._journal = journal
         self._state_ref: ActorRef | None = None
         self._actor_system: ActorSystem | None = None
+        self._stop: asyncio.Event | None = None
 
     async def __aenter__(self) -> DaemonServer:
         from .state import daemon_state_actor
@@ -89,6 +93,8 @@ class DaemonServer:
         self._state_ref = self._actor_system.spawn(
             daemon_state_actor("daemon-state", self._journal), "daemon-state",
         )
+
+        await self._run_recovery()
 
         self._server = await asyncio.start_unix_server(
             self._handle_client, path=str(self._socket_path),
@@ -198,17 +204,28 @@ class DaemonServer:
             self._pools[name] = pool
 
             from .state import RegisterPool
+
+            instance_ids = tuple(
+                ni.instance.id for ni in pool._instances.values()
+            )
             await self._actor_system.ask(
                 self._state_ref,
                 lambda r: RegisterPool(
                     pool_name=name,
                     cluster_id=pool._cluster_id,
-                    instance_ids=tuple(pool._instance_ids),
+                    instance_ids=instance_ids,
                     project_dir=project_dir or str(Path.cwd()),
+                    provider_name=pool._spec.provider or "",
+                    cluster_bytes=cloudpickle.dumps(pool._cluster),
+                    spec_bytes=cloudpickle.dumps(pool._spec),
+                    provider_config_bytes=cloudpickle.dumps(
+                        pool._specs[0].provider,
+                    ),
                     reply_to=r,
                 ),
                 timeout=5.0,
             )
+            self._start_ttl(name)
             await self._register_client(name, client_id)
             return PoolReady(pool_name=name, node_count=pool.current_nodes())
         except Exception as e:
@@ -229,7 +246,7 @@ class DaemonServer:
             self._session.__enter__()
 
         pool.__enter__()
-        self._pool_ttls[name] = pool._specs[0].ttl
+        self._pool_ttls[name] = resolution.ttl
         return pool
 
     # -- Task dispatch (async, no deadlock) --------------------------------
@@ -287,12 +304,11 @@ class DaemonServer:
             lambda r: AddClient(pool_name=pool_name, client_id=client_id, reply_to=r),
             timeout=5.0,
         )
-        self._cancel_ttl(pool_name)
         log.info("Client {cid} joined pool {pool}", cid=client_id, pool=pool_name)
 
     async def _unregister_client(self, pool_name: str, client_id: str) -> None:
         assert self._actor_system is not None and self._state_ref is not None
-        from .state import GetState, RemoveClient
+        from .state import RemoveClient
         await self._actor_system.ask(
             self._state_ref,
             lambda r: RemoveClient(pool_name=pool_name, client_id=client_id, reply_to=r),
@@ -300,13 +316,7 @@ class DaemonServer:
         )
         log.info("Client {cid} left pool {pool}", cid=client_id, pool=pool_name)
 
-        state = await self._actor_system.ask(
-            self._state_ref, lambda r: GetState(reply_to=r), timeout=5.0,
-        )
-        if pool_name in state.pools and not state.pools[pool_name].clients:
-            self._start_ttl(pool_name)
-
-    # -- TTL management (idle-based) ---------------------------------------
+    # -- TTL management (hard lifetime) ------------------------------------
 
     def _start_ttl(self, name: str) -> None:
         if name not in self._pools:
@@ -314,26 +324,232 @@ class DaemonServer:
         ttl = self._pool_ttls.get(name, 1200)
         self._cancel_ttl(name)
         self._ttl_tasks[name] = asyncio.create_task(self._ttl_expire(name, ttl))
-        log.info("Pool {name} idle TTL started: {ttl}s", name=name, ttl=ttl)
+        log.info("Pool {name} TTL started: {ttl}s", name=name, ttl=ttl)
 
     def _cancel_ttl(self, name: str) -> None:
         if task := self._ttl_tasks.pop(name, None):
             task.cancel()
-            log.info("Pool {name} TTL cancelled (client reconnected)", name=name)
 
     async def _ttl_expire(self, name: str, ttl: int) -> None:
         await asyncio.sleep(ttl)
-        log.info("Pool {name} TTL expired, tearing down", name=name)
+        log.info("Pool {name} TTL expired, tearing down", name=name, ttl=ttl)
+        self._ttl_tasks.pop(name, None)
         await self._teardown_pool(name)
+        if not self._pools and self._stop is not None:
+            self._stop.set()
 
     async def _teardown_pool(self, name: str) -> None:
         self._cancel_ttl(name)
         if pool := self._pools.pop(name, None):
             try:
-                pool.__exit__(None, None, None)
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, pool.__exit__, None, None, None)
             except Exception as e:
                 log.warning("Error tearing down pool {name}: {err}", name=name, err=e)
         self._pool_ttls.pop(name, None)
+        if self._actor_system is not None and self._state_ref is not None:
+            from .state import RemovePool
+
+            await self._actor_system.ask(
+                self._state_ref,
+                lambda r: RemovePool(pool_name=name, reply_to=r),
+                timeout=5.0,
+            )
+
+    # -- Crash recovery -----------------------------------------------------
+
+    async def _run_recovery(self) -> None:
+        """Replay journal and attempt to reconnect pools from previous run."""
+        assert self._actor_system is not None and self._state_ref is not None
+        from .state import GetState
+
+        state = await self._actor_system.ask(
+            self._state_ref, lambda r: GetState(reply_to=r), timeout=5.0,
+        )
+        if not state.pools:
+            return
+
+        log.info("Recovery: found {n} pools in journal", n=len(state.pools))
+
+        for name, entry in state.pools.items():
+            try:
+                recovered = await self._recover_pool(name, entry)
+                if recovered:
+                    log.info("Pool {name} recovered successfully", name=name)
+                else:
+                    log.warning("Pool {name} could not be recovered", name=name)
+            except Exception as e:
+                log.warning(
+                    "Pool {name} recovery error: {err}", name=name, err=e,
+                )
+
+        from .state import RemoveClient
+
+        state = await self._actor_system.ask(
+            self._state_ref, lambda r: GetState(reply_to=r), timeout=5.0,
+        )
+        for name, entry in state.pools.items():
+            for stale_cid in entry.clients:
+                await self._actor_system.ask(
+                    self._state_ref,
+                    lambda r, c=stale_cid, n=name: RemoveClient(
+                        pool_name=n, client_id=c, reply_to=r,
+                    ),
+                    timeout=5.0,
+                )
+
+    async def _recover_pool(self, name: str, entry: Any) -> bool:
+        """Verify instances and reconnect a pool from journal state."""
+        assert self._actor_system is not None and self._state_ref is not None
+
+        if not entry.cluster_bytes or not entry.spec_bytes:
+            log.info(
+                "Pool {name}: no recovery data in journal (legacy entry), skipping",
+                name=name,
+            )
+            return False
+
+        try:
+            cluster = cloudpickle.loads(entry.cluster_bytes)
+            spec = cloudpickle.loads(entry.spec_bytes)
+            provider_config = cloudpickle.loads(entry.provider_config_bytes)
+        except Exception as e:
+            log.warning(
+                "Pool {name}: deserialization failed ({err}), skipping",
+                name=name, err=e,
+            )
+            return False
+
+        if not Path(cluster.ssh_key_path).exists():
+            log.warning(
+                "Pool {name}: SSH key missing at {path}, "
+                "cannot reconnect -- terminating instances",
+                name=name, path=cluster.ssh_key_path,
+            )
+            provider = await self._create_provider(provider_config)
+            await self._terminate_and_cleanup(name, provider, cluster, entry.instance_ids)
+            return False
+
+        provider = await self._create_provider(provider_config)
+        alive: list[Any] = []
+        dead: list[str] = []
+
+        for iid in entry.instance_ids:
+            try:
+                cluster, instance = await provider.get_instance(cluster, iid)
+            except Exception as e:
+                log.warning(
+                    "Pool {name}: get_instance({iid}) failed: {err}",
+                    name=name, iid=iid, err=e,
+                )
+                dead.append(iid)
+                continue
+
+            if instance is None or getattr(instance, "status", None) == "exited":
+                dead.append(iid)
+                log.info("Pool {name}: instance {iid} is gone", name=name, iid=iid)
+            else:
+                alive.append(instance)
+                log.info(
+                    "Pool {name}: instance {iid} alive (status={status})",
+                    name=name, iid=iid, status=instance.status,
+                )
+
+        if len(alive) < spec.nodes.min:
+            log.warning(
+                "Pool {name}: only {alive}/{min} instances alive, "
+                "terminating survivors",
+                name=name, alive=len(alive), min=spec.nodes.min,
+            )
+            alive_ids = tuple(inst.id for inst in alive)
+            await self._terminate_and_cleanup(name, provider, cluster, alive_ids)
+            return False
+
+        log.info(
+            "Pool {name}: {alive}/{total} instances alive, recovering",
+            name=name, alive=len(alive), total=len(entry.instance_ids),
+        )
+
+        pool = await self._recover_pool_via_session(
+            name, spec, provider, cluster, tuple(alive),
+        )
+        self._pools[name] = pool
+        self._pool_ttls[name] = spec.ttl
+
+        if dead:
+            from .state import RegisterPool
+
+            alive_ids = tuple(inst.id for inst in alive)
+            await self._actor_system.ask(
+                self._state_ref,
+                lambda r: RegisterPool(
+                    pool_name=name,
+                    cluster_id=cluster.id,
+                    instance_ids=alive_ids,
+                    project_dir=entry.project_dir,
+                    provider_name=entry.provider_name,
+                    cluster_bytes=cloudpickle.dumps(cluster),
+                    spec_bytes=entry.spec_bytes,
+                    provider_config_bytes=entry.provider_config_bytes,
+                    reply_to=r,
+                ),
+                timeout=5.0,
+            )
+
+        self._start_ttl(name)
+        return True
+
+    async def _create_provider(self, provider_config: Any) -> Any:
+        """Instantiate a provider from a persisted config."""
+        return await provider_config.create_provider()
+
+    async def _recover_pool_via_session(
+        self,
+        name: str,
+        spec: Any,
+        provider: Any,
+        cluster: Any,
+        instances: tuple[Any, ...],
+    ) -> Any:
+        """Bridge to Session to create a recovered ComputePool.
+
+        Uses RecoverExistingPool instead of SpawnPool to skip
+        prepare()/provision() and jump to node-spawning.
+        """
+        if self._session is None:
+            from skyward.core.session import Session
+            self._session = Session(console=False, logging=True)
+            self._session.__enter__()
+
+        return self._session.recover_pool(
+            name=name, spec=spec, provider=provider,
+            cluster=cluster, instances=instances,
+        )
+
+    async def _terminate_and_cleanup(
+        self,
+        name: str,
+        provider: Any,
+        cluster: Any,
+        instance_ids: tuple[str, ...],
+    ) -> None:
+        """Terminate instances and remove pool from journal."""
+        assert self._actor_system is not None and self._state_ref is not None
+        from contextlib import suppress
+
+        from .state import RemovePool
+
+        if instance_ids:
+            with suppress(Exception):
+                await provider.terminate(cluster, instance_ids)
+        with suppress(Exception):
+            await provider.teardown(cluster)
+
+        await self._actor_system.ask(
+            self._state_ref,
+            lambda r: RemovePool(pool_name=name, reply_to=r),
+            timeout=5.0,
+        )
 
     async def serve_forever(self) -> None:
         assert self._server is not None

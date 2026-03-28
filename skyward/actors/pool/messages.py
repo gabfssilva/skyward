@@ -66,6 +66,20 @@ class InstancesProvisioned:
 
 
 @dataclass(frozen=True, slots=True)
+class RecoverPool:
+    """Recover a pool from pre-existing instances (crash recovery).
+
+    Skips prepare() and provision() -- goes directly to spawning
+    node actors with already-provisioned instances.
+    """
+    spec: PoolSpec
+    provider: Any
+    cluster: Cluster[Any]
+    instances: tuple[Instance, ...]
+    reply_to: ActorRef[PoolStarted | ProvisionFailed]
+
+
+@dataclass(frozen=True, slots=True)
 class _ShutdownDone:
     pass
 
@@ -73,6 +87,7 @@ class _ShutdownDone:
 type PoolMsg = (
     StartPool
     | StopPool
+    | RecoverPool
     | PoolStarted
     | ProvisionFailed
     | HeadAddressKnown

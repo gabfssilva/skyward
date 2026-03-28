@@ -21,6 +21,10 @@ class PoolEntry:
     instance_ids: tuple[str, ...]
     project_dir: str
     clients: frozenset[str] = frozenset()
+    provider_name: str = ""
+    cluster_bytes: bytes = b""
+    spec_bytes: bytes = b""
+    provider_config_bytes: bytes = b""
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +43,10 @@ class PoolRegistered:
     cluster_id: str
     instance_ids: tuple[str, ...]
     project_dir: str
+    provider_name: str = ""
+    cluster_bytes: bytes = b""
+    spec_bytes: bytes = b""
+    provider_config_bytes: bytes = b""
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +78,10 @@ class RegisterPool:
     instance_ids: tuple[str, ...]
     project_dir: str
     reply_to: ActorRef[Any]
+    provider_name: str = ""
+    cluster_bytes: bytes = b""
+    spec_bytes: bytes = b""
+    provider_config_bytes: bytes = b""
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,8 +117,16 @@ type DaemonCommand = RegisterPool | RemovePool | AddClient | RemoveClient | GetS
 def apply_event(state: DaemonState, event: DaemonEvent) -> DaemonState:
     """Apply one event to derive new state. Pure, synchronous."""
     match event:
-        case PoolRegistered(pool_name=name, cluster_id=cid, instance_ids=iids, project_dir=pd):
-            entry = PoolEntry(cluster_id=cid, instance_ids=iids, project_dir=pd)
+        case PoolRegistered(
+            pool_name=name, cluster_id=cid, instance_ids=iids,
+            project_dir=pd, provider_name=pn, cluster_bytes=cb,
+            spec_bytes=sb, provider_config_bytes=pcb,
+        ):
+            entry = PoolEntry(
+                cluster_id=cid, instance_ids=iids, project_dir=pd,
+                provider_name=pn, cluster_bytes=cb, spec_bytes=sb,
+                provider_config_bytes=pcb,
+            )
             return DaemonState(pools=MappingProxyType({**state.pools, name: entry}))
 
         case PoolRemoved(pool_name=name):
@@ -137,10 +157,18 @@ async def _on_command(
 ) -> Any:
     """Decide which events to persist based on commands."""
     match cmd:
-        case RegisterPool(pool_name=name, cluster_id=cid, instance_ids=iids, project_dir=pd, reply_to=r):
+        case RegisterPool(
+            pool_name=name, cluster_id=cid, instance_ids=iids,
+            project_dir=pd, reply_to=r, provider_name=pn,
+            cluster_bytes=cb, spec_bytes=sb, provider_config_bytes=pcb,
+        ):
             r.tell(True)
             return Behaviors.persisted(events=[
-                PoolRegistered(pool_name=name, cluster_id=cid, instance_ids=iids, project_dir=pd),
+                PoolRegistered(
+                    pool_name=name, cluster_id=cid, instance_ids=iids,
+                    project_dir=pd, provider_name=pn, cluster_bytes=cb,
+                    spec_bytes=sb, provider_config_bytes=pcb,
+                ),
             ])
 
         case RemovePool(pool_name=name, reply_to=r):

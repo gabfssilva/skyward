@@ -46,6 +46,7 @@ from .messages import (
     PoolStarted,
     PoolStopped,
     ProvisionFailed,
+    RecoverPool,
     StartPool,
     StopPool,
     _ShutdownDone,
@@ -216,6 +217,54 @@ def pool_actor(
                         pool_started_at=time.monotonic(),
                     )
                     return requesting(s)
+
+                case RecoverPool(
+                    spec=spec, provider=provider, cluster=cluster,
+                    instances=instances, reply_to=reply_to,
+                ):
+                    logger.bind(actor="pool").info(
+                        "RecoverPool: recovering {n} instances for cluster {cid}",
+                        n=len(instances), cid=cluster.id,
+                    )
+                    if not instances:
+                        reply_to.tell(ProvisionFailed(reason="No alive instances to recover"))
+                        return Behaviors.stopped()
+
+                    from skyward.infra.tls import ensure_ca, issue_client_config
+
+                    ca = ensure_ca()
+                    client_tls = issue_client_config(ca)
+
+                    new_refs: MappingProxyType[int, ActorRef] = MappingProxyType({})
+                    for instance in instances:
+                        nid = len(new_refs)
+                        ref = ctx.spawn(
+                            node_actor(
+                                node_id=nid, pool=ctx.self,
+                                ssh_timeout=spec.ssh_timeout,
+                                ssh_retry_interval=spec.ssh_retry_interval,
+                                poll_timeout=spec.provision_timeout,
+                                bootstrap_timeout=spec.bootstrap_timeout,
+                                ca=ca,
+                            ),
+                            f"node-{nid}",
+                        )
+                        ref.tell(Provision(
+                            cluster=cluster, provider=provider, instance=instance,
+                        ))
+                        new_refs = MappingProxyType({**new_refs, nid: ref})
+
+                    tm_ref = ctx.spawn(task_manager_actor(), "task-manager")
+
+                    _notify_session("provisioning", 0, len(instances))
+                    return provisioning(PoolState(
+                        spec=spec, provider=provider, reply_to=reply_to,
+                        ca=ca, client_tls=client_tls,
+                        pool_started_at=time.monotonic(),
+                        cluster=cluster, cluster_id=cluster.id,
+                        node_refs=new_refs, tm_ref=tm_ref,
+                    ))
+
             return Behaviors.same()
         return Behaviors.receive(receive)
 

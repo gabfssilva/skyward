@@ -60,6 +60,37 @@ class TestDaemonStateEvents:
         assert "abc" not in state.pools["train"].clients
 
 
+    def test_apply_pool_registered_with_recovery_data(self) -> None:
+        state = DaemonState()
+        event = PoolRegistered(
+            pool_name="train",
+            cluster_id="c-123",
+            instance_ids=("i-1", "i-2"),
+            project_dir="/home/user/project",
+            provider_name="aws",
+            cluster_bytes=b"pickled-cluster",
+            spec_bytes=b"pickled-spec",
+            provider_config_bytes=b"pickled-config",
+        )
+        new = apply_event(state, event)
+        entry = new.pools["train"]
+        assert entry.provider_name == "aws"
+        assert entry.cluster_bytes == b"pickled-cluster"
+        assert entry.spec_bytes == b"pickled-spec"
+        assert entry.provider_config_bytes == b"pickled-config"
+
+    def test_pool_registered_recovery_fields_default_empty(self) -> None:
+        """Backwards compatibility: old events without recovery fields."""
+        event = PoolRegistered(
+            pool_name="train",
+            cluster_id="c-1",
+            instance_ids=("i-1",),
+            project_dir="/tmp",
+        )
+        assert event.provider_name == ""
+        assert event.cluster_bytes == b""
+
+
 class TestDaemonStateActor:
     @pytest.mark.asyncio
     async def test_register_and_query(self) -> None:

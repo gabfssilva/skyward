@@ -67,6 +67,7 @@ def load_config(
 
 def _get_provider_map() -> dict[str, type]:
     from skyward.providers.aws.config import AWS
+    from skyward.providers.container.config import Container
     from skyward.providers.gcp.config import GCP
     from skyward.providers.hyperstack.config import Hyperstack
     from skyward.providers.jarvislabs.config import JarvisLabs
@@ -79,6 +80,7 @@ def _get_provider_map() -> dict[str, type]:
 
     return {
         "aws": AWS,
+        "container": Container,
         "gcp": GCP,
         "hyperstack": Hyperstack,
         "jarvislabs": JarvisLabs,
@@ -171,6 +173,7 @@ class PoolResolution:
     """Result of resolving a named pool from TOML."""
     pool: ComputePool
     daemon: bool = False
+    ttl: int = 1200
 
 
 def resolve_pool_config(
@@ -188,6 +191,7 @@ def resolve_pool_config(
 
     raw_pool = dict(pools[name])
     daemon = raw_pool.pop("daemon", False)
+    ttl = raw_pool.pop("ttl", 1200)
 
     pool = _build_pool_from_raw(name, raw_pool, config)
-    return PoolResolution(pool=pool, daemon=daemon)
+    return PoolResolution(pool=pool, daemon=daemon, ttl=ttl)

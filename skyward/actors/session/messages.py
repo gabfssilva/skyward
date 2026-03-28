@@ -9,7 +9,7 @@ from skyward.actors.pool.messages import PoolMsg
 from skyward.actors.snapshot import PoolSnapshot
 
 if TYPE_CHECKING:
-    from skyward.core.model import Cluster, Offer
+    from skyward.core.model import Cluster, Instance, Offer
     from skyward.core.provider import ProviderConfig
     from skyward.core.spec import PoolSpec
 
@@ -101,8 +101,20 @@ class _PoolFailed:
     reason: str
 
 
+@dataclass(frozen=True, slots=True)
+class RecoverExistingPool:
+    """Recover a pool from pre-existing instances (daemon crash recovery)."""
+    name: str
+    spec: PoolSpec
+    provider: Any
+    cluster: Cluster[Any]
+    instances: tuple[Instance, ...]
+    reply_to: ActorRef[PoolSpawned | PoolSpawnFailed]
+
+
 type SessionMsg = (
     SpawnPool
+    | RecoverExistingPool
     | StopSession
     | PoolStateChanged
     | GetSessionSnapshot

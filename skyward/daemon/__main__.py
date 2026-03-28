@@ -10,11 +10,11 @@ def main() -> None:
     async def _run() -> None:
         server = DaemonServer()
         async with server:
-            stop = asyncio.Event()
+            server._stop = asyncio.Event()
             loop = asyncio.get_running_loop()
             for sig in (signal.SIGTERM, signal.SIGINT):
-                loop.add_signal_handler(sig, stop.set)
-            await stop.wait()
+                loop.add_signal_handler(sig, server._stop.set)
+            await server._stop.wait()
 
     asyncio.run(_run())
 

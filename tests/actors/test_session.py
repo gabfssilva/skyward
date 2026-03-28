@@ -273,6 +273,7 @@ class TestSessionMsgTypeAlias:
         from skyward.actors.session.messages import (
             GetSessionSnapshot,
             PoolStateChanged,
+            RecoverExistingPool,
             SessionMsg,
             SpawnPool,
             StopSession,
@@ -284,6 +285,7 @@ class TestSessionMsgTypeAlias:
         args = set(get_args(SessionMsg.__value__))
         expected = {
             SpawnPool,
+            RecoverExistingPool,
             StopSession,
             PoolStateChanged,
             GetSessionSnapshot,

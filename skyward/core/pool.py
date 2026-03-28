@@ -25,6 +25,7 @@ import asyncio
 import queue
 from collections.abc import Callable, Generator, Sequence
 from concurrent.futures import Future
+from contextlib import suppress
 from contextvars import Token
 from dataclasses import dataclass
 from types import TracebackType
@@ -388,11 +389,12 @@ class ComputePool:
             ref=self._pool_ref is not None,
             sys=self._system is not None,
         )
-        try:
-            if self._context_token is not None:
+        if self._context_token is not None:
+            with suppress(ValueError):
                 _active_pool.reset(self._context_token)
-                self._context_token = None
+            self._context_token = None
 
+        try:
             if self._active and self._loop is not None:
                 run_sync(self._loop, self._stop_pool_actor(), timeout=self.shutdown_timeout)
         except TimeoutError:

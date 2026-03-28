@@ -14,6 +14,7 @@ from .messages import (
     PoolSpawned,
     PoolSpawnFailed,
     PoolStateChanged,
+    RecoverExistingPool,
     SessionMsg,
     SessionSnapshot,
     SessionStopped,
@@ -84,6 +85,36 @@ def active(
                     name=name, ref=pool_ref, spec=spec,
                     phase="provisioning", nodes_ready=0,
                     nodes_total=spec.nodes.min,
+                )
+                return active(
+                    pools=MappingProxyType({**pools, name: info}),
+                    pending_replies=MappingProxyType({**pending_replies, name: reply_to}),
+                )
+
+            case RecoverExistingPool(
+                name=name, spec=spec, provider=provider,
+                cluster=cluster, instances=instances, reply_to=reply_to,
+            ):
+                from skyward.actors.pool.actor import pool_actor
+                from skyward.actors.pool.messages import RecoverPool
+
+                pool_ref = ctx.spawn(
+                    pool_actor(session_ref=ctx.self, pool_name=name),
+                    f"pool-{name}",
+                )
+                adapter_ref = ctx.spawn(
+                    start_adapter(name=name, session=ctx.self, pool_ref=pool_ref),
+                    f"start-{name}",
+                )
+                pool_ref.tell(RecoverPool(
+                    spec=spec, provider=provider, cluster=cluster,
+                    instances=instances, reply_to=adapter_ref,
+                ))
+                log.info("Recovering pool {name} ({n} instances)", name=name, n=len(instances))
+                info = PoolInfo(
+                    name=name, ref=pool_ref, spec=spec,
+                    phase="provisioning", nodes_ready=0,
+                    nodes_total=len(instances),
                 )
                 return active(
                     pools=MappingProxyType({**pools, name: info}),

@@ -113,11 +113,13 @@ class Session:
     ) -> None:
         """Stop the session and release all resources."""
         interrupted = exc_type is KeyboardInterrupt
-        try:
-            if self._context_token is not None:
-                _active_session.reset(self._context_token)
-                self._context_token = None
 
+        if self._context_token is not None:
+            with suppress(ValueError):
+                _active_session.reset(self._context_token)
+            self._context_token = None
+
+        try:
             if self._active and self._loop is not None:
                 if interrupted:
                     sys.stderr.write(
@@ -422,6 +424,68 @@ class Session:
                 cluster=cluster,
             ):
                 return pool_ref, spec, cid, cluster, instances
+
+        raise RuntimeError(f"Unexpected result from session actor: {result}")
+
+    def recover_pool(
+        self,
+        name: str,
+        spec: Any,
+        provider: Any,
+        cluster: Any,
+        instances: tuple[Any, ...],
+    ) -> Any:
+        """Recover a pool from pre-existing instances (crash recovery).
+
+        Sends RecoverExistingPool to the session actor instead of SpawnPool,
+        causing the pool actor to skip prepare()/provision().
+        """
+        from skyward.actors.session.messages import (
+            PoolSpawned,
+            PoolSpawnFailed,
+            RecoverExistingPool,
+        )
+
+        loop = self._get_loop()
+        system = self._system
+        session_ref = self._session_ref
+        assert system is not None and session_ref is not None
+
+        timeout = spec.provision_timeout + spec.ssh_timeout + spec.bootstrap_timeout + 30
+
+        def _recover_factory(
+            reply_to: ActorRef[PoolSpawned | PoolSpawnFailed],
+        ) -> RecoverExistingPool:
+            return RecoverExistingPool(
+                name=name, spec=spec, provider=provider,
+                cluster=cluster, instances=instances,
+                reply_to=reply_to,
+            )
+
+        result: PoolSpawned | PoolSpawnFailed = run_sync(
+            loop,
+            system.ask(session_ref, _recover_factory, timeout=timeout),
+        )
+
+        match result:
+            case PoolSpawnFailed(name=n, reason=reason):
+                raise RuntimeError(f"Pool recovery failed for '{n}': {reason}")
+            case PoolSpawned(pool_ref=pool_ref, cluster_id=cid, cluster=cl):
+                from skyward.core.pool import ComputePool
+
+                return ComputePool._from_session(
+                    session=self,
+                    pool_ref=pool_ref,
+                    spec=spec,
+                    specs=(),
+                    plugins=(),
+                    cluster_id=cid,
+                    cluster=cl,
+                    instances=(),
+                    image=spec.image,
+                    worker=spec.worker,
+                    default_compute_timeout=spec.default_compute_timeout,
+                )
 
         raise RuntimeError(f"Unexpected result from session actor: {result}")
 
