@@ -93,6 +93,7 @@ nav:
           - Distributed training: distributed-training.md
           - Distributed collections: distributed-collections.md
       - Misc:
+          - "Choosing the best provider: an opinionated guide": choosing-a-provider.md
           - Compare accelerators: compare.md
           - Sky computing: sky-computing.md
           - For HPC users: hpc.md
