@@ -468,9 +468,11 @@ def ipc_initializer(
         index_queue.put(idx)
         set_worker_index(idx)
 
-    # Loky subprocesses inherit fd 1/2 pointing to casty.log (via shell redirect),
-    # but Python defaults to block buffering for non-TTY fds (~8KB buffer).
-    # Without line buffering, print() output stays in the buffer and never reaches
-    # casty.log → tail → events.jsonl. Reconfigure to match the parent's behavior.
-    sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
-    sys.stderr.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+    import os
+
+    from skyward.infra.worker import _UnbufferedWriter
+
+    log_path = os.environ.get("SKYWARD_LOG_FILE", "/var/log/casty.log")
+    writer = _UnbufferedWriter(path=log_path)
+    sys.stdout = writer  # type: ignore[assignment]
+    sys.stderr = writer  # type: ignore[assignment]

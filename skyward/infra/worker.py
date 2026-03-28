@@ -553,12 +553,18 @@ def _parse_seeds(seeds_str: str | None) -> list[tuple[str, int]] | None:
 class _UnbufferedWriter:
     """Text file writer that flushes after every write."""
 
-    __slots__ = ("_f",)
+    __slots__ = ("_f", "_pending_cr")
 
     def __init__(self, path: str) -> None:
         self._f = open(path, "a")  # noqa: SIM115
+        self._pending_cr = False
 
     def write(self, s: str) -> int:
+        if not s:
+            return 0
+        if self._pending_cr and not s.startswith("\r"):
+            self._f.write("\r\n")
+        self._pending_cr = "\r" in s and not s.endswith("\n")
         n = self._f.write(s)
         self._f.flush()
         return n
