@@ -84,6 +84,7 @@ from .view import (
     _print_provisioning_error,
     _render_summary,
     _ssh_url,
+    _task_cost_label,
 )
 
 _POLL_INTERVAL = 0.125
@@ -421,7 +422,8 @@ def console_actor() -> Behavior[ConsoleInput]:
                         updated = new.inflight.get(tid)
                         if updated and updated.broadcast_done >= updated.broadcast_total:
                             elapsed = time.monotonic() - entry.started_at
-                            _emit_task(console, label, "done", f"{entry.name} in {elapsed:.1f}s", link=link)
+                            cost = _task_cost_label(state, nid, elapsed, broadcast=True)
+                            _emit_task(console, label, "done", f"{entry.name} in {elapsed:.1f}s", link=link, cost=cost)
                             new = _on_task_done(new, tid, elapsed)
                         _update_footer(new)
                         return new
@@ -431,7 +433,8 @@ def console_actor() -> Behavior[ConsoleInput]:
                             _emit_task(console, label, "failed", entry.name, link=link)
                             new = _on_task_failed(state, tid)
                         else:
-                            _emit_task(console, label, "done", f"{entry.name} in {elapsed:.1f}s", link=link)
+                            cost = _task_cost_label(state, resolved_nid, elapsed)
+                            _emit_task(console, label, "done", f"{entry.name} in {elapsed:.1f}s", link=link, cost=cost)
                             new = _on_task_done(state, tid, elapsed)
                         _update_footer(new)
                         return new

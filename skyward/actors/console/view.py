@@ -160,6 +160,8 @@ def _stable_hash(label: str) -> int:
 def _badge_style(label: str) -> Style:
     if label in _FIXED_BADGES:
         return _FIXED_BADGES[label]
+    if label.startswith("~$"):
+        return _FIXED_BADGES["cost"]
     hue = (_stable_hash(label) * 137.508) % 360
     return _make_badge(hue, 0.65)
 
@@ -281,10 +283,36 @@ def _emit(console: Console, badge: str, text: str, style: str = "", link: str = 
     console.print(line)
 
 
-def _emit_task(console: Console, badge: str, status: str, text: str, link: str = "") -> None:
+def _task_cost_label(
+    state: _State, node_id: int, elapsed: float, *, broadcast: bool = False,
+) -> str:
+    """Return ``~$X.XX`` for the estimated cost of a task, or empty if pricing unavailable."""
+    if broadcast:
+        hourly = sum(
+            (i.offer.spot_price if i.spot else i.offer.on_demand_price) or 0.0
+            for i in state.instances
+        )
+    else:
+        if node_id < 0 or node_id >= len(state.instances):
+            return ""
+        inst = state.instances[node_id]
+        hourly = (inst.offer.spot_price if inst.spot else inst.offer.on_demand_price) or 0.0
+    if hourly <= 0:
+        return ""
+    cost = hourly * (elapsed / 3600)
+    return f"~${cost:.4f}" if cost < 0.01 else f"~${cost:.2f}"
+
+
+def _emit_task(
+    console: Console, badge: str, status: str, text: str,
+    link: str = "", cost: str = "",
+) -> None:
     line = _badge_text(badge, link=link)
     line.append(" ")
     line.append_text(_inline_badge(status))
+    if cost:
+        line.append(" ")
+        line.append_text(_inline_badge(cost))
     text_style = Style(link=link) if link else None
     line.append(f" {text}", style=text_style)
     console.print(line)
