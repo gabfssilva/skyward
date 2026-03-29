@@ -670,6 +670,15 @@ def pool_actor(
                     return provisioning(replace(
                         s, ready_nodes=new_ready, node_statuses=new_statuses,
                     ))
+                case NodeLost(node_id=nid, reason=reason):
+                    log.warning(
+                        "Node {nid} lost during provisioning: {reason}",
+                        nid=nid, reason=reason,
+                    )
+                    tm.tell(NodeUnavailable(node_id=nid))
+                    return provisioning(replace(
+                        s, ready_nodes=s.ready_nodes - {nid},
+                    ))
                 case StopPool():
                     log.debug("StopPool received while provisioning")
                 case GetPoolSnapshot(reply_to=snap_reply):
@@ -811,10 +820,11 @@ def pool_actor(
                     return ready(replace(
                         s, ready_nodes=s.ready_nodes | {nid}, node_statuses=new_statuses,
                     ))
-                case NodeLost(node_id=nid):
+                case NodeLost(node_id=nid, reason=reason):
                     log.warning(
-                        "Node {nid} lost, {remaining} nodes remaining",
-                        nid=nid, remaining=len(s.ready_nodes) - 1,
+                        "Node {nid} lost: {reason}, {remaining} nodes remaining",
+                        nid=nid, reason=reason,
+                        remaining=len(s.ready_nodes) - 1,
                     )
                     tm.tell(NodeUnavailable(node_id=nid))
                     if s.spec.cluster and s.head_addr:

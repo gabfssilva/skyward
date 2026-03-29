@@ -72,6 +72,8 @@ from .messages import (
     _PollResult,
     _PostBootstrapFailed,
     _RemoteTaskDone,
+    _ReplaceFailed,
+    _ReplaceRetry,
     _SnapshotFailed,
     _SnapshotSaved,
     _UserCodeSyncDone,
@@ -796,24 +798,49 @@ def node_actor(
 
     # ── replacing ─────────────────────────────────────────────────────
 
-    def _start_replacing(ctx: ActorContext[NodeMsg], s: NodeState) -> Behavior[NodeMsg]:
+    _max_replace_attempts = 5
+
+    def _start_replacing(ctx: ActorContext[NodeMsg], s: NodeState, attempt: int = 1) -> Behavior[NodeMsg]:
         instance_id = s.ni.instance.id if s.ni else ""
+        log.info("Replacing instance (attempt {a}/{m})", a=attempt, m=_max_replace_attempts)
         ctx.pipe_to_self(
             terminate_and_replace(s.provider, s.cluster, instance_id),
             mapper=lambda inst: Provision(cluster=s.cluster, provider=s.provider, instance=inst),
+            on_failure=lambda e: _ReplaceFailed(error=str(e), attempt=attempt),
         )
-        return replacing(s)
+        return replacing(s, attempt)
 
-    def replacing(s: NodeState) -> Behavior[NodeMsg]:
+    def replacing(s: NodeState, attempt: int = 1) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
             match msg:
                 case HeadAddressKnown() as h:
-                    return replacing(replace(s, head_info=h))
+                    return replacing(replace(s, head_info=h), attempt)
                 case Provision(instance=instance):
                     log.info("Replacement provisioned, re-entering polling")
                     return _start_polling(ctx, s, instance)
+                case _ReplaceFailed(error=error, attempt=att):
+                    if att >= _max_replace_attempts:
+                        log.error(
+                            "Replacement failed after {m} attempts: {err}",
+                            m=_max_replace_attempts, err=error,
+                        )
+                        return Behaviors.stopped()
+                    delay = min(5.0 * (2 ** (att - 1)), 60.0)
+                    log.warning(
+                        "Replacement failed (attempt {a}): {err}, retrying in {d:.0f}s",
+                        a=att, err=error, d=delay,
+                    )
+
+                    async def _retry() -> _ReplaceRetry:
+                        await asyncio.sleep(delay)
+                        return _ReplaceRetry(attempt=att + 1)
+
+                    ctx.pipe_to_self(_retry())
+                    return Behaviors.same()
+                case _ReplaceRetry(attempt=next_att):
+                    return _start_replacing(ctx, s, next_att)
                 case ExecuteOnNode() as ex:
-                    return replacing(_enqueue(s, ex))
+                    return replacing(_enqueue(s, ex), attempt)
             return Behaviors.same()
 
         return Behaviors.receive(receive)

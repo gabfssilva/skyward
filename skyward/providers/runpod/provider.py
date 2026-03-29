@@ -526,7 +526,10 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
             pod = await client.get_pod(instance_id)
 
         if not pod:
-            return cluster, None
+            log.warning("Pod {pid} not found (deleted externally)", pid=instance_id)
+            return cluster, Instance(
+                id=instance_id, status="exited", offer=cluster.offer,
+            )
 
         log.debug(
             "Pod {pid} status: desired={desired}, ip={ip}",
@@ -535,7 +538,9 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
         )
         match pod.get("desiredStatus"):
             case "TERMINATED":
-                return cluster, None
+                return cluster, Instance(
+                    id=instance_id, status="exited", offer=cluster.offer,
+                )
             case "EXITED":
                 return cluster, _build_runpod_instance(pod, "exited", cluster)
             case "RUNNING" if pod.get("publicIp"):

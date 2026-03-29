@@ -125,6 +125,17 @@ class _EnvSetupFailed:
     error: str
 
 
+@dataclass(frozen=True, slots=True)
+class _ReplaceFailed:
+    error: str
+    attempt: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ReplaceRetry:
+    attempt: int
+
+
 type NodeMsg = (
     Provision
     | ExecuteOnNode
@@ -144,6 +155,7 @@ type NodeMsg = (
     | _RemoteTaskDone
     | _WorkerDiscovered | _WorkerDiscoveryFailed
     | _EnvSetupDone | _EnvSetupFailed
+    | _ReplaceFailed | _ReplaceRetry
     | ConnectionLost | ConnectionRestored | ConnectionFailed | PortReForwarded
     | Terminated
 )
