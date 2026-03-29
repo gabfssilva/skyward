@@ -12,6 +12,8 @@ All public types are importable from ``skyward.api``::
 """
 
 # ── Protocols & contracts ─────────────────────────────────────
+# ── Events & Views ───────────────────────────────────────────
+from skyward.api import events as events
 from skyward.api.app import App as App
 from skyward.api.compute import Compute as Compute
 
@@ -44,6 +46,7 @@ from skyward.api.model import Offer as Offer
 # ── Plugin system ─────────────────────────────────────────────
 from skyward.api.plugin import Plugin as Plugin
 from skyward.api.pool import Pool as Pool
+from skyward.api.projection import SessionProjection as SessionProjection
 from skyward.api.provider import ProviderConfig as ProviderConfig
 
 # ── Runtime utilities ─────────────────────────────────────────
@@ -75,6 +78,33 @@ from skyward.api.spec import SpecKwargs as SpecKwargs
 from skyward.api.spec import Volume as Volume
 from skyward.api.spec import Worker as Worker
 from skyward.api.spec import WorkerExecutor as WorkerExecutor
+from skyward.api.views import (
+    BootstrapView as BootstrapView,
+)
+from skyward.api.views import (
+    NodeStatus as NodeStatus,
+)
+from skyward.api.views import (
+    NodeView as NodeView,
+)
+from skyward.api.views import (
+    PoolPhase as PoolPhase,
+)
+from skyward.api.views import (
+    PoolView as PoolView,
+)
+from skyward.api.views import (
+    ScalingView as ScalingView,
+)
+from skyward.api.views import (
+    SessionView as SessionView,
+)
+from skyward.api.views import (
+    TaskEntry as TaskEntry,
+)
+from skyward.api.views import (
+    TasksView as TasksView,
+)
 
 __all__ = [
     # Protocols
@@ -132,4 +162,16 @@ __all__ = [
     "Session",
     "Compute",
     "App",
+    # Events & Views
+    "events",
+    "SessionProjection",
+    "SessionView",
+    "PoolView",
+    "NodeView",
+    "TasksView",
+    "TaskEntry",
+    "ScalingView",
+    "BootstrapView",
+    "PoolPhase",
+    "NodeStatus",
 ]

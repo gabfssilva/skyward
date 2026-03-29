@@ -7,6 +7,10 @@ over a Unix domain socket. The type unions define the contract.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from skyward.api.views import PoolView
 
 # -- Requests (client -> daemon) -------------------------------------------
 
@@ -57,6 +61,23 @@ class ShutdownPool:
 @dataclass(frozen=True, slots=True)
 class Ping:
     """Health check."""
+
+
+@dataclass(frozen=True, slots=True)
+class GetPools:
+    """List all running pools."""
+
+
+@dataclass(frozen=True, slots=True)
+class GetPoolView:
+    """Get full view of a specific pool."""
+    pool_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class SubscribeEvents:
+    """Subscribe to live event stream for a pool."""
+    pool_name: str
 
 
 # -- Responses (daemon -> client) ------------------------------------------
@@ -122,15 +143,41 @@ class DaemonError:
     traceback: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class PoolSummary:
+    """Lightweight pool info for list view."""
+    name: str
+    phase: str
+    nodes_ready: int
+    nodes_total: int
+    tasks_done: int
+    tasks_running: int
+    started_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class PoolList:
+    """Response to GetPools."""
+    pools: tuple[PoolSummary, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PoolViewResponse:
+    """Response to GetPoolView."""
+    view: PoolView
+
+
 # -- Type unions -----------------------------------------------------------
 
 type DaemonRequest = (
     EnsurePool | SubmitTask | SubmitBroadcast | GetNodeCount
     | Disconnect | ShutdownPool | Ping
+    | GetPools | GetPoolView | SubscribeEvents
 )
 
 type DaemonResponse = (
     PoolReady | PoolFailed | TaskSucceeded | TaskFailed
     | BroadcastSucceeded | NodeCount | Disconnected | PoolShutdown
     | Pong | DaemonError
+    | PoolList | PoolViewResponse
 )

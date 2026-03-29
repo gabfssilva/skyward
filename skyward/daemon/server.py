@@ -35,6 +35,8 @@ from .protocol import (
     Disconnected,
     EnsurePool,
     GetNodeCount,
+    GetPools,
+    GetPoolView,
     NodeCount,
     Ping,
     Pong,
@@ -44,6 +46,7 @@ from .protocol import (
     ShutdownPool,
     SubmitBroadcast,
     SubmitTask,
+    SubscribeEvents,
     TaskFailed,
     TaskSucceeded,
 )
@@ -74,6 +77,8 @@ class DaemonServer:
         self._ttl_tasks: dict[str, asyncio.Task[None]] = {}  # name -> TTL timer
         self._pool_ttls: dict[str, int] = {}  # name -> TTL seconds
         self._session: Any = None
+        from skyward.api.projection import SessionProjection
+        self._projection = SessionProjection()
         if journal is None:
             _STATE_DIR.mkdir(parents=True, exist_ok=True)
             journal = SqliteJournal(str(_STATE_DIR / "daemon.db"))
@@ -182,6 +187,15 @@ class DaemonServer:
                 case ShutdownPool(pool_name=name):
                     return await self._shutdown_pool(name)
 
+                case GetPools():
+                    return self._get_pools()
+
+                case GetPoolView(pool_name=name):
+                    return self._get_pool_view(name)
+
+                case SubscribeEvents():
+                    return DaemonError(error="SubscribeEvents requires streaming (not yet implemented)")
+
                 case _:
                     return DaemonError(error=f"Unknown request: {type(request).__name__}")
 
@@ -287,6 +301,31 @@ class DaemonServer:
         if name not in self._pools:
             return DaemonError(error=f"Pool '{name}' not found")
         return NodeCount(ready=self._pools[name].current_nodes())
+
+    def _get_pools(self) -> DaemonResponse:
+        from skyward.api.views import NodeStatus
+
+        from .protocol import PoolList, PoolSummary
+
+        summaries: list[PoolSummary] = []
+        view = self._projection.view
+        for name, pv in view.pools.items():
+            ready = sum(1 for n in pv.nodes.values() if n.status.value >= NodeStatus.READY.value)
+            summaries.append(PoolSummary(
+                name=name, phase=pv.phase.name,
+                nodes_ready=ready, nodes_total=pv.total_nodes,
+                tasks_done=pv.tasks.done, tasks_running=pv.tasks.running,
+                started_at=pv.started_at,
+            ))
+        return PoolList(pools=tuple(summaries))
+
+    def _get_pool_view(self, name: str) -> DaemonResponse:
+        from .protocol import PoolViewResponse
+
+        view = self._projection.view
+        if name not in view.pools:
+            return DaemonError(error=f"Pool '{name}' not found")
+        return PoolViewResponse(view=view.pools[name])
 
     async def _shutdown_pool(self, name: str) -> PoolShutdown | DaemonError:
         if name not in self._pools:

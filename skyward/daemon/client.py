@@ -81,6 +81,22 @@ class DaemonClient:
             raise RuntimeError(f"Daemon error: {resp.error}")
         return resp  # type: ignore[return-value]
 
+    async def request(
+        self, msg: DaemonRequest, timeout: float | None = None,
+    ) -> DaemonResponse:
+        """Send a request and return the raw response.
+
+        Unlike ``_request``, this does **not** raise on ``DaemonError``
+        — the caller is responsible for inspecting the response type.
+        """
+        assert self._reader is not None and self._writer is not None
+        await async_send(self._writer, msg)
+        resp = await asyncio.wait_for(
+            async_recv(self._reader),
+            timeout=timeout or self._default_timeout,
+        )
+        return resp  # type: ignore[return-value]
+
     async def ping(self) -> Pong:
         return await self._request(Ping())  # type: ignore[return-value]
 
