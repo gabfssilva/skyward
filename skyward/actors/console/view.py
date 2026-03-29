@@ -11,14 +11,108 @@ from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
-from .model import _throughput
-from .state import _NodeStatus, _Phase, _State
+from skyward.api.views import PoolView
+
+from .state import _BootstrapTimeline, _NodeStatus, _Phase, _State, _TaskEntry, _throughput
 
 _LOGO_LINES = (
 "   \u258c           \u258c",
 " \u259b\u2598\u2599\u2598\u258c\u258c\u258c\u258c\u258c\u2580\u258c\u259b\u2598\u259b\u258c",
 " \u2584\u258c\u259b\u2596\u2599\u258c\u259a\u259a\u2598\u2588\u258c\u258c \u2599\u258c",
 "     \u2584\u258c")
+
+
+# ── PoolView → _State adapter ─────────────────────────────────
+
+
+def _state_from_pool_view(pool: PoolView) -> _State:
+    """Convert a ``PoolView`` into the legacy ``_State`` used by view rendering."""
+    from skyward.api.views import NodeStatus, PoolPhase
+
+    phase_map: dict[PoolPhase, _Phase] = {
+        PoolPhase.PROVISIONING: _Phase.PROVISIONING,
+        PoolPhase.SSH: _Phase.SSH,
+        PoolPhase.BOOTSTRAP: _Phase.BOOTSTRAP,
+        PoolPhase.WORKERS: _Phase.WORKERS,
+        PoolPhase.READY: _Phase.READY,
+        PoolPhase.STOPPING: _Phase.STOPPING,
+    }
+
+    node_status_map: dict[NodeStatus, _NodeStatus] = {
+        NodeStatus.WAITING: _NodeStatus.WAITING,
+        NodeStatus.SSH: _NodeStatus.SSH,
+        NodeStatus.BOOTSTRAPPING: _NodeStatus.BOOTSTRAPPING,
+        NodeStatus.READY: _NodeStatus.READY,
+    }
+
+    nodes: dict[int, _NodeStatus] = {}
+    bootstrap_spinners: dict[int, _BootstrapTimeline] = {}
+    metrics: dict[int, MappingProxyType[str, float]] = {}
+
+    for nid, nv in pool.nodes.items():
+        nodes[nid] = node_status_map.get(nv.status, _NodeStatus.WAITING)
+        if nv.bootstrap is not None:
+            bootstrap_spinners[nid] = _BootstrapTimeline(
+                phases=nv.bootstrap.phases,
+                completed=nv.bootstrap.completed,
+                active=nv.bootstrap.active,
+                output=nv.bootstrap.output,
+            )
+        if nv.metrics:
+            metrics[nid] = nv.metrics
+
+    inflight: dict[str, _TaskEntry] = {}
+    for tid, te in pool.tasks.inflight.items():
+        inflight[tid] = _TaskEntry(
+            task_id=te.task_id,
+            name=te.name,
+            kind=te.kind,
+            started_at=te.started_at,
+            node_id=te.node_id,
+            broadcast_total=te.broadcast_total,
+            broadcast_done=te.broadcast_done,
+        )
+
+    ssh_user = pool.cluster.ssh_user if pool.cluster else ""
+    ssh_key_path = pool.cluster.ssh_key_path if pool.cluster else ""
+
+    spec_accel_mem = ""
+    if pool.instances:
+        accel = pool.instances[0].offer.instance_type.accelerator
+        if accel and accel.memory:
+            spec_accel_mem = accel.memory
+
+    return _State(
+        total_nodes=pool.total_nodes,
+        phase=phase_map.get(pool.phase, _Phase.PROVISIONING),
+        nodes=MappingProxyType(nodes),
+        tasks_queued=pool.tasks.queued,
+        tasks_running=pool.tasks.running,
+        tasks_done=pool.tasks.done,
+        tasks_failed=pool.tasks.failed,
+        first_task_at=pool.tasks.first_task_at,
+        cluster=pool.cluster,
+        instances=pool.instances,
+        metrics=MappingProxyType(metrics),
+        pool_started_at=pool.started_at,
+        task_latencies=pool.tasks.latencies,
+        inflight=MappingProxyType(inflight),
+        task_fn_stats=pool.tasks.fn_stats,
+        task_fn_failed=pool.tasks.fn_failed,
+        ready_at=pool.ready_at,
+        desired_nodes=pool.scaling.desired,
+        pending_nodes=pool.scaling.pending,
+        draining_nodes=pool.scaling.draining,
+        reconciler_state=pool.scaling.reconciler_state,
+        min_nodes=pool.scaling.min_nodes,
+        max_nodes=pool.scaling.max_nodes,
+        is_elastic=pool.scaling.is_elastic,
+        spec_accelerator_memory=spec_accel_mem,
+        tasks_per_node=pool.tasks.tasks_per_node,
+        ssh_user=ssh_user,
+        ssh_key_path=ssh_key_path,
+        bootstrap_spinners=MappingProxyType(bootstrap_spinners),
+    )
 
 # --- Styles ---
 

@@ -389,14 +389,26 @@ class TestPoolLifecycle:
         assert isinstance(result, Pool.Stopped)
         assert result.pool_name == "pool"
 
-    def test_cluster_ready(self):
+    def test_cluster_ready_is_noop(self):
         from skyward.actors.messages import ClusterReady
 
-        ev = ClusterReady(cluster=MagicMock())
+        mock_cluster = MagicMock()
+        ev = ClusterReady(cluster=mock_cluster)
         result = translate(_spy(ev), "pool")
 
-        assert isinstance(result, Pool.PhaseChanged)
-        assert result.phase == "SSH"
+        assert result is None
+
+    def test_instances_provisioned(self):
+        from skyward.actors.pool.messages import InstancesProvisioned
+
+        mock_cluster = MagicMock()
+        mock_instances = (MagicMock(), MagicMock())
+        ev = InstancesProvisioned(cluster=mock_cluster, instances=mock_instances)
+        result = translate(_spy(ev), "pool")
+
+        assert isinstance(result, Pool.Provisioned)
+        assert result.cluster is mock_cluster
+        assert result.instances is mock_instances
 
 
 # ── Scaling events ──────────────────────────────────────────────

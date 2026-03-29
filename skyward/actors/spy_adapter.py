@@ -7,6 +7,7 @@ This module extracts that mapping into a pure function suitable for SessionProje
 from __future__ import annotations
 
 import re
+import time
 
 from casty import SpyEvent, Terminated
 
@@ -49,8 +50,12 @@ from skyward.actors.node.messages import (
     _WorkerStarted,
 )
 from skyward.actors.pool.messages import (
+    InstancesProvisioned,
+    PoolStarted,
     PoolStopped,
     ProvisionFailed,
+    RecoverPool,
+    StartPool,
     StopPool,
     _ShutdownDone,
 )
@@ -71,14 +76,33 @@ from skyward.api.events import (
     Task,
 )
 
-__all__ = ["translate"]
+__all__ = ["pool_name_from_path", "translate"]
 
 _NODE_ID_RE = re.compile(r"/node-(\d+)")
+_POOL_NAME_RE = re.compile(r"(?:^|/)session/pool-([^/]+)")
 
 
 def _node_id_from_path(path: str) -> int | None:
     if m := _NODE_ID_RE.search(path):
         return int(m.group(1))
+    return None
+
+
+def pool_name_from_path(path: str) -> str | None:
+    """Extract pool name from a Casty actor path.
+
+    Parameters
+    ----------
+    path
+        Actor path like ``/session/pool-train/node-0``.
+
+    Returns
+    -------
+    str | None
+        The pool name (e.g. ``"train"``), or None if no match.
+    """
+    if m := _POOL_NAME_RE.search(path):
+        return m.group(1)
     return None
 
 
@@ -93,6 +117,16 @@ def _format_task(fn: object, args: tuple, kwargs: dict) -> str:
 def translate(spy: SpyEvent, pool_name: str) -> SessionEvent | None:  # type: ignore[type-arg]
     """Translate a SpyEvent into a domain event, or None to skip."""
     match spy.event:
+        # ── Pool init ───────────────────────────────────────
+        case StartPool(spec=spec):
+            return Pool.Provisioning(pool_name, spec.nodes.min, time.monotonic())
+
+        case RecoverPool(spec=spec, instances=instances):
+            return Pool.Provisioning(pool_name, len(instances), time.monotonic())
+
+        case PoolStarted():
+            return None
+
         # ── No-ops ──────────────────────────────────────────
         case Terminated():
             return None
@@ -129,7 +163,10 @@ def translate(spy: SpyEvent, pool_name: str) -> SessionEvent | None:  # type: ig
             return Pool.Stopped(pool_name)
 
         case ClusterReady():
-            return Pool.PhaseChanged(pool_name, "SSH")
+            return None
+
+        case InstancesProvisioned(cluster=cluster, instances=instances):
+            return Pool.Provisioned(pool_name, cluster, instances)
 
         # ── Node lifecycle ──────────────────────────────────
         case _Connected(instance=ni):

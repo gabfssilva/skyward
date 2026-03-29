@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from types import MappingProxyType
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
@@ -9,20 +8,16 @@ from skyward.observability.logger import logger
 
 from .adapter import start_adapter
 from .messages import (
-    GetSessionSnapshot,
     PoolInfo,
     PoolSpawned,
     PoolSpawnFailed,
-    PoolStateChanged,
     RecoverExistingPool,
     SessionMsg,
-    SessionSnapshot,
     SessionStopped,
     SpawnPool,
     StopSession,
     _PoolFailed,
     _PoolReady,
-    _SnapshotReady,
 )
 
 log = logger.bind(actor="session")
@@ -81,11 +76,7 @@ def active(
                     reply_to=adapter_ref,
                 ))
                 log.info("Spawning pool {name}", name=name)
-                info = PoolInfo(
-                    name=name, ref=pool_ref, spec=spec,
-                    phase="provisioning", nodes_ready=0,
-                    nodes_total=spec.nodes.min,
-                )
+                info = PoolInfo(name=name, ref=pool_ref)
                 return active(
                     pools=MappingProxyType({**pools, name: info}),
                     pending_replies=MappingProxyType({**pending_replies, name: reply_to}),
@@ -111,11 +102,7 @@ def active(
                     instances=instances, reply_to=adapter_ref,
                 ))
                 log.info("Recovering pool {name} ({n} instances)", name=name, n=len(instances))
-                info = PoolInfo(
-                    name=name, ref=pool_ref, spec=spec,
-                    phase="provisioning", nodes_ready=0,
-                    nodes_total=len(instances),
-                )
+                info = PoolInfo(name=name, ref=pool_ref)
                 return active(
                     pools=MappingProxyType({**pools, name: info}),
                     pending_replies=MappingProxyType({**pending_replies, name: reply_to}),
@@ -133,8 +120,8 @@ def active(
                         cluster=cluster,
                     ))
                     log.info("Pool {name} ready", name=name)
-                if existing := pools.get(name):
-                    updated = replace(existing, phase="ready", ref=pool_ref)
+                if name in pools:
+                    updated = PoolInfo(name=name, ref=pool_ref)
                     return active(
                         pools=MappingProxyType({**pools, name: updated}),
                         pending_replies=MappingProxyType(
@@ -160,50 +147,6 @@ def active(
                         {k: v for k, v in pending_replies.items() if k != name},
                     ),
                 )
-
-            case PoolStateChanged(
-                name=name, phase=phase,
-                nodes_ready=ready, nodes_total=total,
-            ):
-                if existing := pools.get(name):
-                    updated = replace(
-                        existing, phase=phase,
-                        nodes_ready=ready, nodes_total=total,
-                    )
-                    log.debug(
-                        "Pool {name} state: {phase} ({ready}/{total})",
-                        name=name, phase=phase, ready=ready, total=total,
-                    )
-                    return active(
-                        pools=MappingProxyType({**pools, name: updated}),
-                        pending_replies=pending_replies,
-                    )
-                return Behaviors.same()
-
-            case GetSessionSnapshot(reply_to=reply_to):
-                pool_refs = tuple(info.ref for info in pools.values())
-
-                async def _gather_snapshots() -> _SnapshotReady:
-                    import asyncio
-
-                    from skyward.actors.messages import GetPoolSnapshot
-
-                    snapshots = await asyncio.gather(*(
-                        ctx.system.ask(ref, lambda r: GetPoolSnapshot(reply_to=r), timeout=2.0)
-                        for ref in pool_refs
-                    ))
-                    return _SnapshotReady(snapshots=tuple(snapshots), reply_to=reply_to)
-
-                ctx.pipe_to_self(
-                    _gather_snapshots(),
-                    mapper=lambda r: r,
-                    on_failure=lambda _: _SnapshotReady(snapshots=(), reply_to=reply_to),
-                )
-                return Behaviors.same()
-
-            case _SnapshotReady(snapshots=snaps, reply_to=snap_reply):
-                snap_reply.tell(SessionSnapshot(pools=snaps))
-                return Behaviors.same()
 
             case StopSession(reply_to=reply_to):
                 log.info("Session stopping")

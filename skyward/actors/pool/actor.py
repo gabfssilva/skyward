@@ -92,15 +92,6 @@ def pool_actor(
 ) -> Behavior[PoolMsg]:
     """idle -> requesting -> provisioning -> ready -> stopping."""
 
-    def _notify_session(phase: str, nodes_ready: int, nodes_total: int) -> None:
-        if session_ref is not None:
-            from skyward.actors.session.messages import PoolStateChanged
-
-            session_ref.tell(PoolStateChanged(
-                name=pool_name, phase=phase,
-                nodes_ready=nodes_ready, nodes_total=nodes_total,
-            ))
-
     tunnel_map: dict[tuple[str, int], tuple[str, int]] = {}
 
     def address_resolver(addr: tuple[str, int]) -> tuple[str, int]:
@@ -256,7 +247,6 @@ def pool_actor(
 
                     tm_ref = ctx.spawn(task_manager_actor(), "task-manager")
 
-                    _notify_session("provisioning", 0, len(instances))
                     return provisioning(PoolState(
                         spec=spec, provider=provider, reply_to=reply_to,
                         ca=ca, client_tls=client_tls,
@@ -427,7 +417,6 @@ def pool_actor(
                         )
                         for nbr in s.early_ready:
                             ctx.self.tell(nbr)
-                        _notify_session("provisioning", 0, s.spec.nodes.min)
                         return provisioning(replace(
                             s,
                             cluster=updated_cluster,
@@ -662,7 +651,6 @@ def pool_actor(
                             instances=tuple(s.instances.values()),
                             cluster=s.cluster,
                         ))
-                        _notify_session("ready", len(new_ready), s.spec.nodes.min)
                         return ready(replace(
                             s, ready_nodes=new_ready, node_statuses=new_statuses,
                             phase=PoolPhase.WORKERS,
@@ -816,7 +804,6 @@ def pool_actor(
                     if ni:
                         iid = ni.instance.id
                         new_statuses = MappingProxyType({**s.node_statuses, iid: NodeStatus.READY})
-                    _notify_session("ready", len(s.ready_nodes | {nid}), s.spec.nodes.min)
                     return ready(replace(
                         s, ready_nodes=s.ready_nodes | {nid}, node_statuses=new_statuses,
                     ))
@@ -841,13 +828,11 @@ def pool_actor(
                         if old_client:
                             with suppress(Exception):
                                 await old_client.__aexit__(None, None, None)
-                        _notify_session("ready", len(s.ready_nodes - {nid}), s.spec.nodes.min)
                         return ready(replace(
                             s,
                             ready_nodes=s.ready_nodes - {nid},
                             clients=MappingProxyType({k: v for k, v in s.clients.items() if k != nid}),
                         ))
-                    _notify_session("ready", len(s.ready_nodes - {nid}), s.spec.nodes.min)
                     return ready(replace(
                         s, ready_nodes=s.ready_nodes - {nid},
                     ))
@@ -944,7 +929,6 @@ def pool_actor(
                         _shutdown(),
                         mapper=lambda _: _ShutdownDone(),
                     )
-                    _notify_session("stopping", 0, s.spec.nodes.min)
                     return stopping(
                         stop_reply, s.cluster_id,
                         replace(s, phase=PoolPhase.STOPPING), pool_name,

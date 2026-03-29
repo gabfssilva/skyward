@@ -24,6 +24,8 @@ from typing import Any
 import cloudpickle
 from casty import ActorRef, ActorSystem, EventJournal, SqliteJournal
 
+from skyward.api.events import Log
+from skyward.api.views import SessionView
 from skyward.observability.logger import logger
 
 from .protocol import (
@@ -44,6 +46,7 @@ from .protocol import (
     PoolReady,
     PoolShutdown,
     ShutdownPool,
+    StreamEnd,
     SubmitBroadcast,
     SubmitTask,
     SubscribeEvents,
@@ -77,8 +80,26 @@ class DaemonServer:
         self._ttl_tasks: dict[str, asyncio.Task[None]] = {}  # name -> TTL timer
         self._pool_ttls: dict[str, int] = {}  # name -> TTL seconds
         self._session: Any = None
+        self._subscribers: dict[str, list[asyncio.Queue[object]]] = {}
+
         from skyward.api.projection import SessionProjection
-        self._projection = SessionProjection()
+
+        def _on_view_changed(old: SessionView, new: SessionView) -> None:
+            for name, queues in self._subscribers.items():
+                if name in new.pools:
+                    for q in queues:
+                        q.put_nowait(new)
+
+        def _on_log(log_event: Log.Emitted) -> None:
+            pool_name = log_event.pool_name
+            if pool_name in self._subscribers:
+                for q in self._subscribers[pool_name]:
+                    q.put_nowait(log_event)
+
+        self._projection = SessionProjection(
+            on_change=_on_view_changed,
+            on_log=_on_log,
+        )
         if journal is None:
             _STATE_DIR.mkdir(parents=True, exist_ok=True)
             journal = SqliteJournal(str(_STATE_DIR / "daemon.db"))
@@ -144,8 +165,13 @@ class DaemonServer:
                 except (asyncio.IncompleteReadError, ConnectionError, EOFError):
                     break
 
-                response = await self._dispatch(request, client_id)  # type: ignore[arg-type]
-                await async_send(writer, response)
+                match request:
+                    case SubscribeEvents(pool_name=name):
+                        await self._handle_subscribe(name, reader, writer)
+                        break
+                    case _:
+                        response = await self._dispatch(request, client_id)  # type: ignore[arg-type]
+                        await async_send(writer, response)
 
                 match request:
                     case EnsurePool(name=name):
@@ -160,6 +186,76 @@ class DaemonServer:
             writer.close()
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
+
+    async def _handle_subscribe(
+        self,
+        pool_name: str,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        """Stream SessionView + Log.Emitted to client until disconnect."""
+        view = self._projection.view
+        if pool_name not in view.pools:
+            await async_send(writer, DaemonError(error=f"Pool '{pool_name}' not found"))
+            return
+
+        await async_send(writer, view)
+
+        queue: asyncio.Queue[object] = asyncio.Queue(maxsize=256)
+        if pool_name not in self._subscribers:
+            self._subscribers[pool_name] = []
+        self._subscribers[pool_name].append(queue)
+
+        async def _watch_disconnect() -> None:
+            """Detect client disconnect by waiting for EOF on reader."""
+            with contextlib.suppress(ConnectionError, asyncio.IncompleteReadError):
+                await reader.read(1)
+
+        disconnect_task = asyncio.create_task(_watch_disconnect())
+
+        try:
+            while True:
+                get_task = asyncio.create_task(queue.get())
+                done, _ = await asyncio.wait(
+                    {get_task, disconnect_task},
+                    timeout=30.0,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                if disconnect_task in done:
+                    get_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await get_task
+                    break
+
+                if not done:
+                    get_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await get_task
+                    current = self._projection.view
+                    if pool_name in current.pools:
+                        try:
+                            await async_send(writer, current)
+                        except (ConnectionError, BrokenPipeError, ConnectionResetError):
+                            break
+                    else:
+                        with contextlib.suppress(ConnectionError, BrokenPipeError, ConnectionResetError):
+                            await async_send(writer, StreamEnd(reason="pool removed"))
+                        break
+                    continue
+
+                try:
+                    msg = get_task.result()
+                    await async_send(writer, msg)
+                except (ConnectionError, BrokenPipeError, ConnectionResetError):
+                    break
+        finally:
+            disconnect_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await disconnect_task
+            self._subscribers[pool_name].remove(queue)
+            if not self._subscribers[pool_name]:
+                del self._subscribers[pool_name]
 
     async def _dispatch(self, request: DaemonRequest, client_id: str) -> DaemonResponse:
         """Route a request to the appropriate handler."""
@@ -192,9 +288,6 @@ class DaemonServer:
 
                 case GetPoolView(pool_name=name):
                     return self._get_pool_view(name)
-
-                case SubscribeEvents():
-                    return DaemonError(error="SubscribeEvents requires streaming (not yet implemented)")
 
                 case _:
                     return DaemonError(error=f"Unknown request: {type(request).__name__}")
@@ -256,7 +349,10 @@ class DaemonServer:
 
         if self._session is None:
             from skyward.core.session import Session
-            self._session = Session(console=False, logging=True)
+            self._session = Session(
+                console=False, logging=True,
+                projection=self._projection,
+            )
             self._session.__enter__()
 
         pool.__enter__()
@@ -557,7 +653,10 @@ class DaemonServer:
         """
         if self._session is None:
             from skyward.core.session import Session
-            self._session = Session(console=False, logging=True)
+            self._session = Session(
+                console=False, logging=True,
+                projection=self._projection,
+            )
             self._session.__enter__()
 
         return self._session.recover_pool(

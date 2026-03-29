@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from enum import Enum, auto
 from types import MappingProxyType
@@ -76,3 +77,11 @@ class _State:
     bootstrap_started: MappingProxyType[int, float] = MappingProxyType({})
     progress_lines: MappingProxyType[int, str] = MappingProxyType({})
     provision_error_shown: bool = False
+
+
+def _throughput(state: _State, now: float | None = None) -> float:
+    if not state.tasks_done:
+        return 0.0
+    ts = now if now is not None else time.monotonic()
+    elapsed_min = (ts - state.first_task_at) / 60
+    return state.tasks_done / elapsed_min if elapsed_min > 0 else 0.0

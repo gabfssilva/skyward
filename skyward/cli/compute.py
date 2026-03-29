@@ -158,6 +158,62 @@ def stop_pool(
             console.print(f"[red]{err}[/red]")
 
 
+@compute_app.command(name="console")
+def console_pool(
+    name: Annotated[str, Parameter(help="Pool name")],
+) -> None:
+    """Live console view of a compute pool."""
+    _run_async(_console_stream(name))
+
+
+async def _console_stream(name: str) -> None:
+    from rich.console import Console as RichConsole
+    from rich.live import Live
+    from rich.text import Text
+
+    from skyward.api.events import Log
+    from skyward.api.views import NodeStatus, SessionView
+    from skyward.daemon.client import DaemonClient
+
+    rich = RichConsole(stderr=True)
+
+    async with DaemonClient() as client:
+        first = True
+        with Live(Text("[dim]Connecting...[/dim]"), console=rich, refresh_per_second=4) as live:
+            async for msg in client.subscribe(name):
+                match msg:
+                    case SessionView() as view:
+                        pool = view.pools.get(name)
+                        if pool is None:
+                            continue
+                        if first:
+                            rich.print(f"[bold]{name}[/bold]  phase={pool.phase.name}")
+                            first = False
+                        ready = sum(
+                            1 for n in pool.nodes.values()
+                            if n.status.value >= NodeStatus.READY.value
+                        )
+                        total = pool.total_nodes
+                        tasks_done = pool.tasks.done
+                        tasks_running = pool.tasks.running
+                        status = Text()
+                        status.append(f" {name} ", style="bold")
+                        status.append(f" {pool.phase.name} ", style="dim")
+                        status.append(f" nodes {ready}/{total} ")
+                        if tasks_done or tasks_running:
+                            status.append(f" tasks: {tasks_done} done")
+                            if tasks_running:
+                                status.append(f", {tasks_running} running")
+                        if pool.tasks.throughput > 0:
+                            status.append(f" ({pool.tasks.throughput:.1f}/min)")
+                        live.update(status)
+
+                    case Log.Emitted(node_id=nid, message=message):
+                        rich.print(f"  [dim]node-{nid}[/dim]  {message}")
+
+    rich.print("[dim]Stream ended[/dim]")
+
+
 # -- rendering helpers (private) --------------------------------------------
 
 

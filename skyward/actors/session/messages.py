@@ -6,24 +6,17 @@ from typing import TYPE_CHECKING, Any
 from casty import ActorRef
 
 from skyward.actors.pool.messages import PoolMsg
-from skyward.actors.snapshot import PoolSnapshot
 
 if TYPE_CHECKING:
     from skyward.core.model import Cluster, Instance, Offer
     from skyward.core.provider import ProviderConfig
     from skyward.core.spec import PoolSpec
 
-type PoolPhase = str
-
 
 @dataclass(frozen=True, slots=True)
 class PoolInfo:
     name: str
     ref: ActorRef[PoolMsg]
-    spec: PoolSpec
-    phase: PoolPhase
-    nodes_ready: int
-    nodes_total: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,14 +46,6 @@ class PoolSpawnFailed:
 
 
 @dataclass(frozen=True, slots=True)
-class PoolStateChanged:
-    name: str
-    phase: PoolPhase
-    nodes_ready: int
-    nodes_total: int
-
-
-@dataclass(frozen=True, slots=True)
 class StopSession:
     reply_to: ActorRef[SessionStopped]
 
@@ -68,22 +53,6 @@ class StopSession:
 @dataclass(frozen=True, slots=True)
 class SessionStopped:
     pass
-
-
-@dataclass(frozen=True, slots=True)
-class GetSessionSnapshot:
-    reply_to: ActorRef[SessionSnapshot]
-
-
-@dataclass(frozen=True, slots=True)
-class SessionSnapshot:
-    pools: tuple[PoolSnapshot, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _SnapshotReady:
-    snapshots: tuple[PoolSnapshot, ...]
-    reply_to: ActorRef[SessionSnapshot]
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,9 +85,6 @@ type SessionMsg = (
     SpawnPool
     | RecoverExistingPool
     | StopSession
-    | PoolStateChanged
-    | GetSessionSnapshot
-    | _SnapshotReady
     | _PoolReady
     | _PoolFailed
 )

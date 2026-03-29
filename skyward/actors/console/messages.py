@@ -3,11 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from casty import ActorRef, SpyEvent
-
 if TYPE_CHECKING:
-    from skyward.actors.session.messages import SessionMsg
-    from skyward.actors.snapshot import PoolSnapshot
+    from skyward.api.events import Log, SessionEvent
+    from skyward.api.views import SessionView
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,18 +15,18 @@ class LocalOutput:
 
 
 @dataclass(frozen=True, slots=True)
-class _SetSession:
-    ref: ActorRef[SessionMsg]
+class ViewUpdated:
+    view: SessionView
 
 
 @dataclass(frozen=True, slots=True)
-class _PollTick:
-    pass
+class EventReceived:
+    event: SessionEvent
 
 
 @dataclass(frozen=True, slots=True)
-class _SnapshotReceived:
-    snapshots: tuple[PoolSnapshot, ...]
+class LogReceived:
+    log: Log.Emitted
 
 
-type ConsoleInput = SpyEvent | LocalOutput | _SetSession | _PollTick | _SnapshotReceived
+type ConsoleInput = ViewUpdated | EventReceived | LogReceived | LocalOutput

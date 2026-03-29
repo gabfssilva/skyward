@@ -167,6 +167,12 @@ class PoolViewResponse:
     view: PoolView
 
 
+@dataclass(frozen=True, slots=True)
+class StreamEnd:
+    """Signals end of event stream."""
+    reason: str
+
+
 # -- Type unions -----------------------------------------------------------
 
 type DaemonRequest = (
@@ -179,5 +185,5 @@ type DaemonResponse = (
     PoolReady | PoolFailed | TaskSucceeded | TaskFailed
     | BroadcastSucceeded | NodeCount | Disconnected | PoolShutdown
     | Pong | DaemonError
-    | PoolList | PoolViewResponse
+    | PoolList | PoolViewResponse | StreamEnd
 )

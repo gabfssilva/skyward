@@ -109,23 +109,40 @@ class SessionProjection:
         self,
         on_log: Callable[[Log.Emitted], None] | None = None,
         on_change: Callable[[SessionView, SessionView], None] | None = None,
+        on_event: Callable[[SessionEvent], None] | None = None,
     ) -> None:
         self._pools: dict[str, PoolView] = {}
         self._view: SessionView = SessionView()
-        self._on_log = on_log
-        self._on_change = on_change
+        self.on_log = on_log
+        self.on_change = on_change
+        self.on_event = on_event
 
     @property
     def view(self) -> SessionView:
         return self._view
 
+    def _is_duplicate(self, event: SessionEvent) -> bool:
+        match event:
+            case Task.Queued(pool_name=name, task_id=tid):
+                pool = self._pools.get(name)
+                return pool is not None and tid in pool.tasks.inflight
+            case Task.Completed(pool_name=name, task_id=tid) | Task.Failed(pool_name=name, task_id=tid):
+                pool = self._pools.get(name)
+                return pool is not None and tid not in pool.tasks.inflight
+            case _:
+                return False
+
     def handle(self, event: SessionEvent) -> None:
         """Dispatch a domain event to the appropriate handler."""
+        if self._is_duplicate(event):
+            return
+        if self.on_event:
+            self.on_event(event)
         match event:
             # ── Logs: fire callback only, no state change ────────
             case Log.Emitted():
-                if self._on_log:
-                    self._on_log(event)
+                if self.on_log:
+                    self.on_log(event)
                 return
 
             # ── Pool lifecycle ───────────────────────────────────
@@ -152,6 +169,17 @@ class SessionProjection:
                 if name not in self._pools:
                     return
                 self._pools[name] = replace(self._pools[name], phase=PoolPhase.STOPPING)
+
+            case Pool.Provisioned(pool_name=name, cluster=cluster, instances=instances):
+                if name not in self._pools:
+                    return
+                pool = self._pools[name]
+                self._pools[name] = replace(
+                    pool,
+                    phase=_advance(pool.phase, PoolPhase.SSH),
+                    cluster=cluster,
+                    instances=instances,
+                )
 
             case Pool.ProvisionFailed():
                 return
@@ -471,8 +499,8 @@ class SessionProjection:
         self._view = SessionView(
             pools=MappingProxyType(dict(self._pools)),
         )
-        if self._on_change and self._view != old:
-            self._on_change(old, self._view)
+        if self.on_change and self._view != old:
+            self.on_change(old, self._view)
 
     def _on_reconciled(self, name: str, snapshot: object) -> None:
         from skyward.actors.snapshot import PoolSnapshot

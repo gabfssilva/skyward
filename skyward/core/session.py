@@ -34,6 +34,7 @@ from .spec import Options, Spec, SpecKwargs, Worker
 _DEFAULT_OPTIONS = Options()
 
 if TYPE_CHECKING:
+    from skyward.api.projection import SessionProjection
     from skyward.core.pool import ComputePool
 
 
@@ -59,10 +60,14 @@ class Session:
         console: bool = True,
         logging: LogConfig | bool = True,
         shutdown_timeout: float = 120.0,
+        projection: SessionProjection | None = None,
     ) -> None:
+        from skyward.api.projection import SessionProjection as _Proj
+
         self._console = console
         self._logging = logging
         self._shutdown_timeout = shutdown_timeout
+        self._projection = projection or _Proj()
 
         self._log_handler_ids: list[int] = []
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -162,18 +167,35 @@ class Session:
 
         session_behavior = session_actor()
 
-        if self._console:
-            from skyward.actors.console import _SetSession, console_actor
+        from skyward.actors.projection import projection_actor
 
-            spy_ref = self._system.spawn(console_actor(), "console")
-            session_behavior = Behaviors.spy(
-                session_behavior, spy_ref, spy_children=True,
+        proj_ref = self._system.spawn(
+            projection_actor(self._projection), "projection",
+        )
+        session_behavior = Behaviors.spy(
+            session_behavior, proj_ref, spy_children=True,
+        )
+
+        if self._console:
+            from skyward.actors.console import (
+                EventReceived,
+                LogReceived,
+                ViewUpdated,
+                console_actor,
+            )
+
+            console_ref = self._system.spawn(console_actor(), "console")
+            self._projection.on_change = lambda _old, new: console_ref.tell(
+                ViewUpdated(view=new),
+            )
+            self._projection.on_log = lambda log: console_ref.tell(
+                LogReceived(log=log),
+            )
+            self._projection.on_event = lambda ev: console_ref.tell(
+                EventReceived(event=ev),
             )
 
         self._session_ref = self._system.spawn(session_behavior, "session")
-
-        if self._console:
-            spy_ref.tell(_SetSession(ref=self._session_ref))  # type: ignore[possibly-undefined]
 
     async def _stop_async(self) -> None:
         """Stop all pools, then the session actor, then the actor system."""
@@ -236,6 +258,11 @@ class Session:
     def is_active(self) -> bool:
         """True when the session is entered and the actor system is running."""
         return self._active
+
+    @property
+    def projection(self) -> SessionProjection:
+        """The session projection accumulating domain events."""
+        return self._projection
 
     @overload
     def compute(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import AsyncIterator
 from pathlib import Path
 from types import TracebackType
 
@@ -22,8 +23,10 @@ from .protocol import (
     PoolReady,
     PoolShutdown,
     ShutdownPool,
+    StreamEnd,
     SubmitBroadcast,
     SubmitTask,
+    SubscribeEvents,
     TaskFailed,
     TaskSucceeded,
 )
@@ -156,3 +159,27 @@ class DaemonClient:
             case PoolShutdown():
                 return
         raise RuntimeError(f"Unexpected response: {resp}")
+
+    async def subscribe(
+        self, pool_name: str,
+    ) -> AsyncIterator[object]:
+        """Subscribe to live events for a pool.
+
+        Yields ``SessionView`` (state updates) or ``Log.Emitted`` (log events).
+        Stream ends when ``StreamEnd`` is received or connection closes.
+        """
+        assert self._reader is not None and self._writer is not None
+        await async_send(self._writer, SubscribeEvents(pool_name=pool_name))
+
+        while True:
+            try:
+                msg = await async_recv(self._reader)
+            except (asyncio.IncompleteReadError, ConnectionError, EOFError):
+                break
+            match msg:
+                case StreamEnd():
+                    break
+                case DaemonError(error=err):
+                    raise RuntimeError(f"Subscribe failed: {err}")
+                case _:
+                    yield msg

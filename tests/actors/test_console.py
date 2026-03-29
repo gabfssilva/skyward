@@ -1,4 +1,4 @@
-"""Tests for the console actor — Model, View, Controller."""
+"""Tests for the console actor — State, View, Controller."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from rich.console import Console
 
 pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
 
-# --- Model tests ---
+# --- State tests ---
 
 
 class TestPhase:
@@ -55,164 +55,9 @@ class TestNodeStatus:
         assert names == ["WAITING", "SSH", "BOOTSTRAPPING", "READY"]
 
 
-class TestStateTransitions:
-    def test_advance_to_ssh(self) -> None:
-        from skyward.actors.console.model import _on_cluster_ready
-        from skyward.actors.console.state import _Phase, _State
-
-        state = _State(total_nodes=4, phase=_Phase.PROVISIONING)
-        new = _on_cluster_ready(state)
-        assert new.phase == _Phase.SSH
-
-    def test_ssh_connected_advances_node(self) -> None:
-        from skyward.actors.console.model import _on_ssh_connected
-        from skyward.actors.console.state import _NodeStatus, _Phase, _State
-
-        state = _State(total_nodes=2, phase=_Phase.SSH)
-        new = _on_ssh_connected(state, 0)
-        assert new.nodes[0] == _NodeStatus.SSH
-        assert new.phase == _Phase.SSH
-
-    def test_ssh_all_connected_advances_to_bootstrap(self) -> None:
-        from skyward.actors.console.model import _on_ssh_connected
-        from skyward.actors.console.state import _Phase, _State
-
-        state = _State(total_nodes=1, phase=_Phase.SSH)
-        new = _on_ssh_connected(state, 0)
-        assert new.phase == _Phase.BOOTSTRAP
-
-    def test_bootstrap_done_advances_node(self) -> None:
-        from skyward.actors.console.model import _on_bootstrap_done
-        from skyward.actors.console.state import _NodeStatus, _Phase, _State
-
-        state = _State(total_nodes=2, phase=_Phase.BOOTSTRAP)
-        new = _on_bootstrap_done(state, 0)
-        assert new.nodes[0] == _NodeStatus.BOOTSTRAPPING
-
-    def test_worker_started_advances_node(self) -> None:
-        from skyward.actors.console.model import _on_worker_started
-        from skyward.actors.console.state import _NodeStatus, _Phase, _State
-
-        state = _State(total_nodes=2, phase=_Phase.WORKERS)
-        new = _on_worker_started(state, 0)
-        assert new.nodes[0] == _NodeStatus.READY
-        assert new.phase == _Phase.WORKERS
-
-    def test_worker_all_started_advances_to_ready(self) -> None:
-        from skyward.actors.console.model import _on_worker_started
-        from skyward.actors.console.state import _Phase, _State
-
-        state = _State(total_nodes=1, phase=_Phase.WORKERS)
-        new = _on_worker_started(state, 0)
-        assert new.phase == _Phase.READY
-
-    def test_phase_never_regresses_during_scaling(self) -> None:
-        from unittest.mock import MagicMock
-
-        from skyward.actors.console.model import (
-            _on_spawn_nodes,
-            _on_ssh_connected,
-            _on_worker_started,
-        )
-        from skyward.actors.console.state import _NodeStatus, _Phase, _State
-
-        state = _State(
-            total_nodes=1, phase=_Phase.READY,
-            nodes=MappingProxyType({0: _NodeStatus.READY}),
-        )
-        insts = tuple(MagicMock() for _ in range(2))
-        state = _on_spawn_nodes(state, insts)
-        assert state.total_nodes == 3
-        assert state.phase == _Phase.READY
-
-        state = _on_ssh_connected(state, 1)
-        assert state.phase == _Phase.READY
-
-        state = _on_worker_started(state, 1)
-        assert state.phase == _Phase.READY
-
-        state = _on_ssh_connected(state, 2)
-        state = _on_worker_started(state, 2)
-        assert state.phase == _Phase.READY
-
-    def test_record_task_submitted(self) -> None:
-        from skyward.actors.console.model import _on_task_submitted
-        from skyward.actors.console.state import _State
-
-        state = _State(total_nodes=1)
-        new = _on_task_submitted(state, "t1", "train", "single")
-        assert new.tasks_queued == 1
-        assert new.tasks_running == 0
-        assert "t1" in new.inflight
-
-    def test_record_task_assigned(self) -> None:
-        from skyward.actors.console.model import _on_task_assigned, _on_task_submitted
-        from skyward.actors.console.state import _State
-
-        state = _State(total_nodes=1)
-        state = _on_task_submitted(state, "t1", "train", "single")
-        new = _on_task_assigned(state, "t1", 0)
-        assert new.tasks_queued == 0
-        assert new.tasks_running == 1
-
-    def test_record_task_done(self) -> None:
-        from skyward.actors.console.model import (
-            _on_task_assigned,
-            _on_task_done,
-            _on_task_submitted,
-        )
-        from skyward.actors.console.state import _State
-
-        state = _State(total_nodes=1)
-        state = _on_task_submitted(state, "t1", "train", "single")
-        state = _on_task_assigned(state, "t1", 0)
-        new = _on_task_done(state, "t1", elapsed=2.5)
-        assert new.tasks_running == 0
-        assert new.tasks_done == 1
-        assert new.task_latencies == (2.5,)
-
-    def test_task_done_tracks_per_node(self) -> None:
-        from skyward.actors.console.model import (
-            _on_task_assigned,
-            _on_task_done,
-            _on_task_submitted,
-        )
-        from skyward.actors.console.state import _State
-
-        state = _State(total_nodes=2)
-        state = _on_task_submitted(state, "t1", "train", "single")
-        state = _on_task_assigned(state, "t1", 0)
-        state = _on_task_done(state, "t1", elapsed=1.0)
-        state = _on_task_submitted(state, "t2", "train", "single")
-        state = _on_task_assigned(state, "t2", 0)
-        state = _on_task_done(state, "t2", elapsed=1.0)
-        state = _on_task_submitted(state, "t3", "train", "single")
-        state = _on_task_assigned(state, "t3", 1)
-        state = _on_task_done(state, "t3", elapsed=1.0)
-        assert state.tasks_per_node[0] == 2
-        assert state.tasks_per_node[1] == 1
-
-    def test_record_task_failed(self) -> None:
-        from skyward.actors.console.model import _on_task_failed, _on_task_submitted
-        from skyward.actors.console.state import _State
-
-        state = _State(total_nodes=1)
-        state = _on_task_submitted(state, "t1", "train", "single")
-        new = _on_task_failed(state, "t1")
-        assert new.tasks_running == 0
-        assert new.tasks_failed == 1
-
-    def test_record_metric(self) -> None:
-        from skyward.actors.console.model import _on_metric
-        from skyward.actors.console.state import _State
-
-        state = _State(total_nodes=1)
-        new = _on_metric(state, 0, "gpu_util", 87.5)
-        assert new.metrics[0]["gpu_util"] == 87.5
-
+class TestThroughput:
     def test_throughput(self) -> None:
-        from skyward.actors.console.model import _throughput
-        from skyward.actors.console.state import _State
+        from skyward.actors.console.state import _State, _throughput
 
         state = _State(
             total_nodes=1, tasks_done=10,
@@ -542,30 +387,7 @@ class TestInstanceIdResolution:
         assert _resolve_instance_id(state, node_id=None) is None
 
 
-class TestUpdateInstance:
-    def test_updates_instance_ip(self) -> None:
-        from unittest.mock import MagicMock
-
-        from skyward.actors.console.model import _update_instance
-        from skyward.actors.console.state import _State
-        from skyward.actors.console.view import _ssh_url
-
-        inst_no_ip = MagicMock()
-        inst_no_ip.id = "i-abc"
-        inst_no_ip.ip = None
-        inst_no_ip.ssh_port = 22
-
-        inst_with_ip = MagicMock()
-        inst_with_ip.id = "i-abc"
-        inst_with_ip.ip = "10.0.0.1"
-        inst_with_ip.ssh_port = 22
-
-        state = _State(total_nodes=1, instances=(inst_no_ip,), ssh_user="ubuntu")
-        assert _ssh_url(state, 0) == ""
-
-        updated = _update_instance(state, inst_with_ip)
-        assert _ssh_url(updated, 0) == "ssh://ubuntu@10.0.0.1"
-
+class TestSshUrl:
     def test_ssh_url_with_custom_port(self) -> None:
         from unittest.mock import MagicMock
 
@@ -594,95 +416,6 @@ class TestNodeIdFromPath:
 
         assert _node_id_from_path("/system/user/pool") is None
         assert _node_id_from_path("reconciler") is None
-
-
-class TestElasticStateTransitions:
-    def test_desired_changed_scaling_up(self) -> None:
-        from skyward.actors.console.model import _on_desired_changed
-        from skyward.actors.console.state import _State
-
-        state = _State(total_nodes=4, desired_nodes=4, is_elastic=True)
-        new = _on_desired_changed(state, 8)
-        assert new.desired_nodes == 8
-        assert new.reconciler_state == "scaling_up"
-
-    def test_desired_changed_scaling_down(self) -> None:
-        from skyward.actors.console.model import _on_desired_changed
-        from skyward.actors.console.state import _NodeStatus, _State
-
-        state = _State(
-            total_nodes=8, desired_nodes=8, is_elastic=True,
-            nodes=MappingProxyType(dict.fromkeys(range(8), _NodeStatus.READY)),
-        )
-        new = _on_desired_changed(state, 4)
-        assert new.desired_nodes == 4
-        assert new.reconciler_state == "draining"
-
-    def test_spawn_nodes_increments_pending_and_instances(self) -> None:
-        from unittest.mock import MagicMock
-
-        from skyward.actors.console.model import _on_spawn_nodes
-        from skyward.actors.console.state import _State
-
-        insts = tuple(MagicMock() for _ in range(3))
-        state = _State(total_nodes=4, pending_nodes=0)
-        new = _on_spawn_nodes(state, insts)
-        assert new.pending_nodes == 3
-        assert new.total_nodes == 7
-        assert len(new.instances) == 3
-
-    def test_node_joined_decrements_pending(self) -> None:
-        from skyward.actors.console.model import _on_node_joined
-        from skyward.actors.console.state import _State
-
-        state = _State(total_nodes=4, pending_nodes=2, reconciler_state="scaling_up")
-        new = _on_node_joined(state)
-        assert new.pending_nodes == 1
-        assert new.reconciler_state == "scaling_up"
-
-    def test_node_joined_last_pending_goes_to_watching(self) -> None:
-        from skyward.actors.console.model import _on_node_joined
-        from skyward.actors.console.state import _State
-
-        state = _State(total_nodes=4, pending_nodes=1, reconciler_state="scaling_up")
-        new = _on_node_joined(state)
-        assert new.pending_nodes == 0
-        assert new.reconciler_state == "watching"
-
-    def test_drain_node_increments_draining(self) -> None:
-        from skyward.actors.console.model import _on_drain_node
-        from skyward.actors.console.state import _State
-
-        state = _State(total_nodes=4, draining_nodes=0)
-        new = _on_drain_node(state)
-        assert new.draining_nodes == 1
-        assert new.reconciler_state == "draining"
-
-    def test_drain_complete_decrements_draining(self) -> None:
-        from skyward.actors.console.model import _on_drain_complete
-        from skyward.actors.console.state import _NodeStatus, _State
-
-        state = _State(
-            total_nodes=4, draining_nodes=1, reconciler_state="draining",
-            nodes=MappingProxyType({
-                0: _NodeStatus.READY, 1: _NodeStatus.READY,
-                2: _NodeStatus.READY, 3: _NodeStatus.READY,
-            }),
-        )
-        new = _on_drain_complete(state, 3)
-        assert new.draining_nodes == 0
-        assert new.reconciler_state == "watching"
-        assert new.total_nodes == 3
-        assert 3 not in new.nodes
-        assert len(new.nodes) == 3
-
-    def test_reconciler_node_lost_decrements_pending(self) -> None:
-        from skyward.actors.console.model import _on_reconciler_node_lost
-        from skyward.actors.console.state import _State
-
-        state = _State(total_nodes=4, pending_nodes=2)
-        new = _on_reconciler_node_lost(state)
-        assert new.pending_nodes == 1
 
 
 class TestCollectBadges:

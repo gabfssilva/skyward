@@ -641,3 +641,60 @@ class TestReconciled:
         before_phase = proj.view.pools["pool-1"].phase
         proj.handle(Pool.Reconciled(pool_name="pool-1", snapshot=None))
         assert proj.view.pools["pool-1"].phase == before_phase
+
+
+class TestSettableCallbacks:
+    def test_on_change_settable_after_init(self) -> None:
+        proj = _make_projection()
+        changes: list[tuple[SessionView, SessionView]] = []
+
+        proj.on_change = lambda old, new: changes.append((old, new))
+        _provision(proj)
+
+        assert len(changes) == 1
+        old, new = changes[0]
+        assert len(old.pools) == 0
+        assert "pool-1" in new.pools
+
+    def test_on_log_settable_after_init(self) -> None:
+        proj = _make_projection()
+        logs: list[Log.Emitted] = []
+
+        proj.on_log = lambda event: logs.append(event)
+        _provision(proj)
+        proj.handle(Log.Emitted(pool_name="pool-1", node_id=0, message="hello"))
+
+        assert len(logs) == 1
+        assert logs[0].message == "hello"
+
+    def test_on_event_fires_for_every_event(self) -> None:
+        from skyward.api.events import SessionEvent
+
+        events: list[SessionEvent] = []
+        proj = _make_projection(on_event=lambda e: events.append(e))
+
+        _provision(proj)
+        proj.handle(Node.Connected(pool_name="pool-1", node_id=0, instance=None))
+        proj.handle(Log.Emitted(pool_name="pool-1", node_id=0, message="hi"))
+
+        assert len(events) == 3
+        assert isinstance(events[0], Pool.Provisioning)
+        assert isinstance(events[1], Node.Connected)
+        assert isinstance(events[2], Log.Emitted)
+
+    def test_on_event_fires_for_log_events_too(self) -> None:
+        from skyward.api.events import SessionEvent
+
+        events: list[SessionEvent] = []
+        logs: list[Log.Emitted] = []
+
+        proj = _make_projection(
+            on_event=lambda e: events.append(e),
+            on_log=lambda e: logs.append(e),
+        )
+        proj.handle(Log.Emitted(pool_name="pool-1", node_id=0, message="msg"))
+
+        assert len(events) == 1
+        assert isinstance(events[0], Log.Emitted)
+        assert len(logs) == 1
+        assert logs[0].message == "msg"

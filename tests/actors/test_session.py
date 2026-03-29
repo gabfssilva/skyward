@@ -28,15 +28,8 @@ class TestPoolInfo:
         info = PoolInfo(
             name="train",
             ref=_mock_ref(),
-            spec=_mock_spec(),
-            phase="ready",
-            nodes_ready=3,
-            nodes_total=4,
         )
         assert info.name == "train"
-        assert info.phase == "ready"
-        assert info.nodes_ready == 3
-        assert info.nodes_total == 4
 
     def test_frozen(self) -> None:
         from skyward.actors.session.messages import PoolInfo
@@ -44,10 +37,6 @@ class TestPoolInfo:
         info = PoolInfo(
             name="train",
             ref=_mock_ref(),
-            spec=_mock_spec(),
-            phase="ready",
-            nodes_ready=3,
-            nodes_total=4,
         )
         with pytest.raises(FrozenInstanceError):
             info.name = "other"  # type: ignore[misc]
@@ -131,29 +120,6 @@ class TestPoolSpawnFailed:
             msg.reason = "other"  # type: ignore[misc]
 
 
-class TestPoolStateChanged:
-    def test_construction(self) -> None:
-        from skyward.actors.session.messages import PoolStateChanged
-
-        msg = PoolStateChanged(
-            name="train",
-            phase="provisioning",
-            nodes_ready=0,
-            nodes_total=4,
-        )
-        assert msg.phase == "provisioning"
-        assert msg.nodes_ready == 0
-
-    def test_frozen(self) -> None:
-        from skyward.actors.session.messages import PoolStateChanged
-
-        msg = PoolStateChanged(
-            name="train", phase="ready", nodes_ready=4, nodes_total=4,
-        )
-        with pytest.raises(FrozenInstanceError):
-            msg.phase = "stopped"  # type: ignore[misc]
-
-
 class TestStopSession:
     def test_construction(self) -> None:
         from skyward.actors.session.messages import StopSession
@@ -185,45 +151,6 @@ class TestSessionStopped:
         assert dc_fields(msg) == ()
         with pytest.raises((FrozenInstanceError, TypeError, AttributeError)):
             msg.x = 1  # type: ignore[attr-defined]
-
-
-class TestGetSessionSnapshot:
-    def test_construction(self) -> None:
-        from skyward.actors.session.messages import GetSessionSnapshot
-
-        msg = GetSessionSnapshot(reply_to=_mock_ref())
-        assert msg.reply_to is not None
-
-    def test_frozen(self) -> None:
-        from skyward.actors.session.messages import GetSessionSnapshot
-
-        msg = GetSessionSnapshot(reply_to=_mock_ref())
-        with pytest.raises(FrozenInstanceError):
-            msg.reply_to = _mock_ref()  # type: ignore[misc]
-
-
-class TestSessionSnapshot:
-    def test_construction(self) -> None:
-        from skyward.actors.session.messages import PoolInfo, SessionSnapshot
-
-        info = PoolInfo(
-            name="train",
-            ref=_mock_ref(),
-            spec=_mock_spec(),
-            phase="ready",
-            nodes_ready=2,
-            nodes_total=2,
-        )
-        snap = SessionSnapshot(pools=(info,))
-        assert len(snap.pools) == 1
-        assert snap.pools[0].name == "train"
-
-    def test_frozen(self) -> None:
-        from skyward.actors.session.messages import SessionSnapshot
-
-        snap = SessionSnapshot(pools=())
-        with pytest.raises(FrozenInstanceError):
-            snap.pools = ()  # type: ignore[misc]
 
 
 class TestInternalMessages:
@@ -271,15 +198,12 @@ class TestInternalMessages:
 class TestSessionMsgTypeAlias:
     def test_includes_all_expected_types(self) -> None:
         from skyward.actors.session.messages import (
-            GetSessionSnapshot,
-            PoolStateChanged,
             RecoverExistingPool,
             SessionMsg,
             SpawnPool,
             StopSession,
             _PoolFailed,
             _PoolReady,
-            _SnapshotReady,
         )
 
         args = set(get_args(SessionMsg.__value__))
@@ -287,9 +211,6 @@ class TestSessionMsgTypeAlias:
             SpawnPool,
             RecoverExistingPool,
             StopSession,
-            PoolStateChanged,
-            GetSessionSnapshot,
-            _SnapshotReady,
             _PoolReady,
             _PoolFailed,
         }
@@ -305,13 +226,10 @@ class TestPackageExports:
             "SpawnPool",
             "PoolSpawned",
             "PoolSpawnFailed",
-            "PoolStateChanged",
             "StopSession",
             "SessionStopped",
-            "GetSessionSnapshot",
-            "SessionSnapshot",
             "SessionMsg",
-            "PoolPhase",
+            "RecoverExistingPool",
         }
         assert expected_exports.issubset(set(session_pkg.__all__))
 
@@ -404,66 +322,21 @@ class TestSessionActor:
         await s.shutdown()
 
     @pytest.mark.asyncio
-    async def test_empty_snapshot(self, system) -> None:
-        import asyncio
-
-        from skyward.actors.session.actor import session_actor
-        from skyward.actors.session.messages import (
-            GetSessionSnapshot,
-            SessionSnapshot,
-        )
-
-        ref = system.spawn(session_actor(), "session-empty")
-        await asyncio.sleep(0.1)
-
-        collected: list[SessionSnapshot] = []
-        reply_ref = MagicMock()
-        reply_ref.tell = lambda msg: collected.append(msg)
-
-        ref.tell(GetSessionSnapshot(reply_to=reply_ref))
-        await asyncio.sleep(0.2)
-
-        assert len(collected) == 1
-        assert isinstance(collected[0], SessionSnapshot)
-        assert collected[0].pools == ()
-
-    @pytest.mark.asyncio
-    async def test_pool_state_changed_updates_aggregate(self, system) -> None:
+    async def test_pool_ready_updates_pool_info(self, system) -> None:
         import asyncio
 
         from casty import Behaviors
 
-        from skyward.actors.messages import GetPoolSnapshot
         from skyward.actors.session.actor import session_actor
         from skyward.actors.session.messages import (
-            GetSessionSnapshot,
             PoolSpawned,
             PoolSpawnFailed,
-            PoolStateChanged,
-            SessionSnapshot,
             SpawnPool,
             _PoolReady,
-        )
-        from skyward.actors.snapshot import (
-            PoolPhase,
-            PoolSnapshot,
-            ScalingSnapshot,
-            TaskCounters,
-        )
-
-        stub_snapshot = PoolSnapshot(
-            name="train",
-            phase=PoolPhase.READY,
-            nodes=(),
-            tasks=TaskCounters(),
-            scaling=ScalingSnapshot(),
         )
 
         def _stub_pool():
             async def handle(ctx, msg):
-                match msg:
-                    case GetPoolSnapshot(reply_to=reply_to):
-                        reply_to.tell(stub_snapshot)
                 return Behaviors.same()
             return Behaviors.receive(handle)
 
@@ -509,26 +382,6 @@ class TestSessionActor:
         assert len(spawned) == 1
         assert spawned[0].name == "train"
         assert spawned[0].cluster_id == "c-99"
-
-        ref.tell(PoolStateChanged(
-            name="train",
-            phase="ready",
-            nodes_ready=4,
-            nodes_total=4,
-        ))
-        await asyncio.sleep(0.2)
-
-        snapshots: list[SessionSnapshot] = []
-        snap_ref = MagicMock()
-        snap_ref.tell = lambda msg: snapshots.append(msg)
-        ref.tell(GetSessionSnapshot(reply_to=snap_ref))
-        await asyncio.sleep(0.5)
-
-        assert len(snapshots) == 1
-        assert len(snapshots[0].pools) == 1
-        pool = snapshots[0].pools[0]
-        assert pool.name == "train"
-        assert pool.phase == PoolPhase.READY
 
     @pytest.mark.asyncio
     async def test_stop_session(self, system) -> None:

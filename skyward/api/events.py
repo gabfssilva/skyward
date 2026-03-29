@@ -54,6 +54,12 @@ class Pool:
         snapshot: PoolSnapshot | None
 
     @dataclass(frozen=True, slots=True)
+    class Provisioned:
+        pool_name: str
+        cluster: Any
+        instances: tuple[Instance, ...]
+
+    @dataclass(frozen=True, slots=True)
     class ProvisionFailed:
         pool_name: str
         reason: str
@@ -221,6 +227,7 @@ class Error:
 
 type PoolEvent = (
     Pool.Provisioning
+    | Pool.Provisioned
     | Pool.PhaseChanged
     | Pool.Stopped
     | Pool.Reconciled
