@@ -22,7 +22,11 @@ async def _daemon_request(request: Any) -> Any:
 
 
 def _run_async(coro: Any) -> Any:
-    return asyncio.run(coro)
+    try:
+        return asyncio.run(coro)
+    except ConnectionError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise SystemExit(1) from None
 
 
 # -- commands ----------------------------------------------------------------
@@ -141,6 +145,18 @@ def show_stats(
                 print(_json.dumps(_metrics_to_dict(view), default=str))
             else:
                 _print_metrics(view)
+
+
+@compute_app.command(name="start")
+def start_daemon() -> None:
+    """Start the Skyward daemon."""
+    from skyward.daemon.spawn import ensure_daemon, is_daemon_running
+
+    if is_daemon_running():
+        console.print("[dim]Daemon already running[/dim]")
+        return
+    ensure_daemon()
+    console.print("[green]Daemon started[/green]")
 
 
 @compute_app.command(name="stop")

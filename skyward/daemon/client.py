@@ -47,9 +47,14 @@ class DaemonClient:
         self._writer: asyncio.StreamWriter | None = None
 
     async def connect(self) -> None:
-        self._reader, self._writer = await asyncio.open_unix_connection(
-            str(self._socket_path),
-        )
+        try:
+            self._reader, self._writer = await asyncio.open_unix_connection(
+                str(self._socket_path),
+            )
+        except (FileNotFoundError, ConnectionRefusedError):
+            raise ConnectionError(
+                "Daemon is not running. Start it with: sky compute start",
+            ) from None
 
     async def close(self) -> None:
         if self._writer is not None:
