@@ -496,6 +496,7 @@ class ComputePool:
         result: TaskResult = run_sync(
             self._get_loop(),
             system.ask(ref, self._submit(pending), timeout=timeout),
+            timeout=timeout,
         )
         return self._unwrap_result(result)
 
@@ -586,7 +587,7 @@ class ComputePool:
             )
             return [self._unwrap_broadcast_result(v) for v in result]
 
-        return run_sync(self._get_loop(), _broadcast())
+        return run_sync(self._get_loop(), _broadcast(), timeout=timeout + 30)
 
     def run_parallel(
         self, group: PendingFunctionGroup
@@ -626,6 +627,11 @@ class ComputePool:
         if group.stream:
             return self._run_parallel_stream(group)
 
+        group_timeout = (
+            group.timeout if group.timeout is not None
+            else self.default_compute_timeout
+        )
+
         async def _run_parallel() -> tuple[Any, ...]:
             assert self._pool_ref is not None
             tasks = [
@@ -634,15 +640,10 @@ class ComputePool:
                 )
                 for p in group.items
             ]
-            coro = asyncio.gather(*tasks)
-            group_timeout = (
-                group.timeout if group.timeout is not None
-                else self.default_compute_timeout
-            )
-            results = await asyncio.wait_for(coro, timeout=group_timeout)
+            results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=group_timeout)
             return tuple(self._unwrap_result(r) for r in results)
 
-        return run_sync(self._get_loop(), _run_parallel())
+        return run_sync(self._get_loop(), _run_parallel(), timeout=group_timeout)
 
     def _run_parallel_stream(self, group: PendingFunctionGroup) -> Generator[Any, None, None]:
         q: queue.Queue[Any] = queue.Queue()

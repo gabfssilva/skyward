@@ -1,0 +1,205 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "title": "Skyward Configuration",
+  "description": "Schema for skyward.toml — pool configuration for distributed compute orchestration.",
+  "type": "object",
+  "properties": {
+    "pool": {
+      "type": "object",
+      "description": "Named compute pool definitions.",
+      "additionalProperties": {
+        "$ref": "#/definitions/pool"
+      }
+    }
+  },
+  "definitions": {
+    "pool": {
+      "type": "object",
+      "description": "A compute pool specification.",
+      "required": ["provider", "accelerator"],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Cloud provider.",
+          "enum": [
+            "aws",
+            "gcp",
+            "hyperstack",
+            "jarvislabs",
+            "lambda",
+            "runpod",
+            "scaleway",
+            "tensordock",
+            "thunder",
+            "vastai",
+            "verda",
+            "vultr",
+            "container"
+          ]
+        },
+        "accelerator": {
+          "type": "string",
+          "description": "GPU accelerator type (e.g. A100, H100, L40S, RTX4090)."
+        },
+        "nodes": {
+          "description": "Node count specification: fixed integer, elastic [min, max] range, or detailed object.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Fixed node count."
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              },
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "Elastic range [min, max]."
+            },
+            {
+              "$ref": "#/definitions/nodes"
+            }
+          ]
+        },
+        "allocation": {
+          "type": "string",
+          "description": "Instance allocation strategy.",
+          "enum": ["spot", "on-demand", "spot-if-available", "cheapest"],
+          "default": "spot-if-available"
+        },
+        "selection": {
+          "type": "string",
+          "description": "Multi-spec selection strategy.",
+          "enum": ["cheapest", "first"],
+          "default": "cheapest"
+        },
+        "gpu_count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of GPUs per node."
+        },
+        "cpu_count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of CPU cores per node."
+        },
+        "memory_gb": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Minimum system memory in gigabytes."
+        },
+        "disk_gb": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Minimum disk space in gigabytes."
+        },
+        "region": {
+          "type": "string",
+          "description": "Cloud region for instance provisioning."
+        },
+        "image": {
+          "description": "Docker image specification: a string for a pre-built image, or an object for detailed configuration.",
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "Docker image name (e.g. 'nvidia/cuda:12.4.1-devel-ubuntu22.04')."
+            },
+            {
+              "$ref": "#/definitions/image"
+            }
+          ]
+        },
+        "plugins": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of plugin names to activate (e.g. ['torch', 'keras'])."
+        },
+        "worker": {
+          "$ref": "#/definitions/worker",
+          "description": "Worker process configuration."
+        }
+      },
+      "additionalProperties": false
+    },
+    "nodes": {
+      "type": "object",
+      "description": "Detailed node count specification with partial readiness and elastic scaling.",
+      "required": ["min"],
+      "properties": {
+        "min": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Minimum number of nodes to provision."
+        },
+        "desired": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Desired number of ready nodes before the pool becomes usable (partial readiness)."
+        },
+        "max": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of nodes for elastic autoscaling."
+        }
+      },
+      "additionalProperties": false
+    },
+    "image": {
+      "type": "object",
+      "description": "Detailed Docker image configuration with Python version, dependencies, and setup commands.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Base Docker image name."
+        },
+        "python": {
+          "type": "string",
+          "description": "Python version to install (e.g. '3.12', '3.13')."
+        },
+        "requirements": {
+          "type": "string",
+          "description": "Path to a pip requirements file."
+        },
+        "setup": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Shell commands to run during image bootstrap."
+        }
+      },
+      "additionalProperties": false
+    },
+    "worker": {
+      "type": "object",
+      "description": "Remote worker process configuration.",
+      "properties": {
+        "port": {
+          "type": "integer",
+          "description": "Port the worker listens on.",
+          "default": 9100
+        },
+        "timeout": {
+          "type": "integer",
+          "description": "Worker task timeout in seconds."
+        },
+        "max_concurrent": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of concurrent tasks per worker."
+        },
+        "executor": {
+          "type": "string",
+          "description": "Task executor backend.",
+          "enum": ["thread", "process"],
+          "default": "thread"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

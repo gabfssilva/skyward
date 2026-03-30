@@ -1,0 +1,129 @@
+{
+  "name": "skyward",
+  "displayName": "Skyward",
+  "description": "Distributed compute orchestration for ML/AI workloads",
+  "version": "0.0.1",
+  "publisher": "skyward",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Machine Learning",
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "workspaceContains:**/skyward.toml",
+    "onLanguage:python"
+  ],
+  "icon": "resources/skyward.svg",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "skyward",
+          "title": "Skyward",
+          "icon": "resources/skyward.svg"
+        }
+      ]
+    },
+    "views": {
+      "skyward": [
+        {
+          "id": "skyward.poolExplorer",
+          "name": "Pool Explorer"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "skyward.startDaemon",
+        "title": "Skyward: Start Daemon"
+      },
+      {
+        "command": "skyward.startPool",
+        "title": "Skyward: Start Pool"
+      },
+      {
+        "command": "skyward.stopPool",
+        "title": "Skyward: Stop Pool"
+      },
+      {
+        "command": "skyward.selectPool",
+        "title": "Skyward: Select Pool"
+      },
+      {
+        "command": "skyward.runMain",
+        "title": "Skyward: Run Main"
+      },
+      {
+        "command": "skyward.showNodeLogs",
+        "title": "Skyward: Show Node Logs",
+        "icon": "$(output)"
+      },
+      {
+        "command": "skyward.refreshPools",
+        "title": "Skyward: Refresh Pools",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "skyward.stopPoolInline",
+        "title": "Skyward: Stop Pool",
+        "icon": "$(stop)"
+      },
+      {
+        "command": "skyward.showPoolDetail",
+        "title": "Skyward: Show Pool Detail"
+      },
+      {
+        "command": "skyward.showPoolLogs",
+        "title": "Skyward: Show Pool Logs"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "skyward.refreshPools",
+          "when": "view == skyward.poolExplorer",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "skyward.showNodeLogs",
+          "when": "view == skyward.poolExplorer && viewItem == node",
+          "group": "inline"
+        },
+        {
+          "command": "skyward.stopPoolInline",
+          "when": "view == skyward.poolExplorer && viewItem == pool",
+          "group": "inline"
+        }
+      ]
+    },
+    "tomlValidation": [
+      {
+        "fileMatch": "skyward.toml",
+        "url": "./schemas/skyward.toml.schema.json"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "npm-run-all compile:*",
+    "compile:esbuild": "node esbuild.js",
+    "compile:tsc": "tsc --noEmit",
+    "check-types": "tsc --noEmit",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --preserveWatchOutput",
+    "vscode:prepublish": "node esbuild.js --production",
+    "package": "npx @vscode/vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.100.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0",
+    "esbuild": "^0.27.0",
+    "npm-run-all": "^4.1.5"
+  }
+}
