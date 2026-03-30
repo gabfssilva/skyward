@@ -185,48 +185,106 @@ def console_pool(
 async def _console_stream(name: str) -> None:
     from rich.console import Console as RichConsole
     from rich.live import Live
+    from rich.table import Table
     from rich.text import Text
 
-    from skyward.api.events import Log
-    from skyward.api.views import NodeStatus, SessionView
+    from skyward.actors.console.actor import _print_event
+    from skyward.actors.console.state import _State
+    from skyward.actors.console.view import (
+        _LOGO_LINES,
+        DIM,
+        WARNING_STYLE,
+        _emit,
+        _LiveFooter,
+        _make_badge,
+        _node_label,
+        _render_summary,
+        _state_from_pool_view,
+    )
+    from skyward.api.events import Log, Pool
+    from skyward.api.views import SessionView
     from skyward.daemon.client import DaemonClient
 
     rich = RichConsole(stderr=True)
+    footer = _LiveFooter()
+    live: Live | None = None
+    live_stopped = False
+    latest_view = SessionView()
 
+    def _get_state() -> _State:
+        pool = latest_view.pools.get(name)
+        return _state_from_pool_view(pool) if pool else _State(total_nodes=0)
+
+    def _update_footer(state: _State) -> None:
+        nonlocal live
+        if live_stopped:
+            return
+        footer.state = state
+        if live is None:
+            live = Live(
+                footer, console=rich,
+                refresh_per_second=8, screen=False,
+                redirect_stdout=False, redirect_stderr=False,
+            )
+            live.start()
+
+    def _stop_live(*, clear: bool = False) -> None:
+        nonlocal live, live_stopped
+        live_stopped = True
+        if live is not None:
+            if clear:
+                live.update(Text())
+            live.stop()
+            live = None
+
+    # -- banner --
+    from skyward import __version__
+
+    line1 = Text()
+    line1.append(f" v{__version__} ", style=_make_badge(140, 0.6))
+    line1.append("  Cloud accelerators with a single decorator", style=DIM)
+
+    line2 = Text()
+    line2.append("https://gabfssilva.github.io/skyward/", style="underline dim")
+
+    right = [Text(), line1, line2, Text()]
+    banner = Table.grid(padding=(0, 2))
+    banner.add_column("logo")
+    banner.add_column("info")
+    for logo_line, info_line in zip(_LOGO_LINES, right, strict=True):
+        banner.add_row(logo_line, info_line)
+    rich.print()
+    rich.print(banner)
+    rich.print()
+
+    # -- event loop --
     async with DaemonClient() as client:
-        first = True
-        with Live(Text("[dim]Connecting...[/dim]"), console=rich, refresh_per_second=4) as live:
-            async for msg in client.subscribe(name):
-                match msg:
-                    case SessionView() as view:
-                        pool = view.pools.get(name)
-                        if pool is None:
-                            continue
-                        if first:
-                            rich.print(f"[bold]{name}[/bold]  phase={pool.phase.name}")
-                            first = False
-                        ready = sum(
-                            1 for n in pool.nodes.values()
-                            if n.status.value >= NodeStatus.READY.value
-                        )
-                        total = pool.total_nodes
-                        tasks_done = pool.tasks.done
-                        tasks_running = pool.tasks.running
-                        status = Text()
-                        status.append(f" {name} ", style="bold")
-                        status.append(f" {pool.phase.name} ", style="dim")
-                        status.append(f" nodes {ready}/{total} ")
-                        if tasks_done or tasks_running:
-                            status.append(f" tasks: {tasks_done} done")
-                            if tasks_running:
-                                status.append(f", {tasks_running} running")
-                        if pool.tasks.throughput > 0:
-                            status.append(f" ({pool.tasks.throughput:.1f}/min)")
-                        live.update(status)
+        async for msg in client.subscribe(name):
+            match msg:
+                case SessionView() as view:
+                    latest_view = view
+                    pool = view.pools.get(name)
+                    if pool:
+                        _update_footer(_state_from_pool_view(pool))
 
-                    case Log.Emitted(node_id=nid, message=message):
-                        rich.print(f"  [dim]node-{nid}[/dim]  {message}")
+                case Log.Emitted(node_id=nid, message=message):
+                    state = _get_state()
+                    _emit(rich, _node_label(state, nid), message)
 
+                case Pool.Stopped() | Pool.ProvisionFailed():
+                    state = _get_state()
+                    _stop_live(clear=isinstance(msg, Pool.ProvisionFailed))
+                    _print_event(rich, msg, state)
+                    if isinstance(msg, Pool.Stopped):
+                        _emit(rich, "skyward", "Shutting down...", WARNING_STYLE)
+                    rich.print(_render_summary(state))
+
+                case _:
+                    state = _get_state()
+                    _print_event(rich, msg, state)
+
+    if not live_stopped:
+        _stop_live()
     rich.print("[dim]Stream ended[/dim]")
 
 

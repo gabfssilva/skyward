@@ -170,7 +170,8 @@ class DaemonClient:
     ) -> AsyncIterator[object]:
         """Subscribe to live events for a pool.
 
-        Yields ``SessionView`` (state updates) or ``Log.Emitted`` (log events).
+        Yields ``SessionView`` (state snapshots), ``Log.Emitted`` (log lines),
+        and ``SessionEvent`` domain events (node ready, task completed, etc.).
         Stream ends when ``StreamEnd`` is received or connection closes.
         """
         assert self._reader is not None and self._writer is not None

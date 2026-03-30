@@ -21,10 +21,10 @@ if TYPE_CHECKING:
 
 from skyward.actors.messages import (
     BootstrapCommand,
-    BootstrapConsole,
     BootstrapDone,
     BootstrapFailed,
     BootstrapPhase,
+    ConsoleOutput,
     Event,
     Log,
     Metric,
@@ -86,7 +86,7 @@ def streaming(
                         log.info("Phase {phase}: {ev}", phase=event.phase, ev=event.event)
                     case BootstrapCommand():
                         log.info("Command: {cmd}", cmd=event.command)
-                    case BootstrapConsole():
+                    case ConsoleOutput():
                         log.info("{content}", content=event.content.rstrip())
                     case BootstrapFailed():
                         log.error("Bootstrap failed: {err}", err=event.error)
@@ -121,15 +121,15 @@ def streaming(
 def _convert(raw_event: object, info: NodeInstance) -> Event | None:
     from skyward.infra.ssh import (
         RawBootstrapCommand,
-        RawBootstrapConsole,
         RawBootstrapPhase,
+        RawConsoleOutput,
         RawLogEvent,
         RawMetricEvent,
     )
 
     match raw_event:
-        case RawBootstrapConsole(content=content, stream=stream, overwrite=ow):
-            return BootstrapConsole(instance=info, content=content, stream=stream, overwrite=ow)
+        case RawConsoleOutput(content=content, stream=stream, overwrite=ow):
+            return ConsoleOutput(instance=info, content=content, stream=stream, overwrite=ow)
         case RawBootstrapPhase(event=event, phase=phase, elapsed=elapsed, error=error):
             if event == "failed":
                 return BootstrapFailed(instance=info, phase=phase, error=error or "unknown")

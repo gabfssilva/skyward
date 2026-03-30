@@ -248,8 +248,8 @@ class Log:
 
 
 @dataclass(frozen=True, slots=True)
-class BootstrapConsole:
-    """Console output during bootstrap."""
+class ConsoleOutput:
+    """Console output from a remote instance."""
 
     instance: NodeInstance
     content: str
@@ -311,7 +311,7 @@ type Fact = (
     | TaskCompleted
     | Metric
     | Log
-    | BootstrapConsole
+    | ConsoleOutput
     | BootstrapPhase
     | BootstrapCommand
     | BootstrapFailed

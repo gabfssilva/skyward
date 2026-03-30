@@ -50,35 +50,35 @@ class TestParseJsonlWithCarriageReturn:
     """_parse_jsonl_line handles console events with escaped \\r content."""
 
     def test_parse_console_with_escaped_cr(self) -> None:
-        from skyward.infra.ssh import RawBootstrapConsole, _parse_jsonl_line
+        from skyward.infra.ssh import RawConsoleOutput, _parse_jsonl_line
 
         line = r'{"type":"console","content":"\r 50%|█████     | 500/1000","stream":"stdout"}'
         event = _parse_jsonl_line(line)
-        assert isinstance(event, RawBootstrapConsole)
+        assert isinstance(event, RawConsoleOutput)
         assert "50%" in event.content
 
     def test_parse_console_with_overwrite_flag(self) -> None:
-        from skyward.infra.ssh import RawBootstrapConsole, _parse_jsonl_line
+        from skyward.infra.ssh import RawConsoleOutput, _parse_jsonl_line
 
         line = '{"type":"console","content":"50%|█████","stream":"stdout","overwrite":true}'
         event = _parse_jsonl_line(line)
-        assert isinstance(event, RawBootstrapConsole)
+        assert isinstance(event, RawConsoleOutput)
         assert event.overwrite is True
 
     def test_parse_console_overwrite_defaults_false(self) -> None:
-        from skyward.infra.ssh import RawBootstrapConsole, _parse_jsonl_line
+        from skyward.infra.ssh import RawConsoleOutput, _parse_jsonl_line
 
         line = '{"type":"console","content":"some log","stream":"stdout"}'
         event = _parse_jsonl_line(line)
-        assert isinstance(event, RawBootstrapConsole)
+        assert isinstance(event, RawConsoleOutput)
         assert event.overwrite is False
 
     def test_parse_console_with_multiple_escaped_cr(self) -> None:
-        from skyward.infra.ssh import RawBootstrapConsole, _parse_jsonl_line
+        from skyward.infra.ssh import RawConsoleOutput, _parse_jsonl_line
 
         line = r'{"type":"console","content":"\r 10%|█         | 100/1000\r 20%|██        | 200/1000","stream":"stdout"}'
         event = _parse_jsonl_line(line)
-        assert isinstance(event, RawBootstrapConsole)
+        assert isinstance(event, RawConsoleOutput)
         assert "10%" in event.content
         assert "20%" in event.content
 

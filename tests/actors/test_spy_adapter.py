@@ -222,29 +222,29 @@ class TestBootstrapEvents:
         assert result.error == "script exited 1"
 
     def test_bootstrap_console_output(self):
-        from skyward.actors.messages import BootstrapConsole
+        from skyward.actors.messages import ConsoleOutput
 
         ni = _node_instance(2)
-        ev = BootstrapConsole(instance=ni, content="  Installing deps  ")
+        ev = ConsoleOutput(instance=ni, content="  Installing deps  ")
         result = translate(_spy(ev), "pool")
 
         assert isinstance(result, Node.Bootstrap.Output)
         assert result.output == "Installing deps"
 
     def test_bootstrap_console_empty_skipped(self):
-        from skyward.actors.messages import BootstrapConsole
+        from skyward.actors.messages import ConsoleOutput
 
         ni = _node_instance(2)
-        ev = BootstrapConsole(instance=ni, content="   ")
+        ev = ConsoleOutput(instance=ni, content="   ")
         result = translate(_spy(ev), "pool")
 
         assert result is None
 
     def test_bootstrap_console_comment_skipped(self):
-        from skyward.actors.messages import BootstrapConsole
+        from skyward.actors.messages import ConsoleOutput
 
         ni = _node_instance(2)
-        ev = BootstrapConsole(instance=ni, content="# this is a comment")
+        ev = ConsoleOutput(instance=ni, content="# this is a comment")
         result = translate(_spy(ev), "pool")
 
         assert result is None

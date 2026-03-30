@@ -24,7 +24,7 @@ from typing import Any
 import cloudpickle
 from casty import ActorRef, ActorSystem, EventJournal, SqliteJournal
 
-from skyward.api.events import Log
+from skyward.api.events import SessionEvent
 from skyward.api.views import SessionView
 from skyward.observability.logger import logger
 
@@ -90,15 +90,15 @@ class DaemonServer:
                     for q in queues:
                         q.put_nowait(new)
 
-        def _on_log(log_event: Log.Emitted) -> None:
-            pool_name = log_event.pool_name
+        def _on_event(event: SessionEvent) -> None:
+            pool_name = event.pool_name
             if pool_name in self._subscribers:
                 for q in self._subscribers[pool_name]:
-                    q.put_nowait(log_event)
+                    q.put_nowait(event)
 
         self._projection = SessionProjection(
             on_change=_on_view_changed,
-            on_log=_on_log,
+            on_event=_on_event,
         )
         if journal is None:
             _STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -193,7 +193,7 @@ class DaemonServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
-        """Stream SessionView + Log.Emitted to client until disconnect."""
+        """Stream SessionView snapshots and domain events to client until disconnect."""
         view = self._projection.view
         if pool_name not in view.pools:
             await async_send(writer, DaemonError(error=f"Pool '{pool_name}' not found"))

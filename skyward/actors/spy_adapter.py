@@ -13,10 +13,10 @@ from casty import SpyEvent, Terminated
 
 from skyward.actors.messages import (
     BootstrapCommand,
-    BootstrapConsole,
     BootstrapDone,
     BootstrapPhase,
     ClusterReady,
+    ConsoleOutput,
     DesiredCountChanged,
     DrainComplete,
     DrainNode,
@@ -212,7 +212,7 @@ def translate(spy: SpyEvent, pool_name: str) -> SessionEvent | None:  # type: ig
         case BootstrapDone(instance=ni, success=ok, error=err):
             return Node.Bootstrap.Done(pool_name, ni.node, ok, err)
 
-        case BootstrapConsole(instance=ni, content=c):
+        case ConsoleOutput(instance=ni, content=c):
             stripped = c.strip()
             if not stripped or stripped.startswith("#"):
                 return None

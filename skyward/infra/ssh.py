@@ -26,8 +26,8 @@ log = logger.bind(component="ssh")
 
 
 @dataclass(frozen=True, slots=True)
-class RawBootstrapConsole:
-    """Raw console output from JSONL (without instance info)."""
+class RawConsoleOutput:
+    """Raw console output from JSONL on a remote instance (without instance info)."""
 
     content: str
     stream: Literal["stdout", "stderr"] = "stdout"
@@ -70,7 +70,7 @@ class RawLogEvent:
 
 
 type RawStreamEvent = (
-    RawBootstrapConsole
+    RawConsoleOutput
     | RawBootstrapPhase
     | RawBootstrapCommand
     | RawMetricEvent
@@ -560,7 +560,7 @@ def _parse_jsonl_line(line: str) -> RawStreamEvent | None:
 
     match data.get("type"):
         case "console":
-            return RawBootstrapConsole(
+            return RawConsoleOutput(
                 content=data.get("content", ""),
                 stream=data.get("stream", "stdout"),
                 overwrite=bool(data.get("overwrite", False)),

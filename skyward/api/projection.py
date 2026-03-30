@@ -277,6 +277,7 @@ class SessionProjection:
                 pool = self._pools[name]
                 node = self._get_node(pool, nid)
                 if node.bootstrap is None:
+                    self.handle(Log.Emitted(name, nid, output))
                     return
                 bootstrap = replace(node.bootstrap, output=output)
                 node = replace(node, bootstrap=bootstrap)
