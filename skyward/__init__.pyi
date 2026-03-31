@@ -57,6 +57,7 @@ from skyward.api.function import PendingFunctionGroup as PendingFunctionGroup
 from skyward.api.function import function as function
 from skyward.api.function import gather as gather
 from skyward.api.logging import LogConfig as LogConfig
+from skyward.api.main import main as main
 from skyward.api.model import Cluster as Cluster
 from skyward.api.model import Instance as Instance
 from skyward.api.model import InstanceType as InstanceType
@@ -215,5 +216,6 @@ __all__ = [
     "OfferRepository",
     "Nodes",
     "NodeSpec",
+    "main",
     "plugins",
 ]

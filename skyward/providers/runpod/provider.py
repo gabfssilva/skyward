@@ -121,9 +121,9 @@ def _get_cuda_range(spec: PoolSpec) -> tuple[str | None, str | None]:
             return None, None
 
 
-async def _fetch_docker_tags() -> list[str]:
+async def _fetch_docker_tags(repo: str = _DOCKER_HUB_REPO) -> list[str]:
     """Fetch available image tags from Docker Hub (paginated)."""
-    namespace, name = _DOCKER_HUB_REPO.split("/")
+    namespace, name = repo.split("/")
     all_tags: list[str] = []
     path = f"/v2/repositories/{namespace}/{name}/tags/"
     params: dict[str, str] | None = {"page_size": "100", "ordering": "-last_updated"}
@@ -171,6 +171,7 @@ def _select_image_candidates(
     cuda_min: tuple[int, int],
     cuda_max: tuple[int, int],
     ubuntu: str,
+    repo: str = _DOCKER_HUB_REPO,
 ) -> tuple[str, ...]:
     """Select best image per CUDA version within range, sorted highest first.
 
@@ -200,7 +201,7 @@ def _select_image_candidates(
             best_per_cuda[cuda_ver] = (tag_ver, ubuntu_ver, tag)
 
     return tuple(
-        f"{_DOCKER_HUB_REPO}:{entry[2]}"
+        f"{repo}:{entry[2]}"
         for _, entry in sorted(best_per_cuda.items(), reverse=True)
     )
 
@@ -215,25 +216,38 @@ async def _resolve_image_candidates(
     spec
         Pool specification with accelerator CUDA range.
     config
-        RunPod provider config (ubuntu preference).
+        RunPod provider config (ubuntu preference, base image family).
     """
     if config.container_image:
         return (config.container_image,)
 
+    repo = f"runpod/{config.base_image}"
+
     cuda_catalog_min, cuda_catalog_max = _get_cuda_range(spec)
     if cuda_catalog_min is None:
+        if config.base_image != "base":
+            raise RuntimeError(
+                f"No CUDA range in accelerator spec — cannot resolve "
+                f"images from '{repo}'. Set container_image explicitly."
+            )
         return (_FALLBACK_IMAGE,)
 
     min_ver = _parse_cuda_version(cuda_catalog_min)
     max_ver = _parse_cuda_version(cuda_catalog_max) if cuda_catalog_max else (99, 99)
 
-    tags = await _fetch_docker_tags()
-    if candidates := _select_image_candidates(tags, min_ver, max_ver, config.ubuntu):
+    tags = await _fetch_docker_tags(repo)
+    if candidates := _select_image_candidates(tags, min_ver, max_ver, config.ubuntu, repo):
         log.info(
-            "Resolved {n} image candidates for CUDA {min}-{max}",
-            n=len(candidates), min=cuda_catalog_min, max=cuda_catalog_max,
+            "Resolved {n} image candidates from {repo} for CUDA {min}-{max}",
+            n=len(candidates), repo=repo, min=cuda_catalog_min, max=cuda_catalog_max,
         )
         return candidates
+
+    if config.base_image != "base":
+        raise RuntimeError(
+            f"No matching images in '{repo}' for CUDA {cuda_catalog_min}-{cuda_catalog_max}. "
+            f"Set container_image explicitly or use base_image='base'."
+        )
 
     log.warning(
         "No matching images for CUDA {min}-{max}, using fallback",
@@ -839,9 +853,9 @@ async def _create_gpu_pod_rest(
     if config.data_center_ids != "global":
         params["dataCenterIds"] = list(config.data_center_ids)
     if config.min_inet_down is not None:
-        params["minDownload"] = int(config.min_inet_down)
+        params["minDownloadMbps"] = int(config.min_inet_down)
     if config.min_inet_up is not None:
-        params["minUpload"] = int(config.min_inet_up)
+        params["minUploadMbps"] = int(config.min_inet_up)
     return await client.create_pod(params)
 
 

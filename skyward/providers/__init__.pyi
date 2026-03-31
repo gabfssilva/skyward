@@ -227,6 +227,11 @@ class RunPod:
         Max seconds to wait for bootstrap completion.
     bid_multiplier
         Multiplier for spot bid price.
+    base_image
+        Docker Hub image family for automatic resolution. ``"base"`` uses
+        ``runpod/base`` images (default), ``"pytorch"`` uses ``runpod/pytorch``
+        images which are typically pre-cached on RunPod hosts for faster startup.
+        Ignored when ``container_image`` is set.
     container_image
         Override the container image for pods. Skips automatic image
         resolution from Docker Hub when set.
@@ -244,6 +249,7 @@ class RunPod:
         self,
         *,
         cluster_mode: Literal["instant", "individual"] = "individual",
+        base_image: Literal["base", "pytorch"] = "base",
         global_networking: bool | None = None,
         api_key: str | None = None,
         cloud_type: Literal["community", "secure"] = "secure",

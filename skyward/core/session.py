@@ -77,6 +77,7 @@ class Session:
         self._active: bool = False
         self._context_token: Token[Session | None] | None = None
         self._pools: dict[str, Any] = {}
+        self._pending_pool_refs: dict[str, ActorRef[Any]] = {}
         self._original_sigint: Any = None
 
     def __enter__(self) -> Session:
@@ -225,6 +226,23 @@ class Session:
                 logger.warning(
                     "Error stopping pool {name}: {err}", name=name, err=e,
                 )
+
+        if self._pending_pool_refs and self._system is not None:
+            from skyward.actors.pool.messages import StopPool
+
+            for name, ref in self._pending_pool_refs.items():
+                try:
+                    await self._system.ask(
+                        ref,
+                        lambda reply_to: StopPool(reply_to=reply_to),
+                        timeout=self._shutdown_timeout,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Error stopping pending pool {name}: {err}",
+                        name=name, err=e,
+                    )
+            self._pending_pool_refs.clear()
 
     def _defer_interrupts(self) -> None:
         """Replace SIGINT handler so a second Ctrl+C force-exits."""
@@ -385,7 +403,11 @@ class Session:
         pool_name: str,
         provision_timeout: float,
     ) -> tuple[ActorRef[Any], Any, str, Any, tuple[Any, ...]]:
-        """Select offers and ask the session actor to spawn a pool.
+        """Select offers, create pool actor, start provisioning, and wait.
+
+        The pool actor is registered in ``_pending_pool_refs`` before the
+        blocking wait so that ``_stop_all_pools`` can terminate it on
+        interrupt.
 
         Parameters
         ----------
@@ -408,8 +430,6 @@ class Session:
         RuntimeError
             When provisioning fails.
         """
-        from skyward.actors.session.messages import PoolSpawned, PoolSpawnFailed, SpawnPool
-
         loop = self._get_loop()
         system = self._system
         session_ref = self._session_ref
@@ -421,38 +441,85 @@ class Session:
 
         check_fd_budget(spec.nodes.max or spec.nodes.min)
 
-        def _spawn_factory(
-            reply_to: ActorRef[PoolSpawned | PoolSpawnFailed],
-        ) -> SpawnPool:
-            return SpawnPool(
-                name=pool_name,
-                spec=spec,
-                provider_config=provider_config,
-                provider=cloud_provider,
-                offers=offers,
-                provision_timeout=provision_timeout,
-                reply_to=reply_to,
-            )
+        pool_ref = self._create_pool_actor(pool_name)
 
-        result: PoolSpawned | PoolSpawnFailed = run_sync(
+        try:
+            started = self._start_pool(
+                pool_ref, spec, provider_config, cloud_provider,
+                offers, provision_timeout,
+            )
+        except KeyboardInterrupt:
+            raise
+        except Exception:
+            self._pending_pool_refs.pop(pool_name, None)
+            raise
+
+        self._pending_pool_refs.pop(pool_name, None)
+        return pool_ref, spec, started.cluster_id, started.cluster, started.instances
+
+    def _create_pool_actor(self, pool_name: str) -> ActorRef[Any]:
+        """Ask the session actor to spawn a pool actor and return its ref.
+
+        The ref is immediately tracked in ``_pending_pool_refs`` so
+        ``_stop_all_pools`` can reach it during shutdown.
+        """
+        from skyward.actors.session.messages import CreatePool, PoolCreated
+
+        loop = self._get_loop()
+        system = self._system
+        session_ref = self._session_ref
+        assert system is not None and session_ref is not None
+
+        result: PoolCreated = run_sync(
             loop,
-            system.ask(session_ref, _spawn_factory, timeout=provision_timeout),
+            system.ask(
+                session_ref,
+                lambda reply_to: CreatePool(name=pool_name, reply_to=reply_to),
+                timeout=30,
+            ),
+        )
+        self._pending_pool_refs[pool_name] = result.pool_ref
+        return result.pool_ref
+
+    def _start_pool(
+        self,
+        pool_ref: ActorRef[Any],
+        spec: Any,
+        provider_config: Any,
+        provider: Any,
+        offers: tuple[Any, ...],
+        timeout: float,
+    ) -> Any:
+        """Send StartPool to the pool actor and block until ready or failed."""
+        from skyward.actors.pool.messages import PoolStarted, ProvisionFailed, StartPool
+        from skyward.core.errors import ProvisioningError
+
+        loop = self._get_loop()
+        system = self._system
+        assert system is not None
+
+        result: PoolStarted | ProvisionFailed = run_sync(
+            loop,
+            system.ask(
+                pool_ref,
+                lambda reply_to: StartPool(
+                    spec=spec,
+                    provider_config=provider_config,
+                    provider=provider,
+                    offers=offers,
+                    reply_to=reply_to,  # type: ignore[arg-type]
+                ),
+                timeout=timeout,
+            ),
         )
 
         match result:
-            case PoolSpawnFailed(name=n, reason=reason):
-                from skyward.core.errors import ProvisioningError
+            case ProvisionFailed(reason=reason):
+                raise ProvisioningError(pool_name="", reason=reason)
+            case PoolStarted() as started:
+                return started
 
-                raise ProvisioningError(pool_name=n, reason=reason)
-            case PoolSpawned(
-                pool_ref=pool_ref,
-                cluster_id=cid,
-                instances=instances,
-                cluster=cluster,
-            ):
-                return pool_ref, spec, cid, cluster, instances
-
-        raise RuntimeError(f"Unexpected result from session actor: {result}")
+        raise RuntimeError(f"Unexpected result from pool actor: {result}")
 
     def recover_pool(
         self,

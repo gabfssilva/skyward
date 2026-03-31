@@ -183,6 +183,9 @@ def console_pool(
 
 
 async def _console_stream(name: str) -> None:
+    from dataclasses import replace as _replace
+    from types import MappingProxyType
+
     from rich.console import Console as RichConsole
     from rich.live import Live
     from rich.table import Table
@@ -210,10 +213,14 @@ async def _console_stream(name: str) -> None:
     live: Live | None = None
     live_stopped = False
     latest_view = SessionView()
+    progress: dict[int, str] = {}
 
     def _get_state() -> _State:
         pool = latest_view.pools.get(name)
-        return _state_from_pool_view(pool) if pool else _State(total_nodes=0)
+        state = _state_from_pool_view(pool) if pool else _State(total_nodes=0)
+        if progress:
+            state = _replace(state, progress_lines=MappingProxyType(progress))
+        return state
 
     def _update_footer(state: _State) -> None:
         nonlocal live
@@ -263,16 +270,25 @@ async def _console_stream(name: str) -> None:
             match msg:
                 case SessionView() as view:
                     latest_view = view
-                    pool = view.pools.get(name)
-                    if pool:
-                        _update_footer(_state_from_pool_view(pool))
-
-                case Log.Emitted(node_id=nid, message=message):
                     state = _get_state()
-                    _emit(rich, _node_label(state, nid), message)
+                    _update_footer(state)
+
+                case Log.Emitted(node_id=nid, message=message, overwrite=ow):
+                    if ow:
+                        progress[nid] = message
+                        _update_footer(_get_state())
+                    else:
+                        if nid in progress:
+                            state = _get_state()
+                            _emit(rich, _node_label(state, nid), progress.pop(nid))
+                        state = _get_state()
+                        _emit(rich, _node_label(state, nid), message)
 
                 case Pool.Stopped() | Pool.ProvisionFailed():
                     state = _get_state()
+                    for nid, content in progress.items():
+                        _emit(rich, _node_label(state, nid), content)
+                    progress.clear()
                     _stop_live(clear=isinstance(msg, Pool.ProvisionFailed))
                     _print_event(rich, msg, state)
                     if isinstance(msg, Pool.Stopped):

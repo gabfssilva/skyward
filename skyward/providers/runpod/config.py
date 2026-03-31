@@ -54,9 +54,14 @@ class RunPod(ProviderConfig):
             Set to None to skip. Default: "docker hub".
         min_inet_down: Minimum download speed in Mbps. None disables filter.
         min_inet_up: Minimum upload speed in Mbps. None disables filter.
+        base_image: Docker Hub image family for automatic resolution. "base" uses
+            ``runpod/base`` images (default), "pytorch" uses ``runpod/pytorch`` images
+            which are typically pre-cached on RunPod hosts for faster startup.
+            Ignored when ``container_image`` is set. Default: "base".
     """
 
     cluster_mode: ClusterMode = "individual"
+    base_image: Literal["base", "pytorch"] = "base"
     global_networking: bool | None = None
     api_key: str | None = None
     cloud_type: Literal["community", "secure"] = "secure"
