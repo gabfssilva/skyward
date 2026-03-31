@@ -153,7 +153,10 @@ export interface SidecarClient {
     file: string,
     fn: string,
     args: Record<string, unknown>,
+    pool: string,
   ): Promise<void>;
+  configPools(): Promise<string[]>;
+  configProviders(): Promise<string[]>;
   discoverMainFunctions(files?: string[]): Promise<MainFunction[]>;
   dispose(): void;
 }

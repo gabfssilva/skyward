@@ -31,6 +31,9 @@ from skyward.api.function import gather as gather
 from skyward.api.logging import LogConfig as LogConfig
 from skyward.api.logging import LogLevel as LogLevel
 
+# ── Entry point ──────────────────────────────────────────────
+from skyward.api.main import main as main
+
 # ── Metrics ───────────────────────────────────────────────────
 from skyward.api.metrics import Metric as Metric
 from skyward.api.metrics import MetricsConfig as MetricsConfig
@@ -158,6 +161,8 @@ __all__ = [
     "LogLevel",
     # Distributed
     "Consistency",
+    # Entry point
+    "main",
     # Stubs
     "Session",
     "Compute",

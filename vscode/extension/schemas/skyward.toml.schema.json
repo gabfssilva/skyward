@@ -4,7 +4,14 @@
   "description": "Schema for skyward.toml — pool configuration for distributed compute orchestration.",
   "type": "object",
   "properties": {
-    "pool": {
+    "providers": {
+      "type": "object",
+      "description": "Named provider configurations.",
+      "additionalProperties": {
+        "$ref": "#/definitions/provider"
+      }
+    },
+    "pools": {
       "type": "object",
       "description": "Named compute pool definitions.",
       "additionalProperties": {
@@ -13,14 +20,14 @@
     }
   },
   "definitions": {
-    "pool": {
+    "provider": {
       "type": "object",
-      "description": "A compute pool specification.",
-      "required": ["provider", "accelerator"],
+      "description": "A cloud provider configuration.",
+      "required": ["type"],
       "properties": {
-        "provider": {
+        "type": {
           "type": "string",
-          "description": "Cloud provider.",
+          "description": "Provider type.",
           "enum": [
             "aws",
             "gcp",
@@ -36,6 +43,26 @@
             "vultr",
             "container"
           ]
+        },
+        "region": {
+          "type": "string",
+          "description": "Cloud region (provider-specific)."
+        },
+        "api_key": {
+          "type": "string",
+          "description": "API key (falls back to environment variable if not set)."
+        }
+      },
+      "additionalProperties": true
+    },
+    "pool": {
+      "type": "object",
+      "description": "A compute pool specification.",
+      "required": ["provider"],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Reference to a provider defined in [providers]."
         },
         "accelerator": {
           "type": "string",

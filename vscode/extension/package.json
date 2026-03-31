@@ -35,10 +35,24 @@
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "skyward.poolExplorer",
+        "contents": "No pools running.\n[Start Pool](command:skyward.startPool)\n[Add Provider](command:skyward.addProvider)\n[Add Pool](command:skyward.addPool)"
+      }
+    ],
     "commands": [
       {
         "command": "skyward.startDaemon",
         "title": "Skyward: Start Daemon"
+      },
+      {
+        "command": "skyward.addProvider",
+        "title": "Skyward: Add Provider"
+      },
+      {
+        "command": "skyward.addPool",
+        "title": "Skyward: Add Pool"
       },
       {
         "command": "skyward.startPool",
@@ -100,6 +114,16 @@
           "group": "inline"
         }
       ]
+    },
+    "configuration": {
+      "title": "Skyward",
+      "properties": {
+        "skyward.useMock": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use mock data instead of connecting to the daemon (development only)"
+        }
+      }
     },
     "tomlValidation": [
       {

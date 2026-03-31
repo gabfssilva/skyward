@@ -3,7 +3,7 @@ import { registerLifecycleCommands } from "./commands/lifecycle";
 import { SkyMainCodeLensProvider } from "./codelens/main-lens";
 import type { ParsedParam } from "./codelens/main-lens";
 import { NodeLogManager } from "./logs/node-channel";
-import { MockClient } from "./sidecar/mock-client";
+import { createClient } from "./sidecar/client";
 import type { SkywardEvent } from "./sidecar/protocol";
 import { PoolStatusBar } from "./statusbar/pool-status";
 import { DetailPanelManager } from "./views/detail-panel";
@@ -24,7 +24,12 @@ function debounce(fn: () => void, ms: number): () => void {
 // ── Activate ─────────────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext): void {
-  const client = new MockClient();
+  const useMock = vscode.workspace
+    .getConfiguration("skyward")
+    .get("useMock", true);
+  const workspaceRoot =
+    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+  const client = createClient(workspaceRoot, useMock);
   const statusBar = new PoolStatusBar(client);
   const poolExplorer = new PoolExplorer(client);
   const codeLensProvider = new SkyMainCodeLensProvider();
@@ -77,9 +82,19 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
+  const syncCodeLens = (): void => {
+    const names = statusBar.getPoolNames();
+    codeLensProvider.setPoolCount(names.length);
+    const active = statusBar.active;
+    if (active) codeLensProvider.setActivePool(active);
+  };
+
   const refreshAll = (): void => {
     void poolExplorer.refresh();
-    void statusBar.refresh();
+    void statusBar.refresh().then(() => {
+      syncCodeLens();
+      subscribeAll();
+    });
   };
 
   registerLifecycleCommands(context, client, statusBar, refreshAll);
@@ -121,7 +136,21 @@ export function activate(context: vscode.ExtensionContext): void {
           args[param.name] = parseValue(input, param.type);
         }
 
-        const pool = statusBar.active ?? "train";
+        const poolNames = statusBar.getPoolNames();
+        let pool: string | undefined;
+
+        if (poolNames.length === 0) {
+          vscode.window.showWarningMessage("No active pools. Start one first.");
+          return;
+        } else if (poolNames.length === 1) {
+          pool = poolNames[0];
+        } else {
+          pool = await vscode.window.showQuickPick(poolNames, {
+            placeHolder: "Select pool to run on",
+          });
+        }
+
+        if (!pool) return;
         const argStr = Object.entries(args)
           .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
           .join(", ");
@@ -129,7 +158,16 @@ export function activate(context: vscode.ExtensionContext): void {
           `Running ${fnName}(${argStr}) on ${pool}...`,
         );
 
-        await client.runMain(uri.fsPath, fnName, args);
+        try {
+          await client.runMain(uri.fsPath, fnName, args, pool);
+          vscode.window.showInformationMessage(
+            `${fnName}(${argStr}) completed on ${pool}.`,
+          );
+        } catch (err) {
+          vscode.window.showErrorMessage(
+            `${fnName} failed: ${err instanceof Error ? err.message : err}`,
+          );
+        }
       },
     ),
   );
@@ -156,7 +194,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const debouncedRefresh = debounce(() => {
     void poolExplorer.refresh();
-    void statusBar.refresh();
+    void statusBar.refresh().then(() => {
+      syncCodeLens();
+      subscribeAll();
+    });
   }, 500);
 
   const handleEvent = (event: SkywardEvent): void => {
@@ -167,17 +208,27 @@ export function activate(context: vscode.ExtensionContext): void {
     debouncedRefresh();
   };
 
-  // Subscribe to all known pools
-  void client.listPools().then((pools) => {
-    for (const pool of pools) {
-      client.subscribe(pool.name, handleEvent);
-    }
-  });
+  // Subscribe to pool events — tracks which pools are already subscribed
+  const subscribedPools = new Set<string>();
+
+  const subscribeAll = (): void => {
+    void client.listPools().then((pools) => {
+      for (const pool of pools) {
+        if (!subscribedPools.has(pool.name)) {
+          subscribedPools.add(pool.name);
+          client.subscribe(pool.name, handleEvent);
+        }
+      }
+    });
+  };
 
   // ── Initial load ─────────────────────────────────────────────
 
   void poolExplorer.refresh();
-  void statusBar.refresh();
+  void statusBar.refresh().then(() => {
+    syncCodeLens();
+    subscribeAll();
+  });
 }
 
 function parseValue(raw: string, type: string): unknown {

@@ -212,11 +212,11 @@ def translate(spy: SpyEvent, pool_name: str) -> SessionEvent | None:  # type: ig
         case BootstrapDone(instance=ni, success=ok, error=err):
             return Node.Bootstrap.Done(pool_name, ni.node, ok, err)
 
-        case ConsoleOutput(instance=ni, content=c):
+        case ConsoleOutput(instance=ni, content=c, overwrite=ow):
             stripped = c.strip()
             if not stripped or stripped.startswith("#"):
                 return None
-            return Node.Bootstrap.Output(pool_name, ni.node, stripped)
+            return Node.Bootstrap.Output(pool_name, ni.node, stripped, overwrite=ow)
 
         case _PostBootstrapFailed(error=err):
             return ErrorEvent.Occurred(pool_name, f"Post-bootstrap failed: {err}")
@@ -241,11 +241,11 @@ def translate(spy: SpyEvent, pool_name: str) -> SessionEvent | None:  # type: ig
         case Metric(instance=ni, name=name, value=value):
             return MetricEvent.Sampled(pool_name, ni.node, name, value)
 
-        case Log(instance=ni, line=line):
+        case Log(instance=ni, line=line, overwrite=ow):
             stripped = line.strip()
             if not stripped:
                 return None
-            return LogEvent.Emitted(pool_name, ni.node, stripped)
+            return LogEvent.Emitted(pool_name, ni.node, stripped, overwrite=ow)
 
         # ── Errors ──────────────────────────────────────────
         case Error(message=message, fatal=fatal):

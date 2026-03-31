@@ -8,6 +8,8 @@ from skyward.observability.logger import logger
 
 from .adapter import start_adapter
 from .messages import (
+    CreatePool,
+    PoolCreated,
     PoolInfo,
     PoolSpawned,
     PoolSpawnFailed,
@@ -54,6 +56,21 @@ def active(
         ctx: ActorContext[SessionMsg], msg: SessionMsg,
     ) -> Behavior[SessionMsg]:
         match msg:
+            case CreatePool(name=name, reply_to=reply_to):
+                from skyward.actors.pool.actor import pool_actor
+
+                pool_ref = ctx.spawn(
+                    pool_actor(session_ref=ctx.self, pool_name=name),
+                    f"pool-{name}",
+                )
+                info = PoolInfo(name=name, ref=pool_ref)
+                reply_to.tell(PoolCreated(pool_ref=pool_ref))
+                log.info("Created pool actor {name}", name=name)
+                return active(
+                    pools=MappingProxyType({**pools, name: info}),
+                    pending_replies=pending_replies,
+                )
+
             case SpawnPool(
                 name=name, spec=spec, provider_config=pc,
                 provider=provider, offers=offers,

@@ -20,6 +20,19 @@ class PoolInfo:
 
 
 @dataclass(frozen=True, slots=True)
+class CreatePool:
+    """Spawn a pool actor as a session child and return its ref immediately."""
+
+    name: str
+    reply_to: ActorRef[PoolCreated]
+
+
+@dataclass(frozen=True, slots=True)
+class PoolCreated:
+    pool_ref: ActorRef[PoolMsg]
+
+
+@dataclass(frozen=True, slots=True)
 class SpawnPool:
     name: str
     spec: PoolSpec
@@ -82,7 +95,8 @@ class RecoverExistingPool:
 
 
 type SessionMsg = (
-    SpawnPool
+    CreatePool
+    | SpawnPool
     | RecoverExistingPool
     | StopSession
     | _PoolReady

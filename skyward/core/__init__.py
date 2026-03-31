@@ -1,5 +1,6 @@
 """User-facing API — pool, compute, runtime."""
 
+from ..api.main import main as main
 from .compute import Compute
 from .context import sky
 from .errors import NoOffersError as NoOffersError
@@ -79,6 +80,7 @@ __all__ = [
     "Volume",
     "Worker",
     "WorkerExecutor",
+    "main",
     "Compute",
     "NoOffersError",
     "ProvisioningError",

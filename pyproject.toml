@@ -83,7 +83,7 @@ source = "vcs"
 version-file = "skyward/_version.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["skyward"]
+packages = ["skyward", "vscode"]
 
 [tool.ruff]
 target-version = "py312"
@@ -106,7 +106,7 @@ ignore = [
 [tool.pyright]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
-include = ["skyward"]
+include = ["skyward", "vscode"]
 reportMissingImports = "warning"
 
 [tool.pytest.ini_options]

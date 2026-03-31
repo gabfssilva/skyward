@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from types import MappingProxyType
 from typing import Any
 
 from casty import ActorContext, Behavior, Behaviors
@@ -175,38 +177,64 @@ def console_actor() -> Behavior[ConsoleInput]:
 
         return Behaviors.setup(setup)
 
-    def rendering(view: SessionView) -> Behavior[ConsoleInput]:
+    def _get_state(
+        view: SessionView,
+        progress: MappingProxyType[int, str] = MappingProxyType({}),
+    ) -> _State:
+        pool = _first_pool(view)
+        state = _state_from_pool_view(pool) if pool else _State(total_nodes=0)
+        if progress:
+            state = replace(state, progress_lines=progress)
+        return state
+
+    def rendering(
+        view: SessionView,
+        progress: MappingProxyType[int, str] = MappingProxyType({}),
+    ) -> Behavior[ConsoleInput]:
         async def receive(
             ctx: ActorContext[ConsoleInput], msg: ConsoleInput,
         ) -> Behavior[ConsoleInput]:
             match msg:
                 case ViewUpdated(view=new_view):
-                    pool = _first_pool(new_view)
-                    if pool:
-                        state = _state_from_pool_view(pool)
-                        _update_footer(state)
-                    return rendering(new_view)
+                    state = _get_state(new_view, progress)
+                    _update_footer(state)
+                    return rendering(new_view, progress)
 
                 case EventReceived(event=event):
-                    pool = _first_pool(view)
-                    state = _state_from_pool_view(pool) if pool else _State(total_nodes=0)
+                    state = _get_state(view, progress)
                     match event:
                         case Pool.Stopped() | Pool.ProvisionFailed():
+                            for nid, content in progress.items():
+                                _emit(console, _node_label(state, nid), content)
                             _stop_live(clear=isinstance(event, Pool.ProvisionFailed))
                             _print_event(console, event, state)
                             if isinstance(event, Pool.Stopped):
                                 _emit(console, "skyward", "Shutting down...", WARNING_STYLE)
                             summary = _render_summary(state)
                             console.print(summary)
+                            return rendering(view, MappingProxyType({}))
                         case _:
                             _print_event(console, event, state)
                     return Behaviors.same()
 
                 case LogReceived(log=log):
-                    pool = _first_pool(view)
-                    state = _state_from_pool_view(pool) if pool else _State(total_nodes=0)
-                    _emit(console, _node_label(state, log.node_id), log.message)
-                    return Behaviors.same()
+                    nid = log.node_id
+                    if log.overwrite:
+                        new_progress = MappingProxyType({**progress, nid: log.message})
+                        state = _get_state(view, new_progress)
+                        _update_footer(state)
+                        return rendering(view, new_progress)
+                    if nid in progress:
+                        state = _get_state(view, progress)
+                        _emit(console, _node_label(state, nid), progress[nid])
+                        new_progress = MappingProxyType({
+                            k: v for k, v in progress.items() if k != nid
+                        })
+                    else:
+                        new_progress = progress
+                    state = _get_state(view, new_progress)
+                    _emit(console, _node_label(state, nid), log.message)
+                    return rendering(view, new_progress)
 
                 case LocalOutput(line=line):
                     if stripped := line.rstrip():

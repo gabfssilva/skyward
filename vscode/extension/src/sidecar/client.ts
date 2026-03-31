@@ -1,8 +1,20 @@
 /**
- * Re-export for easy swapping between mock and real daemon client.
+ * Factory for creating a {@link SidecarClient}.
  *
- * Change the import here when a real sidecar client is implemented.
+ * Switches between the {@link MockClient} (hardcoded data for UI dev)
+ * and the {@link RealClient} (spawns the Python bridge process) based
+ * on the `skyward.useMock` configuration setting.
  */
 
-export { MockClient as createClient } from "./mock-client";
-export type { SidecarClient } from "./protocol";
+import { MockClient } from "./mock-client";
+import type { SidecarClient } from "./protocol";
+import { RealClient } from "./real-client";
+
+export function createClient(
+  workspaceRoot: string,
+  useMock: boolean,
+): SidecarClient {
+  return useMock ? new MockClient() : new RealClient(workspaceRoot);
+}
+
+export type { SidecarClient };

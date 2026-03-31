@@ -168,7 +168,7 @@ class SessionProjection:
             case Pool.Stopped(pool_name=name):
                 if name not in self._pools:
                     return
-                self._pools[name] = replace(self._pools[name], phase=PoolPhase.STOPPING)
+                del self._pools[name]
 
             case Pool.Provisioned(pool_name=name, cluster=cluster, instances=instances):
                 if name not in self._pools:
@@ -271,13 +271,13 @@ class SessionProjection:
                 node = replace(node, bootstrap=bootstrap)
                 self._pools[name] = self._set_node(pool, node)
 
-            case Node.Bootstrap.Output(pool_name=name, node_id=nid, output=output):
+            case Node.Bootstrap.Output(pool_name=name, node_id=nid, output=output, overwrite=ow):
                 if name not in self._pools:
                     return
                 pool = self._pools[name]
                 node = self._get_node(pool, nid)
                 if node.bootstrap is None:
-                    self.handle(Log.Emitted(name, nid, output))
+                    self.handle(Log.Emitted(name, nid, output, overwrite=ow))
                     return
                 bootstrap = replace(node.bootstrap, output=output)
                 node = replace(node, bootstrap=bootstrap)

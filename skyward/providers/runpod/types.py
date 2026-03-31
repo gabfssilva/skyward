@@ -99,8 +99,8 @@ class PodCreateParams(TypedDict, total=False):
     dataCenterIds: list[str]
     minVCPUPerGPU: int
     minRAMPerGPU: int
-    minDownload: int
-    minUpload: int
+    minDownloadMbps: int
+    minUploadMbps: int
     globalNetworking: bool
     supportPublicIp: bool
 

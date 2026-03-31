@@ -116,6 +116,7 @@ class Node:
             pool_name: str
             node_id: int
             output: str
+            overwrite: bool = False
 
         @dataclass(frozen=True, slots=True)
         class Done:
@@ -189,6 +190,7 @@ class Log:
         node_id: int
         message: str
         level: str = "info"
+        overwrite: bool = False
 
 
 class Scaling:

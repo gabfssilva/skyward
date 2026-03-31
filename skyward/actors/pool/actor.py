@@ -255,6 +255,10 @@ def pool_actor(
                         node_refs=new_refs, tm_ref=tm_ref,
                     ))
 
+                case StopPool(reply_to=stop_reply):
+                    stop_reply.tell(PoolStopped())
+                    return Behaviors.stopped()
+
             return Behaviors.same()
         return Behaviors.receive(receive)
 
@@ -343,6 +347,29 @@ def pool_actor(
                     return provisioning_instances(replace(
                         s, spec=effective_spec, cluster=cluster,
                     ))
+                case StopPool(reply_to=stop_reply):
+                    log.debug("StopPool during requesting")
+                    s.reply_to.tell(ProvisionFailed(reason="Interrupted"))
+                    provider = s.provider
+                    cluster = s.cluster
+                    instance_ids = tuple(
+                        ni.instance.id for ni in s.instances.values()
+                    )
+
+                    async def _shutdown() -> None:
+                        if instance_ids and cluster is not None:
+                            with suppress(Exception):
+                                await provider.terminate(cluster, instance_ids)
+                        if cluster is not None:
+                            with suppress(Exception):
+                                await provider.teardown(cluster)
+
+                    ctx.pipe_to_self(
+                        _shutdown(),
+                        mapper=lambda _: _ShutdownDone(),
+                    )
+                    return stopping(stop_reply, s.cluster_id or "")
+
                 case GetPoolSnapshot(reply_to=snap_reply):
                     snap_reply.tell(build_pool_snapshot(s, pool_name))
                     return Behaviors.same()
@@ -539,6 +566,30 @@ def pool_actor(
                         mapper=lambda _: ProvisionFailed(reason=reason),
                     )
                     return _cleanup_awaiting(reply_to)
+
+                case StopPool(reply_to=stop_reply):
+                    log.debug("StopPool during provisioning_instances")
+                    s.reply_to.tell(ProvisionFailed(reason="Interrupted"))
+                    provider = s.provider
+                    cluster = s.cluster
+                    instance_ids = tuple(
+                        ni.instance.id for ni in s.instances.values()
+                    )
+
+                    async def _shutdown() -> None:
+                        if instance_ids and cluster is not None:
+                            with suppress(Exception):
+                                await provider.terminate(cluster, instance_ids)
+                        if cluster is not None:
+                            with suppress(Exception):
+                                await provider.teardown(cluster)
+
+                    ctx.pipe_to_self(
+                        _shutdown(),
+                        mapper=lambda _: _ShutdownDone(),
+                    )
+                    return stopping(stop_reply, s.cluster_id or "")
+
                 case GetPoolSnapshot(reply_to=snap_reply):
                     snap_reply.tell(build_pool_snapshot(s, pool_name))
                     return Behaviors.same()
@@ -555,6 +606,9 @@ def pool_actor(
                     clog.info("Cleanup complete, reporting failure")
                     reply_to.tell(pf)
                     return Behaviors.stopped()
+                case StopPool(reply_to=stop_reply):
+                    stop_reply.tell(PoolStopped())
+                    return Behaviors.same()
             return Behaviors.same()
         return Behaviors.receive(receive)
 
@@ -667,8 +721,32 @@ def pool_actor(
                     return provisioning(replace(
                         s, ready_nodes=s.ready_nodes - {nid},
                     ))
-                case StopPool():
-                    log.debug("StopPool received while provisioning")
+                case StopPool(reply_to=stop_reply):
+                    log.debug("StopPool during provisioning")
+                    s.reply_to.tell(ProvisionFailed(reason="Interrupted"))
+                    instance_ids = tuple(
+                        ni.instance.id for ni in s.instances.values()
+                    )
+                    provider = s.provider
+                    cluster = s.cluster
+
+                    async def _shutdown() -> None:
+                        if instance_ids and cluster is not None:
+                            with suppress(Exception):
+                                await provider.terminate(cluster, instance_ids)
+                        if cluster is not None:
+                            with suppress(Exception):
+                                await provider.teardown(cluster)
+
+                    ctx.pipe_to_self(
+                        _shutdown(),
+                        mapper=lambda _: _ShutdownDone(),
+                    )
+                    return stopping(
+                        stop_reply, s.cluster_id or "",
+                        replace(s, phase=PoolPhase.STOPPING), pool_name,
+                    )
+
                 case GetPoolSnapshot(reply_to=snap_reply):
                     snap_reply.tell(build_pool_snapshot(s, pool_name))
                     return Behaviors.same()

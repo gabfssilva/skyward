@@ -1,8 +1,8 @@
 /**
  * Pool Explorer TreeView for the Skyward sidebar.
  *
- * Flat, glanceable layout:
- *   pool → Nodes (with inline metrics), Logs
+ * Shows running pools (from daemon) + configured-but-stopped pools
+ * (from skyward.toml) in a unified tree.
  */
 
 import * as vscode from "vscode";
@@ -12,6 +12,7 @@ import type { NodeView, PoolView, SidecarClient } from "../sidecar/protocol";
 
 export type TreeNode =
   | { kind: "pool"; name: string; view: PoolView }
+  | { kind: "stopped-pool"; name: string }
   | { kind: "category"; pool: string; type: "nodes" | "logs" }
   | { kind: "node"; view: NodeView; pool: string; tasksOnNode: number }
   | { kind: "metric"; label: string; value: string }
@@ -25,6 +26,7 @@ export class PoolExplorer implements vscode.TreeDataProvider<TreeNode> {
 
   private readonly _client: SidecarClient;
   private readonly _pools = new Map<string, PoolView>();
+  private _configPoolNames: string[] = [];
 
   constructor(client: SidecarClient) {
     this._client = client;
@@ -35,7 +37,11 @@ export class PoolExplorer implements vscode.TreeDataProvider<TreeNode> {
   }
 
   async refresh(): Promise<void> {
-    const summaries = await this._client.listPools().catch(() => []);
+    const [summaries, configNames] = await Promise.all([
+      this._client.listPools().catch(() => []),
+      this._client.configPools().catch(() => []),
+    ]);
+
     const views = await Promise.all(
       summaries.map((s) => this._client.getPoolView(s.name).catch(() => null)),
     );
@@ -44,12 +50,14 @@ export class PoolExplorer implements vscode.TreeDataProvider<TreeNode> {
       const view = views[i];
       if (view) this._pools.set(summaries[i].name, view);
     }
+    this._configPoolNames = configNames;
     this._onDidChangeTreeData.fire(undefined);
   }
 
   getTreeItem(node: TreeNode): vscode.TreeItem {
     switch (node.kind) {
       case "pool": return this._poolItem(node.name, node.view);
+      case "stopped-pool": return this._stoppedPoolItem(node.name);
       case "category": return this._categoryItem(node.pool, node.type);
       case "node": return this._nodeItem(node);
       case "metric": return this._metricItem(node.label, node.value);
@@ -59,9 +67,21 @@ export class PoolExplorer implements vscode.TreeDataProvider<TreeNode> {
 
   getChildren(node?: TreeNode): TreeNode[] {
     if (!node) {
-      return [...this._pools.entries()].map(
-        ([name, view]): TreeNode => ({ kind: "pool", name, view }),
-      );
+      const children: TreeNode[] = [];
+
+      // Running pools first
+      for (const [name, view] of this._pools) {
+        children.push({ kind: "pool", name, view });
+      }
+
+      // Configured pools that aren't running
+      for (const name of this._configPoolNames) {
+        if (!this._pools.has(name)) {
+          children.push({ kind: "stopped-pool", name });
+        }
+      }
+
+      return children;
     }
     if (node.kind === "pool") {
       return [
@@ -98,6 +118,17 @@ export class PoolExplorer implements vscode.TreeDataProvider<TreeNode> {
       ? new vscode.ThemeIcon("vm-active", new vscode.ThemeColor("charts.green"))
       : new vscode.ThemeIcon("loading~spin");
     item.command = { command: "skyward.showPoolDetail", title: "", arguments: [name] };
+    return item;
+  }
+
+  // ── Stopped Pool ───────────────────────────────────────────
+
+  private _stoppedPoolItem(name: string): vscode.TreeItem {
+    const item = new vscode.TreeItem(name, vscode.TreeItemCollapsibleState.None);
+    item.description = "stopped";
+    item.contextValue = "stopped-pool";
+    item.iconPath = new vscode.ThemeIcon("circle-outline", new vscode.ThemeColor("descriptionForeground"));
+    item.command = { command: "skyward.startPool", title: "" };
     return item;
   }
 

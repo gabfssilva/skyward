@@ -346,6 +346,7 @@ class DaemonServer:
             name, project_dir=Path(project_dir) if project_dir else None,
         )
         pool = resolution.pool
+        pool._pool_name = name
 
         if self._session is None:
             from skyward.core.session import Session

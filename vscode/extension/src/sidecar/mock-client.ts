@@ -248,8 +248,8 @@ export class MockClient implements SidecarClient {
     file: string,
     fn: string,
     _args: Record<string, unknown>,
+    pool: string,
   ): Promise<void> {
-    const pool = "train";
     const taskId = mockTaskId();
     const listener = this._listeners.get(pool);
     if (!listener) {
@@ -279,6 +279,14 @@ export class MockClient implements SidecarClient {
       });
     }, 3_000);
     this._timeouts.push(t2);
+  }
+
+  async configPools(): Promise<string[]> {
+    return ["train", "inference", "eval"];
+  }
+
+  async configProviders(): Promise<string[]> {
+    return ["my-aws", "cheap-vastai"];
   }
 
   async discoverMainFunctions(_files?: string[]): Promise<MainFunction[]> {

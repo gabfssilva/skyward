@@ -220,6 +220,7 @@ class ComputePool:
                 ttl=ttl,
             ),)
 
+        self._pool_name: str | None = None
         self.selection = selection
         self.image = image
         self.worker = worker or Worker()
@@ -978,7 +979,7 @@ class ComputePool:
         pool_ref, spec, cluster_id, cluster, instances = session._spawn_pool(
             self._build_specs(),
             self._pool_config(),
-            f"pool-{id(self)}",
+            self._pool_name or f"pool-{id(self)}",
             float(self.provision_timeout + self.ssh_timeout + self.bootstrap_timeout + 30),
         )
 

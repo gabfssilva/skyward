@@ -27,10 +27,16 @@ export class SkyMainCodeLensProvider implements vscode.CodeLensProvider {
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChangeCodeLenses: vscode.Event<void> = this._onDidChange.event;
 
-  private _activePool = "train";
+  private _poolCount = 0;
+  private _activePool: string | undefined;
 
   setActivePool(name: string): void {
     this._activePool = name;
+    this._onDidChange.fire();
+  }
+
+  setPoolCount(count: number): void {
+    this._poolCount = count;
     this._onDidChange.fire();
   }
 
@@ -52,11 +58,20 @@ export class SkyMainCodeLensProvider implements vscode.CodeLensProvider {
       }
 
       const range = document.lineAt(i).range;
+      let title: string;
+      if (this._poolCount === 0) {
+        title = "Run \u25b6 (no pools)";
+      } else if (this._poolCount === 1 && this._activePool) {
+        title = `Run on ${this._activePool} \u25b6`;
+      } else {
+        title = "Run \u25b6";
+      }
+
       lenses.push(
         new vscode.CodeLens(range, {
-          title: `Run on ${this._activePool} \u25b6`,
-          command: "skyward.runMain",
-          arguments: [document.uri, fnName, params],
+          title,
+          command: this._poolCount > 0 ? "skyward.runMain" : "skyward.startPool",
+          arguments: this._poolCount > 0 ? [document.uri, fnName, params] : [],
         }),
       );
     }

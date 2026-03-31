@@ -198,6 +198,7 @@ class TestInternalMessages:
 class TestSessionMsgTypeAlias:
     def test_includes_all_expected_types(self) -> None:
         from skyward.actors.session.messages import (
+            CreatePool,
             RecoverExistingPool,
             SessionMsg,
             SpawnPool,
@@ -208,6 +209,7 @@ class TestSessionMsgTypeAlias:
 
         args = set(get_args(SessionMsg.__value__))
         expected = {
+            CreatePool,
             SpawnPool,
             RecoverExistingPool,
             StopSession,
