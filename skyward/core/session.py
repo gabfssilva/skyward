@@ -369,6 +369,7 @@ class Session:
             reconcile_tick_interval=options.reconcile_tick_interval,
             plugins=tuple(first_spec.plugins),
             cluster=options.cluster,
+            retry_on_interruption=options.retry_on_interruption,
         )
 
         envelope = float(

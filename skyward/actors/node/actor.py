@@ -31,7 +31,9 @@ from skyward.actors.messages import (
     NodeLost,
     Preempted,
     Provision,
-    TaskResult,
+    TaskFailed,
+    TaskInterrupted,
+    TaskSucceeded,
     _bind_to_node,
 )
 from skyward.actors.streaming import instance_monitor
@@ -708,9 +710,12 @@ def node_actor(
                     log.debug("Node {nid} received task result (tid={tid})", nid=node_id, tid=tid)
                     caller = s.inflight.get(tid)
                     if caller:
-                        caller.tell(
-                            TaskResult(value=value, node_id=node_id, task_id=tid, error=is_err)
+                        result = (
+                            TaskFailed(error=value, node_id=node_id, task_id=tid)
+                            if is_err
+                            else TaskSucceeded(value=value, node_id=node_id, task_id=tid)
                         )
+                        caller.tell(result)
                     if conn_err:
                         log.warning(
                             "Connection error on node {nid}, waiting for transport reconnect",
@@ -720,8 +725,8 @@ def node_actor(
                         for other_tid, other_caller in s.inflight.items():
                             if other_tid != tid:
                                 other_caller.tell(
-                                    TaskResult(
-                                        value=conn_error, node_id=node_id, task_id=other_tid, error=True,
+                                    TaskInterrupted(
+                                        error=conn_error, node_id=node_id, task_id=other_tid,
                                     )
                                 )
                         return active(replace(s, inflight=MappingProxyType({}), pending_tasks=()))
@@ -757,6 +762,13 @@ def node_actor(
                         "Transport permanently failed on node {nid}: {err}",
                         nid=node_id, err=error,
                     )
+                    for tid, caller in s.inflight.items():
+                        caller.tell(
+                            TaskInterrupted(
+                                error=RuntimeError(f"Node {node_id} connection failed: {error}"),
+                                node_id=node_id, task_id=tid,
+                            )
+                        )
                     pool.tell(NodeLost(node_id=node_id, reason="connection lost"))
                     return _start_replacing(ctx, s)
                 case PortReForwarded(old_port=_, new_port=new_port):
@@ -775,15 +787,22 @@ def node_actor(
                 case Preempted(reason=reason):
                     log.warning("Preempted while active: {reason}", reason=reason)
                     _stop_transport(s.transport_ref)
+                    for tid, caller in s.inflight.items():
+                        caller.tell(
+                            TaskInterrupted(
+                                error=RuntimeError(f"Node {node_id} preempted: {reason}"),
+                                node_id=node_id, task_id=tid,
+                            )
+                        )
                     pool.tell(NodeLost(node_id=node_id, reason=reason))
                     return _start_replacing(ctx, s)
                 case Terminated():
                     log.warning("Child died while active, marking node lost")
                     for tid, caller in s.inflight.items():
                         caller.tell(
-                            TaskResult(
-                                value=RuntimeError(f"Node {node_id} child stopped"),
-                                node_id=node_id, task_id=tid, error=True,
+                            TaskInterrupted(
+                                error=RuntimeError(f"Node {node_id} child stopped"),
+                                node_id=node_id, task_id=tid,
                             )
                         )
                     pool.tell(NodeLost(node_id=node_id, reason="child stopped"))

@@ -300,9 +300,9 @@ class TestTaskEvents:
         assert result.node_id == 3
 
     def test_task_result_success(self):
-        from skyward.actors.messages import TaskResult
+        from skyward.actors.messages import TaskSucceeded
 
-        ev = TaskResult(value="ok", node_id=1, task_id="t1", error=False)
+        ev = TaskSucceeded(value="ok", node_id=1, task_id="t1")
         result = translate(_spy(ev), "pool")
 
         assert isinstance(result, Task.Completed)
@@ -311,14 +311,24 @@ class TestTaskEvents:
         assert result.elapsed == 0.0
 
     def test_task_result_failure(self):
-        from skyward.actors.messages import TaskResult
+        from skyward.actors.messages import TaskFailed
 
-        ev = TaskResult(value=None, node_id=1, task_id="t1", error=True)
+        ev = TaskFailed(error=ValueError("x"), node_id=1, task_id="t1")
         result = translate(_spy(ev), "pool")
 
         assert isinstance(result, Task.Failed)
         assert result.task_id == "t1"
         assert result.node_id == 1
+
+    def test_task_result_interrupted(self):
+        from skyward.actors.messages import TaskInterrupted
+
+        ev = TaskInterrupted(error=RuntimeError("lost"), node_id=1, task_id="t1")
+        result = translate(_spy(ev), "pool")
+
+        assert isinstance(result, Task.Failed)
+        assert result.task_id == "t1"
+        assert result.error == "interrupted"
 
 
 # ── Metric events ───────────────────────────────────────────────

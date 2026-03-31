@@ -265,6 +265,8 @@ class Options:
         Whether workers form a Casty cluster.  ``True`` (default) enables
         distributed collections and cluster-aware coordination.  ``False``
         runs each worker independently.
+    retry_on_interruption
+        Maximum retries per task on infrastructure interruption.  ``0`` disables.
 
     Examples
     --------
@@ -291,6 +293,7 @@ class Options:
     console: bool = True
     logging: LogConfig | bool = True
     cluster: bool = True
+    retry_on_interruption: int = 3
 
 
 def _detect_skyward_source() -> SkywardSource:
@@ -454,6 +457,8 @@ class PoolSpec:
         Whether workers form a Casty cluster.  ``True`` (default) enables
         distributed collections and cluster-aware coordination.  ``False``
         runs each worker independently.
+    retry_on_interruption
+        Maximum retries per task on infrastructure interruption.  ``0`` disables.
 
     Examples
     --------
@@ -491,6 +496,7 @@ class PoolSpec:
     reconcile_tick_interval: float = 15.0
     plugins: tuple[Plugin, ...] = ()
     cluster: bool = True
+    retry_on_interruption: int = 3
 
     @property
     def accelerator_name(self) -> str | None:

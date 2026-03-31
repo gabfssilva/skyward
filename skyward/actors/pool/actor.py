@@ -439,7 +439,9 @@ def pool_actor(
                             n=s.spec.nodes.min,
                         )
                         tm_ref = ctx.spawn(
-                            task_manager_actor(),
+                            task_manager_actor(
+                                retry_on_interruption=s.spec.retry_on_interruption,
+                            ),
                             "task-manager",
                         )
                         for nbr in s.early_ready:

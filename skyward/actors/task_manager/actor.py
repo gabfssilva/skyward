@@ -1,5 +1,6 @@
 from dataclasses import replace
 from types import MappingProxyType
+from typing import Any
 
 from casty import ActorContext, Behavior, Behaviors
 
@@ -11,8 +12,10 @@ from skyward.actors.messages import (
     RegisterPressureObserver,
     SubmitBroadcast,
     SubmitTask,
-    TaskResult,
+    TaskFailed,
+    TaskInterrupted,
     TaskSubmitted,
+    TaskSucceeded,
 )
 from skyward.observability.logger import logger
 
@@ -30,7 +33,47 @@ from .state import (
 log = logger.bind(actor="task_manager")
 
 
-def task_manager_actor() -> Behavior[TaskManagerMsg]:
+def _handle_broadcast_result(
+    broadcasts: MappingProxyType[str, PendingBroadcast],
+    node_id: int,
+    value: Any,
+) -> tuple[bool, MappingProxyType[str, PendingBroadcast]]:
+    for bid, bc in broadcasts.items():
+        if node_id in bc.pending:
+            new_bc = replace(
+                bc,
+                pending=bc.pending - {node_id},
+                results=MappingProxyType({**bc.results, node_id: value}),
+            )
+            return True, MappingProxyType({**broadcasts, bid: new_bc})
+    return False, broadcasts
+
+
+def _free_slot_and_drain(
+    s: _State,
+    node_id: int,
+    ctx: ActorContext[TaskManagerMsg],
+    new_inflight: MappingProxyType[str, SubmitTask],
+    new_broadcasts: MappingProxyType[str, PendingBroadcast],
+    new_retries: MappingProxyType[str, int],
+    new_queue: tuple[SubmitTask, ...] | None = None,
+) -> _State:
+    queue = new_queue if new_queue is not None else s.queue
+    if node_id not in s.nodes:
+        return replace(s, broadcasts=new_broadcasts, inflight=new_inflight, retries=new_retries, queue=queue)
+    slot = s.nodes[node_id]
+    new_used = max(0, slot.used - 1)
+    new_nodes = MappingProxyType({**s.nodes, node_id: NodeSlots(slot.ref, slot.total, new_used)})
+    remaining, new_nodes, rr, new_inflight = _drain_queue(
+        queue, new_nodes, s.round_robin, ctx.self, new_inflight,
+    )
+    return replace(
+        s, nodes=new_nodes, queue=remaining, round_robin=rr,
+        inflight=new_inflight, broadcasts=new_broadcasts, retries=new_retries,
+    )
+
+
+def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMsg]:
 
     def active(s: _State) -> Behavior[TaskManagerMsg]:
 
@@ -75,39 +118,65 @@ def task_manager_actor() -> Behavior[TaskManagerMsg]:
                     _emit_pressure(new_s)
                     return _check_broadcasts(new_s)
 
-                case TaskResult(value, node_id, task_id=tid, error=err):
-                    broadcast_hit = False
-                    new_broadcasts = s.broadcasts
-                    for bid, bc in s.broadcasts.items():
-                        if node_id in bc.pending:
-                            new_bc = replace(
-                                bc,
-                                pending=bc.pending - {node_id},
-                                results=MappingProxyType({**bc.results, node_id: value}),
-                            )
-                            new_broadcasts = MappingProxyType({**s.broadcasts, bid: new_bc})
-                            broadcast_hit = True
-                            break
-
+                case TaskSucceeded(value=value, node_id=node_id, task_id=tid):
+                    broadcast_hit, new_broadcasts = _handle_broadcast_result(s.broadcasts, node_id, value)
                     new_inflight = s.inflight
+                    new_retries = MappingProxyType({k: v for k, v in s.retries.items() if k != tid})
                     if not broadcast_hit:
-                        caller = s.inflight.get(tid)
-                        if caller:
-                            caller.tell(TaskResult(
-                                value=value, node_id=node_id, task_id=tid, error=err,
+                        task = s.inflight.get(tid)
+                        if task:
+                            task.reply_to.tell(TaskSucceeded(
+                                value=value, node_id=node_id, task_id=tid,
                             ))
                             new_inflight = MappingProxyType({k: v for k, v in s.inflight.items() if k != tid})
+                    new_s = _free_slot_and_drain(s, node_id, ctx, new_inflight, new_broadcasts, new_retries)
+                    _emit_pressure(new_s)
+                    return _check_broadcasts(new_s) if broadcast_hit else active(new_s)
 
-                    if node_id not in s.nodes:
-                        new_s = replace(s, broadcasts=new_broadcasts, inflight=new_inflight)
-                        return _check_broadcasts(new_s) if broadcast_hit else active(new_s)
-                    slot = s.nodes[node_id]
-                    new_used = max(0, slot.used - 1)
-                    new_nodes = MappingProxyType({**s.nodes, node_id: NodeSlots(slot.ref, slot.total, new_used)})
-                    remaining, new_nodes, rr, new_inflight = _drain_queue(
-                        s.queue, new_nodes, s.round_robin, ctx.self, new_inflight,
+                case TaskFailed(error=err, node_id=node_id, task_id=tid):
+                    broadcast_hit, new_broadcasts = _handle_broadcast_result(s.broadcasts, node_id, err)
+                    new_inflight = s.inflight
+                    new_retries = MappingProxyType({k: v for k, v in s.retries.items() if k != tid})
+                    if not broadcast_hit:
+                        task = s.inflight.get(tid)
+                        if task:
+                            task.reply_to.tell(TaskFailed(
+                                error=err, node_id=node_id, task_id=tid,
+                            ))
+                            new_inflight = MappingProxyType({k: v for k, v in s.inflight.items() if k != tid})
+                    new_s = _free_slot_and_drain(s, node_id, ctx, new_inflight, new_broadcasts, new_retries)
+                    _emit_pressure(new_s)
+                    return _check_broadcasts(new_s) if broadcast_hit else active(new_s)
+
+                case TaskInterrupted(error=err, node_id=node_id, task_id=tid):
+                    broadcast_hit, new_broadcasts = _handle_broadcast_result(s.broadcasts, node_id, err)
+                    new_inflight = s.inflight
+                    new_retries = s.retries
+                    new_queue = s.queue
+                    if not broadcast_hit:
+                        task = s.inflight.get(tid)
+                        if task:
+                            attempt = s.retries.get(tid, 0) + 1
+                            new_inflight = MappingProxyType({k: v for k, v in s.inflight.items() if k != tid})
+                            if attempt <= s.retry_on_interruption:
+                                log.info(
+                                    "Task {tid} interrupted on node {nid}, re-enqueuing (attempt {att}/{max})",
+                                    tid=tid, nid=node_id, att=attempt, max=s.retry_on_interruption,
+                                )
+                                new_retries = MappingProxyType({**s.retries, tid: attempt})
+                                new_queue = (*s.queue, task)
+                            else:
+                                log.warning(
+                                    "Task {tid} interrupted on node {nid}, retries exhausted ({max})",
+                                    tid=tid, nid=node_id, max=s.retry_on_interruption,
+                                )
+                                new_retries = MappingProxyType({k: v for k, v in s.retries.items() if k != tid})
+                                task.reply_to.tell(TaskFailed(
+                                    error=err, node_id=node_id, task_id=tid,
+                                ))
+                    new_s = _free_slot_and_drain(
+                        s, node_id, ctx, new_inflight, new_broadcasts, new_retries, new_queue=new_queue,
                     )
-                    new_s = replace(s, nodes=new_nodes, queue=remaining, round_robin=rr, inflight=new_inflight, broadcasts=new_broadcasts)
                     _emit_pressure(new_s)
                     return _check_broadcasts(new_s) if broadcast_hit else active(new_s)
 
@@ -123,9 +192,7 @@ def task_manager_actor() -> Behavior[TaskManagerMsg]:
                         return active(new_s)
                     log.debug("Dispatching task to node {nid}", nid=nid)
                     new_nodes, new_inflight = _dispatch(
-                        nid, task.task_id, task.fn, task.args, task.kwargs,
-                        task.reply_to, s.nodes, ctx.self, s.inflight,
-                        timeout=task.timeout,
+                        nid, task, s.nodes, ctx.self, s.inflight,
                     )
                     return active(replace(s, nodes=new_nodes, inflight=new_inflight, round_robin=s.round_robin + 1))
 
@@ -176,4 +243,5 @@ def task_manager_actor() -> Behavior[TaskManagerMsg]:
         round_robin=0,
         inflight=MappingProxyType({}),
         broadcasts=MappingProxyType({}),
+        retry_on_interruption=retry_on_interruption,
     ))

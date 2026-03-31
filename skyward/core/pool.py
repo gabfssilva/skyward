@@ -40,7 +40,10 @@ from skyward.actors.messages import (
     NodeInstance,
     SubmitBroadcast,
     SubmitTask,
+    TaskFailed,
+    TaskInterrupted,
     TaskResult,
+    TaskSucceeded,
 )
 from skyward.api.plugin import Plugin
 from skyward.api.spec import Nodes
@@ -441,7 +444,13 @@ class ComputePool:
                 return value
 
     def _unwrap_result(self, result: TaskResult) -> Any:
-        return self._unwrap_broadcast_result(result.value)
+        match result:
+            case TaskSucceeded(value=value):
+                return value
+            case TaskFailed(error=error):
+                raise error
+            case TaskInterrupted(error=error):
+                raise error
 
     def _resolve_timeout(self, pending: PendingFunction[Any]) -> float:
         return pending.timeout if pending.timeout is not None else self.default_compute_timeout

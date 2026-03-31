@@ -4,12 +4,15 @@ from skyward.actors.messages import (
     RegisterPressureObserver,
     SubmitBroadcast,
     SubmitTask,
-    TaskResult,
+    TaskFailed,
+    TaskInterrupted,
     TaskSubmitted,
+    TaskSucceeded,
 )
 
 type TaskManagerMsg = (
-    NodeAvailable | NodeUnavailable | TaskResult
+    NodeAvailable | NodeUnavailable
+    | TaskSucceeded | TaskFailed | TaskInterrupted
     | SubmitTask | SubmitBroadcast | TaskSubmitted
     | RegisterPressureObserver
 )

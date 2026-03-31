@@ -27,8 +27,10 @@ class _State:
     nodes: MappingProxyType[NodeId, NodeSlots]
     queue: tuple[SubmitTask, ...]
     round_robin: int
-    inflight: MappingProxyType[str, ActorRef]
+    inflight: MappingProxyType[str, SubmitTask]
     broadcasts: MappingProxyType[str, PendingBroadcast]
+    retry_on_interruption: int = 3
+    retries: MappingProxyType[str, int] = field(default_factory=lambda: MappingProxyType({}))
     pressure_observer: ActorRef | None = None
 
 
@@ -49,24 +51,19 @@ def _pick_with_free_slot(
 
 def _dispatch(
     nid: NodeId,
-    task_id: str,
-    fn: Any,
-    args: tuple[Any, ...],
-    kwargs: dict[str, Any],
-    reply_to: ActorRef,
+    task: SubmitTask,
     nodes: MappingProxyType[NodeId, NodeSlots],
     tm_ref: ActorRef,
-    inflight: MappingProxyType[str, ActorRef],
-    timeout: float = 600.0,
-) -> tuple[MappingProxyType[NodeId, NodeSlots], MappingProxyType[str, ActorRef]]:
+    inflight: MappingProxyType[str, SubmitTask],
+) -> tuple[MappingProxyType[NodeId, NodeSlots], MappingProxyType[str, SubmitTask]]:
     slot = nodes[nid]
-    tm_ref.tell(TaskSubmitted(task_id=task_id, node_id=nid))
+    tm_ref.tell(TaskSubmitted(task_id=task.task_id, node_id=nid))
     slot.ref.tell(ExecuteOnNode(
-        fn=fn, args=args, kwargs=kwargs,
-        reply_to=tm_ref, task_id=task_id, timeout=timeout,
+        fn=task.fn, args=task.args, kwargs=task.kwargs,
+        reply_to=tm_ref, task_id=task.task_id, timeout=task.timeout,
     ))
     new_nodes = MappingProxyType({**nodes, nid: NodeSlots(slot.ref, slot.total, slot.used + 1)})
-    new_inflight = MappingProxyType({**inflight, task_id: reply_to})
+    new_inflight = MappingProxyType({**inflight, task.task_id: task})
     return new_nodes, new_inflight
 
 
@@ -75,18 +72,15 @@ def _drain_queue(
     nodes: MappingProxyType[NodeId, NodeSlots],
     round_robin: int,
     tm_ref: ActorRef,
-    inflight: MappingProxyType[str, ActorRef],
-) -> tuple[tuple[SubmitTask, ...], MappingProxyType[NodeId, NodeSlots], int, MappingProxyType[str, ActorRef]]:
+    inflight: MappingProxyType[str, SubmitTask],
+) -> tuple[tuple[SubmitTask, ...], MappingProxyType[NodeId, NodeSlots], int, MappingProxyType[str, SubmitTask]]:
     remaining: list[SubmitTask] = []
     for task in queue:
         nid = _pick_with_free_slot(nodes, round_robin)
         if nid is None:
             remaining.append(task)
             continue
-        nodes, inflight = _dispatch(
-            nid, task.task_id, task.fn, task.args, task.kwargs,
-            task.reply_to, nodes, tm_ref, inflight, timeout=task.timeout,
-        )
+        nodes, inflight = _dispatch(nid, task, nodes, tm_ref, inflight)
         round_robin += 1
     return tuple(remaining), nodes, round_robin, inflight
 

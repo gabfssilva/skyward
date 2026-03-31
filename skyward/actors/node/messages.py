@@ -12,7 +12,9 @@ from skyward.actors.messages import (
     NodeInstance,
     Preempted,
     Provision,
-    TaskResult,
+    TaskFailed,
+    TaskInterrupted,
+    TaskSucceeded,
 )
 from skyward.infra.ssh_actor import ConnectionFailed, ConnectionLost, ConnectionRestored, PortReForwarded
 
@@ -139,7 +141,7 @@ class _ReplaceRetry:
 type NodeMsg = (
     Provision
     | ExecuteOnNode
-    | TaskResult
+    | TaskSucceeded | TaskFailed | TaskInterrupted
     | HeadAddressKnown
     | JoinCluster
     | Preempted

@@ -354,11 +354,30 @@ class ExecuteOnNode:
 
 
 @dataclass(frozen=True, slots=True)
-class TaskResult:
+class TaskSucceeded:
+    """Remote function returned normally."""
     value: Any
     node_id: NodeId
     task_id: str = ""
-    error: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class TaskFailed:
+    """Remote function raised an exception (user error)."""
+    error: Exception
+    node_id: NodeId
+    task_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class TaskInterrupted:
+    """Task lost due to infrastructure failure (preemption, connection loss)."""
+    error: Exception
+    node_id: NodeId
+    task_id: str = ""
+
+
+type TaskResult = TaskSucceeded | TaskFailed | TaskInterrupted
 
 
 

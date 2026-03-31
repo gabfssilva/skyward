@@ -27,6 +27,7 @@ class PoolConfig:
     reconcile_tick_interval: float
     plugins: tuple[Plugin, ...]
     cluster: bool = True
+    retry_on_interruption: int = 3
 
 
 async def select_offers(

@@ -36,8 +36,10 @@ from skyward.actors.messages import (
     SpawnNodes,
     SubmitBroadcast,
     SubmitTask,
-    TaskResult,
+    TaskFailed,
+    TaskInterrupted,
     TaskSubmitted,
+    TaskSucceeded,
 )
 from skyward.actors.node.messages import (
     _Connected,
@@ -231,11 +233,14 @@ def translate(spy: SpyEvent, pool_name: str) -> SessionEvent | None:  # type: ig
         case TaskSubmitted(task_id=tid, node_id=nid):
             return Task.Assigned(pool_name, tid, nid)
 
-        case TaskResult(task_id=tid, node_id=nid, error=True):
+        case TaskSucceeded(task_id=tid, node_id=nid):
+            return Task.Completed(pool_name, tid, nid, 0.0)
+
+        case TaskFailed(task_id=tid, node_id=nid):
             return Task.Failed(pool_name, tid, nid, "")
 
-        case TaskResult(task_id=tid, node_id=nid):
-            return Task.Completed(pool_name, tid, nid, 0.0)
+        case TaskInterrupted(task_id=tid, node_id=nid):
+            return Task.Failed(pool_name, tid, nid, "interrupted")
 
         # ── Telemetry ──────────────────────────────────────
         case Metric(instance=ni, name=name, value=value):
