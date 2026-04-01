@@ -13,6 +13,7 @@ from .protocol import (
     DaemonError,
     DaemonRequest,
     DaemonResponse,
+    DaemonStopped,
     Disconnect,
     EnsurePool,
     GetNodeCount,
@@ -20,8 +21,11 @@ from .protocol import (
     Ping,
     Pong,
     PoolFailed,
+    PoolLogLine,
+    PoolProvisioning,
     PoolReady,
     PoolShutdown,
+    ShutdownDaemon,
     ShutdownPool,
     StreamEnd,
     SubmitBroadcast,
@@ -53,7 +57,7 @@ class DaemonClient:
             )
         except (FileNotFoundError, ConnectionRefusedError):
             raise ConnectionError(
-                "Daemon is not running. Start it with: sky compute start",
+                "Daemon is not running. Start it with: sky daemon start",
             ) from None
 
     async def close(self) -> None:
@@ -111,15 +115,42 @@ class DaemonClient:
     async def ensure_pool(
         self, name: str, *, project_dir: str | None = None,
     ) -> PoolReady:
-        resp = await self._request(
-            EnsurePool(name=name, project_dir=project_dir),
-        )
-        match resp:
-            case PoolFailed(reason=reason):
-                raise RuntimeError(f"Pool '{name}' failed: {reason}")
-            case PoolReady():
-                return resp
-        raise RuntimeError(f"Unexpected response: {resp}")
+        assert self._reader is not None and self._writer is not None
+        await async_send(self._writer, EnsurePool(name=name, project_dir=project_dir))
+        while True:
+            resp = await asyncio.wait_for(
+                async_recv(self._reader),
+                timeout=self._default_timeout,
+            )
+            match resp:
+                case PoolReady():
+                    return resp
+                case PoolFailed(reason=reason):
+                    raise RuntimeError(f"Pool '{name}' failed: {reason}")
+                case PoolProvisioning() | PoolLogLine():
+                    continue
+                case DaemonError(error=error):
+                    raise RuntimeError(f"Daemon error: {error}")
+        raise RuntimeError("Unexpected end of stream")
+
+    async def ensure_pool_stream(
+        self, name: str, *, project_dir: str | None = None,
+    ) -> AsyncIterator[object]:
+        assert self._reader is not None and self._writer is not None
+        await async_send(self._writer, EnsurePool(name=name, project_dir=project_dir))
+        while True:
+            resp = await asyncio.wait_for(
+                async_recv(self._reader),
+                timeout=self._default_timeout,
+            )
+            match resp:
+                case DaemonError(error=error):
+                    raise RuntimeError(f"Daemon error: {error}")
+                case _:
+                    yield resp
+            match resp:
+                case PoolReady() | PoolFailed():
+                    return
 
     async def submit_task(
         self, pool_name: str, payload: bytes, timeout: float = 300.0,
@@ -162,6 +193,13 @@ class DaemonClient:
         resp = await self._request(ShutdownPool(pool_name=pool_name))
         match resp:
             case PoolShutdown():
+                return
+        raise RuntimeError(f"Unexpected response: {resp}")
+
+    async def shutdown_daemon(self) -> None:
+        resp = await self._request(ShutdownDaemon())
+        match resp:
+            case DaemonStopped():
                 return
         raise RuntimeError(f"Unexpected response: {resp}")
 

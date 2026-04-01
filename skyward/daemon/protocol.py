@@ -80,6 +80,18 @@ class SubscribeEvents:
     pool_name: str
 
 
+@dataclass(frozen=True, slots=True)
+class GetPoolLogs:
+    """Get the log file path for a pool."""
+    pool_name: str
+    all: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ShutdownDaemon:
+    """Shut down the daemon process gracefully."""
+
+
 # -- Responses (daemon -> client) ------------------------------------------
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +99,21 @@ class PoolReady:
     """Pool is provisioned and ready for tasks."""
     pool_name: str
     node_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class PoolLogLine:
+    """Bootstrap log line emitted during pool provisioning."""
+    pool_name: str
+    node_id: int
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class PoolProvisioning:
+    """Intermediate phase update during pool provisioning."""
+    pool_name: str
+    phase: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +180,14 @@ class PoolSummary:
     tasks_done: int
     tasks_running: int
     started_at: float
+    provider: str = ""
+    accelerator: str = ""
+    vcpus: str = ""
+    memory: str = ""
+    vram: str = ""
+    disk: str = ""
+    avg_cpu: float | None = None
+    avg_mem: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,17 +208,30 @@ class StreamEnd:
     reason: str
 
 
+@dataclass(frozen=True, slots=True)
+class PoolLogs:
+    """Log file paths for a pool."""
+    paths: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DaemonStopped:
+    """Daemon acknowledged shutdown."""
+
+
 # -- Type unions -----------------------------------------------------------
 
 type DaemonRequest = (
     EnsurePool | SubmitTask | SubmitBroadcast | GetNodeCount
     | Disconnect | ShutdownPool | Ping
-    | GetPools | GetPoolView | SubscribeEvents
+    | GetPools | GetPoolView | GetPoolLogs | SubscribeEvents
+    | ShutdownDaemon
 )
 
 type DaemonResponse = (
-    PoolReady | PoolFailed | TaskSucceeded | TaskFailed
+    PoolReady | PoolFailed | PoolProvisioning | PoolLogLine | TaskSucceeded | TaskFailed
     | BroadcastSucceeded | NodeCount | Disconnected | PoolShutdown
     | Pong | DaemonError
-    | PoolList | PoolViewResponse | StreamEnd
+    | PoolList | PoolViewResponse | PoolLogs | StreamEnd
+    | DaemonStopped
 )

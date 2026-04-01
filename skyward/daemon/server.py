@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import traceback as tb_module
 import uuid
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -33,18 +34,24 @@ from .protocol import (
     DaemonError,
     DaemonRequest,
     DaemonResponse,
+    DaemonStopped,
     Disconnect,
     Disconnected,
     EnsurePool,
     GetNodeCount,
+    GetPoolLogs,
     GetPools,
     GetPoolView,
     NodeCount,
     Ping,
     Pong,
     PoolFailed,
+    PoolLogLine,
+    PoolLogs,
+    PoolProvisioning,
     PoolReady,
     PoolShutdown,
+    ShutdownDaemon,
     ShutdownPool,
     StreamEnd,
     SubmitBroadcast,
@@ -81,6 +88,8 @@ class DaemonServer:
         self._pool_ttls: dict[str, int] = {}  # name -> TTL seconds
         self._session: Any = None
         self._subscribers: dict[str, list[asyncio.Queue[object]]] = {}
+        self._log_handles: dict[str, Any] = {}
+        self._logs_dir = Path.home() / ".skyward" / "logs"
 
         from skyward.api.projection import SessionProjection
 
@@ -95,6 +104,7 @@ class DaemonServer:
             if pool_name in self._subscribers:
                 for q in self._subscribers[pool_name]:
                     q.put_nowait(event)
+            self._append_log(event)
 
         self._projection = SessionProjection(
             on_change=_on_view_changed,
@@ -140,6 +150,9 @@ class DaemonServer:
         self._socket_path.unlink(missing_ok=True)
         for name in list(self._pools):
             await self._teardown_pool(name)
+        for fh in self._log_handles.values():
+            fh.close()
+        self._log_handles.clear()
         if self._actor_system is not None:
             await self._actor_system.__aexit__(None, None, None)
             self._actor_system = None
@@ -169,13 +182,15 @@ class DaemonServer:
                     case SubscribeEvents(pool_name=name):
                         await self._handle_subscribe(name, reader, writer)
                         break
+                    case EnsurePool(name=name, project_dir=project_dir):
+                        async for msg in self._ensure_pool_stream(name, project_dir, client_id):
+                            await async_send(writer, msg)
+                        connected_pools.add(name)
                     case _:
                         response = await self._dispatch(request, client_id)  # type: ignore[arg-type]
                         await async_send(writer, response)
 
                 match request:
-                    case EnsurePool(name=name):
-                        connected_pools.add(name)
                     case Disconnect():
                         break
         except Exception as e:
@@ -264,9 +279,6 @@ class DaemonServer:
                 case Ping():
                     return Pong()
 
-                case EnsurePool(name=name, project_dir=project_dir):
-                    return await self._ensure_pool(name, project_dir, client_id)
-
                 case SubmitTask(pool_name=name, payload=payload, timeout=timeout):
                     return await self._submit_task(name, payload, timeout)
 
@@ -289,26 +301,110 @@ class DaemonServer:
                 case GetPoolView(pool_name=name):
                     return self._get_pool_view(name)
 
+                case GetPoolLogs(pool_name=name, all=all_logs):
+                    return self._get_pool_logs(name, all_logs)
+
+                case ShutdownDaemon():
+                    return await self._shutdown_daemon()
+
                 case _:
                     return DaemonError(error=f"Unknown request: {type(request).__name__}")
 
         except Exception as e:
             return DaemonError(error=str(e), traceback=tb_module.format_exc())
 
+    # -- Log persistence ---------------------------------------------------
+
+    def _append_log(self, event: SessionEvent) -> None:
+        from skyward.api.events import Log
+
+        match event:
+            case Log.Emitted(pool_name=name, node_id=nid, message=msg, overwrite=ow):
+                fh = self._log_handles.get(name)
+                if fh is not None:
+                    import json
+
+                    fh.write(json.dumps({
+                        "node": nid, "message": msg, "overwrite": ow,
+                    }) + "\n")
+                    fh.flush()
+            case _:
+                pass
+
+    def _open_log_file(self, name: str) -> None:
+        from datetime import UTC, datetime
+
+        pool_dir = self._logs_dir / name
+        pool_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%S")
+        log_path = pool_dir / f"{ts}.log"
+        self._log_handles[name] = log_path.open("a")
+
     # -- Pool provisioning -------------------------------------------------
 
-    async def _ensure_pool(
+    async def _ensure_pool_stream(
         self, name: str, project_dir: str | None, client_id: str,
-    ) -> PoolReady | PoolFailed:
+    ) -> AsyncGenerator[PoolReady | PoolFailed | PoolProvisioning | PoolLogLine, None]:
+        """Provision a pool, streaming phase transitions to the client."""
         assert self._actor_system is not None and self._state_ref is not None
+
         if name in self._pools:
             pool = self._pools[name]
             await self._register_client(name, client_id)
-            return PoolReady(pool_name=name, node_count=pool.current_nodes())
+            yield PoolReady(pool_name=name, node_count=pool.current_nodes())
+            return
+
+        event_queue: asyncio.Queue[PoolProvisioning | PoolLogLine] = asyncio.Queue()
+        last_phase: str | None = None
+
+        original_on_change = self._projection.on_change
+        original_on_event = self._projection.on_event
+
+        def _on_change(old: SessionView, new: SessionView) -> None:
+            nonlocal last_phase
+            if original_on_change:
+                original_on_change(old, new)
+            if name in new.pools:
+                phase = new.pools[name].phase.name
+                if phase != last_phase and phase not in ("READY", "STOPPED"):
+                    last_phase = phase
+                    event_queue.put_nowait(PoolProvisioning(pool_name=name, phase=phase))
+
+        def _on_event(event: SessionEvent) -> None:
+            if original_on_event:
+                original_on_event(event)
+            from skyward.api.events import Log, Node
+
+            match event:
+                case Log.Emitted(pool_name=pn, node_id=nid, message=msg) if pn == name:
+                    event_queue.put_nowait(PoolLogLine(pool_name=name, node_id=nid, message=msg))
+                case Node.Bootstrap.Output(pool_name=pn, node_id=nid, output=output) if pn == name:
+                    event_queue.put_nowait(PoolLogLine(pool_name=name, node_id=nid, message=output))
+                case _:
+                    pass
+
+        self._projection.on_change = _on_change
+        self._projection.on_event = _on_event
+
+        loop = asyncio.get_running_loop()
+        provision_future: asyncio.Future[Any] = loop.run_in_executor(
+            None, self._provision_pool, name, project_dir,
+        )
 
         try:
-            pool = self._provision_pool(name, project_dir)
+            while not provision_future.done():
+                try:
+                    msg = await asyncio.wait_for(event_queue.get(), timeout=1.0)
+                    yield msg
+                except TimeoutError:
+                    continue
+
+            pool = provision_future.result()
             self._pools[name] = pool
+            self._open_log_file(name)
+
+            while not event_queue.empty():
+                yield event_queue.get_nowait()
 
             from .state import RegisterPool
 
@@ -334,9 +430,14 @@ class DaemonServer:
             )
             self._start_ttl(name)
             await self._register_client(name, client_id)
-            return PoolReady(pool_name=name, node_count=pool.current_nodes())
+            yield PoolReady(pool_name=name, node_count=pool.current_nodes())
+
         except Exception as e:
-            return PoolFailed(pool_name=name, reason=str(e))
+            yield PoolFailed(pool_name=name, reason=str(e))
+
+        finally:
+            self._projection.on_change = original_on_change
+            self._projection.on_event = original_on_event
 
     def _provision_pool(self, name: str, project_dir: str | None) -> Any:
         """Resolve config and provision a ComputePool via Session."""
@@ -408,11 +509,38 @@ class DaemonServer:
         view = self._projection.view
         for name, pv in view.pools.items():
             ready = sum(1 for n in pv.nodes.values() if n.status.value >= NodeStatus.READY.value)
+
+            provider = ""
+            accelerator = ""
+            vcpus = ""
+            memory = ""
+            vram = ""
+            disk = ""
+            if pool := self._pools.get(name):
+                spec = getattr(pool, "_spec", None)
+                if spec is not None:
+                    provider = spec.provider or ""
+                    accelerator = spec.accelerator_name or "cpu"
+                    vcpus = f"{int(spec.vcpus)}" if spec.vcpus else ""
+                    memory = f"{int(spec.memory_gb)}gb" if spec.memory_gb else ""
+                    disk = f"{int(spec.disk_gb)}gb" if spec.disk_gb else ""
+                    if spec.accelerator is not None:
+                        vram_val = getattr(spec.accelerator, "vram_gb", None)
+                        vram = f"{int(vram_val)}gb" if vram_val else ""
+
+            cpu_vals = [n.metrics["cpu"] for n in pv.nodes.values() if "cpu" in n.metrics]
+            mem_vals = [n.metrics["mem"] for n in pv.nodes.values() if "mem" in n.metrics]
+            avg_cpu = sum(cpu_vals) / len(cpu_vals) if cpu_vals else None
+            avg_mem = sum(mem_vals) / len(mem_vals) if mem_vals else None
+
             summaries.append(PoolSummary(
                 name=name, phase=pv.phase.name,
                 nodes_ready=ready, nodes_total=pv.total_nodes,
                 tasks_done=pv.tasks.done, tasks_running=pv.tasks.running,
                 started_at=pv.started_at,
+                provider=provider, accelerator=accelerator,
+                vcpus=vcpus, memory=memory, vram=vram, disk=disk,
+                avg_cpu=avg_cpu, avg_mem=avg_mem,
             ))
         return PoolList(pools=tuple(summaries))
 
@@ -424,11 +552,31 @@ class DaemonServer:
             return DaemonError(error=f"Pool '{name}' not found")
         return PoolViewResponse(view=view.pools[name])
 
+    def _get_pool_logs(self, name: str, all_logs: bool) -> PoolLogs | DaemonError:
+        pool_dir = self._logs_dir / name
+        if not pool_dir.exists():
+            return DaemonError(error=f"No logs for pool '{name}'")
+        files = sorted(pool_dir.glob("*.log"))
+        if not files:
+            return DaemonError(error=f"No logs for pool '{name}'")
+        if all_logs:
+            return PoolLogs(paths=tuple(str(f) for f in files))
+        return PoolLogs(paths=(str(files[-1]),))
+
     async def _shutdown_pool(self, name: str) -> PoolShutdown | DaemonError:
         if name not in self._pools:
             return DaemonError(error=f"Pool '{name}' not found")
         await self._teardown_pool(name)
         return PoolShutdown()
+
+    async def _shutdown_daemon(self) -> DaemonStopped:
+        """Tear down all pools and signal the event loop to stop."""
+        log.info("Daemon shutdown requested")
+        for name in list(self._pools):
+            await self._teardown_pool(name)
+        if self._stop is not None:
+            self._stop.set()
+        return DaemonStopped()
 
     # -- Client tracking (via state actor) ---------------------------------
 
@@ -476,6 +624,8 @@ class DaemonServer:
 
     async def _teardown_pool(self, name: str) -> None:
         self._cancel_ttl(name)
+        if fh := self._log_handles.pop(name, None):
+            fh.close()
         if pool := self._pools.pop(name, None):
             try:
                 loop = asyncio.get_running_loop()
@@ -610,6 +760,7 @@ class DaemonServer:
             name, spec, provider, cluster, tuple(alive),
         )
         self._pools[name] = pool
+        self._open_log_file(name)
         self._pool_ttls[name] = spec.ttl
 
         if dead:
