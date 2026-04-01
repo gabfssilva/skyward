@@ -10,7 +10,7 @@ from typing import Annotated, Any
 from cyclopts import Parameter
 
 from skyward.cli import compute_app
-from skyward.cli._output import console, print_table
+from skyward.cli._output import BRANCH, BRANCH_LAST, console, phase_label
 
 
 async def _daemon_request(request: Any) -> Any:
@@ -21,12 +21,33 @@ async def _daemon_request(request: Any) -> Any:
         return await client.request(request)
 
 
+def _ensure_daemon_running() -> None:
+    from skyward.daemon.spawn import ensure_daemon, is_daemon_running
+
+    if not is_daemon_running():
+        from rich.console import Console as RichConsole
+
+        from skyward.cli._output import INACTIVE
+
+        RichConsole(stderr=True).print(f"{INACTIVE} Daemon not running, starting...")
+        ensure_daemon()
+
+
 def _run_async(coro: Any) -> Any:
+    _ensure_daemon_running()
     try:
         return asyncio.run(coro)
     except ConnectionError as exc:
         console.print(f"[red]{exc}[/red]")
         raise SystemExit(1) from None
+
+
+_PHASE_LABELS: dict[str, str] = {
+    "PROVISIONING": "Provisioning instances",
+    "SSH": "Connecting via SSH",
+    "BOOTSTRAP": "Bootstrapping environment",
+    "WORKERS": "Starting workers",
+}
 
 
 # -- commands ----------------------------------------------------------------
@@ -35,18 +56,23 @@ def _run_async(coro: Any) -> Any:
 @compute_app.command(name="list")
 def list_pools(
     *,
+    all: Annotated[bool, Parameter(name="--all", help="Include stopped pools")] = False,
     json: Annotated[bool, Parameter(name="--json", help="JSON output")] = False,
 ) -> None:
-    """List all running compute pools."""
+    """List compute pools."""
     from skyward.daemon.protocol import GetPools, PoolList
 
     resp: PoolList = _run_async(_daemon_request(GetPools()))
 
-    if not resp.pools:
+    pools = resp.pools
+    if not all:
+        pools = tuple(p for p in pools if p.phase != "STOPPED")
+
+    if not pools:
         if json:
             print("[]")
         else:
-            console.print("[dim]No running pools[/dim]")
+            console.print("[dim]  No pools running[/dim]")
         return
 
     if json:
@@ -54,37 +80,71 @@ def list_pools(
             {
                 "name": p.name,
                 "phase": p.phase,
+                "provider": p.provider,
+                "accelerator": p.accelerator,
                 "nodes_ready": p.nodes_ready,
                 "nodes_total": p.nodes_total,
                 "tasks_done": p.tasks_done,
                 "tasks_running": p.tasks_running,
                 "started_at": p.started_at,
+                "avg_cpu": p.avg_cpu,
+                "avg_mem": p.avg_mem,
             }
-            for p in resp.pools
+            for p in pools
         ]
         print(_json.dumps(data, default=str))
         return
 
-    columns = ["Pool", "Phase", "Nodes", "Tasks", "Uptime"]
-    rows = []
-    for p in resp.pools:
+    for p in pools:
         elapsed = time.time() - p.started_at if p.started_at else 0
         mins = int(elapsed / 60)
-        nodes = f"{p.nodes_ready}/{p.nodes_total}"
+        nodes = f"{p.nodes_ready}/{p.nodes_total} nodes"
         tasks = f"{p.tasks_done} done"
         if p.tasks_running:
             tasks += f", {p.tasks_running} running"
-        rows.append((p.name, p.phase, nodes, tasks, f"{mins}m"))
-    print_table(columns, rows)
+
+        spec = p.provider
+        if p.accelerator:
+            spec += f" · {p.accelerator}"
+
+        phase = phase_label(p.phase)
+
+        console.print(
+            f"  [bold]{p.name}[/bold]    [dim]{spec}[/dim]    {phase}   "
+            f"{nodes}   {tasks}   [dim]{mins}m[/dim]"
+        )
+
+        spec_parts = []
+        if p.vcpus:
+            spec_parts.append(f"{p.vcpus} vcpu")
+        if p.memory:
+            spec_parts.append(p.memory)
+        if p.vram:
+            spec_parts.append(f"{p.vram} vram")
+        if p.disk:
+            spec_parts.append(f"{p.disk} disk")
+        if spec_parts:
+            console.print(f"  [dim]           {' · '.join(spec_parts)}[/dim]")
+
+        metrics_parts = []
+        if p.avg_cpu is not None:
+            metrics_parts.append(f"cpu {p.avg_cpu:.0f}%")
+        if p.avg_mem is not None:
+            metrics_parts.append(f"mem {p.avg_mem:.0f}%")
+        if metrics_parts:
+            console.print(f"  [dim]           {' · '.join(metrics_parts)}[/dim]")
+
+        console.print()
 
 
 @compute_app.default
 def _default_list(
     *,
+    all: Annotated[bool, Parameter(name="--all", help="Include stopped pools")] = False,
     json: Annotated[bool, Parameter(name="--json", help="JSON output")] = False,
 ) -> None:
-    """List all running compute pools."""
-    list_pools(json=json)
+    """List compute pools."""
+    list_pools(all=all, json=json)
 
 
 @compute_app.command(name="view")
@@ -127,36 +187,134 @@ def show_tasks(
                 _print_tasks(view)
 
 
-@compute_app.command(name="stats")
-def show_stats(
-    name: Annotated[str, Parameter(help="Pool name")],
+@compute_app.command(name="start")
+def start_pool(
+    name: Annotated[str, Parameter(help="Pool name from skyward.toml")],
     *,
     json: Annotated[bool, Parameter(name="--json", help="JSON output")] = False,
 ) -> None:
-    """Show metrics for a compute pool."""
-    from skyward.daemon.protocol import DaemonError, GetPoolView, PoolViewResponse
+    """Start a named compute pool via the daemon."""
+    from pathlib import Path
 
-    resp = _run_async(_daemon_request(GetPoolView(pool_name=name)))
+    from skyward.daemon.protocol import PoolFailed, PoolLogLine, PoolProvisioning, PoolReady
+
+    async def _start() -> None:
+        from contextlib import nullcontext
+
+        from rich.status import Status
+
+        from skyward.cli._output import ERROR, PROGRESS
+        from skyward.daemon.client import DaemonClient
+
+        use_spinner = not json and console.is_terminal
+        ctx = Status("", console=console, spinner="dots") if use_spinner else nullcontext()
+        msg: object = None
+        current_phase = ""
+
+        with ctx as spinner:
+            async with DaemonClient() as client:
+                async for msg in client.ensure_pool_stream(
+                    name, project_dir=str(Path.cwd()),
+                ):
+                    match msg:
+                        case PoolProvisioning(phase=phase):
+                            current_phase = _PHASE_LABELS.get(phase, phase)
+                            if json:
+                                print(_json.dumps({"pool": name, "phase": phase.lower()}))
+                            elif spinner is not None:
+                                spinner.update(f"{current_phase}...")
+                            else:
+                                console.print(f"{PROGRESS} {current_phase}...")
+                        case PoolLogLine(message=log_msg):
+                            if spinner is not None and current_phase:
+                                short = log_msg[:60].strip()
+                                spinner.update(f"{current_phase}: [dim]{short}[/dim]")
+                        case PoolReady() | PoolFailed():
+                            if spinner is not None:
+                                spinner.stop()
+
+        match msg:
+            case PoolReady(pool_name=pn, node_count=n):
+                if json:
+                    print(_json.dumps({"pool": pn, "node_count": n, "status": "ready"}))
+                else:
+                    console.print(f"[green]✓[/green] Pool [bold]{pn}[/bold] ready ({n} nodes)")
+            case PoolFailed(pool_name=pn, reason=reason):
+                if json:
+                    print(_json.dumps({"pool": pn, "status": "failed", "reason": reason}))
+                else:
+                    console.print(f"{ERROR} Pool [bold]{pn}[/bold] failed: {reason}")
+                raise SystemExit(1)
+
+    _run_async(_start())
+
+
+@compute_app.command(name="logs")
+def pool_logs(
+    name: Annotated[str, Parameter(help="Pool name")],
+    *,
+    n: Annotated[int, Parameter(name=["-n", "--lines"], help="Number of lines")] = 50,
+    follow: Annotated[bool, Parameter(name=["-f", "--follow"], help="Follow log output")] = False,
+    all: Annotated[bool, Parameter(name="--all", help="All log files, not just latest")] = False,
+    json: Annotated[bool, Parameter(name="--json", help="Raw JSONL output")] = False,
+) -> None:
+    """Show logs for a compute pool."""
+    import subprocess
+
+    from skyward.daemon.protocol import DaemonError, GetPoolLogs, PoolLogs
+
+    resp = _run_async(_daemon_request(GetPoolLogs(pool_name=name, all=all)))
     match resp:
         case DaemonError(error=err):
             console.print(f"[red]{err}[/red]")
-        case PoolViewResponse(view=view):
-            if json:
-                print(_json.dumps(_metrics_to_dict(view), default=str))
-            else:
-                _print_metrics(view)
+            raise SystemExit(1)
+        case PoolLogs(paths=paths):
+            pass
+        case _:
+            console.print(f"[red]Unexpected response: {resp}[/red]")
+            raise SystemExit(1)
 
+    import json as json_mod
 
-@compute_app.command(name="start")
-def start_daemon() -> None:
-    """Start the Skyward daemon."""
-    from skyward.daemon.spawn import ensure_daemon, is_daemon_running
+    def _render_line(line: str) -> None:
+        if json:
+            print(line)
+        else:
+            try:
+                entry = json_mod.loads(line)
+                node = entry.get("node", "?")
+                msg = entry.get("message", line)
+                console.print(f"  [dim]node-{node}:[/dim] {msg}")
+            except json_mod.JSONDecodeError:
+                console.print(f"  {line}")
 
-    if is_daemon_running():
-        console.print("[dim]Daemon already running[/dim]")
+    if follow:
+        import subprocess
+
+        try:
+            proc = subprocess.Popen(
+                ["tail", "-f", paths[-1]],
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+            assert proc.stdout is not None
+            for raw in proc.stdout:
+                _render_line(raw.rstrip())
+        except KeyboardInterrupt:
+            pass
         return
-    ensure_daemon()
-    console.print("[green]Daemon started[/green]")
+
+    from collections import deque
+    from pathlib import Path
+
+    lines: deque[str] = deque(maxlen=n)
+    for path in paths:
+        with Path(path).open() as fh:
+            for raw in fh:
+                lines.append(raw.rstrip())
+
+    for line in lines:
+        _render_line(line)
 
 
 @compute_app.command(name="stop")
@@ -164,14 +322,15 @@ def stop_pool(
     name: Annotated[str, Parameter(help="Pool name")],
 ) -> None:
     """Stop a running compute pool."""
+    from skyward.cli._output import ERROR, SUCCESS
     from skyward.daemon.protocol import DaemonError, PoolShutdown, ShutdownPool
 
     resp = _run_async(_daemon_request(ShutdownPool(pool_name=name)))
     match resp:
         case PoolShutdown():
-            console.print(f"[green]Pool '{name}' stopped[/green]")
+            console.print(f"{SUCCESS} Pool [bold]{name}[/bold] stopped")
         case DaemonError(error=err):
-            console.print(f"[red]{err}[/red]")
+            console.print(f"{ERROR} {err}")
 
 
 @compute_app.command(name="console")
@@ -363,69 +522,106 @@ def _tasks_to_dict(tasks: Any) -> dict[str, Any]:
     return result
 
 
-def _metrics_to_dict(view: Any) -> dict[str, Any]:
-    return {str(nid): dict(nv.metrics) for nid, nv in view.nodes.items()}
 
 
 def _print_pool_view(view: Any) -> None:
-    console.print(f"\n[bold]{view.name}[/bold]  phase={view.phase.name}")
-    console.print(f"  nodes: {view.total_nodes} total")
-    for nid, nv in sorted(view.nodes.items()):
-        iid = nv.instance.id[:12] if nv.instance else "\u2014"
-        console.print(f"    node-{nid}  {nv.status.name}  {iid}")
-    console.print(
-        f"  scaling: desired={view.scaling.desired}"
-        f" pending={view.scaling.pending}"
-        f" draining={view.scaling.draining}",
-    )
+    console.print(f"  {phase_label(view.phase.name)} [bold]{view.name}[/bold] · {view.total_nodes} nodes")
+    console.print()
+
+    nodes = sorted(view.nodes.items())
+    if nodes:
+        console.print("  [bold]Nodes[/bold]")
+        for i, (nid, nv) in enumerate(nodes):
+            connector = BRANCH_LAST if i == len(nodes) - 1 else BRANCH
+            iid = nv.instance.id[:12] if nv.instance else "\u2014"
+            status = phase_label(nv.status.name)
+            metrics_parts = []
+            if "cpu" in nv.metrics:
+                metrics_parts.append(f"cpu {nv.metrics['cpu']:.0f}%")
+            if "mem" in nv.metrics:
+                metrics_parts.append(f"mem {nv.metrics['mem']:.0f}%")
+            metrics_str = f"   [dim]{' · '.join(metrics_parts)}[/dim]" if metrics_parts else ""
+            console.print(f"  {connector} node-{nid}   {status}   [dim]{iid}[/dim]{metrics_str}")
+        console.print()
+
+    tasks = view.tasks
+    console.print("  [bold]Tasks[/bold]")
+    console.print(f"     {tasks.done} done · {tasks.failed} failed · {tasks.throughput:.1f}/min")
+
+    if tasks.fn_stats:
+        console.print()
+        console.print("  [bold]Functions[/bold]")
+        fns = list(tasks.fn_stats.items())
+        for i, (fn, lats) in enumerate(fns):
+            connector = BRANCH_LAST if i == len(fns) - 1 else BRANCH
+            avg = sum(lats) / len(lats)
+            n_calls = len(lats)
+            call_word = "call" if n_calls == 1 else "calls"
+            failed = tasks.fn_failed.get(fn, 0)
+            suffix = f" · {failed} failed" if failed else ""
+            console.print(
+                f"  {connector} {fn}   {n_calls} {call_word}   "
+                f"[dim]avg {avg:.1f}s · min {min(lats):.1f}s · max {max(lats):.1f}s{suffix}[/dim]"
+            )
+
+    running = [(tid, e) for tid, e in tasks.inflight.items() if e.node_id >= 0]
+    queued = [(tid, e) for tid, e in tasks.inflight.items() if e.node_id < 0]
+    if running:
+        console.print()
+        console.print("  [bold]Running[/bold]")
+        for i, (tid, e) in enumerate(running):
+            connector = BRANCH_LAST if i == len(running) - 1 else BRANCH
+            elapsed = time.time() - e.started_at
+            console.print(f"  {connector} {tid[:8]}   {e.name}   node-{e.node_id}   [dim]{elapsed:.0f}s[/dim]")
+    if queued:
+        console.print()
+        console.print("  [bold]Queued[/bold]")
+        for i, (tid, e) in enumerate(queued):
+            connector = BRANCH_LAST if i == len(queued) - 1 else BRANCH
+            console.print(f"  {connector} {tid[:8]}   {e.name}")
+
+    console.print()
+    scaling = view.scaling
+    console.print("  [bold]Scaling[/bold]")
+    console.print(f"     desired {scaling.desired} · pending {scaling.pending} · draining {scaling.draining}")
     console.print()
 
 
 def _print_tasks(view: Any) -> None:
     tasks = view.tasks
+    console.print(f"  [bold]{view.name}[/bold] · {tasks.done} done · {tasks.failed} failed · {tasks.throughput:.1f}/min")
+
+    if tasks.fn_stats:
+        console.print()
+        console.print("  [bold]Functions[/bold]")
+        fns = list(tasks.fn_stats.items())
+        for i, (fn, lats) in enumerate(fns):
+            connector = BRANCH_LAST if i == len(fns) - 1 else BRANCH
+            avg = sum(lats) / len(lats)
+            n_calls = len(lats)
+            call_word = "call" if n_calls == 1 else "calls"
+            failed = tasks.fn_failed.get(fn, 0)
+            suffix = f" · {failed} failed" if failed else ""
+            console.print(
+                f"  {connector} {fn}   {n_calls} {call_word}   "
+                f"[dim]avg {avg:.1f}s · min {min(lats):.1f}s · max {max(lats):.1f}s{suffix}[/dim]"
+            )
+
     running = [(tid, e) for tid, e in tasks.inflight.items() if e.node_id >= 0]
     queued = [(tid, e) for tid, e in tasks.inflight.items() if e.node_id < 0]
     if running:
-        console.print("\n[bold]RUNNING[/bold]")
-        for tid, e in running:
-            console.print(f"  {tid}  {e.name}  node-{e.node_id}")
-    if queued:
-        console.print("\n[bold]QUEUED[/bold]")
-        for tid, e in queued:
-            console.print(f"  {tid}  {e.name}")
-    console.print("\n[bold]SUMMARY[/bold]")
-    console.print(
-        f"  done: {tasks.done}  failed: {tasks.failed}"
-        f"  throughput: {tasks.throughput:.1f}/min",
-    )
-    if tasks.fn_stats:
         console.print()
-        for fn, lats in tasks.fn_stats.items():
-            avg = sum(lats) / len(lats)
-            failed = tasks.fn_failed.get(fn, 0)
-            suffix = f", {failed} failed" if failed else ""
-            console.print(
-                f"  {fn}  avg={avg:.1f}s  min={min(lats):.1f}s"
-                f"  max={max(lats):.1f}s  ({len(lats)} calls{suffix})",
-            )
+        console.print("  [bold]Running[/bold]")
+        for i, (tid, e) in enumerate(running):
+            connector = BRANCH_LAST if i == len(running) - 1 else BRANCH
+            elapsed = time.time() - e.started_at
+            console.print(f"  {connector} {tid[:8]}   {e.name}   node-{e.node_id}   [dim]{elapsed:.0f}s[/dim]")
+    if queued:
+        console.print()
+        console.print("  [bold]Queued[/bold]")
+        for i, (tid, e) in enumerate(queued):
+            connector = BRANCH_LAST if i == len(queued) - 1 else BRANCH
+            console.print(f"  {connector} {tid[:8]}   {e.name}")
     console.print()
 
 
-def _print_metrics(view: Any) -> None:
-    if not any(nv.metrics for nv in view.nodes.values()):
-        console.print("[dim]No metrics available[/dim]")
-        return
-    console.print(f"\n[bold]{view.name}[/bold] metrics\n")
-    metric_names: set[str] = set()
-    for nv in view.nodes.values():
-        metric_names.update(nv.metrics.keys())
-    sorted_names = sorted(metric_names)
-    columns = ["Node", *sorted_names]
-    rows = []
-    for nid, nv in sorted(view.nodes.items()):
-        row: list[str] = [f"node-{nid}"]
-        for mn in sorted_names:
-            val = nv.metrics.get(mn)
-            row.append(f"{val:.1f}" if val is not None else "\u2014")
-        rows.append(tuple(row))
-    print_table(columns, rows)
