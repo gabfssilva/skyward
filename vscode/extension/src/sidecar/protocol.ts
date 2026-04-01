@@ -80,7 +80,7 @@ export type PoolPhase =
   | "bootstrap"
   | "workers"
   | "ready"
-  | "stopping";
+  | "stopped";
 
 export interface PoolView {
   name: string;

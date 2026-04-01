@@ -103,7 +103,7 @@ body { font-family: var(--vscode-font-family); color: var(--fg); background: var
 }
 .badge.ready { background: var(--green); color: #000; }
 .badge.provisioning,.badge.bootstrapping,.badge.workers,.badge.ssh { background: var(--yellow); color: #000; }
-.badge.stopping { background: var(--red); color: #fff; }
+.badge.stopped { background: var(--red); color: #fff; }
 .sub { color: var(--dim); font-size: 0.82em; margin-top: 3px; }
 
 /* ── Tabs ───────────────────────────── */

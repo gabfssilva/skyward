@@ -8,7 +8,7 @@
 import * as vscode from "vscode";
 import type { SidecarClient } from "../sidecar/protocol";
 import type { PoolStatusBar } from "../statusbar/pool-status";
-import type { TreeNode } from "../views/pool-explorer";
+import type { PoolExplorer, TreeNode } from "../views/pool-explorer";
 
 // ── Constants ──────────────────────────────────────────────────
 
@@ -168,6 +168,7 @@ export function registerLifecycleCommands(
   context: vscode.ExtensionContext,
   client: SidecarClient,
   statusBar: PoolStatusBar,
+  poolExplorer: PoolExplorer,
   onPoolChanged: () => void,
 ): void {
   // ── Add Provider ──────────────────────────────────────────
@@ -200,29 +201,33 @@ export function registerLifecycleCommands(
 
   // ── Start Pool ────────────────────────────────────────────
   context.subscriptions.push(
-    vscode.commands.registerCommand("skyward.startPool", async () => {
-      let poolNames = await client.configPools().catch(() => []);
+    vscode.commands.registerCommand("skyward.startPool", async (poolName?: string) => {
+      let picked = poolName;
 
-      if (poolNames.length === 0) {
-        let providers = await client.configProviders().catch(() => []);
+      if (!picked) {
+        let poolNames = await client.configPools().catch(() => []);
 
-        if (providers.length === 0) {
-          const created = await runAddProviderWizard();
+        if (poolNames.length === 0) {
+          let providers = await client.configProviders().catch(() => []);
+
+          if (providers.length === 0) {
+            const created = await runAddProviderWizard();
+            if (!created) return;
+            providers = await client.configProviders().catch(() => []);
+            if (providers.length === 0) return;
+          }
+
+          const created = await runAddPoolWizard(providers);
           if (!created) return;
-          providers = await client.configProviders().catch(() => []);
-          if (providers.length === 0) return;
+          poolNames = await client.configPools().catch(() => []);
+          if (poolNames.length === 0) return;
         }
 
-        const created = await runAddPoolWizard(providers);
-        if (!created) return;
-        poolNames = await client.configPools().catch(() => []);
-        if (poolNames.length === 0) return;
+        picked =
+          poolNames.length === 1
+            ? poolNames[0]
+            : await vscode.window.showQuickPick(poolNames, { placeHolder: "Select a pool to start" });
       }
-
-      const picked =
-        poolNames.length === 1
-          ? poolNames[0]
-          : await vscode.window.showQuickPick(poolNames, { placeHolder: "Select a pool to start" });
 
       if (!picked) return;
 
@@ -238,10 +243,44 @@ export function registerLifecycleCommands(
         vscode.window.showErrorMessage(`Pool "${picked}" failed: ${err}`);
       });
 
+      poolExplorer.markStarting(picked);
       vscode.window.showInformationMessage(`Pool "${picked}" starting...`);
       statusBar.selectPool(picked);
       onPoolChanged();
     }),
+  );
+
+  // ── Start Pool Inline ──────────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "skyward.startPoolInline",
+      async (node?: TreeNode) => {
+        const name = node?.kind === "stopped-pool" ? node.name
+          : node?.kind === "pool" ? node.name
+          : undefined;
+
+        if (!name) {
+          vscode.window.showWarningMessage("No pool selected.");
+          return;
+        }
+
+        await client.startDaemon();
+
+        const poll = setInterval(onPoolChanged, 2000);
+        client.ensurePool(name).then(() => {
+          clearInterval(poll);
+          onPoolChanged();
+        }).catch((err) => {
+          clearInterval(poll);
+          vscode.window.showErrorMessage(`Pool "${name}" failed: ${err}`);
+        });
+
+        poolExplorer.markStarting(name);
+        vscode.window.showInformationMessage(`Pool "${name}" starting...`);
+        statusBar.selectPool(name);
+        onPoolChanged();
+      },
+    ),
   );
 
   // ── Stop Pool ─────────────────────────────────────────────
@@ -262,8 +301,17 @@ export function registerLifecycleCommands(
       if (!picked) return;
 
       await client.shutdownPool(picked);
-      vscode.window.showInformationMessage(`Pool "${picked}" stopped.`);
+      vscode.window.showInformationMessage(`Pool "${picked}" stopping...`);
       onPoolChanged();
+
+      // Poll until the pool disappears from the daemon.
+      const poll = setInterval(async () => {
+        const remaining = await client.listPools().catch(() => []);
+        onPoolChanged();
+        if (!remaining.some((p) => p.name === picked)) {
+          clearInterval(poll);
+        }
+      }, 2000);
     }),
   );
 
@@ -278,8 +326,16 @@ export function registerLifecycleCommands(
         }
 
         await client.shutdownPool(node.name);
-        vscode.window.showInformationMessage(`Pool "${node.name}" stopped.`);
+        vscode.window.showInformationMessage(`Pool "${node.name}" stopping...`);
         onPoolChanged();
+
+        const poll = setInterval(async () => {
+          const remaining = await client.listPools().catch(() => []);
+          onPoolChanged();
+          if (!remaining.some((p) => p.name === node.name)) {
+            clearInterval(poll);
+          }
+        }, 2000);
       },
     ),
   );

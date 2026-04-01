@@ -97,7 +97,7 @@ export function activate(context: vscode.ExtensionContext): void {
     });
   };
 
-  registerLifecycleCommands(context, client, statusBar, refreshAll);
+  registerLifecycleCommands(context, client, statusBar, poolExplorer, refreshAll);
 
   context.subscriptions.push(
     vscode.commands.registerCommand("skyward.refreshPools", async () => {

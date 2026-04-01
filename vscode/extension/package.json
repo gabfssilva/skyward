@@ -38,7 +38,7 @@
     "viewsWelcome": [
       {
         "view": "skyward.poolExplorer",
-        "contents": "No pools running.\n[Start Pool](command:skyward.startPool)\n[Add Provider](command:skyward.addProvider)\n[Add Pool](command:skyward.addPool)"
+        "contents": "Get started by configuring a cloud provider and creating your first compute pool.\n[$(add) New Provider](command:skyward.addProvider)\n[$(server-environment) New Pool](command:skyward.addPool)\nAlready configured? [Start a pool](command:skyward.startPool)."
       }
     ],
     "commands": [
@@ -48,11 +48,13 @@
       },
       {
         "command": "skyward.addProvider",
-        "title": "Skyward: Add Provider"
+        "title": "Skyward: Add Provider",
+        "icon": "$(plug)"
       },
       {
         "command": "skyward.addPool",
-        "title": "Skyward: Add Pool"
+        "title": "Skyward: Add Pool",
+        "icon": "$(server-environment)"
       },
       {
         "command": "skyward.startPool",
@@ -86,6 +88,11 @@
         "icon": "$(stop)"
       },
       {
+        "command": "skyward.startPoolInline",
+        "title": "Skyward: Start Pool",
+        "icon": "$(play)"
+      },
+      {
         "command": "skyward.showPoolDetail",
         "title": "Skyward: Show Pool Detail"
       },
@@ -96,6 +103,16 @@
     ],
     "menus": {
       "view/title": [
+        {
+          "command": "skyward.addPool",
+          "when": "view == skyward.poolExplorer",
+          "group": "navigation"
+        },
+        {
+          "command": "skyward.addProvider",
+          "when": "view == skyward.poolExplorer",
+          "group": "navigation"
+        },
         {
           "command": "skyward.refreshPools",
           "when": "view == skyward.poolExplorer",
@@ -111,6 +128,11 @@
         {
           "command": "skyward.stopPoolInline",
           "when": "view == skyward.poolExplorer && viewItem == pool",
+          "group": "inline"
+        },
+        {
+          "command": "skyward.startPoolInline",
+          "when": "view == skyward.poolExplorer && viewItem == 'stopped-pool'",
           "group": "inline"
         }
       ]
