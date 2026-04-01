@@ -359,6 +359,7 @@ class TaskSucceeded:
     value: Any
     node_id: NodeId
     task_id: str = ""
+    elapsed: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

@@ -45,7 +45,7 @@ class PoolPhase(Enum):
     BOOTSTRAP = auto()
     WORKERS = auto()
     READY = auto()
-    STOPPING = auto()
+    STOPPED = auto()
 
 
 class NodeStatus(Enum):

@@ -35,7 +35,7 @@ def _state_from_pool_view(pool: PoolView) -> _State:
         PoolPhase.BOOTSTRAP: _Phase.BOOTSTRAP,
         PoolPhase.WORKERS: _Phase.WORKERS,
         PoolPhase.READY: _Phase.READY,
-        PoolPhase.STOPPING: _Phase.STOPPING,
+        PoolPhase.STOPPED: _Phase.STOPPED,
     }
 
     node_status_map: dict[NodeStatus, _NodeStatus] = {
@@ -516,7 +516,7 @@ def _collect_badges(state: _State) -> tuple[list[Text], list[Text], list[Text]]:
 
     # --- Line 1: Infra ---
     match state.phase:
-        case _Phase.READY | _Phase.STOPPING:
+        case _Phase.READY | _Phase.STOPPED:
             infra.append(_inline_badge("skyward"))
         case _:
             frame = _SPINNER_FRAMES[_spinner_tick[0] % len(_SPINNER_FRAMES)]
@@ -658,7 +658,7 @@ def _collect_badges(state: _State) -> tuple[list[Text], list[Text], list[Text]]:
                     eta_min = remaining / rate
                     tasks.append(_styled_badge(f"est. {_format_duration(eta_min * 60)}", "cost"))
 
-        case _Phase.STOPPING:
+        case _Phase.STOPPED:
             status.append(_inline_badge("shutting down"))
             if state.tasks_done:
                 status.append(_styled_badge(f"\u2714 {state.tasks_done} done", "done"))

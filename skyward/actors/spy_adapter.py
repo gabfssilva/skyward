@@ -233,8 +233,8 @@ def translate(spy: SpyEvent, pool_name: str) -> SessionEvent | None:  # type: ig
         case TaskSubmitted(task_id=tid, node_id=nid):
             return Task.Assigned(pool_name, tid, nid)
 
-        case TaskSucceeded(task_id=tid, node_id=nid):
-            return Task.Completed(pool_name, tid, nid, 0.0)
+        case TaskSucceeded(task_id=tid, node_id=nid, elapsed=elapsed):
+            return Task.Completed(pool_name, tid, nid, elapsed)
 
         case TaskFailed(task_id=tid, node_id=nid):
             return Task.Failed(pool_name, tid, nid, "")

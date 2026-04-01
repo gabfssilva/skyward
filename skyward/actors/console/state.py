@@ -14,7 +14,7 @@ class _Phase(Enum):
     BOOTSTRAP = auto()
     WORKERS = auto()
     READY = auto()
-    STOPPING = auto()
+    STOPPED = auto()
 
 
 class _NodeStatus(Enum):

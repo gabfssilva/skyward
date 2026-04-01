@@ -56,13 +56,13 @@ class PoolState:
 def _derive_phase(s: PoolState) -> PoolPhase:
     """Derive pool phase from node statuses.
 
-    Explicit phase (READY, WORKERS, STOPPING) takes priority — those are
+    Explicit phase (READY, WORKERS, STOPPED) takes priority — those are
     set by the pool actor's state machine. For earlier phases, derive from
     the minimum progress across all tracked nodes. Only advances past
     PROVISIONING when all expected nodes have reported in.
     """
     match s.phase:
-        case PoolPhase.READY | PoolPhase.WORKERS | PoolPhase.STOPPING:
+        case PoolPhase.READY | PoolPhase.WORKERS | PoolPhase.STOPPED:
             return s.phase
     statuses = tuple(s.node_statuses.values())
     if not statuses or len(statuses) < s.spec.nodes.min:

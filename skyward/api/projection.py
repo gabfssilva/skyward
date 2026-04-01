@@ -54,7 +54,7 @@ _PHASE_MAP: dict[str, PoolPhase] = {
     "BOOTSTRAP": PoolPhase.BOOTSTRAP,
     "WORKERS": PoolPhase.WORKERS,
     "READY": PoolPhase.READY,
-    "STOPPING": PoolPhase.STOPPING,
+    "STOPPED": PoolPhase.STOPPED,
 }
 
 _SNAPSHOT_NODE_STATUS_MAP: dict[int, NodeStatus] = {
@@ -168,7 +168,8 @@ class SessionProjection:
             case Pool.Stopped(pool_name=name):
                 if name not in self._pools:
                     return
-                del self._pools[name]
+                pool = self._pools[name]
+                self._pools[name] = replace(pool, phase=PoolPhase.STOPPED)
 
             case Pool.Provisioned(pool_name=name, cluster=cluster, instances=instances):
                 if name not in self._pools:

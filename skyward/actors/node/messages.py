@@ -96,6 +96,7 @@ class _RemoteTaskDone:
     reply_to: ActorRef[Any]
     error: bool = False
     connection_error: bool = False
+    elapsed: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

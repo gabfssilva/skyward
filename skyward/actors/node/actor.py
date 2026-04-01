@@ -13,6 +13,7 @@ communicates with it via messages, never touching asyncssh directly.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace
@@ -635,22 +636,25 @@ def node_actor(
         kwargs: dict[str, Any],
         timeout: float,
     ) -> None:
+        t0 = time.monotonic()
         ctx.pipe_to_self(
             execute_with_streaming(s.client, s.worker_ref, fn, args, kwargs, timeout),
-            mapper=lambda result, _tid=tid: _RemoteTaskDone(  # type: ignore[return-value]
+            mapper=lambda result, _tid=tid, _t0=t0: _RemoteTaskDone(  # type: ignore[return-value]
                 task_id=_tid,
                 value=(result.result if hasattr(result, "result") else RuntimeError(result.error)),
                 node_id=node_id,
                 reply_to=ctx.self,
                 error=not hasattr(result, "result"),
+                elapsed=time.monotonic() - _t0,
             ),
-            on_failure=lambda e, _tid=tid: _RemoteTaskDone(  # type: ignore[return-value]
+            on_failure=lambda e, _tid=tid, _t0=t0: _RemoteTaskDone(  # type: ignore[return-value]
                 task_id=_tid,
                 value=RuntimeError(str(e)),
                 node_id=node_id,
                 reply_to=ctx.self,
                 error=True,
                 connection_error=True,
+                elapsed=time.monotonic() - _t0,
             ),
         )
 
@@ -706,14 +710,14 @@ def node_actor(
                     _dispatch_task(ctx, s, local_tid, ex.fn, ex.args, ex.kwargs, ex.timeout)
                     new_inflight = MappingProxyType({**s.inflight, local_tid: ex.reply_to})
                     return active(replace(s, inflight=new_inflight, task_counter=s.task_counter + 1))
-                case _RemoteTaskDone(task_id=tid, value=value, error=is_err, connection_error=conn_err):
+                case _RemoteTaskDone(task_id=tid, value=value, error=is_err, connection_error=conn_err, elapsed=elapsed):
                     log.debug("Node {nid} received task result (tid={tid})", nid=node_id, tid=tid)
                     caller = s.inflight.get(tid)
                     if caller:
                         result = (
                             TaskFailed(error=value, node_id=node_id, task_id=tid)
                             if is_err
-                            else TaskSucceeded(value=value, node_id=node_id, task_id=tid)
+                            else TaskSucceeded(value=value, node_id=node_id, task_id=tid, elapsed=elapsed)
                         )
                         caller.tell(result)
                     if conn_err:

@@ -352,8 +352,9 @@ def pool_actor(
                     s.reply_to.tell(ProvisionFailed(reason="Interrupted"))
                     provider = s.provider
                     cluster = s.cluster
-                    instance_ids = tuple(
-                        ni.instance.id for ni in s.instances.values()
+                    instance_ids = (
+                        tuple(inst.id for inst in cluster.instances)
+                        if cluster is not None else ()
                     )
 
                     async def _shutdown() -> None:
@@ -574,8 +575,9 @@ def pool_actor(
                     s.reply_to.tell(ProvisionFailed(reason="Interrupted"))
                     provider = s.provider
                     cluster = s.cluster
-                    instance_ids = tuple(
-                        ni.instance.id for ni in s.instances.values()
+                    instance_ids = (
+                        tuple(inst.id for inst in cluster.instances)
+                        if cluster is not None else ()
                     )
 
                     async def _shutdown() -> None:
@@ -726,11 +728,12 @@ def pool_actor(
                 case StopPool(reply_to=stop_reply):
                     log.debug("StopPool during provisioning")
                     s.reply_to.tell(ProvisionFailed(reason="Interrupted"))
-                    instance_ids = tuple(
-                        ni.instance.id for ni in s.instances.values()
-                    )
                     provider = s.provider
                     cluster = s.cluster
+                    instance_ids = (
+                        tuple(inst.id for inst in cluster.instances)
+                        if cluster is not None else ()
+                    )
 
                     async def _shutdown() -> None:
                         if instance_ids and cluster is not None:
@@ -746,7 +749,7 @@ def pool_actor(
                     )
                     return stopping(
                         stop_reply, s.cluster_id or "",
-                        replace(s, phase=PoolPhase.STOPPING), pool_name,
+                        replace(s, phase=PoolPhase.STOPPED), pool_name,
                     )
 
                 case GetPoolSnapshot(reply_to=snap_reply):
@@ -1011,7 +1014,7 @@ def pool_actor(
                     )
                     return stopping(
                         stop_reply, s.cluster_id,
-                        replace(s, phase=PoolPhase.STOPPING), pool_name,
+                        replace(s, phase=PoolPhase.STOPPED), pool_name,
                     )
             return Behaviors.same()
 

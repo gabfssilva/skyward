@@ -118,7 +118,7 @@ def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMs
                     _emit_pressure(new_s)
                     return _check_broadcasts(new_s)
 
-                case TaskSucceeded(value=value, node_id=node_id, task_id=tid):
+                case TaskSucceeded(value=value, node_id=node_id, task_id=tid, elapsed=elapsed):
                     broadcast_hit, new_broadcasts = _handle_broadcast_result(s.broadcasts, node_id, value)
                     new_inflight = s.inflight
                     new_retries = MappingProxyType({k: v for k, v in s.retries.items() if k != tid})
@@ -126,7 +126,7 @@ def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMs
                         task = s.inflight.get(tid)
                         if task:
                             task.reply_to.tell(TaskSucceeded(
-                                value=value, node_id=node_id, task_id=tid,
+                                value=value, node_id=node_id, task_id=tid, elapsed=elapsed,
                             ))
                             new_inflight = MappingProxyType({k: v for k, v in s.inflight.items() if k != tid})
                     new_s = _free_slot_and_drain(s, node_id, ctx, new_inflight, new_broadcasts, new_retries)
