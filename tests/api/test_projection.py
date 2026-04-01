@@ -69,7 +69,7 @@ class TestPoolLifecycle:
         _provision(proj)
         proj.handle(Pool.Stopped(pool_name="pool-1"))
 
-        assert proj.view.pools["pool-1"].phase == PoolPhase.STOPPING
+        assert proj.view.pools["pool-1"].phase == PoolPhase.STOPPED
 
     def test_provision_failed_no_state_change(self) -> None:
         proj = _make_projection()

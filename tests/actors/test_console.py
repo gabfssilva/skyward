@@ -20,7 +20,7 @@ class TestPhase:
         phases = list(_Phase)
         names = [p.name for p in phases]
         assert names == [
-            "PROVISIONING", "SSH", "BOOTSTRAP", "WORKERS", "READY", "STOPPING",
+            "PROVISIONING", "SSH", "BOOTSTRAP", "WORKERS", "READY", "STOPPED",
         ]
 
 
@@ -171,7 +171,7 @@ class TestFooter:
 
         console, buf = _capture_console()
         footer = _LiveFooter()
-        footer.state = _State(total_nodes=2, phase=_Phase.STOPPING)
+        footer.state = _State(total_nodes=2, phase=_Phase.STOPPED)
         console.print(footer)
         assert "shutting down" in buf.getvalue().lower()
 

@@ -93,7 +93,7 @@ class TestPoolPhase:
 
         names = [p.name for p in PoolPhase]
         assert names == [
-            "PROVISIONING", "SSH", "BOOTSTRAP", "WORKERS", "READY", "STOPPING",
+            "PROVISIONING", "SSH", "BOOTSTRAP", "WORKERS", "READY", "STOPPED",
         ]
 
 
@@ -216,7 +216,7 @@ class TestPoolView:
             name="p", phase=PoolPhase.READY, tasks=TasksView(), scaling=ScalingView(),
         )
         with pytest.raises(AttributeError):
-            pv.phase = PoolPhase.STOPPING  # type: ignore[misc]
+            pv.phase = PoolPhase.STOPPED  # type: ignore[misc]
 
     def test_with_nodes(self) -> None:
         from skyward.api.views import (

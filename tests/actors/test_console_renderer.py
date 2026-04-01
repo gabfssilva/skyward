@@ -89,7 +89,7 @@ class TestStateFromPoolView:
             (PoolPhase.BOOTSTRAP, _Phase.BOOTSTRAP),
             (PoolPhase.WORKERS, _Phase.WORKERS),
             (PoolPhase.READY, _Phase.READY),
-            (PoolPhase.STOPPING, _Phase.STOPPING),
+            (PoolPhase.STOPPED, _Phase.STOPPED),
         ]:
             pool = PoolView(
                 name="test",
