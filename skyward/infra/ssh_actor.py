@@ -216,8 +216,12 @@ async def _default_connect(
     import asyncssh
     return await asyncssh.connect(
         host, port=port, username=user,
-        client_keys=[key_path], known_hosts=None,
+        client_keys=[key_path] if key_path else [],
+        known_hosts=None,
         connect_timeout=connect_timeout,
+        keepalive_interval=10,
+        keepalive_count_max=5,
+        tcp_keepalive=True,
     )
 
 
@@ -544,12 +548,16 @@ def ssh_transport(
         return code, stdout, stderr
 
     async def _do_write_file(conn: Any, remote: str, content: str) -> None:
-        async with conn.start_sftp_client() as sftp, sftp.open(remote, "w") as f:
-            await f.write(content)
+        async with conn.create_process(f"cat > {remote}") as proc:
+            proc.stdin.write(content)
+            proc.stdin.write_eof()
+            await proc.wait()
 
     async def _do_write_bytes(conn: Any, remote: str, content: bytes) -> None:
-        async with conn.start_sftp_client() as sftp, sftp.open(remote, "wb") as f:
-            await f.write(content)
+        async with conn.create_process(f"cat > {remote}", encoding=None) as proc:
+            proc.stdin.write(content)
+            proc.stdin.write_eof()
+            await proc.wait()
 
     async def _do_upload(conn: Any, local: str, remote: str) -> None:
         import asyncssh

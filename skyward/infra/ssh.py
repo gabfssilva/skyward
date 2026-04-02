@@ -155,9 +155,12 @@ class SSHTransport:
                 self.host,
                 port=self.port,
                 username=self.user,
-                client_keys=[self.key_path],
+                client_keys=[self.key_path] if self.key_path else [],
                 known_hosts=None,
                 connect_timeout=self.connect_timeout,
+                keepalive_interval=10,
+                keepalive_count_max=5,
+                tcp_keepalive=True,
             )
 
         self._conn = await do_connect()

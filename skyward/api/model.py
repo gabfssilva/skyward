@@ -177,6 +177,10 @@ class Cluster[S]:
         Whether the cluster uses a pre-baked AMI/snapshot.
     resolved_volumes
         Volume-storage pairs after provider resolution.
+    ssh_pty
+        Whether the SSH channel supports full PTY capabilities
+        (SFTP, complex quoting, ``script -qefc``). ``False`` for
+        proxy-based providers that only support basic command execution.
     """
     id: str
     status: ClusterStatus
@@ -190,3 +194,4 @@ class Cluster[S]:
     instances: tuple[Instance, ...] = ()
     prebaked: bool = False
     resolved_volumes: tuple[tuple[Volume, Storage], ...] | None = None
+    ssh_pty: bool = True

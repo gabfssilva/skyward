@@ -133,8 +133,20 @@ run_phase() {{{{
 
     local start_ns=$(date +%s%N)
 
+    # For bash -c with multiline scripts, write to temp file to avoid
+    # printf %q escaping issues with newlines through SSH proxies.
+    local _run_cmd
+    if [ "$1" = "bash" ] && [ "$2" = "-c" ]; then
+        local _tmp=$(mktemp /tmp/skyward_phase_XXXXXX.sh)
+        printf '%s' "$3" > "$_tmp"
+        chmod +x "$_tmp"
+        _run_cmd="bash $_tmp"
+    else
+        _run_cmd="$(printf '%q ' "$@")"
+    fi
+
     set +e
-    script -qefc "$(printf '%q ' "$@")" /dev/null 2>&1 \\
+    script -qefc "$_run_cmd" /dev/null 2>&1 \\
         | stdbuf -oL sed 's/\\x1b\\[[0-9;?]*[a-zA-Z]//g; s/[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]//g; s/\\r/\\n__CR__\\n/g' \\
         | while IFS= read -r line; do
         if [ "$line" = "__CR__" ]; then _ow=true; continue; fi
@@ -143,6 +155,7 @@ run_phase() {{{{
     done
     local exit_code=${{{{PIPESTATUS[0]}}}}
     set -e
+    [ -n "$_tmp" ] && rm -f "$_tmp"
 
     local end_ns=$(date +%s%N)
     local elapsed=$(awk "BEGIN {{{{printf \\\"%.2f\\\", ($end_ns - $start_ns) / 1000000000}}}}")

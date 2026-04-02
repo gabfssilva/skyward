@@ -141,7 +141,13 @@ async def do_start_worker(
         f'[ -n "$_b" ] && emit_console "$_b" "stdout" "false"; fi; _b=""; '
         f'else _b+="$_c"; fi; done'
     )
-    tail_cmd = f"nohup bash -c '{tail_inner}' </dev/null >/dev/null 2>&1 &"
+    ssh_pty = getattr(cluster, "ssh_pty", True)
+    if ssh_pty:
+        tail_cmd = f"nohup bash -c '{tail_inner}' </dev/null >/dev/null 2>&1 &"
+    else:
+        tail_script_path = f"{SKYWARD_DIR}/tail-casty.sh"
+        await transport_write_file(transport_ref, tail_script_path, f"#!/bin/bash\n{tail_inner}\n")
+        tail_cmd = f"nohup bash {tail_script_path} </dev/null >/dev/null 2>&1 &"
 
     if use_sudo:
         casty_cmd = f"sudo bash -c '{casty_cmd}'"
@@ -269,14 +275,27 @@ async def run_bootstrap(
         iid=ni.instance.id, size=len(bootstrap_script) / 1024,
     )
 
-    encoded = base64.b64encode(bootstrap_script.encode()).decode()
-    exit_code, _, stderr = await transport_run(
-        transport_ref,
-        f"{sudo}bash -c \""
-        f"mkdir -p /opt/skyward && "
-        f"echo '{encoded}' | base64 -d > /opt/skyward/bootstrap.sh && "
-        f"chmod +x /opt/skyward/bootstrap.sh\"",
-    )
+    ssh_pty = getattr(cluster, "ssh_pty", True)
+
+    if ssh_pty:
+        encoded = base64.b64encode(bootstrap_script.encode()).decode()
+        exit_code, _, stderr = await transport_run(
+            transport_ref,
+            f"{sudo}bash -c \""
+            f"mkdir -p /opt/skyward && "
+            f"echo '{encoded}' | base64 -d > /opt/skyward/bootstrap.sh && "
+            f"chmod +x /opt/skyward/bootstrap.sh\"",
+        )
+    else:
+        await transport_run(transport_ref, f"{sudo}mkdir -p /opt/skyward")
+        await transport_write_file(
+            transport_ref, "/opt/skyward/bootstrap.sh", bootstrap_script,
+        )
+        exit_code, _, stderr = await transport_run(
+            transport_ref,
+            f"{sudo}chmod +x /opt/skyward/bootstrap.sh",
+        )
+
     if exit_code != 0:
         raise RuntimeError(f"Bootstrap upload failed: {stderr}")
 
