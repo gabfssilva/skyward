@@ -109,6 +109,7 @@ from skyward.providers import GCP as GCP
 from skyward.providers import Container as Container
 from skyward.providers import Hyperstack as Hyperstack
 from skyward.providers import JarvisLabs as JarvisLabs
+from skyward.providers import Novita as Novita
 from skyward.providers import RunPod as RunPod
 from skyward.providers import Scaleway as Scaleway
 from skyward.providers import TensorDock as TensorDock
@@ -155,6 +156,7 @@ __all__ = [
     "GCP",
     "Hyperstack",
     "JarvisLabs",
+    "Novita",
     "RunPod",
     "Scaleway",
     "TensorDock",

@@ -58,6 +58,7 @@ class AWS:
     @property
     def type(self) -> str: ...
     async def create_provider(self) -> Any: ...
+    def default_options(self) -> Any: ...
 
 class GCP:
     """Google Cloud Platform provider.
@@ -104,6 +105,7 @@ class GCP:
     @property
     def type(self) -> str: ...
     async def create_provider(self) -> Any: ...
+    def default_options(self) -> Any: ...
 
 class Hyperstack:
     """Hyperstack GPU cloud provider.
@@ -148,6 +150,7 @@ class Hyperstack:
     @property
     def type(self) -> str: ...
     async def create_provider(self) -> Any: ...
+    def default_options(self) -> Any: ...
 
 class JarvisLabs:
     """Jarvis Labs GPU cloud provider.
@@ -193,6 +196,57 @@ class JarvisLabs:
     @property
     def type(self) -> str: ...
     async def create_provider(self) -> Any: ...
+    def default_options(self) -> Any: ...
+
+class Novita:
+    """Novita.ai GPU cloud provider.
+
+    Container-based GPU cloud with on-demand and spot pricing.
+    Instances run Docker images with SSH access via platform proxy.
+
+    Parameters
+    ----------
+    api_key
+        API key. ``None`` reads from ``NOVITA_API_KEY`` env var.
+    cluster_id
+        Target cluster/region ID. ``None`` for auto-selection.
+    rootfs_size
+        Root filesystem size in GB.
+    docker_image
+        Base Docker image URL. ``None`` uses default CUDA runtime.
+    min_cuda_version
+        Minimum CUDA version filter (e.g., ``"12.4"``).
+    request_timeout
+        HTTP request timeout in seconds.
+
+    Examples
+    --------
+    >>> sky.Novita(rootfs_size=100, min_cuda_version="12.4")
+    """
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        cluster_id: str | None = None,
+        rootfs_size: int = 50,
+        docker_image: str | None = None,
+        min_cuda_version: str | None = None,
+        request_timeout: int = 30,
+    ) -> None: ...
+    @property
+    def type(self) -> str: ...
+    async def create_provider(self) -> Any: ...
+    def default_options(self) -> Any: ...
+    @classmethod
+    def ubuntu(
+        cls,
+        version: Literal["22.04", "24.04"] | str = "24.04",
+        cuda: Literal["12.9.1", "13.1.0", "13.0.1"] | str = "12.9.1",
+        cuda_dist: Literal["devel", "runtime"] = "runtime",
+    ) -> str:
+        """Generate an NVIDIA CUDA Docker image name."""
+        ...
 
 class RunPod:
     """RunPod serverless GPU provider.
@@ -228,10 +282,10 @@ class RunPod:
     bid_multiplier
         Multiplier for spot bid price.
     base_image
-        Docker Hub image family for automatic resolution. ``"base"`` uses
-        ``runpod/base`` images (default), ``"pytorch"`` uses ``runpod/pytorch``
-        images which are typically pre-cached on RunPod hosts for faster startup.
-        Ignored when ``container_image`` is set.
+        Docker Hub image family for automatic resolution. ``"nvidia"`` uses
+        ``nvidia/cuda`` cudnn-runtime images (default), ``"runpod-base"`` uses
+        ``runpod/base`` images, ``"runpod-pytorch"`` uses ``runpod/pytorch``
+        images. Ignored when ``container_image`` is set.
     container_image
         Override the container image for pods. Skips automatic image
         resolution from Docker Hub when set.
@@ -249,7 +303,7 @@ class RunPod:
         self,
         *,
         cluster_mode: Literal["instant", "individual"] = "individual",
-        base_image: Literal["base", "pytorch"] = "base",
+        base_image: Literal["nvidia", "runpod-base", "runpod-pytorch"] = "nvidia",
         global_networking: bool | None = None,
         api_key: str | None = None,
         cloud_type: Literal["community", "secure"] = "secure",
@@ -261,7 +315,6 @@ class RunPod:
         ports: tuple[str, ...] = ("22/tcp",),
         provision_timeout: float = 300.0,
         bootstrap_timeout: float = 600.0,
-        instance_timeout: int = 300,
         request_timeout: int = 30,
         cpu_clock: Literal["3c", "5c"] | str = "3c",
         bid_multiplier: float = 1,
@@ -273,6 +326,7 @@ class RunPod:
     @property
     def type(self) -> str: ...
     async def create_provider(self) -> Any: ...
+    def default_options(self) -> Any: ...
 
 class TensorDock:
     """TensorDock GPU marketplace provider.
@@ -322,6 +376,7 @@ class TensorDock:
     @property
     def type(self) -> str: ...
     async def create_provider(self) -> Any: ...
+    def default_options(self) -> Any: ...
 
 class VastAI:
     """Vast.ai GPU marketplace provider.
@@ -382,6 +437,7 @@ class VastAI:
     @property
     def type(self) -> str: ...
     async def create_provider(self) -> Any: ...
+    def default_options(self) -> Any: ...
     @classmethod
     def ubuntu(
         cls,
@@ -443,6 +499,7 @@ class Verda:
     @property
     def type(self) -> str: ...
     async def create_provider(self) -> Any: ...
+    def default_options(self) -> Any: ...
 
 class Scaleway:
     """Scaleway GPU cloud provider.
@@ -483,6 +540,7 @@ class Scaleway:
     @property
     def type(self) -> str: ...
     async def create_provider(self) -> Any: ...
+    def default_options(self) -> Any: ...
 
 class Vultr:
     """Vultr GPU cloud provider.
@@ -525,6 +583,7 @@ class Vultr:
     @property
     def type(self) -> str: ...
     async def create_provider(self) -> Any: ...
+    def default_options(self) -> Any: ...
 
 class Container:
     """Local/remote container provider for development and testing.
@@ -563,17 +622,19 @@ class Container:
     @property
     def type(self) -> str: ...
     async def create_provider(self) -> Any: ...
+    def default_options(self) -> Any: ...
 
 __all__ = [
     "AWS",
+    "Container",
     "GCP",
     "Hyperstack",
     "JarvisLabs",
+    "Novita",
     "RunPod",
     "Scaleway",
     "TensorDock",
     "VastAI",
     "Verda",
     "Vultr",
-    "Container",
 ]

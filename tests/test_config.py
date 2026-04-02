@@ -23,6 +23,7 @@ from skyward.providers.scaleway.config import Scaleway
 from skyward.providers.tensordock.config import TensorDock
 from skyward.providers.vastai.config import VastAI
 from skyward.providers.verda.config import Verda
+from skyward.providers.novita.config import Novita
 from skyward.providers.vultr.config import Vultr
 
 pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
@@ -318,6 +319,20 @@ class TestResolvePool:
         assert isinstance(spec.provider, TensorDock)
         assert spec.provider.location == "us"
         assert spec.provider.storage_gb == 200
+
+    def test_novita_pool(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            '[providers.nv]\n'
+            'type = "novita"\n'
+            'cluster_id = "cluster-abc"\n'
+            '\n'
+            '[pools.gpu]\nprovider = "nv"\nnodes = 1\n'
+        )
+        pool = resolve_pool("gpu", project_dir=tmp_path)
+        assert isinstance(pool, ComputePool)
+        spec = pool._specs[0]
+        assert isinstance(spec.provider, Novita)
+        assert spec.provider.cluster_id == "cluster-abc"
 
     def test_global_provider_project_pool(self, tmp_path: Path):
         global_toml = tmp_path / "defaults.toml"

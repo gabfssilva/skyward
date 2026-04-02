@@ -12,6 +12,7 @@ Available providers:
 - GCP: Google Cloud Platform (Compute Engine, instance templates, bulk_insert)
 - Hyperstack: GPU cloud (bare-metal, environment-scoped resources)
 - JarvisLabs: Jarvis Labs GPU cloud (India/Europe, per-minute billing, SSH key auto-registration)
+- Novita: GPU cloud (container-based, spot/on-demand, SSH proxy)
 - RunPod: GPU cloud (pods, serverless endpoints)
 - TensorDock: GPU marketplace (bare-metal VMs, per-second billing)
 - VastAI: GPU marketplace (Docker containers, spot/bid pricing)
@@ -28,6 +29,7 @@ from .container.config import Container
 from .gcp.config import GCP
 from .hyperstack.config import Hyperstack
 from .jarvislabs.config import JarvisLabs
+from .novita.config import Novita
 from .runpod.config import RunPod
 from .scaleway.config import Scaleway
 from .tensordock.config import TensorDock
@@ -42,6 +44,7 @@ __all__ = [
     "GCP",
     "Hyperstack",
     "JarvisLabs",
+    "Novita",
     "RunPod",
     "Scaleway",
     "TensorDock",

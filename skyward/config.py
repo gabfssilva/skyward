@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from skyward.providers.gcp.config import GCP
     from skyward.providers.hyperstack.config import Hyperstack
     from skyward.providers.jarvislabs.config import JarvisLabs
+    from skyward.providers.novita.config import Novita
     from skyward.providers.runpod.config import RunPod
     from skyward.providers.scaleway.config import Scaleway
     from skyward.providers.tensordock.config import TensorDock
@@ -32,7 +33,7 @@ if TYPE_CHECKING:
     from skyward.providers.vultr.config import Vultr
     from skyward.storage import Storage
 
-    type ProviderConfig = AWS | GCP | Hyperstack | JarvisLabs | RunPod | Scaleway | TensorDock | VastAI | Verda | Vultr
+    type ProviderConfig = AWS | GCP | Hyperstack | JarvisLabs | Novita | RunPod | Scaleway | TensorDock | VastAI | Verda | Vultr
 
 type RawConfig = dict[str, Any]
 
@@ -78,6 +79,7 @@ def _get_provider_map() -> dict[str, type]:
     from skyward.providers.gcp.config import GCP
     from skyward.providers.hyperstack.config import Hyperstack
     from skyward.providers.jarvislabs.config import JarvisLabs
+    from skyward.providers.novita.config import Novita
     from skyward.providers.runpod.config import RunPod
     from skyward.providers.scaleway.config import Scaleway
     from skyward.providers.tensordock.config import TensorDock
@@ -91,6 +93,7 @@ def _get_provider_map() -> dict[str, type]:
         "gcp": GCP,
         "hyperstack": Hyperstack,
         "jarvislabs": JarvisLabs,
+        "novita": Novita,
         "tensordock": TensorDock,
         "vastai": VastAI,
         "runpod": RunPod,
