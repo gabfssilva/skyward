@@ -37,7 +37,7 @@ _CUDA_DOTTED_RE = re.compile(r"cuda(\d+)\.(\d+)")
 _CUDA_COMPACT_RE = re.compile(r"cu(?:da)?(\d{2})(\d)\d")
 _UBUNTU_RE = re.compile(r"ubuntu(\d{2})\.?(\d{2})")
 _TAG_VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
-_FALLBACK_IMAGE = "runpod/base:1.0.3-cuda1290-ubuntu2204"
+_FALLBACK_IMAGE = "nvidia/cuda:12.8.0-cudnn-runtime-ubuntu24.04"
 _RUNPOD_S3_DATACENTERS = frozenset({
     "EUR-IS-1", "EUR-NO-1", "EU-RO-1", "EU-CZ-1",
     "US-CA-2", "US-GA-2", "US-KS-2", "US-MD-1",
@@ -49,6 +49,15 @@ _KNOWN_CUDA_VERSIONS = [
     "11.8", "12.0", "12.1", "12.2", "12.3", "12.4",
     "12.5", "12.6", "12.7", "12.8", "12.9", "13.0", "13.1",
 ]
+_SSH_SETUP_CMD = (
+    "(sleep $INSTANCE_TIMEOUT && kill 1) & "
+    "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server "
+    '&& mkdir -p ~/.ssh && echo "$PUBLIC_KEY" >> ~/.ssh/authorized_keys '
+    "&& chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys "
+    "&& mkdir -p /run/sshd && ssh-keygen -A "
+    '&& sed -i "s/#PermitRootLogin.*/PermitRootLogin yes/" /etc/ssh/sshd_config '
+    "&& /usr/sbin/sshd && sleep infinity"
+)
 
 
 def _gpu_match_score(requested: str, display: str, gpu_id: str) -> float:
@@ -81,7 +90,8 @@ def _gpu_match_score(requested: str, display: str, gpu_id: str) -> float:
 
     return best
 _DOCKER_HUB_URL = "https://hub.docker.com"
-_DOCKER_HUB_REPO = "runpod/base"
+_DOCKER_HUB_REPO = "nvidia/cuda"
+_NVIDIA_VARIANT_RE = re.compile(r"cudnn\d*-runtime")
 
 
 def _parse_cuda_version(version: str) -> tuple[int, int]:
@@ -91,8 +101,12 @@ def _parse_cuda_version(version: str) -> tuple[int, int]:
 
 def _extract_image_cuda(image_name: str) -> str | None:
     """Extract CUDA version string from a Docker image tag."""
-    m = _CUDA_DOTTED_RE.search(image_name) or _CUDA_COMPACT_RE.search(image_name)
-    return f"{m.group(1)}.{m.group(2)}" if m else None
+    if m := _CUDA_DOTTED_RE.search(image_name) or _CUDA_COMPACT_RE.search(image_name):
+        return f"{m.group(1)}.{m.group(2)}"
+    repo, _, tag = image_name.rpartition(":")
+    if "cuda" in repo and (m := _TAG_VERSION_RE.match(tag)):
+        return f"{m.group(1)}.{m.group(2)}"
+    return None
 
 
 def _build_allowed_cuda_versions(
@@ -117,6 +131,14 @@ def _get_cuda_range(spec: PoolSpec) -> tuple[str | None, str | None]:
         case Accelerator(metadata=metadata) if metadata and "cuda" in metadata:
             cuda = metadata["cuda"]
             return cuda.get("min"), cuda.get("max")
+        case Accelerator(name=name) if name:
+            from skyward.accelerators.catalog import SPECS
+            from skyward.offers.feed import _normalize_gpu_name
+            normalized = _normalize_gpu_name(name)
+            if catalog := SPECS.get(normalized):
+                cuda = catalog.get("cuda", {})
+                return cuda.get("min"), cuda.get("max")
+            return None, None
         case _:
             return None, None
 
@@ -130,7 +152,7 @@ async def _fetch_docker_tags(repo: str = _DOCKER_HUB_REPO) -> list[str]:
 
     try:
         async with httpx.AsyncClient(base_url=_DOCKER_HUB_URL, timeout=httpx.Timeout(15)) as http:
-            for _ in range(5):
+            for _ in range(50):
                 resp = await http.get(path, params=params)
                 if resp.status_code >= 400:
                     break
@@ -172,6 +194,7 @@ def _select_image_candidates(
     cuda_max: tuple[int, int],
     ubuntu: str,
     repo: str = _DOCKER_HUB_REPO,
+    variant: re.Pattern[str] = _NVIDIA_VARIANT_RE,
 ) -> tuple[str, ...]:
     """Select best image per CUDA version within range, sorted highest first.
 
@@ -184,11 +207,19 @@ def _select_image_candidates(
         tuple[tuple[int, int, int], tuple[int, int], str],
     ] = {}
     for tag in tags:
-        if tag.endswith("-test") or "-dev-" in tag or "ubuntu" not in tag:
+        if "ubuntu" not in tag:
+            continue
+        if tag.endswith("-test") or "-dev-" in tag:
             continue
         if not _ubuntu_matches(tag, ubuntu):
             continue
-        m = _CUDA_DOTTED_RE.search(tag) or _CUDA_COMPACT_RE.search(tag)
+        if not variant.search(tag):
+            continue
+        m = (
+            (_TAG_VERSION_RE.match(tag) if repo == "nvidia/cuda" else None)
+            or _CUDA_DOTTED_RE.search(tag)
+            or _CUDA_COMPACT_RE.search(tag)
+        )
         if not m:
             continue
         cuda_ver = (int(m.group(1)), int(m.group(2)))
@@ -206,54 +237,59 @@ def _select_image_candidates(
     )
 
 
+_BASE_IMAGE_REPOS: dict[str, str] = {
+    "nvidia": "nvidia/cuda",
+    "runpod-base": "runpod/base",
+    "runpod-pytorch": "runpod/pytorch",
+}
+_BASE_IMAGE_FALLBACKS: dict[str, str] = {
+    "nvidia": "nvidia/cuda:12.8.0-cudnn-runtime-ubuntu24.04",
+    "runpod-base": "runpod/base:1.0.3-cuda1290-ubuntu2204",
+    "runpod-pytorch": "runpod/pytorch:2.8.0-py3.13-cuda12.8.1-devel-ubuntu24.04",
+}
+
+
 async def _resolve_image_candidates(
     spec: PoolSpec, config: RunPod,
 ) -> tuple[str, ...]:
-    """Resolve candidate RunPod container images, sorted highest CUDA first.
+    """Resolve candidate container images, sorted highest CUDA first.
 
     Parameters
     ----------
     spec
         Pool specification with accelerator CUDA range.
     config
-        RunPod provider config (ubuntu preference, base image family).
+        RunPod provider config (base_image, ubuntu, optional container_image override).
     """
     if config.container_image:
         return (config.container_image,)
 
-    repo = f"runpod/{config.base_image}"
+    repo = _BASE_IMAGE_REPOS[config.base_image]
+    fallback = _BASE_IMAGE_FALLBACKS[config.base_image]
+    is_nvidia = config.base_image == "nvidia"
 
     cuda_catalog_min, cuda_catalog_max = _get_cuda_range(spec)
     if cuda_catalog_min is None:
-        if config.base_image != "base":
-            raise RuntimeError(
-                f"No CUDA range in accelerator spec — cannot resolve "
-                f"images from '{repo}'. Set container_image explicitly."
-            )
-        return (_FALLBACK_IMAGE,)
+        return (fallback,)
 
     min_ver = _parse_cuda_version(cuda_catalog_min)
     max_ver = _parse_cuda_version(cuda_catalog_max) if cuda_catalog_max else (99, 99)
 
+    variant = _NVIDIA_VARIANT_RE if is_nvidia else re.compile(r".")
     tags = await _fetch_docker_tags(repo)
-    if candidates := _select_image_candidates(tags, min_ver, max_ver, config.ubuntu, repo):
+    if candidates := _select_image_candidates(tags, min_ver, max_ver, config.ubuntu, repo, variant):
         log.info(
             "Resolved {n} image candidates from {repo} for CUDA {min}-{max}",
-            n=len(candidates), repo=repo, min=cuda_catalog_min, max=cuda_catalog_max,
+            n=len(candidates), repo=repo,
+            min=cuda_catalog_min, max=cuda_catalog_max,
         )
         return candidates
-
-    if config.base_image != "base":
-        raise RuntimeError(
-            f"No matching images in '{repo}' for CUDA {cuda_catalog_min}-{cuda_catalog_max}. "
-            f"Set container_image explicitly or use base_image='base'."
-        )
 
     log.warning(
         "No matching images for CUDA {min}-{max}, using fallback",
         min=cuda_catalog_min, max=cuda_catalog_max,
     )
-    return (_FALLBACK_IMAGE,)
+    return (fallback,)
 
 
 @dataclass(frozen=True, slots=True)
@@ -402,14 +438,10 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
     async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[RunPodSpecific]:
         api_key = get_api_key(self._config.api_key)
         ssh_key_path = get_ssh_key_path()
-        _, ssh_public_key = get_local_ssh_key()
 
         registry_auth_id: str | None = None
-        async with RunPodClient(api_key, config=self._config) as client:
-            await client.ensure_ssh_key(ssh_public_key)
-            log.debug("SSH key ensured on RunPod account")
-
-            if self._config.registry_auth:
+        if self._config.registry_auth:
+            async with RunPodClient(api_key, config=self._config) as client:
                 registry_auth_id = await client.resolve_registry_auth(self._config.registry_auth)
                 if registry_auth_id:
                     log.info(
@@ -452,9 +484,11 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
         pod_ids: tuple[tuple[int, str], ...] = ()
         cluster_ips: tuple[tuple[int, str], ...] = ()
 
+        _, ssh_public_key = get_local_ssh_key()
+
         if self._config.cluster_mode == "instant" and spec.nodes.min >= 2 and gpu_type_id:
             runpod_cluster_id, pod_ids, cluster_ips = await _create_instant_cluster(
-                self._config, spec, gpu_type_id, image_name,
+                self._config, spec, gpu_type_id, image_name, ssh_public_key,
                 registry_auth_id=registry_auth_id,
             )
 
@@ -516,14 +550,15 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                 for (_, pid), pod in zip(specific.pod_ids[:count], pods, strict=True)
             ]
 
+        _, ssh_public_key = get_local_ssh_key()
         instances: list[Instance] = []
         async with RunPodClient(api_key, config=self._config) as client:
             for i in range(count):
                 try:
                     pod = (
-                        await _create_gpu_pod(client, self._config, cluster, i)
+                        await _create_gpu_pod(client, self._config, cluster, i, ssh_public_key)
                         if specific.gpu_type_id
-                        else await _create_cpu_pod(client, self._config, cluster)
+                        else await _create_cpu_pod(client, self._config, cluster, ssh_public_key)
                     )
                 except RunPodError as e:
                     log.error("Failed to create pod: {err}", err=e)
@@ -708,6 +743,7 @@ async def _create_instant_cluster(
     spec: PoolSpec,
     gpu_type_id: str,
     image_name: str,
+    ssh_public_key: str,
     *,
     registry_auth_id: str | None = None,
 ) -> tuple[str, tuple[tuple[int, str], ...], tuple[tuple[int, str], ...]]:
@@ -729,12 +765,16 @@ async def _create_instant_cluster(
         "gpuCountPerPod": int(spec.accelerator_count or 1),
         "type": "TRAINING",
         "imageName": image_name,
-        "startSsh": True,
+        "dockerArgs": f"bash -c '{_SSH_SETUP_CMD}'",
         "containerDiskInGb": spec.disk_gb or config.container_disk_gb,
         "volumeInGb": config.volume_gb,
         "volumeMountPath": config.volume_mount_path,
         "ports": ",".join(config.ports),
         "deployCost": spec.max_hourly_cost or 10.0,
+        "env": [
+            {"key": "PUBLIC_KEY", "value": ssh_public_key},
+            {"key": "INSTANCE_TIMEOUT", "value": str(spec.ttl)},
+        ],
     }
 
     if config.data_center_ids != "global":
@@ -763,6 +803,7 @@ async def _create_gpu_pod(
     config: RunPod,
     cluster: Cluster[RunPodSpecific],
     node_index: int,
+    ssh_public_key: str,
 ) -> PodResponse:
     specific = cluster.specific
     use_spot = _is_spot(cluster.spec.allocation, cluster.offer)
@@ -775,10 +816,11 @@ async def _create_gpu_pod(
         else None
     )
     candidates = specific.image_candidates or (specific.image_name,)
+    env = {"PUBLIC_KEY": ssh_public_key, "INSTANCE_TIMEOUT": str(cluster.spec.ttl)}
 
     if specific.global_networking:
         return await _create_gpu_pod_rest(
-            client, config, cluster, node_index,
+            client, config, cluster, node_index, ssh_public_key,
             image_name=candidates[0], use_spot=use_spot,
         )
 
@@ -814,6 +856,8 @@ async def _create_gpu_pod(
                 container_registry_auth_id=specific.registry_auth_id,
                 min_download=int(config.min_inet_down) if config.min_inet_down is not None else None,
                 min_upload=int(config.min_inet_up) if config.min_inet_up is not None else None,
+                docker_args=f"bash -c '{_SSH_SETUP_CMD}'",
+                env=env,
             )
         except RunPodError as e:
             if "SUPPLY_CONSTRAINT" not in str(e):
@@ -832,6 +876,7 @@ async def _create_gpu_pod_rest(
     config: RunPod,
     cluster: Cluster[RunPodSpecific],
     node_index: int,
+    ssh_public_key: str,
     *,
     image_name: str,
     use_spot: bool,
@@ -846,6 +891,8 @@ async def _create_gpu_pod_rest(
         "volumeInGb": config.volume_gb,
         "volumeMountPath": config.volume_mount_path,
         "ports": list(config.ports),
+        "dockerStartCmd": ["bash", "-c", _SSH_SETUP_CMD],
+        "env": {"PUBLIC_KEY": ssh_public_key, "INSTANCE_TIMEOUT": str(cluster.spec.ttl)},
         "interruptible": use_spot,
         "globalNetworking": True,
         "supportPublicIp": True,
@@ -863,6 +910,7 @@ async def _create_cpu_pod(
     client: RunPodClient,
     config: RunPod,
     cluster: Cluster[RunPodSpecific],
+    ssh_public_key: str,
 ) -> PodResponse:
     vcpus = cluster.spec.vcpus or 2
     memory_gb = cluster.spec.memory_gb or 4
@@ -873,10 +921,13 @@ async def _create_cpu_pod(
         "instanceId": instance_id,
         "cloudType": config.cloud_type.upper(),
         "containerDiskInGb": disk_gb,
-        "startSsh": True,
-        "templateId": "runpod-ubuntu",
+        "dockerArgs": f"bash -c '{_SSH_SETUP_CMD}'",
         "ports": ",".join(config.ports),
         "deployCost": cluster.spec.max_hourly_cost or 0.50,
+        "env": [
+            {"key": "PUBLIC_KEY", "value": ssh_public_key},
+            {"key": "INSTANCE_TIMEOUT", "value": str(cluster.spec.ttl)},
+        ],
     }
 
     if config.data_center_ids != "global":

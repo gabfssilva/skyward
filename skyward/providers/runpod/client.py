@@ -121,20 +121,8 @@ mutation DeploySpot($input: PodRentInterruptableInput!) {
 }
 """
 
-MYSELF_QUERY = """
-query { myself { id pubKey } }
-"""
-
 REGISTRY_AUTHS_QUERY = """
 query { myself { containerRegistryCreds { id name } } }
-"""
-
-UPDATE_USER_SETTINGS_MUTATION = """
-mutation Mutation($input: UpdateUserSettingsInput) {
-  updateUserSettings(input: $input) {
-    id
-  }
-}
 """
 
 
@@ -222,6 +210,8 @@ class RunPodClient:
         container_registry_auth_id: str | None = None,
         min_download: int | None = None,
         min_upload: int | None = None,
+        docker_args: str | None = None,
+        env: dict[str, str] | None = None,
     ) -> PodResponse:
         """Deploy a GPU pod via GraphQL."""
         input_vars: dict[str, Any] = {
@@ -234,10 +224,13 @@ class RunPodClient:
             "volumeInGb": volume_gb,
             "volumeMountPath": volume_mount_path,
             "ports": ports,
-            "startSsh": True,
             "supportPublicIp": True,
         }
 
+        if docker_args:
+            input_vars["dockerArgs"] = docker_args
+        if env:
+            input_vars["env"] = [{"key": k, "value": v} for k, v in env.items()]
         if data_center_id:
             input_vars["dataCenterId"] = data_center_id
         if allowed_cuda_versions:
@@ -331,26 +324,6 @@ class RunPodClient:
                 return d.get("data", {})
             case _:
                 return {}
-
-    # =========================================================================
-    # SSH Key Management (via GraphQL)
-    # =========================================================================
-
-    async def get_ssh_keys(self) -> str:
-        data = await self._graphql(MYSELF_QUERY)
-        return data.get("myself", {}).get("pubKey", "")
-
-    async def ensure_ssh_key(self, public_key: str) -> None:
-        existing = await self.get_ssh_keys()
-        key_content = public_key.strip()
-
-        if key_content in existing:
-            self._log.debug("SSH key already registered on RunPod")
-            return
-
-        updated = f"{existing}\n{key_content}" if existing else key_content
-        await self._graphql(UPDATE_USER_SETTINGS_MUTATION, {"input": {"pubKey": updated}})
-        self._log.debug("SSH key registered on RunPod")
 
     # =========================================================================
     # Container Registry Authentication (via GraphQL)

@@ -31,7 +31,6 @@ def _spec_with_cuda(cuda_min: str = "12.1", cuda_max: str = "12.9") -> PoolSpec:
 class TestFetchDockerTags:
     @pytest.mark.asyncio
     async def test_fetches_from_correct_repo(self) -> None:
-        """_fetch_docker_tags should use the repo parameter, not a hardcoded constant."""
         with patch("skyward.providers.runpod.provider.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -42,154 +41,132 @@ class TestFetchDockerTags:
             mock_client.get = AsyncMock(return_value=mock_resp)
             mock_client_cls.return_value = mock_client
 
-            tags = await _fetch_docker_tags("runpod/pytorch")
+            tags = await _fetch_docker_tags("nvidia/cuda")
 
             call_args = mock_client.get.call_args
-            assert "/runpod/pytorch/" in call_args[0][0]
+            assert "/nvidia/cuda/" in call_args[0][0]
             assert tags == ["tag1"]
 
 
 class TestSelectImageCandidates:
     def test_uses_repo_in_output(self) -> None:
-        """_select_image_candidates should prefix image names with the given repo."""
-        tags = ["1.0.3-cuda1240-ubuntu2204"]
+        tags = ["12.4.0-cudnn-runtime-ubuntu22.04"]
         result = _select_image_candidates(
-            tags, cuda_min=(12, 0), cuda_max=(12, 9), ubuntu="newest", repo="runpod/pytorch",
+            tags, cuda_min=(12, 0), cuda_max=(12, 9), ubuntu="newest", repo="nvidia/cuda",
         )
-        assert all("runpod/pytorch:" in img for img in result)
+        assert all("nvidia/cuda:" in img for img in result)
 
-    def test_defaults_to_base_repo(self) -> None:
-        """_select_image_candidates should default repo to runpod/base."""
-        tags = ["1.0.3-cuda1240-ubuntu2204"]
+    def test_defaults_to_nvidia_repo(self) -> None:
+        tags = ["12.4.0-cudnn-runtime-ubuntu22.04"]
         result = _select_image_candidates(
             tags, cuda_min=(12, 0), cuda_max=(12, 9), ubuntu="newest",
         )
-        assert all("runpod/base:" in img for img in result)
+        assert all("nvidia/cuda:" in img for img in result)
+
+    def test_filters_by_variant(self) -> None:
+        tags = [
+            "12.8.0-cudnn-runtime-ubuntu24.04",
+            "12.8.0-runtime-ubuntu24.04",
+            "12.8.0-devel-ubuntu24.04",
+            "12.8.0-base-ubuntu24.04",
+        ]
+        result = _select_image_candidates(
+            tags, cuda_min=(12, 0), cuda_max=(12, 9), ubuntu="newest",
+        )
+        assert len(result) == 1
+        assert "cudnn-runtime" in result[0]
+
+    def test_matches_cudnn_versioned_variant(self) -> None:
+        tags = [
+            "12.4.0-cudnn9-runtime-ubuntu24.04",
+            "12.4.0-runtime-ubuntu24.04",
+            "12.4.0-devel-ubuntu24.04",
+        ]
+        result = _select_image_candidates(
+            tags, cuda_min=(12, 0), cuda_max=(12, 9), ubuntu="newest",
+        )
+        assert len(result) == 1
+        assert "cudnn9-runtime" in result[0]
+
+    def test_selects_by_cuda_range(self) -> None:
+        tags = [
+            "13.2.0-cudnn-runtime-ubuntu24.04",
+            "12.9.1-cudnn-runtime-ubuntu24.04",
+            "12.8.0-cudnn-runtime-ubuntu24.04",
+            "12.4.0-cudnn-runtime-ubuntu24.04",
+            "11.8.0-cudnn-runtime-ubuntu24.04",
+        ]
+        result = _select_image_candidates(
+            tags, cuda_min=(12, 4), cuda_max=(13, 1), ubuntu="newest",
+        )
+        assert len(result) == 3
+        assert "12.9.1" in result[0]
+        assert "12.8.0" in result[1]
+        assert "12.4.0" in result[2]
+
+    def test_picks_highest_patch_per_cuda_minor(self) -> None:
+        tags = [
+            "12.8.1-cudnn-runtime-ubuntu24.04",
+            "12.8.0-cudnn-runtime-ubuntu24.04",
+        ]
+        result = _select_image_candidates(
+            tags, cuda_min=(12, 0), cuda_max=(12, 9), ubuntu="newest",
+        )
+        assert len(result) == 1
+        assert "12.8.1" in result[0]
 
 
 class TestResolveImageCandidates:
     @pytest.mark.asyncio
-    async def test_container_image_overrides_base_image(self) -> None:
-        config = RunPod(base_image="pytorch", container_image="custom/image:latest")
+    async def test_container_image_overrides(self) -> None:
+        config = RunPod(container_image="custom/image:latest")
         result = await _resolve_image_candidates(_spec_with_cuda(), config)
         assert result == ("custom/image:latest",)
 
     @pytest.mark.asyncio
-    async def test_base_image_pytorch_uses_pytorch_repo(self) -> None:
-        config = RunPod(base_image="pytorch")
-        pytorch_tags = [
-            "2.8.0-py3.13-cuda12.8.1-devel-ubuntu24.04",
-            "2.7.0-py3.12-cuda12.4.0-devel-ubuntu22.04",
+    async def test_resolves_nvidia_cuda_images(self) -> None:
+        config = RunPod()
+        nvidia_tags = [
+            "12.8.0-cudnn-runtime-ubuntu24.04",
+            "12.4.0-cudnn-runtime-ubuntu22.04",
         ]
         with patch(
             "skyward.providers.runpod.provider._fetch_docker_tags",
-            return_value=pytorch_tags,
+            return_value=nvidia_tags,
         ) as mock_fetch:
             result = await _resolve_image_candidates(_spec_with_cuda(), config)
 
-        mock_fetch.assert_called_once_with("runpod/pytorch")
-        assert all("runpod/pytorch:" in img for img in result)
+        mock_fetch.assert_called_once_with("nvidia/cuda")
+        assert all("nvidia/cuda:" in img for img in result)
 
     @pytest.mark.asyncio
-    async def test_base_image_base_uses_base_repo(self) -> None:
-        config = RunPod(base_image="base")
-        base_tags = ["1.0.3-cuda1240-ubuntu2204"]
-        with patch(
-            "skyward.providers.runpod.provider._fetch_docker_tags",
-            return_value=base_tags,
-        ) as mock_fetch:
-            result = await _resolve_image_candidates(_spec_with_cuda(), config)
-
-        mock_fetch.assert_called_once_with("runpod/base")
-        assert all("runpod/base:" in img for img in result)
-
-    @pytest.mark.asyncio
-    async def test_pytorch_no_candidates_raises(self) -> None:
-        """When base_image='pytorch' and no tags match, raise instead of silent fallback."""
-        config = RunPod(base_image="pytorch")
-        with (
-            patch("skyward.providers.runpod.provider._fetch_docker_tags", return_value=[]),
-            pytest.raises(RuntimeError, match="No matching.*pytorch"),
-        ):
-            await _resolve_image_candidates(_spec_with_cuda(), config)
-
-    @pytest.mark.asyncio
-    async def test_base_no_candidates_uses_fallback(self) -> None:
-        """When base_image='base' and no tags match, use hardcoded fallback (existing behavior)."""
-        config = RunPod(base_image="base")
+    async def test_no_candidates_uses_fallback(self) -> None:
+        config = RunPod()
         with patch(
             "skyward.providers.runpod.provider._fetch_docker_tags",
             return_value=[],
         ):
             result = await _resolve_image_candidates(_spec_with_cuda(), config)
-        assert "runpod/base:" in result[0]
+        assert "nvidia/cuda:" in result[0]
 
     @pytest.mark.asyncio
-    async def test_pytorch_no_cuda_range_raises(self) -> None:
-        """When base_image='pytorch' and no CUDA range, raise instead of silent fallback."""
-        config = RunPod(base_image="pytorch")
-        spec = PoolSpec(nodes=Nodes(min=1), region="global", accelerator=None)
-        with pytest.raises(RuntimeError, match="No CUDA range.*pytorch"):
-            await _resolve_image_candidates(spec, config)
-
-    @pytest.mark.asyncio
-    async def test_base_no_cuda_range_uses_fallback(self) -> None:
-        """When base_image='base' and no CUDA range, use fallback (existing behavior)."""
-        config = RunPod(base_image="base")
+    async def test_no_cuda_range_uses_fallback(self) -> None:
+        config = RunPod()
         spec = PoolSpec(nodes=Nodes(min=1), region="global", accelerator=None)
         result = await _resolve_image_candidates(spec, config)
-        assert "runpod/base:" in result[0]
+        assert "nvidia/cuda:" in result[0]
 
-
-class TestPytorchTagParsing:
-    """Verify _select_image_candidates handles pytorch tag format correctly."""
-
-    def test_selects_pytorch_tags_by_cuda_range(self) -> None:
+    @pytest.mark.asyncio
+    async def test_ubuntu_filter(self) -> None:
+        config = RunPod(ubuntu="22.04")
         tags = [
-            "2.8.0-py3.13-cuda12.8.1-devel-ubuntu24.04",
-            "2.7.0-py3.12-cuda12.4.0-devel-ubuntu22.04",
-            "2.6.0-py3.12-cuda12.1.0-devel-ubuntu22.04",
-            "2.5.0-py3.11-cuda11.8.0-devel-ubuntu22.04",
+            "12.8.0-cudnn-runtime-ubuntu24.04",
+            "12.8.0-cudnn-runtime-ubuntu22.04",
         ]
-        result = _select_image_candidates(
-            tags,
-            cuda_min=(12, 1),
-            cuda_max=(12, 9),
-            ubuntu="newest",
-            repo="runpod/pytorch",
-        )
-        assert len(result) == 3
-        assert all("runpod/pytorch:" in r for r in result)
-        assert "cuda12.8" in result[0]
-        assert "cuda12.4" in result[1]
-        assert "cuda12.1" in result[2]
-
-    def test_picks_newest_pytorch_version_per_cuda(self) -> None:
-        tags = [
-            "2.8.0-py3.13-cuda12.8.1-devel-ubuntu24.04",
-            "2.7.0-py3.13-cuda12.8.1-devel-ubuntu24.04",
-        ]
-        result = _select_image_candidates(
-            tags,
-            cuda_min=(12, 1),
-            cuda_max=(12, 9),
-            ubuntu="newest",
-            repo="runpod/pytorch",
-        )
-        assert len(result) == 1
-        assert "2.8.0" in result[0]
-
-    def test_ubuntu_filter_works_with_pytorch_format(self) -> None:
-        tags = [
-            "2.8.0-py3.13-cuda12.8.1-devel-ubuntu24.04",
-            "2.8.0-py3.13-cuda12.8.1-devel-ubuntu22.04",
-        ]
-        result = _select_image_candidates(
-            tags,
-            cuda_min=(12, 1),
-            cuda_max=(12, 9),
-            ubuntu="22.04",
-            repo="runpod/pytorch",
-        )
+        with patch(
+            "skyward.providers.runpod.provider._fetch_docker_tags",
+            return_value=tags,
+        ):
+            result = await _resolve_image_candidates(_spec_with_cuda(), config)
         assert len(result) == 1
         assert "ubuntu22.04" in result[0]

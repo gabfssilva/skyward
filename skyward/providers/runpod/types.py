@@ -94,6 +94,7 @@ class PodCreateParams(TypedDict, total=False):
     volumeInGb: int
     volumeMountPath: str
     ports: list[str]
+    dockerStartCmd: list[str]
     env: dict[str, str]
     interruptible: bool
     dataCenterIds: list[str]
@@ -163,7 +164,7 @@ class ClusterCreateParams(TypedDict, total=False):
     gpuCountPerPod: int  # Required
     type: str  # Required: TRAINING, APPLICATION, SLURM
     imageName: str
-    startSsh: bool
+    dockerArgs: str
     containerDiskInGb: int
     volumeInGb: int
     volumeMountPath: str
@@ -187,10 +188,8 @@ class CpuPodCreateParams(TypedDict, total=False):
     dataCenterId: str | None
     networkVolumeId: str | None
     startJupyter: bool
-    startSsh: bool
-    templateId: str  # e.g. "runpod-ubuntu"
     ports: str  # e.g. "22/tcp"
-    dockerArgs: str  # Custom docker args
+    dockerArgs: str
     volumeKey: str | None
     env: list[dict[str, str]]  # [{"key": "...", "value": "..."}]
     containerRegistryAuthId: str

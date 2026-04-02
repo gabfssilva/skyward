@@ -45,7 +45,6 @@ class RunPod(ProviderConfig):
         ports: Port mappings (e.g., ["22/tcp", "8888/http"]). Default: ["22/tcp"].
         provision_timeout: Instance provision timeout in seconds. Default: 300.
         bootstrap_timeout: Bootstrap timeout in seconds. Default: 600.
-        instance_timeout: Auto-shutdown in seconds (safety timeout). Default: 300.
         container_image: Override the container image for pods. When set, skips
             automatic image resolution from Docker Hub. Example:
             ``"runpod/base:1.0.3-cuda1210-ubuntu2204"``. Default: None (auto-select).
@@ -61,7 +60,7 @@ class RunPod(ProviderConfig):
     """
 
     cluster_mode: ClusterMode = "individual"
-    base_image: Literal["base", "pytorch"] = "base"
+    base_image: Literal["nvidia", "runpod-base", "runpod-pytorch"] = "runpod-base"
     global_networking: bool | None = None
     api_key: str | None = None
     cloud_type: Literal["community", "secure"] = "secure"
@@ -73,7 +72,6 @@ class RunPod(ProviderConfig):
     ports: tuple[str, ...] = ("22/tcp",)
     provision_timeout: float = 300.0
     bootstrap_timeout: float = 600.0
-    instance_timeout: int = 300
     request_timeout: int = 30
     cpu_clock: Literal["3c", "5c"] | str = "3c"
     bid_multiplier: float = 1
@@ -88,6 +86,9 @@ class RunPod(ProviderConfig):
 
     @property
     def type(self) -> str: return "runpod"
+
+    def default_options(self) -> None:
+        return None
 
     @property
     def region(self) -> str:
