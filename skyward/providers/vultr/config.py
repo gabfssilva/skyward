@@ -51,3 +51,6 @@ class Vultr(ProviderConfig):
 
     @property
     def type(self) -> str: return "vultr"
+
+    def default_options(self) -> None:
+        return None

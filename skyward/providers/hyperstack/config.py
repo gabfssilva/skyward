@@ -66,6 +66,9 @@ class Hyperstack(ProviderConfig):
     def type(self) -> str:
         return "hyperstack"
 
+    def default_options(self) -> None:
+        return None
+
     async def create_provider(self) -> HyperstackProvider:
         from skyward.providers.hyperstack.provider import HyperstackProvider
 

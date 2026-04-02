@@ -53,6 +53,9 @@ class GCP(ProviderConfig):
     @property
     def type(self) -> str: return "gcp"
 
+    def default_options(self) -> None:
+        return None
+
     async def create_provider(self) -> GCPProvider:
         from skyward.providers.gcp.provider import GCPProvider
         return await GCPProvider.create(self)

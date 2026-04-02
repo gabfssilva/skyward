@@ -49,6 +49,9 @@ class Scaleway(ProviderConfig):
     def type(self) -> str:
         return "scaleway"
 
+    def default_options(self) -> None:
+        return None
+
     async def create_provider(self) -> ScalewayProvider:
         from skyward.providers.scaleway.provider import ScalewayProvider
 

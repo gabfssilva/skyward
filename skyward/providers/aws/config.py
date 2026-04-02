@@ -64,6 +64,9 @@ class AWS(ProviderConfig):
     @property
     def type(self) -> str: return "aws"
 
+    def default_options(self) -> None:
+        return None
+
     async def create_provider(self) -> AWSProvider:
         from skyward.providers.aws.provider import AWSProvider
         return await AWSProvider.create(self)

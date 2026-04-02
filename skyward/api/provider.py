@@ -8,7 +8,10 @@ provider implementation is created lazily via ``create_provider()``.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from skyward.api.spec import Options
 
 
 @runtime_checkable
@@ -44,5 +47,15 @@ class ProviderConfig[P](Protocol):
         -------
         P
             The provider implementation.
+        """
+        ...
+
+    def default_options(self) -> Options | None:
+        """Provider-specific default options.
+
+        Returns ``None`` to use system defaults. Override to supply
+        higher timeouts for providers with slower provisioning.
+        Fields set to ``None`` in the returned ``Options`` fall
+        through to system defaults.
         """
         ...

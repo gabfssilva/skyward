@@ -39,3 +39,6 @@ class Container(ProviderConfig):
 
     @property
     def type(self) -> str: return "container"
+
+    def default_options(self) -> None:
+        return None

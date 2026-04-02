@@ -131,6 +131,14 @@ class Worker:
                 return concrete
 
 
+DEFAULT_PROVISION_TIMEOUT: int = 300
+DEFAULT_SSH_TIMEOUT: int = 300
+DEFAULT_BOOTSTRAP_TIMEOUT: int = 300
+DEFAULT_PROVISION_RETRY_DELAY: float = 5.0
+DEFAULT_MAX_PROVISION_ATTEMPTS: int = 3
+DEFAULT_SSH_RETRY_INTERVAL: int = 2
+
+
 @dataclass(frozen=True, slots=True)
 class Spec:
     """Hardware and environment specification for compute pools.
@@ -235,17 +243,23 @@ class Options:
     provision_timeout
         Maximum seconds to wait for cloud instance provisioning (polling
         until the instance is running with an IP).
+        ``None`` uses provider or system default.
     ssh_timeout
         SSH connection timeout in seconds.
+        ``None`` uses provider or system default.
     bootstrap_timeout
         Maximum seconds for bootstrap script, post-bootstrap steps, and
         worker startup to complete.
+        ``None`` uses provider or system default.
     provision_retry_delay
         Seconds between provision retry attempts.
+        ``None`` uses provider or system default.
     max_provision_attempts
         Maximum number of provision attempts.
+        ``None`` uses provider or system default.
     ssh_retry_interval
         Seconds between SSH retry attempts.
+        ``None`` uses provider or system default.
     default_compute_timeout
         Default timeout in seconds for submitted tasks.
     autoscale_cooldown
@@ -279,12 +293,12 @@ class Options:
 
     selection: SelectionStrategy = "cheapest"
     worker: Worker | None = None
-    provision_timeout: int = 300
-    ssh_timeout: int = 300
-    bootstrap_timeout: int = 300
-    provision_retry_delay: float = 5.0
-    max_provision_attempts: int = 3
-    ssh_retry_interval: int = 2
+    provision_timeout: int | None = None
+    ssh_timeout: int | None = None
+    bootstrap_timeout: int | None = None
+    provision_retry_delay: float | None = None
+    max_provision_attempts: int | None = None
+    ssh_retry_interval: int | None = None
     default_compute_timeout: float = 300.0
     autoscale_cooldown: float = 30.0
     autoscale_idle_timeout: float = 60.0

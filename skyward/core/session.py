@@ -29,9 +29,29 @@ from skyward.observability.logging import LogConfig, setup_logging, teardown_log
 from .context import _active_session
 from .loop import check_fd_budget, cleanup_loop, run_loop, run_sync
 from .offers import PoolConfig, select_offers
-from .spec import Options, Spec, SpecKwargs, Worker
+from .spec import (
+    DEFAULT_BOOTSTRAP_TIMEOUT,
+    DEFAULT_MAX_PROVISION_ATTEMPTS,
+    DEFAULT_PROVISION_RETRY_DELAY,
+    DEFAULT_PROVISION_TIMEOUT,
+    DEFAULT_SSH_RETRY_INTERVAL,
+    DEFAULT_SSH_TIMEOUT,
+    Options,
+    Spec,
+    SpecKwargs,
+    Worker,
+)
 
 _DEFAULT_OPTIONS = Options()
+
+
+def _resolve[T: (int, float)](user: T | None, provider: T | None, default: T) -> T:
+    if user is not None:
+        return user
+    if provider is not None:
+        return provider
+    return default
+
 
 if TYPE_CHECKING:
     from skyward.api.projection import SessionProjection
@@ -354,15 +374,46 @@ class Session:
 
         first_spec = built_specs[0]
         effective_worker = options.worker or Worker()
+
+        provider_opts = first_spec.provider.default_options()
+
+        provision_timeout = float(_resolve(
+            options.provision_timeout,
+            provider_opts.provision_timeout if provider_opts else None,
+            DEFAULT_PROVISION_TIMEOUT,
+        ))
+        ssh_timeout = float(_resolve(
+            options.ssh_timeout,
+            provider_opts.ssh_timeout if provider_opts else None,
+            DEFAULT_SSH_TIMEOUT,
+        ))
+        bootstrap_timeout = float(_resolve(
+            options.bootstrap_timeout,
+            provider_opts.bootstrap_timeout if provider_opts else None,
+            DEFAULT_BOOTSTRAP_TIMEOUT,
+        ))
+
         pool_config = PoolConfig(
             image=first_spec.image,
             worker=effective_worker,
-            provision_timeout=float(options.provision_timeout),
-            ssh_timeout=float(options.ssh_timeout),
-            bootstrap_timeout=float(options.bootstrap_timeout),
-            ssh_retry_interval=options.ssh_retry_interval,
-            provision_retry_delay=options.provision_retry_delay,
-            max_provision_attempts=options.max_provision_attempts,
+            provision_timeout=provision_timeout,
+            ssh_timeout=ssh_timeout,
+            bootstrap_timeout=bootstrap_timeout,
+            ssh_retry_interval=_resolve(
+                options.ssh_retry_interval,
+                provider_opts.ssh_retry_interval if provider_opts else None,
+                DEFAULT_SSH_RETRY_INTERVAL,
+            ),
+            provision_retry_delay=_resolve(
+                options.provision_retry_delay,
+                provider_opts.provision_retry_delay if provider_opts else None,
+                DEFAULT_PROVISION_RETRY_DELAY,
+            ),
+            max_provision_attempts=_resolve(
+                options.max_provision_attempts,
+                provider_opts.max_provision_attempts if provider_opts else None,
+                DEFAULT_MAX_PROVISION_ATTEMPTS,
+            ),
             volumes=tuple(first_spec.volumes),
             autoscale_cooldown=options.autoscale_cooldown,
             autoscale_idle_timeout=options.autoscale_idle_timeout,
@@ -372,9 +423,7 @@ class Session:
             retry_on_interruption=options.retry_on_interruption,
         )
 
-        envelope = float(
-            options.provision_timeout + options.ssh_timeout + options.bootstrap_timeout + 30,
-        )
+        envelope = float(provision_timeout + ssh_timeout + bootstrap_timeout + 30)
         pool_ref, spec, cid, cluster, instances = self._spawn_pool(
             built_specs, pool_config, pool_name, envelope,
         )

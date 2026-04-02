@@ -52,6 +52,9 @@ class Verda(ProviderConfig):
     @property
     def type(self) -> str: return "verda"
 
+    def default_options(self) -> None:
+        return None
+
     async def create_provider(self) -> VerdaProvider:
         from skyward.providers.verda.provider import VerdaProvider
         return await VerdaProvider.create(self)

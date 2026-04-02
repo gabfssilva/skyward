@@ -55,6 +55,9 @@ class TensorDock(ProviderConfig):
     def type(self) -> str:
         return "tensordock"
 
+    def default_options(self) -> None:
+        return None
+
     async def create_provider(self) -> TensorDockProvider:
         from skyward.providers.tensordock.provider import TensorDockProvider
 

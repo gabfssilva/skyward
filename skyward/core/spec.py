@@ -6,7 +6,13 @@ the ``generate_bootstrap()`` standalone function.
 
 from __future__ import annotations
 
+from skyward.api.spec import DEFAULT_BOOTSTRAP_TIMEOUT as DEFAULT_BOOTSTRAP_TIMEOUT
 from skyward.api.spec import DEFAULT_IMAGE as DEFAULT_IMAGE
+from skyward.api.spec import DEFAULT_MAX_PROVISION_ATTEMPTS as DEFAULT_MAX_PROVISION_ATTEMPTS
+from skyward.api.spec import DEFAULT_PROVISION_RETRY_DELAY as DEFAULT_PROVISION_RETRY_DELAY
+from skyward.api.spec import DEFAULT_PROVISION_TIMEOUT as DEFAULT_PROVISION_TIMEOUT
+from skyward.api.spec import DEFAULT_SSH_RETRY_INTERVAL as DEFAULT_SSH_RETRY_INTERVAL
+from skyward.api.spec import DEFAULT_SSH_TIMEOUT as DEFAULT_SSH_TIMEOUT
 from skyward.api.spec import AllocationStrategy as AllocationStrategy
 from skyward.api.spec import Architecture as Architecture
 from skyward.api.spec import Image as Image

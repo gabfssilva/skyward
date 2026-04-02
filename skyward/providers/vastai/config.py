@@ -73,6 +73,9 @@ class VastAI(ProviderConfig):
     @property
     def type(self) -> str: return "vastai"
 
+    def default_options(self) -> None:
+        return None
+
     @classmethod
     def ubuntu(
         cls,

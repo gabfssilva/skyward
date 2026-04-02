@@ -45,6 +45,9 @@ class JarvisLabs(ProviderConfig):
     def type(self) -> str:
         return "jarvislabs"
 
+    def default_options(self) -> None:
+        return None
+
     async def create_provider(self) -> JarvisLabsProvider:
         from skyward.providers.jarvislabs.provider import JarvisLabsProvider
 
