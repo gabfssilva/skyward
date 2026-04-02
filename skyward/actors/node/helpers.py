@@ -215,16 +215,33 @@ async def sync_user_code(transport_ref: ActorRef, ni: NodeInstance, spec: Any, c
 
     _, sudo = resolve_ssh_user(ni, cluster)
     remote_tar = "/tmp/_user_code.tar.gz"
-    site_packages = f"{SKYWARD_DIR}/.venv/lib/python*/site-packages"
+    python_bin = f"{SKYWARD_DIR}/.venv/bin/python"
 
     log = logger.bind(component="bootstrap_ssh")
     log.info("Uploading user code ({size:.1f} KB)", size=len(tarball) / 1024)
-    await transport_write_bytes(transport_ref, remote_tar, tarball)
+
+    ssh_pty = getattr(cluster, "ssh_pty", True)
+
+    if ssh_pty:
+        await transport_write_bytes(transport_ref, remote_tar, tarball)
+    else:
+        import base64
+        encoded = base64.b64encode(tarball).decode()
+        await transport_write_file(transport_ref, f"{remote_tar}.b64", encoded)
+        await transport_run(
+            transport_ref,
+            f"base64 -d {remote_tar}.b64 > {remote_tar} && rm -f {remote_tar}.b64",
+        )
+
+    _, sp_out, _ = await transport_run(
+        transport_ref,
+        f"""{python_bin} -c "import sysconfig; print(sysconfig.get_path('purelib'))" """,
+    )
+    site_packages = sp_out.strip()
 
     exit_code, stdout, stderr = await transport_run(
         transport_ref,
-        f"{sudo}bash -c 'SP=$(echo {site_packages}); "
-        f"tar xzf {remote_tar} -C $SP && rm -f {remote_tar}'",
+        f"{sudo}tar xzf {remote_tar} -C {site_packages} && rm -f {remote_tar}",
         timeout=60.0,
     )
 
