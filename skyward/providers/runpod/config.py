@@ -9,6 +9,7 @@ import typing
 from dataclasses import dataclass
 from typing import Literal
 
+from skyward.containers import DockerImage
 from skyward.core.provider import ProviderConfig
 
 type ClusterMode = Literal["instant", "individual"]
@@ -75,7 +76,7 @@ class RunPod(ProviderConfig):
     request_timeout: int = 30
     cpu_clock: Literal["3c", "5c"] | str = "3c"
     bid_multiplier: float = 1
-    container_image: str | None = None
+    container_image: DockerImage | None = None
     registry_auth: str | None = "docker hub"
     min_inet_down: float | None = None
     min_inet_up: float | None = None

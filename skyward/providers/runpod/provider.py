@@ -262,7 +262,7 @@ async def _resolve_image_candidates(
         RunPod provider config (base_image, ubuntu, optional container_image override).
     """
     if config.container_image:
-        return (config.container_image,)
+        return (str(config.container_image),)
 
     repo = _BASE_IMAGE_REPOS[config.base_image]
     fallback = _BASE_IMAGE_FALLBACKS[config.base_image]

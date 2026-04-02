@@ -2,6 +2,8 @@
 
 from typing import Any, Literal
 
+from skyward.containers import DockerImage
+
 class AWS:
     """Amazon Web Services cloud provider.
 
@@ -230,7 +232,7 @@ class Novita:
         api_key: str | None = None,
         cluster_id: str | None = None,
         rootfs_size: int = 50,
-        docker_image: str | None = None,
+        docker_image: DockerImage | None = None,
         min_cuda_version: str | None = None,
         request_timeout: int = 30,
     ) -> None: ...
@@ -238,15 +240,6 @@ class Novita:
     def type(self) -> str: ...
     async def create_provider(self) -> Any: ...
     def default_options(self) -> Any: ...
-    @classmethod
-    def ubuntu(
-        cls,
-        version: Literal["22.04", "24.04"] | str = "24.04",
-        cuda: Literal["12.9.1", "13.1.0", "13.0.1"] | str = "12.9.1",
-        cuda_dist: Literal["devel", "runtime"] = "runtime",
-    ) -> str:
-        """Generate an NVIDIA CUDA Docker image name."""
-        ...
 
 class RunPod:
     """RunPod serverless GPU provider.
@@ -318,7 +311,7 @@ class RunPod:
         request_timeout: int = 30,
         cpu_clock: Literal["3c", "5c"] | str = "3c",
         bid_multiplier: float = 1,
-        container_image: str | None = None,
+        container_image: DockerImage | None = None,
         registry_auth: str | None = "docker hub",
         min_inet_down: float | None = None,
         min_inet_up: float | None = None,
@@ -426,7 +419,7 @@ class VastAI:
         bid_multiplier: float = 1.2,
         instance_timeout: int = 300,
         request_timeout: int = 30,
-        docker_image: str | None = None,
+        docker_image: DockerImage | None = None,
         disk_gb: int = 100,
         use_overlay: bool = True,
         overlay_timeout: int = 120,
@@ -438,30 +431,6 @@ class VastAI:
     def type(self) -> str: ...
     async def create_provider(self) -> Any: ...
     def default_options(self) -> Any: ...
-    @classmethod
-    def ubuntu(
-        cls,
-        version: Literal["22.04", "24.04", "26.04"] | str = "24.04",
-        cuda: Literal["12.9.1", "13.1.0", "13.0.1"] | str = "12.9.1",
-        cuda_dist: Literal["devel", "runtime"] = "runtime",
-    ) -> str:
-        """Generate an NVIDIA CUDA Docker image name.
-
-        Parameters
-        ----------
-        version
-            Ubuntu version.
-        cuda
-            CUDA toolkit version.
-        cuda_dist
-            CUDA distribution type.
-
-        Returns
-        -------
-        str
-            Docker image name (e.g., ``"nvidia/cuda:12.9.1-runtime-ubuntu24.04"``).
-        """
-        ...
 
 class Verda:
     """Verda GPU cloud provider.

@@ -6,8 +6,9 @@ Immutable configuration dataclass for Novita.ai provider.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
+from skyward.containers import DockerImage
 from skyward.core.provider import ProviderConfig
 
 if TYPE_CHECKING:
@@ -51,7 +52,7 @@ class Novita(ProviderConfig):
     api_key: str | None = None
     cluster_id: str | None = None
     rootfs_size: int = 50
-    docker_image: str | None = None
+    docker_image: DockerImage | None = None
     min_cuda_version: str | None = None
     request_timeout: int = 30
 
@@ -69,28 +70,3 @@ class Novita(ProviderConfig):
             ssh_timeout=600,
             bootstrap_timeout=600,
         )
-
-    @classmethod
-    def ubuntu(
-        cls,
-        version: Literal["22.04", "24.04", "26.04"] | str = "24.04",
-        cuda: Literal["12.9.1", "13.1.0", "13.0.1"] | str = "12.9.1",
-        cuda_dist: Literal["devel", "runtime"] = "runtime",
-    ) -> str:
-        """Generate NVIDIA CUDA Docker image name.
-
-        Parameters
-        ----------
-        version
-            Ubuntu version.
-        cuda
-            CUDA toolkit version.
-        cuda_dist
-            CUDA distribution variant.
-
-        Returns
-        -------
-        str
-            Full Docker image name.
-        """
-        return f"nvcr.io/nvidia/cuda:{cuda}-{cuda_dist}-ubuntu{version}"

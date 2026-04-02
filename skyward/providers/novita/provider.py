@@ -26,14 +26,6 @@ log = logger.bind(provider="novita")
 _DEFAULT_IMAGE = "nvcr.io/nvidia/cuda:12.9.1-runtime-ubuntu24.04"
 
 
-def _get_docker_image(config: Novita, spec: PoolSpec) -> str:
-    match getattr(spec.image, "container_image", None):
-        case str() as img:
-            return img
-        case _:
-            return config.docker_image or _DEFAULT_IMAGE
-
-
 def _extract_cuda_version(image: str) -> str | None:
     """Extract CUDA major.minor from a Docker image name.
 
@@ -274,7 +266,7 @@ class NovitaProvider(Provider[Novita, NovitaSpecific]):
         cluster_id = specific_data["cluster_id"]
         gpu_num = specific_data.get("gpu_num", 1)
 
-        docker_image = _get_docker_image(self._config, spec)
+        docker_image = str(self._config.docker_image) if self._config.docker_image else _DEFAULT_IMAGE
 
         return Cluster(
             id=f"novita-{uuid.uuid4().hex[:8]}",
@@ -318,8 +310,7 @@ class NovitaProvider(Provider[Novita, NovitaSpecific]):
                     gpu_num=specific.gpu_num,
                     billing_mode=billing_mode,
                     cuda_versions=cuda_versions,
-                    user_image=self._config.docker_image
-                        or getattr(cluster.spec.image, "container_image", None),
+                    user_image=str(self._config.docker_image) if self._config.docker_image else None,
                 )
                 if instance_id is None:
                     continue

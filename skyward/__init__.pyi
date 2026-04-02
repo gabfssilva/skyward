@@ -16,6 +16,7 @@ from typing import Any
 
 # ── Sub-module namespaces ─────────────────────────────────────
 from skyward import accelerators as accelerators
+from skyward import containers as containers
 from skyward import plugins as plugins
 from skyward import storage as storage
 
@@ -88,6 +89,7 @@ from skyward.api.spec import SpecKwargs as SpecKwargs
 from skyward.api.spec import Volume as Volume
 from skyward.api.spec import Worker as Worker
 from skyward.api.spec import WorkerExecutor as WorkerExecutor
+from skyward.containers import DockerImage as DockerImage
 
 # ── Re-exported distributed proxies & factories ──────────────
 from skyward.distributed import barrier as barrier
@@ -220,4 +222,6 @@ __all__ = [
     "NodeSpec",
     "main",
     "plugins",
+    "containers",
+    "DockerImage",
 ]

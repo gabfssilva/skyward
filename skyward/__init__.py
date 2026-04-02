@@ -17,8 +17,10 @@ except ModuleNotFoundError:
     __version__: str = "0.0.0+unknown"
 
 from skyward import accelerators as accelerators
+from skyward import containers as containers
 from skyward import plugins as plugins
 from skyward import storage as storage
+from skyward.containers import DockerImage as DockerImage
 from skyward.observability import LogConfig
 from skyward.observability import metrics as metrics
 from skyward.storage import Storage as Storage
@@ -203,4 +205,6 @@ __all__ = [
     "offers",
     "OfferRepository",
     "plugins",
+    "containers",
+    "DockerImage",
 ]

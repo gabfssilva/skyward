@@ -23,14 +23,6 @@ log = logger.bind(provider="vastai")
 _DEFAULT_IMAGE = "nvcr.io/nvidia/cuda:12.9.1-runtime-ubuntu24.04"
 
 
-def _get_docker_image(config: VastAI, spec: PoolSpec) -> str:
-    match getattr(spec.image, "container_image", None):
-        case str() as img:
-            return img
-        case _:
-            return config.docker_image or _DEFAULT_IMAGE
-
-
 @dataclass(frozen=True, slots=True)
 class VastAISpecific:
     """VastAI-specific cluster data flowing through Cluster[VastAISpecific]."""
@@ -83,7 +75,7 @@ class VastAIProvider(Provider[VastAI, VastAISpecific]):
                     client, self._config, spec,
                 )
 
-        docker_image = _get_docker_image(self._config, spec)
+        docker_image = str(self._config.docker_image) if self._config.docker_image else _DEFAULT_IMAGE
 
         shutdown_command = (
             "eval $(cat /proc/1/environ "

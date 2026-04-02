@@ -6,8 +6,9 @@ Immutable configuration dataclass for Vast.ai provider.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
+from skyward.containers import DockerImage
 from skyward.core.provider import ProviderConfig
 
 if TYPE_CHECKING:
@@ -58,7 +59,7 @@ class VastAI(ProviderConfig):
     bid_multiplier: float = 1.2
     instance_timeout: int = 300
     request_timeout: int = 30
-    docker_image: str | None = None
+    docker_image: DockerImage | None = None
     disk_gb: int = 100
     use_overlay: bool = True
     overlay_timeout: int = 120
@@ -75,13 +76,3 @@ class VastAI(ProviderConfig):
 
     def default_options(self) -> None:
         return None
-
-    @classmethod
-    def ubuntu(
-        cls,
-        version: Literal["22.04", "24.04", "26.04"] | str = "24.04",
-        cuda: Literal["12.9.1", "13.1.0", "13.0.1"] | str = "12.9.1",
-        cuda_dist: Literal["devel", "runtime"] = "runtime",
-    ) -> str:
-        """Generate NVIDIA CUDA Docker image name."""
-        return f"nvcr.io/nvidia/cuda:{cuda}-{cuda_dist}-ubuntu{version}"
