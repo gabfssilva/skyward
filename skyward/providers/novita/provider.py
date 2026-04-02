@@ -16,7 +16,6 @@ from skyward.core import PoolSpec
 from skyward.core.model import Cluster, Instance, InstanceStatus, InstanceType, Offer
 from skyward.observability.logger import logger
 from skyward.providers.provider import Provider
-from skyward.providers.ssh_keys import get_ssh_key_path
 
 from .client import NovitaClient, NovitaError, get_api_key
 from .config import Novita
@@ -183,19 +182,22 @@ def _to_offer(product: ProductResponse, cluster_id: str) -> Offer:
 
 def _extract_ssh(
     info: InstanceResponse,
-) -> tuple[str | None, int]:
+) -> tuple[str | None, int, str | None]:
     ssh_comp = info.get("connectComponentSSH")
     if not ssh_comp:
-        return None, 22
+        return None, 22, None
+
+    password = ssh_comp.get("password") or info.get("sshPassword")
 
     ssh_cmd = ssh_comp.get("sshCommand")
     if not ssh_cmd:
-        return None, 22
+        return None, 22, password
 
     try:
-        return parse_ssh_command(ssh_cmd)
+        host, port = parse_ssh_command(ssh_cmd)
+        return host, port, password
     except ValueError:
-        return None, 22
+        return None, 22, password
 
 
 def _build_instance(
@@ -206,6 +208,7 @@ def _build_instance(
     port: int,
     *,
     spot: bool,
+    ssh_password: str | None = None,
 ) -> Instance:
     return Instance(
         id=info["id"],
@@ -214,6 +217,7 @@ def _build_instance(
         ip=host,
         private_ip=host,
         ssh_port=port,
+        ssh_password=ssh_password,
         spot=spot,
     )
 
@@ -265,8 +269,6 @@ class NovitaProvider(Provider[Novita, NovitaSpecific]):
                 yield _to_offer(product, self._config.cluster_id or "")
 
     async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[NovitaSpecific]:
-        ssh_key_path = get_ssh_key_path()
-
         specific_data = offer.specific
         product_id = specific_data["product_id"]
         cluster_id = specific_data["cluster_id"]
@@ -279,7 +281,7 @@ class NovitaProvider(Provider[Novita, NovitaSpecific]):
             status="setting_up",
             spec=spec,
             offer=offer,
-            ssh_key_path=ssh_key_path,
+            ssh_key_path="",
             ssh_user="root",
             use_sudo=False,
             shutdown_command="kill 1",
@@ -394,13 +396,15 @@ class NovitaProvider(Provider[Novita, NovitaSpecific]):
             case "removed" | "exited" | "terminated" | "error" | "failed":
                 return cluster, None
             case "running":
-                host, port = _extract_ssh(info)
+                host, port, password = _extract_ssh(info)
                 if host:
                     return cluster, _build_instance(
-                        info, "provisioned", cluster.offer, host, port, spot=use_spot,
+                        info, "provisioned", cluster.offer, host, port,
+                        spot=use_spot, ssh_password=password,
                     )
                 return cluster, _build_instance(
-                    info, "provisioning", cluster.offer, None, 22, spot=use_spot,
+                    info, "provisioning", cluster.offer, None, 22,
+                    spot=use_spot, ssh_password=password,
                 )
             case _:
                 return cluster, _build_instance(

@@ -212,11 +212,13 @@ log = logger.bind(component="ssh_actor")
 
 async def _default_connect(
     host: str, port: int, user: str, key_path: str, connect_timeout: float,
+    password: str | None = None,
 ) -> Any:
     import asyncssh
     return await asyncssh.connect(
         host, port=port, username=user,
         client_keys=[key_path] if key_path else [],
+        password=password,
         known_hosts=None,
         connect_timeout=connect_timeout,
         keepalive_interval=10,
@@ -236,11 +238,12 @@ def ssh_transport(
     reconnect_max_attempts: int | None = None,
     parent: ActorRef | None = None,
     connect_fn: Callable[[], Awaitable[Any]] | None = None,
+    password: str | None = None,
 ) -> Behavior[TransportMsg]:
     """SSH transport actor: connecting → connected → reconnecting → ... → stopped."""
 
     _connect = connect_fn or (
-        lambda: _default_connect(host, port, user, key_path, connect_timeout)
+        lambda: _default_connect(host, port, user, key_path, connect_timeout, password)
     )
 
     # ── connecting ────────────────────────────────────────────────────

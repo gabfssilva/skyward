@@ -127,6 +127,7 @@ class SSHTransport:
     user: str
     key_path: str
     port: int = 22
+    password: str | None = None
     connect_timeout: float = 30.0
     retry_max_attempts: int = 150  # 5 min at 2s intervals
     retry_delay: float = 2.0
@@ -156,6 +157,7 @@ class SSHTransport:
                 port=self.port,
                 username=self.user,
                 client_keys=[self.key_path] if self.key_path else [],
+                password=self.password,
                 known_hosts=None,
                 connect_timeout=self.connect_timeout,
                 keepalive_interval=10,

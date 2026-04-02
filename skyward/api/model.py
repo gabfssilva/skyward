@@ -118,6 +118,7 @@ class Instance:
     ip: str | None = None
     private_ip: str | None = None
     ssh_port: int = 22
+    ssh_password: str | None = None
     spot: bool = False
     region: str = ""
 

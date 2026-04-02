@@ -43,6 +43,7 @@ class NodeInstance:
     provider: ProviderName
     ssh_user: str
     ssh_key_path: str
+    ssh_password: str | None = None
     network_interface: str = ""
 
 
@@ -158,6 +159,7 @@ class InstanceRunning:
     instance: Instance
     ssh_user: str = ""
     ssh_key_path: str = ""
+    ssh_password: str | None = None
     network_interface: str = ""
 
 
@@ -645,4 +647,5 @@ def _bind_to_node(
         provider=provider,
         ssh_user=cluster.ssh_user,
         ssh_key_path=cluster.ssh_key_path,
+        ssh_password=inst.ssh_password,
     )

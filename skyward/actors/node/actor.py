@@ -262,6 +262,7 @@ def node_actor(
                 connect_timeout=min(ssh_retry_interval * 2, 10.0),
                 reconnect_max_attempts=5,
                 parent=ctx.self,
+                password=ni.ssh_password,
             ),
             f"transport-{ni.instance.id}",
         )
