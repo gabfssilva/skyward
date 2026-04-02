@@ -187,6 +187,30 @@ def show_tasks(
                 _print_tasks(view)
 
 
+@compute_app.command(name="stats")
+def show_stats(
+    name: Annotated[str, Parameter(help="Pool name")],
+    *,
+    json: Annotated[bool, Parameter(name="--json", help="JSON output")] = False,
+) -> None:
+    """Show node metrics for a compute pool."""
+    from skyward.daemon.protocol import DaemonError, GetPoolView, PoolViewResponse
+
+    resp = _run_async(_daemon_request(GetPoolView(pool_name=name)))
+    match resp:
+        case DaemonError(error=err):
+            console.print(f"[red]{err}[/red]")
+        case PoolViewResponse(view=view):
+            if json:
+                data = {
+                    str(nid): dict(nv.metrics)
+                    for nid, nv in view.nodes.items()
+                }
+                print(_json.dumps(data, default=str))
+            else:
+                _print_stats(view)
+
+
 @compute_app.command(name="start")
 def start_pool(
     name: Annotated[str, Parameter(help="Pool name from skyward.toml")],
@@ -622,6 +646,19 @@ def _print_tasks(view: Any) -> None:
         for i, (tid, e) in enumerate(queued):
             connector = BRANCH_LAST if i == len(queued) - 1 else BRANCH
             console.print(f"  {connector} {tid[:8]}   {e.name}")
+    console.print()
+
+
+def _print_stats(view: Any) -> None:
+    nodes = sorted(view.nodes.items())
+    if not nodes:
+        console.print("[dim]  No nodes[/dim]")
+        return
+    for nid, nv in nodes:
+        parts = [f"[bold]node-{nid}[/bold]"]
+        for key, val in nv.metrics.items():
+            parts.append(f"{key} {val:.1f}" if isinstance(val, float) else f"{key} {val}")
+        console.print(f"  {' · '.join(parts)}")
     console.print()
 
 

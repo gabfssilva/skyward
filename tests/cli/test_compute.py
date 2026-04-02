@@ -74,7 +74,7 @@ class TestListPools:
             app(["compute", "list"], exit_on_error=False)
 
         out = capsys.readouterr().out
-        assert "No running pools" in out
+        assert "No pools running" in out
 
     def test_list_empty_json(self, capsys: pytest.CaptureFixture[str]) -> None:
         mock = _mock_request(PoolList(pools=()))
@@ -94,7 +94,7 @@ class TestListPools:
 
         out = capsys.readouterr().out
         assert "train" in out
-        assert "READY" in out
+        assert "ready" in out
 
     def test_default_command_is_list(self, capsys: pytest.CaptureFixture[str]) -> None:
         mock = _mock_request(PoolList(pools=()))
@@ -103,7 +103,7 @@ class TestListPools:
             app(["compute"], exit_on_error=False)
 
         out = capsys.readouterr().out
-        assert "No running pools" in out
+        assert "No pools running" in out
 
 
 class TestViewPool:
@@ -176,7 +176,7 @@ class TestViewPool:
 
         out = capsys.readouterr().out
         assert "train" in out
-        assert "READY" in out
+        assert "ready" in out
 
 
 class TestShowTasks:

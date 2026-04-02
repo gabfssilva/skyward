@@ -125,7 +125,7 @@ class TestResolveImageCandidates:
 
     @pytest.mark.asyncio
     async def test_resolves_nvidia_cuda_images(self) -> None:
-        config = RunPod()
+        config = RunPod(base_image="nvidia")
         nvidia_tags = [
             "12.8.0-cudnn-runtime-ubuntu24.04",
             "12.4.0-cudnn-runtime-ubuntu22.04",
@@ -147,18 +147,18 @@ class TestResolveImageCandidates:
             return_value=[],
         ):
             result = await _resolve_image_candidates(_spec_with_cuda(), config)
-        assert "nvidia/cuda:" in result[0]
+        assert "runpod/base:" in result[0]
 
     @pytest.mark.asyncio
     async def test_no_cuda_range_uses_fallback(self) -> None:
         config = RunPod()
         spec = PoolSpec(nodes=Nodes(min=1), region="global", accelerator=None)
         result = await _resolve_image_candidates(spec, config)
-        assert "nvidia/cuda:" in result[0]
+        assert "runpod/base:" in result[0]
 
     @pytest.mark.asyncio
     async def test_ubuntu_filter(self) -> None:
-        config = RunPod(ubuntu="22.04")
+        config = RunPod(base_image="nvidia", ubuntu="22.04")
         tags = [
             "12.8.0-cudnn-runtime-ubuntu24.04",
             "12.8.0-cudnn-runtime-ubuntu22.04",
