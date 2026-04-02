@@ -1,6 +1,6 @@
 # Cloud providers
 
-Skyward supports eleven providers. Ten are cloud services — AWS, GCP, Hyperstack, JarvisLabs, RunPod, Scaleway, TensorDock, Verda, VastAI, Vultr — and one is local containers for development and CI. All implement the same `Provider` protocol, so the orchestration layer (actor system, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
+Skyward supports twelve providers. Eleven are cloud services — AWS, GCP, Hyperstack, JarvisLabs, Novita, RunPod, Scaleway, TensorDock, Verda, VastAI, Vultr — and one is local containers for development and CI. All implement the same `Provider` protocol, so the orchestration layer (actor system, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
 
 Provider configs are lightweight frozen dataclasses. They hold configuration — region, API keys, disk sizes — but don't import any cloud SDK at module level. The SDK is loaded lazily when the pool starts, so `import skyward` stays fast regardless of which providers are installed.
 
@@ -16,13 +16,13 @@ When set, `disk_gb` overrides the provider's own default. When omitted (`None`),
 
 ## Provider comparison
 
-| Feature | AWS | GCP | Hyperstack | JarvisLabs | RunPod | Scaleway | TensorDock | Verda | VastAI | Vultr | Container |
-|---------|-----|-----|------------|------------|--------|----------|------------|-------|--------|-------|-----------|
-| **GPUs** | H100, A100, T4, L4, Trainium, Inferentia | H100, A100, T4, L4, V100, H200 | A100, H100, RTX series | H200, H100, A100, A100-80GB, A6000, RTX6000Ada, L4 | H100, A100, A40, RTX series | L4, L40S, H100, H100 SXM, B300 | H100, A100, L40, RTX series, V100 | H100, A100, H200, GB200 | Marketplace (varies) | A16, A40, A100, L40S (cloud); H100, B200, MI300X (bare metal) | None (CPU) |
-| **Spot Instances** | Yes (60-90% savings) | Yes (preemptible/spot) | No (on-demand only) | No (on-demand only) | Yes | No (on-demand only) | No (on-demand only) | Yes | Yes (bid-based) | No (on-demand only) | N/A |
-| **Regions** | 20+ | 40+ zones | Canada, Norway, US | IN1, IN2 (India), EU1 (Finland) | Global (Secure + Community) | fr-par-1, fr-par-2, fr-par-3, nl-ams, pl-waw | 100+ locations, 20+ countries | FIN, ICL, ISR | Global marketplace | EWR, ORD, DFW, LAX + more | Local |
-| **Auth** | AWS credentials | Application Default Credentials | API key | API token | API key | Secret key | API key + token | Client ID + Secret | API key | API key | None |
-| **Billing** | Per-second | Per-second | Per-second | Per-minute | Per-second | Per-hour | Per-second | Per-second | Per-minute | Hourly | Free |
+| Feature | AWS | GCP | Hyperstack | JarvisLabs | Novita | RunPod | Scaleway | TensorDock | Verda | VastAI | Vultr | Container |
+|---------|-----|-----|------------|------------|--------|--------|----------|------------|-------|--------|-------|-----------|
+| **GPUs** | H100, A100, T4, L4, Trainium, Inferentia | H100, A100, T4, L4, V100, H200 | A100, H100, RTX series | H200, H100, A100, A100-80GB, A6000, RTX6000Ada, L4 | H100, A100, RTX series (dynamic catalog) | H100, A100, A40, RTX series | L4, L40S, H100, H100 SXM, B300 | H100, A100, L40, RTX series, V100 | H100, A100, H200, GB200 | Marketplace (varies) | A16, A40, A100, L40S (cloud); H100, B200, MI300X (bare metal) | None (CPU) |
+| **Spot Instances** | Yes (60-90% savings) | Yes (preemptible/spot) | No (on-demand only) | No (on-demand only) | Yes | Yes | No (on-demand only) | No (on-demand only) | Yes | Yes (bid-based) | No (on-demand only) | N/A |
+| **Regions** | 20+ | 40+ zones | Canada, Norway, US | IN1, IN2 (India), EU1 (Finland) | Cluster-based (dynamic) | Global (Secure + Community) | fr-par-1, fr-par-2, fr-par-3, nl-ams, pl-waw | 100+ locations, 20+ countries | FIN, ICL, ISR | Global marketplace | EWR, ORD, DFW, LAX + more | Local |
+| **Auth** | AWS credentials | Application Default Credentials | API key | API token | API key | API key | Secret key | API key + token | Client ID + Secret | API key | API key | None |
+| **Billing** | Per-second | Per-second | Per-second | Per-minute | Per-hour | Per-second | Per-hour | Per-second | Per-second | Per-minute | Hourly | Free |
 
 ## AWS
 
@@ -177,6 +177,49 @@ The simplest approach is the **Compute Admin** role (`roles/compute.admin`).
 
 ```bash
 uv add "skyward[gcp]"
+```
+
+## Novita
+
+Novita.ai is a GPU cloud where instances are Docker containers with configurable GPU count and root filesystem size. SSH access is provided through Novita's proxy — no openssh-server or key injection is needed inside the container. Skyward reads the SSH connection details from the instance metadata and connects through the proxy automatically.
+
+Novita resolves CUDA compatibility dynamically. When provisioning, Skyward queries the instance's maximum supported CUDA version and tries descending versions until it finds a host with availability. If you provide a custom Docker image, it's used as-is.
+
+### Setup
+
+```bash
+export NOVITA_API_KEY=your_api_key
+```
+
+### Usage
+
+```python
+import skyward as sky
+
+with sky.Compute(
+    provider=sky.Novita(),
+    accelerator=sky.accelerators.A100(),
+    nodes=2,
+) as compute:
+    result = train(data) >> compute
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `api_key` | `str or None` | `None` | API key. Falls back to `NOVITA_API_KEY` env var. |
+| `cluster_id` | `str or None` | `None` | Target cluster/region ID. `None` for auto-selection. |
+| `rootfs_size` | `int` | `50` | Root filesystem size in GB. |
+| `docker_image` | `str or None` | `None` | Base Docker image. Defaults to `nvcr.io/nvidia/cuda:12.9.1-runtime-ubuntu24.04`. |
+| `min_cuda_version` | `str or None` | `None` | Minimum CUDA version requirement (e.g., `"12.4"`). |
+| `request_timeout` | `int` | `30` | HTTP request timeout in seconds. |
+
+Novita also provides a helper for building NVIDIA CUDA base images:
+
+```python
+image_name = sky.Novita.ubuntu(version="24.04", cuda="12.9.1")
+# → "nvcr.io/nvidia/cuda:12.9.1-runtime-ubuntu24.04"
 ```
 
 ## RunPod
@@ -606,6 +649,8 @@ with sky.Compute(
 **AWS** — When you need specific hardware (H100, Trainium, Inferentia), spot instance savings, or enterprise reliability. Best if you're already in the AWS ecosystem.
 
 **GCP** — Deep integration with Google Cloud. Deep Learning VM images with pre-installed CUDA drivers, dynamic machine type resolution, fleet-style provisioning via `bulk_insert`. Supports T4, L4, V100, A100, H100, H200.
+
+**Novita** — Docker-based GPU cloud with automatic CUDA version resolution. SSH through Novita's proxy — no key injection or openssh-server setup. Spot instances available.
 
 **RunPod** — Fast provisioning, competitive pricing, minimal setup. Both Secure Cloud (dedicated) and Community Cloud (cheaper) tiers. Good for A100/H100/RTX workloads.
 
