@@ -38,13 +38,13 @@ class DaemonPool:
         socket_path: Path = _DEFAULT_SOCKET,
         *,
         shutdown_on_exit: bool = False,
-        project_dir: str | None = None,
+        spec_bytes: bytes = b"",
         default_compute_timeout: float = 300.0,
     ) -> None:
         self._name = name
         self._socket_path = socket_path
         self._shutdown_on_exit = shutdown_on_exit
-        self._project_dir = project_dir
+        self._spec_bytes = spec_bytes
         self._default_timeout = default_compute_timeout
 
         self._client: DaemonClient | None = None
@@ -78,7 +78,7 @@ class DaemonPool:
         run_sync(loop, client.connect())
         result = run_sync(
             loop,
-            client.ensure_pool(self._name, project_dir=self._project_dir),
+            client.ensure_pool(self._name, spec_bytes=self._spec_bytes),
         )
         self._node_count = result.node_count
 

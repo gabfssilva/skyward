@@ -113,10 +113,10 @@ class DaemonClient:
         return await self._request(Ping())  # type: ignore[return-value]
 
     async def ensure_pool(
-        self, name: str, *, project_dir: str | None = None,
+        self, name: str, *, spec_bytes: bytes = b"",
     ) -> PoolReady:
         assert self._reader is not None and self._writer is not None
-        await async_send(self._writer, EnsurePool(name=name, project_dir=project_dir))
+        await async_send(self._writer, EnsurePool(name=name, spec_bytes=spec_bytes))
         while True:
             resp = await asyncio.wait_for(
                 async_recv(self._reader),
@@ -134,10 +134,10 @@ class DaemonClient:
         raise RuntimeError("Unexpected end of stream")
 
     async def ensure_pool_stream(
-        self, name: str, *, project_dir: str | None = None,
+        self, name: str, *, spec_bytes: bytes = b"",
     ) -> AsyncIterator[object]:
         assert self._reader is not None and self._writer is not None
-        await async_send(self._writer, EnsurePool(name=name, project_dir=project_dir))
+        await async_send(self._writer, EnsurePool(name=name, spec_bytes=spec_bytes))
         while True:
             resp = await asyncio.wait_for(
                 async_recv(self._reader),

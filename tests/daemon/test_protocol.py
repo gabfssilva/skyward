@@ -24,7 +24,7 @@ from skyward.daemon.protocol import (
 
 class TestProtocolMessages:
     def test_ensure_pool_is_frozen(self) -> None:
-        msg = EnsurePool(name="train", project_dir="/path")
+        msg = EnsurePool(name="train", spec_bytes=b"data")
         assert msg.name == "train"
         with pytest.raises(AttributeError):
             msg.name = "other"  # type: ignore[misc]

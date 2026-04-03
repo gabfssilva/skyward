@@ -1111,7 +1111,7 @@ class ComputePool:
         resolution = resolve_pool_config(name)
 
         if resolution.daemon:
-            from pathlib import Path
+            import cloudpickle
 
             from skyward.daemon.pool import DaemonPool
             from skyward.daemon.spawn import ensure_daemon
@@ -1120,7 +1120,7 @@ class ComputePool:
             return DaemonPool(  # type: ignore[return-value]
                 name=name,
                 shutdown_on_exit=shutdown_on_exit,
-                project_dir=str(Path.cwd()),
+                spec_bytes=cloudpickle.dumps(resolution.specs),
             )
 
         return resolution.pool

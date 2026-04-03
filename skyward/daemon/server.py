@@ -182,8 +182,8 @@ class DaemonServer:
                     case SubscribeEvents(pool_name=name):
                         await self._handle_subscribe(name, reader, writer)
                         break
-                    case EnsurePool(name=name, project_dir=project_dir):
-                        async for msg in self._ensure_pool_stream(name, project_dir, client_id):
+                    case EnsurePool(name=name, spec_bytes=spec_bytes):
+                        async for msg in self._ensure_pool_stream(name, spec_bytes, client_id):
                             await async_send(writer, msg)
                         connected_pools.add(name)
                     case _:
@@ -343,7 +343,7 @@ class DaemonServer:
     # -- Pool provisioning -------------------------------------------------
 
     async def _ensure_pool_stream(
-        self, name: str, project_dir: str | None, client_id: str,
+        self, name: str, spec_bytes: bytes, client_id: str,
     ) -> AsyncGenerator[PoolReady | PoolFailed | PoolProvisioning | PoolLogLine, None]:
         """Provision a pool, streaming phase transitions to the client."""
         assert self._actor_system is not None and self._state_ref is not None
@@ -388,7 +388,7 @@ class DaemonServer:
 
         loop = asyncio.get_running_loop()
         provision_future: asyncio.Future[Any] = loop.run_in_executor(
-            None, self._provision_pool, name, project_dir,
+            None, self._provision_pool, name, spec_bytes,
         )
 
         try:
@@ -417,7 +417,6 @@ class DaemonServer:
                     pool_name=name,
                     cluster_id=pool._cluster_id,
                     instance_ids=instance_ids,
-                    project_dir=project_dir or str(Path.cwd()),
                     provider_name=pool._spec.provider or "",
                     cluster_bytes=cloudpickle.dumps(pool._cluster),
                     spec_bytes=cloudpickle.dumps(pool._spec),
@@ -439,14 +438,14 @@ class DaemonServer:
             self._projection.on_change = original_on_change
             self._projection.on_event = original_on_event
 
-    def _provision_pool(self, name: str, project_dir: str | None) -> Any:
-        """Resolve config and provision a ComputePool via Session."""
-        from skyward.config import resolve_pool_config
+    def _provision_pool(self, name: str, spec_bytes: bytes) -> Any:
+        """Provision a ComputePool from serialized specs."""
+        import cloudpickle
 
-        resolution = resolve_pool_config(
-            name, project_dir=Path(project_dir) if project_dir else None,
-        )
-        pool = resolution.pool
+        from skyward.core.pool import ComputePool
+
+        specs: tuple = cloudpickle.loads(spec_bytes)
+        pool = ComputePool(*specs)
         pool._pool_name = name
 
         if self._session is None:
@@ -458,7 +457,7 @@ class DaemonServer:
             self._session.__enter__()
 
         pool.__enter__()
-        self._pool_ttls[name] = resolution.ttl
+        self._pool_ttls[name] = specs[0].ttl if specs else 1200
         return pool
 
     # -- Task dispatch (async, no deadlock) --------------------------------
@@ -773,7 +772,6 @@ class DaemonServer:
                     pool_name=name,
                     cluster_id=cluster.id,
                     instance_ids=alive_ids,
-                    project_dir=entry.project_dir,
                     provider_name=entry.provider_name,
                     cluster_bytes=cloudpickle.dumps(cluster),
                     spec_bytes=entry.spec_bytes,

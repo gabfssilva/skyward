@@ -24,7 +24,6 @@ class TestDaemonStateEvents:
             pool_name="train",
             cluster_id="c-123",
             instance_ids=("i-1", "i-2"),
-            project_dir="/home/user/project",
         )
         new = apply_event(state, event)
         assert "train" in new.pools
@@ -35,7 +34,7 @@ class TestDaemonStateEvents:
         state = DaemonState()
         state = apply_event(state, PoolRegistered(
             pool_name="train", cluster_id="c-1",
-            instance_ids=("i-1",), project_dir="/tmp",
+            instance_ids=("i-1",),
         ))
         state = apply_event(state, PoolRemoved(pool_name="train"))
         assert "train" not in state.pools
@@ -44,7 +43,7 @@ class TestDaemonStateEvents:
         state = DaemonState()
         state = apply_event(state, PoolRegistered(
             pool_name="train", cluster_id="c-1",
-            instance_ids=(), project_dir="/tmp",
+            instance_ids=(),
         ))
         state = apply_event(state, ClientJoined(pool_name="train", client_id="abc"))
         assert "abc" in state.pools["train"].clients
@@ -53,7 +52,7 @@ class TestDaemonStateEvents:
         state = DaemonState()
         state = apply_event(state, PoolRegistered(
             pool_name="train", cluster_id="c-1",
-            instance_ids=(), project_dir="/tmp",
+            instance_ids=(),
         ))
         state = apply_event(state, ClientJoined(pool_name="train", client_id="abc"))
         state = apply_event(state, ClientLeft(pool_name="train", client_id="abc"))
@@ -66,7 +65,6 @@ class TestDaemonStateEvents:
             pool_name="train",
             cluster_id="c-123",
             instance_ids=("i-1", "i-2"),
-            project_dir="/home/user/project",
             provider_name="aws",
             cluster_bytes=b"pickled-cluster",
             spec_bytes=b"pickled-spec",
@@ -85,7 +83,6 @@ class TestDaemonStateEvents:
             pool_name="train",
             cluster_id="c-1",
             instance_ids=("i-1",),
-            project_dir="/tmp",
         )
         assert event.provider_name == ""
         assert event.cluster_bytes == b""
@@ -103,7 +100,7 @@ class TestDaemonStateActor:
                 ref,
                 lambda r: RegisterPool(
                     pool_name="train", cluster_id="c-1",
-                    instance_ids=("i-1",), project_dir="/tmp",
+                    instance_ids=("i-1",),
                     reply_to=r,
                 ),
                 timeout=2.0,
@@ -127,7 +124,7 @@ class TestDaemonStateActor:
                 ref,
                 lambda r: RegisterPool(
                     pool_name="train", cluster_id="c-1",
-                    instance_ids=("i-1", "i-2"), project_dir="/tmp",
+                    instance_ids=("i-1", "i-2"),
                     reply_to=r,
                 ),
                 timeout=2.0,

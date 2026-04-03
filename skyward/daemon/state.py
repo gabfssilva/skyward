@@ -19,7 +19,6 @@ class PoolEntry:
     """Persisted metadata for one daemon-managed pool."""
     cluster_id: str
     instance_ids: tuple[str, ...]
-    project_dir: str
     clients: frozenset[str] = frozenset()
     provider_name: str = ""
     cluster_bytes: bytes = b""
@@ -42,7 +41,6 @@ class PoolRegistered:
     pool_name: str
     cluster_id: str
     instance_ids: tuple[str, ...]
-    project_dir: str
     provider_name: str = ""
     cluster_bytes: bytes = b""
     spec_bytes: bytes = b""
@@ -76,7 +74,6 @@ class RegisterPool:
     pool_name: str
     cluster_id: str
     instance_ids: tuple[str, ...]
-    project_dir: str
     reply_to: ActorRef[Any]
     provider_name: str = ""
     cluster_bytes: bytes = b""
@@ -119,11 +116,11 @@ def apply_event(state: DaemonState, event: DaemonEvent) -> DaemonState:
     match event:
         case PoolRegistered(
             pool_name=name, cluster_id=cid, instance_ids=iids,
-            project_dir=pd, provider_name=pn, cluster_bytes=cb,
+            provider_name=pn, cluster_bytes=cb,
             spec_bytes=sb, provider_config_bytes=pcb,
         ):
             entry = PoolEntry(
-                cluster_id=cid, instance_ids=iids, project_dir=pd,
+                cluster_id=cid, instance_ids=iids,
                 provider_name=pn, cluster_bytes=cb, spec_bytes=sb,
                 provider_config_bytes=pcb,
             )
@@ -159,14 +156,14 @@ async def _on_command(
     match cmd:
         case RegisterPool(
             pool_name=name, cluster_id=cid, instance_ids=iids,
-            project_dir=pd, reply_to=r, provider_name=pn,
+            reply_to=r, provider_name=pn,
             cluster_bytes=cb, spec_bytes=sb, provider_config_bytes=pcb,
         ):
             r.tell(True)
             return Behaviors.persisted(events=[
                 PoolRegistered(
                     pool_name=name, cluster_id=cid, instance_ids=iids,
-                    project_dir=pd, provider_name=pn, cluster_bytes=cb,
+                    provider_name=pn, cluster_bytes=cb,
                     spec_bytes=sb, provider_config_bytes=pcb,
                 ),
             ])

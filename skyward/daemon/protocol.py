@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 class EnsurePool:
     """Provision pool if not running, or return existing handle."""
     name: str
-    project_dir: str | None = None
+    spec_bytes: bytes = b""
 
 
 @dataclass(frozen=True, slots=True)

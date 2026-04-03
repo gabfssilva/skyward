@@ -70,7 +70,6 @@ def _make_registered_event(
         pool_name=name,
         cluster_id="c-123",
         instance_ids=instance_ids,
-        project_dir=str(tmp_path),
         provider_name="aws",
         cluster_bytes=cloudpickle.dumps(cluster),
         spec_bytes=cloudpickle.dumps(spec),
@@ -172,7 +171,6 @@ class TestCrashRecovery:
             pool_name="train",
             cluster_id="c-bad",
             instance_ids=("i-1",),
-            project_dir=str(tmp_path),
             provider_name="aws",
             cluster_bytes=b"not-valid-pickle",
             spec_bytes=b"not-valid-pickle",
@@ -194,7 +192,6 @@ class TestCrashRecovery:
             pool_name="old-pool",
             cluster_id="c-old",
             instance_ids=("i-1",),
-            project_dir=str(tmp_path),
         )
         await journal.persist("daemon-state", [PersistedEvent(sequence_nr=1, event=event, timestamp=0.0)])
 
