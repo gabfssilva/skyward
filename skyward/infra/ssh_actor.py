@@ -320,6 +320,13 @@ def ssh_transport(
         pending: tuple[TransportMsg, ...],
     ) -> Behavior[TransportMsg]:
         ctx.on_stop(lambda: _cleanup(state))
+
+        async def _watch_connection() -> _ConnectionDropped:
+            await state.conn.wait_closed()
+            return _ConnectionDropped(error="SSH connection closed by remote")
+
+        ctx.pipe_to_self(_watch_connection())
+
         for msg in pending:
             ctx.self.tell(msg)
         return connected(state)
@@ -357,9 +364,12 @@ def ssh_transport(
 
                 case _ConnectionDropped(error=error):
                     log.warning("Connection dropped: {err}", err=error)
+                    for listener in state.listeners:
+                        with contextlib.suppress(Exception):
+                            listener.close()
                     if parent:
                         parent.tell(ConnectionLost(error=error))
-                    return reconnecting(state)
+                    return reconnecting(replace(state, listeners=()))
 
                 case WriteFile(remote=remote, content=content, reply_to=rt):
                     ctx.pipe_to_self(
@@ -440,9 +450,12 @@ def ssh_transport(
                 case _StreamEnded(error=error):
                     if error and state.conn.is_closed():
                         log.warning("Connection lost (detected via stream): {err}", err=error)
+                        for listener in state.listeners:
+                            with contextlib.suppress(Exception):
+                                listener.close()
                         if parent:
                             parent.tell(ConnectionLost(error=error))
-                        return reconnecting(state)
+                        return reconnecting(replace(state, listeners=()))
                     if error:
                         log.warning("Event stream ended: {err}", err=error)
                     if state.subscribers and not state.conn.is_closed():

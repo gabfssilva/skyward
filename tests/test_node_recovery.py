@@ -345,3 +345,62 @@ class TestActiveNodeRecovery:
                 pytest.fail(f"Recovery did not complete within 120s, last result: {nodes}")
 
             assert len(set(nodes)) == 5, f"Expected 5 unique nodes, got {nodes}"
+
+
+# ---------------------------------------------------------------------------
+# In-flight task retry after node crash
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.timeout(300)
+class TestInflightTaskRetry:
+    """When a container dies while a task is in-flight, the node detects
+    the connection loss, sends TaskInterrupted + NodeBecameUnready,
+    provisions a replacement, and the task manager re-dispatches the
+    interrupted task to the new node. The Future resolves normally."""
+
+    def test_future_resolves_after_node_crash(self) -> None:
+        """Submit a long task via ``>``, kill the container mid-flight,
+        and assert the Future resolves with the retried result."""
+        kill_switch = _KillSwitch(
+            binary="docker", container_prefix="skyward-inflight",
+        )
+
+        with sky.Compute(
+            provider=_KillSwitchContainer(
+                network="skyward",
+                container_prefix="skyward-inflight",
+                kill_switch=kill_switch,
+            ),
+            nodes=1,
+            vcpus=0.5,
+            memory_gb=0.5,
+            options=sky.Options(
+                ssh_timeout=10,
+                ssh_retry_interval=2,
+                default_compute_timeout=180,
+                console=False,
+            ),
+        ) as compute:
+
+            @sky.function
+            def long_process() -> str:
+                import time
+
+                time.sleep(30)
+                return "done"
+
+            # 1. dispatch long task (async)
+            future = long_process() > compute
+
+            # 2. let it reach the worker
+            import time
+
+            time.sleep(5)
+
+            # 3. kill the container — long_process is interrupted
+            kill_switch.kill(0)
+
+            # 4. future resolves after recovery + retry (~50s)
+            result = future.result(timeout=180)
+            assert result == "done"

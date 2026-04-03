@@ -239,8 +239,8 @@ def translate(spy: SpyEvent, pool_name: str) -> SessionEvent | None:  # type: ig
         case TaskFailed(task_id=tid, node_id=nid):
             return Task.Failed(pool_name, tid, nid, "")
 
-        case TaskInterrupted(task_id=tid, node_id=nid):
-            return Task.Failed(pool_name, tid, nid, "interrupted")
+        case TaskInterrupted():
+            return None
 
         # ── Telemetry ──────────────────────────────────────
         case Metric(instance=ni, name=name, value=value):

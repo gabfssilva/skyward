@@ -28,6 +28,7 @@ from skyward.actors.messages import (
     HeadAddressKnown,
     NodeActivated,
     NodeBecameReady,
+    NodeBecameUnready,
     NodeConnected,
     NodeLost,
     Preempted,
@@ -713,6 +714,22 @@ def node_actor(
                     return active(replace(s, inflight=new_inflight, task_counter=s.task_counter + 1))
                 case _RemoteTaskDone(task_id=tid, value=value, error=is_err, connection_error=conn_err, elapsed=elapsed):
                     log.debug("Node {nid} received task result (tid={tid})", nid=node_id, tid=tid)
+                    if conn_err:
+                        log.warning(
+                            "Connection error on node {nid}, interrupting inflight tasks and replacing",
+                            nid=node_id,
+                        )
+                        conn_error = RuntimeError(f"Node {node_id} connection lost")
+                        for inflight_tid, inflight_caller in s.inflight.items():
+                            inflight_caller.tell(
+                                TaskInterrupted(
+                                    error=conn_error, node_id=node_id, task_id=inflight_tid,
+                                )
+                            )
+                        pool.tell(NodeBecameUnready(node_id=node_id, reason="connection lost"))
+                        return _start_replacing(
+                            ctx, replace(s, inflight=MappingProxyType({}), pending_tasks=()),
+                        )
                     caller = s.inflight.get(tid)
                     if caller:
                         result = (
@@ -721,21 +738,6 @@ def node_actor(
                             else TaskSucceeded(value=value, node_id=node_id, task_id=tid, elapsed=elapsed)
                         )
                         caller.tell(result)
-                    if conn_err:
-                        log.warning(
-                            "Connection error on node {nid}, waiting for transport reconnect",
-                            nid=node_id,
-                        )
-                        conn_error = RuntimeError(f"Node {node_id} connection lost")
-                        for other_tid, other_caller in s.inflight.items():
-                            if other_tid != tid:
-                                other_caller.tell(
-                                    TaskInterrupted(
-                                        error=conn_error, node_id=node_id, task_id=other_tid,
-                                    )
-                                )
-                        return active(replace(s, inflight=MappingProxyType({}), pending_tasks=()))
-                    if caller:
                         new_inflight = MappingProxyType({k: v for k, v in s.inflight.items() if k != tid})
                         return active(replace(s, inflight=new_inflight))
                     return Behaviors.same()
@@ -774,8 +776,10 @@ def node_actor(
                                 node_id=node_id, task_id=tid,
                             )
                         )
-                    pool.tell(NodeLost(node_id=node_id, reason="connection lost"))
-                    return _start_replacing(ctx, s)
+                    pool.tell(NodeBecameUnready(node_id=node_id, reason="connection lost"))
+                    return _start_replacing(
+                        ctx, replace(s, inflight=MappingProxyType({}), pending_tasks=()),
+                    )
                 case PortReForwarded(old_port=_, new_port=new_port):
                     log.info("Port re-forwarded to {port}", port=new_port)
                     ni = s.ni

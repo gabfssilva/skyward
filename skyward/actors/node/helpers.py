@@ -342,16 +342,30 @@ async def discover_own_worker(
     ni: NodeInstance | None,
     standalone: bool = False,
 ) -> Any:
-    from skyward.infra.worker import WORKER_KEY
+    from contextlib import contextmanager
+
+    from skyward.infra.worker import WORKER_KEY, EnterContext
 
     private_ip = ni.instance.private_ip or ni.instance.ip or "" if ni else ""
+
+    @contextmanager
+    def _noop() -> Any:
+        yield
 
     deadline = asyncio.get_event_loop().time() + 120.0
     while asyncio.get_event_loop().time() < deadline:
         listing = client.lookup(WORKER_KEY)
         for instance in listing.instances:
             if standalone or instance.node.host == private_ip:
-                return instance.ref
+                try:
+                    await client.ask(
+                        instance.ref,
+                        lambda rto: EnterContext(factory=_noop, reply_to=rto),
+                        timeout=3.0,
+                    )
+                    return instance.ref
+                except Exception:
+                    pass
         await asyncio.sleep(1.0)
 
     raise RuntimeError(f"Worker for {private_ip} not discovered within 120s")

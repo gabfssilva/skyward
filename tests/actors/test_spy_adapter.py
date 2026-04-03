@@ -320,15 +320,13 @@ class TestTaskEvents:
         assert result.task_id == "t1"
         assert result.node_id == 1
 
-    def test_task_result_interrupted(self):
+    def test_task_result_interrupted_is_silent(self):
         from skyward.actors.messages import TaskInterrupted
 
         ev = TaskInterrupted(error=RuntimeError("lost"), node_id=1, task_id="t1")
         result = translate(_spy(ev), "pool")
 
-        assert isinstance(result, Task.Failed)
-        assert result.task_id == "t1"
-        assert result.error == "interrupted"
+        assert result is None
 
 
 # ── Metric events ───────────────────────────────────────────────

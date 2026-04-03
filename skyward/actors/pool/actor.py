@@ -23,6 +23,7 @@ from skyward.actors.messages import (
     NodeActivated,
     NodeAvailable,
     NodeBecameReady,
+    NodeBecameUnready,
     NodeConnected,
     NodeInstance,
     NodeJoined,
@@ -716,6 +717,15 @@ def pool_actor(
                     return provisioning(replace(
                         s, ready_nodes=new_ready, node_statuses=new_statuses,
                     ))
+                case NodeBecameUnready(node_id=nid, reason=reason):
+                    log.warning(
+                        "Node {nid} became unready during provisioning: {reason}",
+                        nid=nid, reason=reason,
+                    )
+                    tm.tell(NodeUnavailable(node_id=nid))
+                    return provisioning(replace(
+                        s, ready_nodes=s.ready_nodes - {nid},
+                    ))
                 case NodeLost(node_id=nid, reason=reason):
                     log.warning(
                         "Node {nid} lost during provisioning: {reason}",
@@ -890,6 +900,13 @@ def pool_actor(
                     return ready(replace(
                         s, ready_nodes=s.ready_nodes | {nid}, node_statuses=new_statuses,
                     ))
+                case NodeBecameUnready(node_id=nid, reason=reason):
+                    log.warning(
+                        "Node {nid} became unready: {reason}",
+                        nid=nid, reason=reason,
+                    )
+                    tm.tell(NodeUnavailable(node_id=nid))
+                    return ready(replace(s, ready_nodes=s.ready_nodes - {nid}))
                 case NodeLost(node_id=nid, reason=reason):
                     log.warning(
                         "Node {nid} lost: {reason}, {remaining} nodes remaining",

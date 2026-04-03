@@ -421,6 +421,12 @@ class NodeLost:
 
 
 @dataclass(frozen=True, slots=True)
+class NodeBecameUnready:
+    node_id: NodeId
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class HeadAddressKnown:
     head_addr: str
     casty_port: int
