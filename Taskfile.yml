@@ -129,6 +129,11 @@ tasks:
     cmds:
       - uv run pytest -m "sanity and tensordock" {{.CLI_ARGS}}
 
+  test:sanity:massed_compute:
+    desc: Run Massed Compute sanity tests
+    cmds:
+      - uv run pytest -m "sanity and massed_compute" {{.CLI_ARGS}}
+
   test:sanity:novita:
     desc: Run Novita sanity tests
     cmds:

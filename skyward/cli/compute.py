@@ -218,8 +218,6 @@ def start_pool(
     json: Annotated[bool, Parameter(name="--json", help="JSON output")] = False,
 ) -> None:
     """Start a named compute pool via the daemon."""
-    from pathlib import Path
-
     from skyward.daemon.protocol import PoolFailed, PoolLogLine, PoolProvisioning, PoolReady
 
     async def _start() -> None:
@@ -238,7 +236,7 @@ def start_pool(
         with ctx as spinner:
             async with DaemonClient() as client:
                 async for msg in client.ensure_pool_stream(
-                    name, project_dir=str(Path.cwd()),
+                    name,
                 ):
                     match msg:
                         case PoolProvisioning(phase=phase):

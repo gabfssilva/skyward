@@ -120,7 +120,7 @@ class Bridge:
 
     async def _ensure_pool(self, name: str, project_dir: str | None) -> dict[str, Any]:
         client = await self._connect()
-        await client.ensure_pool(name, project_dir=project_dir)
+        await client.ensure_pool(name)
         return {"ok": True}
 
     async def _shutdown_pool(self, pool: str) -> dict[str, Any]:

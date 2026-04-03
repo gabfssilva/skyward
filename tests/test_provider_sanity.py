@@ -332,6 +332,36 @@ class TestScalewaySanity:
 
 
 # ---------------------------------------------------------------------------
+# Massed Compute
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.sanity
+@pytest.mark.massed_compute
+@pytest.mark.timeout(TIMEOUT)
+@pytest.mark.xdist_group("massed_compute")
+class TestMassedComputeSanity:
+    @pytest.fixture(scope="class")
+    def pool(self):
+        with sky.Compute(
+            provider=sky.MassedCompute(),
+            accelerator=sky.accelerators.RTX_A6000(),
+            nodes=NODES,
+            image=sky.Image(pip=["torch"]),
+            options=sky.Options(console=False),
+        ) as p:
+            yield p
+
+    def test_single_dispatch(self, pool):
+        result = gpu_matmul() >> pool
+        _assert_single(result)
+
+    def test_broadcast(self, pool):
+        results = gpu_matmul() @ pool
+        _assert_broadcast(results)
+
+
+# ---------------------------------------------------------------------------
 # Novita
 # ---------------------------------------------------------------------------
 

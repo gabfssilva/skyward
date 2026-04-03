@@ -128,6 +128,7 @@ markers = [
     "gcp: GCP provider tests",
     "hyperstack: Hyperstack provider tests",
     "jarvislabs: Jarvis Labs provider tests",
+    "massed_compute: Massed Compute provider tests",
     "novita: Novita provider tests",
     "tensordock: TensorDock provider tests",
     "scaleway: Scaleway provider tests",

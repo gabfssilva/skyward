@@ -33,6 +33,6 @@ def run_main(file: str, fn_name: str, args: dict[str, Any], pool: str) -> Any:
 
     from skyward.daemon.pool import DaemonPool
 
-    daemon_pool = DaemonPool(name=pool, project_dir=str(path.parent))
+    daemon_pool = DaemonPool(name=pool)
     with daemon_pool:
         return func(**args)

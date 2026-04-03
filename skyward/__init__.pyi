@@ -19,6 +19,7 @@ from skyward import accelerators as accelerators
 from skyward import containers as containers
 from skyward import plugins as plugins
 from skyward import storage as storage
+from skyward import time as time
 
 # ── Re-exported events (frozen dataclasses — not in api/) ─────
 from skyward.actors.messages import ClusterDestroyed as ClusterDestroyed
@@ -111,6 +112,7 @@ from skyward.providers import GCP as GCP
 from skyward.providers import Container as Container
 from skyward.providers import Hyperstack as Hyperstack
 from skyward.providers import JarvisLabs as JarvisLabs
+from skyward.providers import MassedCompute as MassedCompute
 from skyward.providers import Novita as Novita
 from skyward.providers import RunPod as RunPod
 from skyward.providers import Scaleway as Scaleway
@@ -158,6 +160,7 @@ __all__ = [
     "GCP",
     "Hyperstack",
     "JarvisLabs",
+    "MassedCompute",
     "Novita",
     "RunPod",
     "Scaleway",
@@ -224,4 +227,5 @@ __all__ = [
     "plugins",
     "containers",
     "DockerImage",
+    "time",
 ]

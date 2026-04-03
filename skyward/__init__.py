@@ -20,6 +20,7 @@ from skyward import accelerators as accelerators
 from skyward import containers as containers
 from skyward import plugins as plugins
 from skyward import storage as storage
+from skyward import time as time
 from skyward.containers import DockerImage as DockerImage
 from skyward.observability import LogConfig
 from skyward.observability import metrics as metrics
@@ -100,7 +101,7 @@ from .distributed import (
     set,
 )
 from .offers.repository import OfferRepository
-from .providers import AWS, GCP, Container, Hyperstack, JarvisLabs, Novita, RunPod, Scaleway, TensorDock, VastAI, Verda, Vultr
+from .providers import AWS, GCP, Container, Hyperstack, JarvisLabs, MassedCompute, Novita, RunPod, Scaleway, TensorDock, VastAI, Verda, Vultr
 
 
 async def offers(providers: list[Any]) -> OfferRepository:
@@ -142,6 +143,7 @@ __all__ = [
     "GCP",
     "Hyperstack",
     "JarvisLabs",
+    "MassedCompute",
     "Novita",
     "RunPod",
     "Scaleway",
@@ -207,4 +209,5 @@ __all__ = [
     "plugins",
     "containers",
     "DockerImage",
+    "time",
 ]

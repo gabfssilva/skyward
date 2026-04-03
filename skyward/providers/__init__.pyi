@@ -200,6 +200,39 @@ class JarvisLabs:
     async def create_provider(self) -> Any: ...
     def default_options(self) -> Any: ...
 
+class MassedCompute:
+    """Massed Compute GPU cloud provider.
+
+    Bare-metal GPU instances with on-demand and spot pricing.
+    Supports A30 through H200 NVL and RTX PRO 6000 Blackwell GPUs
+    across US regions. SSH key auto-registered via API.
+
+    Parameters
+    ----------
+    api_key
+        API key. ``None`` reads from ``MASSED_API_KEY`` env var.
+    image_id
+        OS image ID. Default ``184`` (Ubuntu Server 24.04).
+    request_timeout
+        HTTP request timeout in seconds.
+
+    Examples
+    --------
+    >>> sky.MassedCompute()
+    """
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        image_id: int = 184,
+        request_timeout: int = 30,
+    ) -> None: ...
+    @property
+    def type(self) -> str: ...
+    async def create_provider(self) -> Any: ...
+    def default_options(self) -> Any: ...
+
 class Novita:
     """Novita.ai GPU cloud provider.
 
@@ -599,6 +632,7 @@ __all__ = [
     "GCP",
     "Hyperstack",
     "JarvisLabs",
+    "MassedCompute",
     "Novita",
     "RunPod",
     "Scaleway",

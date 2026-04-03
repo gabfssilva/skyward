@@ -1,6 +1,6 @@
 # Cloud providers
 
-Skyward supports twelve providers. Eleven are cloud services — AWS, GCP, Hyperstack, JarvisLabs, Novita, RunPod, Scaleway, TensorDock, Verda, VastAI, Vultr — and one is local containers for development and CI. All implement the same `Provider` protocol, so the orchestration layer (actor system, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
+Skyward supports thirteen providers. Twelve are cloud services — AWS, GCP, Hyperstack, JarvisLabs, Massed Compute, Novita, RunPod, Scaleway, TensorDock, Verda, VastAI, Vultr — and one is local containers for development and CI. All implement the same `Provider` protocol, so the orchestration layer (actor system, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
 
 Provider configs are lightweight frozen dataclasses. They hold configuration — region, API keys, disk sizes — but don't import any cloud SDK at module level. The SDK is loaded lazily when the pool starts, so `import skyward` stays fast regardless of which providers are installed.
 
@@ -16,13 +16,13 @@ When set, `disk_gb` overrides the provider's own default. When omitted (`None`),
 
 ## Provider comparison
 
-| Feature | AWS | GCP | Hyperstack | JarvisLabs | Novita | RunPod | Scaleway | TensorDock | Verda | VastAI | Vultr | Container |
-|---------|-----|-----|------------|------------|--------|--------|----------|------------|-------|--------|-------|-----------|
-| **GPUs** | H100, A100, T4, L4, Trainium, Inferentia | H100, A100, T4, L4, V100, H200 | A100, H100, RTX series | H200, H100, A100, A100-80GB, A6000, RTX6000Ada, L4 | H100, A100, RTX series (dynamic catalog) | H100, A100, A40, RTX series | L4, L40S, H100, H100 SXM, B300 | H100, A100, L40, RTX series, V100 | H100, A100, H200, GB200 | Marketplace (varies) | A16, A40, A100, L40S (cloud); H100, B200, MI300X (bare metal) | None (CPU) |
-| **Spot Instances** | Yes (60-90% savings) | Yes (preemptible/spot) | No (on-demand only) | No (on-demand only) | Yes | Yes | No (on-demand only) | No (on-demand only) | Yes | Yes (bid-based) | No (on-demand only) | N/A |
-| **Regions** | 20+ | 40+ zones | Canada, Norway, US | IN1, IN2 (India), EU1 (Finland) | Cluster-based (dynamic) | Global (Secure + Community) | fr-par-1, fr-par-2, fr-par-3, nl-ams, pl-waw | 100+ locations, 20+ countries | FIN, ICL, ISR | Global marketplace | EWR, ORD, DFW, LAX + more | Local |
-| **Auth** | AWS credentials | Application Default Credentials | API key | API token | API key | API key | Secret key | API key + token | Client ID + Secret | API key | API key | None |
-| **Billing** | Per-second | Per-second | Per-second | Per-minute | Per-hour | Per-second | Per-hour | Per-second | Per-second | Per-minute | Hourly | Free |
+| Feature | AWS | GCP | Hyperstack | JarvisLabs | Massed Compute | Novita | RunPod | Scaleway | TensorDock | Verda | VastAI | Vultr | Container |
+|---------|-----|-----|------------|------------|----------------|--------|--------|----------|------------|-------|--------|-------|-----------|
+| **GPUs** | H100, A100, T4, L4, Trainium, Inferentia | H100, A100, T4, L4, V100, H200 | A100, H100, RTX series | H200, H100, A100, A100-80GB, A6000, RTX6000Ada, L4 | H200 NVL, H100, A100, RTX PRO 6000 Blackwell, RTX A6000, L40S, L40, RTX 6000 Ada, A30 | H100, A100, RTX series (dynamic catalog) | H100, A100, A40, RTX series | L4, L40S, H100, H100 SXM, B300 | H100, A100, L40, RTX series, V100 | H100, A100, H200, GB200 | Marketplace (varies) | A16, A40, A100, L40S (cloud); H100, B200, MI300X (bare metal) | None (CPU) |
+| **Spot Instances** | Yes (60-90% savings) | Yes (preemptible/spot) | No (on-demand only) | No (on-demand only) | Yes (17-20% savings) | Yes | Yes | No (on-demand only) | No (on-demand only) | Yes | Yes (bid-based) | No (on-demand only) | N/A |
+| **Regions** | 20+ | 40+ zones | Canada, Norway, US | IN1, IN2 (India), EU1 (Finland) | US (Kansas City, Des Moines, Wichita, Beltsville, Omaha) | Cluster-based (dynamic) | Global (Secure + Community) | fr-par-1, fr-par-2, fr-par-3, nl-ams, pl-waw | 100+ locations, 20+ countries | FIN, ICL, ISR | Global marketplace | EWR, ORD, DFW, LAX + more | Local |
+| **Auth** | AWS credentials | Application Default Credentials | API key | API token | API key | API key | API key | Secret key | API key + token | Client ID + Secret | API key | API key | None |
+| **Billing** | Per-second | Per-second | Per-second | Per-minute | Per-minute | Per-hour | Per-second | Per-hour | Per-second | Per-second | Per-minute | Hourly | Free |
 
 ## AWS
 
@@ -615,6 +615,58 @@ with sky.Compute(
 | A6000 | 48 GB | $0.79 | IN1 |
 | L4 | 24 GB | $0.44 | IN2 |
 
+## Massed Compute
+
+Massed Compute is a bare-metal GPU cloud with data centers across the US. Instances run Ubuntu with NVIDIA drivers pre-installed, SSH access via key or password, and all ports open by default (no firewall configuration needed). SSH keys are auto-registered and cleaned up by Skyward.
+
+Spot instances are available on select GPU types (H100, A6000, L40, H200 NVL) at 17-20% discount. Region is auto-placed — Massed Compute assigns the best available data center.
+
+### Setup
+
+```bash
+export MASSED_API_KEY=your_api_key
+```
+
+### Usage
+
+```python
+import skyward as sky
+
+with sky.Compute(
+    provider=sky.MassedCompute(),
+    accelerator=sky.accelerators.RTX_A6000(),
+    nodes=2,
+) as compute:
+    result = train(data) >> compute
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `api_key` | `str or None` | `None` | API key. Falls back to `MASSED_API_KEY` env var. |
+| `image_id` | `int` | `184` | OS image ID. `184` = Ubuntu 24.04, `84` = Ubuntu 22.04 w/ drivers. |
+| `request_timeout` | `int` | `30` | HTTP request timeout in seconds. |
+
+### GPU availability
+
+| GPU | VRAM | Price/hr | Spot Price/hr |
+|-----|------|----------|---------------|
+| RTX PRO 6000 Blackwell | 96 GB | $1.74 | — |
+| H200 NVL | 141 GB | $2.83 | — |
+| H100 | 80 GB | $2.40 | $1.98 |
+| H100 NVL | 94 GB | $3.11 | — |
+| A100 SXM4 | 80 GB | $1.28 | — |
+| DGX A100 | 80 GB | $1.28 | — |
+| L40S | 48 GB | $0.88 | — |
+| L40 | 48 GB | $0.84 | $0.67 |
+| RTX 6000 Ada | 48 GB | $0.79 | — |
+| RTX A6000 | 48 GB | $0.57 | $0.45 |
+| RTX A5000 | 24 GB | $0.44 | — |
+| A30 | 24 GB | $0.35 | — |
+
+Prices are per GPU. Multi-GPU configurations (2x, 4x, 8x) scale linearly.
+
 ## Container
 
 The Container provider runs compute nodes as local containers — Docker, podman, nerdctl, or Apple's container CLI. No cloud credentials, no costs. Useful for development, CI testing, and validating your code before deploying to real hardware.
@@ -657,6 +709,8 @@ with sky.Compute(
 **Hyperstack** — Bare-metal GPU cloud with environment-scoped resource management. On-demand only, regions in Canada, Norway, and US.
 
 **JarvisLabs** — GPU cloud with data centers in India and Finland. Per-minute billing with a prepaid wallet model. Good for A100, H100, H200 workloads. On-demand only.
+
+**Massed Compute** — Bare-metal GPU cloud across US data centers. Wide GPU range from A30 to H200 NVL and RTX PRO 6000 Blackwell. Spot instances on H100, A6000, L40. Per-minute billing, auto-placed regions, all ports open by default.
 
 **Verda** — European data residency (Finland, Iceland, Israel). H100/A100/H200/GB200 availability with automatic region selection.
 

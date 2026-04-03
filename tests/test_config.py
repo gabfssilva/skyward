@@ -18,6 +18,7 @@ from skyward.providers.aws.config import AWS
 from skyward.providers.gcp.config import GCP
 from skyward.providers.hyperstack.config import Hyperstack
 from skyward.providers.jarvislabs.config import JarvisLabs
+from skyward.providers.massed_compute.config import MassedCompute
 from skyward.providers.runpod.config import RunPod
 from skyward.providers.scaleway.config import Scaleway
 from skyward.providers.tensordock.config import TensorDock
@@ -319,6 +320,20 @@ class TestResolvePool:
         assert isinstance(spec.provider, TensorDock)
         assert spec.provider.location == "us"
         assert spec.provider.storage_gb == 200
+
+    def test_massed_compute_pool(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            '[providers.mc]\n'
+            'type = "massed_compute"\n'
+            'image_id = 84\n'
+            '\n'
+            '[pools.gpu]\nprovider = "mc"\nnodes = 1\n'
+        )
+        pool = resolve_pool("gpu", project_dir=tmp_path)
+        assert isinstance(pool, ComputePool)
+        spec = pool._specs[0]
+        assert isinstance(spec.provider, MassedCompute)
+        assert spec.provider.image_id == 84
 
     def test_novita_pool(self, tmp_path: Path):
         (tmp_path / "skyward.toml").write_text(

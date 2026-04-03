@@ -17,13 +17,14 @@ if TYPE_CHECKING:
     from skyward.api.logging import LogConfig
     from skyward.api.metrics import MetricsConfig
     from skyward.api.plugin import Plugin
-    from skyward.api.spec import Nodes, Volume, Worker
+    from skyward.api.spec import Nodes, Spec, Volume, Worker
     from skyward.core.pool import ComputePool
     from skyward.core.spec import Image
     from skyward.providers.aws.config import AWS
     from skyward.providers.gcp.config import GCP
     from skyward.providers.hyperstack.config import Hyperstack
     from skyward.providers.jarvislabs.config import JarvisLabs
+    from skyward.providers.massed_compute.config import MassedCompute
     from skyward.providers.novita.config import Novita
     from skyward.providers.runpod.config import RunPod
     from skyward.providers.scaleway.config import Scaleway
@@ -33,7 +34,7 @@ if TYPE_CHECKING:
     from skyward.providers.vultr.config import Vultr
     from skyward.storage import Storage
 
-    type ProviderConfig = AWS | GCP | Hyperstack | JarvisLabs | Novita | RunPod | Scaleway | TensorDock | VastAI | Verda | Vultr
+    type ProviderConfig = AWS | GCP | Hyperstack | JarvisLabs | MassedCompute | Novita | RunPod | Scaleway | TensorDock | VastAI | Verda | Vultr
 
 type RawConfig = dict[str, Any]
 
@@ -79,6 +80,7 @@ def _get_provider_map() -> dict[str, type]:
     from skyward.providers.gcp.config import GCP
     from skyward.providers.hyperstack.config import Hyperstack
     from skyward.providers.jarvislabs.config import JarvisLabs
+    from skyward.providers.massed_compute.config import MassedCompute
     from skyward.providers.novita.config import Novita
     from skyward.providers.runpod.config import RunPod
     from skyward.providers.scaleway.config import Scaleway
@@ -93,6 +95,7 @@ def _get_provider_map() -> dict[str, type]:
         "gcp": GCP,
         "hyperstack": Hyperstack,
         "jarvislabs": JarvisLabs,
+        "massed_compute": MassedCompute,
         "novita": Novita,
         "tensordock": TensorDock,
         "vastai": VastAI,
@@ -323,6 +326,7 @@ def resolve_pool(
 class PoolResolution:
     """Result of resolving a named pool from TOML."""
     pool: ComputePool
+    specs: tuple[Spec, ...] = ()
     daemon: bool = False
     ttl: int = 1200
 
@@ -345,4 +349,4 @@ def resolve_pool_config(
     ttl = raw_pool.pop("ttl", 1200)
 
     pool = _build_pool_from_raw(name, raw_pool, config)
-    return PoolResolution(pool=pool, daemon=daemon, ttl=ttl)
+    return PoolResolution(pool=pool, specs=pool._specs, daemon=daemon, ttl=ttl)
