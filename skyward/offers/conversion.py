@@ -16,7 +16,14 @@ from .model import CatalogOffer
 
 def to_offer(co: CatalogOffer) -> Offer:
     """Convert a CatalogOffer from the SQLite catalog into a runtime Offer."""
-    accelerator = Accelerator(name=co.accelerator_name, count=co.accelerator_count) if co.accelerator_name else None
+    if co.accelerator_name:
+        try:
+            accelerator: Accelerator | None = Accelerator.from_name(co.accelerator_name, count=co.accelerator_count)
+        except ValueError:
+            mem = f"{int(co.accelerator_memory_gb)}GB" if co.accelerator_memory_gb else ""
+            accelerator = Accelerator(name=co.accelerator_name, count=co.accelerator_count, memory=mem)
+    else:
+        accelerator = None
 
     it = InstanceType(
         name=co.instance_type,
