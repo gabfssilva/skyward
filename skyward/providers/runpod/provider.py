@@ -860,7 +860,8 @@ async def _create_gpu_pod(
                 env=env,
             )
         except RunPodError as e:
-            if "SUPPLY_CONSTRAINT" not in str(e):
+            err_str = str(e)
+            if "SUPPLY_CONSTRAINT" not in err_str and "no longer any instances available" not in err_str:
                 raise
             log.info(
                 "No hosts for CUDA {cuda}, trying next candidate",
