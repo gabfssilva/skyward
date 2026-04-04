@@ -620,21 +620,8 @@ class Image:
             case _:
                 pass
 
-    def content_hash(self) -> str:
-        """Generate a deterministic hash of this image specification.
-
-        Used by ``WarmableProvider`` implementations to detect whether
-        an existing AMI/snapshot can be reused or a fresh bootstrap is
-        needed.  The hash covers all fields that affect the remote
-        environment (packages, env vars, Python version, etc.).
-
-        Returns
-        -------
-        str
-            A 12-character hex digest (SHA-256 prefix).
-        """
-        from skyward import __version__
-
+    def _env_data(self) -> dict:
+        """Fields that define the remote environment (no local version)."""
         metrics_data = None
         if self.metrics:
             metrics_data = [
@@ -646,26 +633,54 @@ class Image:
                 }
                 for m in self.metrics
             ]
+        return {
+            "python": self.python,
+            "pip": sorted(self.pip),
+            "pip_indexes": [
+                {"url": idx.url, "packages": sorted(idx.packages)}
+                for idx in self.pip_indexes
+            ],
+            "apt": sorted(self.apt),
+            "env": dict(sorted(self.env.items())),
+            "shell_vars": dict(sorted(self.shell_vars.items())),
+            "includes": sorted(self.includes),
+            "excludes": sorted(self.excludes),
+            "skyward_source": self.skyward_source,
+            "metrics": metrics_data,
+        }
 
-        content = json.dumps(
-            {
-                "python": self.python,
-                "pip": sorted(self.pip),
-                "pip_indexes": [
-                    {"url": idx.url, "packages": sorted(idx.packages)}
-                    for idx in self.pip_indexes
-                ],
-                "apt": sorted(self.apt),
-                "env": dict(sorted(self.env.items())),
-                "shell_vars": dict(sorted(self.shell_vars.items())),
-                "includes": sorted(self.includes),
-                "excludes": sorted(self.excludes),
-                "skyward_source": self.skyward_source,
-                "skyward_version": __version__,
-                "metrics": metrics_data,
-            },
-            sort_keys=True,
-        )
+    def env_hash(self) -> str:
+        """Hash of the remote environment specification.
+
+        Covers packages, env vars, Python version, etc. — but NOT
+        the local skyward version.  Stable across local code edits,
+        suitable for daemon pool fingerprinting.
+
+        Returns
+        -------
+        str
+            A 12-character hex digest (SHA-256 prefix).
+        """
+        content = json.dumps(self._env_data(), sort_keys=True)
+        return hashlib.sha256(content.encode()).hexdigest()[:12]
+
+    def content_hash(self) -> str:
+        """Hash including the local skyward version.
+
+        Used by ``WarmableProvider`` implementations to detect whether
+        an existing AMI/snapshot can be reused or a fresh bootstrap is
+        needed.  Includes ``skyward_version`` because the wheel is
+        baked into the snapshot.
+
+        Returns
+        -------
+        str
+            A 12-character hex digest (SHA-256 prefix).
+        """
+        from skyward import __version__
+
+        data = {**self._env_data(), "skyward_version": __version__}
+        content = json.dumps(data, sort_keys=True)
         return hashlib.sha256(content.encode()).hexdigest()[:12]
 
 

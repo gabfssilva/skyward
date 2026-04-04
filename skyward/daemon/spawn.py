@@ -52,6 +52,7 @@ def ensure_daemon(socket_path: Path = _DEFAULT_SOCKET, timeout: float = 10.0) ->
     with log_path.open("a") as log_file:
         subprocess.Popen(
             [sys.executable, "-m", "skyward.daemon"],
+            stdin=subprocess.DEVNULL,
             stdout=log_file,
             stderr=log_file,
             start_new_session=True,

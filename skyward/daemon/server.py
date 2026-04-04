@@ -445,7 +445,13 @@ class DaemonServer:
         from skyward.core.pool import ComputePool
 
         specs: tuple = cloudpickle.loads(spec_bytes)
-        pool = ComputePool(*specs)
+        first = specs[0]
+        pool = ComputePool(
+            *specs,
+            image=first.image,
+            plugins=tuple(first.plugins),
+            volumes=tuple(first.volumes),
+        )
         pool._pool_name = name
 
         if self._session is None:

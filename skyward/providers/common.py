@@ -38,6 +38,7 @@ def build_wheel() -> Path:
     result = subprocess.run(
         ["uv", "build", "--wheel", "-o", build_dir],
         cwd=project_dir,
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
     )

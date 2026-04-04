@@ -34,7 +34,7 @@ def compute_fingerprint(spec: Spec) -> str:
     provider_type = spec.provider.type
     accel_name = spec.accelerator.name if spec.accelerator else "cpu"
     region = spec.region or "default"
-    image_hash = spec.image.content_hash()
+    image_hash = spec.image.env_hash()
 
     content = json.dumps(
         {
@@ -46,4 +46,5 @@ def compute_fingerprint(spec: Spec) -> str:
         sort_keys=True,
     )
     short_hash = hashlib.sha256(content.encode()).hexdigest()[:6]
-    return f"{provider_type}-{accel_name}-{region}-{short_hash}"
+    slug = f"{provider_type}-{accel_name}-{region}-{short_hash}"
+    return slug.replace(" ", "-")
