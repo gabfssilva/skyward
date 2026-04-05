@@ -301,10 +301,6 @@ class RunPod:
         Specific data center IDs or ``"global"`` for any.
     ports
         Network ports to expose.
-    provision_timeout
-        Max seconds to wait for pod provisioning.
-    bootstrap_timeout
-        Max seconds to wait for bootstrap completion.
     bid_multiplier
         Multiplier for spot bid price.
     base_image
@@ -339,8 +335,6 @@ class RunPod:
         volume_mount_path: str = "/workspace",
         data_center_ids: tuple[str, ...] | Literal["global"] = "global",
         ports: tuple[str, ...] = ("22/tcp",),
-        provision_timeout: float = 300.0,
-        bootstrap_timeout: float = 600.0,
         request_timeout: int = 30,
         cpu_clock: Literal["3c", "5c"] | str = "3c",
         bid_multiplier: float = 1,

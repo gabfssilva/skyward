@@ -22,7 +22,7 @@ def _dummy_cluster() -> Cluster[HyperstackSpecific]:
     return Cluster(
         id="test-cluster",
         status="ready",
-        spec=PoolSpec(nodes=Nodes(min=1), accelerator=Accelerator.from_name("A100"), region="CANADA-1"),
+        spec=PoolSpec(nodes=Nodes(desired=1), accelerator=Accelerator.from_name("A100"), region="CANADA-1"),
         offer=Offer(
             id="1",
             instance_type=None,

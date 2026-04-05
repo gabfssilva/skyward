@@ -116,24 +116,24 @@ The `nodes` parameter controls how many machines the pool provisions and when wo
 ```python
 with sky.Compute(
     provider=sky.AWS(),
-    nodes=sky.Nodes(min=8, desired=4),
+    nodes=sky.Nodes(desired=8, min=4),
 ) as compute:
     result = train(data) @ compute  # starts with 4 nodes, grows to 8
 ```
 
-The pool becomes operational when `desired` nodes are ready. The remaining nodes join as they come up — tasks dispatched with `>>` pick up new nodes via round-robin, and `@` broadcasts to all currently ready nodes.
+The pool becomes operational when `min` nodes are ready. The remaining nodes join as they come up — tasks dispatched with `>>` pick up new nodes via round-robin, and `@` broadcasts to all currently ready nodes.
 
 **Elastic pools** scale the cluster size based on workload pressure:
 
 ```python
 with sky.Compute(
     provider=sky.AWS(),
-    nodes=sky.Nodes(min=2, max=16),  # or just nodes=(2, 16)
+    nodes=sky.Nodes(desired=2, max=16),  # or just nodes=(2, 16)
 ) as compute:
     results = sky.gather(*tasks) >> compute  # scales between 2 and 16
 ```
 
-Both modes compose — `sky.Nodes(min=4, desired=2, max=16)` creates an elastic pool that starts work with 2 nodes and can scale up to 16. For the full details on how elastic pools make scaling decisions, see [Provision Controllers](provision-controllers.md).
+Both modes compose — `sky.Nodes(desired=4, min=2, max=16)` creates an elastic pool that starts work with 2 nodes and can scale up to 16. For the full details on how elastic pools make scaling decisions, see [Provision Controllers](provision-controllers.md).
 
 ## Workers
 

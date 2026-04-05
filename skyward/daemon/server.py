@@ -746,11 +746,11 @@ class DaemonServer:
                     name=name, iid=iid, status=instance.status,
                 )
 
-        if len(alive) < spec.nodes.min:
+        if len(alive) < spec.nodes.desired:
             log.warning(
-                "Pool {name}: only {alive}/{min} instances alive, "
+                "Pool {name}: only {alive}/{desired} instances alive, "
                 "terminating survivors",
-                name=name, alive=len(alive), min=spec.nodes.min,
+                name=name, alive=len(alive), desired=spec.nodes.desired,
             )
             alive_ids = tuple(inst.id for inst in alive)
             await self._terminate_and_cleanup(name, provider, cluster, alive_ids)

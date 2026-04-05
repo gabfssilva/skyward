@@ -70,7 +70,7 @@ class VastAIProvider(Provider[VastAI, VastAISpecific]):
             overlay_name: str | None = None
             overlay_cluster_id: int | None = None
 
-            if spec.nodes.min > 1 and self._config.use_overlay:
+            if spec.nodes.desired > 1 and self._config.use_overlay:
                 overlay_name, overlay_cluster_id = await _setup_overlay_network(
                     client, self._config, spec,
                 )
@@ -289,7 +289,7 @@ async def _search_offers(
         geolocation=config.geolocation,
         verified_only=config.verified_only,
         use_interruptible=use_interruptible,
-        with_cluster_id=spec.nodes.min > 1,
+        with_cluster_id=spec.nodes.desired > 1,
     )
     log.debug("Found {n} offers", n=len(offers))
 
@@ -307,7 +307,7 @@ async def _search_offers(
     offers.sort(key=lambda o: o.get(price_key, float("inf")))
 
     if spec.max_hourly_cost:
-        max_per_instance = spec.max_hourly_cost / spec.nodes.min
+        max_per_instance = spec.max_hourly_cost / spec.nodes.desired
 
         def offer_price(o: OfferResponse) -> float:
             if use_interruptible:
@@ -449,9 +449,9 @@ async def _setup_overlay_network(
         with_cluster_id=True,
     )
 
-    valid_clusters = select_all_valid_clusters(offers, spec.nodes.min, use_interruptible)
+    valid_clusters = select_all_valid_clusters(offers, spec.nodes.desired, use_interruptible)
     if not valid_clusters:
-        log.warning("No clusters found with {n} nodes", n=spec.nodes.min)
+        log.warning("No clusters found with {n} nodes", n=spec.nodes.desired)
         return None, None
 
     for idx, (physical_cluster_id, _) in enumerate(valid_clusters):

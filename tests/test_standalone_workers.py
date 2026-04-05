@@ -4,12 +4,12 @@ from skyward.api.spec import Nodes, Options, PoolSpec
 
 
 def test_pool_spec_cluster_default_true():
-    spec = PoolSpec(nodes=Nodes(min=1), accelerator=None, region="us-east-1")
+    spec = PoolSpec(nodes=Nodes(desired=1), accelerator=None, region="us-east-1")
     assert spec.cluster is True
 
 
 def test_pool_spec_cluster_false():
-    spec = PoolSpec(nodes=Nodes(min=1), accelerator=None, region="us-east-1", cluster=False)
+    spec = PoolSpec(nodes=Nodes(desired=1), accelerator=None, region="us-east-1", cluster=False)
     assert spec.cluster is False
 
 
@@ -89,13 +89,13 @@ def test_worker_cluster_default_uses_seeds():
 
 def test_pool_spec_cluster_false_propagates():
     spec = PoolSpec(
-        nodes=Nodes(min=2),
+        nodes=Nodes(desired=2),
         accelerator=None,
         region="us-east-1",
         cluster=False,
     )
     assert spec.cluster is False
-    assert spec.nodes.min == 2
+    assert spec.nodes.desired == 2
 
 
 def test_disabled_registry_satisfies_protocol():

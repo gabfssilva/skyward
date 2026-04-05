@@ -4,12 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from skyward.api.spec import (
-    DEFAULT_BOOTSTRAP_TIMEOUT,
-    DEFAULT_PROVISION_TIMEOUT,
-    DEFAULT_SSH_TIMEOUT,
-    Options,
-)
+from skyward.api.spec import Options
 from skyward.providers.aws.config import AWS
 from skyward.providers.container.config import Container
 from skyward.providers.gcp.config import GCP
@@ -110,14 +105,3 @@ class TestOptionsExplicitValues:
     def test_ssh_retry_interval(self):
         opts = Options(ssh_retry_interval=4)
         assert opts.ssh_retry_interval == 4
-
-
-class TestSystemDefaultConstants:
-    def test_default_provision_timeout(self):
-        assert DEFAULT_PROVISION_TIMEOUT == 300
-
-    def test_default_ssh_timeout(self):
-        assert DEFAULT_SSH_TIMEOUT == 300
-
-    def test_default_bootstrap_timeout(self):
-        assert DEFAULT_BOOTSTRAP_TIMEOUT == 300

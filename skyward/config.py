@@ -152,7 +152,7 @@ def _build_nodes(raw: int | list[int] | RawConfig) -> int | tuple[int, int] | No
         case _:
             raise ValueError(
                 f"Invalid nodes: {raw!r}. "
-                "Expected int, [min, max], or {min, max, desired} table."
+                "Expected int, [min, max], or {desired, min, max} table."
             )
 
 

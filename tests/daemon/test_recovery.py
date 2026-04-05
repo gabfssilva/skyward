@@ -42,9 +42,9 @@ class _FakeInstance:
 
 @dataclass(frozen=True, slots=True)
 class _FakeNodes:
-    min: int = 2
+    desired: int = 2
     max: int | None = None
-    desired: int | None = None
+    min: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,7 +63,7 @@ def _make_registered_event(
 ) -> PoolRegistered:
     """Build a PoolRegistered event with serialized recovery data."""
     cluster = _FakeCluster(id="c-123", ssh_key_path=str(tmp_path / "ssh_key"))
-    spec = _FakeSpec(nodes=_FakeNodes(min=len(instance_ids)))
+    spec = _FakeSpec(nodes=_FakeNodes(desired=len(instance_ids)))
     config = MagicMock()
 
     return PoolRegistered(

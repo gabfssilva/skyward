@@ -18,12 +18,12 @@ class TestDiskGbSpec:
         assert s.disk_gb == 500
 
     def test_pool_spec_disk_gb_default_none(self) -> None:
-        ps = PoolSpec(nodes=Nodes(min=1), accelerator=None, region="us-east-1")
+        ps = PoolSpec(nodes=Nodes(desired=1), accelerator=None, region="us-east-1")
         assert ps.disk_gb is None
 
     def test_pool_spec_disk_gb_explicit(self) -> None:
         ps = PoolSpec(
-            nodes=Nodes(min=1), accelerator=None,
+            nodes=Nodes(desired=1), accelerator=None,
             region="us-east-1", disk_gb=200,
         )
         assert ps.disk_gb == 200
@@ -31,7 +31,7 @@ class TestDiskGbSpec:
     def test_pool_spec_built_with_disk_gb_from_spec(self) -> None:
         s = Spec(provider=AWS(), disk_gb=300, nodes=2)
         ps = PoolSpec(
-            nodes=Nodes(min=2),
+            nodes=Nodes(desired=2),
             accelerator=s.accelerator,
             region="us-east-1",
             disk_gb=s.disk_gb,
@@ -41,7 +41,7 @@ class TestDiskGbSpec:
     def test_pool_spec_built_without_disk_gb(self) -> None:
         s = Spec(provider=AWS())
         ps = PoolSpec(
-            nodes=Nodes(min=1),
+            nodes=Nodes(desired=1),
             accelerator=s.accelerator,
             region="us-east-1",
             disk_gb=s.disk_gb,

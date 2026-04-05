@@ -121,7 +121,7 @@ def translate(spy: SpyEvent, pool_name: str) -> SessionEvent | None:  # type: ig
     match spy.event:
         # ── Pool init ───────────────────────────────────────
         case StartPool(spec=spec):
-            return Pool.Provisioning(pool_name, spec.nodes.min, time.monotonic())
+            return Pool.Provisioning(pool_name, spec.nodes.desired, time.monotonic())
 
         case RecoverPool(spec=spec, instances=instances):
             return Pool.Provisioning(pool_name, len(instances), time.monotonic())

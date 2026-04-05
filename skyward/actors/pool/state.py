@@ -65,7 +65,7 @@ def _derive_phase(s: PoolState) -> PoolPhase:
         case PoolPhase.READY | PoolPhase.WORKERS | PoolPhase.STOPPED:
             return s.phase
     statuses = tuple(s.node_statuses.values())
-    if not statuses or len(statuses) < s.spec.nodes.min:
+    if not statuses or len(statuses) < s.spec.nodes.desired:
         return PoolPhase.PROVISIONING
     min_status = min(statuses, key=lambda v: v.value)
     match min_status:

@@ -67,18 +67,18 @@ class Nodes:
 
     Parameters
     ----------
-    min
-        Number of nodes to provision. Must be >= 1.
+    desired
+        Number of nodes to eagerly provision. Must be >= 1.
     max
         Maximum node count for autoscaling. ``None`` disables autoscaling.
-    desired
+    min
         Minimum nodes needed before pool becomes operational.
-        ``None`` waits for all ``min`` nodes.
+        ``None`` waits for all ``desired`` nodes.
     """
 
-    min: int
+    desired: int
     max: int | None = None
-    desired: int | None = None
+    min: int | None = None
 
     @property
     def auto_scaling(self) -> bool:
@@ -86,18 +86,18 @@ class Nodes:
         return self.max is not None
 
     def __post_init__(self) -> None:
-        if self.min < 1:
-            raise ValueError(f"min must be >= 1, got {self.min}")
-        if self.max is not None and self.max < self.min:
-            raise ValueError(f"max ({self.max}) must be >= min ({self.min})")
-        upper = self.max if self.max is not None else self.min
-        effective_desired = self.desired if self.desired is not None else self.min
-        if effective_desired > upper:
+        if self.desired < 1:
+            raise ValueError(f"desired must be >= 1, got {self.desired}")
+        if self.max is not None and self.max < self.desired:
+            raise ValueError(f"max ({self.max}) must be >= desired ({self.desired})")
+        upper = self.max if self.max is not None else self.desired
+        effective_min = self.min if self.min is not None else self.desired
+        if effective_min > upper:
             raise ValueError(
-                f"desired ({effective_desired}) must be <= {'max' if self.max is not None else 'min'} ({upper})"
+                f"min ({effective_min}) must be <= {'max' if self.max is not None else 'desired'} ({upper})"
             )
-        if effective_desired < 1:
-            raise ValueError(f"desired must be >= 1, got {effective_desired}")
+        if effective_min < 1:
+            raise ValueError(f"min must be >= 1, got {effective_min}")
 
 
 type NodeSpec = int | tuple[int, int] | Nodes
@@ -111,6 +111,10 @@ class Worker:
     ----------
     concurrency
         Number of concurrent task slots per node. Default ``1``.
+    buffer
+        Extra task slots buffered per node beyond *concurrency*.
+        Improves throughput for short-lived tasks by keeping the next
+        task ready to run as soon as a slot frees.  Default ``0``.
     executor
         Execution backend -- ``"auto"`` (default) resolves to ``"thread"``.
         Use ``"process"`` explicitly for CPU-bound pure-Python workloads
@@ -119,6 +123,7 @@ class Worker:
     """
 
     concurrency: int = 1
+    buffer: int = 0
     executor: WorkerExecutor = "auto"
 
     @property
@@ -131,8 +136,8 @@ class Worker:
                 return concrete
 
 
-DEFAULT_PROVISION_TIMEOUT: int = 300
-DEFAULT_SSH_TIMEOUT: int = 300
+DEFAULT_PROVISION_TIMEOUT: int = 120
+DEFAULT_SSH_TIMEOUT: int = 90
 DEFAULT_BOOTSTRAP_TIMEOUT: int = 300
 DEFAULT_PROVISION_RETRY_DELAY: float = 5.0
 DEFAULT_MAX_PROVISION_ATTEMPTS: int = 3
@@ -477,7 +482,7 @@ class PoolSpec:
     Examples
     --------
     >>> spec = PoolSpec(
-    ...     nodes=Nodes(min=4),
+    ...     nodes=Nodes(desired=4),
     ...     accelerator=H100(),
     ...     region="us-east-1",
     ...     allocation="spot-if-available",
@@ -498,9 +503,9 @@ class PoolSpec:
     worker: Worker = field(default_factory=Worker)
     provider: ProviderName | None = None
     max_hourly_cost: float | None = None
-    provision_timeout: float = 300.0
-    ssh_timeout: float = 300.0
-    bootstrap_timeout: float = 300.0
+    provision_timeout: float = float(DEFAULT_PROVISION_TIMEOUT)
+    ssh_timeout: float = float(DEFAULT_SSH_TIMEOUT)
+    bootstrap_timeout: float = float(DEFAULT_BOOTSTRAP_TIMEOUT)
     ssh_retry_interval: float = 5.0
     provision_retry_delay: float = 10.0
     max_provision_attempts: int = 10
@@ -597,7 +602,7 @@ class Image:
     excludes: list[str] | tuple[str, ...] = ()
     skyward_source: SkywardSource = "auto"
     metrics: MetricsConfig = field(default_factory=lambda: _default_metrics())
-    bootstrap_timeout: int = 300
+    bootstrap_timeout: int = DEFAULT_BOOTSTRAP_TIMEOUT
 
     def __post_init__(self) -> None:
         """Convert lists to tuples for immutability."""

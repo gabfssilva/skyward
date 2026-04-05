@@ -476,7 +476,7 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
             case None:
                 effective_global_networking = (
                     self._config.cluster_mode == "individual"
-                    and spec.nodes.min >= 2
+                    and spec.nodes.desired >= 2
                     and gpu_type_id is not None
                 )
 
@@ -486,7 +486,7 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
 
         _, ssh_public_key = get_local_ssh_key()
 
-        if self._config.cluster_mode == "instant" and spec.nodes.min >= 2 and gpu_type_id:
+        if self._config.cluster_mode == "instant" and spec.nodes.desired >= 2 and gpu_type_id:
             runpod_cluster_id, pod_ids, cluster_ips = await _create_instant_cluster(
                 self._config, spec, gpu_type_id, image_name, ssh_public_key,
                 registry_auth_id=registry_auth_id,
@@ -551,21 +551,22 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
             ]
 
         _, ssh_public_key = get_local_ssh_key()
-        instances: list[Instance] = []
-        async with RunPodClient(api_key, config=self._config) as client:
-            for i in range(count):
+
+        async def _create_one(idx: int) -> Instance | None:
+            async with RunPodClient(api_key, config=self._config) as client:
                 try:
                     pod = (
-                        await _create_gpu_pod(client, self._config, cluster, i, ssh_public_key)
+                        await _create_gpu_pod(client, self._config, cluster, idx, ssh_public_key)
                         if specific.gpu_type_id
                         else await _create_cpu_pod(client, self._config, cluster, ssh_public_key)
                     )
                 except RunPodError as e:
-                    log.error("Failed to create pod: {err}", err=e)
-                    continue
-                instances.append(_build_runpod_instance(pod, "provisioning", cluster))
+                    log.error("Failed to create pod {idx}/{count}: {err}", idx=idx + 1, count=count, err=e)
+                    return None
+                return _build_runpod_instance(pod, "provisioning", cluster)
 
-        return cluster, instances
+        results = await asyncio.gather(*(_create_one(i) for i in range(count)))
+        return cluster, [inst for inst in results if inst is not None]
 
     async def get_instance(
         self, cluster: Cluster[RunPodSpecific], instance_id: str,
@@ -754,14 +755,14 @@ async def _create_instant_cluster(
     tuple[str, tuple[tuple[int, str], ...], tuple[tuple[int, str], ...]]
         (cluster_id, pod_ids as (node_id, pod_id), cluster_ips as (node_id, ip))
     """
-    log.info("Creating Instant Cluster with {n} nodes", n=spec.nodes.min)
+    log.info("Creating Instant Cluster with {n} nodes", n=spec.nodes.desired)
 
     api_key = get_api_key(config.api_key)
 
     params: ClusterCreateParams = {
         "clusterName": f"skyward-{uuid.uuid4().hex[:8]}",
         "gpuTypeId": gpu_type_id,
-        "podCount": spec.nodes.min,
+        "podCount": spec.nodes.desired,
         "gpuCountPerPod": int(spec.accelerator_count or 1),
         "type": "TRAINING",
         "imageName": image_name,

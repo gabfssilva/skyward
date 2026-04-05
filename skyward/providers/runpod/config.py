@@ -44,8 +44,6 @@ class RunPod(ProviderConfig):
         volume_mount_path: Volume mount path. Default: /workspace.
         data_center_ids: Preferred data center IDs or "global" for auto-selection.
         ports: Port mappings (e.g., ["22/tcp", "8888/http"]). Default: ["22/tcp"].
-        provision_timeout: Instance provision timeout in seconds. Default: 300.
-        bootstrap_timeout: Bootstrap timeout in seconds. Default: 600.
         container_image: Override the container image for pods. When set, skips
             automatic image resolution from Docker Hub. Example:
             ``"runpod/base:1.0.3-cuda1210-ubuntu2204"``. Default: None (auto-select).
@@ -71,8 +69,6 @@ class RunPod(ProviderConfig):
     volume_mount_path: str = "/workspace"
     data_center_ids: tuple[str, ...] | Literal["global"] = "global"
     ports: tuple[str, ...] = ("22/tcp",)
-    provision_timeout: float = 300.0
-    bootstrap_timeout: float = 600.0
     request_timeout: int = 30
     cpu_clock: Literal["3c", "5c"] | str = "3c"
     bid_multiplier: float = 1

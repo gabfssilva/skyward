@@ -6,7 +6,7 @@ Skyward handles this with **elastic pools**: pools whose node count adjusts auto
 
 ## Node specification
 
-Before diving into elastic pools, it helps to understand the three ways to specify node counts. All three are different expressions of the same underlying type — `sky.Nodes` — a frozen dataclass with three fields: `min`, `max`, and `desired`.
+Before diving into elastic pools, it helps to understand the three ways to specify node counts. All three are different expressions of the same underlying type — `sky.Nodes` — a frozen dataclass with three fields: `desired`, `min`, and `max`.
 
 ### Fixed pools
 
@@ -16,19 +16,19 @@ The simplest form: an integer. Skyward provisions exactly that many nodes and wa
 sky.Compute(provider=sky.AWS(), nodes=4)
 ```
 
-This is equivalent to `sky.Nodes(min=4)`. Four nodes are requested, four must be ready before any work starts.
+This is equivalent to `sky.Nodes(desired=4)`. Four nodes are requested, four must be ready before any work starts.
 
 ### Partial readiness
 
 Sometimes you want a fixed number of nodes but don't need all of them before starting work. A training run that benefits from 8 nodes can still make progress with 4 — waiting for the last few to boot is wasted time.
 
 ```python
-sky.Compute(provider=sky.AWS(), nodes=sky.Nodes(min=8, desired=4))
+sky.Compute(provider=sky.AWS(), nodes=sky.Nodes(desired=8, min=4))
 ```
 
 Skyward provisions 8 nodes but marks the pool as operational when 4 are ready. The remaining nodes join as they come up. Tasks dispatched with `>>` use round-robin across whatever nodes are available; `@` broadcasts to ready nodes and automatically includes latecomers as they appear.
 
-`desired` must be `<= min` in fixed pools (you can't start with more nodes than you requested). Omitting `desired` is the same as `desired=min` — wait for all.
+`min` must be `<= desired` in fixed pools (you can't require more ready nodes than you requested). Omitting `min` is the same as `min=desired` — wait for all.
 
 ### Elastic pools
 
@@ -39,10 +39,10 @@ Pass a tuple or use `sky.Nodes` with a `max` field. The pool scales between `min
 sky.Compute(provider=sky.AWS(), nodes=(2, 16))
 
 # Explicit form
-sky.Compute(provider=sky.AWS(), nodes=sky.Nodes(min=2, max=16))
+sky.Compute(provider=sky.AWS(), nodes=sky.Nodes(desired=2, max=16))
 ```
 
-The pool starts with the minimum (2) and grows up to the maximum (16) when demand increases. When workload decreases, it shrinks back — but never below the minimum.
+The pool starts with the desired count (2) and grows up to the maximum (16) when demand increases. When workload decreases, it shrinks back — but never below the desired count.
 
 ### Elastic pools with partial readiness
 
@@ -51,20 +51,20 @@ The two concepts compose naturally. You can set `desired` on an elastic pool to 
 ```python
 sky.Compute(
     provider=sky.AWS(),
-    nodes=sky.Nodes(min=4, desired=2, max=16),
+    nodes=sky.Nodes(desired=4, min=2, max=16),
 )
 ```
 
-This provisions at least 4 nodes, starts work when 2 are ready, and can scale up to 16. With autoscaling, `desired` can be up to `max` — the system will scale to meet the readiness threshold.
+This provisions at least 4 nodes, starts work when 2 are ready, and can scale up to 16. With autoscaling, `min` can be up to `max` — the system will scale to meet the readiness threshold.
 
 ### Summary
 
 | Form | Equivalent `Nodes` | Behavior |
 |------|-------------------|----------|
-| `nodes=4` | `Nodes(min=4)` | Fixed, wait for all |
-| `nodes=Nodes(min=8, desired=4)` | — | Fixed, start early |
-| `nodes=(2, 16)` | `Nodes(min=2, max=16)` | Elastic, wait for min |
-| `nodes=Nodes(min=4, desired=2, max=16)` | — | Elastic, start early |
+| `nodes=4` | `Nodes(desired=4)` | Fixed, wait for all |
+| `nodes=Nodes(desired=8, min=4)` | — | Fixed, start early |
+| `nodes=(2, 16)` | `Nodes(desired=2, max=16)` | Elastic, wait for all desired |
+| `nodes=Nodes(desired=4, min=2, max=16)` | — | Elastic, start early |
 
 ## Enabling elastic pools
 
@@ -157,11 +157,11 @@ Periodically (every `reconcile_tick_interval` seconds — 15 by default), the re
 
 ## Always-on reconciliation
 
-The reconciler is spawned for **every** pool — not just elastic ones. In a fixed-size pool (`nodes=4`), the reconciler starts with `min = max = 4` and the autoscaler is never created. No `DesiredCountChanged` messages arrive, so the reconciler stays in the `watching` state permanently.
+The reconciler is spawned for **every** pool — not just elastic ones. In a fixed-size pool (`nodes=4`), the reconciler starts with `desired = max = 4` and the autoscaler is never created. No `DesiredCountChanged` messages arrive, so the reconciler stays in the `watching` state permanently.
 
 But the reconcile tick still fires, and `ReconcilerNodeLost` messages still arrive. If a node dies in a fixed pool, the reconciler detects that the effective count (3) is below the desired count (4) and provisions a replacement. The pool self-heals without any elastic configuration — the reconciliation loop handles node replacement as a natural consequence of keeping `effective == desired`.
 
-Partial-readiness pools (those with `desired` set) work the same way. The reconciler doesn't know about the readiness threshold — that's the pool actor's concern. The pool actor transitions to operational when `desired` nodes are ready, and the reconciler continues provisioning the remaining nodes in the background. From the reconciler's perspective, it's just a normal fixed or elastic pool converging toward its target count.
+Partial-readiness pools (those with `min` set) work the same way. The reconciler doesn't know about the readiness threshold — that's the pool actor's concern. The pool actor transitions to operational when `min` nodes are ready, and the reconciler continues provisioning the remaining nodes in the background. From the reconciler's perspective, it's just a normal fixed or elastic pool converging toward its target count.
 
 ## How they interact
 

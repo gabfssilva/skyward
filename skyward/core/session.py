@@ -489,7 +489,7 @@ class Session:
             loop, select_offers(built_specs, pool_config),
         )
 
-        check_fd_budget(spec.nodes.max or spec.nodes.min)
+        check_fd_budget(spec.nodes.max or spec.nodes.desired)
 
         pool_ref = self._create_pool_actor(pool_name)
 

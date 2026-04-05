@@ -46,7 +46,12 @@ from skyward.actors.messages import (
     TaskSucceeded,
 )
 from skyward.api.plugin import Plugin
-from skyward.api.spec import Nodes
+from skyward.api.spec import (
+    DEFAULT_BOOTSTRAP_TIMEOUT,
+    DEFAULT_PROVISION_TIMEOUT,
+    DEFAULT_SSH_TIMEOUT,
+    Nodes,
+)
 from skyward.core.provider import ProviderConfig
 from skyward.distributed import (
     BarrierProxy,
@@ -177,9 +182,9 @@ class ComputePool:
         logging: LogConfig | bool = True,
         max_hourly_cost: float | None = None,
         default_compute_timeout: float = 300.0,
-        provision_timeout: int = 300,
-        ssh_timeout: int = 300,
-        bootstrap_timeout: int = 300,
+        provision_timeout: int = DEFAULT_PROVISION_TIMEOUT,
+        ssh_timeout: int = DEFAULT_SSH_TIMEOUT,
+        bootstrap_timeout: int = DEFAULT_BOOTSTRAP_TIMEOUT,
         ssh_retry_interval: int = 2,
         provision_retry_delay: float = 5.0,
         max_provision_attempts: int = 3,
@@ -202,7 +207,7 @@ class ComputePool:
             assert provider is not None
             match nodes:
                 case Nodes(max=int(max_n)) as n:
-                    self._scaling = (n.min, max_n)
+                    self._scaling = (n.desired, max_n)
                 case Nodes():
                     self._scaling = None
                 case (min_n, max_n):
@@ -310,15 +315,15 @@ class ComputePool:
                 if n.auto_scaling:
                     logger.info(
                         "Starting pool with {min}-{max} nodes ({accel})",
-                        min=n.min, max=n.max, accel=first.accelerator,
+                        min=n.desired, max=n.max, accel=first.accelerator,
                     )
-                    fd_nodes = n.max or n.min
+                    fd_nodes = n.max or n.desired
                 else:
                     logger.info(
                         "Starting pool with {n} nodes ({accel})",
-                        n=n.min, accel=first.accelerator,
+                        n=n.desired, accel=first.accelerator,
                     )
-                    fd_nodes = n.min
+                    fd_nodes = n.desired
             case (min_n, max_n):
                 logger.info(
                     "Starting pool with {min}-{max} nodes ({accel})",
@@ -1051,9 +1056,9 @@ class ComputePool:
         pool.worker = worker
         pool.logging = False
         pool.default_compute_timeout = default_compute_timeout
-        pool.provision_timeout = 300
-        pool.ssh_timeout = 300
-        pool.bootstrap_timeout = 300
+        pool.provision_timeout = DEFAULT_PROVISION_TIMEOUT
+        pool.ssh_timeout = DEFAULT_SSH_TIMEOUT
+        pool.bootstrap_timeout = DEFAULT_BOOTSTRAP_TIMEOUT
         pool.ssh_retry_interval = 2
         pool.provision_retry_delay = 5.0
         pool.max_provision_attempts = 3

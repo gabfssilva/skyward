@@ -65,13 +65,13 @@ def _build_pool_info_json(
 
     accel = ni.instance.offer.instance_type.accelerator
     accelerator_count = accel.count if accel else 1
-    total_accelerators = accelerator_count * spec.nodes.min
+    total_accelerators = accelerator_count * spec.nodes.desired
 
     wpn = spec.worker.concurrency if spec.worker.executor == "process" else 1
 
     pool_info = build_pool_info(
         node=node_id,
-        total_nodes=spec.nodes.min,
+        total_nodes=spec.nodes.desired,
         accelerator_count=accelerator_count,
         total_accelerators=total_accelerators,
         head_addr=head_addr,
@@ -187,7 +187,7 @@ def pool_actor(
                     logger.bind(actor="pool").info(
                         "StartPool received: {nodes} nodes, accelerator={acc}, "
                         "offers={n}",
-                        nodes=spec.nodes.min,
+                        nodes=spec.nodes.desired,
                         acc=getattr(spec, "accelerator", None),
                         n=len(offers),
                     )
@@ -300,7 +300,7 @@ def pool_actor(
 
                     log.info(
                         "Cluster ready, provisioning {n} instances",
-                        n=effective_spec.nodes.min,
+                        n=effective_spec.nodes.desired,
                     )
 
                     if effective_spec.volumes and cluster.resolved_volumes is None:
@@ -337,7 +337,7 @@ def pool_actor(
                         log.warning("Provision failed: {err}", err=err)
                         return InstancesProvisioned(instances=(), cluster=cluster)
 
-                    remaining = effective_spec.nodes.min - len(s.node_refs)
+                    remaining = effective_spec.nodes.desired - len(s.node_refs)
                     ctx.pipe_to_self(
                         s.provider.provision(cluster, remaining),
                         mapper=lambda result: InstancesProvisioned(
@@ -406,7 +406,7 @@ def pool_actor(
                     )
 
                     new_spawned = s.node_refs
-                    remaining = s.spec.nodes.min - len(new_spawned)
+                    remaining = s.spec.nodes.desired - len(new_spawned)
                     to_spawn = instances[:remaining]
 
                     updated_cluster = replace(
@@ -434,11 +434,11 @@ def pool_actor(
                         ))
                         new_spawned = MappingProxyType({**new_spawned, nid: ref})
 
-                    if len(new_spawned) >= s.spec.nodes.min:
+                    if len(new_spawned) >= s.spec.nodes.desired:
                         log.info(
                             "All {n} instances provisioned, "
                             "spawning task manager",
-                            n=s.spec.nodes.min,
+                            n=s.spec.nodes.desired,
                         )
                         tm_ref = ctx.spawn(
                             task_manager_actor(
@@ -457,7 +457,7 @@ def pool_actor(
                             early_ready=(),
                         ))
 
-                    still_needed = s.spec.nodes.min - len(new_spawned)
+                    still_needed = s.spec.nodes.desired - len(new_spawned)
                     got_partial = len(instances) > 0
 
                     if (
@@ -467,7 +467,7 @@ def pool_actor(
                         log.info(
                             "Got {got}/{need} nodes, retrying in "
                             "{delay}s (attempt {next}/{max})",
-                            got=len(new_spawned), need=s.spec.nodes.min,
+                            got=len(new_spawned), need=s.spec.nodes.desired,
                             delay=s.spec.provision_retry_delay,
                             next=s.attempt + 1,
                             max=s.spec.max_provision_attempts,
@@ -514,7 +514,7 @@ def pool_actor(
                                 "trying next offer for remaining "
                                 "({n} offers left)",
                                 got=len(new_spawned),
-                                need=s.spec.nodes.min,
+                                need=s.spec.nodes.desired,
                                 n=len(s.remaining_offers),
                             )
                         else:
@@ -541,7 +541,7 @@ def pool_actor(
                         "Exhausted {max} provision attempts and all offers, "
                         "only got {got}/{need} nodes — cleaning up",
                         max=s.spec.max_provision_attempts,
-                        got=len(new_spawned), need=s.spec.nodes.min,
+                        got=len(new_spawned), need=s.spec.nodes.desired,
                     )
 
                     instance_ids = tuple(
@@ -551,7 +551,7 @@ def pool_actor(
                     reply_to = s.reply_to
                     reason = (
                         f"Only provisioned {len(new_spawned)}"
-                        f"/{s.spec.nodes.min} nodes after "
+                        f"/{s.spec.nodes.desired} nodes after "
                         f"{s.spec.max_provision_attempts} attempts "
                         f"across all offers"
                     )
@@ -641,7 +641,7 @@ def pool_actor(
                     new_instances = MappingProxyType({**s.instances, nid: meta})
                     log.info(
                         "Node {nid} ready ({n}/{total})",
-                        nid=nid, n=len(new_instances), total=s.spec.nodes.min,
+                        nid=nid, n=len(new_instances), total=s.spec.nodes.desired,
                     )
                     iid = meta.instance.id
                     new_statuses = MappingProxyType({**s.node_statuses, iid: NodeStatus.BOOTSTRAPPING})
@@ -688,22 +688,22 @@ def pool_actor(
                         ))
                 case NodeActivated(node_id=nid, node_ref=nref, slots=slots):
                     log.info("Node {nid} activated", nid=nid)
-                    tm.tell(NodeAvailable(node_id=nid, node_ref=nref, slots=slots))
+                    tm.tell(NodeAvailable(node_id=nid, node_ref=nref, slots=slots + s.spec.worker.buffer))
                     new_ready = s.ready_nodes | {nid}
                     ni = s.instances.get(nid)
                     new_statuses = s.node_statuses
                     if ni:
                         iid = ni.instance.id
                         new_statuses = MappingProxyType({**s.node_statuses, iid: NodeStatus.READY})
-                    ready_threshold = s.spec.nodes.desired or s.spec.nodes.min
+                    ready_threshold = s.spec.nodes.min or s.spec.nodes.desired
 
                     if len(new_ready) >= ready_threshold:
-                        if len(new_ready) == s.spec.nodes.min:
-                            log.info("All {n} nodes active, pool is operational", n=s.spec.nodes.min)
+                        if len(new_ready) == s.spec.nodes.desired:
+                            log.info("All {n} nodes active, pool is operational", n=s.spec.nodes.desired)
                         else:
                             log.info(
-                                "{n}/{total} nodes active (desired met), pool is operational",
-                                n=len(new_ready), total=s.spec.nodes.min,
+                                "{n}/{total} nodes active (min threshold met), pool is operational",
+                                n=len(new_ready), total=s.spec.nodes.desired,
                             )
                         ctx.self.tell(PoolStarted(
                             cluster_id=s.cluster_id,
@@ -788,8 +788,8 @@ def pool_actor(
                     s.reply_to.tell(started)
                     from skyward.actors.reconciler import reconciler_actor
 
-                    min_n = s.spec.nodes.min
-                    max_n = s.spec.nodes.max or s.spec.nodes.min
+                    min_n = s.spec.nodes.desired
+                    max_n = s.spec.nodes.max or s.spec.nodes.desired
                     inst_map = MappingProxyType({nid: ni.instance.id for nid, ni in s.instances.items()})
                     rec_ref = ctx.spawn(
                         reconciler_actor(
@@ -800,7 +800,7 @@ def pool_actor(
                             max_nodes=max_n,
                             initial_node_ids=frozenset(s.instances.keys()),
                             initial_instance_map=inst_map,
-                            next_node_id=max(s.instances.keys()) + 1 if s.instances else s.spec.nodes.min,
+                            next_node_id=max(s.instances.keys()) + 1 if s.instances else s.spec.nodes.desired,
                             tick_interval=s.spec.reconcile_tick_interval,
                         ),
                         "reconciler",
@@ -812,11 +812,11 @@ def pool_actor(
                         assert s.spec.nodes.max is not None
                         as_ref = ctx.spawn(
                             autoscaler_actor(
-                                min_nodes=s.spec.nodes.min,
+                                min_nodes=s.spec.nodes.desired,
                                 max_nodes=s.spec.nodes.max,
                                 reconciler=rec_ref,
-                                slots_per_node=s.spec.worker.concurrency + 1,
-                                initial_count=s.spec.nodes.min,
+                                slots_per_node=s.spec.worker.concurrency + s.spec.worker.buffer,
+                                initial_count=s.spec.nodes.desired,
                                 cooldown=s.spec.autoscale_cooldown,
                                 scale_down_idle_seconds=s.spec.autoscale_idle_timeout,
                             ),
@@ -891,7 +891,7 @@ def pool_actor(
                         ))
                 case NodeActivated(node_id=nid, node_ref=nref, slots=slots):
                     log.info("Node {nid} activated", nid=nid)
-                    tm.tell(NodeAvailable(node_id=nid, node_ref=nref, slots=slots))
+                    tm.tell(NodeAvailable(node_id=nid, node_ref=nref, slots=slots + s.spec.worker.buffer))
                     ni = s.instances.get(nid)
                     new_statuses = s.node_statuses
                     if ni:
@@ -918,7 +918,7 @@ def pool_actor(
                         head_msg = HeadAddressKnown(
                             head_addr=s.head_addr,
                             casty_port=25520,
-                            num_nodes=s.spec.nodes.max or s.spec.nodes.min,
+                            num_nodes=s.spec.nodes.max or s.spec.nodes.desired,
                             worker_concurrency=s.spec.worker.concurrency,
                             worker_executor=s.spec.worker.resolved_executor,
                         )
@@ -966,7 +966,7 @@ def pool_actor(
                         if s.spec.cluster and s.head_addr:
                             ref.tell(HeadAddressKnown(
                                 head_addr=s.head_addr, casty_port=25520,
-                                num_nodes=s.spec.nodes.max or s.spec.nodes.min,
+                                num_nodes=s.spec.nodes.max or s.spec.nodes.desired,
                                 worker_concurrency=s.spec.worker.concurrency,
                                 worker_executor=s.spec.worker.resolved_executor,
                             ))

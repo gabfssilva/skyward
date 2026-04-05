@@ -18,7 +18,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
 
 def _spec_with_cuda(cuda_min: str = "12.1", cuda_max: str = "12.9") -> PoolSpec:
     return PoolSpec(
-        nodes=Nodes(min=1),
+        nodes=Nodes(desired=1),
         region="global",
         accelerator=Accelerator(
             name="A100",
@@ -152,7 +152,7 @@ class TestResolveImageCandidates:
     @pytest.mark.asyncio
     async def test_no_cuda_range_uses_fallback(self) -> None:
         config = RunPod()
-        spec = PoolSpec(nodes=Nodes(min=1), region="global", accelerator=None)
+        spec = PoolSpec(nodes=Nodes(desired=1), region="global", accelerator=None)
         result = await _resolve_image_candidates(spec, config)
         assert "runpod/base:" in result[0]
 

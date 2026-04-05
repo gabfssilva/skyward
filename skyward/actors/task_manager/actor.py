@@ -82,14 +82,13 @@ def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMs
         ) -> Behavior[TaskManagerMsg]:
             match msg:
                 case NodeAvailable(node_id, node_ref, slots):
-                    buffered = slots + 1
                     log.info(
-                        "Node {nid} available ({slots} slots, buffered={buf})",
-                        nid=node_id, slots=slots, buf=buffered,
+                        "Node {nid} available ({slots} slots)",
+                        nid=node_id, slots=slots,
                     )
                     new_nodes = MappingProxyType({
                         **s.nodes,
-                        node_id: NodeSlots(ref=node_ref, total=buffered, used=0),
+                        node_id: NodeSlots(ref=node_ref, total=slots, used=0),
                     })
                     remaining, new_nodes, rr, new_inflight = _drain_queue(
                         s.queue, new_nodes, s.round_robin, ctx.self, s.inflight,

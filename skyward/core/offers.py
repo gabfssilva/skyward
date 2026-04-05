@@ -105,9 +105,9 @@ async def select_offers(
             case Nodes() as spec_nodes:
                 pass
             case (min_n, max_n):
-                spec_nodes = Nodes(min=min_n, max=max_n)
+                spec_nodes = Nodes(desired=min_n, max=max_n)
             case int(n):
-                spec_nodes = Nodes(min=n)
+                spec_nodes = Nodes(desired=n)
 
         pool_spec = PoolSpec(
             nodes=spec_nodes,

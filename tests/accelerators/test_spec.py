@@ -40,7 +40,7 @@ from skyward.api.spec import PoolSpec, Nodes
 class TestPoolSpecFractionalCount:
     def test_accelerator_count_returns_float(self) -> None:
         spec = PoolSpec(
-            nodes=Nodes(min=1),
+            nodes=Nodes(desired=1),
             accelerator=Accelerator("H100", count=0.5),
             region="us-east-1",
         )
@@ -48,7 +48,7 @@ class TestPoolSpecFractionalCount:
 
     def test_accelerator_count_no_accelerator(self) -> None:
         spec = PoolSpec(
-            nodes=Nodes(min=1),
+            nodes=Nodes(desired=1),
             accelerator=None,
             region="us-east-1",
         )

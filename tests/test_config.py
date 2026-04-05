@@ -424,18 +424,18 @@ class TestBuildNodes:
         assert _build_nodes([2, 8]) == (2, 8)
 
     def test_dict_full(self):
-        result = _build_nodes({"min": 4, "desired": 2, "max": 16})
+        result = _build_nodes({"desired": 4, "min": 2, "max": 16})
         assert isinstance(result, Nodes)
-        assert result.min == 4
-        assert result.desired == 2
+        assert result.desired == 4
+        assert result.min == 2
         assert result.max == 16
 
-    def test_dict_min_only(self):
-        result = _build_nodes({"min": 8})
+    def test_dict_desired_only(self):
+        result = _build_nodes({"desired": 8})
         assert isinstance(result, Nodes)
-        assert result.min == 8
+        assert result.desired == 8
         assert result.max is None
-        assert result.desired is None
+        assert result.min is None
 
     def test_invalid_raises(self):
         with pytest.raises(ValueError, match="Invalid nodes"):
@@ -518,30 +518,30 @@ class TestResolvePoolWithNodes:
             'provider = "a"\n'
             '\n'
             '[pools.ml.nodes]\n'
-            'min = 4\n'
-            'desired = 2\n'
+            'desired = 4\n'
+            'min = 2\n'
             'max = 16\n'
         )
         pool = resolve_pool("ml", project_dir=tmp_path)
         nodes = pool._specs[0].nodes
         assert isinstance(nodes, Nodes)
-        assert nodes.min == 4
-        assert nodes.desired == 2
+        assert nodes.desired == 4
+        assert nodes.min == 2
         assert nodes.max == 16
 
-    def test_nodes_table_min_only(self, tmp_path: Path):
+    def test_nodes_table_desired_only(self, tmp_path: Path):
         (tmp_path / "skyward.toml").write_text(
             _PROVIDER_PREAMBLE +
             '[pools.ml]\n'
             'provider = "a"\n'
             '\n'
             '[pools.ml.nodes]\n'
-            'min = 8\n'
+            'desired = 8\n'
         )
         pool = resolve_pool("ml", project_dir=tmp_path)
         nodes = pool._specs[0].nodes
         assert isinstance(nodes, Nodes)
-        assert nodes.min == 8
+        assert nodes.desired == 8
 
 
 class TestResolvePoolWithLogging:

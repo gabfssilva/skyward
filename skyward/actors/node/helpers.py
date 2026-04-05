@@ -41,7 +41,7 @@ async def do_start_worker(
 
     private_ip = ni.instance.private_ip or ni.instance.ip or ""
     casty_port = head_info.casty_port if head_info else 25520
-    num_nodes = head_info.num_nodes if head_info else spec.nodes.min
+    num_nodes = head_info.num_nodes if head_info else spec.nodes.desired
     concurrency = head_info.worker_concurrency if head_info else spec.worker.concurrency
     executor = head_info.worker_executor if head_info else spec.worker.resolved_executor
 

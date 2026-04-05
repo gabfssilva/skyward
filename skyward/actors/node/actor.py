@@ -39,6 +39,11 @@ from skyward.actors.messages import (
     _bind_to_node,
 )
 from skyward.actors.streaming import instance_monitor
+from skyward.api.spec import (
+    DEFAULT_BOOTSTRAP_TIMEOUT,
+    DEFAULT_PROVISION_TIMEOUT,
+    DEFAULT_SSH_TIMEOUT,
+)
 from skyward.infra.ssh_actor import (
     ConnectionFailed,
     ConnectionLost,
@@ -92,11 +97,11 @@ from .state import NodeId, NodeState, PendingTask
 def node_actor(
     node_id: NodeId,
     pool: ActorRef,
-    ssh_timeout: float = 300.0,
+    ssh_timeout: float = float(DEFAULT_SSH_TIMEOUT),
     ssh_retry_interval: float = 5.0,
     poll_interval: float = 5.0,
-    poll_timeout: float = 300.0,
-    bootstrap_timeout: float = 300.0,
+    poll_timeout: float = float(DEFAULT_PROVISION_TIMEOUT),
+    bootstrap_timeout: float = float(DEFAULT_BOOTSTRAP_TIMEOUT),
     _skip_monitor: bool = False,
     ca: CertificateAuthority | None = None,
 ) -> Behavior[NodeMsg]:
@@ -448,7 +453,7 @@ def node_actor(
                 HeadAddressKnown(
                     head_addr=head_private,
                     casty_port=25520,
-                    num_nodes=spec.nodes.min,
+                    num_nodes=spec.nodes.desired,
                     worker_concurrency=spec.worker.concurrency,
                     worker_executor=spec.worker.resolved_executor,
                 )

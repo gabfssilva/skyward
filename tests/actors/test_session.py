@@ -351,7 +351,7 @@ class TestSessionActor:
         from skyward.core.spec import Nodes
 
         spec = MagicMock()
-        spec.nodes = Nodes(min=4)
+        spec.nodes = Nodes(desired=4)
 
         spawn_replies: list[PoolSpawned | PoolSpawnFailed] = []
         spawn_reply_ref = MagicMock()
