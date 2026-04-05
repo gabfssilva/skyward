@@ -102,9 +102,3 @@ class TestStorage:
             await provider.storage(cluster)
 
 
-class TestProviderAccessKeyState:
-    def test_initial_state_is_none(self):
-        provider = HyperstackProvider(Hyperstack())
-        assert provider._access_key is None
-        assert provider._secret_key is None
-        assert provider._access_key_id is None

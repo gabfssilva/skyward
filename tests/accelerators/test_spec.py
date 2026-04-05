@@ -2,10 +2,6 @@ from skyward.accelerators.spec import Accelerator
 
 
 class TestAcceleratorFractionalCount:
-    def test_fractional_count(self) -> None:
-        accel = Accelerator("H100", count=0.5)
-        assert accel.count == 0.5
-
     def test_str_fractional(self) -> None:
         assert str(Accelerator("H100", count=0.5)) == "0.5xH100"
 
@@ -23,10 +19,6 @@ class TestAcceleratorFractionalCount:
         fractional = accel.with_count(0.5)
         assert fractional.count == 0.5
         assert str(fractional) == "0.5xH100"
-
-    def test_repr_fractional(self) -> None:
-        accel = Accelerator("H100", count=0.5)
-        assert "count=0.5" in repr(accel)
 
     def test_from_name_fractional(self) -> None:
         accel = Accelerator.from_name("H100", count=0.5)

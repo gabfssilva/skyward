@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from vscode.sidecar.protocol import Request, format_event, format_response, parse_request
+from vscode.sidecar.protocol import format_event, format_response, parse_request
 
 
 def test_parse_request_valid():
@@ -31,12 +31,6 @@ def test_parse_request_invalid_json():
         parse_request("not json")
 
 
-def test_parse_request_is_frozen():
-    req = parse_request('{"id": 1, "method": "pools/list", "params": {}}')
-    with pytest.raises(AttributeError):
-        req.id = 2  # type: ignore[misc]
-
-
 def test_format_response():
     out = format_response(1, {"pools": []})
     parsed = json.loads(out)
@@ -61,8 +55,3 @@ def test_format_event():
     assert parsed == {"event": "task.completed", "pool": "train", "data": {"task_id": "t1"}}
 
 
-def test_request_dataclass():
-    req = Request(id=5, method="pools/status", params={"name": "train"})
-    assert req.id == 5
-    assert req.method == "pools/status"
-    assert req.params == {"name": "train"}

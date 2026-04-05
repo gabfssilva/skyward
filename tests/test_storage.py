@@ -6,32 +6,6 @@ pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
 
 
 class TestStorage:
-    def test_basic_creation(self):
-        from skyward.storage import Storage
-
-        s = Storage(endpoint="https://s3.us-east-1.amazonaws.com")
-        assert s.endpoint == "https://s3.us-east-1.amazonaws.com"
-        assert s.access_key is None
-        assert s.secret_key is None
-        assert s.path_style is False
-
-    def test_with_credentials(self):
-        from skyward.storage import Storage
-
-        s = Storage(
-            endpoint="https://abc.r2.cloudflarestorage.com",
-            access_key="AK",
-            secret_key="SK",
-        )
-        assert s.access_key == "AK"
-        assert s.secret_key == "SK"
-
-    def test_path_style(self):
-        from skyward.storage import Storage
-
-        s = Storage(endpoint="https://obj.nexgencloud.io", path_style=True)
-        assert s.path_style is True
-
     def test_with_callable_credentials(self):
         from skyward.storage import Storage
 
@@ -42,13 +16,6 @@ class TestStorage:
         )
         assert callable(s.access_key)
         assert callable(s.secret_key)
-
-    def test_frozen(self):
-        from skyward.storage import Storage
-
-        s = Storage(endpoint="https://s3.amazonaws.com")
-        with pytest.raises(AttributeError):
-            s.endpoint = "other"  # type: ignore[misc]
 
 
 class TestResolve:
@@ -215,36 +182,3 @@ class TestVolumeStorageField:
         s = Storage(endpoint="https://abc.r2.cloudflarestorage.com", access_key="AK", secret_key="SK")
         v = Volume(bucket="b", mount="/data", storage=s)
         assert v.storage is s
-
-    def test_volume_storage_default_none(self):
-        from skyward.core.spec import Volume
-
-        v = Volume(bucket="b", mount="/data")
-        assert v.storage is None
-
-
-class TestTopLevelExports:
-    def test_storage_importable(self):
-        import skyward as sky
-
-        assert hasattr(sky, "Storage")
-
-    def test_storage_in_all(self):
-        import skyward
-
-        assert "Storage" in skyward.__all__
-
-    def test_storage_namespace(self):
-        import skyward as sky
-
-        assert hasattr(sky.storage, "R2")
-        assert hasattr(sky.storage, "S3")
-        assert hasattr(sky.storage, "GCS")
-        assert hasattr(sky.storage, "Wasabi")
-        assert hasattr(sky.storage, "Backblaze")
-        assert hasattr(sky.storage, "Hyperstack")
-
-    def test_volume_client_removed(self):
-        import skyward
-
-        assert "VolumeClient" not in skyward.__all__

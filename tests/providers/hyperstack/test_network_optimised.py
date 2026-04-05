@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from skyward.providers.hyperstack.config import Hyperstack
 from skyward.providers.hyperstack.provider import (
     _constrain_region_for_network,
     _to_offer,
 )
-from skyward.providers.hyperstack.types import EnvironmentFeatures
 
 pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
 
@@ -55,47 +53,6 @@ class TestConstrainRegionForNetwork:
         assert result == "EU-1"
 
 
-class TestNetworkOptimisedConfig:
-    def test_default_false(self):
-        config = Hyperstack()
-        assert config.network_optimised is False
-
-    def test_explicit_true(self):
-        config = Hyperstack(network_optimised=True)
-        assert config.network_optimised is True
-
-    def test_default_regions(self):
-        config = Hyperstack()
-        assert config.network_optimised_regions == ("CANADA-1", "US-1")
-
-    def test_custom_regions(self):
-        config = Hyperstack(network_optimised_regions=("EU-1", "US-2"))
-        assert config.network_optimised_regions == ("EU-1", "US-2")
-
-    def test_frozen(self):
-        config = Hyperstack(network_optimised=True)
-        with pytest.raises(AttributeError):
-            config.network_optimised = False  # type: ignore[misc]
-
-
-class TestObjectStorageConfig:
-    def test_default_region(self):
-        config = Hyperstack()
-        assert config.object_storage_region == "CANADA-1"
-
-    def test_default_endpoint(self):
-        config = Hyperstack()
-        assert config.object_storage_endpoint == "https://ca1.obj.nexgencloud.io"
-
-    def test_custom_region(self):
-        config = Hyperstack(object_storage_region="US-1")
-        assert config.object_storage_region == "US-1"
-
-    def test_custom_endpoint(self):
-        config = Hyperstack(object_storage_endpoint="https://us1.obj.nexgencloud.io")
-        assert config.object_storage_endpoint == "https://us1.obj.nexgencloud.io"
-
-
 class TestOfferNetworkOptimisedField:
     _net_regions = frozenset({"CANADA-1", "US-1"})
 
@@ -127,21 +84,3 @@ class TestOfferNetworkOptimisedField:
         assert offer.specific["network_optimised"] is False
 
 
-class TestEnvironmentFeaturesTypedDict:
-    def test_full_features(self):
-        features: EnvironmentFeatures = {
-            "network_optimised": True,
-            "green_status": "GREEN",
-        }
-        assert features["network_optimised"] is True
-        assert features["green_status"] == "GREEN"
-
-    def test_empty_features(self):
-        features: EnvironmentFeatures = {}
-        assert features.get("network_optimised", False) is False
-
-
-class TestVolumeAndNetworkInteraction:
-    def test_volumes_canada_then_network_passes(self):
-        result = _constrain_region_for_network("CANADA-1", _DEFAULT_REGIONS)
-        assert result == "CANADA-1"

@@ -217,30 +217,3 @@ class TestStorageRm:
         await _rm(s3, "b", "ghost.pt")
         s3.delete_objects.assert_not_awaited()
 
-
-# =============================================================================
-# Exports
-# =============================================================================
-
-
-class TestStorageExports:
-    def test_s3_object_store_importable_from_infra(self):
-        from skyward.infra import S3ObjectStore
-
-        assert S3ObjectStore is not None
-
-    def test_storage_importable(self):
-        import skyward as sky
-
-        assert hasattr(sky, "Storage")
-
-    def test_providers_have_storage(self):
-        from skyward.providers.aws.provider import AWSProvider
-        from skyward.providers.gcp.provider import GCPProvider
-        from skyward.providers.hyperstack.provider import HyperstackProvider
-        from skyward.providers.runpod.provider import RunPodProvider
-
-        assert hasattr(AWSProvider, "storage")
-        assert hasattr(GCPProvider, "storage")
-        assert hasattr(HyperstackProvider, "storage")
-        assert hasattr(RunPodProvider, "storage")

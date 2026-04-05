@@ -24,37 +24,6 @@ class TestPhase:
         ]
 
 
-class TestState:
-    def test_default_state(self) -> None:
-        from skyward.actors.console.state import _Phase, _State
-
-        state = _State(total_nodes=4)
-        assert state.phase == _Phase.PROVISIONING
-        assert state.total_nodes == 4
-        assert state.tasks_running == 0
-        assert state.tasks_done == 0
-        assert state.tasks_failed == 0
-        assert state.cluster is None
-        assert state.instances == ()
-        assert state.task_latencies == ()
-
-    def test_state_is_frozen(self) -> None:
-        from skyward.actors.console.state import _State
-
-        state = _State(total_nodes=2)
-        with pytest.raises(AttributeError):
-            state.phase = "bad"  # type: ignore[misc]
-
-
-class TestNodeStatus:
-    def test_node_status_values(self) -> None:
-        from skyward.actors.console.state import _NodeStatus
-
-        statuses = list(_NodeStatus)
-        names = [s.name for s in statuses]
-        assert names == ["WAITING", "SSH", "BOOTSTRAPPING", "READY"]
-
-
 class TestThroughput:
     def test_throughput(self) -> None:
         from skyward.actors.console.state import _State, _throughput

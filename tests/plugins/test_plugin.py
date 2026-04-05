@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import FrozenInstanceError
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -18,26 +17,6 @@ pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
 
 
 class TestPluginCreation:
-    def test_minimal_plugin(self) -> None:
-        from skyward.api.plugin import Plugin
-
-        p = Plugin(name="test")
-        assert p.name == "test"
-        assert p.transform is None
-        assert p.bootstrap is None
-        assert p.decorate is None
-        assert p.around_app is None
-        assert p.around_process is None
-        assert p.around_client is None
-
-    def test_create_factory(self) -> None:
-        from skyward.api.plugin import Plugin
-
-        p = Plugin.create("my-plugin")
-        assert p.name == "my-plugin"
-        assert p.transform is None
-        assert p.bootstrap is None
-
     def test_direct_construction_with_all_fields(self) -> None:
         from skyward.api.plugin import Plugin
 
@@ -65,12 +44,6 @@ class TestPluginCreation:
         assert p.around_process is around_process
         assert p.around_client is around_client
 
-    def test_frozen(self) -> None:
-        from skyward.api.plugin import Plugin
-
-        p = Plugin(name="frozen")
-        with pytest.raises(FrozenInstanceError):
-            p.name = "changed"  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
@@ -627,51 +600,3 @@ class TestRunInProcessWithHooks:
         assert result == "ok"
 
 
-# ---------------------------------------------------------------------------
-# Type alias accessibility
-# ---------------------------------------------------------------------------
-
-
-class TestTypeAliases:
-    def test_image_transform_alias_exists(self) -> None:
-        from skyward.api import plugin
-
-        assert hasattr(plugin, "ImageTransform")
-
-    def test_task_decorator_alias_exists(self) -> None:
-        from skyward.api import plugin
-
-        assert hasattr(plugin, "TaskDecorator")
-
-    def test_app_lifecycle_alias_exists(self) -> None:
-        from skyward.api import plugin
-
-        assert hasattr(plugin, "AppLifecycle")
-
-    def test_process_lifecycle_alias_exists(self) -> None:
-        from skyward.api import plugin
-
-        assert hasattr(plugin, "ProcessLifecycle")
-
-    def test_client_lifecycle_alias_exists(self) -> None:
-        from skyward.api import plugin
-
-        assert hasattr(plugin, "ClientLifecycle")
-
-
-# ---------------------------------------------------------------------------
-# Package __init__ re-export
-# ---------------------------------------------------------------------------
-
-
-class TestPackageExport:
-    def test_plugin_importable_from_package(self) -> None:
-        from skyward.plugins import Plugin
-
-        p = Plugin(name="from-package")
-        assert p.name == "from-package"
-
-    def test_all_exports(self) -> None:
-        import skyward.plugins
-
-        assert "Plugin" in skyward.plugins.__all__

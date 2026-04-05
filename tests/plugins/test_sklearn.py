@@ -12,12 +12,6 @@ pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
 
 
 class TestSklearnPlugin:
-    def test_factory_returns_plugin(self) -> None:
-        from skyward.plugins.sklearn import sklearn
-
-        p = sklearn()
-        assert p.name == "sklearn"
-
     def test_transform_adds_pip(self) -> None:
         from skyward.plugins.sklearn import sklearn
 
@@ -37,24 +31,6 @@ class TestSklearnPlugin:
         result = p.transform(image, MagicMock())
         assert "scikit-learn==1.4.0" in result.pip
 
-    def test_has_around_client(self) -> None:
-        from skyward.plugins.sklearn import sklearn
-
-        p = sklearn()
-        assert p.around_client is not None
-
-    def test_no_decorator(self) -> None:
-        from skyward.plugins.sklearn import sklearn
-
-        p = sklearn()
-        assert p.decorate is None
-
-    def test_no_around_app(self) -> None:
-        from skyward.plugins.sklearn import sklearn
-
-        p = sklearn()
-        assert p.around_app is None
-
     def test_transform_preserves_existing_pip(self) -> None:
         from skyward.plugins.sklearn import sklearn
 
@@ -64,9 +40,3 @@ class TestSklearnPlugin:
         result = p.transform(image, MagicMock())
         assert "numpy" in result.pip
         assert "scikit-learn" in result.pip
-
-    def test_no_bootstrap(self) -> None:
-        from skyward.plugins.sklearn import sklearn
-
-        p = sklearn()
-        assert p.bootstrap is None

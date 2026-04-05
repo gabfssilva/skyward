@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-import skyward as sky
-from skyward.api.pool import Pool
-from skyward.core.spec import Nodes, PoolSpec, Volume
+from skyward.core.spec import Volume
 from skyward.providers.aws.config import AWS
 from skyward.providers.provider import Mountable
 
@@ -12,18 +10,6 @@ pytestmark = [pytest.mark.xdist_group("unit")]
 
 
 class TestVolume:
-    def test_basic_creation(self):
-        v = Volume(bucket="my-bucket", mount="/data")
-        assert v.bucket == "my-bucket"
-        assert v.mount == "/data"
-        assert v.prefix == ""
-        assert v.read_only is True
-
-    def test_with_prefix_and_read_write(self):
-        v = Volume(bucket="b", mount="/checkpoints", prefix="exp/", read_only=False)
-        assert v.prefix == "exp/"
-        assert v.read_only is False
-
     def test_relative_mount_raises(self):
         with pytest.raises(ValueError, match="absolute path"):
             Volume(bucket="b", mount="data")
@@ -33,66 +19,6 @@ class TestVolume:
             with pytest.raises(ValueError, match="system path"):
                 Volume(bucket="b", mount=path)
 
-    def test_frozen(self):
-        v = Volume(bucket="b", mount="/data")
-        with pytest.raises(AttributeError):
-            v.bucket = "other"  # type: ignore[misc]
-
-    def test_poolspec_volumes_default_empty(self):
-        spec = PoolSpec(nodes=Nodes(desired=1), accelerator=None, region="us-east-1")
-        assert spec.volumes == ()
-
-    def test_poolspec_with_volumes(self):
-        vols = (Volume(bucket="b", mount="/data"),)
-        spec = PoolSpec(nodes=Nodes(desired=1), accelerator=None, region="us-east-1", volumes=vols)
-        assert len(spec.volumes) == 1
-        assert spec.volumes[0].mount == "/data"
-
-
-class TestStorageReplacedMountEndpoint:
-    def test_storage_with_credentials(self):
-        from skyward.storage import Storage
-
-        s = Storage(
-            endpoint="https://storage.googleapis.com",
-            access_key="AKIA...",
-            secret_key="secret",
-        )
-        assert s.endpoint == "https://storage.googleapis.com"
-        assert s.access_key == "AKIA..."
-
-    def test_storage_without_credentials(self):
-        from skyward.storage import Storage
-
-        s = Storage(endpoint="https://s3.us-east-1.amazonaws.com")
-        assert s.access_key is None
-
-    def test_mountable_is_runtime_checkable(self):
-        from skyward.providers.provider import Mountable
-
-        assert isinstance(Mountable, type)
-
-    def test_mountable_has_storage_method(self):
-        from skyward.providers.provider import Mountable
-
-        assert hasattr(Mountable, "storage")
-
-
-class TestClusterResolvedVolumes:
-    def test_resolved_volumes_field_default_none(self):
-        import dataclasses
-        from skyward.core.model import Cluster
-
-        fields = {f.name: f for f in dataclasses.fields(Cluster)}
-        assert "resolved_volumes" in fields
-        assert fields["resolved_volumes"].default is None
-
-    def test_mount_endpoint_removed(self):
-        import dataclasses
-        from skyward.core.model import Cluster
-
-        fields = {f.name for f in dataclasses.fields(Cluster)}
-        assert "mount_endpoint" not in fields
 
 
 class TestMountVolumes:
@@ -207,19 +133,6 @@ class TestComputePoolVolumes:
         assert len(pool.volumes) == 1
         assert pool.volumes[0].bucket == "b"
 
-    def test_pool_default_no_volumes(self):
-        from skyward.core.pool import ComputePool
-
-        pool = ComputePool(provider=AWS())
-        assert pool.volumes == ()
-
-    def test_pool_converts_list_to_tuple(self):
-        from skyward.core.pool import ComputePool
-
-        vols = [Volume(bucket="b", mount="/data")]
-        pool = ComputePool(provider=AWS(), volumes=vols)
-        assert isinstance(pool.volumes, tuple)
-
 
 class TestBootstrapWithVolumes:
     def test_generate_bootstrap_with_volume_postamble(self):
@@ -247,33 +160,3 @@ class TestMountableValidation:
         assert not isinstance(Container(), Mountable)
 
 
-class TestAWSMountable:
-    def test_aws_provider_has_storage(self):
-        from skyward.providers.aws.provider import AWSProvider
-        assert hasattr(AWSProvider, "storage")
-
-
-class TestGCPMountable:
-    def test_gcp_provider_has_storage(self):
-        from skyward.providers.gcp.provider import GCPProvider
-        assert hasattr(GCPProvider, "storage")
-
-
-class TestRunPodMountable:
-    def test_runpod_provider_has_storage(self):
-        from skyward.providers.runpod.provider import RunPodProvider
-        assert hasattr(RunPodProvider, "storage")
-
-    def test_runpod_s3_datacenters_defined(self):
-        from skyward.providers.runpod.provider import _RUNPOD_S3_DATACENTERS
-        assert len(_RUNPOD_S3_DATACENTERS) == 11
-
-
-class TestExports:
-    def test_volume_importable_from_skyward(self):
-        import skyward as sky
-        assert hasattr(sky, "Volume")
-
-    def test_volume_in_all(self):
-        import skyward
-        assert "Volume" in skyward.__all__

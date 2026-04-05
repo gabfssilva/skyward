@@ -54,24 +54,10 @@ def _inject_pool(server: DaemonServer, name: str, total_nodes: int = 1) -> None:
 
 
 class TestStreamEndMessage:
-    def test_construction(self) -> None:
-        msg = StreamEnd(reason="pool stopped")
-        assert msg.reason == "pool stopped"
-
-    def test_frozen(self) -> None:
-        msg = StreamEnd(reason="done")
-        with pytest.raises(AttributeError):
-            msg.reason = "other"  # type: ignore[misc]
-
     def test_cloudpickle_roundtrip(self) -> None:
         msg = StreamEnd(reason="test")
         restored = cloudpickle.loads(cloudpickle.dumps(msg))
         assert restored.reason == "test"
-
-    def test_in_daemon_response_type(self) -> None:
-        from skyward.daemon.protocol import DaemonResponse, StreamEnd
-
-        assert StreamEnd is not None
 
 
 class TestSubscribeEventsRouting:

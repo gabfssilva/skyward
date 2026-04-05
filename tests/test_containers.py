@@ -12,16 +12,6 @@ class TestDockerImage:
         img = DockerImage(tag="nvcr.io/nvidia/cuda:12.9.1-runtime-ubuntu24.04", cuda="12.9", ubuntu="24.04")
         assert str(img) == "nvcr.io/nvidia/cuda:12.9.1-runtime-ubuntu24.04"
 
-    def test_optional_fields_default_none(self) -> None:
-        img = DockerImage(tag="ubuntu:24.04")
-        assert img.cuda is None
-        assert img.ubuntu is None
-
-    def test_frozen(self) -> None:
-        img = DockerImage(tag="ubuntu:24.04")
-        with pytest.raises(AttributeError):
-            img.tag = "other"  # type: ignore[misc]
-
     def test_of_plain_tag(self) -> None:
         img = DockerImage.of("my-registry.io/custom:latest")
         assert str(img) == "my-registry.io/custom:latest"

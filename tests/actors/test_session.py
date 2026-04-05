@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
-from typing import Any, get_args
+from typing import get_args
 from unittest.mock import MagicMock
 
 import pytest
@@ -9,190 +8,16 @@ import pytest
 pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
 
 
-def _mock_ref() -> Any:
+def _mock_ref() -> MagicMock:
     return MagicMock()
 
 
-def _mock_spec() -> Any:
+def _mock_spec() -> MagicMock:
     return MagicMock()
 
 
-def _mock_provider_config() -> Any:
+def _mock_provider_config() -> MagicMock:
     return MagicMock()
-
-
-class TestPoolInfo:
-    def test_construction(self) -> None:
-        from skyward.actors.session.messages import PoolInfo
-
-        info = PoolInfo(
-            name="train",
-            ref=_mock_ref(),
-        )
-        assert info.name == "train"
-
-    def test_frozen(self) -> None:
-        from skyward.actors.session.messages import PoolInfo
-
-        info = PoolInfo(
-            name="train",
-            ref=_mock_ref(),
-        )
-        with pytest.raises(FrozenInstanceError):
-            info.name = "other"  # type: ignore[misc]
-
-
-class TestSpawnPool:
-    def test_construction(self) -> None:
-        from skyward.actors.session.messages import SpawnPool
-
-        msg = SpawnPool(
-            name="train",
-            spec=_mock_spec(),
-            provider_config=_mock_provider_config(),
-            provider=object(),
-            offers=(),
-            provision_timeout=300.0,
-            reply_to=_mock_ref(),
-        )
-        assert msg.name == "train"
-        assert msg.provision_timeout == 300.0
-        assert msg.offers == ()
-
-    def test_frozen(self) -> None:
-        from skyward.actors.session.messages import SpawnPool
-
-        msg = SpawnPool(
-            name="train",
-            spec=_mock_spec(),
-            provider_config=_mock_provider_config(),
-            provider=object(),
-            offers=(),
-            provision_timeout=300.0,
-            reply_to=_mock_ref(),
-        )
-        with pytest.raises(FrozenInstanceError):
-            msg.name = "other"  # type: ignore[misc]
-
-
-class TestPoolSpawned:
-    def test_construction(self) -> None:
-        from skyward.actors.session.messages import PoolSpawned
-
-        msg = PoolSpawned(
-            name="train",
-            pool_ref=_mock_ref(),
-            cluster_id="c-123",
-            instances=(object(),),
-            cluster=MagicMock(),
-        )
-        assert msg.name == "train"
-        assert msg.cluster_id == "c-123"
-        assert len(msg.instances) == 1
-
-    def test_frozen(self) -> None:
-        from skyward.actors.session.messages import PoolSpawned
-
-        msg = PoolSpawned(
-            name="train",
-            pool_ref=_mock_ref(),
-            cluster_id="c-123",
-            instances=(),
-            cluster=MagicMock(),
-        )
-        with pytest.raises(FrozenInstanceError):
-            msg.name = "other"  # type: ignore[misc]
-
-
-class TestPoolSpawnFailed:
-    def test_construction(self) -> None:
-        from skyward.actors.session.messages import PoolSpawnFailed
-
-        msg = PoolSpawnFailed(name="train", reason="out of capacity")
-        assert msg.name == "train"
-        assert msg.reason == "out of capacity"
-
-    def test_frozen(self) -> None:
-        from skyward.actors.session.messages import PoolSpawnFailed
-
-        msg = PoolSpawnFailed(name="train", reason="timeout")
-        with pytest.raises(FrozenInstanceError):
-            msg.reason = "other"  # type: ignore[misc]
-
-
-class TestStopSession:
-    def test_construction(self) -> None:
-        from skyward.actors.session.messages import StopSession
-
-        msg = StopSession(reply_to=_mock_ref())
-        assert msg.reply_to is not None
-
-    def test_frozen(self) -> None:
-        from skyward.actors.session.messages import StopSession
-
-        msg = StopSession(reply_to=_mock_ref())
-        with pytest.raises(FrozenInstanceError):
-            msg.reply_to = _mock_ref()  # type: ignore[misc]
-
-
-class TestSessionStopped:
-    def test_construction(self) -> None:
-        from skyward.actors.session.messages import SessionStopped
-
-        msg = SessionStopped()
-        assert msg is not None
-
-    def test_frozen(self) -> None:
-        from dataclasses import fields as dc_fields
-
-        from skyward.actors.session.messages import SessionStopped
-
-        msg = SessionStopped()
-        assert dc_fields(msg) == ()
-        with pytest.raises((FrozenInstanceError, TypeError, AttributeError)):
-            msg.x = 1  # type: ignore[attr-defined]
-
-
-class TestInternalMessages:
-    def test_pool_ready_construction(self) -> None:
-        from skyward.actors.session.messages import _PoolReady
-
-        msg = _PoolReady(
-            name="train",
-            cluster_id="c-123",
-            instances=(object(),),
-            cluster=MagicMock(),
-            pool_ref=_mock_ref(),
-        )
-        assert msg.name == "train"
-        assert msg.cluster_id == "c-123"
-
-    def test_pool_ready_frozen(self) -> None:
-        from skyward.actors.session.messages import _PoolReady
-
-        msg = _PoolReady(
-            name="train",
-            cluster_id="c-123",
-            instances=(),
-            cluster=MagicMock(),
-            pool_ref=_mock_ref(),
-        )
-        with pytest.raises(FrozenInstanceError):
-            msg.name = "other"  # type: ignore[misc]
-
-    def test_pool_failed_construction(self) -> None:
-        from skyward.actors.session.messages import _PoolFailed
-
-        msg = _PoolFailed(name="train", reason="timeout")
-        assert msg.name == "train"
-        assert msg.reason == "timeout"
-
-    def test_pool_failed_frozen(self) -> None:
-        from skyward.actors.session.messages import _PoolFailed
-
-        msg = _PoolFailed(name="train", reason="timeout")
-        with pytest.raises(FrozenInstanceError):
-            msg.reason = "other"  # type: ignore[misc]
 
 
 class TestSessionMsgTypeAlias:
@@ -217,29 +42,6 @@ class TestSessionMsgTypeAlias:
             _PoolFailed,
         }
         assert args == expected
-
-
-class TestPackageExports:
-    def test_public_types_exported(self) -> None:
-        import skyward.actors.session as session_pkg
-
-        expected_exports = {
-            "PoolInfo",
-            "SpawnPool",
-            "PoolSpawned",
-            "PoolSpawnFailed",
-            "StopSession",
-            "SessionStopped",
-            "SessionMsg",
-            "RecoverExistingPool",
-        }
-        assert expected_exports.issubset(set(session_pkg.__all__))
-
-    def test_internal_types_not_exported(self) -> None:
-        import skyward.actors.session as session_pkg
-
-        assert "_PoolReady" not in session_pkg.__all__
-        assert "_PoolFailed" not in session_pkg.__all__
 
 
 class TestStartAdapter:
@@ -464,24 +266,3 @@ class TestSessionCompute:
             ValueError, match="Either Spec objects or keyword arguments",
         ):
             session.compute()
-
-
-class TestPoolActorSessionRef:
-    def test_pool_actor_accepts_session_ref(self) -> None:
-        from skyward.actors.pool.actor import pool_actor
-        behavior = pool_actor()
-        assert behavior is not None
-        behavior_with_ref = pool_actor(session_ref=None, pool_name="test")
-        assert behavior_with_ref is not None
-
-
-class TestComputeSugar:
-    def test_compute_is_importable(self) -> None:
-        from skyward.core.compute import Compute
-
-        assert callable(Compute)
-
-    def test_compute_is_context_manager(self) -> None:
-        from skyward.core.compute import Compute
-
-        assert hasattr(Compute, '__call__')

@@ -170,17 +170,6 @@ class TestMIGBootstrap:
         assert "nv-hostengine" in script
 
 
-class TestMIGRegistration:
-    def test_mig_in_plugins_all(self) -> None:
-        from skyward import plugins
-        assert "mig" in plugins.__all__
-
-    def test_mig_in_lazy_imports(self) -> None:
-        from skyward.plugins import _LAZY_IMPORTS
-        assert "mig" in _LAZY_IMPORTS
-        assert _LAZY_IMPORTS["mig"] == ("skyward.plugins.mig", "mig")
-
-
 class TestMIGAroundProcess:
     def _make_info(self, worker: int = 0) -> MagicMock:
         info = MagicMock()

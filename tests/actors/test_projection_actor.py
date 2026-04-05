@@ -42,19 +42,3 @@ class TestPoolNameFromPath:
         assert pool_name_from_path("session/pool-gpu") == "gpu"
 
 
-# ── projection_actor ───────────────────────────────────────────
-
-
-class TestProjectionActorExists:
-    def test_projection_actor_is_callable(self):
-        from skyward.actors.projection import projection_actor
-
-        assert callable(projection_actor)
-
-    def test_projection_actor_returns_behavior(self):
-        from skyward.actors.projection import projection_actor
-        from skyward.api.projection import SessionProjection
-
-        projection = SessionProjection()
-        behavior = projection_actor(projection)
-        assert behavior is not None

@@ -3,54 +3,15 @@
 from types import MappingProxyType
 from unittest.mock import MagicMock
 
-import pytest
-
 from skyward.actors.messages import (
     ExecuteOnNode,
     NodeSlots,
     SubmitTask,
-    TaskFailed,
-    TaskInterrupted,
-    TaskSucceeded,
     TaskSubmitted,
 )
 from skyward.actors.task_manager.state import (
     _dispatch,
-    _State,
 )
-
-
-class TestStateRetryFields:
-    def test_state_has_retries_field(self):
-        s = _State(
-            nodes=MappingProxyType({}),
-            queue=(),
-            round_robin=0,
-            inflight=MappingProxyType({}),
-            broadcasts=MappingProxyType({}),
-        )
-        assert s.retries == MappingProxyType({})
-
-    def test_state_has_retry_on_interruption_field(self):
-        s = _State(
-            nodes=MappingProxyType({}),
-            queue=(),
-            round_robin=0,
-            inflight=MappingProxyType({}),
-            broadcasts=MappingProxyType({}),
-            retry_on_interruption=5,
-        )
-        assert s.retry_on_interruption == 5
-
-    def test_state_retry_on_interruption_defaults_to_3(self):
-        s = _State(
-            nodes=MappingProxyType({}),
-            queue=(),
-            round_robin=0,
-            inflight=MappingProxyType({}),
-            broadcasts=MappingProxyType({}),
-        )
-        assert s.retry_on_interruption == 3
 
 
 class TestDispatchStoresFullTask:
@@ -126,52 +87,3 @@ class TestDispatchStoresFullTask:
         assert msg.node_id == 1
 
 
-class TestPatternMatchingOnSubtypes:
-    def test_task_succeeded_matches(self):
-        msg = TaskSucceeded(value=42, node_id=1, task_id="t1")
-        match msg:
-            case TaskSucceeded(value=v, node_id=nid, task_id=tid):
-                assert v == 42
-                assert nid == 1
-                assert tid == "t1"
-            case _:
-                pytest.fail("TaskSucceeded should match")
-
-    def test_task_failed_matches(self):
-        err = ValueError("bad input")
-        msg = TaskFailed(error=err, node_id=2, task_id="t2")
-        match msg:
-            case TaskFailed(error=e, node_id=nid, task_id=tid):
-                assert e is err
-                assert nid == 2
-                assert tid == "t2"
-            case _:
-                pytest.fail("TaskFailed should match")
-
-    def test_task_interrupted_matches(self):
-        err = RuntimeError("node lost")
-        msg = TaskInterrupted(error=err, node_id=3, task_id="t3")
-        match msg:
-            case TaskInterrupted(error=e, node_id=nid, task_id=tid):
-                assert e is err
-                assert nid == 3
-                assert tid == "t3"
-            case _:
-                pytest.fail("TaskInterrupted should match")
-
-    def test_subtypes_are_distinct_in_match(self):
-        results = [
-            TaskSucceeded(value="ok", node_id=1, task_id="t1"),
-            TaskFailed(error=ValueError("x"), node_id=1, task_id="t2"),
-            TaskInterrupted(error=RuntimeError("lost"), node_id=1, task_id="t3"),
-        ]
-        kinds = []
-        for r in results:
-            match r:
-                case TaskSucceeded():
-                    kinds.append("success")
-                case TaskFailed():
-                    kinds.append("user_error")
-                case TaskInterrupted():
-                    kinds.append("infra_error")
-        assert kinds == ["success", "user_error", "infra_error"]

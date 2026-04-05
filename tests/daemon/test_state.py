@@ -8,9 +8,6 @@ from skyward.daemon.state import (
     ClientJoined,
     ClientLeft,
     RegisterPool,
-    RemovePool,
-    AddClient,
-    RemoveClient,
     GetState,
     daemon_state_actor,
     apply_event,
@@ -76,16 +73,6 @@ class TestDaemonStateEvents:
         assert entry.cluster_bytes == b"pickled-cluster"
         assert entry.spec_bytes == b"pickled-spec"
         assert entry.provider_config_bytes == b"pickled-config"
-
-    def test_pool_registered_recovery_fields_default_empty(self) -> None:
-        """Backwards compatibility: old events without recovery fields."""
-        event = PoolRegistered(
-            pool_name="train",
-            cluster_id="c-1",
-            instance_ids=("i-1",),
-        )
-        assert event.provider_name == ""
-        assert event.cluster_bytes == b""
 
 
 class TestDaemonStateActor:

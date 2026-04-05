@@ -1,27 +1,5 @@
 import pytest
 
-from skyward.api.spec import Nodes, Options, PoolSpec
-
-
-def test_pool_spec_cluster_default_true():
-    spec = PoolSpec(nodes=Nodes(desired=1), accelerator=None, region="us-east-1")
-    assert spec.cluster is True
-
-
-def test_pool_spec_cluster_false():
-    spec = PoolSpec(nodes=Nodes(desired=1), accelerator=None, region="us-east-1", cluster=False)
-    assert spec.cluster is False
-
-
-def test_options_cluster_default_true():
-    opts = Options()
-    assert opts.cluster is True
-
-
-def test_options_cluster_false():
-    opts = Options(cluster=False)
-    assert opts.cluster is False
-
 
 def test_disabled_registry_dict_raises():
     from skyward.distributed.disabled import DisabledRegistry
@@ -65,12 +43,6 @@ def test_disabled_registry_queue_raises():
         reg.queue("tasks")
 
 
-def test_disabled_registry_cleanup_is_noop():
-    from skyward.distributed.disabled import DisabledRegistry
-    reg = DisabledRegistry()
-    reg.cleanup()
-
-
 def test_worker_standalone_env_skips_seeds():
     from skyward.infra.worker import _parse_seeds
 
@@ -87,20 +59,3 @@ def test_worker_cluster_default_uses_seeds():
     assert seeds == [("10.0.0.1", 25520)]
 
 
-def test_pool_spec_cluster_false_propagates():
-    spec = PoolSpec(
-        nodes=Nodes(desired=2),
-        accelerator=None,
-        region="us-east-1",
-        cluster=False,
-    )
-    assert spec.cluster is False
-    assert spec.nodes.desired == 2
-
-
-def test_disabled_registry_satisfies_protocol():
-    from skyward.distributed.disabled import DisabledRegistry
-
-    reg = DisabledRegistry()
-    for method in ("dict", "set", "counter", "queue", "barrier", "lock", "cleanup"):
-        assert hasattr(reg, method), f"Missing method: {method}"

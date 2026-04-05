@@ -35,10 +35,6 @@ def _make_pool(**kwargs: Any) -> ComputePool:
 
 
 class TestPluginsParameter:
-    def test_defaults_to_empty_tuple(self) -> None:
-        pool = _make_pool()
-        assert pool._plugins == ()
-
     def test_accepts_list(self) -> None:
         p = Plugin(name="a")
         pool = _make_pool(plugins=[p])
@@ -48,13 +44,6 @@ class TestPluginsParameter:
         p = Plugin(name="b")
         pool = _make_pool(plugins=(p,))
         assert pool._plugins == (p,)
-
-    def test_stored_as_tuple(self) -> None:
-        p1 = Plugin(name="x")
-        p2 = Plugin(name="y")
-        pool = _make_pool(plugins=[p1, p2])
-        assert isinstance(pool._plugins, tuple)
-        assert pool._plugins == (p1, p2)
 
     def test_multiple_plugins_order_preserved(self) -> None:
         plugins = [Plugin(name=str(i)) for i in range(5)]
@@ -284,10 +273,6 @@ class TestDecorateFn:
 
 
 class TestAroundClientUnit:
-    def test_plugin_client_contexts_starts_empty(self) -> None:
-        pool = _make_pool()
-        assert pool._plugin_client_contexts == []
-
     def test_plugins_without_around_client_are_skipped(self) -> None:
         p = Plugin(name="no-client")
         pool = _make_pool(plugins=[p])

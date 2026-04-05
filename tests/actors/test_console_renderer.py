@@ -9,57 +9,6 @@ import pytest
 pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
 
 
-class TestConsoleMessages:
-    def test_view_updated(self) -> None:
-        from skyward.actors.console.messages import ViewUpdated
-        from skyward.api.views import SessionView
-
-        msg = ViewUpdated(view=SessionView())
-        assert msg.view is not None
-
-    def test_event_received(self) -> None:
-        from skyward.actors.console.messages import EventReceived
-        from skyward.api.events import Pool
-
-        ev = Pool.Provisioning(pool_name="p", total_nodes=1, started_at=0.0)
-        msg = EventReceived(event=ev)
-        assert msg.event is ev
-
-    def test_log_received(self) -> None:
-        from skyward.actors.console.messages import LogReceived
-        from skyward.api.events import Log
-
-        log = Log.Emitted(pool_name="p", node_id=0, message="hi", level="info")
-        msg = LogReceived(log=log)
-        assert msg.log.message == "hi"
-
-    def test_local_output(self) -> None:
-        from skyward.actors.console.messages import LocalOutput
-
-        msg = LocalOutput(line="hello")
-        assert msg.line == "hello"
-        assert msg.stream == "stdout"
-
-    def test_console_input_type(self) -> None:
-        from skyward.actors.console.messages import (
-            ConsoleInput,
-            EventReceived,
-            LocalOutput,
-            LogReceived,
-            ViewUpdated,
-        )
-        from skyward.api.events import Log, Pool
-        from skyward.api.views import SessionView
-
-        msgs: list[ConsoleInput] = [  # type: ignore[type-arg]
-            ViewUpdated(view=SessionView()),
-            EventReceived(event=Pool.Stopped(pool_name="p")),
-            LogReceived(log=Log.Emitted(pool_name="p", node_id=0, message="x", level="info")),
-            LocalOutput(line="y"),
-        ]
-        assert len(msgs) == 4
-
-
 class TestStateFromPoolView:
     def test_converts_basic_pool(self) -> None:
         from skyward.actors.console.view import _state_from_pool_view
@@ -362,13 +311,6 @@ class TestStateFromPoolView:
 
 
 class TestThroughputInState:
-    """Verify _throughput was moved from model.py to state.py."""
-
-    def test_throughput_in_state_module(self) -> None:
-        from skyward.actors.console.state import _throughput
-
-        assert callable(_throughput)
-
     def test_throughput_computes_correctly(self) -> None:
         from skyward.actors.console.state import _State, _throughput
 

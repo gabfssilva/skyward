@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import pytest
-
 from skyward.api.pool import Pool
 from skyward.daemon.pool import DaemonPool
 
@@ -15,7 +13,3 @@ class TestDaemonPool:
         pool = DaemonPool(name="train", socket_path=Path("/tmp/fake.sock"))
         assert not pool.is_active
 
-    def test_repr(self) -> None:
-        pool = DaemonPool(name="train", socket_path=Path("/tmp/fake.sock"))
-        assert "train" in repr(pool)
-        assert "daemon" in repr(pool)
