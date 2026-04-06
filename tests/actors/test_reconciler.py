@@ -131,3 +131,12 @@ class TestReconcilerState:
         )
         assert not new_s.draining  # drain complete
         assert len(new_s.current) == 1
+
+    def test_node_lost_retains_instance_map_entry(self) -> None:
+        s = _make_state(
+            desired=3,
+            current=frozenset({0, 1, 2}),
+            instance_map={0: "i-0", 1: "i-1", 2: "i-2"},
+        )
+        new_s = replace(s, current=s.current - {2})
+        assert "i-2" in new_s.instance_map.values()

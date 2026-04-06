@@ -3,7 +3,9 @@
 Tells this story:
   idle → polling → connecting → bootstrapping → post_bootstrap
        → starting_worker → ready → active
-       → replacing → polling → … (loop back, if connection permanently fails)
+
+On failure the node sends NodeExhausted and stops; the reconciler
+handles termination and replacement provisioning.
 
 The transport actor (child) fully encapsulates SSH connection, port
 forwarding, event streaming, and auto-reconnection. The node actor
@@ -28,10 +30,8 @@ from skyward.actors.messages import (
     HeadAddressKnown,
     NodeActivated,
     NodeBecameReady,
-    NodeBecameUnready,
     NodeConnected,
     NodeExhausted,
-    NodeLost,
     Preempted,
     Provision,
     TaskFailed,
@@ -67,7 +67,6 @@ from .helpers import (
     run_bootstrap,
     setup_worker_env,
     sync_user_code,
-    terminate_and_replace,
 )
 from .messages import (
     JoinCluster,
@@ -82,8 +81,6 @@ from .messages import (
     _PollResult,
     _PostBootstrapFailed,
     _RemoteTaskDone,
-    _ReplaceFailed,
-    _ReplaceRetry,
     _SnapshotFailed,
     _SnapshotSaved,
     _UserCodeSyncDone,
@@ -116,10 +113,10 @@ def node_actor(
         if ref:
             ref.tell(StopTransport())
 
-    def _fail_and_replace(ctx: ActorContext[NodeMsg], s: NodeState, reason: str) -> Behavior[NodeMsg]:
+    def _fail_and_stop(s: NodeState, reason: str) -> Behavior[NodeMsg]:
         _stop_transport(s.transport_ref)
-        pool.tell(NodeLost(node_id=node_id, reason=reason))
-        return _start_replacing(ctx, s)
+        pool.tell(NodeExhausted(node_id=node_id, reason=reason))
+        return Behaviors.stopped()
 
     def _enqueue(s: NodeState, ex: ExecuteOnNode) -> NodeState:
         pt = PendingTask(ex.fn, ex.args, ex.kwargs, ex.reply_to, ex.task_id, ex.timeout)
@@ -137,9 +134,9 @@ def node_actor(
             case ExecuteOnNode() as ex:
                 return reenter(_enqueue(s, ex))
             case Preempted(reason=reason):
-                return _fail_and_replace(ctx, s, reason)
+                return _fail_and_stop(s, reason)
             case Terminated():
-                return _fail_and_replace(ctx, s, "child stopped")
+                return _fail_and_stop(s, "child stopped")
             case _SnapshotSaved():
                 log.info("Snapshot saved")
             case _SnapshotFailed(error=error):
@@ -203,29 +200,16 @@ def node_actor(
                 ):
                     c = updated or s.cluster
                     log.warning(
-                        "Instance {iid} exited, terminating and replacing",
+                        "Instance {iid} exited",
                         iid=instance_id,
                     )
-                    pool.tell(NodeLost(
-                        node_id=node_id,
-                        reason=f"Instance {instance_id} exited",
-                    ))
-                    ctx.pipe_to_self(
-                        terminate_and_replace(s.provider, c, instance_id),
-                        mapper=lambda new_inst: Provision(
-                            cluster=c, provider=s.provider, instance=new_inst,
-                        ),
-                    )
-                    return replacing(replace(s, cluster=c))
+                    return _fail_and_stop(replace(s, cluster=c), f"Instance {instance_id} exited")
                 case _PollResult(cluster=updated):
                     c = updated or s.cluster
                     elapsed = asyncio.get_event_loop().time() - start_time
                     if elapsed > poll_timeout:
                         log.error("Instance not ready within {t}s", t=poll_timeout)
-                        pool.tell(
-                            NodeLost(node_id=node_id, reason=f"Instance not ready within {poll_timeout}s")
-                        )
-                        return _start_replacing(ctx, replace(s, cluster=c))
+                        return _fail_and_stop(replace(s, cluster=c), f"Instance not ready within {poll_timeout}s")
 
                     ns = replace(s, cluster=c)
 
@@ -239,15 +223,7 @@ def node_actor(
                         on_failure=lambda e: _PollResult(instance=None),
                     )
                     return polling(ns, instance_id, start_time)
-                case Preempted():
-                    log.warning("Preempted during polling")
-                    pool.tell(NodeLost(node_id=node_id, reason="preempted"))
-                    return _start_replacing(ctx, s)
-                case HeadAddressKnown() as h:
-                    return polling(replace(s, head_info=h), instance_id, start_time)
-                case ExecuteOnNode() as ex:
-                    return polling(_enqueue(s, ex), instance_id, start_time)
-            return Behaviors.same()
+            return _common(ctx, msg, s, lambda ns: polling(ns, instance_id, start_time))
 
         return Behaviors.receive(receive)
 
@@ -299,10 +275,10 @@ def node_actor(
                     return _start_bootstrapping(ctx, replace(s, transport_ref=tref, local_port=lp))
                 case _ConnectionFailed(error=error):
                     log.error("SSH connection failed: {error}", error=error)
-                    return _fail_and_replace(ctx, s, error)
+                    return _fail_and_stop(s, error)
                 case ConnectionFailed(error=error):
                     log.error("Transport permanently failed: {error}", error=error)
-                    return _fail_and_replace(ctx, s, error)
+                    return _fail_and_stop(s, error)
             return _common(ctx, msg, s, connecting)
 
         return Behaviors.receive(receive)
@@ -341,17 +317,17 @@ def node_actor(
         return bootstrapping(s, bs_start)
 
     def _check_bootstrap_timeout(
-        ctx: ActorContext[NodeMsg], s: NodeState, bs_start: float,
+        s: NodeState, bs_start: float,
     ) -> Behavior[NodeMsg] | None:
         elapsed = asyncio.get_event_loop().time() - bs_start
         if elapsed > bootstrap_timeout:
             log.error("Bootstrap timed out after {t:.0f}s", t=elapsed)
-            return _fail_and_replace(ctx, s, f"Bootstrap timed out after {elapsed:.0f}s")
+            return _fail_and_stop(s, f"Bootstrap timed out after {elapsed:.0f}s")
         return None
 
     def bootstrapping(s: NodeState, bs_start: float) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
-            if timeout_behavior := _check_bootstrap_timeout(ctx, s, bs_start):
+            if timeout_behavior := _check_bootstrap_timeout(s, bs_start):
                 return timeout_behavior
             match msg:
                 case BootstrapDone(success=True, instance=done_info):
@@ -368,13 +344,13 @@ def node_actor(
                     return _enter_post_bootstrap(ctx, replace(s, ni=final_ni), bs_start)
                 case BootstrapDone(success=False, error=error):
                     log.error("Bootstrap failed: {error}", error=error)
-                    return _fail_and_replace(ctx, s, error or "bootstrap failed")
+                    return _fail_and_stop(s, error or "bootstrap failed")
                 case _BootstrapUploaded():
                     log.info("Bootstrap script uploaded and started")
                     return Behaviors.same()
                 case _BootstrapUploadFailed(error=error):
                     log.error("Bootstrap upload failed: {error}", error=error)
-                    return _fail_and_replace(ctx, s, error)
+                    return _fail_and_stop(s, error)
             return _common(ctx, msg, s, lambda ns: bootstrapping(ns, bs_start))
 
         return Behaviors.receive(receive)
@@ -410,7 +386,7 @@ def node_actor(
 
     def post_bootstrap(s: NodeState, bs_start: float) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
-            if timeout_behavior := _check_bootstrap_timeout(ctx, s, bs_start):
+            if timeout_behavior := _check_bootstrap_timeout(s, bs_start):
                 return timeout_behavior
             tref = s.transport_ref
             assert tref is not None
@@ -428,7 +404,7 @@ def node_actor(
                 case _UserCodeSyncDone():
                     return _enter_ready(ctx, s, bs_start)
                 case _PostBootstrapFailed(error=err):
-                    return _fail_and_replace(ctx, s, err)
+                    return _fail_and_stop(s, err)
             return _common(ctx, msg, s, lambda ns: post_bootstrap(ns, bs_start))
 
         return Behaviors.receive(receive)
@@ -471,7 +447,7 @@ def node_actor(
 
     def waiting_for_head(s: NodeState, bs_start: float) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
-            if timeout_behavior := _check_bootstrap_timeout(ctx, s, bs_start):
+            if timeout_behavior := _check_bootstrap_timeout(s, bs_start):
                 return timeout_behavior
             match msg:
                 case HeadAddressKnown() as h:
@@ -499,7 +475,7 @@ def node_actor(
 
     def starting_worker(s: NodeState, bs_start: float) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
-            if timeout_behavior := _check_bootstrap_timeout(ctx, s, bs_start):
+            if timeout_behavior := _check_bootstrap_timeout(s, bs_start):
                 return timeout_behavior
             ni = s.ni
             assert ni is not None
@@ -517,7 +493,7 @@ def node_actor(
                     return ready(s)
                 case _WorkerFailed(error=error):
                     log.error("Worker failed to start: {error}", error=error)
-                    return _fail_and_replace(ctx, s, error)
+                    return _fail_and_stop(s, error)
             return _common(ctx, msg, s, lambda ns: starting_worker(ns, bs_start))
 
         return Behaviors.receive(receive)
@@ -573,8 +549,7 @@ def node_actor(
                     return ready(replace(s, local_port=effective_port))
                 case ConnectionFailed(error=error):
                     log.error("Transport permanently failed while ready: {err}", err=error)
-                    pool.tell(NodeLost(node_id=node_id, reason="connection lost"))
-                    return _start_replacing(ctx, s)
+                    return _fail_and_stop(s, "connection lost")
             return _common(ctx, msg, s, ready)
 
         return Behaviors.receive(receive)
@@ -597,7 +572,7 @@ def node_actor(
                     return joining_env_setup(replace(s, worker_ref=wref))
                 case _WorkerDiscoveryFailed(error=error):
                     log.error("Worker discovery failed: {error}", error=error)
-                    return _fail_and_replace(ctx, s, error)
+                    return _fail_and_stop(s, error)
             return _common(ctx, msg, s, joining)
 
         return Behaviors.receive(receive)
@@ -612,7 +587,7 @@ def node_actor(
                     return _enter_active(ctx, s)
                 case _EnvSetupFailed(error=error):
                     log.error("Env setup failed: {error}", error=error)
-                    return _fail_and_replace(ctx, s, error)
+                    return _fail_and_stop(s, error)
             return _common(ctx, msg, s, joining_env_setup)
 
         return Behaviors.receive(receive)
@@ -722,7 +697,7 @@ def node_actor(
                     log.debug("Node {nid} received task result (tid={tid})", nid=node_id, tid=tid)
                     if conn_err:
                         log.warning(
-                            "Connection error on node {nid}, interrupting inflight tasks and replacing",
+                            "Connection error on node {nid}, interrupting inflight tasks",
                             nid=node_id,
                         )
                         conn_error = RuntimeError(f"Node {node_id} connection lost")
@@ -732,10 +707,9 @@ def node_actor(
                                     error=conn_error, node_id=node_id, task_id=inflight_tid,
                                 )
                             )
-                        pool.tell(NodeBecameUnready(node_id=node_id, reason="connection lost"))
-                        return _start_replacing(
-                            ctx, replace(s, inflight=MappingProxyType({}), pending_tasks=()),
-                        )
+                        _stop_transport(s.transport_ref)
+                        pool.tell(NodeExhausted(node_id=node_id, reason="connection lost"))
+                        return Behaviors.stopped()
                     caller = s.inflight.get(tid)
                     if caller:
                         result = (
@@ -782,10 +756,9 @@ def node_actor(
                                 node_id=node_id, task_id=tid,
                             )
                         )
-                    pool.tell(NodeBecameUnready(node_id=node_id, reason="connection lost"))
-                    return _start_replacing(
-                        ctx, replace(s, inflight=MappingProxyType({}), pending_tasks=()),
-                    )
+                    _stop_transport(s.transport_ref)
+                    pool.tell(NodeExhausted(node_id=node_id, reason=f"connection failed: {error}"))
+                    return Behaviors.stopped()
                 case PortReForwarded(old_port=_, new_port=new_port):
                     log.info("Port re-forwarded to {port}", port=new_port)
                     ni = s.ni
@@ -809,8 +782,8 @@ def node_actor(
                                 node_id=node_id, task_id=tid,
                             )
                         )
-                    pool.tell(NodeLost(node_id=node_id, reason=reason))
-                    return _start_replacing(ctx, s)
+                    pool.tell(NodeExhausted(node_id=node_id, reason=reason))
+                    return Behaviors.stopped()
                 case Terminated():
                     log.warning("Child died while active, marking node lost")
                     for tid, caller in s.inflight.items():
@@ -820,63 +793,13 @@ def node_actor(
                                 node_id=node_id, task_id=tid,
                             )
                         )
-                    pool.tell(NodeLost(node_id=node_id, reason="child stopped"))
-                    return _start_replacing(ctx, s)
+                    _stop_transport(s.transport_ref)
+                    pool.tell(NodeExhausted(node_id=node_id, reason="child stopped"))
+                    return Behaviors.stopped()
                 case _SnapshotSaved():
                     log.info("Snapshot saved")
                 case _SnapshotFailed(error=error):
                     log.warning("Snapshot failed: {error}", error=error)
-            return Behaviors.same()
-
-        return Behaviors.receive(receive)
-
-    # ── replacing ─────────────────────────────────────────────────────
-
-    _max_replace_attempts = 5
-
-    def _start_replacing(ctx: ActorContext[NodeMsg], s: NodeState, attempt: int = 1) -> Behavior[NodeMsg]:
-        instance_id = s.ni.instance.id if s.ni else ""
-        log.info("Replacing instance (attempt {a}/{m})", a=attempt, m=_max_replace_attempts)
-        ctx.pipe_to_self(
-            terminate_and_replace(s.provider, s.cluster, instance_id),
-            mapper=lambda inst: Provision(cluster=s.cluster, provider=s.provider, instance=inst),
-            on_failure=lambda e: _ReplaceFailed(error=str(e), attempt=attempt),
-        )
-        return replacing(s, attempt)
-
-    def replacing(s: NodeState, attempt: int = 1) -> Behavior[NodeMsg]:
-        async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
-            match msg:
-                case HeadAddressKnown() as h:
-                    return replacing(replace(s, head_info=h), attempt)
-                case Provision(instance=instance):
-                    log.info("Replacement provisioned, re-entering polling")
-                    return _start_polling(ctx, s, instance)
-                case _ReplaceFailed(error=error, attempt=att):
-                    if att >= _max_replace_attempts:
-                        reason = f"replacement exhausted after {_max_replace_attempts} attempts: {error}"
-                        log.error(
-                            "Replacement failed after {m} attempts: {err}",
-                            m=_max_replace_attempts, err=error,
-                        )
-                        pool.tell(NodeExhausted(node_id=node_id, reason=reason))
-                        return Behaviors.stopped()
-                    delay = min(5.0 * (2 ** (att - 1)), 60.0)
-                    log.warning(
-                        "Replacement failed (attempt {a}): {err}, retrying in {d:.0f}s",
-                        a=att, err=error, d=delay,
-                    )
-
-                    async def _retry() -> _ReplaceRetry:
-                        await asyncio.sleep(delay)
-                        return _ReplaceRetry(attempt=att + 1)
-
-                    ctx.pipe_to_self(_retry())
-                    return Behaviors.same()
-                case _ReplaceRetry(attempt=next_att):
-                    return _start_replacing(ctx, s, next_att)
-                case ExecuteOnNode() as ex:
-                    return replacing(_enqueue(s, ex), attempt)
             return Behaviors.same()
 
         return Behaviors.receive(receive)

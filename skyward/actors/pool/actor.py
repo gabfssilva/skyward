@@ -995,10 +995,14 @@ def pool_actor(
                         s.reconciler_ref.tell(ReconcilerNodeLost(
                             node_id=nid, reason=reason,
                         ))
+                    new_node_refs = MappingProxyType(
+                        {k: v for k, v in s.node_refs.items() if k != nid}
+                    )
                     return ready(replace(
                         s,
                         ready_nodes=s.ready_nodes - {nid},
                         dead_nodes=new_dead,
+                        node_refs=new_node_refs,
                     ))
                 case ReconciliationExhausted(reason=reason):
                     if not s.ready_nodes:

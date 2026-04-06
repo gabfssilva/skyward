@@ -138,10 +138,32 @@ def reconciler_actor(
                     log.warning("Node {nid} lost: {reason}", nid=nid, reason=reason)
                     new_current = s.current - {nid}
                     new_pending = s.pending - {nid}
+
+                    dead_iid = s.instance_map.get(nid)
+                    if dead_iid:
+                        ctx.pipe_to_self(
+                            provider.terminate(s.cluster, (dead_iid,)),
+                            mapper=lambda _: _TerminateResult(node_ids=(nid,)),
+                            on_failure=lambda err: _TerminateError(
+                                node_ids=(nid,), error=str(err),
+                            ),
+                        )
+
                     new_s = replace(s, current=new_current, pending=new_pending)
                     if new_s.desired > _effective(new_s):
                         return _start_scaling_up(ctx, new_s)
                     return watching(new_s)
+
+                case _TerminateResult(node_ids=nids):
+                    log.debug("Terminated dead instances for nodes {nids}", nids=nids)
+                    return Behaviors.same()
+
+                case _TerminateError(node_ids=nids, error=error):
+                    log.error(
+                        "Failed to terminate dead instances for nodes {nids}: {err}",
+                        nids=nids, err=error,
+                    )
+                    return Behaviors.same()
 
                 case NodeJoined(node_id=nid):
                     log.info("Node {nid} joined", nid=nid)
@@ -252,11 +274,31 @@ def reconciler_actor(
 
                 case ReconcilerNodeLost(node_id=nid, reason=reason):
                     log.warning("Node {nid} lost during scale-up: {reason}", nid=nid, reason=reason)
+                    dead_iid = s.instance_map.get(nid)
+                    if dead_iid:
+                        ctx.pipe_to_self(
+                            provider.terminate(s.cluster, (dead_iid,)),
+                            mapper=lambda _: _TerminateResult(node_ids=(nid,)),
+                            on_failure=lambda err: _TerminateError(
+                                node_ids=(nid,), error=str(err),
+                            ),
+                        )
                     return scaling_up(replace(
                         s,
                         current=s.current - {nid},
                         pending=s.pending - {nid},
                     ))
+
+                case _TerminateResult(node_ids=nids):
+                    log.debug("Terminated dead instances for nodes {nids}", nids=nids)
+                    return Behaviors.same()
+
+                case _TerminateError(node_ids=nids, error=error):
+                    log.error(
+                        "Failed to terminate dead instances for nodes {nids}: {err}",
+                        nids=nids, err=error,
+                    )
+                    return Behaviors.same()
 
                 case NodeJoined(node_id=nid):
                     log.info("Node {nid} joined during scale-up", nid=nid)
@@ -329,6 +371,15 @@ def reconciler_actor(
 
                 case ReconcilerNodeLost(node_id=nid, reason=reason):
                     log.warning("Node {nid} lost during drain: {reason}", nid=nid, reason=reason)
+                    dead_iid = s.instance_map.get(nid)
+                    if dead_iid:
+                        ctx.pipe_to_self(
+                            provider.terminate(s.cluster, (dead_iid,)),
+                            mapper=lambda _: _TerminateResult(node_ids=(nid,)),
+                            on_failure=lambda err: _TerminateError(
+                                node_ids=(nid,), error=str(err),
+                            ),
+                        )
                     new_s = replace(
                         s,
                         current=s.current - {nid},

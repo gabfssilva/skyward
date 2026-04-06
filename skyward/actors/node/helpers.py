@@ -325,18 +325,6 @@ async def run_bootstrap(
     log.info("Bootstrap started on {iid}", iid=ni.instance.id)
 
 
-async def terminate_and_replace(provider: Any, cluster: Any, dead_id: str) -> Any:
-    log = logger.bind(actor="node")
-    try:
-        await provider.terminate(cluster, (dead_id,))
-    except Exception as e:
-        log.warning("Failed to terminate dead instance {iid}: {err}", iid=dead_id, err=e)
-    _, instances = await provider.provision(cluster, 1)
-    if not instances:
-        raise RuntimeError("Failed to provision replacement instance")
-    return instances[0]
-
-
 async def discover_own_worker(
     client: Any,
     ni: NodeInstance | None,
