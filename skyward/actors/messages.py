@@ -421,6 +421,14 @@ class NodeLost:
 
 
 @dataclass(frozen=True, slots=True)
+class NodeExhausted:
+    """Node exhausted all recovery attempts and is permanently dead."""
+
+    node_id: NodeId
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class NodeBecameUnready:
     node_id: NodeId
     reason: str
@@ -516,6 +524,13 @@ class DesiredCountChanged:
 @dataclass(frozen=True, slots=True)
 class ReconcilerNodeLost:
     node_id: NodeId
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReconciliationExhausted:
+    """Reconciler exhausted all provision retry attempts."""
+
     reason: str
 
 

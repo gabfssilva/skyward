@@ -25,11 +25,14 @@ from skyward.actors.messages import (
     NodeBecameReady,
     NodeBecameUnready,
     NodeConnected,
+    NodeExhausted,
     NodeInstance,
     NodeJoined,
     NodeLost,
     NodeUnavailable,
     Provision,
+    ReconcilerNodeLost,
+    ReconciliationExhausted,
     RegisterPressureObserver,
     SpawnNodes,
     SubmitBroadcast,
@@ -735,6 +738,50 @@ def pool_actor(
                     return provisioning(replace(
                         s, ready_nodes=s.ready_nodes - {nid},
                     ))
+                case NodeExhausted(node_id=nid, reason=reason):
+                    log.error(
+                        "Node {nid} permanently lost: {reason}",
+                        nid=nid, reason=reason,
+                    )
+                    tm.tell(NodeUnavailable(node_id=nid))
+                    new_dead = s.dead_nodes | {nid}
+                    alive = s.spec.nodes.desired - len(new_dead)
+                    min_required = s.spec.nodes.min if s.spec.nodes.min is not None else s.spec.nodes.desired
+                    if alive < min_required:
+                        log.error(
+                            "Only {alive}/{min} nodes viable, failing pool",
+                            alive=alive, min=min_required,
+                        )
+                        s.reply_to.tell(ProvisionFailed(
+                            reason=f"Too many nodes lost ({len(new_dead)}/{s.spec.nodes.desired}), "
+                            f"cannot reach minimum of {min_required}",
+                        ))
+                        provider = s.provider
+                        cluster = s.cluster
+                        instance_ids = (
+                            tuple(inst.id for inst in cluster.instances)
+                            if cluster is not None else ()
+                        )
+
+                        async def _shutdown_exhausted() -> None:
+                            if instance_ids and cluster is not None:
+                                with suppress(Exception):
+                                    await provider.terminate(cluster, instance_ids)
+                            if cluster is not None:
+                                with suppress(Exception):
+                                    await provider.teardown(cluster)
+
+                        ctx.pipe_to_self(
+                            _shutdown_exhausted(),
+                            mapper=lambda _: _ShutdownDone(),
+                        )
+                        return stopping(
+                            None, s.cluster_id or "",
+                            replace(s, phase=PoolPhase.STOPPED, dead_nodes=new_dead), pool_name,
+                        )
+                    return provisioning(replace(
+                        s, ready_nodes=s.ready_nodes - {nid}, dead_nodes=new_dead,
+                    ))
                 case StopPool(reply_to=stop_reply):
                     log.debug("StopPool during provisioning")
                     s.reply_to.tell(ProvisionFailed(reason="Interrupted"))
@@ -802,6 +849,7 @@ def pool_actor(
                             initial_instance_map=inst_map,
                             next_node_id=max(s.instances.keys()) + 1 if s.instances else s.spec.nodes.desired,
                             tick_interval=s.spec.reconcile_tick_interval,
+                            max_provision_retries=s.spec.max_provision_attempts,
                         ),
                         "reconciler",
                     )
@@ -936,6 +984,55 @@ def pool_actor(
                     return ready(replace(
                         s, ready_nodes=s.ready_nodes - {nid},
                     ))
+                case NodeExhausted(node_id=nid, reason=reason):
+                    log.error(
+                        "Node {nid} permanently lost: {reason}",
+                        nid=nid, reason=reason,
+                    )
+                    tm.tell(NodeUnavailable(node_id=nid))
+                    new_dead = s.dead_nodes | {nid}
+                    if s.reconciler_ref is not None:
+                        s.reconciler_ref.tell(ReconcilerNodeLost(
+                            node_id=nid, reason=reason,
+                        ))
+                    return ready(replace(
+                        s,
+                        ready_nodes=s.ready_nodes - {nid},
+                        dead_nodes=new_dead,
+                    ))
+                case ReconciliationExhausted(reason=reason):
+                    if not s.ready_nodes:
+                        log.error(
+                            "Reconciler gave up with 0 ready nodes, shutting down: {reason}",
+                            reason=reason,
+                        )
+                        instance_ids = tuple(
+                            ni.instance.id for ni in s.instances.values()
+                        )
+                        provider = s.provider
+                        cluster_to_clean = s.cluster
+
+                        async def _shutdown_unrecoverable() -> None:
+                            if instance_ids and cluster_to_clean is not None:
+                                with suppress(Exception):
+                                    await provider.terminate(cluster_to_clean, instance_ids)
+                            if cluster_to_clean is not None:
+                                with suppress(Exception):
+                                    await provider.teardown(cluster_to_clean)
+
+                        ctx.pipe_to_self(
+                            _shutdown_unrecoverable(),
+                            mapper=lambda _: _ShutdownDone(),
+                        )
+                        return stopping(
+                            None, s.cluster_id,
+                            replace(s, phase=PoolPhase.STOPPED), pool_name,
+                        )
+                    log.warning(
+                        "Reconciler gave up but {n} nodes still active",
+                        n=len(s.ready_nodes),
+                    )
+                    return Behaviors.same()
                 case SpawnNodes(
                     instances=new_instances, cluster=upd_cluster,
                     start_node_id=start_id,
@@ -1049,7 +1146,7 @@ def pool_actor(
         )
 
     def stopping(
-        stop_reply: ActorRef, cluster_id: str,
+        stop_reply: ActorRef | None, cluster_id: str,
         s: PoolState | None = None, name: str = "",
     ) -> Behavior[PoolMsg]:
         log = logger.bind(actor="pool", state="stopping")
@@ -1059,7 +1156,8 @@ def pool_actor(
             match msg:
                 case _ShutdownDone():
                     log.info("Cluster {cid} shutdown confirmed", cid=cluster_id)
-                    stop_reply.tell(PoolStopped())
+                    if stop_reply is not None:
+                        stop_reply.tell(PoolStopped())
                     return Behaviors.stopped()
                 case GetPoolSnapshot(reply_to=snap_reply) if s is not None:
                     snap_reply.tell(build_pool_snapshot(s, name))

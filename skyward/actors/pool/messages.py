@@ -15,7 +15,9 @@ from skyward.actors.messages import (
     NodeBecameReady,
     NodeBecameUnready,
     NodeConnected,
+    NodeExhausted,
     NodeLost,
+    ReconciliationExhausted,
     SpawnNodes,
     SubmitBroadcast,
     SubmitTask,
@@ -97,6 +99,8 @@ type PoolMsg = (
     | NodeConnected
     | NodeBecameUnready
     | NodeLost
+    | NodeExhausted
+    | ReconciliationExhausted
     | SubmitTask
     | SubmitBroadcast
     | ClusterReady

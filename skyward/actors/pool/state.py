@@ -39,6 +39,7 @@ class PoolState:
     client: ClusterClient | None = None
     clients: MappingProxyType[NodeId, ClusterClient] = MappingProxyType({})
     ready_nodes: frozenset[int] = frozenset()
+    dead_nodes: frozenset[int] = frozenset()
     reconciler_ref: ActorRef | None = None
     instance_map: MappingProxyType[NodeId, str] = MappingProxyType({})
     attempt: int = 1

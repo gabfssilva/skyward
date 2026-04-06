@@ -27,11 +27,13 @@ from skyward.actors.messages import (
     NodeActivated,
     NodeBecameReady,
     NodeConnected,
+    NodeExhausted,
     NodeJoined,
     NodeLost,
     Preempted,
     Provision,
     ReconcilerNodeLost,
+    ReconciliationExhausted,
     ShutdownRequested,
     SpawnNodes,
     SubmitBroadcast,
@@ -157,6 +159,9 @@ def translate(spy: SpyEvent, pool_name: str) -> SessionEvent | None:  # type: ig
         case ReconcilerNodeLost():
             return None
 
+        case ReconciliationExhausted():
+            return None
+
         # ── Pool lifecycle ──────────────────────────────────
         case ProvisionFailed(reason=reason):
             return Pool.ProvisionFailed(pool_name, reason)
@@ -191,6 +196,9 @@ def translate(spy: SpyEvent, pool_name: str) -> SessionEvent | None:  # type: ig
 
         case NodeLost(node_id=nid, reason=reason):
             return Node.Lost(pool_name, nid, reason)
+
+        case NodeExhausted(node_id=nid, reason=reason):
+            return Node.Lost(pool_name, nid, f"permanently lost: {reason}")
 
         case Preempted(reason=reason):
             return Node.Preempted(pool_name, reason)

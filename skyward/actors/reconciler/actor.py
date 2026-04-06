@@ -14,6 +14,7 @@ from skyward.actors.messages import (
     NodeId,
     NodeJoined,
     ReconcilerNodeLost,
+    ReconciliationExhausted,
     SpawnNodes,
 )
 
@@ -44,6 +45,7 @@ def reconciler_actor(
     initial_instance_map: MappingProxyType[NodeId, str] | dict[NodeId, str],
     next_node_id: int,
     tick_interval: float = 15.0,
+    max_provision_retries: int = 10,
 ) -> Behavior[ReconcilerMsg]:
 
     def _effective(s: _State) -> int:
@@ -147,11 +149,14 @@ def reconciler_actor(
                         s,
                         current=s.current | {nid},
                         pending=s.pending - {nid},
+                        consecutive_failures=0,
                     )
                     return watching(new_s)
 
                 case _ReconcileTick():
                     _schedule_tick(ctx)
+                    if s.consecutive_failures >= max_provision_retries:
+                        return Behaviors.same()
                     effective = _effective(s)
                     if s.desired > effective:
                         log.debug(
@@ -172,8 +177,21 @@ def reconciler_actor(
             match msg:
                 case _ProvisionResult(instances=instances, cluster=upd_cluster):
                     if not instances:
-                        log.warning("Provision returned 0 instances")
-                        return watching(s)
+                        new_failures = s.consecutive_failures + 1
+                        if new_failures >= max_provision_retries:
+                            log.error(
+                                "Provision returned 0 instances ({n}/{max} attempts exhausted)",
+                                n=new_failures, max=max_provision_retries,
+                            )
+                            pool.tell(ReconciliationExhausted(
+                                reason=f"failed to provision after {new_failures} consecutive attempts",
+                            ))
+                        else:
+                            log.warning(
+                                "Provision returned 0 instances (attempt {n}/{max})",
+                                n=new_failures, max=max_provision_retries,
+                            )
+                        return watching(replace(s, consecutive_failures=new_failures))
 
                     start_id = s.next_node_id
                     new_pending_ids: list[NodeId] = []
@@ -199,14 +217,28 @@ def reconciler_actor(
                         next_node_id=start_id + len(instances),
                         instance_map=new_map,
                         cluster=upd_cluster,
+                        consecutive_failures=0,
                     )
                     if new_s.desired <= _effective(new_s):
                         return watching(new_s)
                     return _start_scaling_up(ctx, new_s)
 
                 case _ProvisionError(error=error):
-                    log.error("Provision failed: {err}", err=error)
-                    return watching(s)
+                    new_failures = s.consecutive_failures + 1
+                    if new_failures >= max_provision_retries:
+                        log.error(
+                            "Provision failed ({n}/{max} attempts exhausted): {err}",
+                            n=new_failures, max=max_provision_retries, err=error,
+                        )
+                        pool.tell(ReconciliationExhausted(
+                            reason=f"provision error after {new_failures} consecutive attempts: {error}",
+                        ))
+                    else:
+                        log.error(
+                            "Provision failed (attempt {n}/{max}): {err}",
+                            n=new_failures, max=max_provision_retries, err=error,
+                        )
+                    return watching(replace(s, consecutive_failures=new_failures))
 
                 case DesiredCountChanged(desired=desired, reason=reason):
                     log.info(
@@ -232,6 +264,7 @@ def reconciler_actor(
                         s,
                         current=s.current | {nid},
                         pending=s.pending - {nid},
+                        consecutive_failures=0,
                     )
                     if new_s.desired <= _effective(new_s):
                         return watching(new_s)

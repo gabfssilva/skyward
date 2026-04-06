@@ -19,3 +19,4 @@ class _State:
     next_node_id: int
     instance_map: MappingProxyType[NodeId, str]
     cluster: Cluster
+    consecutive_failures: int = 0

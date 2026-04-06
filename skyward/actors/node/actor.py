@@ -30,6 +30,7 @@ from skyward.actors.messages import (
     NodeBecameReady,
     NodeBecameUnready,
     NodeConnected,
+    NodeExhausted,
     NodeLost,
     Preempted,
     Provision,
@@ -853,10 +854,12 @@ def node_actor(
                     return _start_polling(ctx, s, instance)
                 case _ReplaceFailed(error=error, attempt=att):
                     if att >= _max_replace_attempts:
+                        reason = f"replacement exhausted after {_max_replace_attempts} attempts: {error}"
                         log.error(
                             "Replacement failed after {m} attempts: {err}",
                             m=_max_replace_attempts, err=error,
                         )
+                        pool.tell(NodeExhausted(node_id=node_id, reason=reason))
                         return Behaviors.stopped()
                     delay = min(5.0 * (2 ** (att - 1)), 60.0)
                     log.warning(
