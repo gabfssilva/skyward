@@ -615,6 +615,45 @@ with sky.Compute(
 | A6000 | 48 GB | $0.79 | IN1 |
 | L4 | 24 GB | $0.44 | IN2 |
 
+## Lambda Cloud
+
+Lambda Cloud offers on-demand GPU instances with a straightforward API. Instances run Ubuntu with NVIDIA drivers pre-installed. SSH keys are auto-registered and cleaned up by Skyward. Per-minute billing.
+
+If no region is specified, Lambda Cloud auto-selects the first region with available capacity.
+
+### Setup
+
+```bash
+export LAMBDA_API_KEY=your_api_key
+```
+
+### Usage
+
+```python
+import skyward as sky
+
+with sky.Compute(
+    provider=sky.LambdaCloud(),
+    accelerator=sky.accelerators.H100(),
+    nodes=2,
+) as compute:
+    result = train(data) >> compute
+```
+
+Pick a specific region:
+
+```python
+sky.LambdaCloud(region="us-east-3")
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `api_key` | `str or None` | `None` | API key. Falls back to `LAMBDA_API_KEY` env var. |
+| `region` | `str or None` | `None` | Preferred region (e.g., `"us-east-3"`). Auto-selects region with capacity if not set. |
+| `request_timeout` | `int` | `30` | HTTP request timeout in seconds. |
+
 ## Massed Compute
 
 Massed Compute is a bare-metal GPU cloud with data centers across the US. Instances run Ubuntu with NVIDIA drivers pre-installed, SSH access via key or password, and all ports open by default (no firewall configuration needed). SSH keys are auto-registered and cleaned up by Skyward.
