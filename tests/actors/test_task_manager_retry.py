@@ -25,7 +25,7 @@ class TestDispatchStoresFullTask:
         })
         inflight: MappingProxyType[str, SubmitTask] = MappingProxyType({})
 
-        new_nodes, new_inflight = _dispatch(1, task, nodes, tm_ref, inflight)
+        new_nodes, new_inflight, new_nt = _dispatch(1, task, nodes, tm_ref, inflight, MappingProxyType({}))
 
         assert "t1" in new_inflight
         assert isinstance(new_inflight["t1"], SubmitTask)
@@ -42,7 +42,7 @@ class TestDispatchStoresFullTask:
         })
         inflight: MappingProxyType[str, SubmitTask] = MappingProxyType({})
 
-        new_nodes, _ = _dispatch(1, task, nodes, tm_ref, inflight)
+        new_nodes, _, _ = _dispatch(1, task, nodes, tm_ref, inflight, MappingProxyType({}))
 
         assert new_nodes[1].used == 1
 
@@ -56,7 +56,7 @@ class TestDispatchStoresFullTask:
         })
         inflight: MappingProxyType[str, SubmitTask] = MappingProxyType({})
 
-        _dispatch(1, task, nodes, tm_ref, inflight)
+        _dispatch(1, task, nodes, tm_ref, inflight, MappingProxyType({}))
 
         node_ref.tell.assert_called_once()
         msg = node_ref.tell.call_args[0][0]
@@ -78,7 +78,7 @@ class TestDispatchStoresFullTask:
         })
         inflight: MappingProxyType[str, SubmitTask] = MappingProxyType({})
 
-        _dispatch(1, task, nodes, tm_ref, inflight)
+        _dispatch(1, task, nodes, tm_ref, inflight, MappingProxyType({}))
 
         tm_ref.tell.assert_called_once()
         msg = tm_ref.tell.call_args[0][0]

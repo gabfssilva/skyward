@@ -498,13 +498,9 @@ class Session:
                 pool_ref, spec, provider_config, cloud_provider,
                 offers, provision_timeout,
             )
-        except KeyboardInterrupt:
-            raise
-        except Exception:
+        finally:
             self._pending_pool_refs.pop(pool_name, None)
-            raise
 
-        self._pending_pool_refs.pop(pool_name, None)
         return pool_ref, spec, started.cluster_id, started.cluster, started.instances
 
     def _create_pool_actor(self, pool_name: str) -> ActorRef[Any]:

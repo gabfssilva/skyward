@@ -29,6 +29,7 @@ from .container.config import Container
 from .gcp.config import GCP
 from .hyperstack.config import Hyperstack
 from .jarvislabs.config import JarvisLabs
+from .lambda_cloud.config import LambdaCloud
 from .massed_compute.config import MassedCompute
 from .novita.config import Novita
 from .runpod.config import RunPod
@@ -45,6 +46,7 @@ __all__ = [
     "GCP",
     "Hyperstack",
     "JarvisLabs",
+    "LambdaCloud",
     "MassedCompute",
     "Novita",
     "RunPod",

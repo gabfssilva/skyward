@@ -151,7 +151,7 @@ class SessionProjection:
                     name=name,
                     phase=PoolPhase.PROVISIONING,
                     tasks=TasksView(),
-                    scaling=ScalingView(),
+                    scaling=ScalingView(desired=total),
                     total_nodes=total,
                     started_at=started,
                 )
@@ -229,10 +229,19 @@ class SessionProjection:
                 if name not in self._pools:
                     return
                 pool = self._pools[name]
+                lost_node = pool.nodes.get(nid)
+                lost_iid = lost_node.instance.id if lost_node and lost_node.instance else None
                 nodes = MappingProxyType({
                     k: v for k, v in pool.nodes.items() if k != nid
                 })
-                self._pools[name] = replace(pool, nodes=nodes)
+                instances = tuple(
+                    i for i in pool.instances if i.id != lost_iid
+                ) if lost_iid else pool.instances
+                self._pools[name] = replace(
+                    pool,
+                    nodes=nodes,
+                    instances=instances,
+                )
 
             # ── Bootstrap ────────────────────────────────────────
             case Node.Bootstrap.Started(pool_name=name, node_id=nid, phase=phase):
@@ -425,7 +434,7 @@ class SessionProjection:
                     return
                 pool = self._pools[name]
                 match desired:
-                    case d if d > pool.scaling.desired:
+                    case d if d > max(pool.scaling.desired, pool.total_nodes):
                         reconciler = "scaling_up"
                     case d if d < len(pool.nodes):
                         reconciler = "draining"
@@ -442,7 +451,7 @@ class SessionProjection:
                 self._pools[name] = replace(
                     pool,
                     scaling=scaling,
-                    total_nodes=pool.total_nodes + count,
+                    total_nodes=scaling.desired or pool.total_nodes + count,
                     instances=(*pool.instances, *instances),
                 )
 
@@ -466,13 +475,19 @@ class SessionProjection:
                 scaling = replace(
                     pool.scaling, draining=draining, reconciler_state=reconciler,
                 )
+                drained_node = pool.nodes.get(nid)
+                drained_iid = drained_node.instance.id if drained_node and drained_node.instance else None
                 nodes = MappingProxyType({
                     k: v for k, v in pool.nodes.items() if k != nid
                 })
+                instances = tuple(
+                    i for i in pool.instances if i.id != drained_iid
+                ) if drained_iid else pool.instances
                 self._pools[name] = replace(
                     pool,
                     scaling=scaling,
                     nodes=nodes,
+                    instances=instances,
                     total_nodes=max(0, pool.total_nodes - 1),
                 )
 
@@ -510,6 +525,9 @@ class SessionProjection:
         if not isinstance(snapshot, PoolSnapshot):
             return
 
+        pool = self._pools[name]
+        instances_by_id = {i.id: i for i in snapshot.instances} if snapshot.instances else {}
+
         nodes: dict[int, NodeView] = {}
         for ns in snapshot.nodes:
             status = _SNAPSHOT_NODE_STATUS_MAP.get(ns.status.value, NodeStatus.WAITING)
@@ -521,13 +539,17 @@ class SessionProjection:
                     active=ns.bootstrap.active,
                     output=ns.bootstrap.output,
                 )
+            existing = pool.nodes.get(ns.node_id)
+            instance = (
+                instances_by_id.get(ns.instance_id)
+                or (existing.instance if existing else None)
+            )
             nodes[ns.node_id] = NodeView(
                 node_id=ns.node_id, status=status, bootstrap=bootstrap,
+                instance=instance,
             )
 
         phase = _PHASE_MAP.get(snapshot.phase.name, PoolPhase.PROVISIONING)
-
-        pool = self._pools[name]
         tasks = replace(
             pool.tasks,
             queued=snapshot.tasks.queued,

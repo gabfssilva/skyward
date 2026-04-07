@@ -29,6 +29,7 @@ class _State:
     round_robin: int
     inflight: MappingProxyType[str, SubmitTask]
     broadcasts: MappingProxyType[str, PendingBroadcast]
+    node_tasks: MappingProxyType[NodeId, frozenset[str]] = field(default_factory=lambda: MappingProxyType({}))
     retry_on_interruption: int = 3
     retries: MappingProxyType[str, int] = field(default_factory=lambda: MappingProxyType({}))
     pressure_observer: ActorRef | None = None
@@ -55,7 +56,8 @@ def _dispatch(
     nodes: MappingProxyType[NodeId, NodeSlots],
     tm_ref: ActorRef,
     inflight: MappingProxyType[str, SubmitTask],
-) -> tuple[MappingProxyType[NodeId, NodeSlots], MappingProxyType[str, SubmitTask]]:
+    node_tasks: MappingProxyType[NodeId, frozenset[str]],
+) -> tuple[MappingProxyType[NodeId, NodeSlots], MappingProxyType[str, SubmitTask], MappingProxyType[NodeId, frozenset[str]]]:
     slot = nodes[nid]
     tm_ref.tell(TaskSubmitted(task_id=task.task_id, node_id=nid))
     slot.ref.tell(ExecuteOnNode(
@@ -64,7 +66,9 @@ def _dispatch(
     ))
     new_nodes = MappingProxyType({**nodes, nid: NodeSlots(slot.ref, slot.total, slot.used + 1)})
     new_inflight = MappingProxyType({**inflight, task.task_id: task})
-    return new_nodes, new_inflight
+    existing = node_tasks.get(nid, frozenset())
+    new_node_tasks = MappingProxyType({**node_tasks, nid: existing | {task.task_id}})
+    return new_nodes, new_inflight, new_node_tasks
 
 
 def _drain_queue(
@@ -73,16 +77,17 @@ def _drain_queue(
     round_robin: int,
     tm_ref: ActorRef,
     inflight: MappingProxyType[str, SubmitTask],
-) -> tuple[tuple[SubmitTask, ...], MappingProxyType[NodeId, NodeSlots], int, MappingProxyType[str, SubmitTask]]:
+    node_tasks: MappingProxyType[NodeId, frozenset[str]],
+) -> tuple[tuple[SubmitTask, ...], MappingProxyType[NodeId, NodeSlots], int, MappingProxyType[str, SubmitTask], MappingProxyType[NodeId, frozenset[str]]]:
     remaining: list[SubmitTask] = []
     for task in queue:
         nid = _pick_with_free_slot(nodes, round_robin)
         if nid is None:
             remaining.append(task)
             continue
-        nodes, inflight = _dispatch(nid, task, nodes, tm_ref, inflight)
+        nodes, inflight, node_tasks = _dispatch(nid, task, nodes, tm_ref, inflight, node_tasks)
         round_robin += 1
-    return tuple(remaining), nodes, round_robin, inflight
+    return tuple(remaining), nodes, round_robin, inflight, node_tasks
 
 
 def _emit_pressure(s: _State) -> None:

@@ -49,6 +49,18 @@ def _handle_broadcast_result(
     return False, broadcasts
 
 
+def _remove_task_from_node(
+    node_tasks: MappingProxyType[NodeId, frozenset[str]],
+    node_id: int,
+    task_id: str,
+) -> MappingProxyType[NodeId, frozenset[str]]:
+    existing = node_tasks.get(node_id, frozenset())
+    updated = existing - {task_id}
+    if updated:
+        return MappingProxyType({**node_tasks, node_id: updated})
+    return MappingProxyType({k: v for k, v in node_tasks.items() if k != node_id})
+
+
 def _free_slot_and_drain(
     s: _State,
     node_id: int,
@@ -57,19 +69,21 @@ def _free_slot_and_drain(
     new_broadcasts: MappingProxyType[str, PendingBroadcast],
     new_retries: MappingProxyType[str, int],
     new_queue: tuple[SubmitTask, ...] | None = None,
+    new_node_tasks: MappingProxyType[NodeId, frozenset[str]] | None = None,
 ) -> _State:
     queue = new_queue if new_queue is not None else s.queue
+    nt = new_node_tasks if new_node_tasks is not None else s.node_tasks
     if node_id not in s.nodes:
-        return replace(s, broadcasts=new_broadcasts, inflight=new_inflight, retries=new_retries, queue=queue)
+        return replace(s, broadcasts=new_broadcasts, inflight=new_inflight, retries=new_retries, queue=queue, node_tasks=nt)
     slot = s.nodes[node_id]
     new_used = max(0, slot.used - 1)
     new_nodes = MappingProxyType({**s.nodes, node_id: NodeSlots(slot.ref, slot.total, new_used)})
-    remaining, new_nodes, rr, new_inflight = _drain_queue(
-        queue, new_nodes, s.round_robin, ctx.self, new_inflight,
+    remaining, new_nodes, rr, new_inflight, nt = _drain_queue(
+        queue, new_nodes, s.round_robin, ctx.self, new_inflight, nt,
     )
     return replace(
         s, nodes=new_nodes, queue=remaining, round_robin=rr,
-        inflight=new_inflight, broadcasts=new_broadcasts, retries=new_retries,
+        inflight=new_inflight, broadcasts=new_broadcasts, retries=new_retries, node_tasks=nt,
     )
 
 
@@ -90,17 +104,24 @@ def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMs
                         **s.nodes,
                         node_id: NodeSlots(ref=node_ref, total=slots, used=0),
                     })
-                    remaining, new_nodes, rr, new_inflight = _drain_queue(
-                        s.queue, new_nodes, s.round_robin, ctx.self, s.inflight,
+                    remaining, new_nodes, rr, new_inflight, new_nt = _drain_queue(
+                        s.queue, new_nodes, s.round_robin, ctx.self, s.inflight, s.node_tasks,
                     )
                     if len(remaining) < len(s.queue):
                         log.debug("Drained {n} queued tasks", n=len(s.queue) - len(remaining))
-                    new_s = replace(s, nodes=new_nodes, queue=remaining, round_robin=rr, inflight=new_inflight)
+                    new_s = replace(s, nodes=new_nodes, queue=remaining, round_robin=rr, inflight=new_inflight, node_tasks=new_nt)
                     _emit_pressure(new_s)
                     return active(new_s)
 
                 case NodeUnavailable(node_id):
-                    log.info("Node {nid} unavailable", nid=node_id)
+                    orphaned_tids = s.node_tasks.get(node_id, frozenset())
+                    if orphaned_tids:
+                        log.info(
+                            "Node {nid} unavailable, re-enqueuing {n} orphaned tasks",
+                            nid=node_id, n=len(orphaned_tids),
+                        )
+                    else:
+                        log.info("Node {nid} unavailable", nid=node_id)
                     new_nodes = MappingProxyType({k: v for k, v in s.nodes.items() if k != node_id})
                     new_broadcasts = MappingProxyType({
                         bid: replace(
@@ -113,7 +134,14 @@ def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMs
                         ) if node_id in bc.pending else bc
                         for bid, bc in s.broadcasts.items()
                     })
-                    new_s = replace(s, nodes=new_nodes, broadcasts=new_broadcasts)
+                    requeue = tuple(s.inflight[tid] for tid in orphaned_tids if tid in s.inflight)
+                    new_inflight = MappingProxyType({k: v for k, v in s.inflight.items() if k not in orphaned_tids})
+                    new_node_tasks = MappingProxyType({k: v for k, v in s.node_tasks.items() if k != node_id})
+                    new_s = replace(
+                        s, nodes=new_nodes, broadcasts=new_broadcasts,
+                        inflight=new_inflight, node_tasks=new_node_tasks,
+                        queue=(*s.queue, *requeue),
+                    )
                     _emit_pressure(new_s)
                     return _check_broadcasts(new_s)
 
@@ -128,7 +156,8 @@ def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMs
                                 value=value, node_id=node_id, task_id=tid, elapsed=elapsed,
                             ))
                             new_inflight = MappingProxyType({k: v for k, v in s.inflight.items() if k != tid})
-                    new_s = _free_slot_and_drain(s, node_id, ctx, new_inflight, new_broadcasts, new_retries)
+                    new_nt = _remove_task_from_node(s.node_tasks, node_id, tid)
+                    new_s = _free_slot_and_drain(s, node_id, ctx, new_inflight, new_broadcasts, new_retries, new_node_tasks=new_nt)
                     _emit_pressure(new_s)
                     return _check_broadcasts(new_s) if broadcast_hit else active(new_s)
 
@@ -143,7 +172,8 @@ def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMs
                                 error=err, node_id=node_id, task_id=tid,
                             ))
                             new_inflight = MappingProxyType({k: v for k, v in s.inflight.items() if k != tid})
-                    new_s = _free_slot_and_drain(s, node_id, ctx, new_inflight, new_broadcasts, new_retries)
+                    new_nt = _remove_task_from_node(s.node_tasks, node_id, tid)
+                    new_s = _free_slot_and_drain(s, node_id, ctx, new_inflight, new_broadcasts, new_retries, new_node_tasks=new_nt)
                     _emit_pressure(new_s)
                     return _check_broadcasts(new_s) if broadcast_hit else active(new_s)
 
@@ -173,8 +203,9 @@ def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMs
                                 task.reply_to.tell(TaskFailed(
                                     error=err, node_id=node_id, task_id=tid,
                                 ))
+                    new_nt = _remove_task_from_node(s.node_tasks, node_id, tid)
                     new_s = _free_slot_and_drain(
-                        s, node_id, ctx, new_inflight, new_broadcasts, new_retries, new_queue=new_queue,
+                        s, node_id, ctx, new_inflight, new_broadcasts, new_retries, new_queue=new_queue, new_node_tasks=new_nt,
                     )
                     _emit_pressure(new_s)
                     return _check_broadcasts(new_s) if broadcast_hit else active(new_s)
@@ -190,10 +221,10 @@ def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMs
                         _emit_pressure(new_s)
                         return active(new_s)
                     log.debug("Dispatching task to node {nid}", nid=nid)
-                    new_nodes, new_inflight = _dispatch(
-                        nid, task, s.nodes, ctx.self, s.inflight,
+                    new_nodes, new_inflight, new_nt = _dispatch(
+                        nid, task, s.nodes, ctx.self, s.inflight, s.node_tasks,
                     )
-                    return active(replace(s, nodes=new_nodes, inflight=new_inflight, round_robin=s.round_robin + 1))
+                    return active(replace(s, nodes=new_nodes, inflight=new_inflight, node_tasks=new_nt, round_robin=s.round_robin + 1))
 
                 case SubmitBroadcast() as bcast:
                     n = len(s.nodes)

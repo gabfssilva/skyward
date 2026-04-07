@@ -32,6 +32,9 @@ from .messages import (
 )
 from .state import _State
 
+MAX_TERMINATE_RETRIES = 3
+TERMINATE_RETRY_DELAY = 5.0
+
 log = logger.bind(actor="reconciler")
 
 
@@ -64,8 +67,9 @@ def reconciler_actor(
 
     async def setup(ctx: ActorContext[ReconcilerMsg]) -> Behavior[ReconcilerMsg]:
         _schedule_tick(ctx)
+        desired = len(initial_node_ids)
         state = _State(
-            desired=len(initial_node_ids),
+            desired=desired,
             current=initial_node_ids,
             pending=frozenset(),
             draining=frozenset(),
@@ -73,6 +77,7 @@ def reconciler_actor(
             instance_map=MappingProxyType(dict(initial_instance_map)),
             cluster=cluster,
         )
+        ctx.self.tell(DesiredCountChanged(desired=desired, reason="initial"))
         log.info(
             "Reconciler started: desired={d}, current={c}, next_id={nid}",
             d=state.desired, c=len(state.current), nid=state.next_node_id,
@@ -146,6 +151,7 @@ def reconciler_actor(
                             mapper=lambda _: _TerminateResult(node_ids=(nid,)),
                             on_failure=lambda err: _TerminateError(
                                 node_ids=(nid,), error=str(err),
+                                instance_ids=(dead_iid,),
                             ),
                         )
 
@@ -158,11 +164,35 @@ def reconciler_actor(
                     log.debug("Terminated dead instances for nodes {nids}", nids=nids)
                     return Behaviors.same()
 
-                case _TerminateError(node_ids=nids, error=error):
-                    log.error(
-                        "Failed to terminate dead instances for nodes {nids}: {err}",
-                        nids=nids, err=error,
-                    )
+                case _TerminateError(
+                    node_ids=nids, error=error,
+                    instance_ids=iids, attempt=attempt,
+                ):
+                    if attempt < MAX_TERMINATE_RETRIES and iids:
+                        log.warning(
+                            "Terminate failed for nodes {nids} (attempt {a}/{max}), "
+                            "retrying: {err}",
+                            nids=nids, a=attempt, max=MAX_TERMINATE_RETRIES, err=error,
+                        )
+
+                        async def _retry_terminate_w() -> _TerminateResult:
+                            await asyncio.sleep(TERMINATE_RETRY_DELAY * attempt)
+                            await provider.terminate(s.cluster, iids)
+                            return _TerminateResult(node_ids=nids)
+
+                        ctx.pipe_to_self(
+                            _retry_terminate_w(),
+                            on_failure=lambda err: _TerminateError(
+                                node_ids=nids, error=str(err),
+                                instance_ids=iids, attempt=attempt + 1,
+                            ),
+                        )
+                    else:
+                        log.error(
+                            "Permanently failed to terminate instances for "
+                            "nodes {nids}: {err}",
+                            nids=nids, err=error,
+                        )
                     return Behaviors.same()
 
                 case NodeJoined(node_id=nid):
@@ -281,6 +311,7 @@ def reconciler_actor(
                             mapper=lambda _: _TerminateResult(node_ids=(nid,)),
                             on_failure=lambda err: _TerminateError(
                                 node_ids=(nid,), error=str(err),
+                                instance_ids=(dead_iid,),
                             ),
                         )
                     return scaling_up(replace(
@@ -293,11 +324,35 @@ def reconciler_actor(
                     log.debug("Terminated dead instances for nodes {nids}", nids=nids)
                     return Behaviors.same()
 
-                case _TerminateError(node_ids=nids, error=error):
-                    log.error(
-                        "Failed to terminate dead instances for nodes {nids}: {err}",
-                        nids=nids, err=error,
-                    )
+                case _TerminateError(
+                    node_ids=nids, error=error,
+                    instance_ids=iids, attempt=attempt,
+                ):
+                    if attempt < MAX_TERMINATE_RETRIES and iids:
+                        log.warning(
+                            "Terminate failed for nodes {nids} (attempt {a}/{max}), "
+                            "retrying: {err}",
+                            nids=nids, a=attempt, max=MAX_TERMINATE_RETRIES, err=error,
+                        )
+
+                        async def _retry_terminate_su() -> _TerminateResult:
+                            await asyncio.sleep(TERMINATE_RETRY_DELAY * attempt)
+                            await provider.terminate(s.cluster, iids)
+                            return _TerminateResult(node_ids=nids)
+
+                        ctx.pipe_to_self(
+                            _retry_terminate_su(),
+                            on_failure=lambda err: _TerminateError(
+                                node_ids=nids, error=str(err),
+                                instance_ids=iids, attempt=attempt + 1,
+                            ),
+                        )
+                    else:
+                        log.error(
+                            "Permanently failed to terminate instances for "
+                            "nodes {nids}: {err}",
+                            nids=nids, err=error,
+                        )
                     return Behaviors.same()
 
                 case NodeJoined(node_id=nid):
@@ -333,6 +388,7 @@ def reconciler_actor(
                             mapper=lambda _: _TerminateResult(node_ids=(nid,)),
                             on_failure=lambda err: _TerminateError(
                                 node_ids=(nid,), error=str(err),
+                                instance_ids=(iid,),
                             ),
                         )
                     new_s = replace(
@@ -348,11 +404,35 @@ def reconciler_actor(
                     log.debug("Terminated instances for nodes {nids}", nids=nids)
                     return Behaviors.same()
 
-                case _TerminateError(node_ids=nids, error=error):
-                    log.error(
-                        "Failed to terminate instances for nodes {nids}: {err}",
-                        nids=nids, err=error,
-                    )
+                case _TerminateError(
+                    node_ids=nids, error=error,
+                    instance_ids=iids, attempt=attempt,
+                ):
+                    if attempt < MAX_TERMINATE_RETRIES and iids:
+                        log.warning(
+                            "Terminate failed for nodes {nids} (attempt {a}/{max}), "
+                            "retrying: {err}",
+                            nids=nids, a=attempt, max=MAX_TERMINATE_RETRIES, err=error,
+                        )
+
+                        async def _retry_terminate_d() -> _TerminateResult:
+                            await asyncio.sleep(TERMINATE_RETRY_DELAY * attempt)
+                            await provider.terminate(s.cluster, iids)
+                            return _TerminateResult(node_ids=nids)
+
+                        ctx.pipe_to_self(
+                            _retry_terminate_d(),
+                            on_failure=lambda err: _TerminateError(
+                                node_ids=nids, error=str(err),
+                                instance_ids=iids, attempt=attempt + 1,
+                            ),
+                        )
+                    else:
+                        log.error(
+                            "Permanently failed to terminate instances for "
+                            "nodes {nids}: {err}",
+                            nids=nids, err=error,
+                        )
                     return Behaviors.same()
 
                 case DesiredCountChanged(desired=desired, reason=reason):
@@ -378,6 +458,7 @@ def reconciler_actor(
                             mapper=lambda _: _TerminateResult(node_ids=(nid,)),
                             on_failure=lambda err: _TerminateError(
                                 node_ids=(nid,), error=str(err),
+                                instance_ids=(dead_iid,),
                             ),
                         )
                     new_s = replace(

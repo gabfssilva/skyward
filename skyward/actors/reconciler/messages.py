@@ -37,6 +37,8 @@ class _TerminateResult:
 class _TerminateError:
     node_ids: tuple[NodeId, ...]
     error: str
+    instance_ids: tuple[str, ...] = ()
+    attempt: int = 1
 
 
 type ReconcilerMsg = (

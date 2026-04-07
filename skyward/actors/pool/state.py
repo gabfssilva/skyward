@@ -51,6 +51,7 @@ class PoolState:
     bootstrap_timelines: MappingProxyType[str, BootstrapTimeline] = MappingProxyType({})
     task_counters: TaskCounters = TaskCounters()
     scaling: ScalingSnapshot = ScalingSnapshot()
+    replacement_attempts: int = 0
     pool_started_at: float = 0.0
 
 

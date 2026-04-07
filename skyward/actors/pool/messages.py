@@ -87,6 +87,17 @@ class _ShutdownDone:
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class _ReplacementProvisioned:
+    instances: tuple[Any, ...]
+    cluster: Any
+
+
+@dataclass(frozen=True, slots=True)
+class _ReplacementFailed:
+    error: str
+
+
 type PoolMsg = (
     StartPool
     | StopPool
@@ -106,6 +117,8 @@ type PoolMsg = (
     | ClusterReady
     | InstancesProvisioned
     | _ShutdownDone
+    | _ReplacementProvisioned
+    | _ReplacementFailed
     | SpawnNodes
     | DrainNode
     | GetCurrentNodes

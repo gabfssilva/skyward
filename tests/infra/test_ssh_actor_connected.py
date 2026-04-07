@@ -31,6 +31,20 @@ def _mock_conn() -> MagicMock:
 
     conn.run = mock_run
 
+    # create_process returns an async context manager whose proc has
+    # sync stdin.write / stdin.write_eof (matching real asyncssh) and async wait.
+    def _mock_create_process(*_args: object, **_kwargs: object) -> MagicMock:
+        proc = MagicMock()
+        proc.stdin.write = MagicMock()
+        proc.stdin.write_eof = MagicMock()
+        proc.wait = AsyncMock()
+        ctx_mgr = MagicMock()
+        ctx_mgr.__aenter__ = AsyncMock(return_value=proc)
+        ctx_mgr.__aexit__ = AsyncMock(return_value=False)
+        return ctx_mgr
+
+    conn.create_process = _mock_create_process
+
     sftp = AsyncMock()
     file_mock = AsyncMock()
     file_mock.__aenter__ = AsyncMock(return_value=file_mock)
@@ -41,7 +55,11 @@ def _mock_conn() -> MagicMock:
     conn.start_sftp_client = MagicMock(return_value=sftp)
 
     conn.close = MagicMock()
-    conn.wait_closed = AsyncMock()
+
+    # wait_closed must hang (like a real open connection) — otherwise the
+    # actor immediately transitions to reconnecting via _ConnectionDropped.
+    _closed: asyncio.Future[None] = asyncio.get_event_loop().create_future()
+    conn.wait_closed = lambda: _closed
 
     return conn
 
@@ -135,12 +153,13 @@ class TestUpload:
         reply = MagicMock()
         reply.tell = lambda msg: future.set_result(msg) if not future.done() else None
 
-        with patch.dict("sys.modules", {"asyncssh": MagicMock(scp=AsyncMock())}):
+        mock_asyncssh = MagicMock(scp=AsyncMock())
+        with patch.dict("sys.modules", {"asyncssh": mock_asyncssh}):
             ref.tell(Upload(local="/tmp/a.txt", remote="/tmp/b.txt", reply_to=reply))
-
             result = await asyncio.wait_for(future, timeout=2.0)
-            assert isinstance(result, UploadResult)
-            assert result.success is True
+
+        assert isinstance(result, UploadResult)
+        assert result.success is True
 
 
 async def _as_coro(val: MagicMock) -> MagicMock:

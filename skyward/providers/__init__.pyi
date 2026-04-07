@@ -620,12 +620,44 @@ class Container:
     async def create_provider(self) -> Any: ...
     def default_options(self) -> Any: ...
 
+class LambdaCloud:
+    """Lambda Cloud GPU provider.
+
+    Parameters
+    ----------
+    api_key
+        API key. ``None`` reads from ``LAMBDA_API_KEY`` env var.
+    region
+        Preferred region (e.g., ``"us-east-3"``). ``None`` picks
+        first region with available capacity.
+    request_timeout
+        HTTP request timeout in seconds.
+
+    Examples
+    --------
+    >>> sky.LambdaCloud()
+    >>> sky.LambdaCloud(region="us-east-3")
+    """
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        region: str | None = None,
+        request_timeout: int = 30,
+    ) -> None: ...
+    @property
+    def type(self) -> str: ...
+    async def create_provider(self) -> Any: ...
+    def default_options(self) -> Any: ...
+
 __all__ = [
     "AWS",
     "Container",
     "GCP",
     "Hyperstack",
     "JarvisLabs",
+    "LambdaCloud",
     "MassedCompute",
     "Novita",
     "RunPod",

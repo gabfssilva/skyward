@@ -129,6 +129,10 @@ query { myself { containerRegistryCreds { id name } } }
 class RunPodError(Exception):
     """Error from RunPod API."""
 
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
 
 class RunPodClient:
     """Async HTTP client for RunPod API.
@@ -173,7 +177,10 @@ class RunPodClient:
                 "API error {method} {path}: {status}",
                 method=method, path=path, status=resp.status_code,
             )
-            raise RunPodError(f"API error {resp.status_code}: {resp.text}")
+            raise RunPodError(
+                f"API error {resp.status_code}: {resp.text}",
+                status=resp.status_code,
+            )
         return resp.json() if resp.content else None
 
     # =========================================================================
@@ -281,10 +288,29 @@ class RunPodClient:
         """Stop a pod (pause)."""
         await self._request("POST", f"/pods/{pod_id}/stop")
 
+    @retry(
+        on=lambda e: not (isinstance(e, RunPodError) and e.status == 404),
+        max_attempts=10,
+        base_delay=2.0,
+    )
     async def terminate_pod(self, pod_id: str) -> None:
-        """Terminate a pod (destroy)."""
+        """Terminate a pod (destroy).
+
+        Retries until the API confirms termination (200) or the pod is
+        already gone (404).  Never returns without one of those two
+        confirmations.
+        """
         self._log.debug("Terminating pod {pod_id}", pod_id=pod_id)
-        await self._request("DELETE", f"/pods/{pod_id}")
+        try:
+            await self._request("DELETE", f"/pods/{pod_id}")
+        except RunPodError as e:
+            if e.status == 404:
+                self._log.debug(
+                    "Pod {pod_id} already terminated (404)",
+                    pod_id=pod_id,
+                )
+                return
+            raise
 
     # =========================================================================
     # GraphQL API

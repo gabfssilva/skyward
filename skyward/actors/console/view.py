@@ -12,6 +12,7 @@ from rich.table import Table
 from rich.text import Text
 
 from skyward.api.views import PoolView
+from skyward.core.model import Instance
 
 from .state import _BootstrapTimeline, _NodeStatus, _Phase, _State, _TaskEntry, _throughput
 
@@ -112,6 +113,11 @@ def _state_from_pool_view(pool: PoolView) -> _State:
         ssh_user=ssh_user,
         ssh_key_path=ssh_key_path,
         bootstrap_spinners=MappingProxyType(bootstrap_spinners),
+        node_instances=MappingProxyType({
+            nid: nv.instance
+            for nid, nv in pool.nodes.items()
+            if nv.instance is not None
+        }),
     )
 
 # --- Styles ---
@@ -294,27 +300,31 @@ def _badge_text(label: str, link: str = "") -> Text:
     return t
 
 
-def _node_label(state: _State, node_id: int) -> str:
+def _node_instance(state: _State, node_id: int) -> Instance | None:
+    if node_id in state.node_instances:
+        return state.node_instances[node_id]
     if 0 <= node_id < len(state.instances):
-        return state.instances[node_id].id
+        return state.instances[node_id]
+    return None
+
+
+def _node_label(state: _State, node_id: int) -> str:
+    if inst := _node_instance(state, node_id):
+        return inst.id
     return f"node-{node_id}"
 
 
 def _ssh_url(state: _State, node_id: int) -> str:
-    if node_id < 0 or node_id >= len(state.instances):
-        return ""
-    inst = state.instances[node_id]
-    if not inst.ip or not state.ssh_user:
+    inst = _node_instance(state, node_id)
+    if not inst or not inst.ip or not state.ssh_user:
         return ""
     port = f":{inst.ssh_port}" if inst.ssh_port != 22 else ""
     return f"ssh://{state.ssh_user}@{inst.ip}{port}"
 
 
 def _ssh_command(state: _State, node_id: int) -> str:
-    if node_id < 0 or node_id >= len(state.instances):
-        return ""
-    inst = state.instances[node_id]
-    if not inst.ip or not state.ssh_user:
+    inst = _node_instance(state, node_id)
+    if not inst or not inst.ip or not state.ssh_user:
         return ""
     parts = ["ssh"]
     if state.ssh_key_path:
@@ -387,9 +397,9 @@ def _task_cost_label(
             for i in state.instances
         )
     else:
-        if node_id < 0 or node_id >= len(state.instances):
+        inst = _node_instance(state, node_id)
+        if not inst:
             return ""
-        inst = state.instances[node_id]
         hourly = (inst.offer.spot_price if inst.spot else inst.offer.on_demand_price) or 0.0
     if hourly <= 0:
         return ""
@@ -527,7 +537,7 @@ def _collect_badges(state: _State) -> tuple[list[Text], list[Text], list[Text]]:
     if state.instances:
         first = state.instances[0]
         itype = first.offer.instance_type
-        n = len(state.instances)
+        n = state.desired_nodes or state.total_nodes or len(state.instances)
 
         n_spot = sum(1 for i in state.instances if i.spot)
         n_od = n - n_spot
@@ -946,6 +956,7 @@ def _node_id_from_path(actor_path: str) -> int | None:
 
 
 def _resolve_instance_id(state: _State, node_id: int | None = None) -> str | None:
-    if node_id is not None and node_id < len(state.instances):
-        return state.instances[node_id].id
+    if node_id is not None:
+        inst = _node_instance(state, node_id)
+        return inst.id if inst else None
     return None

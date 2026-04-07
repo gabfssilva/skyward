@@ -112,6 +112,7 @@ from skyward.providers import GCP as GCP
 from skyward.providers import Container as Container
 from skyward.providers import Hyperstack as Hyperstack
 from skyward.providers import JarvisLabs as JarvisLabs
+from skyward.providers import LambdaCloud as LambdaCloud
 from skyward.providers import MassedCompute as MassedCompute
 from skyward.providers import Novita as Novita
 from skyward.providers import RunPod as RunPod
@@ -160,6 +161,7 @@ __all__ = [
     "GCP",
     "Hyperstack",
     "JarvisLabs",
+    "LambdaCloud",
     "MassedCompute",
     "Novita",
     "RunPod",

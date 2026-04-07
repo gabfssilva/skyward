@@ -76,6 +76,7 @@ class _State:
     bootstrap_spinners: MappingProxyType[int, _BootstrapTimeline] = MappingProxyType({})
     bootstrap_started: MappingProxyType[int, float] = MappingProxyType({})
     progress_lines: MappingProxyType[int, str] = MappingProxyType({})
+    node_instances: MappingProxyType[int, Instance] = MappingProxyType({})
     provision_error_shown: bool = False
 
 

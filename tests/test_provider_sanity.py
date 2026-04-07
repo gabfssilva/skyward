@@ -392,6 +392,31 @@ class TestNovitaSanity:
 
 
 @pytest.mark.sanity
+@pytest.mark.lambda_cloud
+@pytest.mark.timeout(TIMEOUT)
+@pytest.mark.xdist_group("lambda_cloud")
+class TestLambdaCloudSanity:
+    @pytest.fixture(scope="class")
+    def pool(self):
+        with sky.Compute(
+            provider=sky.LambdaCloud(),
+            accelerator=sky.accelerators.GH200(),
+            nodes=NODES,
+            image=sky.Image(pip=["torch"]),
+            options=sky.Options(console=False),
+        ) as p:
+            yield p
+
+    def test_single_dispatch(self, pool):
+        result = gpu_matmul() >> pool
+        _assert_single(result)
+
+    def test_broadcast(self, pool):
+        results = gpu_matmul() @ pool
+        _assert_broadcast(results)
+
+
+@pytest.mark.sanity
 @pytest.mark.vultr
 @pytest.mark.timeout(TIMEOUT)
 @pytest.mark.xdist_group("vultr")

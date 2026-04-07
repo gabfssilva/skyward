@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from skyward.providers.gcp.config import GCP
     from skyward.providers.hyperstack.config import Hyperstack
     from skyward.providers.jarvislabs.config import JarvisLabs
+    from skyward.providers.lambda_cloud.config import LambdaCloud
     from skyward.providers.massed_compute.config import MassedCompute
     from skyward.providers.novita.config import Novita
     from skyward.providers.runpod.config import RunPod
@@ -34,7 +35,7 @@ if TYPE_CHECKING:
     from skyward.providers.vultr.config import Vultr
     from skyward.storage import Storage
 
-    type ProviderConfig = AWS | GCP | Hyperstack | JarvisLabs | MassedCompute | Novita | RunPod | Scaleway | TensorDock | VastAI | Verda | Vultr
+    type ProviderConfig = AWS | GCP | Hyperstack | JarvisLabs | LambdaCloud | MassedCompute | Novita | RunPod | Scaleway | TensorDock | VastAI | Verda | Vultr
 
 type RawConfig = dict[str, Any]
 
@@ -80,6 +81,7 @@ def _get_provider_map() -> dict[str, type]:
     from skyward.providers.gcp.config import GCP
     from skyward.providers.hyperstack.config import Hyperstack
     from skyward.providers.jarvislabs.config import JarvisLabs
+    from skyward.providers.lambda_cloud.config import LambdaCloud
     from skyward.providers.massed_compute.config import MassedCompute
     from skyward.providers.novita.config import Novita
     from skyward.providers.runpod.config import RunPod
@@ -95,6 +97,7 @@ def _get_provider_map() -> dict[str, type]:
         "gcp": GCP,
         "hyperstack": Hyperstack,
         "jarvislabs": JarvisLabs,
+        "lambda": LambdaCloud,
         "massed_compute": MassedCompute,
         "novita": Novita,
         "tensordock": TensorDock,

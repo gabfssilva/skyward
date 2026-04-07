@@ -18,6 +18,7 @@ from skyward.providers.aws.config import AWS
 from skyward.providers.gcp.config import GCP
 from skyward.providers.hyperstack.config import Hyperstack
 from skyward.providers.jarvislabs.config import JarvisLabs
+from skyward.providers.lambda_cloud.config import LambdaCloud
 from skyward.providers.massed_compute.config import MassedCompute
 from skyward.providers.runpod.config import RunPod
 from skyward.providers.scaleway.config import Scaleway
@@ -261,6 +262,19 @@ class TestResolvePool:
         spec = pool._specs[0]
         assert isinstance(spec.provider, Scaleway)
         assert spec.provider.zone is None
+
+    def test_lambda_pool(self, tmp_path: Path):
+        (tmp_path / "skyward.toml").write_text(
+            '[providers.lc]\n'
+            'type = "lambda"\n'
+            'region = "us-east-3"\n'
+            '\n'
+            '[pools.gpu]\nprovider = "lc"\nnodes = 1\n'
+        )
+        pool = resolve_pool("gpu", project_dir=tmp_path)
+        spec = pool._specs[0]
+        assert isinstance(spec.provider, LambdaCloud)
+        assert spec.provider.region == "us-east-3"
 
     def test_vultr_pool(self, tmp_path: Path):
         (tmp_path / "skyward.toml").write_text(

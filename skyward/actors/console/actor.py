@@ -213,6 +213,13 @@ def console_actor() -> Behavior[ConsoleInput]:
                             summary = _render_summary(state)
                             console.print(summary)
                             return rendering(view, MappingProxyType({}))
+                        case Node.Lost(node_id=nid) if nid in progress:
+                            _emit(console, _node_label(state, nid), progress[nid])
+                            _print_event(console, event, state)
+                            new_progress = MappingProxyType({
+                                k: v for k, v in progress.items() if k != nid
+                            })
+                            return rendering(view, new_progress)
                         case _:
                             _print_event(console, event, state)
                     return Behaviors.same()

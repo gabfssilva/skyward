@@ -446,6 +446,9 @@ class TestScaling:
     def test_spawning_increments(self) -> None:
         proj = _make_projection()
         _provision(proj, total_nodes=2)
+        proj.handle(Scaling.DesiredChanged(
+            pool_name="pool-1", desired=4, reason="pressure",
+        ))
         proj.handle(Scaling.Spawning(
             pool_name="pool-1", count=2, instances=("i-1", "i-2"),
         ))

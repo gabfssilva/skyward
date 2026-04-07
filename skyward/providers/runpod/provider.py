@@ -552,8 +552,9 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
 
         _, ssh_public_key = get_local_ssh_key()
 
-        async def _create_one(idx: int) -> Instance | None:
-            async with RunPodClient(api_key, config=self._config) as client:
+        instances: list[Instance] = []
+        async with RunPodClient(api_key, config=self._config) as client:
+            for idx in range(count):
                 try:
                     pod = (
                         await _create_gpu_pod(client, self._config, cluster, idx, ssh_public_key)
@@ -562,11 +563,9 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                     )
                 except RunPodError as e:
                     log.error("Failed to create pod {idx}/{count}: {err}", idx=idx + 1, count=count, err=e)
-                    return None
-                return _build_runpod_instance(pod, "provisioning", cluster)
-
-        results = await asyncio.gather(*(_create_one(i) for i in range(count)))
-        return cluster, [inst for inst in results if inst is not None]
+                    continue
+                instances.append(_build_runpod_instance(pod, "provisioning", cluster))
+        return cluster, instances
 
     async def get_instance(
         self, cluster: Cluster[RunPodSpecific], instance_id: str,
@@ -606,13 +605,7 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
 
         api_key = get_api_key(self._config.api_key)
         async with RunPodClient(api_key, config=self._config) as client:
-            async def _terminate(pod_id: str) -> None:
-                try:
-                    await client.terminate_pod(pod_id)
-                except Exception as e:
-                    log.error("Failed to terminate pod {pid}: {err}", pid=pod_id, err=e)
-
-            await asyncio.gather(*(_terminate(pid) for pid in instance_ids))
+            await asyncio.gather(*(client.terminate_pod(pid) for pid in instance_ids))
         return cluster
 
     async def storage(self, cluster: Cluster[RunPodSpecific]) -> Storage:
