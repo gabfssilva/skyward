@@ -141,12 +141,7 @@ class LambdaCloudProvider(Provider[LambdaCloud, LambdaSpecific]):
         self, cluster: Cluster[LambdaSpecific], count: int,
     ) -> tuple[Cluster[LambdaSpecific], Sequence[Instance]]:
         type_name = cluster.offer.instance_type.name
-
-        match cluster.offer.specific:
-            case LambdaOfferData(regions=regions) if regions:
-                region = self._config.region or regions[0]
-            case _:
-                region = self._config.region or "us-east-3"
+        region = await self._resolve_region(type_name)
 
         try:
             result = await self._client.launch_instances(
@@ -171,6 +166,21 @@ class LambdaCloudProvider(Provider[LambdaCloud, LambdaSpecific]):
         )
 
         return cluster, instances
+
+    async def _resolve_region(self, instance_type_name: str) -> str:
+        if self._config.region:
+            return self._config.region
+
+        instance_types = await self._client.list_instance_types()
+        if entry := instance_types.get(instance_type_name):
+            regions = entry["regions_with_capacity_available"]
+            if regions:
+                region = regions[0]["name"]
+                log.info("Auto-selected region {region} for {type}", region=region, type=instance_type_name)
+                return region
+
+        log.warning("No regions with capacity for {type}, defaulting to us-east-3", type=instance_type_name)
+        return "us-east-3"
 
     async def get_instance(
         self, cluster: Cluster[LambdaSpecific], instance_id: str,

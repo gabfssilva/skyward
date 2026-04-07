@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from skyward.api.provider import ProviderConfig
 
 if typing.TYPE_CHECKING:
+    from skyward.api.spec import Options
     from skyward.providers.lambda_cloud.provider import LambdaCloudProvider
 
 
@@ -31,6 +32,15 @@ class LambdaCloud(ProviderConfig):
     @property
     def type(self) -> str:
         return "lambda"
+
+    def default_options(self) -> Options:
+        from skyward.api.spec import Options
+
+        return Options(
+            provision_timeout=600,
+            ssh_timeout=600,
+            bootstrap_timeout=600,
+        )
 
     async def create_provider(self) -> LambdaCloudProvider:
         from skyward.providers.lambda_cloud.provider import LambdaCloudProvider
