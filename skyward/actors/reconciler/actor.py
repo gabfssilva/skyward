@@ -139,12 +139,12 @@ def reconciler_actor(
                         return _start_draining(ctx, new_s)
                     return watching(new_s)
 
-                case ReconcilerNodeLost(node_id=nid, reason=reason):
+                case ReconcilerNodeLost(node_id=nid, reason=reason, instance_id=hint_iid):
                     log.warning("Node {nid} lost: {reason}", nid=nid, reason=reason)
                     new_current = s.current - {nid}
                     new_pending = s.pending - {nid}
 
-                    dead_iid = s.instance_map.get(nid)
+                    dead_iid = s.instance_map.get(nid) or hint_iid
                     if dead_iid:
                         ctx.pipe_to_self(
                             provider.terminate(s.cluster, (dead_iid,)),
@@ -231,6 +231,13 @@ def reconciler_actor(
                     if not instances:
                         new_failures = s.consecutive_failures + 1
                         if new_failures >= max_provision_retries:
+                            if len(s.current) >= min_nodes:
+                                log.warning(
+                                    "Provision returned 0 instances after {n} attempts "
+                                    "but min satisfied ({cur}/{min} nodes), will keep retrying",
+                                    n=new_failures, cur=len(s.current), min=min_nodes,
+                                )
+                                return watching(replace(s, consecutive_failures=0))
                             log.error(
                                 "Provision returned 0 instances ({n}/{max} attempts exhausted)",
                                 n=new_failures, max=max_provision_retries,
@@ -278,6 +285,13 @@ def reconciler_actor(
                 case _ProvisionError(error=error):
                     new_failures = s.consecutive_failures + 1
                     if new_failures >= max_provision_retries:
+                        if len(s.current) >= min_nodes:
+                            log.warning(
+                                "Provision failed after {n} attempts "
+                                "but min satisfied ({cur}/{min} nodes), will keep retrying: {err}",
+                                n=new_failures, cur=len(s.current), min=min_nodes, err=error,
+                            )
+                            return watching(replace(s, consecutive_failures=0))
                         log.error(
                             "Provision failed ({n}/{max} attempts exhausted): {err}",
                             n=new_failures, max=max_provision_retries, err=error,
@@ -302,9 +316,9 @@ def reconciler_actor(
                         return watching(new_s)
                     return scaling_up(new_s)
 
-                case ReconcilerNodeLost(node_id=nid, reason=reason):
+                case ReconcilerNodeLost(node_id=nid, reason=reason, instance_id=hint_iid):
                     log.warning("Node {nid} lost during scale-up: {reason}", nid=nid, reason=reason)
-                    dead_iid = s.instance_map.get(nid)
+                    dead_iid = s.instance_map.get(nid) or hint_iid
                     if dead_iid:
                         ctx.pipe_to_self(
                             provider.terminate(s.cluster, (dead_iid,)),
@@ -449,9 +463,9 @@ def reconciler_actor(
                         return watching(new_s)
                     return draining(new_s)
 
-                case ReconcilerNodeLost(node_id=nid, reason=reason):
+                case ReconcilerNodeLost(node_id=nid, reason=reason, instance_id=hint_iid):
                     log.warning("Node {nid} lost during drain: {reason}", nid=nid, reason=reason)
-                    dead_iid = s.instance_map.get(nid)
+                    dead_iid = s.instance_map.get(nid) or hint_iid
                     if dead_iid:
                         ctx.pipe_to_self(
                             provider.terminate(s.cluster, (dead_iid,)),

@@ -613,6 +613,8 @@ def pool_actor(
 
                 case StopPool(reply_to=stop_reply):
                     log.debug("StopPool during provisioning_instances")
+                    for node_ref in s.node_refs.values():
+                        ctx.stop(node_ref)
                     s.reply_to.tell(ProvisionFailed(reason="Interrupted"))
                     _prov_pi = s.provider
                     _cl_pi = s.cluster
@@ -807,6 +809,8 @@ def pool_actor(
                             "Replacement attempts exhausted ({n}/{max}), failing pool",
                             n=new_attempts - 1, max=s.spec.max_provision_attempts,
                         )
+                        for ref in new_refs.values():
+                            ctx.stop(ref)
                         s.reply_to.tell(ProvisionFailed(
                             reason=f"Too many node replacements ({new_attempts - 1}/"
                             f"{s.spec.max_provision_attempts})",
@@ -882,6 +886,8 @@ def pool_actor(
                                 "failed replacement, failing pool",
                                 alive=len(s.node_refs), min=min_required,
                             )
+                            for ref in s.node_refs.values():
+                                ctx.stop(ref)
                             s.reply_to.tell(ProvisionFailed(
                                 reason=f"Replacement failed: only {len(s.node_refs)}"
                                 f"/{min_required} nodes viable",
@@ -971,6 +977,8 @@ def pool_actor(
                             "Only {alive}/{min} nodes viable, failing pool",
                             alive=len(s.node_refs), min=min_required,
                         )
+                        for ref in s.node_refs.values():
+                            ctx.stop(ref)
                         s.reply_to.tell(ProvisionFailed(
                             reason=f"Replacement provision failed and only "
                             f"{len(s.node_refs)}/{min_required} nodes viable: "
@@ -1013,6 +1021,8 @@ def pool_actor(
 
                 case StopPool(reply_to=stop_reply):
                     log.debug("StopPool during provisioning")
+                    for node_ref in s.node_refs.values():
+                        ctx.stop(node_ref)
                     s.reply_to.tell(ProvisionFailed(reason="Interrupted"))
                     _prov_stop = s.provider
                     _cl_stop = s.cluster
@@ -1232,10 +1242,26 @@ def pool_actor(
                     )
                     tm.tell(NodeUnavailable(node_id=nid))
                     new_dead = s.dead_nodes | {nid}
+
+                    dead_ni = s.instances.get(nid)
+                    dead_iid = dead_ni.instance.id if dead_ni is not None else None
+                    if dead_iid is None:
+                        dead_iid = s.instance_map.get(nid)
+                    if dead_iid is None and s.cluster is not None and nid < len(s.cluster.instances):
+                        dead_iid = s.cluster.instances[nid].id
+
                     if s.reconciler_ref is not None:
                         s.reconciler_ref.tell(ReconcilerNodeLost(
                             node_id=nid, reason=reason,
+                            instance_id=dead_iid,
                         ))
+                    elif dead_iid is not None and s.cluster is not None:
+                        ctx.pipe_to_self(
+                            s.provider.terminate(s.cluster, (dead_iid,)),
+                            mapper=lambda _: _ShutdownDone(),
+                            on_failure=lambda err: _ShutdownDone(),
+                        )
+
                     new_node_refs = MappingProxyType(
                         {k: v for k, v in s.node_refs.items() if k != nid}
                     )
@@ -1259,6 +1285,10 @@ def pool_actor(
                             "Reconciler gave up with 0 ready nodes, shutting down: {reason}",
                             reason=reason,
                         )
+                        for node_ref in s.node_refs.values():
+                            ctx.stop(node_ref)
+                        if s.reconciler_ref is not None:
+                            ctx.stop(s.reconciler_ref)
                         known_iids = {ni.instance.id for ni in s.instances.values()}
                         known_iids |= {iid for iid in s.instance_map.values() if iid}
                         instance_ids = tuple(known_iids)
@@ -1374,6 +1404,11 @@ def pool_actor(
                         "StopPool, shutting down cluster {cid}",
                         cid=s.cluster_id,
                     )
+                    for node_ref in s.node_refs.values():
+                        ctx.stop(node_ref)
+                    if s.reconciler_ref is not None:
+                        ctx.stop(s.reconciler_ref)
+
                     known_iids = {ni.instance.id for ni in s.instances.values()}
                     known_iids |= {iid for iid in s.instance_map.values() if iid}
                     instance_ids = tuple(known_iids)
@@ -1441,6 +1476,40 @@ def pool_actor(
                         mapper=lambda _: _ShutdownDone(),
                         on_failure=lambda err: _ShutdownDone(),
                     )
+                    return Behaviors.same()
+                case _ReplacementProvisioned(
+                    instances=late_instances,
+                ) if s is not None and late_instances:
+                    late_iids = tuple(inst.id for inst in late_instances)
+                    log.warning(
+                        "Replacement arrived during shutdown — terminating "
+                        "orphaned instances {iids}",
+                        iids=late_iids,
+                    )
+                    ctx.pipe_to_self(
+                        s.provider.terminate(s.cluster, late_iids),
+                        mapper=lambda _: _ShutdownDone(),
+                        on_failure=lambda err: _ShutdownDone(),
+                    )
+                    return Behaviors.same()
+                case _ReplacementProvisioned() | _ReplacementFailed():
+                    return Behaviors.same()
+                case InstancesProvisioned(
+                    instances=late_instances,
+                ) if s is not None and late_instances:
+                    late_iids = tuple(inst.id for inst in late_instances)
+                    log.warning(
+                        "InstancesProvisioned arrived during shutdown — "
+                        "terminating orphaned instances {iids}",
+                        iids=late_iids,
+                    )
+                    ctx.pipe_to_self(
+                        s.provider.terminate(s.cluster, late_iids),
+                        mapper=lambda _: _ShutdownDone(),
+                        on_failure=lambda err: _ShutdownDone(),
+                    )
+                    return Behaviors.same()
+                case InstancesProvisioned():
                     return Behaviors.same()
                 case GetPoolSnapshot(reply_to=snap_reply) if s is not None:
                     snap_reply.tell(build_pool_snapshot(s, name))

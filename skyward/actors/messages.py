@@ -525,6 +525,7 @@ class DesiredCountChanged:
 class ReconcilerNodeLost:
     node_id: NodeId
     reason: str
+    instance_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
