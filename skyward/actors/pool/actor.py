@@ -756,6 +756,11 @@ def pool_actor(
                         new_statuses = MappingProxyType({**s.node_statuses, iid: NodeStatus.READY})
                     ready_threshold = s.spec.nodes.min or s.spec.nodes.desired
 
+                    new_scaling = replace(
+                        s.scaling,
+                        pending_nodes=max(0, s.scaling.pending_nodes - 1),
+                    )
+
                     if len(new_ready) >= ready_threshold:
                         if len(new_ready) == s.spec.nodes.desired:
                             log.info("All {n} nodes active, pool is operational", n=s.spec.nodes.desired)
@@ -771,10 +776,11 @@ def pool_actor(
                         ))
                         return ready(replace(
                             s, ready_nodes=new_ready, node_statuses=new_statuses,
-                            phase=PoolPhase.WORKERS,
+                            phase=PoolPhase.WORKERS, scaling=new_scaling,
                         ))
                     return provisioning(replace(
                         s, ready_nodes=new_ready, node_statuses=new_statuses,
+                        scaling=new_scaling,
                     ))
                 case NodeBecameUnready(node_id=nid, reason=reason):
                     log.warning(
@@ -834,10 +840,7 @@ def pool_actor(
                         _do_provision_prov(),
                         on_failure=lambda _err: InstancesProvisioned(instances=(), cluster=_cl),
                     )
-                    return provisioning(replace(
-                        s,
-                        scaling=replace(s.scaling, pending_nodes=s.scaling.pending_nodes + count),
-                    ))
+                    return provisioning(s)
 
                 case InstancesProvisioned(instances=new_instances, cluster=upd_cluster):
                     if not new_instances:
@@ -1022,8 +1025,13 @@ def pool_actor(
                     if ni:
                         iid = ni.instance.id
                         new_statuses = MappingProxyType({**s.node_statuses, iid: NodeStatus.READY})
+                    new_scaling = replace(
+                        s.scaling,
+                        pending_nodes=max(0, s.scaling.pending_nodes - 1),
+                    )
                     return ready(replace(
-                        s, ready_nodes=s.ready_nodes | {nid}, node_statuses=new_statuses,
+                        s, ready_nodes=s.ready_nodes | {nid},
+                        node_statuses=new_statuses, scaling=new_scaling,
                     ))
                 case NodeBecameUnready(node_id=nid, reason=reason):
                     log.warning(
@@ -1142,10 +1150,7 @@ def pool_actor(
                         _do_provision_ready(),
                         on_failure=lambda _err: InstancesProvisioned(instances=(), cluster=_cl),
                     )
-                    return ready(replace(
-                        s,
-                        scaling=replace(s.scaling, pending_nodes=s.scaling.pending_nodes + count),
-                    ))
+                    return ready(s)
 
                 case InstancesProvisioned(instances=new_instances, cluster=upd_cluster):
                     if not new_instances:
