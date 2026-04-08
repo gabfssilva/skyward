@@ -7,7 +7,6 @@ from casty import ActorRef
 
 from skyward.actors.messages import (
     ClusterReady,
-    DrainNode,
     GetCurrentNodes,
     GetPoolSnapshot,
     HeadAddressKnown,
@@ -18,7 +17,8 @@ from skyward.actors.messages import (
     NodeExhausted,
     NodeLost,
     ReconciliationExhausted,
-    SpawnNodes,
+    RequestScaleDown,
+    RequestScaleUp,
     SubmitBroadcast,
     SubmitTask,
 )
@@ -87,17 +87,6 @@ class _ShutdownDone:
     pass
 
 
-@dataclass(frozen=True, slots=True)
-class _ReplacementProvisioned:
-    instances: tuple[Any, ...]
-    cluster: Any
-
-
-@dataclass(frozen=True, slots=True)
-class _ReplacementFailed:
-    error: str
-
-
 type PoolMsg = (
     StartPool
     | StopPool
@@ -117,10 +106,8 @@ type PoolMsg = (
     | ClusterReady
     | InstancesProvisioned
     | _ShutdownDone
-    | _ReplacementProvisioned
-    | _ReplacementFailed
-    | SpawnNodes
-    | DrainNode
+    | RequestScaleUp
+    | RequestScaleDown
     | GetCurrentNodes
     | GetPoolSnapshot
 )

@@ -47,7 +47,7 @@ class TestCloudpickleRoundtrip:
             lambda: Log.Emitted(pool_name="p", node_id=0, message="x"),
             lambda: Scaling.DesiredChanged(pool_name="p", desired=4, reason="x"),
             lambda: Scaling.Spawning(pool_name="p", count=2),
-            lambda: Scaling.Draining(pool_name="p", node_id=0),
+            lambda: Scaling.Draining(pool_name="p", count=1),
             lambda: Scaling.DrainCompleted(pool_name="p", node_id=0),
             lambda: Error.Occurred(pool_name="p", message="x"),
         ],

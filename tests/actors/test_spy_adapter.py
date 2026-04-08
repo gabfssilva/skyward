@@ -433,25 +433,23 @@ class TestScalingEvents:
         assert result.desired == 6
         assert result.reason == "pressure"
 
-    def test_spawn_nodes(self):
-        from skyward.actors.messages import SpawnNodes
+    def test_request_scale_up(self):
+        from skyward.actors.messages import RequestScaleUp
 
-        instances = ("i-1", "i-2", "i-3")
-        ev = SpawnNodes(instances=instances, cluster=MagicMock(), start_node_id=0)
+        ev = RequestScaleUp(count=3)
         result = translate(_spy(ev), "pool")
 
         assert isinstance(result, Scaling.Spawning)
         assert result.count == 3
-        assert result.instances == instances
 
-    def test_drain_node(self):
-        from skyward.actors.messages import DrainNode
+    def test_request_scale_down(self):
+        from skyward.actors.messages import RequestScaleDown
 
-        ev = DrainNode(node_id=2, reply_to=MagicMock())
+        ev = RequestScaleDown(count=2)
         result = translate(_spy(ev), "pool")
 
         assert isinstance(result, Scaling.Draining)
-        assert result.node_id == 2
+        assert result.count == 2
 
     def test_drain_complete(self):
         from skyward.actors.messages import DrainComplete

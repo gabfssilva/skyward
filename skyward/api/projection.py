@@ -455,13 +455,13 @@ class SessionProjection:
                     instances=(*pool.instances, *instances),
                 )
 
-            case Scaling.Draining(pool_name=name):
+            case Scaling.Draining(pool_name=name, count=n):
                 if name not in self._pools:
                     return
                 pool = self._pools[name]
                 scaling = replace(
                     pool.scaling,
-                    draining=pool.scaling.draining + 1,
+                    draining=pool.scaling.draining + n,
                     reconciler_state="draining",
                 )
                 self._pools[name] = replace(pool, scaling=scaling)

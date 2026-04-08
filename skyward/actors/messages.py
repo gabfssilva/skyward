@@ -525,7 +525,6 @@ class DesiredCountChanged:
 class ReconcilerNodeLost:
     node_id: NodeId
     reason: str
-    instance_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -544,22 +543,39 @@ class NodeJoined:
 
 
 @dataclass(frozen=True, slots=True)
-class SpawnNodes:
-    instances: tuple[Any, ...]
-    cluster: Any
-    start_node_id: int
-
-
-@dataclass(frozen=True, slots=True)
-class DrainNode:
-    node_id: NodeId
-    reply_to: ActorRef[DrainComplete]
-
-
-@dataclass(frozen=True, slots=True)
 class DrainComplete:
     node_id: NodeId
     instance_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class RequestScaleUp:
+    """Reconciler asks pool to provision more nodes."""
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
+class RequestScaleDown:
+    """Reconciler asks pool to drain excess nodes."""
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
+class ScaleUpComplete:
+    """Pool reports how many nodes were actually provisioned."""
+    provisioned: int
+
+
+@dataclass(frozen=True, slots=True)
+class ScaleUpFailed:
+    """Pool reports provision failure."""
+    error: str
+
+
+@dataclass(frozen=True, slots=True)
+class ScaleDownComplete:
+    """Pool confirms drain started for N nodes."""
+    drained: int
 
 
 # ── Pool Query ────────────────────────────────────────────────────

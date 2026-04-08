@@ -209,7 +209,7 @@ class Scaling:
     @dataclass(frozen=True, slots=True)
     class Draining:
         pool_name: str
-        node_id: int
+        count: int
 
     @dataclass(frozen=True, slots=True)
     class DrainCompleted:

@@ -16,7 +16,6 @@ from skyward.actors.messages import (
     ClusterReady,
     CurrentNodeCount,
     DrainComplete,
-    DrainNode,
     GetCurrentNodes,
     GetPoolSnapshot,
     HeadAddressKnown,
@@ -34,7 +33,10 @@ from skyward.actors.messages import (
     ReconcilerNodeLost,
     ReconciliationExhausted,
     RegisterPressureObserver,
-    SpawnNodes,
+    RequestScaleDown,
+    RequestScaleUp,
+    ScaleDownComplete,
+    ScaleUpComplete,
     SubmitBroadcast,
     SubmitTask,
 )
@@ -53,8 +55,6 @@ from .messages import (
     RecoverPool,
     StartPool,
     StopPool,
-    _ReplacementFailed,
-    _ReplacementProvisioned,
     _ShutdownDone,
 )
 from .state import PoolState, build_pool_snapshot
@@ -91,12 +91,29 @@ def _build_pool_info_json(
     return pool_info.model_dump_json()
 
 
+async def _shutdown_cluster(
+    provider: Any, cluster: Any, instance_ids: tuple[str, ...],
+) -> None:
+    if instance_ids and cluster is not None:
+        try:
+            await provider.terminate(cluster, instance_ids)
+        except Exception:
+            logger.bind(actor="pool").error(
+                "CRITICAL: FAILED to terminate instances "
+                "{ids} — they may still be running!",
+                ids=instance_ids,
+            )
+    if cluster is not None:
+        with suppress(Exception):
+            await provider.teardown(cluster)
+
+
 def pool_actor(
     *,
     session_ref: ActorRef[SessionMsg] | None = None,
     pool_name: str = "",
 ) -> Behavior[PoolMsg]:
-    """idle -> requesting -> provisioning -> ready -> stopping."""
+    """idle -> requesting -> provisioning_instances -> provisioning -> ready -> stopping."""
 
     tunnel_map: dict[tuple[str, int], tuple[str, int]] = {}
 
@@ -176,6 +193,55 @@ def pool_actor(
             around_process_hooks=process_hooks,
         ))
 
+    def _spawn_node(
+        ctx: ActorContext[PoolMsg],
+        nid: int,
+        spec: Any,
+        cluster: Any,
+        provider: Any,
+        instance: Any,
+        ca: Any,
+        head_addr: str | None,
+    ) -> ActorRef:
+        ref = ctx.spawn(
+            node_actor(
+                node_id=nid, pool=ctx.self,
+                ssh_timeout=spec.ssh_timeout,
+                ssh_retry_interval=spec.ssh_retry_interval,
+                poll_timeout=spec.provision_timeout,
+                bootstrap_timeout=spec.bootstrap_timeout,
+                ca=ca,
+            ),
+            f"node-{nid}",
+        )
+        ref.tell(Provision(
+            cluster=cluster, provider=provider, instance=instance,
+        ))
+        if spec.cluster and head_addr:
+            ref.tell(HeadAddressKnown(
+                head_addr=head_addr, casty_port=25520,
+                num_nodes=spec.nodes.max or spec.nodes.desired,
+                worker_concurrency=spec.worker.concurrency,
+                worker_executor=spec.worker.resolved_executor,
+            ))
+        return ref
+
+    def _collect_instance_ids(s: PoolState) -> tuple[str, ...]:
+        known_iids = {ni.instance.id for ni in s.instances.values()}
+        known_iids |= {iid for iid in s.instance_map.values() if iid}
+        return tuple(known_iids)
+
+    def _resolve_dead_iid(s: PoolState, nid: int) -> str | None:
+        dead_ni = s.instances.get(nid)
+        dead_iid = dead_ni.instance.id if dead_ni is not None else None
+        if dead_iid is None:
+            dead_iid = s.instance_map.get(nid)
+        if dead_iid is None and s.cluster is not None and nid < len(s.cluster.instances):
+            dead_iid = s.cluster.instances[nid].id
+        return dead_iid
+
+    # ── idle ──────────────────────────────────────────────────────
+
     def idle() -> Behavior[PoolMsg]:
         async def receive(
             ctx: ActorContext[PoolMsg], msg: PoolMsg,
@@ -235,20 +301,9 @@ def pool_actor(
                     new_refs: MappingProxyType[int, ActorRef] = MappingProxyType({})
                     for instance in instances:
                         nid = len(new_refs)
-                        ref = ctx.spawn(
-                            node_actor(
-                                node_id=nid, pool=ctx.self,
-                                ssh_timeout=spec.ssh_timeout,
-                                ssh_retry_interval=spec.ssh_retry_interval,
-                                poll_timeout=spec.provision_timeout,
-                                bootstrap_timeout=spec.bootstrap_timeout,
-                                ca=ca,
-                            ),
-                            f"node-{nid}",
+                        ref = _spawn_node(
+                            ctx, nid, spec, cluster, provider, instance, ca, None,
                         )
-                        ref.tell(Provision(
-                            cluster=cluster, provider=provider, instance=instance,
-                        ))
                         new_refs = MappingProxyType({**new_refs, nid: ref})
 
                     tm_ref = ctx.spawn(task_manager_actor(), "task-manager")
@@ -267,6 +322,8 @@ def pool_actor(
 
             return Behaviors.same()
         return Behaviors.receive(receive)
+
+    # ── requesting ────────────────────────────────────────────────
 
     def requesting(s: PoolState) -> Behavior[PoolMsg]:
         log = logger.bind(actor="pool", state="requesting")
@@ -356,29 +413,12 @@ def pool_actor(
                 case StopPool(reply_to=stop_reply):
                     log.debug("StopPool during requesting")
                     s.reply_to.tell(ProvisionFailed(reason="Interrupted"))
-                    _prov_req = s.provider
-                    _cl_req = s.cluster
-                    _iids_req = (
-                        tuple(inst.id for inst in _cl_req.instances)
-                        if _cl_req is not None else ()
+                    _iids = (
+                        tuple(inst.id for inst in s.cluster.instances)
+                        if s.cluster is not None else ()
                     )
-
-                    async def _shutdown() -> None:
-                        if _iids_req and _cl_req is not None:
-                            try:
-                                await _prov_req.terminate(_cl_req, _iids_req)
-                            except Exception:
-                                log.error(
-                                    "CRITICAL: FAILED to terminate instances "
-                                    "{ids} — they may still be running!",
-                                    ids=_iids_req,
-                                )
-                        if _cl_req is not None:
-                            with suppress(Exception):
-                                await _prov_req.teardown(_cl_req)
-
                     ctx.pipe_to_self(
-                        _shutdown(),
+                        _shutdown_cluster(s.provider, s.cluster, _iids),
                         mapper=lambda _: _ShutdownDone(),
                     )
                     return stopping(stop_reply, s.cluster_id or "")
@@ -389,6 +429,8 @@ def pool_actor(
             return Behaviors.same()
         return Behaviors.receive(receive)
 
+    # ── provisioning_instances ────────────────────────────────────
+
     def provisioning_instances(s: PoolState) -> Behavior[PoolMsg]:
         log = logger.bind(actor="pool", state="provisioning_instances")
 
@@ -398,14 +440,12 @@ def pool_actor(
                     iid = meta.instance.id
                     new_statuses = MappingProxyType({**s.node_statuses, iid: NodeStatus.SSH})
                     return provisioning_instances(replace(s, node_statuses=new_statuses))
-                case NodeBecameReady() as nbr:
+                case NodeBecameReady():
                     log.debug(
-                        "Node {nid} ready early (buffered)",
-                        nid=nbr.node_id,
+                        "Node {nid} ready early (ignored during provisioning_instances)",
+                        nid=msg.node_id,
                     )
-                    return provisioning_instances(replace(
-                        s, early_ready=(*s.early_ready, nbr),
-                    ))
+                    return Behaviors.same()
                 case InstancesProvisioned(
                     instances=instances, cluster=updated_cluster,
                 ):
@@ -427,22 +467,10 @@ def pool_actor(
 
                     for instance in to_spawn:
                         nid = len(new_spawned)
-                        ref = ctx.spawn(
-                            node_actor(
-                                node_id=nid, pool=ctx.self,
-                                ssh_timeout=s.spec.ssh_timeout,
-                                ssh_retry_interval=s.spec.ssh_retry_interval,
-                                poll_timeout=s.spec.provision_timeout,
-                                bootstrap_timeout=s.spec.bootstrap_timeout,
-                                ca=s.ca,
-                            ),
-                            f"node-{nid}",
+                        ref = _spawn_node(
+                            ctx, nid, s.spec, updated_cluster,
+                            s.provider, instance, s.ca, None,
                         )
-                        ref.tell(Provision(
-                            cluster=updated_cluster,
-                            provider=s.provider,
-                            instance=instance,
-                        ))
                         new_spawned = MappingProxyType({**new_spawned, nid: ref})
 
                     min_needed = s.spec.nodes.min or s.spec.nodes.desired
@@ -461,15 +489,30 @@ def pool_actor(
                             ),
                             "task-manager",
                         )
-                        for nbr in s.early_ready:
-                            ctx.self.tell(nbr)
+
+                        from skyward.actors.reconciler import reconciler_actor
+
+                        min_n = s.spec.nodes.desired
+                        max_n = s.spec.nodes.max or s.spec.nodes.desired
+                        rec_ref = ctx.spawn(
+                            reconciler_actor(
+                                pool=ctx.self,
+                                min_nodes=min_n,
+                                max_nodes=max_n,
+                                initial_node_ids=frozenset(new_spawned.keys()),
+                                tick_interval=s.spec.reconcile_tick_interval,
+                                max_provision_retries=s.spec.max_provision_attempts,
+                            ),
+                            "reconciler",
+                        )
+
                         return provisioning(replace(
                             s,
                             cluster=updated_cluster,
                             cluster_id=updated_cluster.id,
                             node_refs=new_spawned,
                             tm_ref=tm_ref,
-                            early_ready=(),
+                            reconciler_ref=rec_ref,
                         ))
 
                     still_needed = s.spec.nodes.desired - len(new_spawned)
@@ -582,31 +625,14 @@ def pool_actor(
                     instance_ids = tuple(
                         inst.id for inst in updated_cluster.instances
                     )
-                    provider = s.provider
                     reply_to = s.reply_to
                     reason = (
                         f"Only provisioned {len(new_spawned)}"
                         f"/{s.spec.nodes.desired} nodes after "
                         f"{s.attempt} attempts across all offers"
                     )
-
-                    async def _cleanup_and_fail() -> None:
-                        if instance_ids:
-                            try:
-                                await provider.terminate(
-                                    updated_cluster, instance_ids,
-                                )
-                            except Exception:
-                                log.error(
-                                    "CRITICAL: FAILED to terminate instances "
-                                    "{ids} — they may still be running!",
-                                    ids=instance_ids,
-                                )
-                        with suppress(Exception):
-                            await provider.teardown(updated_cluster)
-
                     ctx.pipe_to_self(
-                        _cleanup_and_fail(),
+                        _shutdown_cluster(s.provider, updated_cluster, instance_ids),
                         mapper=lambda _: ProvisionFailed(reason=reason),
                     )
                     return _cleanup_awaiting(reply_to)
@@ -616,29 +642,12 @@ def pool_actor(
                     for node_ref in s.node_refs.values():
                         ctx.stop(node_ref)
                     s.reply_to.tell(ProvisionFailed(reason="Interrupted"))
-                    _prov_pi = s.provider
-                    _cl_pi = s.cluster
-                    _iids_pi = (
-                        tuple(inst.id for inst in _cl_pi.instances)
-                        if _cl_pi is not None else ()
+                    _iids = (
+                        tuple(inst.id for inst in s.cluster.instances)
+                        if s.cluster is not None else ()
                     )
-
-                    async def _shutdown() -> None:
-                        if _iids_pi and _cl_pi is not None:
-                            try:
-                                await _prov_pi.terminate(_cl_pi, _iids_pi)
-                            except Exception:
-                                log.error(
-                                    "CRITICAL: FAILED to terminate instances "
-                                    "{ids} — they may still be running!",
-                                    ids=_iids_pi,
-                                )
-                        if _cl_pi is not None:
-                            with suppress(Exception):
-                                await _prov_pi.teardown(_cl_pi)
-
                     ctx.pipe_to_self(
-                        _shutdown(),
+                        _shutdown_cluster(s.provider, s.cluster, _iids),
                         mapper=lambda _: _ShutdownDone(),
                     )
                     return stopping(stop_reply, s.cluster_id or "")
@@ -664,6 +673,8 @@ def pool_actor(
                     return Behaviors.same()
             return Behaviors.same()
         return Behaviors.receive(receive)
+
+    # ── provisioning ──────────────────────────────────────────────
 
     def provisioning(s: PoolState) -> Behavior[PoolMsg]:
         assert s.tm_ref is not None
@@ -786,234 +797,80 @@ def pool_actor(
                 case NodeExhausted(node_id=nid, reason=reason):
                     tm.tell(NodeUnavailable(node_id=nid))
                     new_dead = s.dead_nodes | {nid}
-                    new_refs = MappingProxyType(
-                        {k: v for k, v in s.node_refs.items() if k != nid},
-                    )
-                    new_attempts = s.replacement_attempts + 1
 
-                    dead_ni = s.instances.get(nid)
-                    _dead_iid = dead_ni.instance.id if dead_ni is not None else None
-                    if _dead_iid is None and s.cluster is not None and nid < len(s.cluster.instances):
-                        _dead_iid = s.cluster.instances[nid].id
-                    if _dead_iid is not None and s.cluster is not None:
-                        _prov = s.provider
-                        _cl = s.cluster
+                    dead_iid = _resolve_dead_iid(s, nid)
+                    if dead_iid is not None and s.cluster is not None:
                         ctx.pipe_to_self(
-                            _prov.terminate(_cl, (_dead_iid,)),
+                            s.provider.terminate(s.cluster, (dead_iid,)),
                             mapper=lambda _: _ShutdownDone(),
-                            on_failure=lambda err: _ShutdownDone(),
+                            on_failure=lambda _err: _ShutdownDone(),
                         )
 
-                    if new_attempts > s.spec.max_provision_attempts:
-                        log.error(
-                            "Replacement attempts exhausted ({n}/{max}), failing pool",
-                            n=new_attempts - 1, max=s.spec.max_provision_attempts,
-                        )
-                        for ref in new_refs.values():
-                            ctx.stop(ref)
-                        s.reply_to.tell(ProvisionFailed(
-                            reason=f"Too many node replacements ({new_attempts - 1}/"
-                            f"{s.spec.max_provision_attempts})",
+                    if s.reconciler_ref is not None:
+                        s.reconciler_ref.tell(ReconcilerNodeLost(
+                            node_id=nid, reason=reason,
                         ))
-                        _prov_fail = s.provider
-                        _cl_fail = s.cluster
-                        _iids_fail = (
-                            tuple(inst.id for inst in _cl_fail.instances)
-                            if _cl_fail is not None else ()
-                        )
 
-                        async def _shutdown_exhausted() -> None:
-                            if _iids_fail and _cl_fail is not None:
-                                try:
-                                    await _prov_fail.terminate(_cl_fail, _iids_fail)
-                                except Exception:
-                                    log.error(
-                                        "CRITICAL: FAILED to terminate instances "
-                                        "{ids} — they may still be running!",
-                                        ids=_iids_fail,
-                                    )
-                            if _cl_fail is not None:
-                                with suppress(Exception):
-                                    await _prov_fail.teardown(_cl_fail)
-
-                        ctx.pipe_to_self(
-                            _shutdown_exhausted(),
-                            mapper=lambda _: _ShutdownDone(),
-                        )
-                        return stopping(
-                            None, s.cluster_id or "",
-                            replace(s, phase=PoolPhase.STOPPED, dead_nodes=new_dead),
-                            pool_name,
-                        )
-
-                    log.warning(
-                        "Node {nid} exhausted during provisioning, "
-                        "provisioning replacement (attempt {n}/{max}): {reason}",
-                        nid=nid, n=new_attempts,
-                        max=s.spec.max_provision_attempts, reason=reason,
-                    )
-                    _prov_repl = s.provider
-                    _cl_repl = s.cluster
-                    ctx.pipe_to_self(
-                        _prov_repl.provision(_cl_repl, 1),
-                        mapper=lambda result: _ReplacementProvisioned(
-                            instances=tuple(result[1]), cluster=result[0],
-                        ),
-                        on_failure=lambda err: _ReplacementFailed(
-                            error=str(err),
-                        ),
+                    new_node_refs = MappingProxyType(
+                        {k: v for k, v in s.node_refs.items() if k != nid},
                     )
                     return provisioning(replace(
                         s,
                         ready_nodes=s.ready_nodes - {nid},
                         dead_nodes=new_dead,
-                        node_refs=new_refs,
-                        replacement_attempts=new_attempts,
+                        node_refs=new_node_refs,
                     ))
-                case _ReplacementProvisioned(
-                    instances=repl_instances, cluster=repl_cluster,
-                ):
-                    if not repl_instances:
-                        log.error("Replacement provision returned 0 instances")
-                        min_required = (
-                            s.spec.nodes.min
-                            if s.spec.nodes.min is not None
-                            else s.spec.nodes.desired
-                        )
-                        if len(s.node_refs) < min_required:
-                            log.error(
-                                "Only {alive}/{min} nodes viable after "
-                                "failed replacement, failing pool",
-                                alive=len(s.node_refs), min=min_required,
-                            )
-                            for ref in s.node_refs.values():
-                                ctx.stop(ref)
-                            s.reply_to.tell(ProvisionFailed(
-                                reason=f"Replacement failed: only {len(s.node_refs)}"
-                                f"/{min_required} nodes viable",
-                            ))
-                            _prov_rp = s.provider
-                            _cl_rp = s.cluster
-                            _iids_rp = (
-                                tuple(inst.id for inst in _cl_rp.instances)
-                                if _cl_rp is not None else ()
-                            )
 
-                            async def _shutdown_no_replacement() -> None:
-                                if _iids_rp and _cl_rp is not None:
-                                    try:
-                                        await _prov_rp.terminate(_cl_rp, _iids_rp)
-                                    except Exception:
-                                        log.error(
-                                            "CRITICAL: FAILED to terminate instances "
-                                            "{ids} — they may still be running!",
-                                            ids=_iids_rp,
-                                        )
-                                if _cl_rp is not None:
-                                    with suppress(Exception):
-                                        await _prov_rp.teardown(_cl_rp)
+                case RequestScaleUp(count=count):
+                    log.info("Reconciler requested scale-up of {n} nodes", n=count)
+                    _prov = s.provider
+                    _cl = s.cluster
 
-                            ctx.pipe_to_self(
-                                _shutdown_no_replacement(),
-                                mapper=lambda _: _ShutdownDone(),
-                            )
-                            return stopping(
-                                None, s.cluster_id or "",
-                                replace(s, phase=PoolPhase.STOPPED), pool_name,
-                            )
+                    async def _do_provision_prov() -> InstancesProvisioned:
+                        result = await _prov.provision(_cl, count)
+                        return InstancesProvisioned(instances=tuple(result[1]), cluster=result[0])
+
+                    ctx.pipe_to_self(
+                        _do_provision_prov(),
+                        on_failure=lambda _err: InstancesProvisioned(instances=(), cluster=_cl),
+                    )
+                    return provisioning(replace(
+                        s,
+                        scaling=replace(s.scaling, pending_nodes=s.scaling.pending_nodes + count),
+                    ))
+
+                case InstancesProvisioned(instances=new_instances, cluster=upd_cluster):
+                    if not new_instances:
+                        if s.reconciler_ref is not None:
+                            s.reconciler_ref.tell(ScaleUpComplete(provisioned=0))
                         return provisioning(s)
 
-                    inst = repl_instances[0]
-                    next_nid = max(
-                        (*s.node_refs.keys(), *s.dead_nodes), default=-1,
-                    ) + 1
+                    start_id = max((*s.node_refs.keys(), *s.dead_nodes), default=-1) + 1
                     log.info(
-                        "Replacement instance provisioned, spawning node {nid}",
-                        nid=next_nid,
+                        "Scale-up: spawning {n} nodes from id {sid}",
+                        n=len(new_instances), sid=start_id,
                     )
-                    ref = ctx.spawn(
-                        node_actor(
-                            node_id=next_nid, pool=ctx.self,
-                            ssh_timeout=s.spec.ssh_timeout,
-                            ssh_retry_interval=s.spec.ssh_retry_interval,
-                            poll_timeout=s.spec.provision_timeout,
-                            bootstrap_timeout=s.spec.bootstrap_timeout,
-                            ca=s.ca,
-                        ),
-                        f"node-{next_nid}",
-                    )
-                    upd_cluster = replace(
-                        repl_cluster,
-                        instances=(*repl_cluster.instances, inst),
-                    )
-                    ref.tell(Provision(
-                        cluster=upd_cluster, provider=s.provider,
-                        instance=inst,
-                    ))
-                    if s.spec.cluster and s.head_addr:
-                        ref.tell(HeadAddressKnown(
-                            head_addr=s.head_addr, casty_port=25520,
-                            num_nodes=s.spec.nodes.max or s.spec.nodes.desired,
-                            worker_concurrency=s.spec.worker.concurrency,
-                            worker_executor=s.spec.worker.resolved_executor,
-                        ))
+                    new_node_refs = s.node_refs
+                    new_inst_map = s.instance_map
+                    for i, inst in enumerate(new_instances):
+                        nid = start_id + i
+                        ref = _spawn_node(
+                            ctx, nid, s.spec, upd_cluster,
+                            s.provider, inst, s.ca, s.head_addr,
+                        )
+                        new_node_refs = MappingProxyType({**new_node_refs, nid: ref})
+                        new_inst_map = MappingProxyType({**new_inst_map, nid: inst.id})
+
+                    if s.reconciler_ref is not None:
+                        s.reconciler_ref.tell(ScaleUpComplete(provisioned=len(new_instances)))
+
                     return provisioning(replace(
                         s,
                         cluster=upd_cluster,
-                        node_refs=MappingProxyType({**s.node_refs, next_nid: ref}),
+                        node_refs=new_node_refs,
+                        instance_map=new_inst_map,
+                        scaling=replace(s.scaling, pending_nodes=s.scaling.pending_nodes + len(new_instances)),
                     ))
-
-                case _ReplacementFailed(error=repl_error):
-                    log.error(
-                        "Replacement provision failed: {err}", err=repl_error,
-                    )
-                    min_required = (
-                        s.spec.nodes.min
-                        if s.spec.nodes.min is not None
-                        else s.spec.nodes.desired
-                    )
-                    if len(s.node_refs) < min_required:
-                        log.error(
-                            "Only {alive}/{min} nodes viable, failing pool",
-                            alive=len(s.node_refs), min=min_required,
-                        )
-                        for ref in s.node_refs.values():
-                            ctx.stop(ref)
-                        s.reply_to.tell(ProvisionFailed(
-                            reason=f"Replacement provision failed and only "
-                            f"{len(s.node_refs)}/{min_required} nodes viable: "
-                            f"{repl_error}",
-                        ))
-                        _prov_rf = s.provider
-                        _cl_rf = s.cluster
-                        _iids_rf = (
-                            tuple(inst.id for inst in _cl_rf.instances)
-                            if _cl_rf is not None else ()
-                        )
-
-                        async def _shutdown_repl_failed() -> None:
-                            if _iids_rf and _cl_rf is not None:
-                                try:
-                                    await _prov_rf.terminate(_cl_rf, _iids_rf)
-                                except Exception:
-                                    log.error(
-                                        "CRITICAL: FAILED to terminate instances "
-                                        "{ids} — they may still be running!",
-                                        ids=_iids_rf,
-                                    )
-                            if _cl_rf is not None:
-                                with suppress(Exception):
-                                    await _prov_rf.teardown(_cl_rf)
-
-                        ctx.pipe_to_self(
-                            _shutdown_repl_failed(),
-                            mapper=lambda _: _ShutdownDone(),
-                        )
-                        return stopping(
-                            None, s.cluster_id or "",
-                            replace(s, phase=PoolPhase.STOPPED), pool_name,
-                        )
-                    return provisioning(s)
 
                 case _ShutdownDone():
                     log.debug("Dead instance terminated")
@@ -1023,30 +880,15 @@ def pool_actor(
                     log.debug("StopPool during provisioning")
                     for node_ref in s.node_refs.values():
                         ctx.stop(node_ref)
+                    if s.reconciler_ref is not None:
+                        ctx.stop(s.reconciler_ref)
                     s.reply_to.tell(ProvisionFailed(reason="Interrupted"))
-                    _prov_stop = s.provider
-                    _cl_stop = s.cluster
-                    _iids_stop = (
-                        tuple(inst.id for inst in _cl_stop.instances)
-                        if _cl_stop is not None else ()
+                    _iids = (
+                        tuple(inst.id for inst in s.cluster.instances)
+                        if s.cluster is not None else ()
                     )
-
-                    async def _shutdown() -> None:
-                        if _iids_stop and _cl_stop is not None:
-                            try:
-                                await _prov_stop.terminate(_cl_stop, _iids_stop)
-                            except Exception:
-                                log.error(
-                                    "CRITICAL: FAILED to terminate instances "
-                                    "{ids} — they may still be running!",
-                                    ids=_iids_stop,
-                                )
-                        if _cl_stop is not None:
-                            with suppress(Exception):
-                                await _prov_stop.teardown(_cl_stop)
-
                     ctx.pipe_to_self(
-                        _shutdown(),
+                        _shutdown_cluster(s.provider, s.cluster, _iids),
                         mapper=lambda _: _ShutdownDone(),
                     )
                     return stopping(
@@ -1067,6 +909,8 @@ def pool_actor(
             behavior = Behaviors.with_lifecycle(behavior, post_stop=_close)
         return behavior
 
+    # ── ready ─────────────────────────────────────────────────────
+
     def ready(s: PoolState) -> Behavior[PoolMsg]:
         assert s.tm_ref is not None
         assert s.client is not None or s.clients
@@ -1078,36 +922,18 @@ def pool_actor(
             match msg:
                 case PoolStarted() as started:
                     s.reply_to.tell(started)
-                    from skyward.actors.reconciler import reconciler_actor
 
-                    min_n = s.spec.nodes.desired
-                    max_n = s.spec.nodes.max or s.spec.nodes.desired
-                    inst_map = MappingProxyType({nid: ni.instance.id for nid, ni in s.instances.items()})
-                    rec_ref = ctx.spawn(
-                        reconciler_actor(
-                            pool=ctx.self,
-                            provider=s.provider,
-                            cluster=s.cluster,
-                            min_nodes=min_n,
-                            max_nodes=max_n,
-                            initial_node_ids=frozenset(s.instances.keys()),
-                            initial_instance_map=inst_map,
-                            next_node_id=max(s.instances.keys()) + 1 if s.instances else s.spec.nodes.desired,
-                            tick_interval=s.spec.reconcile_tick_interval,
-                            max_provision_retries=s.spec.max_provision_attempts,
-                        ),
-                        "reconciler",
-                    )
                     is_elastic = s.spec.nodes.auto_scaling
                     if is_elastic:
                         from skyward.actors.autoscaler import autoscaler_actor
 
                         assert s.spec.nodes.max is not None
+                        assert s.reconciler_ref is not None
                         as_ref = ctx.spawn(
                             autoscaler_actor(
                                 min_nodes=s.spec.nodes.desired,
                                 max_nodes=s.spec.nodes.max,
-                                reconciler=rec_ref,
+                                reconciler=s.reconciler_ref,
                                 slots_per_node=s.spec.worker.concurrency + s.spec.worker.buffer,
                                 initial_count=s.spec.nodes.desired,
                                 cooldown=s.spec.autoscale_cooldown,
@@ -1116,6 +942,9 @@ def pool_actor(
                             "autoscaler",
                         )
                         tm.tell(RegisterPressureObserver(observer=as_ref))
+
+                    min_n = s.spec.nodes.desired
+                    inst_map = MappingProxyType({nid: ni.instance.id for nid, ni in s.instances.items()})
                     new_scaling = ScalingSnapshot(
                         desired_nodes=min_n,
                         is_elastic=is_elastic,
@@ -1124,7 +953,6 @@ def pool_actor(
                     )
                     return ready(replace(
                         s,
-                        reconciler_ref=rec_ref,
                         instance_map=inst_map,
                         phase=PoolPhase.READY,
                         scaling=new_scaling,
@@ -1243,24 +1071,21 @@ def pool_actor(
                     tm.tell(NodeUnavailable(node_id=nid))
                     new_dead = s.dead_nodes | {nid}
 
-                    dead_ni = s.instances.get(nid)
-                    dead_iid = dead_ni.instance.id if dead_ni is not None else None
-                    if dead_iid is None:
-                        dead_iid = s.instance_map.get(nid)
-                    if dead_iid is None and s.cluster is not None and nid < len(s.cluster.instances):
-                        dead_iid = s.cluster.instances[nid].id
+                    dead_iid = _resolve_dead_iid(s, nid)
 
-                    if s.reconciler_ref is not None:
-                        s.reconciler_ref.tell(ReconcilerNodeLost(
-                            node_id=nid, reason=reason,
-                            instance_id=dead_iid,
-                        ))
-                    elif dead_iid is not None and s.cluster is not None:
+                    # Terminate the dead instance directly
+                    if dead_iid is not None and s.cluster is not None:
                         ctx.pipe_to_self(
                             s.provider.terminate(s.cluster, (dead_iid,)),
                             mapper=lambda _: _ShutdownDone(),
-                            on_failure=lambda err: _ShutdownDone(),
+                            on_failure=lambda _err: _ShutdownDone(),
                         )
+
+                    # Notify reconciler (pool handles terminate directly)
+                    if s.reconciler_ref is not None:
+                        s.reconciler_ref.tell(ReconcilerNodeLost(
+                            node_id=nid, reason=reason,
+                        ))
 
                     new_node_refs = MappingProxyType(
                         {k: v for k, v in s.node_refs.items() if k != nid}
@@ -1289,28 +1114,9 @@ def pool_actor(
                             ctx.stop(node_ref)
                         if s.reconciler_ref is not None:
                             ctx.stop(s.reconciler_ref)
-                        known_iids = {ni.instance.id for ni in s.instances.values()}
-                        known_iids |= {iid for iid in s.instance_map.values() if iid}
-                        instance_ids = tuple(known_iids)
-                        provider = s.provider
-                        cluster_to_clean = s.cluster
-
-                        async def _shutdown_unrecoverable() -> None:
-                            if instance_ids and cluster_to_clean is not None:
-                                try:
-                                    await provider.terminate(cluster_to_clean, instance_ids)
-                                except Exception:
-                                    log.error(
-                                        "CRITICAL: FAILED to terminate instances "
-                                        "{ids} — they may still be running!",
-                                        ids=instance_ids,
-                                    )
-                            if cluster_to_clean is not None:
-                                with suppress(Exception):
-                                    await provider.teardown(cluster_to_clean)
-
+                        instance_ids = _collect_instance_ids(s)
                         ctx.pipe_to_self(
-                            _shutdown_unrecoverable(),
+                            _shutdown_cluster(s.provider, s.cluster, instance_ids),
                             mapper=lambda _: _ShutdownDone(),
                         )
                         return stopping(
@@ -1322,72 +1128,96 @@ def pool_actor(
                         n=len(s.ready_nodes),
                     )
                     return Behaviors.same()
-                case SpawnNodes(
-                    instances=new_instances, cluster=upd_cluster,
-                    start_node_id=start_id,
-                ):
+
+                case RequestScaleUp(count=count):
+                    log.info("Reconciler requested scale-up of {n} nodes", n=count)
+                    _prov = s.provider
+                    _cl = s.cluster
+
+                    async def _do_provision_ready() -> InstancesProvisioned:
+                        result = await _prov.provision(_cl, count)
+                        return InstancesProvisioned(instances=tuple(result[1]), cluster=result[0])
+
+                    ctx.pipe_to_self(
+                        _do_provision_ready(),
+                        on_failure=lambda _err: InstancesProvisioned(instances=(), cluster=_cl),
+                    )
+                    return ready(replace(
+                        s,
+                        scaling=replace(s.scaling, pending_nodes=s.scaling.pending_nodes + count),
+                    ))
+
+                case InstancesProvisioned(instances=new_instances, cluster=upd_cluster):
+                    if not new_instances:
+                        if s.reconciler_ref is not None:
+                            s.reconciler_ref.tell(ScaleUpComplete(provisioned=0))
+                        return ready(s)
+
+                    start_id = max((*s.node_refs.keys(), *s.dead_nodes), default=-1) + 1
                     log.info(
-                        "Spawning {n} dynamic nodes from id {sid}",
+                        "Scale-up: spawning {n} nodes from id {sid}",
                         n=len(new_instances), sid=start_id,
                     )
                     new_node_refs = s.node_refs
                     new_inst_map = s.instance_map
                     for i, inst in enumerate(new_instances):
                         nid = start_id + i
-                        ref = ctx.spawn(
-                            node_actor(
-                                node_id=nid, pool=ctx.self,
-                                ssh_timeout=s.spec.ssh_timeout,
-                                ssh_retry_interval=s.spec.ssh_retry_interval,
-                                poll_timeout=s.spec.provision_timeout,
-                                bootstrap_timeout=s.spec.bootstrap_timeout,
-                                ca=s.ca,
-                            ),
-                            f"node-{nid}",
+                        ref = _spawn_node(
+                            ctx, nid, s.spec, upd_cluster,
+                            s.provider, inst, s.ca, s.head_addr,
                         )
-                        ref.tell(Provision(
-                            cluster=upd_cluster, provider=s.provider,
-                            instance=inst,
-                        ))
-                        if s.spec.cluster and s.head_addr:
-                            ref.tell(HeadAddressKnown(
-                                head_addr=s.head_addr, casty_port=25520,
-                                num_nodes=s.spec.nodes.max or s.spec.nodes.desired,
-                                worker_concurrency=s.spec.worker.concurrency,
-                                worker_executor=s.spec.worker.resolved_executor,
-                            ))
                         new_node_refs = MappingProxyType({**new_node_refs, nid: ref})
                         new_inst_map = MappingProxyType({**new_inst_map, nid: inst.id})
-                    new_scaling = replace(
-                        s.scaling,
-                        pending_nodes=s.scaling.pending_nodes + len(new_instances),
-                    )
+
+                    if s.reconciler_ref is not None:
+                        s.reconciler_ref.tell(ScaleUpComplete(provisioned=len(new_instances)))
+
                     return ready(replace(
                         s,
+                        cluster=upd_cluster,
                         node_refs=new_node_refs,
                         instance_map=new_inst_map,
-                        scaling=new_scaling,
+                        scaling=replace(s.scaling, pending_nodes=s.scaling.pending_nodes + len(new_instances)),
                     ))
 
-                case DrainNode(node_id=nid, reply_to=drain_reply):
-                    log.info("Draining node {nid}", nid=nid)
-                    tm.tell(NodeUnavailable(node_id=nid))
-                    iid = s.instance_map.get(nid, "")
-                    drain_reply.tell(DrainComplete(node_id=nid, instance_id=iid))
-                    node_ref = s.node_refs.get(nid)
-                    if node_ref:
-                        ctx.stop(node_ref)
-                    new_node_refs = MappingProxyType({k: v for k, v in s.node_refs.items() if k != nid})
-                    new_scaling = replace(
-                        s.scaling,
-                        draining_nodes=s.scaling.draining_nodes + 1,
-                    )
+                case RequestScaleDown(count=count):
+                    log.info("Reconciler requested scale-down of {n} nodes", n=count)
+                    victims = sorted(s.node_refs.keys(), reverse=True)[:count]
+                    victims = [nid for nid in victims if nid != 0][:count]
+                    if not victims:
+                        if s.reconciler_ref is not None:
+                            s.reconciler_ref.tell(ScaleDownComplete(drained=0))
+                        return ready(s)
+
+                    new_node_refs = s.node_refs
+                    for nid in victims:
+                        tm.tell(NodeUnavailable(node_id=nid))
+                        iid = s.instance_map.get(nid, "")
+                        if s.reconciler_ref is not None:
+                            s.reconciler_ref.tell(DrainComplete(node_id=nid, instance_id=iid))
+                        node_ref = s.node_refs.get(nid)
+                        if node_ref:
+                            ctx.stop(node_ref)
+                        new_node_refs = MappingProxyType({k: v for k, v in new_node_refs.items() if k != nid})
+                        if iid and s.cluster is not None:
+                            ctx.pipe_to_self(
+                                s.provider.terminate(s.cluster, (iid,)),
+                                mapper=lambda _: _ShutdownDone(),
+                                on_failure=lambda _err: _ShutdownDone(),
+                            )
+
+                    if s.reconciler_ref is not None:
+                        s.reconciler_ref.tell(ScaleDownComplete(drained=len(victims)))
+
                     return ready(replace(
                         s,
                         node_refs=new_node_refs,
-                        ready_nodes=s.ready_nodes - {nid},
-                        scaling=new_scaling,
+                        ready_nodes=s.ready_nodes - frozenset(victims),
+                        scaling=replace(s.scaling, draining_nodes=s.scaling.draining_nodes + len(victims)),
                     ))
+
+                case _ShutdownDone():
+                    return Behaviors.same()
 
                 case GetCurrentNodes(reply_to=query_reply):
                     query_reply.tell(CurrentNodeCount(
@@ -1408,27 +1238,9 @@ def pool_actor(
                         ctx.stop(node_ref)
                     if s.reconciler_ref is not None:
                         ctx.stop(s.reconciler_ref)
-
-                    known_iids = {ni.instance.id for ni in s.instances.values()}
-                    known_iids |= {iid for iid in s.instance_map.values() if iid}
-                    instance_ids = tuple(known_iids)
-                    provider = s.provider
-                    cluster = s.cluster
-
-                    async def _shutdown() -> None:
-                        try:
-                            await provider.terminate(cluster, instance_ids)
-                        except Exception:
-                            log.error(
-                                "CRITICAL: FAILED to terminate instances "
-                                "{ids} — they may still be running!",
-                                ids=instance_ids,
-                            )
-                        with suppress(Exception):
-                            await provider.teardown(cluster)
-
+                    instance_ids = _collect_instance_ids(s)
                     ctx.pipe_to_self(
-                        _shutdown(),
+                        _shutdown_cluster(s.provider, s.cluster, instance_ids),
                         mapper=lambda _: _ShutdownDone(),
                     )
                     return stopping(
@@ -1450,6 +1262,8 @@ def pool_actor(
             post_stop=_close_client,
         )
 
+    # ── stopping ──────────────────────────────────────────────────
+
     def stopping(
         stop_reply: ActorRef | None, cluster_id: str,
         s: PoolState | None = None, name: str = "",
@@ -1464,36 +1278,6 @@ def pool_actor(
                     if stop_reply is not None:
                         stop_reply.tell(PoolStopped())
                     return Behaviors.stopped()
-                case SpawnNodes(instances=late_instances) if s is not None:
-                    late_iids = tuple(inst.id for inst in late_instances)
-                    log.warning(
-                        "SpawnNodes arrived during shutdown — terminating "
-                        "orphaned instances {iids}",
-                        iids=late_iids,
-                    )
-                    ctx.pipe_to_self(
-                        s.provider.terminate(s.cluster, late_iids),
-                        mapper=lambda _: _ShutdownDone(),
-                        on_failure=lambda err: _ShutdownDone(),
-                    )
-                    return Behaviors.same()
-                case _ReplacementProvisioned(
-                    instances=late_instances,
-                ) if s is not None and late_instances:
-                    late_iids = tuple(inst.id for inst in late_instances)
-                    log.warning(
-                        "Replacement arrived during shutdown — terminating "
-                        "orphaned instances {iids}",
-                        iids=late_iids,
-                    )
-                    ctx.pipe_to_self(
-                        s.provider.terminate(s.cluster, late_iids),
-                        mapper=lambda _: _ShutdownDone(),
-                        on_failure=lambda err: _ShutdownDone(),
-                    )
-                    return Behaviors.same()
-                case _ReplacementProvisioned() | _ReplacementFailed():
-                    return Behaviors.same()
                 case InstancesProvisioned(
                     instances=late_instances,
                 ) if s is not None and late_instances:
@@ -1506,7 +1290,7 @@ def pool_actor(
                     ctx.pipe_to_self(
                         s.provider.terminate(s.cluster, late_iids),
                         mapper=lambda _: _ShutdownDone(),
-                        on_failure=lambda err: _ShutdownDone(),
+                        on_failure=lambda _err: _ShutdownDone(),
                     )
                     return Behaviors.same()
                 case InstancesProvisioned():

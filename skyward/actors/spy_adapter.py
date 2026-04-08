@@ -19,7 +19,6 @@ from skyward.actors.messages import (
     ConsoleOutput,
     DesiredCountChanged,
     DrainComplete,
-    DrainNode,
     Error,
     ExecuteOnNode,
     Log,
@@ -34,8 +33,9 @@ from skyward.actors.messages import (
     Provision,
     ReconcilerNodeLost,
     ReconciliationExhausted,
+    RequestScaleDown,
+    RequestScaleUp,
     ShutdownRequested,
-    SpawnNodes,
     SubmitBroadcast,
     SubmitTask,
     TaskFailed,
@@ -268,11 +268,11 @@ def translate(spy: SpyEvent, pool_name: str) -> SessionEvent | None:  # type: ig
         case DesiredCountChanged(desired=desired, reason=reason):
             return Scaling.DesiredChanged(pool_name, desired, reason)
 
-        case SpawnNodes(instances=instances):
-            return Scaling.Spawning(pool_name, len(instances), instances)
+        case RequestScaleUp(count=count):
+            return Scaling.Spawning(pool_name, count)
 
-        case DrainNode(node_id=nid):
-            return Scaling.Draining(pool_name, nid)
+        case RequestScaleDown(count=count):
+            return Scaling.Draining(pool_name, count)
 
         case DrainComplete(node_id=nid):
             return Scaling.DrainCompleted(pool_name, nid)

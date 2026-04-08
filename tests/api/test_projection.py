@@ -460,7 +460,7 @@ class TestScaling:
     def test_draining_increments(self) -> None:
         proj = _make_projection()
         _provision(proj, total_nodes=2)
-        proj.handle(Scaling.Draining(pool_name="pool-1", node_id=0))
+        proj.handle(Scaling.Draining(pool_name="pool-1", count=1))
 
         sv = proj.view.pools["pool-1"].scaling
         assert sv.draining == 1
@@ -470,7 +470,7 @@ class TestScaling:
         proj = _make_projection()
         _provision(proj, total_nodes=2)
         proj.handle(Node.Connected(pool_name="pool-1", node_id=0, instance=None))
-        proj.handle(Scaling.Draining(pool_name="pool-1", node_id=0))
+        proj.handle(Scaling.Draining(pool_name="pool-1", count=1))
         proj.handle(Scaling.DrainCompleted(pool_name="pool-1", node_id=0))
 
         pv = proj.view.pools["pool-1"]
