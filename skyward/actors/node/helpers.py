@@ -211,7 +211,7 @@ async def sync_user_code(transport_ref: ActorRef, ni: NodeInstance, spec: Any, c
         return
 
     excludes = getattr(image, "excludes", ())
-    tarball = build_user_code_tarball(includes=includes, excludes=excludes)
+    tarball = await asyncio.to_thread(build_user_code_tarball, includes=includes, excludes=excludes)
 
     _, sudo = resolve_ssh_user(ni, cluster)
     remote_tar = "/tmp/_user_code.tar.gz"

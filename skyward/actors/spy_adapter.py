@@ -118,8 +118,8 @@ def _format_task(fn: object, args: tuple, kwargs: dict) -> str:
     return call[:80] + "\u2026" if len(call) > 80 else call
 
 
-def translate(spy: SpyEvent, pool_name: str) -> SessionEvent | None:  # type: ignore[type-arg]
-    """Translate a SpyEvent into a domain event, or None to skip."""
+def translate(spy: SpyEvent, pool_name: str) -> SessionEvent | tuple[SessionEvent, ...] | None:  # type: ignore[type-arg]
+    """Translate a SpyEvent into domain event(s), or None to skip."""
     match spy.event:
         # ── Pool init ───────────────────────────────────────
         case StartPool(spec=spec):
@@ -173,7 +173,13 @@ def translate(spy: SpyEvent, pool_name: str) -> SessionEvent | None:  # type: ig
             return None
 
         case InstancesProvisioned(cluster=cluster, instances=instances):
-            return Pool.Provisioned(pool_name, cluster, instances)
+            provisioned = Pool.Provisioned(pool_name, cluster, instances)
+            if not instances:
+                return provisioned
+            return (
+                provisioned,
+                Scaling.Spawning(pool_name, len(instances), instances),
+            )
 
         # ── Node lifecycle ──────────────────────────────────
         case _Connected(instance=ni):
@@ -268,8 +274,8 @@ def translate(spy: SpyEvent, pool_name: str) -> SessionEvent | None:  # type: ig
         case DesiredCountChanged(desired=desired, reason=reason):
             return Scaling.DesiredChanged(pool_name, desired, reason)
 
-        case RequestScaleUp(count=count):
-            return Scaling.Spawning(pool_name, count)
+        case RequestScaleUp():
+            return None
 
         case RequestScaleDown(count=count):
             return Scaling.Draining(pool_name, count)

@@ -411,6 +411,9 @@ class DaemonServer:
             instance_ids = tuple(
                 ni.instance.id for ni in pool._instances.values()
             )
+            cluster_bytes = await asyncio.to_thread(cloudpickle.dumps, pool._cluster)
+            spec_bytes_out = await asyncio.to_thread(cloudpickle.dumps, pool._spec)
+            provider_bytes = await asyncio.to_thread(cloudpickle.dumps, pool._specs[0].provider)
             await self._actor_system.ask(
                 self._state_ref,
                 lambda r: RegisterPool(
@@ -418,11 +421,9 @@ class DaemonServer:
                     cluster_id=pool._cluster_id,
                     instance_ids=instance_ids,
                     provider_name=pool._spec.provider or "",
-                    cluster_bytes=cloudpickle.dumps(pool._cluster),
-                    spec_bytes=cloudpickle.dumps(pool._spec),
-                    provider_config_bytes=cloudpickle.dumps(
-                        pool._specs[0].provider,
-                    ),
+                    cluster_bytes=cluster_bytes,
+                    spec_bytes=spec_bytes_out,
+                    provider_config_bytes=provider_bytes,
                     reply_to=r,
                 ),
                 timeout=5.0,
@@ -475,12 +476,12 @@ class DaemonServer:
             return TaskFailed(error=f"Pool '{name}' not found", traceback="")
 
         pool = self._pools[name]
-        pending = cloudpickle.loads(payload)
+        pending = await asyncio.to_thread(cloudpickle.loads, payload)
 
         try:
             future = pool.run_async(pending)
             result = await asyncio.wrap_future(future)
-            return TaskSucceeded(payload=cloudpickle.dumps(result))
+            return TaskSucceeded(payload=await asyncio.to_thread(cloudpickle.dumps, result))
         except Exception as e:
             return TaskFailed(error=str(e), traceback=tb_module.format_exc())
 
@@ -491,12 +492,12 @@ class DaemonServer:
             return TaskFailed(error=f"Pool '{name}' not found", traceback="")
 
         pool = self._pools[name]
-        pending = cloudpickle.loads(payload)
+        pending = await asyncio.to_thread(cloudpickle.loads, payload)
 
         try:
             loop = asyncio.get_running_loop()
             results = await loop.run_in_executor(None, pool.broadcast, pending)
-            return BroadcastSucceeded(payload=cloudpickle.dumps(results))
+            return BroadcastSucceeded(payload=await asyncio.to_thread(cloudpickle.dumps, results))
         except Exception as e:
             return TaskFailed(error=str(e), traceback=tb_module.format_exc())
 
@@ -701,9 +702,9 @@ class DaemonServer:
             return False
 
         try:
-            cluster = cloudpickle.loads(entry.cluster_bytes)
-            spec = cloudpickle.loads(entry.spec_bytes)
-            provider_config = cloudpickle.loads(entry.provider_config_bytes)
+            cluster = await asyncio.to_thread(cloudpickle.loads, entry.cluster_bytes)
+            spec = await asyncio.to_thread(cloudpickle.loads, entry.spec_bytes)
+            provider_config = await asyncio.to_thread(cloudpickle.loads, entry.provider_config_bytes)
         except Exception as e:
             log.warning(
                 "Pool {name}: deserialization failed ({err}), skipping",
@@ -772,6 +773,7 @@ class DaemonServer:
             from .state import RegisterPool
 
             alive_ids = tuple(inst.id for inst in alive)
+            cluster_bytes = await asyncio.to_thread(cloudpickle.dumps, cluster)
             await self._actor_system.ask(
                 self._state_ref,
                 lambda r: RegisterPool(
@@ -779,7 +781,7 @@ class DaemonServer:
                     cluster_id=cluster.id,
                     instance_ids=alive_ids,
                     provider_name=entry.provider_name,
-                    cluster_bytes=cloudpickle.dumps(cluster),
+                    cluster_bytes=cluster_bytes,
                     spec_bytes=entry.spec_bytes,
                     provider_config_bytes=entry.provider_config_bytes,
                     reply_to=r,

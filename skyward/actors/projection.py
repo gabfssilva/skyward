@@ -42,9 +42,15 @@ def projection_actor(projection: SessionProjection) -> Behavior[ProjectionMsg]:
                 pool_name = pool_name_from_path(path)
                 if pool_name is None:
                     return Behaviors.same()
-                domain_event = translate(spy, pool_name)
-                if domain_event is not None:
-                    projection.handle(domain_event)
+                result = translate(spy, pool_name)
+                match result:
+                    case tuple() as events:
+                        for event in events:
+                            projection.handle(event)
+                    case None:
+                        pass
+                    case event:
+                        projection.handle(event)
         return Behaviors.same()
 
     return Behaviors.receive(receive)

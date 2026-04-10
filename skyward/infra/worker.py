@@ -309,7 +309,7 @@ def worker_behavior(
                     import cloudpickle
 
                     loop = asyncio.get_running_loop()
-                    payload = cloudpickle.dumps((fn, args, kwargs))
+                    payload = await asyncio.to_thread(cloudpickle.dumps, (fn, args, kwargs))
                     result = await loop.run_in_executor(
                         executor_pool, _run_in_process, payload,
                         dict(os.environ), tuple(process_hooks),

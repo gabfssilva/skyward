@@ -12,6 +12,7 @@ class _State:
     pending: int = 0
     draining: int = 0
     consecutive_failures: int = 0
+    last_requested: int = 0
 
     @property
     def effective(self) -> int:

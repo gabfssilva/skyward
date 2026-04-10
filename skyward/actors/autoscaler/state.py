@@ -30,9 +30,9 @@ def _compute_desired(
     if report.inflight == 0 and now - last_busy_time > scale_down_idle_seconds:
         return min_nodes
 
-    if report.queued == 0 and report.total_capacity > 0:
+    if report.queued == 0 and report.inflight > 0 and report.total_capacity > 0:
         utilization = report.inflight / report.total_capacity
-        if utilization < 0.3 and now - last_busy_time > scale_down_idle_seconds:
+        if utilization < 0.5:
             needed = ceil(report.inflight / max(slots_per_node, 1)) + 1
             return min(current_desired, max(min_nodes, needed))
 

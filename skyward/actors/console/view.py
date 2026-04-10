@@ -14,7 +14,7 @@ from rich.text import Text
 from skyward.api.views import PoolView
 from skyward.core.model import Instance
 
-from .state import _BootstrapTimeline, _NodeStatus, _Phase, _State, _TaskEntry, _throughput
+from .state import _BootstrapTimeline, _NodeStatus, _Phase, _State, _throughput
 
 _LOGO_LINES = (
 "   \u258c           \u258c",
@@ -62,18 +62,6 @@ def _state_from_pool_view(pool: PoolView) -> _State:
         if nv.metrics:
             metrics[nid] = nv.metrics
 
-    inflight: dict[str, _TaskEntry] = {}
-    for tid, te in pool.tasks.inflight.items():
-        inflight[tid] = _TaskEntry(
-            task_id=te.task_id,
-            name=te.name,
-            kind=te.kind,
-            started_at=te.started_at,
-            node_id=te.node_id,
-            broadcast_total=te.broadcast_total,
-            broadcast_done=te.broadcast_done,
-        )
-
     ssh_user = pool.cluster.ssh_user if pool.cluster else ""
     ssh_key_path = pool.cluster.ssh_key_path if pool.cluster else ""
 
@@ -97,7 +85,6 @@ def _state_from_pool_view(pool: PoolView) -> _State:
         metrics=MappingProxyType(metrics),
         pool_started_at=pool.started_at,
         task_latencies=pool.tasks.latencies,
-        inflight=MappingProxyType(inflight),
         task_fn_stats=pool.tasks.fn_stats,
         task_fn_failed=pool.tasks.fn_failed,
         ready_at=pool.ready_at,

@@ -414,9 +414,23 @@ class TestPoolLifecycle:
         ev = InstancesProvisioned(cluster=mock_cluster, instances=mock_instances)
         result = translate(_spy(ev), "pool")
 
+        assert isinstance(result, tuple)
+        provisioned, spawning = result
+        assert isinstance(provisioned, Pool.Provisioned)
+        assert provisioned.cluster is mock_cluster
+        assert provisioned.instances is mock_instances
+        assert isinstance(spawning, Scaling.Spawning)
+        assert spawning.count == 2
+
+    def test_instances_provisioned_empty(self):
+        from skyward.actors.pool.messages import InstancesProvisioned
+
+        mock_cluster = MagicMock()
+        ev = InstancesProvisioned(cluster=mock_cluster, instances=())
+        result = translate(_spy(ev), "pool")
+
         assert isinstance(result, Pool.Provisioned)
         assert result.cluster is mock_cluster
-        assert result.instances is mock_instances
 
 
 # ── Scaling events ──────────────────────────────────────────────
@@ -433,14 +447,26 @@ class TestScalingEvents:
         assert result.desired == 6
         assert result.reason == "pressure"
 
-    def test_request_scale_up(self):
+    def test_request_scale_up_is_noop(self):
         from skyward.actors.messages import RequestScaleUp
 
         ev = RequestScaleUp(count=3)
         result = translate(_spy(ev), "pool")
 
-        assert isinstance(result, Scaling.Spawning)
-        assert result.count == 3
+        assert result is None
+
+    def test_instances_provisioned_emits_spawning(self):
+        from skyward.actors.pool.messages import InstancesProvisioned
+
+        mock_inst = MagicMock()
+        ev = InstancesProvisioned(cluster=MagicMock(), instances=(mock_inst,))
+        result = translate(_spy(ev), "pool")
+
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        assert isinstance(result[0], Pool.Provisioned)
+        assert isinstance(result[1], Scaling.Spawning)
+        assert result[1].count == 1
 
     def test_request_scale_down(self):
         from skyward.actors.messages import RequestScaleDown

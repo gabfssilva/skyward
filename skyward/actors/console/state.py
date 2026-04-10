@@ -58,7 +58,6 @@ class _State:
     metrics: MappingProxyType[int, MappingProxyType[str, float]] = MappingProxyType({})
     pool_started_at: float = 0.0
     task_latencies: tuple[float, ...] = ()
-    inflight: MappingProxyType[str, _TaskEntry] = MappingProxyType({})
     task_fn_stats: MappingProxyType[str, tuple[float, ...]] = MappingProxyType({})
     task_fn_failed: MappingProxyType[str, int] = MappingProxyType({})
     ready_at: float = 0.0

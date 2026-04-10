@@ -69,7 +69,9 @@ def reconciler_actor(
             count = s.desired - s.effective
             log.info("Scaling up: requesting {n} instances", n=count)
             pool.tell(RequestScaleUp(count=count))
-            return waiting_for_scale_up(replace(s, pending=s.pending + count))
+            return waiting_for_scale_up(replace(
+                s, pending=s.pending + count, last_requested=count,
+            ))
         if s.desired < len(s.current):
             excess = len(s.current) - s.desired
             log.info("Scaling down: requesting drain of {n} nodes", n=excess)
@@ -97,17 +99,20 @@ def reconciler_actor(
                         count = new_s.desired - new_s.effective
                         log.info("Auto-repair: requesting {n} instances", n=count)
                         pool.tell(RequestScaleUp(count=count))
-                        return waiting_for_scale_up(replace(new_s, pending=new_s.pending + count))
+                        return waiting_for_scale_up(replace(
+                            new_s, pending=new_s.pending + count, last_requested=count,
+                        ))
                     return watching(new_s)
 
                 case NodeJoined(node_id=nid):
                     log.info("Node {nid} joined", nid=nid)
-                    return watching(replace(
+                    new_s = replace(
                         s,
                         current=s.current | {nid},
                         pending=max(0, s.pending - 1),
                         consecutive_failures=0,
-                    ))
+                    )
+                    return _maybe_scale(ctx, new_s)
 
                 case DrainComplete(node_id=nid):
                     return watching(replace(
@@ -126,12 +131,20 @@ def reconciler_actor(
                         return Behaviors.same()
                     if s.desired > s.effective:
                         log.debug(
-                            "Tick: drift detected, desired={d} effective={e}",
+                            "Tick: upward drift, desired={d} effective={e}",
                             d=s.desired, e=s.effective,
                         )
                         count = s.desired - s.effective
                         pool.tell(RequestScaleUp(count=count))
-                        return waiting_for_scale_up(replace(s, pending=s.pending + count))
+                        return waiting_for_scale_up(replace(
+                            s, pending=s.pending + count, last_requested=count,
+                        ))
+                    if s.desired < len(s.current) and s.draining == 0:
+                        log.debug(
+                            "Tick: downward drift, desired={d} current={c}",
+                            d=s.desired, c=len(s.current),
+                        )
+                        return _maybe_scale(ctx, s)
                     return Behaviors.same()
 
             return Behaviors.same()
@@ -170,11 +183,18 @@ def reconciler_actor(
                         return watching(new_s)
 
                     log.info("Scale up: {n} instances provisioned", n=n)
-                    new_s = replace(s, consecutive_failures=0)
+                    unprovisioned = max(0, s.last_requested - n)
+                    new_pending = max(0, s.pending - unprovisioned)
+                    new_s = replace(
+                        s, consecutive_failures=0,
+                        pending=new_pending, last_requested=0,
+                    )
                     if new_s.desired > new_s.effective:
                         count = new_s.desired - new_s.effective
                         pool.tell(RequestScaleUp(count=count))
-                        return waiting_for_scale_up(replace(new_s, pending=new_s.pending + count))
+                        return waiting_for_scale_up(replace(
+                            new_s, pending=new_s.pending + count, last_requested=count,
+                        ))
                     return watching(new_s)
 
                 case ScaleUpFailed(error=error):

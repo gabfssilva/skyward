@@ -450,7 +450,7 @@ class TestScaling:
             pool_name="pool-1", desired=4, reason="pressure",
         ))
         proj.handle(Scaling.Spawning(
-            pool_name="pool-1", count=2, instances=("i-1", "i-2"),
+            pool_name="pool-1", count=2,
         ))
 
         pv = proj.view.pools["pool-1"]
@@ -465,6 +465,31 @@ class TestScaling:
         sv = proj.view.pools["pool-1"].scaling
         assert sv.draining == 1
         assert sv.reconciler_state == "draining"
+
+    def test_node_ready_decrements_pending(self) -> None:
+        proj = _make_projection()
+        _provision(proj, total_nodes=2)
+        proj.handle(Scaling.DesiredChanged(
+            pool_name="pool-1", desired=5, reason="pressure",
+        ))
+        proj.handle(Scaling.Spawning(
+            pool_name="pool-1", count=3,
+        ))
+
+        sv = proj.view.pools["pool-1"].scaling
+        assert sv.pending == 3
+        assert sv.reconciler_state == "scaling_up"
+
+        proj.handle(Node.Ready(pool_name="pool-1", node_id=2))
+        sv = proj.view.pools["pool-1"].scaling
+        assert sv.pending == 2
+        assert sv.reconciler_state == "scaling_up"
+
+        proj.handle(Node.Ready(pool_name="pool-1", node_id=3))
+        proj.handle(Node.Ready(pool_name="pool-1", node_id=4))
+        sv = proj.view.pools["pool-1"].scaling
+        assert sv.pending == 0
+        assert sv.reconciler_state == "watching"
 
     def test_drain_completed(self) -> None:
         proj = _make_projection()

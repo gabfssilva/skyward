@@ -85,6 +85,16 @@ class TestReconcilerState:
         new_s = replace(s, consecutive_failures=0)
         assert new_s.consecutive_failures == 0
 
+    def test_excess_node_triggers_scale_down(self) -> None:
+        s = _make_state(desired=2, current=frozenset({0, 1}))
+        new_s = replace(s, current=s.current | {2})
+        assert new_s.desired < len(new_s.current)
+
+    def test_tick_detects_downward_drift(self) -> None:
+        s = _make_state(desired=2, current=frozenset({0, 1, 2}))
+        assert s.desired < len(s.current)
+        assert s.draining == 0
+
     def test_no_cluster_or_instance_map_in_state(self) -> None:
         """Reconciler state must NOT contain provider-level details."""
         s = _make_state()

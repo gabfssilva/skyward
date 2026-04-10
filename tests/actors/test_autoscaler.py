@@ -69,9 +69,29 @@ class TestComputeDesired:
             slots_per_node=2, now=200.0, last_busy_time=100.0,
             scale_down_idle_seconds=60.0,
         )
-        # utilization = 1/16 = 0.0625 < 0.3
+        # utilization = 1/16 = 0.0625 < 0.5
         # needed = ceil(1/2) + 1 = 2
         assert result == 2
+
+    def test_scale_down_while_tasks_running(self) -> None:
+        result = _compute_desired(
+            _report(queued=0, inflight=5, total_capacity=10, node_count=10),
+            current_desired=10, min_nodes=1, max_nodes=10,
+            slots_per_node=1, now=100.0, last_busy_time=100.0,
+            scale_down_idle_seconds=60.0,
+        )
+        # utilization = 5/10 = 0.5, not < 0.5 → no scale-down
+        assert result == 10
+
+    def test_scale_down_under_half_utilization(self) -> None:
+        result = _compute_desired(
+            _report(queued=0, inflight=4, total_capacity=10, node_count=10),
+            current_desired=10, min_nodes=1, max_nodes=10,
+            slots_per_node=1, now=100.0, last_busy_time=100.0,
+            scale_down_idle_seconds=60.0,
+        )
+        # utilization = 4/10 = 0.4 < 0.5 → needed = ceil(4/1) + 1 = 5
+        assert result == 5
 
     def test_steady_state_no_change(self) -> None:
         result = _compute_desired(

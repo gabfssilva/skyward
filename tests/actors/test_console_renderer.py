@@ -150,7 +150,6 @@ class TestStateFromPoolView:
         assert state.tasks_running == 1
         assert state.tasks_done == 5
         assert state.tasks_failed == 1
-        assert "t1" in state.inflight
 
     def test_converts_scaling(self) -> None:
         from skyward.actors.console.view import _state_from_pool_view

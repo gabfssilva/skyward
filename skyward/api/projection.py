@@ -175,11 +175,16 @@ class SessionProjection:
                 if name not in self._pools:
                     return
                 pool = self._pools[name]
+                existing_ids = {i.id for i in pool.instances}
+                new_instances = tuple(
+                    i for i in instances if i.id not in existing_ids
+                ) if pool.instances else instances
+                merged = (*pool.instances, *new_instances) if pool.instances else instances
                 self._pools[name] = replace(
                     pool,
                     phase=_advance(pool.phase, PoolPhase.SSH),
                     cluster=cluster,
-                    instances=instances,
+                    instances=merged,
                 )
 
             case Pool.ProvisionFailed():
@@ -198,6 +203,8 @@ class SessionProjection:
                 node = self._get_node(pool, nid)
                 node = replace(node, status=NodeStatus.SSH, instance=inst or node.instance)
                 pool = self._set_node(pool, node)
+                if inst and inst.id not in {i.id for i in pool.instances}:
+                    pool = replace(pool, instances=(*pool.instances, inst))
                 ssh_count = sum(
                     1 for n in pool.nodes.values()
                     if n.status.value >= NodeStatus.SSH.value
@@ -213,6 +220,22 @@ class SessionProjection:
                 node = self._get_node(pool, nid)
                 node = replace(node, status=NodeStatus.READY, bootstrap=None)
                 pool = self._set_node(pool, node)
+
+                new_pending = max(0, pool.scaling.pending - 1)
+                reconciler = (
+                    pool.scaling.reconciler_state
+                    if new_pending > 0
+                    else "watching"
+                )
+                pool = replace(
+                    pool,
+                    scaling=replace(
+                        pool.scaling,
+                        pending=new_pending,
+                        reconciler_state=reconciler,
+                    ),
+                )
+
                 ready_count = sum(
                     1 for n in pool.nodes.values()
                     if n.status.value >= NodeStatus.READY.value
@@ -443,16 +466,19 @@ class SessionProjection:
                 scaling = replace(pool.scaling, desired=desired, reconciler_state=reconciler)
                 self._pools[name] = replace(pool, scaling=scaling)
 
-            case Scaling.Spawning(pool_name=name, count=count, instances=instances):
+            case Scaling.Spawning(pool_name=name, count=count):
                 if name not in self._pools:
                     return
                 pool = self._pools[name]
-                scaling = replace(pool.scaling, pending=pool.scaling.pending + count)
+                scaling = replace(
+                    pool.scaling,
+                    pending=pool.scaling.pending + count,
+                    reconciler_state="scaling_up",
+                )
                 self._pools[name] = replace(
                     pool,
                     scaling=scaling,
                     total_nodes=scaling.desired or pool.total_nodes + count,
-                    instances=(*pool.instances, *instances),
                 )
 
             case Scaling.Draining(pool_name=name, count=n):
@@ -516,7 +542,7 @@ class SessionProjection:
         self._view = SessionView(
             pools=MappingProxyType(dict(self._pools)),
         )
-        if self.on_change and self._view != old:
+        if self.on_change:
             self.on_change(old, self._view)
 
     def _on_reconciled(self, name: str, snapshot: object) -> None:
