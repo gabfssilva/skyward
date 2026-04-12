@@ -357,13 +357,8 @@ class DaemonServer:
         event_queue: asyncio.Queue[PoolProvisioning | PoolLogLine] = asyncio.Queue()
         last_phase: str | None = None
 
-        original_on_change = self._projection.on_change
-        original_on_event = self._projection.on_event
-
-        def _on_change(old: SessionView, new: SessionView) -> None:
+        def _on_change(_old: SessionView, new: SessionView) -> None:
             nonlocal last_phase
-            if original_on_change:
-                original_on_change(old, new)
             if name in new.pools:
                 phase = new.pools[name].phase.name
                 if phase != last_phase and phase not in ("READY", "STOPPED"):
@@ -371,8 +366,6 @@ class DaemonServer:
                     event_queue.put_nowait(PoolProvisioning(pool_name=name, phase=phase))
 
         def _on_event(event: SessionEvent) -> None:
-            if original_on_event:
-                original_on_event(event)
             from skyward.api.events import Log, Node
 
             match event:
@@ -383,8 +376,10 @@ class DaemonServer:
                 case _:
                     pass
 
-        self._projection.on_change = _on_change
-        self._projection.on_event = _on_event
+        unsubscribe = self._projection.subscribe(
+            on_change=_on_change,
+            on_event=_on_event,
+        )
 
         loop = asyncio.get_running_loop()
         provision_future: asyncio.Future[Any] = loop.run_in_executor(
@@ -436,8 +431,7 @@ class DaemonServer:
             yield PoolFailed(pool_name=name, reason=str(e))
 
         finally:
-            self._projection.on_change = original_on_change
-            self._projection.on_event = original_on_event
+            unsubscribe()
 
     def _provision_pool(self, name: str, spec_bytes: bytes) -> Any:
         """Provision a ComputePool from serialized specs."""

@@ -667,7 +667,13 @@ def _build_runpod_instance(
 ) -> Instance:
     specific = cluster.specific
     machine = pod.get("machine") or {}
-    region = machine.get("dataCenterId") or machine.get("location") or ""
+    region = (
+        machine.get("dataCenterId")
+        or machine.get("location")
+        or pod.get("dataCenterId")
+        or pod.get("location")
+        or ""
+    )
 
     private_ip: str | None = None
     if specific.is_instant_cluster:

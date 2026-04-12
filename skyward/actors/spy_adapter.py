@@ -203,8 +203,8 @@ def translate(spy: SpyEvent, pool_name: str) -> SessionEvent | tuple[SessionEven
         case NodeLost(node_id=nid, reason=reason):
             return Node.Lost(pool_name, nid, reason)
 
-        case NodeExhausted(node_id=nid, reason=reason):
-            return Node.Lost(pool_name, nid, f"permanently lost: {reason}")
+        case NodeExhausted(node_id=nid, reason=reason, instance_id=iid):
+            return Node.Lost(pool_name, nid, f"permanently lost: {reason}", instance_id=iid)
 
         case Preempted(reason=reason):
             return Node.Preempted(pool_name, reason)

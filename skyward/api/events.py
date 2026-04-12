@@ -82,6 +82,7 @@ class Node:
         pool_name: str
         node_id: int
         reason: str
+        instance_id: str | None = None
 
     @dataclass(frozen=True, slots=True)
     class ConnectionFailed:

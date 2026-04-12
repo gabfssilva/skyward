@@ -80,6 +80,10 @@ class PodResponse(TypedDict):
     portMappings: NotRequired[dict[str, int] | None]  # {"22": 22008}
     imageName: NotRequired[str]
     interruptible: NotRequired[bool]
+    # REST /pods/{id} returns these at the top level in addition to the
+    # nested ``machine`` block; keep both as fallback sources.
+    dataCenterId: NotRequired[str]
+    location: NotRequired[str]
 
 
 class PodCreateParams(TypedDict, total=False):

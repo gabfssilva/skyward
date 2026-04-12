@@ -115,7 +115,8 @@ def node_actor(
 
     def _fail_and_stop(s: NodeState, reason: str) -> Behavior[NodeMsg]:
         _stop_transport(s.transport_ref)
-        pool.tell(NodeExhausted(node_id=node_id, reason=reason))
+        iid = s.ni.instance.id if s.ni else None
+        pool.tell(NodeExhausted(node_id=node_id, reason=reason, instance_id=iid))
         return Behaviors.stopped()
 
     def _enqueue(s: NodeState, ex: ExecuteOnNode) -> NodeState:
@@ -708,7 +709,8 @@ def node_actor(
                                 )
                             )
                         _stop_transport(s.transport_ref)
-                        pool.tell(NodeExhausted(node_id=node_id, reason="connection lost"))
+                        iid = s.ni.instance.id if s.ni else None
+                        pool.tell(NodeExhausted(node_id=node_id, reason="connection lost", instance_id=iid))
                         return Behaviors.stopped()
                     caller = s.inflight.get(tid)
                     if caller:
@@ -757,7 +759,8 @@ def node_actor(
                             )
                         )
                     _stop_transport(s.transport_ref)
-                    pool.tell(NodeExhausted(node_id=node_id, reason=f"connection failed: {error}"))
+                    iid = s.ni.instance.id if s.ni else None
+                    pool.tell(NodeExhausted(node_id=node_id, reason=f"connection failed: {error}", instance_id=iid))
                     return Behaviors.stopped()
                 case PortReForwarded(old_port=_, new_port=new_port):
                     log.info("Port re-forwarded to {port}", port=new_port)
@@ -782,7 +785,8 @@ def node_actor(
                                 node_id=node_id, task_id=tid,
                             )
                         )
-                    pool.tell(NodeExhausted(node_id=node_id, reason=reason))
+                    iid = s.ni.instance.id if s.ni else None
+                    pool.tell(NodeExhausted(node_id=node_id, reason=reason, instance_id=iid))
                     return Behaviors.stopped()
                 case Terminated():
                     log.warning("Child died while active, marking node lost")
@@ -794,7 +798,8 @@ def node_actor(
                             )
                         )
                     _stop_transport(s.transport_ref)
-                    pool.tell(NodeExhausted(node_id=node_id, reason="child stopped"))
+                    iid = s.ni.instance.id if s.ni else None
+                    pool.tell(NodeExhausted(node_id=node_id, reason="child stopped", instance_id=iid))
                     return Behaviors.stopped()
                 case _SnapshotSaved():
                     log.info("Snapshot saved")

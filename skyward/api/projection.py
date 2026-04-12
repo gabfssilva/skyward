@@ -1,8 +1,10 @@
 """Mutable projection that builds ``SessionView`` from domain events.
 
-Reactive via ``on_change`` and ``on_log`` callbacks.  This is the single
-source of truth for the current session state, consumed by console actors,
-CLI dashboards, and programmatic introspection.
+Reactive via :meth:`SessionProjection.subscribe` — consumers register
+``on_change``/``on_log``/``on_event`` callbacks and receive an idempotent
+unsubscribe handle.  Multiple subscribers are fanned out in registration
+order.  This is the single source of truth for the current session state,
+consumed by console actors, CLI dashboards, and programmatic introspection.
 """
 
 from __future__ import annotations
@@ -102,24 +104,76 @@ def _throughput(tasks: TasksView, now: float | None = None) -> float:
 # ── SessionProjection ───────────────────────────────────────────
 
 
+type _ChangeCallback = Callable[[SessionView, SessionView], None]
+type _LogCallback = Callable[[Log.Emitted], None]
+type _EventCallback = Callable[[SessionEvent], None]
+
+
 class SessionProjection:
-    """Mutable projection that builds ``SessionView`` from domain events."""
+    """Mutable projection that builds ``SessionView`` from domain events.
+
+    Consumers subscribe to changes, logs, and raw events via
+    :meth:`subscribe`, which returns an unsubscribe callable.  Initial
+    callbacks can also be supplied via the constructor.
+    """
 
     def __init__(
         self,
-        on_log: Callable[[Log.Emitted], None] | None = None,
-        on_change: Callable[[SessionView, SessionView], None] | None = None,
-        on_event: Callable[[SessionEvent], None] | None = None,
+        on_log: _LogCallback | None = None,
+        on_change: _ChangeCallback | None = None,
+        on_event: _EventCallback | None = None,
     ) -> None:
         self._pools: dict[str, PoolView] = {}
         self._view: SessionView = SessionView()
-        self.on_log = on_log
-        self.on_change = on_change
-        self.on_event = on_event
+        self._change_subs: tuple[_ChangeCallback, ...] = (on_change,) if on_change else ()
+        self._log_subs: tuple[_LogCallback, ...] = (on_log,) if on_log else ()
+        self._event_subs: tuple[_EventCallback, ...] = (on_event,) if on_event else ()
 
     @property
     def view(self) -> SessionView:
         return self._view
+
+    def subscribe(
+        self,
+        *,
+        on_change: _ChangeCallback | None = None,
+        on_log: _LogCallback | None = None,
+        on_event: _EventCallback | None = None,
+    ) -> Callable[[], None]:
+        """Register callbacks for projection updates.
+
+        Parameters
+        ----------
+        on_change
+            Fires with ``(old_view, new_view)`` whenever the projected
+            state changes.
+        on_log
+            Fires on ``Log.Emitted`` events (does not alter state).
+        on_event
+            Fires for every handled event, before state transition.
+
+        Returns
+        -------
+        Callable[[], None]
+            Idempotent unsubscribe function that removes the callbacks
+            registered by this call.
+        """
+        if on_change is not None:
+            self._change_subs = (*self._change_subs, on_change)
+        if on_log is not None:
+            self._log_subs = (*self._log_subs, on_log)
+        if on_event is not None:
+            self._event_subs = (*self._event_subs, on_event)
+
+        def unsubscribe() -> None:
+            if on_change is not None:
+                self._change_subs = tuple(c for c in self._change_subs if c is not on_change)
+            if on_log is not None:
+                self._log_subs = tuple(c for c in self._log_subs if c is not on_log)
+            if on_event is not None:
+                self._event_subs = tuple(c for c in self._event_subs if c is not on_event)
+
+        return unsubscribe
 
     def _is_duplicate(self, event: SessionEvent) -> bool:
         match event:
@@ -136,13 +190,13 @@ class SessionProjection:
         """Dispatch a domain event to the appropriate handler."""
         if self._is_duplicate(event):
             return
-        if self.on_event:
-            self.on_event(event)
+        for cb in self._event_subs:
+            cb(event)
         match event:
             # ── Logs: fire callback only, no state change ────────
             case Log.Emitted():
-                if self.on_log:
-                    self.on_log(event)
+                for log_cb in self._log_subs:
+                    log_cb(event)
                 return
 
             # ── Pool lifecycle ───────────────────────────────────
@@ -203,8 +257,14 @@ class SessionProjection:
                 node = self._get_node(pool, nid)
                 node = replace(node, status=NodeStatus.SSH, instance=inst or node.instance)
                 pool = self._set_node(pool, node)
-                if inst and inst.id not in {i.id for i in pool.instances}:
-                    pool = replace(pool, instances=(*pool.instances, inst))
+                if inst:
+                    if inst.id in {i.id for i in pool.instances}:
+                        instances = tuple(
+                            inst if i.id == inst.id else i for i in pool.instances
+                        )
+                    else:
+                        instances = (*pool.instances, inst)
+                    pool = replace(pool, instances=instances)
                 ssh_count = sum(
                     1 for n in pool.nodes.values()
                     if n.status.value >= NodeStatus.SSH.value
@@ -248,12 +308,14 @@ class SessionProjection:
                     )
                 self._pools[name] = pool
 
-            case Node.Lost(pool_name=name, node_id=nid):
+            case Node.Lost(pool_name=name, node_id=nid, instance_id=ev_iid):
                 if name not in self._pools:
                     return
                 pool = self._pools[name]
                 lost_node = pool.nodes.get(nid)
-                lost_iid = lost_node.instance.id if lost_node and lost_node.instance else None
+                lost_iid = ev_iid or (
+                    lost_node.instance.id if lost_node and lost_node.instance else None
+                )
                 nodes = MappingProxyType({
                     k: v for k, v in pool.nodes.items() if k != nid
                 })
@@ -542,8 +604,8 @@ class SessionProjection:
         self._view = SessionView(
             pools=MappingProxyType(dict(self._pools)),
         )
-        if self.on_change:
-            self.on_change(old, self._view)
+        for cb in self._change_subs:
+            cb(old, self._view)
 
     def _on_reconciled(self, name: str, snapshot: object) -> None:
         from skyward.actors.snapshot import PoolSnapshot

@@ -158,6 +158,34 @@ class TestNodeLifecycle:
         assert 0 not in proj.view.pools["pool-1"].nodes
         assert 1 in proj.view.pools["pool-1"].nodes
 
+    def test_lost_removes_instance_via_event_id_before_connected(self) -> None:
+        """A node that fails before Connected still drops its instance from
+        ``pool.instances`` via the event's ``instance_id``. Prevents stale
+        instances from inflating cost aggregation.
+        """
+        inst_a = MagicMock()
+        inst_a.id = "i-a"
+        inst_b = MagicMock()
+        inst_b.id = "i-b"
+
+        proj = _make_projection()
+        _provision(proj, total_nodes=1)
+        proj.handle(Pool.Provisioned(
+            pool_name="pool-1", cluster=MagicMock(), instances=(inst_a,),
+        ))
+        assert [i.id for i in proj.view.pools["pool-1"].instances] == ["i-a"]
+
+        proj.handle(Node.Lost(
+            pool_name="pool-1", node_id=0, reason="not ready within 120s",
+            instance_id="i-a",
+        ))
+        assert proj.view.pools["pool-1"].instances == ()
+
+        proj.handle(Pool.Provisioned(
+            pool_name="pool-1", cluster=MagicMock(), instances=(inst_b,),
+        ))
+        assert [i.id for i in proj.view.pools["pool-1"].instances] == ["i-b"]
+
     def test_node_event_for_unknown_pool_ignored(self) -> None:
         proj = _make_projection()
         proj.handle(Node.Connected(pool_name="unknown", node_id=0, instance=None))
@@ -671,12 +699,12 @@ class TestReconciled:
         assert proj.view.pools["pool-1"].phase == before_phase
 
 
-class TestSettableCallbacks:
-    def test_on_change_settable_after_init(self) -> None:
+class TestSubscribe:
+    def test_subscribe_on_change_after_init(self) -> None:
         proj = _make_projection()
         changes: list[tuple[SessionView, SessionView]] = []
 
-        proj.on_change = lambda old, new: changes.append((old, new))
+        proj.subscribe(on_change=lambda old, new: changes.append((old, new)))
         _provision(proj)
 
         assert len(changes) == 1
@@ -684,11 +712,11 @@ class TestSettableCallbacks:
         assert len(old.pools) == 0
         assert "pool-1" in new.pools
 
-    def test_on_log_settable_after_init(self) -> None:
+    def test_subscribe_on_log_after_init(self) -> None:
         proj = _make_projection()
         logs: list[Log.Emitted] = []
 
-        proj.on_log = lambda event: logs.append(event)
+        proj.subscribe(on_log=lambda event: logs.append(event))
         _provision(proj)
         proj.handle(Log.Emitted(pool_name="pool-1", node_id=0, message="hello"))
 
@@ -726,3 +754,72 @@ class TestSettableCallbacks:
         assert isinstance(events[0], Log.Emitted)
         assert len(logs) == 1
         assert logs[0].message == "msg"
+
+    def test_multiple_subscribers_fan_out(self) -> None:
+        a: list[SessionView] = []
+        b: list[SessionView] = []
+        proj = _make_projection()
+        proj.subscribe(on_change=lambda _o, n: a.append(n))
+        proj.subscribe(on_change=lambda _o, n: b.append(n))
+
+        _provision(proj)
+
+        assert len(a) == 1
+        assert len(b) == 1
+        assert "pool-1" in a[0].pools
+        assert "pool-1" in b[0].pools
+
+    def test_constructor_and_subscribe_both_fire(self) -> None:
+        from_ctor: list[SessionView] = []
+        from_sub: list[SessionView] = []
+        proj = _make_projection(on_change=lambda _o, n: from_ctor.append(n))
+        proj.subscribe(on_change=lambda _o, n: from_sub.append(n))
+
+        _provision(proj)
+
+        assert len(from_ctor) == 1
+        assert len(from_sub) == 1
+
+    def test_unsubscribe_removes_callbacks(self) -> None:
+        changes: list[SessionView] = []
+        logs: list[Log.Emitted] = []
+        proj = _make_projection()
+
+        cb_change = lambda _o, n: changes.append(n)  # noqa: E731
+        cb_log = lambda ev: logs.append(ev)  # noqa: E731
+        unsubscribe = proj.subscribe(on_change=cb_change, on_log=cb_log)
+
+        _provision(proj)
+        proj.handle(Log.Emitted(pool_name="pool-1", node_id=0, message="one"))
+
+        unsubscribe()
+
+        proj.handle(Pool.PhaseChanged(pool_name="pool-1", phase="SSH"))
+        proj.handle(Log.Emitted(pool_name="pool-1", node_id=0, message="two"))
+
+        assert len(changes) == 1
+        assert len(logs) == 1
+
+    def test_unsubscribe_is_idempotent(self) -> None:
+        changes: list[SessionView] = []
+        proj = _make_projection()
+        unsubscribe = proj.subscribe(on_change=lambda _o, n: changes.append(n))
+
+        unsubscribe()
+        unsubscribe()
+
+        _provision(proj)
+        assert changes == []
+
+    def test_unsubscribe_only_removes_own_callbacks(self) -> None:
+        survivor: list[SessionView] = []
+        doomed: list[SessionView] = []
+        proj = _make_projection()
+        proj.subscribe(on_change=lambda _o, n: survivor.append(n))
+        unsubscribe = proj.subscribe(on_change=lambda _o, n: doomed.append(n))
+
+        unsubscribe()
+        _provision(proj)
+
+        assert len(survivor) == 1
+        assert len(doomed) == 0

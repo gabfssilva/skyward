@@ -44,6 +44,7 @@ from skyward.actors.node import node_actor
 from skyward.actors.node.messages import JoinCluster
 from skyward.actors.snapshot import NodeStatus, PoolPhase, ScalingSnapshot
 from skyward.actors.task_manager import task_manager_actor
+from skyward.core.model import Cluster
 from skyward.observability.logger import logger
 
 from .messages import (
@@ -239,6 +240,14 @@ def pool_actor(
         if dead_iid is None and s.cluster is not None and nid < len(s.cluster.instances):
             dead_iid = s.cluster.instances[nid].id
         return dead_iid
+
+    def _prune_cluster_instance(cluster: Cluster | None, iid: str | None) -> Cluster | None:
+        if cluster is None or iid is None:
+            return cluster
+        return replace(
+            cluster,
+            instances=tuple(i for i in cluster.instances if i.id != iid),
+        )
 
     # ── idle ──────────────────────────────────────────────────────
 
@@ -800,11 +809,11 @@ def pool_actor(
                     return provisioning(replace(
                         s, ready_nodes=s.ready_nodes - {nid},
                     ))
-                case NodeExhausted(node_id=nid, reason=reason):
+                case NodeExhausted(node_id=nid, reason=reason, instance_id=ev_iid):
                     tm.tell(NodeUnavailable(node_id=nid))
                     new_dead = s.dead_nodes | {nid}
 
-                    dead_iid = _resolve_dead_iid(s, nid)
+                    dead_iid = ev_iid or _resolve_dead_iid(s, nid)
                     if dead_iid is not None and s.cluster is not None:
                         ctx.pipe_to_self(
                             s.provider.terminate(s.cluster, (dead_iid,)),
@@ -825,6 +834,7 @@ def pool_actor(
                         ready_nodes=s.ready_nodes - {nid},
                         dead_nodes=new_dead,
                         node_refs=new_node_refs,
+                        cluster=_prune_cluster_instance(s.cluster, dead_iid),
                     ))
 
                 case RequestScaleUp(count=count):
@@ -1069,7 +1079,7 @@ def pool_actor(
                     return ready(replace(
                         s, ready_nodes=s.ready_nodes - {nid},
                     ))
-                case NodeExhausted(node_id=nid, reason=reason):
+                case NodeExhausted(node_id=nid, reason=reason, instance_id=ev_iid):
                     if nid not in s.node_refs:
                         return Behaviors.same()
                     log.error(
@@ -1079,9 +1089,8 @@ def pool_actor(
                     tm.tell(NodeUnavailable(node_id=nid))
                     new_dead = s.dead_nodes | {nid}
 
-                    dead_iid = _resolve_dead_iid(s, nid)
+                    dead_iid = ev_iid or _resolve_dead_iid(s, nid)
 
-                    # Terminate the dead instance directly
                     if dead_iid is not None and s.cluster is not None:
                         ctx.pipe_to_self(
                             s.provider.terminate(s.cluster, (dead_iid,)),
@@ -1089,7 +1098,6 @@ def pool_actor(
                             on_failure=lambda _err: _ShutdownDone(),
                         )
 
-                    # Notify reconciler (pool handles terminate directly)
                     if s.reconciler_ref is not None:
                         s.reconciler_ref.tell(ReconcilerNodeLost(
                             node_id=nid, reason=reason,
@@ -1111,6 +1119,7 @@ def pool_actor(
                         node_refs=new_node_refs,
                         instances=new_instances,
                         instance_map=new_inst_map,
+                        cluster=_prune_cluster_instance(s.cluster, dead_iid),
                     ))
                 case ReconciliationExhausted(reason=reason):
                     if not s.ready_nodes:

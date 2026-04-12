@@ -61,6 +61,18 @@ type WorkerExecutor = Literal["auto", "thread", "process"]
 """
 
 
+type ConsoleMode = Literal["rich", "minimal", "silent"]
+"""Console renderer selection.
+
+- ``"rich"`` -- verbose dashboard with per-event labels, banner, and
+  progress footer (default).
+- ``"minimal"`` -- single live status line with cluster identity header,
+  bootstrap tail per node, and compact task counters.
+- ``"silent"`` -- no console output; projection state still accumulates
+  and can be inspected programmatically.
+"""
+
+
 @dataclass(frozen=True, slots=True)
 class Nodes:
     """Node count specification.
@@ -309,7 +321,7 @@ class Options:
     autoscale_idle_timeout: float = 60.0
     reconcile_tick_interval: float = 15.0
     shutdown_timeout: float = 120.0
-    console: bool = True
+    console: bool | ConsoleMode = True
     logging: LogConfig | bool = True
     cluster: bool = True
     retry_on_interruption: int = 3

@@ -102,6 +102,19 @@ class TestNodeEvents:
         assert result.node_id == 2
         assert result.reason == "timeout"
 
+    def test_node_exhausted_forwards_instance_id(self):
+        from skyward.actors.messages import NodeExhausted
+
+        ev = NodeExhausted(
+            node_id=3, reason="Instance not ready within 120s", instance_id="i-abc",
+        )
+        result = translate(_spy(ev), "pool")
+
+        assert isinstance(result, Node.Lost)
+        assert result.node_id == 3
+        assert result.instance_id == "i-abc"
+        assert "permanently lost" in result.reason
+
     def test_connection_failed(self):
         from skyward.actors.node.messages import _ConnectionFailed
 

@@ -16,6 +16,7 @@ import os
 import signal
 import sys
 import threading
+from collections.abc import Callable
 from contextlib import suppress
 from contextvars import Token
 from types import TracebackType
@@ -23,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Unpack, overload
 
 from casty import ActorRef, ActorSystem, Behaviors, CastyConfig
 
+from skyward.api.spec import ConsoleMode
 from skyward.observability.logger import logger
 from skyward.observability.logging import LogConfig, setup_logging, teardown_logging
 
@@ -77,17 +79,18 @@ class Session:
     def __init__(
         self,
         *,
-        console: bool = True,
+        console: bool | ConsoleMode = True,
         logging: LogConfig | bool = True,
         shutdown_timeout: float = 120.0,
         projection: SessionProjection | None = None,
     ) -> None:
         from skyward.api.projection import SessionProjection as _Proj
 
-        self._console = console
+        self._console: bool | ConsoleMode = console
         self._logging = logging
         self._shutdown_timeout = shutdown_timeout
         self._projection = projection or _Proj()
+        self._unsubscribe: Callable[[], None] | None = None
 
         self._log_handler_ids: list[int] = []
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -178,6 +181,13 @@ class Session:
 
     async def _start_async(self) -> None:
         """Create actor system and spawn the session actor."""
+        from skyward.actors.console import (
+            EventReceived,
+            LogReceived,
+            ViewUpdated,
+            resolve_console,
+        )
+        from skyward.actors.projection import projection_actor
         from skyward.actors.session.actor import session_actor
 
         self._system = ActorSystem(
@@ -186,36 +196,20 @@ class Session:
         )
         await self._system.__aenter__()
 
-        session_behavior = session_actor()
-
-        from skyward.actors.projection import projection_actor
+        if factory := resolve_console(self._console):
+            console_ref = self._system.spawn(factory(), "console")
+            self._unsubscribe = self._projection.subscribe(
+                on_change=lambda _old, new: console_ref.tell(ViewUpdated(view=new)),
+                on_log=lambda log: console_ref.tell(LogReceived(log=log)),
+                on_event=lambda ev: console_ref.tell(EventReceived(event=ev)),
+            )
 
         proj_ref = self._system.spawn(
             projection_actor(self._projection), "projection",
         )
         session_behavior = Behaviors.spy(
-            session_behavior, proj_ref, spy_children=True,
+            session_actor(), proj_ref, spy_children=True,
         )
-
-        if self._console:
-            from skyward.actors.console import (
-                EventReceived,
-                LogReceived,
-                ViewUpdated,
-                console_actor,
-            )
-
-            console_ref = self._system.spawn(console_actor(), "console")
-            self._projection.on_change = lambda _old, new: console_ref.tell(
-                ViewUpdated(view=new),
-            )
-            self._projection.on_log = lambda log: console_ref.tell(
-                LogReceived(log=log),
-            )
-            self._projection.on_event = lambda ev: console_ref.tell(
-                EventReceived(event=ev),
-            )
-
         self._session_ref = self._system.spawn(session_behavior, "session")
 
     async def _stop_async(self) -> None:
@@ -230,6 +224,10 @@ class Session:
                 lambda reply_to: StopSession(reply_to=reply_to),
                 timeout=self._shutdown_timeout,
             )
+
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
 
         if self._system is not None:
             await self._system.__aexit__(None, None, None)
