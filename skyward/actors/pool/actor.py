@@ -492,7 +492,7 @@ def pool_actor(
 
                         from skyward.actors.reconciler import reconciler_actor
 
-                        min_n = s.spec.nodes.desired
+                        min_n = s.spec.nodes.min or s.spec.nodes.desired
                         max_n = s.spec.nodes.max or s.spec.nodes.desired
                         rec_ref = ctx.spawn(
                             reconciler_actor(

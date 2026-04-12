@@ -237,6 +237,11 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
         ttl = cluster.spec.ttl or self._config.instance_timeout
         user_data = _self_destruction_script(ttl, cluster.shutdown_command)
 
+        spec_min = cluster.spec.nodes.min or cluster.spec.nodes.desired
+        current = len(cluster.instances)
+        fleet_min = max(1, spec_min - current)
+        min_count = min(fleet_min, count)
+
         instance_ids = await _launch_fleet(
             config=self._config,
             ec2=self._ec2,
@@ -246,6 +251,7 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
             instances=instance_configs,
             user_data=user_data,
             n=count,
+            min_count=min_count,
             pinned_az=cluster.specific.pinned_az,
             disk_gb=cluster.spec.disk_gb,
         )
@@ -725,12 +731,14 @@ async def _launch_fleet(
     instances: tuple[_InstanceConfig, ...],
     user_data: str,
     n: int,
+    min_count: int | None = None,
     allocation_strategy: AllocationStrategy | None = None,
     pinned_az: str | None = None,
     disk_gb: int | None = None,
 ) -> list[str]:
     strategy = allocation_strategy or config.allocation_strategy
     spot = instances[0].spot if instances else False
+    effective_min = min_count if min_count is not None else n
 
     async with ec2() as client:
         target_subnets = await _get_valid_subnets(
@@ -804,13 +812,13 @@ async def _launch_fleet(
                     "AllocationStrategy": strategy,
                     "SingleAvailabilityZone": True,
                     "SingleInstanceType": True,
-                    "MinTargetCapacity": n,
+                    "MinTargetCapacity": effective_min,
                 },
                 OnDemandOptions={
                     "AllocationStrategy": "lowest-price",
                     "SingleAvailabilityZone": True,
                     "SingleInstanceType": True,
-                    "MinTargetCapacity": n,
+                    "MinTargetCapacity": effective_min,
                 },
             )
 
@@ -825,13 +833,22 @@ async def _launch_fleet(
                 msgs = [f"{e.get('ErrorCode')}: {e.get('ErrorMessage')}" for e in errors]
                 raise RuntimeError(f"Fleet failed: {'; '.join(msgs)}")
 
-            if len(instance_ids) < n:
-                raise RuntimeError(f"Fleet launched {len(instance_ids)}/{n}. Errors: {errors}")
+            if len(instance_ids) < effective_min:
+                raise RuntimeError(
+                    f"Fleet launched {len(instance_ids)}/{n} "
+                    f"(min={effective_min}). Errors: {errors}",
+                )
 
-            log.info(
-                "Fleet launched {count} instances: {ids}",
-                count=len(instance_ids), ids=instance_ids,
-            )
+            if len(instance_ids) < n:
+                log.warning(
+                    "Fleet launched {got}/{requested} instances (min={min})",
+                    got=len(instance_ids), requested=n, min=effective_min,
+                )
+            else:
+                log.info(
+                    "Fleet launched {count} instances: {ids}",
+                    count=len(instance_ids), ids=instance_ids,
+                )
             return instance_ids
 
         finally:
