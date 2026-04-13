@@ -4,7 +4,7 @@
     │  Local   │ ──────────────────────→  │  S3 Bucket       │
     │  Machine │ ←────────────────────── │  (provider)      │
     └──────────┘  Storage.download()      └──────────────────┘
-                                                 ↕  s3fs-fuse
+                                                 ↕  geesefs
                                          ┌──────────────────┐
                                          │  Remote Worker   │
                                          │  /data  /output  │

@@ -18,6 +18,7 @@ from .types import (
     ClusterResponse,
     CpuPodCreateParams,
     GpuTypeResponse,
+    NetworkVolumeResponse,
     PodCreateParams,
     PodResponse,
 )
@@ -219,6 +220,7 @@ class RunPodClient:
         min_upload: int | None = None,
         docker_args: str | None = None,
         env: dict[str, str] | None = None,
+        network_volume_id: str | None = None,
     ) -> PodResponse:
         """Deploy a GPU pod via GraphQL."""
         input_vars: dict[str, Any] = {
@@ -248,6 +250,8 @@ class RunPodClient:
             input_vars["minDownload"] = min_download
         if min_upload is not None:
             input_vars["minUpload"] = min_upload
+        if network_volume_id:
+            input_vars["networkVolumeId"] = network_volume_id
 
         if interruptible:
             input_vars["bidPerGpu"] = deploy_cost or spot_price or 0.0
@@ -282,6 +286,14 @@ class RunPodClient:
     async def list_pods(self) -> list[PodResponse]:
         """List all pods."""
         result: list[PodResponse] | None = await self._request("GET", "/pods")
+        return result or []
+
+    @retry(on=on_status_code(429, 503), max_attempts=3, base_delay=1.0)
+    async def list_network_volumes(self) -> list[NetworkVolumeResponse]:
+        """List every network volume attached to this account."""
+        result: list[NetworkVolumeResponse] | None = await self._request(
+            "GET", "/networkvolumes",
+        )
         return result or []
 
     async def stop_pod(self, pod_id: str) -> None:

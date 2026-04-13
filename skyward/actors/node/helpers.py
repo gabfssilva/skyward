@@ -266,10 +266,10 @@ async def run_bootstrap(
     _, sudo = resolve_ssh_user(ni, cluster)
 
     postamble_ops: list = []
-    if cluster.resolved_volumes:
-        from skyward.providers.bootstrap import mount_volumes, phase
+    if cluster.mount_plan and cluster.mount_plan.bootstrap is not None:
+        from skyward.providers.bootstrap import phase
 
-        postamble_ops.append(phase("volumes", mount_volumes(cluster.resolved_volumes)))
+        postamble_ops.append(phase("volumes", cluster.mount_plan.bootstrap))
     for plugin in spec.plugins:
         if plugin.bootstrap is not None:
             postamble_ops.extend(plugin.bootstrap(cluster))

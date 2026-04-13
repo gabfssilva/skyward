@@ -20,7 +20,7 @@ from skyward.observability.logger import logger
 from skyward.providers.provider import Provider
 
 if TYPE_CHECKING:
-    from skyward.storage import Storage
+    from skyward.api.model import MountPlan
 
 from .client import EC2ClientFactory
 from .config import AWS, AllocationStrategy
@@ -314,12 +314,14 @@ class AWSProvider(Provider[AWS, AWSSpecific]):
         await _terminate_instances(self._ec2, list(instance_ids))
         return cluster
 
-    async def storage(self, cluster: Cluster[AWSSpecific]) -> Storage:
+    async def mount_plan(
+        self, cluster: Cluster[AWSSpecific], volumes: tuple[Volume, ...],
+    ) -> MountPlan:
+        from skyward.providers.bootstrap import fuse_mount_plan
         from skyward.storage import Storage
 
-        return Storage(
-            endpoint=f"https://s3.{self._config.region}.amazonaws.com",
-        )
+        storage = Storage(endpoint=f"https://s3.{self._config.region}.amazonaws.com")
+        return fuse_mount_plan(volumes, storage)
 
     async def teardown(self, cluster: Cluster[AWSSpecific]) -> Cluster[AWSSpecific]:
         if self._auto_profile_prefix:

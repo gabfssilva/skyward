@@ -1,6 +1,6 @@
 # S3 volumes
 
-This guide walks through a complete volume workflow: upload a dataset from your local machine, train a model on a remote cluster, and download the result — all through S3-compatible object storage. Your local machine talks to S3 via `Storage`, and remote workers see the same data as mounted directories via s3fs-fuse.
+This guide walks through a complete volume workflow: upload a dataset from your local machine, train a model on a remote cluster, and download the result — all through S3-compatible object storage. Your local machine talks to S3 via `Storage`, and remote workers see the same data as mounted directories via geesefs.
 
 ## Storage and volumes
 
@@ -64,8 +64,8 @@ sequenceDiagram
 
     L->>S: Storage.upload(dataset)
     Note over W: Pool provisions, mounts volumes
-    W->>S: read /data/iris.csv (s3fs-fuse)
-    W->>S: write /output/model.pkl (s3fs-fuse)
+    W->>S: read /data/iris.csv (geesefs)
+    W->>S: write /output/model.pkl (geesefs)
     Note over W: Pool tears down
     L->>S: Storage.download(model.pkl)
 ```
@@ -94,5 +94,5 @@ uv run python guides/17_s3_volumes.py
 
 - **`sky.Volume`** maps an S3 bucket to a local path on every worker — read or read-write.
 - **`sky.Storage`** manages data outside the cluster — upload before training, download after.
-- **s3fs-fuse** handles the mounting transparently — no SDK, no download step, just file paths.
+- **geesefs** handles the mounting transparently — no SDK, no download step, just file paths.
 - **Three-phase workflow** — upload, train, download — decouples local and remote environments through S3.

@@ -20,7 +20,8 @@ from skyward.observability.logger import logger
 from skyward.providers.provider import Mountable, Provider
 
 if TYPE_CHECKING:
-    from skyward.storage import Storage
+    from skyward.api.model import MountPlan
+    from skyward.core.spec import Volume
 from skyward.providers.ssh_keys import generate_key_name, get_local_ssh_key, get_ssh_key_path
 
 from .client import HYPERSTACK_API_BASE, HyperstackClient, get_api_key
@@ -277,17 +278,21 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific], Mountable[Hyp
 
         return cluster
 
-    async def storage(self, cluster: Cluster[HyperstackSpecific]) -> Storage:
+    async def mount_plan(
+        self, cluster: Cluster[HyperstackSpecific], volumes: tuple[Volume, ...],
+    ) -> MountPlan:
+        from skyward.providers.bootstrap import fuse_mount_plan
         from skyward.storage import Storage
 
         if self._access_key is None or self._secret_key is None:
             raise RuntimeError("Access key not created — call prepare() with volumes first")
-        return Storage(
+        storage = Storage(
             endpoint=self._config.object_storage_endpoint,
             access_key=self._access_key,
             secret_key=self._secret_key,
             path_style=True,
         )
+        return fuse_mount_plan(volumes, storage)
 
     async def teardown(
         self, cluster: Cluster[HyperstackSpecific],

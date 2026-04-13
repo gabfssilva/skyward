@@ -740,6 +740,10 @@ def RTX_A4000(*, count: float = 1) -> Accelerator:
     """NVIDIA RTX A4000 - Ampere workstation (2021)."""
     return Accelerator.from_name("RTX A4000", count=count)
 
+def RTX_A4500(*, count: float = 1) -> Accelerator:
+    """NVIDIA RTX A4000 - Ampere workstation (2021)."""
+    return Accelerator.from_name("RTX A4500", count=count)
+
 
 def RTX_A2000(*, count: float = 1) -> Accelerator:
     """NVIDIA RTX A2000 - Ampere workstation entry (2021)."""

@@ -1,14 +1,38 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Literal
 
 from skyward.api.spec import Architecture, PoolSpec
 
 if TYPE_CHECKING:
     from skyward.accelerators import Accelerator
-    from skyward.api.spec import Volume
-    from skyward.storage import Storage
+    from skyward.providers.bootstrap.compose import Op
+
+
+_EMPTY_HINTS: Mapping[str, Any] = MappingProxyType({})
+
+
+@dataclass(frozen=True, slots=True)
+class MountPlan:
+    """Provider's plan for satisfying a set of `Volume` requests.
+
+    Parameters
+    ----------
+    deploy_hints
+        Opaque hints consumed by ``Provider.provision`` **before** the
+        instance is created (e.g. ``{"networkVolumeId": "..."}`` for
+        RunPod). Immutable.
+    bootstrap
+        Bootstrap ``Op`` executed in the ``"volumes"`` phase after SSH
+        opens, or ``None`` when the provider needs no bootstrap action
+        (e.g. the host already mounted the volume).
+    """
+
+    deploy_hints: Mapping[str, Any] = field(default=_EMPTY_HINTS)
+    bootstrap: Op | None = None
 
 type InstanceStatus = Literal[
     "provisioning",
@@ -176,8 +200,11 @@ class Cluster[S]:
         Current instances in the cluster.
     prebaked
         Whether the cluster uses a pre-baked AMI/snapshot.
-    resolved_volumes
-        Volume-storage pairs after provider resolution.
+    mount_plan
+        Provider-chosen plan for satisfying ``spec.volumes`` — deploy-time
+        hints (consumed by ``Provider.provision``) plus a bootstrap op
+        rendered in the ``"volumes"`` phase. ``None`` when the pool has
+        no volumes.
     ssh_pty
         Whether the SSH channel supports full PTY capabilities
         (SFTP, complex quoting, ``script -qefc``). ``False`` for
@@ -194,5 +221,5 @@ class Cluster[S]:
     specific: S
     instances: tuple[Instance, ...] = ()
     prebaked: bool = False
-    resolved_volumes: tuple[tuple[Volume, Storage], ...] | None = None
+    mount_plan: MountPlan | None = None
     ssh_pty: bool = True

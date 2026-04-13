@@ -108,6 +108,16 @@ class PodCreateParams(TypedDict, total=False):
     minUploadMbps: int
     globalNetworking: bool
     supportPublicIp: bool
+    networkVolumeId: NotRequired[str]
+
+
+class NetworkVolumeResponse(TypedDict):
+    """RunPod network volume resource (``GET /v1/networkvolumes``)."""
+
+    id: str
+    name: NotRequired[str]
+    dataCenterId: NotRequired[str]
+    size: NotRequired[int]
 
 
 class LowestPriceResponse(TypedDict):

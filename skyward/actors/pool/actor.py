@@ -63,6 +63,53 @@ from .state import PoolState, build_pool_snapshot
 _logging.getLogger("casty").setLevel(_logging.ERROR)
 
 
+async def _build_mount_plan(
+    volumes: Any, cluster: Any, provider: Any,
+) -> Any:
+    """Dispatch a `Volume` tuple to the right mount strategy.
+
+    - If every volume carries an explicit ``storage=``, build a FUSE plan
+      locally (works regardless of provider).
+    - Else, if the provider implements ``Mountable``, delegate to it.
+    - Mixed modes (some explicit, some provider-managed) are rejected —
+      the error surfaces here, not mid-provision.
+    """
+    from skyward.api.model import MountPlan
+    from skyward.providers.bootstrap.ops import mount_volumes
+    from skyward.providers.provider import Mountable
+
+    explicit: list[tuple[Any, Any]] = []
+    needs_provider: list[Any] = []
+    for vol in volumes:
+        if vol.storage is not None:
+            explicit.append((vol, await vol.storage.resolve()))
+        else:
+            needs_provider.append(vol)
+
+    if explicit and needs_provider:
+        raise RuntimeError(
+            "Mixing volumes with explicit `storage=` and provider-managed volumes "
+            "in the same pool is not supported."
+        )
+
+    if needs_provider:
+        if not isinstance(provider, Mountable):
+            bucket_names = [v.bucket for v in needs_provider]
+            raise RuntimeError(
+                f"Volumes {bucket_names} require a provider implementing Mountable, "
+                "but none have explicit `storage=` and the selected provider does not."
+            )
+        return await provider.mount_plan(cluster, tuple(needs_provider))
+
+    if explicit:
+        return MountPlan(bootstrap=mount_volumes(tuple(explicit)))
+
+    # Empty volumes — caller is expected to guard, but return a no-op plan defensively.
+    if isinstance(provider, Mountable):
+        return await provider.mount_plan(cluster, ())
+    return MountPlan()
+
+
 def _build_pool_info_json(
     node_id: int, spec: Any, cluster: Any, ni: NodeInstance,
     head_addr: str,
@@ -374,32 +421,20 @@ def pool_actor(
                         n=effective_spec.nodes.desired,
                     )
 
-                    if effective_spec.volumes and cluster.resolved_volumes is None:
-                        from skyward.providers.provider import Mountable
-
+                    if effective_spec.volumes and cluster.mount_plan is None:
                         provider = s.provider
 
-                        async def _resolve_volumes() -> Any:
-                            resolved: list[tuple] = []
-                            for vol in effective_spec.volumes:
-                                if vol.storage is not None:
-                                    st = await vol.storage.resolve()
-                                    resolved.append((vol, st))
-                                elif isinstance(provider, Mountable):
-                                    st = await provider.storage(cluster)
-                                    resolved.append((vol, st))
-                                else:
-                                    raise RuntimeError(
-                                        f"Volume '{vol.bucket}' has no storage and provider "
-                                        "does not support volumes."
-                                    )
-                            return replace(cluster, resolved_volumes=tuple(resolved))
+                        async def _resolve_mount_plan() -> Any:
+                            plan = await _build_mount_plan(
+                                effective_spec.volumes, cluster, provider,
+                            )
+                            return replace(cluster, mount_plan=plan)
 
                         ctx.pipe_to_self(
-                            _resolve_volumes(),
+                            _resolve_mount_plan(),
                             mapper=lambda c: ClusterReady(cluster=c),
                             on_failure=lambda err: ProvisionFailed(
-                                reason=f"Volume storage resolution failed: {err}",
+                                reason=f"Mount plan resolution failed: {err}",
                             ),
                         )
                         return requesting(replace(s, spec=effective_spec))

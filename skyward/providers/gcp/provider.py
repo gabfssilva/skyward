@@ -22,7 +22,8 @@ from skyward.observability.logger import logger
 from skyward.providers.provider import Provider
 
 if TYPE_CHECKING:
-    from skyward.storage import Storage
+    from skyward.api.model import MountPlan
+    from skyward.core.spec import Volume
 from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
 
 from .config import GCP
@@ -684,16 +685,20 @@ class GCPProvider(Provider[GCP, GCPSpecific]):
         await asyncio.gather(*(_delete_one(n) for n in names))
         return cluster
 
-    async def storage(self, cluster: Cluster[GCPSpecific]) -> Storage:
+    async def mount_plan(
+        self, cluster: Cluster[GCPSpecific], volumes: tuple[Volume, ...],
+    ) -> MountPlan:
+        from skyward.providers.bootstrap import fuse_mount_plan
         from skyward.storage import Storage
 
         if self._hmac_access_key is None or self._hmac_secret_key is None:
             raise RuntimeError("HMAC keys not generated — call prepare() with volumes first")
-        return Storage(
+        storage = Storage(
             endpoint="https://storage.googleapis.com",
             access_key=self._hmac_access_key,
             secret_key=self._hmac_secret_key,
         )
+        return fuse_mount_plan(volumes, storage)
 
     async def teardown(self, cluster: Cluster[GCPSpecific]) -> Cluster[GCPSpecific]:
         specific = cluster.specific

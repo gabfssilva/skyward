@@ -17,7 +17,8 @@ from skyward.observability.logger import logger
 from skyward.providers.provider import Provider
 
 if TYPE_CHECKING:
-    from skyward.storage import Storage
+    from skyward.api.model import MountPlan
+    from skyward.core.spec import Volume
 from skyward.providers.ssh_keys import get_local_ssh_key, get_ssh_key_path
 
 from .client import RunPodClient, RunPodError, get_api_key
@@ -38,11 +39,6 @@ _CUDA_COMPACT_RE = re.compile(r"cu(?:da)?(\d{2})(\d)\d")
 _UBUNTU_RE = re.compile(r"ubuntu(\d{2})\.?(\d{2})")
 _TAG_VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
 _FALLBACK_IMAGE = "nvidia/cuda:12.8.0-cudnn-runtime-ubuntu24.04"
-_RUNPOD_S3_DATACENTERS = frozenset({
-    "EUR-IS-1", "EUR-NO-1", "EU-RO-1", "EU-CZ-1",
-    "US-CA-2", "US-GA-2", "US-KS-2", "US-MD-1",
-    "US-MO-2", "US-NC-1", "US-NC-2",
-})
 _TOKEN_SPLIT = re.compile(r"[\s\-/]+")
 _MIN_GPU_MATCH = 0.5
 _KNOWN_CUDA_VERSIONS = [
@@ -608,32 +604,76 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
             await asyncio.gather(*(client.terminate_pod(pid) for pid in instance_ids))
         return cluster
 
-    async def storage(self, cluster: Cluster[RunPodSpecific]) -> Storage:
-        from skyward.storage import Storage
+    async def mount_plan(
+        self, cluster: Cluster[RunPodSpecific], volumes: tuple[Volume, ...],
+    ) -> MountPlan:
+        from skyward.api.model import MountPlan
+        from skyward.providers.bootstrap import native_mount_plan
 
-        from .client import get_api_key
+        if not volumes:
+            return MountPlan()
 
-        api_key = get_api_key(self._config.api_key)
-
-        if self._config.data_center_ids == "global":
+        refs = {v.bucket for v in volumes}
+        if len(refs) > 1:
             raise ValueError(
-                "RunPod volumes require an explicit data_center_ids setting. "
-                f"S3-supported datacenters: {', '.join(sorted(_RUNPOD_S3_DATACENTERS))}"
+                f"RunPod only supports one network volume per pod, but volumes "
+                f"reference multiple buckets: {sorted(refs)}. Use a single network "
+                "volume (id or name) as `bucket` and different `prefix` values to "
+                "separate datasets."
+            )
+        ref = volumes[0].bucket
+        if not ref:
+            raise ValueError(
+                "RunPod volumes require a network volume id or name as "
+                "`Volume(bucket=...)`. FUSE mounts do not work inside RunPod pods "
+                "(no CAP_SYS_ADMIN). List existing volumes with `runpodctl nv list` "
+                "or create one with `runpodctl nv create`."
             )
 
-        dc = self._config.data_center_ids[0]
-        if dc not in _RUNPOD_S3_DATACENTERS:
-            raise ValueError(
-                f"RunPod datacenter '{dc}' does not support S3 API. "
-                f"Supported: {', '.join(sorted(_RUNPOD_S3_DATACENTERS))}"
-            )
-
-        dc_lower = dc.lower()
-        return Storage(
-            endpoint=f"https://s3api-{dc_lower}.runpod.io",
-            access_key=api_key,
-            secret_key=api_key,
+        nv_id = await self._resolve_network_volume(ref)
+        mount_path = self._config.volume_mount_path
+        return native_mount_plan(
+            volumes,
+            base=mount_path,
+            networkVolumeId=nv_id,
+            volumeMountPath=mount_path,
         )
+
+    async def _resolve_network_volume(self, ref: str) -> str:
+        """Return the NV id, accepting either an id or a human-readable name.
+
+        Also validates that the volume lives in a data center reachable by
+        the current config, since RunPod refuses cross-DC attachments with
+        an opaque ``network volume not found`` error.
+        """
+        api_key = get_api_key(self._config.api_key)
+        async with RunPodClient(api_key, config=self._config) as client:
+            volumes = await client.list_network_volumes()
+
+        by_id = next((v for v in volumes if v.get("id") == ref), None)
+        by_name = next((v for v in volumes if v.get("name") == ref), None)
+        matched = by_id or by_name
+        if matched is None:
+            available = ", ".join(
+                f"{v.get('name') or v.get('id')} ({v.get('id')}, {v.get('dataCenterId', '?')})"
+                for v in volumes
+            ) or "none"
+            raise ValueError(
+                f"RunPod network volume '{ref}' not found. Available: {available}. "
+                "Pass either the volume id or name via `Volume(bucket=...)`."
+            )
+
+        nv_dc = matched.get("dataCenterId")
+        if self._config.data_center_ids != "global" and nv_dc:
+            configured = self._config.data_center_ids
+            if nv_dc not in configured:
+                raise ValueError(
+                    f"RunPod network volume '{ref}' lives in {nv_dc} but the "
+                    f"configured data_center_ids are {list(configured)}. RunPod "
+                    "rejects cross-DC attachments — set "
+                    f"`RunPod(data_center_ids=(\"{nv_dc}\",))`."
+                )
+        return matched["id"]
 
     async def teardown(self, cluster: Cluster[RunPodSpecific]) -> Cluster[RunPodSpecific]:
         specific = cluster.specific
@@ -672,7 +712,7 @@ def _build_runpod_instance(
         or machine.get("location")
         or pod.get("dataCenterId")
         or pod.get("location")
-        or ""
+        or "US"
     )
 
     private_ip: str | None = None
@@ -837,6 +877,10 @@ async def _create_gpu_pod(
             idx=node_index, image=image_name, cuda=image_cuda, spot=use_spot,
         )
 
+        hints = cluster.mount_plan.deploy_hints if cluster.mount_plan else {}
+        nv_id = hints.get("networkVolumeId")
+        mount_path = hints.get("volumeMountPath", config.volume_mount_path)
+
         try:
             return await client.deploy_gpu_pod(
                 name=f"skyward-{cluster.id}-{node_index}",
@@ -846,7 +890,7 @@ async def _create_gpu_pod(
                 cloud_type=config.cloud_type.upper(),
                 container_disk_gb=cluster.spec.disk_gb or config.container_disk_gb,
                 volume_gb=config.volume_gb,
-                volume_mount_path=config.volume_mount_path,
+                volume_mount_path=mount_path,
                 ports=",".join(config.ports),
                 interruptible=use_spot,
                 data_center_id=config.data_center_ids[0] if config.data_center_ids != "global" else None,
@@ -858,6 +902,7 @@ async def _create_gpu_pod(
                 min_upload=int(config.min_inet_up) if config.min_inet_up is not None else None,
                 docker_args=f"bash -c '{_SSH_SETUP_CMD}'",
                 env=env,
+                network_volume_id=nv_id,
             )
         except RunPodError as e:
             err_str = str(e)
@@ -882,6 +927,9 @@ async def _create_gpu_pod_rest(
     image_name: str,
     use_spot: bool,
 ) -> PodResponse:
+    hints = cluster.mount_plan.deploy_hints if cluster.mount_plan else {}
+    mount_path = hints.get("volumeMountPath", config.volume_mount_path)
+
     params: PodCreateParams = {
         "name": f"skyward-{cluster.id}-{node_index}",
         "imageName": image_name,
@@ -890,7 +938,7 @@ async def _create_gpu_pod_rest(
         "cloudType": config.cloud_type.upper(),
         "containerDiskInGb": cluster.spec.disk_gb or config.container_disk_gb,
         "volumeInGb": config.volume_gb,
-        "volumeMountPath": config.volume_mount_path,
+        "volumeMountPath": mount_path,
         "ports": list(config.ports),
         "dockerStartCmd": ["bash", "-c", _SSH_SETUP_CMD],
         "env": {"PUBLIC_KEY": ssh_public_key, "INSTANCE_TIMEOUT": str(cluster.spec.ttl)},
@@ -904,6 +952,8 @@ async def _create_gpu_pod_rest(
         params["minDownloadMbps"] = int(config.min_inet_down)
     if config.min_inet_up is not None:
         params["minUploadMbps"] = int(config.min_inet_up)
+    if nv_id := hints.get("networkVolumeId"):
+        params["networkVolumeId"] = nv_id
     return await client.create_pod(params)
 
 

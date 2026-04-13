@@ -504,7 +504,7 @@ def stop_metrics() -> Op:
 def mount_volumes(
     volumes: tuple[tuple[Volume, Storage], ...],
 ) -> Op:
-    """Install s3fs-fuse and mount all volumes as local filesystem paths.
+    """Install geesefs and mount all volumes as local filesystem paths.
 
     Parameters
     ----------
@@ -513,12 +513,28 @@ def mount_volumes(
     """
 
     def generate() -> str:
+        import hashlib
+
         lines: list[str] = []
 
-        # 1. Install s3fs
-        lines.append("apt-get -o DPkg::Lock::Timeout=-1 install -y -qq s3fs")
+        lock_wait = "-o DPkg::Lock::Timeout=-1"
+        lines.append(f"apt-get {lock_wait} install -y -qq ca-certificates curl")
+        lines.append(
+            f"apt-get {lock_wait} install -y -qq fuse3 "
+            f"|| apt-get {lock_wait} install -y -qq fuse"
+        )
+        lines.append(
+            'arch=$(uname -m); '
+            'case "$arch" in '
+            'x86_64) a=amd64 ;; '
+            'aarch64|arm64) a=arm64 ;; '
+            '*) echo "geesefs: unsupported arch $arch" >&2; exit 1 ;; '
+            'esac; '
+            'curl -fsSL -o /usr/local/bin/geesefs '
+            '"https://github.com/yandex-cloud/geesefs/releases/latest/download/geesefs-linux-${a}"'
+        )
+        lines.append("chmod +x /usr/local/bin/geesefs")
 
-        # 2. Collect endpoint info and deduplicate
         mount_key_rw: dict[tuple[str, str], bool] = {}
         endpoint_info: dict[str, tuple[str | None, str | None, bool]] = {}
 
@@ -538,58 +554,88 @@ def mount_volumes(
                     sk = None
             endpoint_info[storage.endpoint] = (ak, sk, storage.path_style)
 
-        # 3. Write credential files per unique endpoint
         cred_files: dict[str, str] = {}
         for endpoint, (access_key, secret_key, _path_style) in endpoint_info.items():
             if access_key is not None:
-                import hashlib
-
                 ep_hash = hashlib.md5(endpoint.encode()).hexdigest()[:8]
-                cred_path = f"/etc/s3fs-passwd-{ep_hash}"
-                lines.append(f'echo "{access_key}:{secret_key}" > {cred_path}')
+                cred_path = f"/etc/geesefs-creds-{ep_hash}"
+                lines.append(f"cat > {cred_path} <<'EOF'")
+                lines.append("[default]")
+                lines.append(f"aws_access_key_id = {access_key}")
+                lines.append(f"aws_secret_access_key = {secret_key}")
+                lines.append("EOF")
                 lines.append(f"chmod 600 {cred_path}")
                 cred_files[endpoint] = cred_path
 
-        # 4. Mount each unique (bucket, endpoint) pair
         for (bucket, endpoint), writable in mount_key_rw.items():
-            access_key, _secret_key, path_style = endpoint_info[endpoint]
-            fuse_mount = f"/mnt/s3fs/{bucket}"
-            mount_log = f"/tmp/s3fs_{bucket}.log"
+            _access_key, _secret_key, path_style = endpoint_info[endpoint]
+            fuse_mount = f"/mnt/geesefs/{bucket}"
+            mount_log = f"/tmp/geesefs_{bucket}.log"
 
-            opts = [f"url={endpoint}"]
-            if path_style:
-                opts.append("use_path_request_style")
+            flags = [f"--endpoint={endpoint}"]
+            if not path_style:
+                flags.append("--subdomain")
             if endpoint in cred_files:
-                opts.append(f"passwd_file={cred_files[endpoint]}")
+                flags.append(f"--shared-config={cred_files[endpoint]}")
             else:
-                opts.append("iam_role=auto")
-            if not writable:
-                opts.append("ro")
-            opts.append("allow_other")
-            opts.append("dbglevel=warn")
-            opts.append(f"logfile={mount_log}")
-            opts_str = " -o ".join(opts)
+                flags.append("--iam")
+                flags.append("--iam-flavor=imdsv1")
+            flags.append("--stat-cache-ttl=1s")
+            flags.append(f"--log-file={mount_log}")
+
+            fuse_opts = ["allow_other"] if writable else ["allow_other", "ro"]
+            fuse_opts_str = ",".join(fuse_opts)
 
             lines.append(f"mkdir -p {fuse_mount}")
-            lines.append(f"s3fs {bucket} {fuse_mount} -o {opts_str}")
+            lines.append(
+                f"geesefs {' '.join(flags)} -o {fuse_opts_str} {bucket} {fuse_mount}"
+            )
             lines.append("sleep 1")
             lines.append(f"cat {mount_log} 2>/dev/null || true")
             lines.append(
                 f"if mountpoint -q {fuse_mount}; then "
-                f"echo 's3fs: mounted {fuse_mount}'; "
-                f"else echo 's3fs: FAILED to mount {fuse_mount}'; "
+                f"echo 'geesefs: mounted {fuse_mount}'; "
+                f"else echo 'geesefs: FAILED to mount {fuse_mount}'; "
                 f"exit 1; fi"
             )
 
-        # 5. Create user mount points — symlinks
         for vol, _storage in volumes:
-            fuse_mount = f"/mnt/s3fs/{vol.bucket}"
+            fuse_mount = f"/mnt/geesefs/{vol.bucket}"
             if vol.prefix:
                 lines.append(f"mkdir -p {fuse_mount}/{vol.prefix}")
                 lines.append(f"ln -sfn {fuse_mount}/{vol.prefix} {vol.mount}")
             else:
                 lines.append(f"ln -sfn {fuse_mount} {vol.mount}")
 
+        return "\n".join(lines)
+
+    return generate
+
+
+def symlink_volumes(volumes: tuple[Volume, ...], base: str) -> Op:
+    """Symlink user mount paths to subdirs of a pre-mounted base directory.
+
+    Used by providers that attach volumes natively (e.g. RunPod
+    ``networkVolumeId`` mounted at ``/workspace`` by the host runtime).
+    No install, no FUSE — pure ``mkdir`` + ``ln -sfn``.
+
+    Parameters
+    ----------
+    volumes
+        Volumes to project into the base directory. Each ``Volume.prefix``
+        becomes a subdirectory under ``base``; no prefix symlinks ``base``
+        directly to ``Volume.mount``.
+    base
+        Absolute path where the native volume is already mounted
+        on the pod (e.g. ``"/workspace"``).
+    """
+
+    def generate() -> str:
+        lines: list[str] = []
+        for vol in volumes:
+            target = f"{base}/{vol.prefix}".rstrip("/") if vol.prefix else base
+            lines.append(f"mkdir -p {target}")
+            lines.append(f"ln -sfn {target} {vol.mount}")
         return "\n".join(lines)
 
     return generate

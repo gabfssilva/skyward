@@ -151,38 +151,66 @@ This enables heterogeneous volumes — different storage providers in the same p
 
 ## How it works
 
-Under the hood, Skyward uses [s3fs-fuse](https://github.com/s3fs-fuse/s3fs-fuse) to mount S3-compatible buckets as FUSE filesystems. The mounting happens during the bootstrap phase, after system packages and Python dependencies are installed but before the worker starts accepting tasks.
+Each provider implements `Mountable.mount_plan(cluster, volumes)` and returns a `MountPlan` — two things the rest of the pipeline consumes:
 
-The process has three steps:
+- **`deploy_hints`** — opaque key/value pairs fed into the cloud-provision call *before* SSH opens. The only current consumer is RunPod, which uses them to attach a native network volume to the pod at creation time.
+- **`bootstrap`** — a shell op injected into the `"volumes"` phase of the bootstrap script, *after* SSH opens. For FUSE providers this installs geesefs and mounts each bucket; for native attachments this is a handful of `ln -sfn` calls against the pre-mounted base.
 
-1. **Endpoint resolution.** For each volume, Skyward resolves storage credentials. If the volume has an explicit `storage` field, those credentials are used. Otherwise, the pool's provider supplies them — AWS returns the regional S3 endpoint with IAM role authentication, GCP returns HMAC keys, Hyperstack creates ephemeral access keys, RunPod uses the API key.
+This lets providers pick their own strategy without leaking that choice into the user API.
 
-2. **Bucket mounting.** Each unique bucket is mounted once at `/mnt/s3fs/<bucket>` via s3fs. If multiple volumes reference the same bucket, Skyward deduplicates — one FUSE mount serves all of them. If any volume on a bucket needs writes, the entire bucket is mounted read-write.
+### FUSE strategy (AWS, GCP, Hyperstack)
 
-3. **Symlink creation.** Each volume's `mount` path is created as a symlink pointing to the appropriate location inside `/mnt/s3fs/<bucket>/<prefix>`. This is why you see `/data` instead of `/mnt/s3fs/my-datasets/imagenet/train/` — the implementation detail is hidden behind a clean path.
+Skyward uses [geesefs](https://github.com/yandex-cloud/geesefs) to mount S3-compatible buckets as FUSE filesystems during the `"volumes"` bootstrap phase — after system packages and Python dependencies, before the worker starts accepting tasks.
+
+1. **Endpoint resolution.** For each volume, Skyward resolves storage credentials. If the volume has an explicit `storage=` field those credentials are used; otherwise the pool's provider supplies them (AWS → regional S3 + IAM role; GCP → HMAC keys from the service account; Hyperstack → ephemeral access keys).
+2. **Bucket mounting.** Each unique bucket is mounted once at `/mnt/geesefs/<bucket>` via geesefs. Multiple volumes on the same bucket share the mount — if any needs writes, the whole mount is read-write.
+3. **Symlink creation.** Each volume's `mount` path becomes a symlink into `/mnt/geesefs/<bucket>/<prefix>`.
 
 ```mermaid
 graph LR
-    A["/data"] -->|symlink| B["/mnt/s3fs/my-datasets/imagenet/"]
-    C["/checkpoints"] -->|symlink| D["/mnt/s3fs/my-experiments/run-042/"]
-    B -->|s3fs-fuse| E["s3://my-datasets"]
-    D -->|s3fs-fuse| F["s3://my-experiments"]
+    A["/data"] -->|symlink| B["/mnt/geesefs/my-datasets/imagenet/"]
+    C["/checkpoints"] -->|symlink| D["/mnt/geesefs/my-experiments/run-042/"]
+    B -->|geesefs| E["s3://my-datasets"]
+    D -->|geesefs| F["s3://my-experiments"]
 ```
+
+### Native-attachment strategy (RunPod)
+
+FUSE does not work inside RunPod pods — the container sandbox withholds `CAP_SYS_ADMIN` and blocks `/dev/fuse`. RunPod instead exposes **network volumes**: persistent block storage that the host runtime bind-mounts at `/workspace` *before* the container starts.
+
+Skyward maps the generic `Volume` onto that primitive:
+
+1. **Resolve the volume.** `Volume.bucket` is treated as either a network volume id (`aqsojarpxt`) *or* a human-readable name (`my-checkpoints`). Skyward calls `GET /v1/networkvolumes` on pool startup and matches by id first, then by name. Cross-DC attachments are rejected upfront with the DC mismatch spelled out.
+2. **Attach at provision time.** The resolved id is injected as `networkVolumeId` into the pod-create payload (both GraphQL and REST paths), so the RunPod host mounts the volume at `/workspace` when the pod boots.
+3. **Symlink at bootstrap.** Inside the container, the `"volumes"` phase runs a tiny script that creates each volume's `mount` path as a symlink into `/workspace/<prefix>`. No install, no FUSE.
+
+RunPod only supports **one** network volume per pod. Multiple `Volume` entries must share the same `bucket`, projected into different subdirectories via `prefix`:
+
+```python
+with sky.Compute(
+    provider=sky.RunPod(data_center_ids=("EU-RO-1",)),
+    accelerator="RTX_4090",
+    nodes=2,
+    volumes=[
+        sky.Volume(bucket="my-checkpoints", mount="/data", prefix="datasets", read_only=True),
+        sky.Volume(bucket="my-checkpoints", mount="/ckpt", prefix="ckpt", read_only=False),
+    ],
+) as compute:
+    train() @ compute
+```
+
+If you pass two different buckets you get a clear error at pool startup. If you pass an unknown name the error lists the volumes actually available in your account so you can copy the right one.
 
 ## Provider support
 
-Volumes work with any provider that implements the `Mountable` protocol — a single method that returns a `Storage` endpoint with credentials.
+| Provider | Strategy | `bucket` means | Notes |
+|----------|----------|----------------|-------|
+| **AWS** | FUSE (geesefs) | S3 bucket name | IAM role (no explicit credentials) via `instance_profile_arn="auto"`. |
+| **GCP** | FUSE (geesefs) | GCS bucket name | HMAC keys generated during `prepare()`. |
+| **Hyperstack** | FUSE (geesefs) | Hyperstack bucket name | Ephemeral access keys provisioned on `prepare()`, cleaned up on `teardown()`. |
+| **RunPod** | Native attachment | Network volume id **or** name | One NV per pod. NV must be in the same DC as the pod. |
 
-| Provider | Endpoint | Authentication |
-|----------|----------|----------------|
-| **AWS** | `s3.{region}.amazonaws.com` | IAM role (no explicit credentials) |
-| **GCP** | `storage.googleapis.com` | HMAC keys (generated during `prepare()`) |
-| **Hyperstack** | `ca1.obj.nexgencloud.io` | Ephemeral access keys (created during `prepare()`, deleted during `teardown()`) |
-| **RunPod** | `s3api-{datacenter}.runpod.io` | API key |
-
-On AWS, the cleanest setup is an instance profile with S3 permissions — pass `instance_profile_arn="auto"` to `sky.AWS()` and no credentials are written to disk. On GCP, Skyward generates HMAC keys automatically from your service account during cluster preparation. On Hyperstack, ephemeral access keys are provisioned and cleaned up automatically. On RunPod, the existing API key doubles as S3 credentials.
-
-Providers that don't implement `Mountable` (VastAI, Verda, Container) will fail fast with a clear error if you pass volumes — unless every volume has an explicit `storage` field.
+Providers that don't implement `Mountable` (VastAI, Verda, Container) fail fast with a clear error if you pass volumes — unless every volume has an explicit `storage=` field (which forces the FUSE path locally).
 
 ## Deduplication
 
@@ -196,7 +224,7 @@ volumes=[
 ]
 ```
 
-This creates one FUSE mount at `/mnt/s3fs/my-data` (read-write, because `/output` needs writes) and three symlinks: `/train → /mnt/s3fs/my-data/train/`, `/val → /mnt/s3fs/my-data/val/`, `/output → /mnt/s3fs/my-data/results/`. The mode is coerced upward: if any volume on a bucket is writable, the bucket mounts as read-write.
+This creates one FUSE mount at `/mnt/geesefs/my-data` (read-write, because `/output` needs writes) and three symlinks: `/train → /mnt/geesefs/my-data/train/`, `/val → /mnt/geesefs/my-data/val/`, `/output → /mnt/geesefs/my-data/results/`. The mode is coerced upward: if any volume on a bucket is writable, the bucket mounts as read-write.
 
 ## TOML configuration
 

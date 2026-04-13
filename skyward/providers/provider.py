@@ -7,7 +7,8 @@ from skyward.core import Cluster, Instance, PoolSpec
 from skyward.core.model import Offer
 
 if TYPE_CHECKING:
-    from skyward.storage import Storage
+    from skyward.api.model import MountPlan
+    from skyward.api.spec import Volume
 
 
 @runtime_checkable
@@ -101,6 +102,15 @@ class WarmableProvider[C, S](Provider[C, S], Protocol):
 
 @runtime_checkable
 class Mountable[S](Protocol):
-    """Protocol for providers that support volume mounting."""
+    """Providers that translate ``Volume`` requests into a ``MountPlan``.
 
-    async def storage(self, cluster: Cluster[S]) -> Storage: ...
+    Returns a plan that may carry (a) deploy-time hints consumed by
+    ``Provider.provision`` (e.g. RunPod ``networkVolumeId``), and (b) a
+    bootstrap op wrapped in the ``"volumes"`` phase on the node.
+    """
+
+    async def mount_plan(
+        self,
+        cluster: Cluster[S],
+        volumes: tuple[Volume, ...],
+    ) -> MountPlan: ...

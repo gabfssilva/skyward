@@ -24,6 +24,7 @@ from skyward.api.events import (
     SessionEvent,
     Task,
 )
+from skyward.api.model import Instance
 from skyward.api.views import (
     BootstrapView,
     NodeStatus,
@@ -90,6 +91,21 @@ def _insert_phase(phases: tuple[str, ...], new_phase: str) -> tuple[str, ...]:
 def _advance(current: PoolPhase, candidate: PoolPhase) -> PoolPhase:
     """Only advance forward (higher enum value)."""
     return candidate if candidate.value > current.value else current
+
+
+def _merge_instance(old: Instance, new: Instance) -> Instance:
+    """Merge a replacement instance with an existing one, preserving fields
+    the new payload left at default. Defensive against providers whose
+    polling endpoints return partial data (e.g., RunPod REST sometimes omits
+    ``machine.dataCenterId`` populated by the GraphQL create call).
+    """
+    return replace(
+        new,
+        ip=new.ip or old.ip,
+        private_ip=new.private_ip or old.private_ip,
+        ssh_password=new.ssh_password or old.ssh_password,
+        region=new.region or old.region,
+    )
 
 
 def _throughput(tasks: TasksView, now: float | None = None) -> float:
@@ -255,15 +271,29 @@ class SessionProjection:
                     return
                 pool = self._pools[name]
                 node = self._get_node(pool, nid)
-                node = replace(node, status=NodeStatus.SSH, instance=inst or node.instance)
+                merged_inst = inst
+                if inst is not None:
+                    existing = next(
+                        (i for i in pool.instances if i.id == inst.id), None,
+                    )
+                    if existing is not None:
+                        merged_inst = _merge_instance(existing, inst)
+                    elif node.instance is not None and node.instance.id == inst.id:
+                        merged_inst = _merge_instance(node.instance, inst)
+                node = replace(
+                    node,
+                    status=NodeStatus.SSH,
+                    instance=merged_inst or node.instance,
+                )
                 pool = self._set_node(pool, node)
-                if inst:
-                    if inst.id in {i.id for i in pool.instances}:
+                if merged_inst is not None:
+                    if merged_inst.id in {i.id for i in pool.instances}:
                         instances = tuple(
-                            inst if i.id == inst.id else i for i in pool.instances
+                            merged_inst if i.id == merged_inst.id else i
+                            for i in pool.instances
                         )
                     else:
-                        instances = (*pool.instances, inst)
+                        instances = (*pool.instances, merged_inst)
                     pool = replace(pool, instances=instances)
                 ssh_count = sum(
                     1 for n in pool.nodes.values()

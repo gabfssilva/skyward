@@ -33,6 +33,12 @@ from .compose import (
     resolve,
 )
 
+# Mount plan helpers
+from .mounts import (
+    fuse_mount_plan,
+    native_mount_plan,
+)
+
 # Core operations
 from .ops import (
     apt,
@@ -53,6 +59,7 @@ from .ops import (
     shell_vars,
     start_metrics,
     stop_metrics,
+    symlink_volumes,
     uv,
     uv_add,
     uv_configure_indexes,
@@ -90,6 +97,9 @@ __all__ = [
     "stop_metrics",
     # Volume operations
     "mount_volumes",
+    "symlink_volumes",
+    "fuse_mount_plan",
+    "native_mount_plan",
     # AWS operations
     "grid_driver",
     # Casty operations

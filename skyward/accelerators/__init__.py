@@ -90,6 +90,7 @@ from .factories import (
     RTX_5090,
     RTX_A2000,
     RTX_A4000,
+    RTX_A4500,
     RTX_A5000,
     # NVIDIA Workstation - Ampere
     RTX_A6000,
@@ -268,6 +269,7 @@ __all__ = [
     "RTX_A5000",
     "RTX_A5000_Pro",
     "RTX_A4000",
+    "RTX_A4500",
     "RTX_A2000",
     # NVIDIA Workstation - Turing
     "Quadro_RTX_8000",
