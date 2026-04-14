@@ -491,13 +491,17 @@ class Session:
 
         pool_ref = self._create_pool_actor(pool_name)
 
+        from skyward.core.errors import ProvisioningError
+
         try:
             started = self._start_pool(
                 pool_ref, spec, provider_config, cloud_provider,
                 offers, provision_timeout,
             )
-        finally:
+        except ProvisioningError:
             self._pending_pool_refs.pop(pool_name, None)
+            raise
+        self._pending_pool_refs.pop(pool_name, None)
 
         return pool_ref, spec, started.cluster_id, started.cluster, started.instances
 

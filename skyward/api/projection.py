@@ -346,6 +346,19 @@ class SessionProjection:
                 lost_iid = ev_iid or (
                     lost_node.instance.id if lost_node and lost_node.instance else None
                 )
+                new_scaling = pool.scaling
+                if lost_node is not None and lost_node.status is not NodeStatus.READY:
+                    new_pending = max(0, pool.scaling.pending - 1)
+                    reconciler = (
+                        pool.scaling.reconciler_state
+                        if new_pending > 0
+                        else "watching"
+                    )
+                    new_scaling = replace(
+                        pool.scaling,
+                        pending=new_pending,
+                        reconciler_state=reconciler,
+                    )
                 nodes = MappingProxyType({
                     k: v for k, v in pool.nodes.items() if k != nid
                 })
@@ -356,6 +369,7 @@ class SessionProjection:
                     pool,
                     nodes=nodes,
                     instances=instances,
+                    scaling=new_scaling,
                 )
 
             # ── Bootstrap ────────────────────────────────────────

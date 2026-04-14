@@ -11,6 +11,12 @@ type CudaVariant = Literal["runtime", "devel", "cudnn-runtime"]
 type PyTorchVersion = Literal["2.6", "2.7", "2.8"] | str
 
 _CUDA_PATCHES: dict[str, str] = {
+    "12.0": "12.0.1",
+    "12.1": "12.1.1",
+    "12.2": "12.2.2",
+    "12.3": "12.3.2",
+    "12.4": "12.4.1",
+    "12.5": "12.5.1",
     "12.6": "12.6.3",
     "12.8": "12.8.1",
     "12.9": "12.9.1",
@@ -98,8 +104,9 @@ class DockerImage:
 def cuda(
     version: CudaVersion,
     *,
-    variant: CudaVariant = "runtime",
-    ubuntu: UbuntuVersion = "24.04",
+    variant: CudaVariant = "cudnn-runtime",
+    ubuntu: UbuntuVersion = "22.04",
+    repository: Literal['nvidia', 'dockerhub'] = "dockerhub",
 ) -> DockerImage:
     """Build an NVIDIA CUDA base image tag.
 
@@ -111,6 +118,8 @@ def cuda(
         Image variant: ``"runtime"``, ``"devel"``, or ``"cudnn-runtime"``.
     ubuntu : UbuntuVersion
         Ubuntu base version (e.g. ``"24.04"``).
+    repository : Literal['nvidia', 'dockerhub']
+        Image repository: ``"nvidia"``, ``"dockerhub"``.
 
     Returns
     -------
@@ -118,8 +127,13 @@ def cuda(
         Image pointing to ``nvcr.io/nvidia/cuda:<patch>-<variant>-ubuntu<ubuntu>``.
     """
     patch = _CUDA_PATCHES.get(version, f"{version}.0")
-    tag = f"nvcr.io/nvidia/cuda:{patch}-{variant}-ubuntu{ubuntu}"
-    return DockerImage(tag=tag, cuda=version, ubuntu=ubuntu)
+    tag = f"nvidia/cuda:{patch}-{variant}-ubuntu{ubuntu}"
+
+    return DockerImage(
+        tag=tag if repository == "dockerhub" else f"nvcr.io/{tag}",
+        cuda=version,
+        ubuntu=ubuntu
+    )
 
 
 def ubuntu(version: UbuntuVersion = "24.04") -> DockerImage:

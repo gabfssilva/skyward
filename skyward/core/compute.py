@@ -115,6 +115,7 @@ def Compute(
         pool = DaemonPool(
             name=fingerprint,
             spec_bytes=cloudpickle.dumps(built_specs),
+            console=options.console,
         )
         with pool:
             token = _active_pool.set(pool)

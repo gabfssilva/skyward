@@ -26,7 +26,7 @@ import cloudpickle
 from casty import ActorRef, ActorSystem, EventJournal, SqliteJournal
 
 from skyward.api.events import SessionEvent
-from skyward.api.views import SessionView
+from skyward.api.views import PoolPhase, SessionView
 from skyward.observability.logger import logger
 
 from .protocol import (
@@ -208,13 +208,17 @@ class DaemonServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
-        """Stream SessionView snapshots and domain events to client until disconnect."""
-        view = self._projection.view
-        if pool_name not in view.pools:
-            await async_send(writer, DaemonError(error=f"Pool '{pool_name}' not found"))
-            return
+        """Stream SessionView snapshots and domain events to client until disconnect.
 
-        await async_send(writer, view)
+        Subscribing to a pool that does not yet exist is allowed — events and
+        snapshots start flowing as soon as the pool appears in the projection.
+        ``StreamEnd`` is only emitted after the pool has been seen and then
+        disappeared (i.e. was torn down).
+        """
+        view = self._projection.view
+        has_seen = pool_name in view.pools
+        if has_seen:
+            await async_send(writer, view)
 
         queue: asyncio.Queue[object] = asyncio.Queue(maxsize=256)
         if pool_name not in self._subscribers:
@@ -249,11 +253,12 @@ class DaemonServer:
                         await get_task
                     current = self._projection.view
                     if pool_name in current.pools:
+                        has_seen = True
                         try:
                             await async_send(writer, current)
                         except (ConnectionError, BrokenPipeError, ConnectionResetError):
                             break
-                    else:
+                    elif has_seen:
                         with contextlib.suppress(ConnectionError, BrokenPipeError, ConnectionResetError):
                             await async_send(writer, StreamEnd(reason="pool removed"))
                         break
@@ -261,6 +266,8 @@ class DaemonServer:
 
                 try:
                     msg = get_task.result()
+                    if isinstance(msg, SessionView) and pool_name in msg.pools:
+                        has_seen = True
                     await async_send(writer, msg)
                 except (ConnectionError, BrokenPipeError, ConnectionResetError):
                     break
@@ -564,7 +571,8 @@ class DaemonServer:
         return PoolLogs(paths=(str(files[-1]),))
 
     async def _shutdown_pool(self, name: str) -> PoolShutdown | DaemonError:
-        if name not in self._pools:
+        pv = self._projection.view.pools.get(name)
+        if name not in self._pools and (pv is None or pv.phase == PoolPhase.STOPPED):
             return DaemonError(error=f"Pool '{name}' not found")
         await self._teardown_pool(name)
         return PoolShutdown()
@@ -623,6 +631,8 @@ class DaemonServer:
             self._stop.set()
 
     async def _teardown_pool(self, name: str) -> None:
+        from skyward.api.events import Pool as PoolEvent
+
         self._cancel_ttl(name)
         if fh := self._log_handles.pop(name, None):
             fh.close()
@@ -632,6 +642,8 @@ class DaemonServer:
                 await loop.run_in_executor(None, pool.__exit__, None, None, None)
             except Exception as e:
                 log.warning("Error tearing down pool {name}: {err}", name=name, err=e)
+        elif (pv := self._projection.view.pools.get(name)) is not None and pv.phase != PoolPhase.STOPPED:
+            self._projection.handle(PoolEvent.Stopped(pool_name=name))
         self._pool_ttls.pop(name, None)
         if self._actor_system is not None and self._state_ref is not None:
             from .state import RemovePool

@@ -519,6 +519,63 @@ class TestScaling:
         assert sv.pending == 0
         assert sv.reconciler_state == "watching"
 
+    def test_pre_ready_loss_decrements_pending(self) -> None:
+        """A node lost before reaching READY must release its Spawning slot.
+
+        Otherwise ``pending`` leaks permanently every time a VM dies during
+        bootstrap (common on spot/on-demand with flaky providers).
+        """
+        proj = _make_projection()
+        _provision(proj, total_nodes=2)
+        proj.handle(Scaling.DesiredChanged(
+            pool_name="pool-1", desired=3, reason="repair",
+        ))
+        proj.handle(Scaling.Spawning(pool_name="pool-1", count=1))
+        assert proj.view.pools["pool-1"].scaling.pending == 1
+
+        proj.handle(Node.Connected(pool_name="pool-1", node_id=2, instance=None))
+        proj.handle(Node.Lost(pool_name="pool-1", node_id=2, reason="instance exited"))
+
+        sv = proj.view.pools["pool-1"].scaling
+        assert sv.pending == 0
+        assert sv.reconciler_state == "watching"
+        assert 2 not in proj.view.pools["pool-1"].nodes
+
+    def test_ready_then_loss_keeps_pending(self) -> None:
+        """Losing a node that already reached READY must not decrement pending.
+
+        Its Spawning slot was already consumed by Node.Ready. The reconciler
+        will emit a new Spawning for the replacement, balanced by its own Ready.
+        """
+        proj = _make_projection()
+        _provision(proj, total_nodes=2)
+        proj.handle(Scaling.DesiredChanged(
+            pool_name="pool-1", desired=3, reason="repair",
+        ))
+        proj.handle(Scaling.Spawning(pool_name="pool-1", count=1))
+        proj.handle(Node.Connected(pool_name="pool-1", node_id=2, instance=None))
+        proj.handle(Node.Ready(pool_name="pool-1", node_id=2))
+        assert proj.view.pools["pool-1"].scaling.pending == 0
+
+        proj.handle(Node.Lost(pool_name="pool-1", node_id=2, reason="preempted"))
+
+        assert proj.view.pools["pool-1"].scaling.pending == 0
+
+    def test_duplicate_loss_does_not_double_decrement(self) -> None:
+        """A second Node.Lost for the same node is a no-op on pending."""
+        proj = _make_projection()
+        _provision(proj, total_nodes=2)
+        proj.handle(Scaling.DesiredChanged(
+            pool_name="pool-1", desired=3, reason="repair",
+        ))
+        proj.handle(Scaling.Spawning(pool_name="pool-1", count=2))
+        proj.handle(Node.Connected(pool_name="pool-1", node_id=2, instance=None))
+        proj.handle(Node.Lost(pool_name="pool-1", node_id=2, reason="died"))
+        assert proj.view.pools["pool-1"].scaling.pending == 1
+
+        proj.handle(Node.Lost(pool_name="pool-1", node_id=2, reason="died"))
+        assert proj.view.pools["pool-1"].scaling.pending == 1
+
     def test_drain_completed(self) -> None:
         proj = _make_projection()
         _provision(proj, total_nodes=2)

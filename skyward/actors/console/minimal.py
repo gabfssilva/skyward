@@ -78,10 +78,10 @@ def _elapsed_hours(pool: PoolView) -> float:
 
 def _group_instances(
     pool: PoolView,
-) -> list[tuple[str, str, tuple[str, ...], int, Any, float]]:
+) -> list[tuple[str, str, tuple[str, ...], int, int, int, Any, float]]:
     """Group by (provider, instance_type); regions collapse into a list.
 
-    Each row carries the group's aggregated ``$/hr``.
+    Each row carries total/spot/on-demand counts and aggregated ``$/hr``.
     """
     groups: dict[tuple[str, str], list[Any]] = defaultdict(list)
     regions: dict[tuple[str, str], list[str]] = defaultdict(list)
@@ -98,7 +98,10 @@ def _group_instances(
     return [
         (
             prov, itname, tuple(regions[(prov, itname)]),
-            len(insts), samples[(prov, itname)], _hourly(insts),
+            len(insts),
+            sum(1 for i in insts if i.spot),
+            sum(1 for i in insts if not i.spot),
+            samples[(prov, itname)], _hourly(insts),
         )
         for (prov, itname), insts in groups.items()
     ]
@@ -109,12 +112,19 @@ def _header(pool: PoolView) -> Text:
         return Text(f"{pool.name} · provisioning…", style="dim cyan")
 
     lines: list[Text] = []
-    for prov, itname, regions, n, it, rate in _group_instances(pool):
+    for prov, itname, regions, n, spot, od, it, rate in _group_instances(pool):
         segs: list[tuple[str, str]] = [
             (prov, "cyan"),
             (", ".join(regions), "cyan"),
             (f"{n}× {itname}", "bold"),
         ]
+        if spot and od:
+            segs.append((f"{spot} spot", "yellow"))
+            segs.append((f"{od} on-demand", "dim"))
+        elif spot:
+            segs.append(("spot", "yellow"))
+        else:
+            segs.append(("on-demand", "dim"))
         if it.accelerator is not None:
             segs.append(
                 (f"{it.accelerator.name}×{_fmt_count(it.accelerator.count)}", "green"),
@@ -353,7 +363,16 @@ def minimal_console_actor() -> Behavior[ConsoleInput]:
 
                 case LogReceived(log=log):
                     if live.is_started:
-                        live.console.print(log.message)
+                        pool = _first_pool(renderable.view)
+                        node = pool.nodes.get(log.node_id) if pool else None
+                        label = _node_label(node) if node else str(log.node_id)
+                        live.console.print(
+                            Text.assemble(
+                                (label, "blue"),
+                                ": ",
+                                log.message,
+                            ),
+                        )
 
                 case LocalOutput(line=line):
                     if live.is_started and (stripped := line.rstrip()):
