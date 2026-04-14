@@ -28,6 +28,9 @@ dependencies = [
     "asyncssh>=2.22.0",
     "httpx>=0.28",
     "loky>=3.5",
+    "aiosqlite>=0.22.1",
+    "starlette>=1.0.0",
+    "uvicorn>=0.44.0",
 ]
 
 [project.optional-dependencies]
