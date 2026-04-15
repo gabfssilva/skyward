@@ -30,6 +30,7 @@ from contextvars import Token
 from dataclasses import dataclass
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Literal, overload
+from uuid import uuid4
 
 from casty import ActorRef, ActorSystem
 
@@ -449,9 +450,11 @@ class ComputePool:
                 return value
 
     def _unwrap_result(self, result: TaskResult) -> Any:
+        import cloudpickle
+
         match result:
             case TaskSucceeded(value=value):
-                return value
+                return cloudpickle.loads(value) if isinstance(value, bytes | bytearray) else value
             case TaskFailed(error=error):
                 raise error
             case TaskInterrupted(error=error):
@@ -460,13 +463,56 @@ class ComputePool:
     def _resolve_timeout(self, pending: PendingFunction[Any]) -> float:
         return pending.timeout if pending.timeout is not None else self.default_compute_timeout
 
-    def _submit(self, pending: PendingFunction[Any]) -> Callable[[ActorRef[Any]], SubmitTask]:
-        timeout = self._resolve_timeout(pending)
+    async def _build_submit_async(
+        self, pending: PendingFunction[Any], *, broadcast: bool = False,
+    ) -> Callable[[ActorRef[Any]], SubmitTask | SubmitBroadcast]:
+        """Pickle ``(fn, args, kwargs)`` and build the submit factory.
+
+        Generator arguments are pulled out of ``args`` before serialization
+        and replaced with Casty stream producers so the worker can reconstruct
+        them on the other side. ``input_streams`` and ``is_generator`` are
+        kept as live fields because they carry :class:`ActorRef` values the
+        Casty serializer must route.
+        """
+        import cloudpickle
+
+        from skyward.actors.node.helpers import setup_input_streams
+        from skyward.infra.streaming import _stream_param_indices, is_generator_compute
+
+        assert self._system is not None
         fn = self._decorate_fn(pending.fn)
-        return lambda reply_to: SubmitTask(
-            fn=fn, args=pending.args, kwargs=pending.kwargs,
-            reply_to=reply_to, timeout=timeout,
+        args = pending.args
+        indices = _stream_param_indices(fn)
+        stream_refs: tuple[tuple[int, Any], ...] = ()
+        if indices:
+            args, _pump_tasks, stream_refs = await setup_input_streams(
+                self._system, args, indices,
+            )
+        is_gen = is_generator_compute(fn)
+        payload = cloudpickle.dumps((fn, args, pending.kwargs))
+        timeout = self._resolve_timeout(pending)
+        task_id = uuid4().hex[:8]
+        task_key = (
+            getattr(fn, "__module__", "") or "",
+            getattr(fn, "__qualname__", "") or "",
         )
+
+        if broadcast:
+            def _broadcast_factory(reply_to: ActorRef[Any]) -> SubmitBroadcast:
+                return SubmitBroadcast(
+                    payload=payload, reply_to=reply_to, task_id=task_id,
+                    timeout=timeout, task_key=task_key,
+                    input_streams=stream_refs, is_generator=is_gen,
+                )
+            return _broadcast_factory
+
+        def _factory(reply_to: ActorRef[Any]) -> SubmitTask:
+            return SubmitTask(
+                payload=payload, reply_to=reply_to, task_id=task_id,
+                timeout=timeout, task_key=task_key,
+                input_streams=stream_refs, is_generator=is_gen,
+            )
+        return _factory
 
     def _assert_active(self) -> None:
         if not self._active or self._pool_ref is None or self._system is None:
@@ -508,11 +554,12 @@ class ComputePool:
 
         timeout = self._resolve_timeout(pending)
         logger.debug("Submitting task: {fn}", fn=getattr(pending.fn, "__name__", repr(pending.fn)))
-        result: TaskResult = run_sync(
-            self._get_loop(),
-            system.ask(ref, self._submit(pending), timeout=timeout),
-            timeout=timeout,
-        )
+
+        async def _run() -> TaskResult:
+            factory = await self._build_submit_async(pending)
+            return await system.ask(ref, factory, timeout=timeout)
+
+        result: TaskResult = run_sync(self._get_loop(), _run(), timeout=timeout)
         return self._unwrap_result(result)
 
     def run_async[T](self, pending: PendingFunction[T]) -> Future[T]:
@@ -551,8 +598,9 @@ class ComputePool:
 
         async def _run() -> T:
             assert self._pool_ref is not None
+            factory = await self._build_submit_async(pending)
             result: TaskResult = await self._system.ask(  # type: ignore[union-attr]
-                self._pool_ref, self._submit(pending), timeout=timeout,
+                self._pool_ref, factory, timeout=timeout,
             )
             return self._unwrap_result(result)
 
@@ -586,21 +634,23 @@ class ComputePool:
         self._assert_active()
 
         timeout = self._resolve_timeout(pending)
-        fn = self._decorate_fn(pending.fn)
         fn_name = getattr(pending.fn, "__name__", repr(pending.fn))
         logger.debug("Broadcasting task: {fn} to {n} nodes", fn=fn_name, n=self._specs[0].nodes)
 
         async def _broadcast() -> list[T]:
             assert self._pool_ref is not None
+            factory = await self._build_submit_async(pending, broadcast=True)
             result = await self._system.ask(  # type: ignore[union-attr]
-                self._pool_ref,
-                lambda reply_to: SubmitBroadcast(
-                    fn=fn, args=pending.args, kwargs=pending.kwargs,
-                    reply_to=reply_to, timeout=timeout,
-                ),
-                timeout=timeout + 30,
+                self._pool_ref, factory, timeout=timeout + 30,
             )
-            return [self._unwrap_broadcast_result(v) for v in result]
+            import cloudpickle
+
+            return [
+                self._unwrap_broadcast_result(
+                    cloudpickle.loads(v) if isinstance(v, bytes | bytearray) else v,
+                )
+                for v in result
+            ]
 
         return run_sync(self._get_loop(), _broadcast(), timeout=timeout + 30)
 
@@ -649,11 +699,14 @@ class ComputePool:
 
         async def _run_parallel() -> tuple[Any, ...]:
             assert self._pool_ref is not None
+            factories = await asyncio.gather(
+                *(self._build_submit_async(p) for p in group.items),
+            )
             tasks = [
                 self._system.ask(  # type: ignore[union-attr]
-                    self._pool_ref, self._submit(p), timeout=self._resolve_timeout(p),
+                    self._pool_ref, factories[i], timeout=self._resolve_timeout(p),
                 )
-                for p in group.items
+                for i, p in enumerate(group.items)
             ]
             results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=group_timeout)
             return tuple(self._unwrap_result(r) for r in results)
@@ -670,13 +723,16 @@ class ComputePool:
 
         async def _feed_queue() -> None:
             assert self._pool_ref is not None
+            factories = await asyncio.gather(
+                *(self._build_submit_async(p) for p in group.items),
+            )
             tasks = [
                 asyncio.ensure_future(
                     self._system.ask(  # type: ignore[union-attr]
-                        self._pool_ref, self._submit(p), timeout=self._resolve_timeout(p),
+                        self._pool_ref, factories[i], timeout=self._resolve_timeout(p),
                     )
                 )
-                for p in group.items
+                for i, p in enumerate(group.items)
             ]
             try:
                 if group.ordered:
@@ -742,13 +798,16 @@ class ComputePool:
 
         async def _map_async() -> list[R]:
             assert self._pool_ref is not None
+            pendings = [PendingFunction(fn=fn, args=(item,), kwargs={}) for item in items]
+            factories = await asyncio.gather(
+                *(self._build_submit_async(p) for p in pendings),
+            )
             tasks = [
                 self._system.ask(  # type: ignore[union-attr]
-                    self._pool_ref,
-                    self._submit(PendingFunction(fn=fn, args=(item,), kwargs={})),
+                    self._pool_ref, factories[i],
                     timeout=self.default_compute_timeout,
                 )
-                for item in items
+                for i in range(len(pendings))
             ]
             return [self._unwrap_result(r) for r in await asyncio.gather(*tasks)]
 
@@ -1088,18 +1147,13 @@ class ComputePool:
     def Named(cls, name: str, *, shutdown_on_exit: bool = False) -> ComputePool:
         """Create a pool from a named configuration in ``skyward.toml``.
 
-        When the pool config has ``daemon = true``, returns a ``DaemonPool``
-        that connects to the background daemon process (auto-spawning it
-        if needed). Otherwise returns a regular ``ComputePool``.
-
         Parameters
         ----------
         name
             Pool name as defined in the ``[pools.<name>]`` section of
             ``skyward.toml``.
         shutdown_on_exit
-            If ``True`` and using daemon mode, shut down the daemon pool
-            on context exit.
+            Reserved for future server-mode lifecycle control.
 
         Returns
         -------
@@ -1111,21 +1165,8 @@ class ComputePool:
         >>> with ComputePool.Named("training") as compute:
         ...     result = train(data) >> compute
         """
+        _ = shutdown_on_exit
         from skyward.config import resolve_pool_config
 
         resolution = resolve_pool_config(name)
-
-        if resolution.daemon:
-            import cloudpickle
-
-            from skyward.daemon.pool import DaemonPool
-            from skyward.daemon.spawn import ensure_daemon
-
-            ensure_daemon()
-            return DaemonPool(  # type: ignore[return-value]
-                name=name,
-                shutdown_on_exit=shutdown_on_exit,
-                spec_bytes=cloudpickle.dumps(resolution.specs),
-            )
-
         return resolution.pool

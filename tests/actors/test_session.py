@@ -144,10 +144,15 @@ class TestSessionActor:
                 return Behaviors.same()
             return Behaviors.receive(handle)
 
+        from skyward.server.host.store import Store
+
+        store = Store(":memory:")
+        await store.open()
+
         pool_ref = system.spawn(_stub_pool(), "stub-pool")
         await asyncio.sleep(0.1)
 
-        ref = system.spawn(session_actor(), "session-state")
+        ref = system.spawn(session_actor(store=store), "session-state")
         await asyncio.sleep(0.1)
 
         from skyward.core.spec import Nodes
@@ -169,6 +174,8 @@ class TestSessionActor:
             provider=provider,
             offers=(MagicMock(),),
             provision_timeout=300.0,
+            compute_spec=MagicMock(),
+            chosen_spec=MagicMock(),
             reply_to=spawn_reply_ref,
         ))
         await asyncio.sleep(0.3)
@@ -196,8 +203,12 @@ class TestSessionActor:
             SessionStopped,
             StopSession,
         )
+        from skyward.server.host.store import Store
 
-        ref = system.spawn(session_actor(), "session-stop")
+        store = Store(":memory:")
+        await store.open()
+
+        ref = system.spawn(session_actor(store=store), "session-stop")
         await asyncio.sleep(0.1)
 
         collected: list[SessionStopped] = []

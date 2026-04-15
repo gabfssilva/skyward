@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
@@ -51,6 +52,9 @@ class PoolState:
     task_counters: TaskCounters = TaskCounters()
     scaling: ScalingSnapshot = ScalingSnapshot()
     pool_started_at: float = 0.0
+    compute_created_at: datetime | None = None
+    compute_spec: Any = None
+    chosen_spec: Any = None
 
 
 def _derive_phase(s: PoolState) -> PoolPhase:

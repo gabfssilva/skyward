@@ -51,6 +51,7 @@ from skyward.server.host.domain import (
     Node,
     NodeBootstrapping,
     NodeConnecting,
+    NodeId,
     NodeLost,
     NodeReady,
     NodeStatus,
@@ -454,13 +455,24 @@ class Store:
         self._read: aiosqlite.Connection | None = None
 
     async def open(self) -> None:
-        """Connect writer and reader, apply schema, and enable WAL."""
+        """Connect writer and reader, apply schema, and enable WAL.
+
+        A path of ``":memory:"`` is transparently rewritten to a
+        shared-cache URI so writer and reader observe the same
+        in-memory database. File paths work as usual.
+        """
         if self._write is not None or self._read is not None:
             raise RuntimeError("Store already open")
-        self._write = await aiosqlite.connect(self._path)
+        if self._path == ":memory:":
+            import uuid
+            uri = f"file:skyward-{uuid.uuid4().hex}?mode=memory&cache=shared"
+            self._write = await aiosqlite.connect(uri, uri=True)
+            self._read = await aiosqlite.connect(uri, uri=True)
+        else:
+            self._write = await aiosqlite.connect(self._path)
+            self._read = await aiosqlite.connect(self._path)
         self._write.row_factory = aiosqlite.Row
         await apply_schema(self._write)
-        self._read = await aiosqlite.connect(self._path)
         self._read.row_factory = aiosqlite.Row
         await self._read.execute("PRAGMA journal_mode=WAL")
 
@@ -498,12 +510,31 @@ class Store:
             else:
                 await write.commit()
 
+    @asynccontextmanager
+    async def _ensure_tx(
+        self, tx: Transaction | None,
+    ) -> AsyncIterator[Transaction]:
+        """Yield the supplied transaction, or open a fresh one.
+
+        Lets repository methods share code between standalone mode
+        (callers get their own transaction) and enlisted mode (callers
+        commit atomically with other writes in the same ``tx`` block).
+        """
+        match tx:
+            case None:
+                async with self.tx() as owned:
+                    yield owned
+            case existing:
+                yield existing
+
     # ── providers ──────────────────────────────────────────────────
 
-    async def put_provider(self, p: Provider) -> None:
+    async def put_provider(
+        self, p: Provider, *, tx: Transaction | None = None,
+    ) -> None:
         """Insert or replace a provider row."""
         config_json = json.dumps(_wire().to_dict(p.config))
-        async with self.tx() as tx:
+        async with self._ensure_tx(tx) as tx:
             await tx.execute(
                 "INSERT OR REPLACE INTO providers "
                 "(name, type, config, created_at, updated_at, last_used_at) "
@@ -551,7 +582,9 @@ class Store:
 
     # ── compute ────────────────────────────────────────────────────
 
-    async def put_compute(self, c: Compute) -> None:
+    async def put_compute(
+        self, c: Compute, *, tx: Transaction | None = None,
+    ) -> None:
         """Insert or replace a compute row."""
         spec_json = json.dumps(_wire().to_dict(c.spec))
         (
@@ -566,7 +599,7 @@ class Store:
             chosen_spec_ordinal,
             chosen_spec_json,
         ) = _encode_compute_status(c.status)
-        async with self.tx() as tx:
+        async with self._ensure_tx(tx) as tx:
             await tx.execute(
                 "INSERT OR REPLACE INTO compute "
                 "(name, spec, created_at, status_tag, started_at, stopped_at, "
@@ -627,14 +660,18 @@ class Store:
             await cursor.close()
         return [_row_to_compute(r) for r in rows]
 
-    async def delete_compute(self, name: ComputeName) -> None:
+    async def delete_compute(
+        self, name: ComputeName, *, tx: Transaction | None = None,
+    ) -> None:
         """Delete a compute row (and cascade to nodes)."""
-        async with self.tx() as tx:
+        async with self._ensure_tx(tx) as tx:
             await tx.execute("DELETE FROM compute WHERE name = ?", (name,))
 
     # ── nodes ──────────────────────────────────────────────────────
 
-    async def put_node(self, n: Node) -> None:
+    async def put_node(
+        self, n: Node, *, tx: Transaction | None = None,
+    ) -> None:
         """Insert or replace a node row."""
         (
             tag,
@@ -643,7 +680,7 @@ class Store:
             lost_at,
             lost_reason,
         ) = _encode_node_status(n.status)
-        async with self.tx() as tx:
+        async with self._ensure_tx(tx) as tx:
             await tx.execute(
                 "INSERT OR REPLACE INTO nodes "
                 "(id, compute, instance_id, provider_name, head_addr, created_at, "
@@ -664,6 +701,52 @@ class Store:
                 ),
             )
 
+    async def update_node_status(
+        self,
+        node_id: NodeId,
+        status: NodeStatus,
+        *,
+        head_addr: str | None = None,
+        tx: Transaction | None = None,
+    ) -> None:
+        """Update only the status columns of an existing ``nodes`` row.
+
+        Avoids read-modify-write on the immutable columns (``compute``,
+        ``instance_id``, ``provider_name``, ``created_at``) set at
+        insertion time by the pool actor. ``head_addr`` is optional and
+        only written when supplied.
+        """
+        (
+            tag,
+            status_since,
+            bootstrap_phase,
+            lost_at,
+            lost_reason,
+        ) = _encode_node_status(status)
+        match head_addr:
+            case None:
+                sql = (
+                    "UPDATE nodes SET status_tag=?, status_since=?, "
+                    "bootstrap_phase=?, lost_at=?, lost_reason=? "
+                    "WHERE id=?"
+                )
+                params: SqlParams = (
+                    tag, status_since, bootstrap_phase, lost_at, lost_reason,
+                    node_id,
+                )
+            case addr:
+                sql = (
+                    "UPDATE nodes SET status_tag=?, status_since=?, "
+                    "bootstrap_phase=?, lost_at=?, lost_reason=?, "
+                    "head_addr=? WHERE id=?"
+                )
+                params = (
+                    tag, status_since, bootstrap_phase, lost_at, lost_reason,
+                    addr, node_id,
+                )
+        async with self._ensure_tx(tx) as inner:
+            await inner.execute(sql, params)
+
     async def list_nodes(self, *, compute: ComputeName) -> list[Node]:
         """Return every node attached to *compute* ordered by id."""
         if self._read is None:
@@ -680,9 +763,11 @@ class Store:
 
     # ── tasks ──────────────────────────────────────────────────────
 
-    async def put_task(self, t: Task) -> None:
+    async def put_task(
+        self, t: Task, *, tx: Transaction | None = None,
+    ) -> None:
         """Upsert a task row keyed by ``(module, qualname)``."""
-        async with self.tx() as tx:
+        async with self._ensure_tx(tx) as tx:
             await tx.execute(
                 "INSERT OR IGNORE INTO tasks (module, qualname) VALUES (?, ?)",
                 (t.module, t.qualname),
@@ -690,7 +775,9 @@ class Store:
 
     # ── executions ─────────────────────────────────────────────────
 
-    async def put_execution(self, e: TaskExecution) -> None:
+    async def put_execution(
+        self, e: TaskExecution, *, tx: Transaction | None = None,
+    ) -> None:
         """Insert or replace a task execution row."""
         kind_tag, group_id = _encode_exec_kind(e.kind)
         (
@@ -703,7 +790,7 @@ class Store:
         ) = _encode_execution_status(e.status)
         module, qualname = e.task
         timeout_s = None if e.timeout is None else e.timeout.total_seconds()
-        async with self.tx() as tx:
+        async with self._ensure_tx(tx) as tx:
             await tx.execute(
                 "INSERT OR REPLACE INTO task_executions "
                 "(id, task_module, task_qualname, compute, kind_tag, group_id, "
@@ -745,6 +832,42 @@ class Store:
         if row is None:
             return None
         return _row_to_execution(row)
+
+    async def update_execution_status(
+        self,
+        execution_id: ExecutionId,
+        status: ExecutionStatus,
+        *,
+        tx: Transaction | None = None,
+    ) -> None:
+        """Partial update of an existing ``task_executions`` row.
+
+        Keeps the immutable columns (``task_module``, ``task_qualname``,
+        ``compute``, ``payload_blob``, etc.) untouched. Used by the task
+        manager and PoolHost to transition ``Queued → Dispatching →
+        Running → Succeeded | Failed | Interrupted`` atomically with an
+        emitted event.
+        """
+        (
+            status_tag,
+            finished_at,
+            interrupted_at,
+            interrupt_reason,
+            cancelled_at,
+            cancel_reason,
+        ) = _encode_execution_status(status)
+        sql = (
+            "UPDATE task_executions SET "
+            "status_tag=?, finished_at=?, interrupted_at=?, "
+            "interrupt_reason=?, cancelled_at=?, cancel_reason=? "
+            "WHERE id=?"
+        )
+        params: SqlParams = (
+            status_tag, finished_at, interrupted_at, interrupt_reason,
+            cancelled_at, cancel_reason, execution_id,
+        )
+        async with self._ensure_tx(tx) as inner:
+            await inner.execute(sql, params)
 
     async def list_executions(
         self,
@@ -813,7 +936,9 @@ class Store:
 
     # ── results ────────────────────────────────────────────────────
 
-    async def put_result(self, r: TaskResult) -> None:
+    async def put_result(
+        self, r: TaskResult, *, tx: Transaction | None = None,
+    ) -> None:
         """Insert a task result row.
 
         Results are identified by ``(execution, shard)``; the ``id`` field on
@@ -831,7 +956,7 @@ class Store:
             error_id,
             node_id,
         ) = _encode_result_status(r.status)
-        async with self.tx() as tx:
+        async with self._ensure_tx(tx) as tx:
             await tx.execute(
                 "INSERT OR REPLACE INTO task_results "
                 "(execution, shard, node_id, status_tag, dispatched_at, "
@@ -876,6 +1001,7 @@ class Store:
         size: int,
         kind: BlobKind,
         sha256: str | None = None,
+        tx: Transaction | None = None,
     ) -> BlobId:
         """Insert a blob row and return the new id.
 
@@ -883,7 +1009,7 @@ class Store:
         The Blobs service (Phase E) is responsible for the content path.
         """
         ts = time.time()
-        async with self.tx() as tx:
+        async with self._ensure_tx(tx) as tx:
             cursor = await tx.execute(
                 "INSERT INTO blobs (path, size, sha256, kind, created_at) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -908,14 +1034,16 @@ class Store:
             return None
         return _row_to_blob(row)
 
-    async def evict_blob(self, id: BlobId) -> None:
+    async def evict_blob(
+        self, id: BlobId, *, tx: Transaction | None = None,
+    ) -> None:
         """Mark a blob as evicted by setting ``evicted_at = now()``.
 
         The blob file is not removed; the Blobs service handles content unlink
         in Phase E.
         """
         ts = time.time()
-        async with self.tx() as tx:
+        async with self._ensure_tx(tx) as tx:
             await tx.execute(
                 "UPDATE blobs SET evicted_at = ? WHERE id = ?",
                 (ts, id),
@@ -929,10 +1057,11 @@ class Store:
         type: str,
         message: str,
         traceback: str | None = None,
+        tx: Transaction | None = None,
     ) -> ErrorId:
         """Insert an error row and return the new id."""
         ts = time.time()
-        async with self.tx() as tx:
+        async with self._ensure_tx(tx) as tx:
             cursor = await tx.execute(
                 "INSERT INTO errors (type, message, traceback, created_at) "
                 "VALUES (?, ?, ?, ?)",

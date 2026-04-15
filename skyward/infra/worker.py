@@ -44,6 +44,13 @@ _background_tasks: set[asyncio.Task[None]] = set()
 
 @dataclass(frozen=True, slots=True)
 class TaskSucceeded:
+    """Worker reply carrying the pickled return value.
+
+    ``result`` is ``cloudpickle.dumps(return_value)`` for regular tasks
+    or a :class:`~skyward.infra.streaming._StreamHandle` for generator
+    tasks, because streams carry a live :class:`ActorRef` that must stay
+    routable by Casty's serializer instead of being re-pickled.
+    """
     result: Any
     node_id: int
 
@@ -106,11 +113,17 @@ def skyward_serializer() -> _DiagnosticSerializer:
 
 @dataclass(frozen=True, slots=True)
 class ExecuteTask:
-    fn: Any
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
+    """Worker-bound execution carrying opaque pickled bytes.
+
+    ``payload`` is ``cloudpickle.dumps((fn, args, kwargs))`` produced by
+    the caller. The worker is the sole site that runs
+    :func:`cloudpickle.loads` on user code.
+    """
+
+    payload: bytes
     reply_to: ActorRef[TaskResult]
     input_streams: tuple[tuple[int, Any], ...] = ()
+    is_generator: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,31 +303,28 @@ def worker_behavior(
         return tuple(resolved)
 
     async def _execute(
-        fn: Any,
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
+        payload: bytes,
         input_streams: tuple[tuple[int, Any], ...] = (),
+        is_generator: bool = False,
     ) -> TaskResult:
         async with sem:
             try:
-                from skyward.infra.streaming import is_generator_compute
+                import cloudpickle
 
                 use_process = (
                     executor == "process"
                     and not input_streams
-                    and not is_generator_compute(fn)
+                    and not is_generator
                 )
 
                 if use_process:
-                    import cloudpickle
-
                     loop = asyncio.get_running_loop()
-                    payload = await asyncio.to_thread(cloudpickle.dumps, (fn, args, kwargs))
                     result = await loop.run_in_executor(
                         executor_pool, _run_in_process, payload,
                         dict(os.environ), tuple(process_hooks),
                     )
                 else:
+                    fn, args, kwargs = cloudpickle.loads(payload)
                     args = await _resolve_input_streams(args, input_streams)
 
                     def _run() -> Any:
@@ -333,9 +343,9 @@ def worker_behavior(
 
                         fn_name = getattr(fn, "__name__", str(fn))
                         log.info("Executing {fn_name}", fn_name=fn_name)
-                        result = fn(*args, **kwargs)
+                        value = fn(*args, **kwargs)
                         log.info("Task {fn_name} completed", fn_name=fn_name)
-                        return result
+                        return value
 
                     result = await asyncio.to_thread(_run)
 
@@ -343,7 +353,10 @@ def worker_behavior(
                     case types.GeneratorType() if system is not None:
                         return await _wrap_generator(system, result, node_id)
                     case _:
-                        return TaskSucceeded(result=result, node_id=node_id)
+                        return TaskSucceeded(
+                            result=cloudpickle.dumps(result),
+                            node_id=node_id,
+                        )
             except Exception as e:
                 log.error("Task failed: {err}", err=e)
                 return TaskFailed(
@@ -393,13 +406,12 @@ def worker_behavior(
                 ))
                 return Behaviors.same()
             case ExecuteTask(
-                fn=fn, args=args, kwargs=kwargs,
-                reply_to=reply_to, input_streams=streams,
+                payload=payload, reply_to=reply_to,
+                input_streams=streams, is_generator=is_gen,
             ):
-                fn_name = getattr(fn, "__name__", str(fn))
-                log.debug("ExecuteTask received, fn={fn_name}", fn_name=fn_name)
+                log.debug("ExecuteTask received ({n} bytes)", n=len(payload))
                 ctx.pipe_to_self(
-                    coro=_execute(fn, args, kwargs, streams),
+                    coro=_execute(payload, streams, is_gen),
                     mapper=lambda result: _TaskDone(result=result, reply_to=reply_to),
                     on_failure=lambda e: _TaskErrored(error=e, reply_to=reply_to),
                 )

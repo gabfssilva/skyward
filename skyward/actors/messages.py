@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
-from uuid import uuid4
 
 from casty import ActorRef
 
@@ -347,18 +346,31 @@ class Provision:
 
 @dataclass(frozen=True, slots=True)
 class ExecuteOnNode:
-    fn: Any
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
+    """Pool-to-node dispatch carrying opaque pickled bytes.
+
+    ``payload`` is ``cloudpickle.dumps((fn, args, kwargs))`` produced by
+    the caller (``ComputePool`` or ``PoolHost``). The node actor never
+    deserializes it — bytes flow straight to the worker where
+    :func:`cloudpickle.loads` runs exactly once.
+    """
+
+    payload: bytes
     reply_to: ActorRef[Any]
-    task_id: str = ""
+    task_id: str
     timeout: float = 600.0
+    input_streams: tuple[tuple[int, ActorRef[Any]], ...] = ()
+    is_generator: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class TaskSucceeded:
-    """Remote function returned normally."""
-    value: Any
+    """Remote function returned normally.
+
+    ``value`` is ``cloudpickle.dumps(result)`` — the worker is the only
+    site that serializes user return values; everything upstream passes
+    the bytes through unchanged until the client boundary decodes them.
+    """
+    value: bytes
     node_id: NodeId
     task_id: str = ""
     elapsed: float = 0.0
@@ -458,22 +470,37 @@ class ClusterReady:
 
 @dataclass(frozen=True, slots=True)
 class SubmitTask:
-    fn: Any
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
+    """Submit an opaque pickled task for round-robin execution.
+
+    ``payload`` is ``cloudpickle.dumps((fn, args, kwargs))``; callers
+    (``ComputePool`` or ``PoolHost``) produce the bytes so the server
+    process never deserializes user code. ``task_key`` carries the
+    ``(module, qualname)`` for observability only — it never feeds
+    execution. ``input_streams`` and ``is_generator`` are precomputed by
+    the caller so actors downstream can dispatch without inspecting the
+    function.
+    """
+
+    payload: bytes
     reply_to: ActorRef[Any]
-    task_id: str = field(default_factory=lambda: uuid4().hex[:8])
+    task_id: str
     timeout: float = 600.0
+    task_key: tuple[str, str] = ("", "")
+    input_streams: tuple[tuple[int, ActorRef[Any]], ...] = ()
+    is_generator: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class SubmitBroadcast:
-    fn: Any
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
+    """Broadcast variant of :class:`SubmitTask` with the same payload shape."""
+
+    payload: bytes
     reply_to: ActorRef[Any]
-    task_id: str = field(default_factory=lambda: uuid4().hex[:8])
+    task_id: str
     timeout: float = 600.0
+    task_key: tuple[str, str] = ("", "")
+    input_streams: tuple[tuple[int, ActorRef[Any]], ...] = ()
+    is_generator: bool = False
 
 
 @dataclass(frozen=True, slots=True)

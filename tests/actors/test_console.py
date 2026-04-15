@@ -254,6 +254,8 @@ class TestConsoleActor:
                         provider_config=None,  # type: ignore[arg-type]
                         provider=None,
                         offers=(),
+                        compute_spec=None,  # type: ignore[arg-type]
+                        chosen_spec=None,  # type: ignore[arg-type]
                         reply_to=None,  # type: ignore[arg-type]
                     ),
                     timestamp=0.0,

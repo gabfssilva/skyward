@@ -110,12 +110,11 @@ def pool_name_from_path(path: str) -> str | None:
     return None
 
 
-def _format_task(fn: object, args: tuple, kwargs: dict) -> str:
-    name = getattr(fn, "__name__", str(fn))
-    parts = [repr(a) for a in args]
-    parts.extend(f"{k}={v!r}" for k, v in kwargs.items())
-    call = f"{name}({', '.join(parts)})"
-    return call[:80] + "\u2026" if len(call) > 80 else call
+def _task_label(task_key: tuple[str, str]) -> str:
+    module, qualname = task_key
+    if module or qualname:
+        return f"{module}.{qualname}" if module else qualname
+    return "<bytes>"
 
 
 def translate(spy: SpyEvent, pool_name: str) -> SessionEvent | tuple[SessionEvent, ...] | None:  # type: ignore[type-arg]
@@ -238,11 +237,11 @@ def translate(spy: SpyEvent, pool_name: str) -> SessionEvent | tuple[SessionEven
             return ErrorEvent.Occurred(pool_name, f"Post-bootstrap failed: {err}")
 
         # ── Tasks ───────────────────────────────────────────
-        case SubmitTask(task_id=tid, fn=fn, args=args, kwargs=kwargs):
-            return Task.Queued(pool_name, tid, _format_task(fn, args, kwargs), "single")
+        case SubmitTask(task_id=tid, task_key=tk):
+            return Task.Queued(pool_name, tid, _task_label(tk), "single")
 
-        case SubmitBroadcast(task_id=tid, fn=fn, args=args, kwargs=kwargs):
-            return Task.Queued(pool_name, tid, _format_task(fn, args, kwargs), "broadcast")
+        case SubmitBroadcast(task_id=tid, task_key=tk):
+            return Task.Queued(pool_name, tid, _task_label(tk), "broadcast")
 
         case TaskSubmitted(task_id=tid, node_id=nid):
             return Task.Assigned(pool_name, tid, nid)

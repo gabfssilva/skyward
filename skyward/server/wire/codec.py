@@ -205,6 +205,8 @@ def _decode_target(data: dict[str, Any], cls: type) -> Any:
 def _decode_field(value: Any, hint: Any) -> Any:
     if hint is None:
         return _infer_decode(value)
+    if isinstance(hint, typing.TypeAliasType):
+        return _decode_field(value, hint.__value__)
     origin = get_origin(hint)
     if origin is None and isinstance(hint, type) and hint in _DECODERS:
         return _DECODERS[hint](value) if isinstance(value, dict) else value

@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING
 
 from casty import ActorRef
 
@@ -12,6 +12,9 @@ from skyward.actors.messages import (
     TaskSubmitted,
 )
 
+if TYPE_CHECKING:
+    from skyward.server.host.store import Store
+
 type NodeId = int
 
 
@@ -19,7 +22,9 @@ type NodeId = int
 class PendingBroadcast:
     caller: ActorRef
     pending: frozenset[NodeId]
-    results: MappingProxyType[NodeId, Any] = field(default_factory=lambda: MappingProxyType({}))
+    results: MappingProxyType[NodeId, object] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,10 +34,15 @@ class _State:
     round_robin: int
     inflight: MappingProxyType[str, SubmitTask]
     broadcasts: MappingProxyType[str, PendingBroadcast]
-    node_tasks: MappingProxyType[NodeId, frozenset[str]] = field(default_factory=lambda: MappingProxyType({}))
+    node_tasks: MappingProxyType[NodeId, frozenset[str]] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )
     retry_on_interruption: int = 3
-    retries: MappingProxyType[str, int] = field(default_factory=lambda: MappingProxyType({}))
+    retries: MappingProxyType[str, int] = field(
+        default_factory=lambda: MappingProxyType({}),
+    )
     pressure_observer: ActorRef | None = None
+    store: "Store | None" = None
 
 
 def _pick_with_free_slot(
@@ -50,6 +60,17 @@ def _pick_with_free_slot(
     return None
 
 
+def _to_node_message(task: SubmitTask, tm_ref: ActorRef) -> ExecuteOnNode:
+    return ExecuteOnNode(
+        payload=task.payload,
+        reply_to=tm_ref,
+        task_id=task.task_id,
+        timeout=task.timeout,
+        input_streams=task.input_streams,
+        is_generator=task.is_generator,
+    )
+
+
 def _dispatch(
     nid: NodeId,
     task: SubmitTask,
@@ -57,17 +78,19 @@ def _dispatch(
     tm_ref: ActorRef,
     inflight: MappingProxyType[str, SubmitTask],
     node_tasks: MappingProxyType[NodeId, frozenset[str]],
-) -> tuple[MappingProxyType[NodeId, NodeSlots], MappingProxyType[str, SubmitTask], MappingProxyType[NodeId, frozenset[str]]]:
+) -> tuple[
+    MappingProxyType[NodeId, NodeSlots],
+    MappingProxyType[str, SubmitTask],
+    MappingProxyType[NodeId, frozenset[str]],
+]:
     slot = nodes[nid]
-    tm_ref.tell(TaskSubmitted(task_id=task.task_id, node_id=nid))
-    slot.ref.tell(ExecuteOnNode(
-        fn=task.fn, args=task.args, kwargs=task.kwargs,
-        reply_to=tm_ref, task_id=task.task_id, timeout=task.timeout,
-    ))
+    tid = task.task_id
+    tm_ref.tell(TaskSubmitted(task_id=tid, node_id=nid))
+    slot.ref.tell(_to_node_message(task, tm_ref))
     new_nodes = MappingProxyType({**nodes, nid: NodeSlots(slot.ref, slot.total, slot.used + 1)})
-    new_inflight = MappingProxyType({**inflight, task.task_id: task})
+    new_inflight = MappingProxyType({**inflight, tid: task})
     existing = node_tasks.get(nid, frozenset())
-    new_node_tasks = MappingProxyType({**node_tasks, nid: existing | {task.task_id}})
+    new_node_tasks = MappingProxyType({**node_tasks, nid: existing | {tid}})
     return new_nodes, new_inflight, new_node_tasks
 
 
@@ -78,7 +101,13 @@ def _drain_queue(
     tm_ref: ActorRef,
     inflight: MappingProxyType[str, SubmitTask],
     node_tasks: MappingProxyType[NodeId, frozenset[str]],
-) -> tuple[tuple[SubmitTask, ...], MappingProxyType[NodeId, NodeSlots], int, MappingProxyType[str, SubmitTask], MappingProxyType[NodeId, frozenset[str]]]:
+) -> tuple[
+    tuple[SubmitTask, ...],
+    MappingProxyType[NodeId, NodeSlots],
+    int,
+    MappingProxyType[str, SubmitTask],
+    MappingProxyType[NodeId, frozenset[str]],
+]:
     remaining: list[SubmitTask] = []
     for task in queue:
         nid = _pick_with_free_slot(nodes, round_robin)

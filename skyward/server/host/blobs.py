@@ -194,5 +194,52 @@ class Blobs:
         hex_id = f"{id:08x}"
         return self.root / hex_id[:2] / f"{hex_id}.bin"
 
+    async def gc_orphans(self) -> int:
+        """Reconcile on-disk blobs with live DB rows on startup.
+
+        - Files inside ``root`` with no matching live ``blobs`` row are
+          deleted (they are leftovers from a crash between ``os.replace``
+          and the commit).
+        - Rows whose on-disk path is missing get ``evicted_at`` set so
+          the client sees a ``410 Gone`` rather than a 500.
+
+        Non-terminal executions / results keep their blob pinned —
+        eviction there would drop the bytes a still-running worker
+        expects. Returns the total number of rows / files reconciled.
+        """
+        if not self.root.exists():
+            return 0
+        async with self.store.tx() as tx:
+            rows = await tx.fetch_all(
+                "SELECT id, path, evicted_at FROM blobs",
+            )
+
+        live_paths: set[str] = set()
+        missing_ids: list[int] = []
+        for row in rows:
+            path = str(row["path"])
+            if row["evicted_at"] is not None:
+                continue
+            live_paths.add(path)
+            if not Path(path).exists():
+                missing_ids.append(int(row["id"]))
+
+        removed = 0
+        if missing_ids:
+            async with self.store.tx() as tx:
+                now_ts = time.time()
+                for blob_id in missing_ids:
+                    await tx.execute(
+                        "UPDATE blobs SET evicted_at = ? WHERE id = ?",
+                        (now_ts, blob_id),
+                    )
+            removed += len(missing_ids)
+
+        for file_path in self.root.glob("**/*.bin"):
+            if str(file_path) not in live_paths:
+                file_path.unlink(missing_ok=True)
+                removed += 1
+        return removed
+
 
 __all__ = ["BlobEvicted", "Blobs"]

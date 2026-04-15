@@ -24,7 +24,7 @@ def Compute(
     *specs: Spec,
     name: str | None = None,
     options: Options = _DEFAULT_OPTIONS,
-    daemon: bool = False,
+    server: bool = True,
     **kwargs: Unpack[SpecKwargs],
 ) -> Generator[Pool, None, None]:
     """Single-pool convenience: creates a Session and provisions one pool.
@@ -32,17 +32,11 @@ def Compute(
     Three calling conventions (mutually exclusive):
 
     - **Named pool**: ``sky.Compute(name="train")`` — loads from
-      ``skyward.toml``. When ``daemon = true``, connects to the
-      background daemon (auto-spawning if needed).
+      ``skyward.toml``.
     - **Flat kwargs**: ``sky.Compute(provider=sky.AWS(), ...)`` —
       assembles a single ``Spec`` from keyword arguments.
     - **Explicit specs**: ``sky.Compute(Spec(...), Spec(...))`` —
       multi-provider fallback.
-
-    When ``daemon=True``, routes through the background daemon
-    instead of creating a full Session. The daemon is auto-spawned
-    if not already running. A fingerprint is computed from the spec
-    to identify the pool across script runs.
 
     Parameters
     ----------
@@ -55,10 +49,11 @@ def Compute(
     options
         Operational tuning (timeouts, retries, autoscaling, session
         settings). Defaults are sensible for most workloads.
-    daemon
-        When ``True``, dispatch through the background daemon
-        instead of creating an inline Session. The daemon is
-        auto-spawned if not already running.
+    server
+        When ``True`` (default), route through the background HTTP
+        server so every pool operation survives script restarts.
+        Set to ``False`` for an in-process Session that lives and
+        dies with the current interpreter.
     **kwargs
         Flat keyword arguments matching ``Spec`` fields. Assembled
         into a single ``Spec`` when no positional specs are given.
@@ -81,9 +76,6 @@ def Compute(
 
     >>> with sky.Compute(name="train") as pool:
     ...     result = train(data) >> pool
-
-    >>> with sky.Compute(provider=sky.AWS(), accelerator="A100", daemon=True) as pool:
-    ...     result = train(data) >> pool
     """
     from skyward.core.context import _active_pool
 
@@ -101,21 +93,32 @@ def Compute(
                 _active_pool.reset(token)
         return
 
-    if daemon:
-        import cloudpickle
+    if server:
+        import asyncio
 
-        from skyward.daemon.fingerprint import compute_fingerprint
-        from skyward.daemon.pool import DaemonPool
-        from skyward.daemon.spawn import ensure_daemon
+        from skyward.core.fingerprint import compute_fingerprint
+        from skyward.core.session import _build_compute_spec
+        from skyward.server.driver.pool import ServerPool
+        from skyward.server.driver.spawn import ensure_server
 
+        if specs and kwargs:
+            raise ValueError(
+                "Cannot mix positional Spec objects with flat keyword arguments",
+            )
+        if not specs and not kwargs:
+            raise ValueError(
+                "Either Spec objects or keyword arguments "
+                "(provider, ...) must be provided",
+            )
         built_specs = specs if specs else (Spec(**kwargs),)
-        fingerprint = compute_fingerprint(built_specs[0])
+        compute_spec = _build_compute_spec(
+            list(built_specs), options, built_specs[0],
+        )
 
-        ensure_daemon()
-        pool = DaemonPool(
-            name=fingerprint,
-            spec_bytes=cloudpickle.dumps(built_specs),
-            console=options.console,
+        pool_name = name or compute_fingerprint(built_specs[0])
+        socket_path = asyncio.run(ensure_server())
+        pool = ServerPool(
+            pool_name, socket_path, compute_spec, console=options.console,
         )
         with pool:
             token = _active_pool.set(pool)

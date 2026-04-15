@@ -8,9 +8,11 @@ from casty import ActorRef
 from skyward.actors.pool.messages import PoolMsg
 
 if TYPE_CHECKING:
+    from skyward.api.spec import Spec
     from skyward.core.model import Cluster, Instance, Offer
     from skyward.core.provider import ProviderConfig
     from skyward.core.spec import PoolSpec
+    from skyward.server.host.domain import ComputeSpec
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +42,8 @@ class SpawnPool:
     provider: Any
     offers: tuple[Offer, ...]
     provision_timeout: float
+    compute_spec: ComputeSpec
+    chosen_spec: Spec
     reply_to: ActorRef[PoolSpawned | PoolSpawnFailed]
 
 
@@ -91,6 +95,8 @@ class RecoverExistingPool:
     provider: Any
     cluster: Cluster[Any]
     instances: tuple[Instance, ...]
+    compute_spec: ComputeSpec
+    chosen_spec: Spec
     reply_to: ActorRef[PoolSpawned | PoolSpawnFailed]
 
 

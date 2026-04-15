@@ -24,17 +24,29 @@ from skyward.actors.messages import (
 )
 
 if TYPE_CHECKING:
+    from skyward.api.spec import Spec
     from skyward.core.model import Cluster, Instance, Offer
     from skyward.core.provider import ProviderConfig
     from skyward.core.spec import PoolSpec
+    from skyward.server.host.domain import ComputeSpec
 
 
 @dataclass(frozen=True, slots=True)
 class StartPool:
+    """Command the pool actor to provision a fresh cluster.
+
+    ``spec`` is the resolved ``PoolSpec`` used for runtime decisions;
+    ``compute_spec`` and ``chosen_spec`` are the authoritative user-
+    facing projections that land in the Store so that recovery can
+    rebuild the pool from persisted state.
+    """
+
     spec: PoolSpec
     provider_config: ProviderConfig
     provider: Any
     offers: tuple[Offer, ...]
+    compute_spec: ComputeSpec
+    chosen_spec: Spec
     reply_to: ActorRef[PoolStarted | ProvisionFailed]
 
 
@@ -73,12 +85,16 @@ class RecoverPool:
     """Recover a pool from pre-existing instances (crash recovery).
 
     Skips prepare() and provision() -- goes directly to spawning
-    node actors with already-provisioned instances.
+    node actors with already-provisioned instances. ``compute_spec``
+    and ``chosen_spec`` mirror the fields on :class:`StartPool` so
+    that persisted state stays consistent across restarts.
     """
     spec: PoolSpec
     provider: Any
     cluster: Cluster[Any]
     instances: tuple[Instance, ...]
+    compute_spec: ComputeSpec
+    chosen_spec: Spec
     reply_to: ActorRef[PoolStarted | ProvisionFailed]
 
 

@@ -22,6 +22,7 @@ from skyward.actors.messages import (
 
 if TYPE_CHECKING:
     from skyward.actors.pool.messages import PoolMsg
+    from skyward.server.host.store import Store
 
 from skyward.observability.logger import logger
 
@@ -38,7 +39,17 @@ def reconciler_actor(
     initial_node_ids: frozenset[NodeId],
     tick_interval: float = 15.0,
     max_provision_retries: int = 10,
+    *,
+    store: Store,
 ) -> Behavior[ReconcilerMsg]:
+    """Reconciler actor.
+
+    Parameters
+    ----------
+    store
+        Persistence layer; F3 wires node-drain writes through ``tx``.
+    """
+    _ = store
 
     def _schedule_tick(ctx: ActorContext[ReconcilerMsg]) -> None:
         async def _tick() -> _ReconcileTick:

@@ -6,7 +6,7 @@ from skyward.actors.messages import TaskFailed, TaskInterrupted, TaskSucceeded
 class TestTaskResultSubtypes:
     def test_pattern_matching(self):
         results = [
-            TaskSucceeded(value="ok", node_id=1, task_id="t1"),
+            TaskSucceeded(value=b"ok", node_id=1, task_id="t1"),
             TaskFailed(error=ValueError("x"), node_id=1, task_id="t2"),
             TaskInterrupted(error=RuntimeError("lost"), node_id=1, task_id="t3"),
         ]

@@ -55,9 +55,43 @@ def _resolve[T: (int, float)](user: T | None, provider: T | None, default: T) ->
     return default
 
 
+def _build_compute_spec(
+    built_specs: list[Spec], options: Options, first_spec: Spec,
+) -> Any:
+    """Assemble a ``ComputeSpec`` from the user-facing arguments.
+
+    The ``ComputeSpec`` is the authoritative persistence form — it is
+    the exact shape the HTTP server receives from a client and writes
+    to the Store. Constructing it here keeps in-process and server
+    modes data-isomorphic.
+    """
+    from datetime import timedelta as _timedelta
+
+    from skyward.api.spec import Nodes as _Nodes
+    from skyward.server.host.domain import ComputeSpec as _ComputeSpec
+
+    match first_spec.nodes:
+        case _Nodes() as n:
+            nodes = n
+        case (int() as lo, int() as hi):
+            nodes = _Nodes(desired=hi, min=lo, max=hi)
+        case int() as desired:
+            nodes = _Nodes(desired=desired)
+        case other:
+            raise TypeError(f"Unsupported NodeSpec: {other!r}")
+    return _ComputeSpec(
+        specs=tuple(built_specs),
+        selection=options.selection,
+        nodes=nodes,
+        allocation=first_spec.allocation,
+        ttl=_timedelta(seconds=first_spec.ttl),
+    )
+
+
 if TYPE_CHECKING:
     from skyward.api.projection import SessionProjection
     from skyward.core.pool import ComputePool
+    from skyward.server.host.store import Store
 
 
 class Session:
@@ -74,6 +108,11 @@ class Session:
     shutdown_timeout
         Maximum seconds to wait for a graceful shutdown of the session
         actor and actor system.
+    store
+        Pre-opened persistence store. When ``None`` the Session
+        constructs a private in-memory Store and closes it on
+        ``__exit__``. When supplied, the caller (e.g. ``PoolHost``)
+        owns the store lifecycle — Session neither opens nor closes it.
     """
 
     def __init__(
@@ -83,6 +122,7 @@ class Session:
         logging: LogConfig | bool = True,
         shutdown_timeout: float = 120.0,
         projection: SessionProjection | None = None,
+        store: Store | None = None,
     ) -> None:
         from skyward.api.projection import SessionProjection as _Proj
 
@@ -102,6 +142,8 @@ class Session:
         self._pools: dict[str, Any] = {}
         self._pending_pool_refs: dict[str, ActorRef[Any]] = {}
         self._original_sigint: Any = None
+        self._store: Store | None = store
+        self._owns_store: bool = store is None
 
     def __enter__(self) -> Session:
         """Start the session infrastructure."""
@@ -189,6 +231,12 @@ class Session:
         )
         from skyward.actors.projection import projection_actor
         from skyward.actors.session.actor import session_actor
+        from skyward.server.host.store import Store
+
+        if self._store is None:
+            self._store = Store(":memory:")
+            await self._store.open()
+        store = self._store
 
         self._system = ActorSystem(
             "skyward",
@@ -208,7 +256,7 @@ class Session:
             projection_actor(self._projection), "projection",
         )
         session_behavior = Behaviors.spy(
-            session_actor(), proj_ref, spy_children=True,
+            session_actor(store=store), proj_ref, spy_children=True,
         )
         self._session_ref = self._system.spawn(session_behavior, "session")
 
@@ -232,6 +280,9 @@ class Session:
         if self._system is not None:
             await self._system.__aexit__(None, None, None)
             self._system = None
+
+        if self._owns_store and self._store is not None:
+            await self._store.close()
 
     async def _stop_all_pools(self) -> None:
         """Send StopPool to every tracked pool and await termination."""
@@ -422,8 +473,10 @@ class Session:
         )
 
         envelope = float(provision_timeout + ssh_timeout + bootstrap_timeout + 30)
+        compute_spec = _build_compute_spec(built_specs, options, first_spec)
         pool_ref, spec, cid, cluster, instances = self._spawn_pool(
             built_specs, pool_config, pool_name, envelope,
+            compute_spec=compute_spec,
         )
 
         from .pool import ComputePool as _ComputePool
@@ -450,6 +503,8 @@ class Session:
         pool_config: PoolConfig,
         pool_name: str,
         provision_timeout: float,
+        *,
+        compute_spec: Any,
     ) -> tuple[ActorRef[Any], Any, str, Any, tuple[Any, ...]]:
         """Select offers, create pool actor, start provisioning, and wait.
 
@@ -493,10 +548,12 @@ class Session:
 
         from skyward.core.errors import ProvisioningError
 
+        chosen_spec = built_specs[0]
         try:
             started = self._start_pool(
                 pool_ref, spec, provider_config, cloud_provider,
                 offers, provision_timeout,
+                compute_spec=compute_spec, chosen_spec=chosen_spec,
             )
         except ProvisioningError:
             self._pending_pool_refs.pop(pool_name, None)
@@ -537,6 +594,9 @@ class Session:
         provider: Any,
         offers: tuple[Any, ...],
         timeout: float,
+        *,
+        compute_spec: Any,
+        chosen_spec: Any,
     ) -> Any:
         """Send StartPool to the pool actor and block until ready or failed."""
         from skyward.actors.pool.messages import PoolStarted, ProvisionFailed, StartPool
@@ -555,6 +615,8 @@ class Session:
                     provider_config=provider_config,
                     provider=provider,
                     offers=offers,
+                    compute_spec=compute_spec,
+                    chosen_spec=chosen_spec,
                     reply_to=reply_to,  # type: ignore[arg-type]
                 ),
                 timeout=timeout,
@@ -576,11 +638,15 @@ class Session:
         provider: Any,
         cluster: Any,
         instances: tuple[Any, ...],
+        *,
+        compute_spec: Any,
+        chosen_spec: Any,
     ) -> Any:
         """Recover a pool from pre-existing instances (crash recovery).
 
         Sends RecoverExistingPool to the session actor instead of SpawnPool,
-        causing the pool actor to skip prepare()/provision().
+        causing the pool actor to skip prepare()/provision(). ``compute_spec``
+        and ``chosen_spec`` mirror what PoolHost loads from the Store.
         """
         from skyward.actors.session.messages import (
             PoolSpawned,
@@ -601,6 +667,7 @@ class Session:
             return RecoverExistingPool(
                 name=name, spec=spec, provider=provider,
                 cluster=cluster, instances=instances,
+                compute_spec=compute_spec, chosen_spec=chosen_spec,
                 reply_to=reply_to,
             )
 

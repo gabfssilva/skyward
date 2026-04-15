@@ -31,6 +31,7 @@ from skyward.server.host.domain import (
     TaskExecutionKind,
     TaskKey,
 )
+from skyward.server.host.pool_host import PoolHost
 from skyward.server.wire import to_dict
 
 
@@ -74,6 +75,18 @@ async def _detail(request: Request) -> Response:
     return JSONResponse(to_dict(e))
 
 
+def _pack_broadcast(shards: list[bytes]) -> bytes:
+    """Encode broadcast replies as ``[u32][shard0][u32][shard1]...``.
+
+    Matches the wire shape the client driver unpacks in Phase H2; the
+    length prefix is big-endian to stay consistent with the rest of
+    the host protocol framing.
+    """
+    import struct
+
+    return b"".join(struct.pack(">I", len(s)) + s for s in shards)
+
+
 def _parse_kind(raw: str) -> TaskExecutionKind | None:
     match raw.lower():
         case "run":
@@ -85,8 +98,17 @@ def _parse_kind(raw: str) -> TaskExecutionKind | None:
 
 
 async def _create(request: Request) -> Response:
+    """Enqueue a task execution for ``/v1/compute/{name}/tasks``.
+
+    When a :class:`PoolHost` is attached, the route hands the bytes to
+    :meth:`PoolHost.submit_task` and returns the pickled result as
+    ``application/octet-stream`` (G3 contract). Otherwise the request
+    falls through to the D-phase stub that merely persists a
+    ``Queued`` row — kept alive so the D3 contract tests stay green.
+    """
     store = request.app.state.store
     blobs = request.app.state.blobs
+    pool_host: PoolHost | None = getattr(request.app.state, "pool_host", None)
     compute_name = request.path_params["name"]
 
     if (await store.get_compute(compute_name)) is None:
@@ -112,12 +134,45 @@ async def _create(request: Request) -> Response:
         return JSONResponse({"error": "invalid_kind"}, status_code=422)
 
     client_id = request.headers.get("x-client-id")
-
     payload = await request.body()
+
+    if pool_host is not None:
+        try:
+            match kind:
+                case Broadcast():
+                    execution_id, shards = await pool_host.broadcast(
+                        compute_name, (module, qualname), payload,
+                        timeout_s, client_id,
+                    )
+                    return Response(
+                        content=_pack_broadcast(shards),
+                        media_type="application/octet-stream",
+                        headers={"X-Execution-Id": execution_id},
+                    )
+                case Run():
+                    execution_id, result_bytes = await pool_host.submit_task(
+                        compute_name, (module, qualname), payload,
+                        timeout_s, client_id,
+                    )
+                    return Response(
+                        content=result_bytes,
+                        media_type="application/octet-stream",
+                        headers={"X-Execution-Id": execution_id},
+                    )
+        except TimeoutError:
+            return JSONResponse({"error": "timeout"}, status_code=504)
+        except LookupError as exc:
+            return JSONResponse(
+                {"error": "not_found", "reason": str(exc)}, status_code=404,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse(
+                {"error": "execution_failed", "reason": str(exc)},
+                status_code=500,
+            )
+
     blob_id = await blobs.put(payload, kind="payload")
-
     await store.put_task(Task(module=module, qualname=qualname))
-
     execution_id = str(uuid.uuid4())
     now = datetime.now(UTC)
     await store.put_execution(

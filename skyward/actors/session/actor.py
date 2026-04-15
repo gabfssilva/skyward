@@ -5,6 +5,7 @@ from types import MappingProxyType
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 
 from skyward.observability.logger import logger
+from skyward.server.host.store import Store
 
 from .adapter import start_adapter
 from .messages import (
@@ -31,12 +32,15 @@ _EMPTY_POOLS: _Pools = MappingProxyType({})
 _EMPTY_PENDING: _PendingReplies = MappingProxyType({})
 
 
-def session_actor() -> Behavior[SessionMsg]:
+def session_actor(*, store: Store) -> Behavior[SessionMsg]:
     """Session actor managing the lifecycle of multiple named compute pools.
 
     Parameters
     ----------
-    None
+    store
+        Shared persistence layer. Every child pool actor receives the
+        same reference so that state transitions commit atomically with
+        their emitted events.
 
     Returns
     -------
@@ -44,12 +48,13 @@ def session_actor() -> Behavior[SessionMsg]:
         A behavior that tracks spawned pools, relays lifecycle events,
         and responds to snapshot queries.
     """
-    return active(pools=_EMPTY_POOLS, pending_replies=_EMPTY_PENDING)
+    return active(pools=_EMPTY_POOLS, pending_replies=_EMPTY_PENDING, store=store)
 
 
 def active(
     pools: _Pools,
     pending_replies: _PendingReplies,
+    store: Store,
 ) -> Behavior[SessionMsg]:
 
     async def receive(
@@ -60,7 +65,7 @@ def active(
                 from skyward.actors.pool.actor import pool_actor
 
                 pool_ref = ctx.spawn(
-                    pool_actor(session_ref=ctx.self, pool_name=name),
+                    pool_actor(session_ref=ctx.self, pool_name=name, store=store),
                     f"pool-{name}",
                 )
                 info = PoolInfo(name=name, ref=pool_ref)
@@ -69,18 +74,20 @@ def active(
                 return active(
                     pools=MappingProxyType({**pools, name: info}),
                     pending_replies=pending_replies,
+                    store=store,
                 )
 
             case SpawnPool(
                 name=name, spec=spec, provider_config=pc,
                 provider=provider, offers=offers,
-                provision_timeout=_, reply_to=reply_to,
+                provision_timeout=_, compute_spec=compute_spec,
+                chosen_spec=chosen_spec, reply_to=reply_to,
             ):
                 from skyward.actors.pool.actor import pool_actor
                 from skyward.actors.pool.messages import StartPool
 
                 pool_ref = ctx.spawn(
-                    pool_actor(session_ref=ctx.self, pool_name=name),
+                    pool_actor(session_ref=ctx.self, pool_name=name, store=store),
                     f"pool-{name}",
                 )
                 adapter_ref = ctx.spawn(
@@ -90,6 +97,7 @@ def active(
                 pool_ref.tell(StartPool(
                     spec=spec, provider_config=pc,
                     provider=provider, offers=offers,
+                    compute_spec=compute_spec, chosen_spec=chosen_spec,
                     reply_to=adapter_ref,
                 ))
                 log.info("Spawning pool {name}", name=name)
@@ -97,17 +105,20 @@ def active(
                 return active(
                     pools=MappingProxyType({**pools, name: info}),
                     pending_replies=MappingProxyType({**pending_replies, name: reply_to}),
+                    store=store,
                 )
 
             case RecoverExistingPool(
                 name=name, spec=spec, provider=provider,
-                cluster=cluster, instances=instances, reply_to=reply_to,
+                cluster=cluster, instances=instances,
+                compute_spec=compute_spec, chosen_spec=chosen_spec,
+                reply_to=reply_to,
             ):
                 from skyward.actors.pool.actor import pool_actor
                 from skyward.actors.pool.messages import RecoverPool
 
                 pool_ref = ctx.spawn(
-                    pool_actor(session_ref=ctx.self, pool_name=name),
+                    pool_actor(session_ref=ctx.self, pool_name=name, store=store),
                     f"pool-{name}",
                 )
                 adapter_ref = ctx.spawn(
@@ -116,13 +127,16 @@ def active(
                 )
                 pool_ref.tell(RecoverPool(
                     spec=spec, provider=provider, cluster=cluster,
-                    instances=instances, reply_to=adapter_ref,
+                    instances=instances,
+                    compute_spec=compute_spec, chosen_spec=chosen_spec,
+                    reply_to=adapter_ref,
                 ))
                 log.info("Recovering pool {name} ({n} instances)", name=name, n=len(instances))
                 info = PoolInfo(name=name, ref=pool_ref)
                 return active(
                     pools=MappingProxyType({**pools, name: info}),
                     pending_replies=MappingProxyType({**pending_replies, name: reply_to}),
+                    store=store,
                 )
 
             case _PoolReady(
@@ -144,12 +158,14 @@ def active(
                         pending_replies=MappingProxyType(
                             {k: v for k, v in pending_replies.items() if k != name},
                         ),
+                        store=store,
                     )
                 return active(
                     pools=pools,
                     pending_replies=MappingProxyType(
                         {k: v for k, v in pending_replies.items() if k != name},
                     ),
+                    store=store,
                 )
 
             case _PoolFailed(name=name, reason=reason):
@@ -163,6 +179,7 @@ def active(
                     pending_replies=MappingProxyType(
                         {k: v for k, v in pending_replies.items() if k != name},
                     ),
+                    store=store,
                 )
 
             case StopSession(reply_to=reply_to):

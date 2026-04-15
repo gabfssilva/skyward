@@ -19,8 +19,12 @@ import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace
+from datetime import UTC, datetime
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from skyward.server.host.store import Store
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors, Terminated
 
@@ -62,7 +66,6 @@ from skyward.providers.provider import WarmableProvider
 from .helpers import (
     discover_own_worker,
     do_start_worker,
-    execute_with_streaming,
     install_local_skyward,
     run_bootstrap,
     setup_worker_env,
@@ -102,10 +105,48 @@ def node_actor(
     bootstrap_timeout: float = float(DEFAULT_BOOTSTRAP_TIMEOUT),
     _skip_monitor: bool = False,
     ca: CertificateAuthority | None = None,
+    *,
+    store: Store,
+    pool_name: str = "",
 ) -> Behavior[NodeMsg]:
-    """A merged node tells this story: idle → polling → … → active."""
+    """A merged node tells this story: idle → polling → … → active.
+
+    Parameters
+    ----------
+    store
+        Closure-captured persistence layer; transitions emit their row
+        update and their event inside the same ``store.tx()`` block.
+    pool_name
+        Name of the parent compute pool; used to key node rows and
+        scope emitted events. Empty when the actor is hosted outside a
+        named compute (e.g. isolated tests).
+    """
 
     log = logger.bind(actor="node", node_id=node_id)
+    row_id = f"{pool_name}-{node_id}" if pool_name else f"node-{node_id}"
+
+    async def _write_status(
+        status: Any,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        """Partial update of the node row plus an atomic event emit.
+
+        Failures are logged but not propagated: the node actor's state
+        machine must keep moving even if the Store is momentarily
+        unavailable. Persistence is observability, not correctness.
+        """
+        try:
+            async with store.tx() as tx:
+                await store.update_node_status(row_id, status, tx=tx)
+                await store.emit(
+                    aggregate=f"compute:{pool_name}/node:{row_id}",
+                    type=event_type,
+                    payload=payload or {},
+                    tx=tx,
+                )
+        except Exception as exc:
+            log.warning("node status persist failed: {err}", err=exc)
 
     # ── common handlers ──────────────────────────────────────────────
 
@@ -114,13 +155,29 @@ def node_actor(
             ref.tell(StopTransport())
 
     def _fail_and_stop(s: NodeState, reason: str) -> Behavior[NodeMsg]:
+        from skyward.server.host.domain import NodeLost as _NodeLost
+
         _stop_transport(s.transport_ref)
         iid = s.ni.instance.id if s.ni else None
+        asyncio.get_event_loop().create_task(
+            _write_status(
+                _NodeLost(at=datetime.now(UTC), reason=reason),
+                event_type="Node.Lost",
+                payload={"reason": reason, "instance_id": iid},
+            ),
+        )
         pool.tell(NodeExhausted(node_id=node_id, reason=reason, instance_id=iid))
         return Behaviors.stopped()
 
     def _enqueue(s: NodeState, ex: ExecuteOnNode) -> NodeState:
-        pt = PendingTask(ex.fn, ex.args, ex.kwargs, ex.reply_to, ex.task_id, ex.timeout)
+        pt = PendingTask(
+            payload=ex.payload,
+            reply_to=ex.reply_to,
+            task_id=ex.task_id,
+            timeout=ex.timeout,
+            input_streams=ex.input_streams,
+            is_generator=ex.is_generator,
+        )
         return replace(s, pending_tasks=(*s.pending_tasks, pt))
 
     def _common(
@@ -483,6 +540,12 @@ def node_actor(
             match msg:
                 case _WorkerStarted(local_port=lp, private_ip=pip):
                     log.info("Worker started, tunnel port={port}", port=lp)
+                    from skyward.server.host.domain import NodeReady as _NodeReady
+                    await _write_status(
+                        _NodeReady(since=datetime.now(UTC)),
+                        event_type="Node.Ready",
+                        payload={"local_port": lp, "private_ip": pip},
+                    )
                     pool.tell(
                         NodeBecameReady(
                             node_id=node_id,
@@ -600,7 +663,7 @@ def node_actor(
         counter = 0
         for pt in s.pending_tasks:
             tid = pt.task_id or str(counter)
-            _dispatch_task(ctx, s, tid, pt.fn, pt.args, pt.kwargs, pt.timeout)
+            _dispatch_task(ctx, s, tid, pt)
             new_inflight = MappingProxyType({**new_inflight, tid: pt.reply_to})
             counter += 1
 
@@ -615,22 +678,61 @@ def node_actor(
         ctx: ActorContext[NodeMsg],
         s: NodeState,
         tid: str,
-        fn: Any,
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
-        timeout: float,
+        pt: PendingTask,
     ) -> None:
+        from skyward.infra.streaming import _StreamHandle, _SyncSource
+        from skyward.infra.worker import ExecuteTask
+        from skyward.infra.worker import TaskSucceeded as WorkerTaskSucceeded
+
         t0 = time.monotonic()
+
+        async def _run() -> object:
+            result = await asyncio.wait_for(
+                s.client.ask(
+                    s.worker_ref,
+                    lambda rto: ExecuteTask(
+                        payload=pt.payload,
+                        reply_to=rto,
+                        input_streams=pt.input_streams,
+                        is_generator=pt.is_generator,
+                    ),
+                    timeout=pt.timeout,
+                ),
+                timeout=pt.timeout,
+            )
+            match result:
+                case WorkerTaskSucceeded(result=_StreamHandle(producer_ref=pref)):
+                    from .helpers import _resolve_output_stream
+
+                    source = await _resolve_output_stream(s.client, pref)
+                    loop = asyncio.get_running_loop()
+                    return WorkerTaskSucceeded(
+                        result=_SyncSource(source, loop), node_id=result.node_id,
+                    )
+                case _:
+                    return result
+
+        def _map_result(result: Any, _tid: str = tid, _t0: float = t0) -> _RemoteTaskDone:
+            match result:
+                case WorkerTaskSucceeded(result=value):
+                    return _RemoteTaskDone(
+                        task_id=_tid, value=value, node_id=node_id,
+                        reply_to=ctx.self, error=False,
+                        elapsed=time.monotonic() - _t0,
+                    )
+                case _:
+                    return _RemoteTaskDone(
+                        task_id=_tid,
+                        value=RuntimeError(
+                            getattr(result, "error", "") or repr(result),
+                        ),
+                        node_id=node_id, reply_to=ctx.self, error=True,
+                        elapsed=time.monotonic() - _t0,
+                    )
+
         ctx.pipe_to_self(
-            execute_with_streaming(s.client, s.worker_ref, fn, args, kwargs, timeout),
-            mapper=lambda result, _tid=tid, _t0=t0: _RemoteTaskDone(  # type: ignore[return-value]
-                task_id=_tid,
-                value=(result.result if hasattr(result, "result") else RuntimeError(result.error)),
-                node_id=node_id,
-                reply_to=ctx.self,
-                error=not hasattr(result, "result"),
-                elapsed=time.monotonic() - _t0,
-            ),
+            _run(),
+            mapper=_map_result,
             on_failure=lambda e, _tid=tid, _t0=t0: _RemoteTaskDone(  # type: ignore[return-value]
                 task_id=_tid,
                 value=RuntimeError(str(e)),
@@ -691,7 +793,15 @@ def node_actor(
                 case ExecuteOnNode() as ex:
                     local_tid = ex.task_id or str(s.task_counter)
                     log.debug("Node {nid} dispatching task {tid}", nid=node_id, tid=local_tid)
-                    _dispatch_task(ctx, s, local_tid, ex.fn, ex.args, ex.kwargs, ex.timeout)
+                    pt = PendingTask(
+                        payload=ex.payload,
+                        reply_to=ex.reply_to,
+                        task_id=local_tid,
+                        timeout=ex.timeout,
+                        input_streams=ex.input_streams,
+                        is_generator=ex.is_generator,
+                    )
+                    _dispatch_task(ctx, s, local_tid, pt)
                     new_inflight = MappingProxyType({**s.inflight, local_tid: ex.reply_to})
                     return active(replace(s, inflight=new_inflight, task_counter=s.task_counter + 1))
                 case _RemoteTaskDone(task_id=tid, value=value, error=is_err, connection_error=conn_err, elapsed=elapsed):

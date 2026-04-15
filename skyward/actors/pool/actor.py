@@ -4,6 +4,7 @@ import logging as _logging
 import time
 from contextlib import suppress
 from dataclasses import replace
+from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
@@ -11,6 +12,7 @@ from casty import ActorContext, ActorRef, Behavior, Behaviors, ClusterClient
 
 if TYPE_CHECKING:
     from skyward.actors.session.messages import SessionMsg
+    from skyward.server.host.store import Store
 
 from skyward.actors.messages import (
     ClusterReady,
@@ -61,6 +63,69 @@ from .messages import (
 from .state import PoolState, build_pool_snapshot
 
 _logging.getLogger("casty").setLevel(_logging.ERROR)
+
+
+async def _persist_node_waiting(
+    store: Store,
+    pool_name: str,
+    nid: int,
+    instance: Any,
+    provider: Any,
+    created_at: datetime,
+) -> None:
+    """Write an initial ``Node`` row with ``NodeWaiting`` status."""
+    from skyward.server.host.domain import Node as _Node
+    from skyward.server.host.domain import NodeWaiting as _NodeWaiting
+
+    node_id = f"{pool_name}-{nid}"
+    provider_name = getattr(provider, "name", None) or type(provider).__name__
+    async with store.tx() as tx:
+        await store.put_node(
+            _Node(
+                id=node_id,
+                compute=pool_name,
+                instance_id=instance.id,
+                provider_name=provider_name,
+                head_addr=None,
+                status=_NodeWaiting(),
+                created_at=created_at,
+            ),
+            tx=tx,
+        )
+        await store.emit(
+            aggregate=f"compute:{pool_name}/node:{node_id}",
+            type="Node.Waiting",
+            payload={"instance_id": instance.id},
+            tx=tx,
+        )
+
+
+async def _persist_compute(
+    store: Store,
+    pool_name: str,
+    compute_spec: Any,
+    created_at: datetime,
+    status: Any,
+    event_type: str,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    """Write a ``Compute`` row and emit its event atomically."""
+    from skyward.server.host.domain import Compute as _Compute
+
+    compute = _Compute(
+        name=pool_name,
+        spec=compute_spec,
+        created_at=created_at,
+        status=status,
+    )
+    async with store.tx() as tx:
+        await store.put_compute(compute, tx=tx)
+        await store.emit(
+            aggregate=f"compute:{pool_name}",
+            type=event_type,
+            payload=payload or {},
+            tx=tx,
+        )
 
 
 async def _build_mount_plan(
@@ -160,8 +225,22 @@ def pool_actor(
     *,
     session_ref: ActorRef[SessionMsg] | None = None,
     pool_name: str = "",
+    store: Store,
 ) -> Behavior[PoolMsg]:
-    """idle -> requesting -> provisioning_instances -> provisioning -> ready -> stopping."""
+    """idle -> requesting -> provisioning_instances -> provisioning -> ready -> stopping.
+
+    Parameters
+    ----------
+    session_ref
+        Parent session actor, notified on terminal pool transitions.
+    pool_name
+        Logical name of the pool (used as the compute aggregate key in
+        the Store).
+    store
+        Persistence layer. Every child actor spawned here (node, task
+        manager, reconciler) receives the same reference so that all
+        transitions commit atomically via ``store.tx()``.
+    """
 
     tunnel_map: dict[tuple[str, int], tuple[str, int]] = {}
 
@@ -259,6 +338,8 @@ def pool_actor(
                 poll_timeout=spec.provision_timeout,
                 bootstrap_timeout=spec.bootstrap_timeout,
                 ca=ca,
+                store=store,
+                pool_name=pool_name,
             ),
             f"node-{nid}",
         )
@@ -305,7 +386,8 @@ def pool_actor(
             match msg:
                 case StartPool(
                     spec=spec, provider_config=_, provider=provider,
-                    offers=offers, reply_to=reply_to,
+                    offers=offers, compute_spec=compute_spec,
+                    chosen_spec=chosen_spec, reply_to=reply_to,
                 ):
                     if not offers:
                         reply_to.tell(ProvisionFailed(reason="No offers available"))
@@ -320,9 +402,21 @@ def pool_actor(
                     )
 
                     from skyward.infra.tls import ensure_ca, issue_client_config
+                    from skyward.server.host.domain import (
+                        Provisioning as _Provisioning,
+                    )
 
                     ca = ensure_ca()
                     client_tls = issue_client_config(ca)
+
+                    now = datetime.now(UTC)
+                    await _persist_compute(
+                        store, pool_name, compute_spec,
+                        created_at=now,
+                        status=_Provisioning(started_at=now),
+                        event_type="Pool.Provisioning",
+                        payload={"nodes_desired": spec.nodes.desired},
+                    )
 
                     ctx.pipe_to_self(
                         provider.prepare(spec, offer),
@@ -334,12 +428,16 @@ def pool_actor(
                         remaining_offers=tuple(remaining),
                         ca=ca, client_tls=client_tls,
                         pool_started_at=time.monotonic(),
+                        compute_created_at=now,
+                        compute_spec=compute_spec,
+                        chosen_spec=chosen_spec,
                     )
                     return requesting(s)
 
                 case RecoverPool(
                     spec=spec, provider=provider, cluster=cluster,
-                    instances=instances, reply_to=reply_to,
+                    instances=instances, compute_spec=compute_spec,
+                    chosen_spec=chosen_spec, reply_to=reply_to,
                 ):
                     logger.bind(actor="pool").info(
                         "RecoverPool: recovering {n} instances for cluster {cid}",
@@ -355,14 +453,18 @@ def pool_actor(
                     client_tls = issue_client_config(ca)
 
                     new_refs: MappingProxyType[int, ActorRef] = MappingProxyType({})
+                    recover_now = datetime.now(UTC)
                     for instance in instances:
                         nid = len(new_refs)
+                        await _persist_node_waiting(
+                            store, pool_name, nid, instance, provider, recover_now,
+                        )
                         ref = _spawn_node(
                             ctx, nid, spec, cluster, provider, instance, ca, None,
                         )
                         new_refs = MappingProxyType({**new_refs, nid: ref})
 
-                    tm_ref = ctx.spawn(task_manager_actor(), "task-manager")
+                    tm_ref = ctx.spawn(task_manager_actor(store=store), "task-manager")
 
                     return provisioning(PoolState(
                         spec=spec, provider=provider, reply_to=reply_to,
@@ -370,6 +472,8 @@ def pool_actor(
                         pool_started_at=time.monotonic(),
                         cluster=cluster, cluster_id=cluster.id,
                         node_refs=new_refs, tm_ref=tm_ref,
+                        compute_spec=compute_spec,
+                        chosen_spec=chosen_spec,
                     ))
 
                 case StopPool(reply_to=stop_reply):
@@ -399,6 +503,16 @@ def pool_actor(
                             on_failure=lambda err: ProvisionFailed(reason=str(err)),
                         )
                         return requesting(replace(s, remaining_offers=tuple(rest)))
+                    from skyward.server.host.domain import Failed as _Failed
+
+                    fail_now = datetime.now(UTC)
+                    await _persist_compute(
+                        store, pool_name, s.compute_spec,
+                        created_at=s.compute_created_at or fail_now,
+                        status=_Failed(failed_at=fail_now, reason=pf.reason),
+                        event_type="Pool.Failed",
+                        payload={"reason": pf.reason},
+                    )
                     s.reply_to.tell(pf)
                     return Behaviors.stopped()
                 case ClusterReady(cluster=cluster):
@@ -509,8 +623,12 @@ def pool_actor(
                         instances=(*updated_cluster.instances, *to_spawn),
                     )
 
+                    now = datetime.now(UTC)
                     for instance in to_spawn:
                         nid = len(new_spawned)
+                        await _persist_node_waiting(
+                            store, pool_name, nid, instance, s.provider, now,
+                        )
                         ref = _spawn_node(
                             ctx, nid, s.spec, updated_cluster,
                             s.provider, instance, s.ca, None,
@@ -530,6 +648,7 @@ def pool_actor(
                         tm_ref = ctx.spawn(
                             task_manager_actor(
                                 retry_on_interruption=s.spec.retry_on_interruption,
+                                store=store,
                             ),
                             "task-manager",
                         )
@@ -546,6 +665,7 @@ def pool_actor(
                                 initial_node_ids=frozenset(new_spawned.keys()),
                                 tick_interval=s.spec.reconcile_tick_interval,
                                 max_provision_retries=s.spec.max_provision_attempts,
+                                store=store,
                             ),
                             "reconciler",
                         )
@@ -813,6 +933,21 @@ def pool_actor(
                                 "{n}/{total} nodes active (min threshold met), pool is operational",
                                 n=len(new_ready), total=s.spec.nodes.desired,
                             )
+                        from skyward.server.host.domain import Ready as _Ready
+
+                        ready_now = datetime.now(UTC)
+                        await _persist_compute(
+                            store, pool_name, s.compute_spec,
+                            created_at=s.compute_created_at or ready_now,
+                            status=_Ready(
+                                started_at=s.compute_created_at or ready_now,
+                                chosen=s.chosen_spec,
+                                nodes_ready=len(new_ready),
+                                last_activity_at=ready_now,
+                            ),
+                            event_type="Pool.Ready",
+                            payload={"nodes_ready": len(new_ready)},
+                        )
                         ctx.self.tell(PoolStarted(
                             cluster_id=s.cluster_id,
                             instances=tuple(s.instances.values()),
@@ -900,8 +1035,12 @@ def pool_actor(
                     )
                     new_node_refs = s.node_refs
                     new_inst_map = s.instance_map
+                    now = datetime.now(UTC)
                     for i, inst in enumerate(new_instances):
                         nid = start_id + i
+                        await _persist_node_waiting(
+                            store, pool_name, nid, inst, s.provider, now,
+                        )
                         ref = _spawn_node(
                             ctx, nid, s.spec, upd_cluster,
                             s.provider, inst, s.ca, s.head_addr,
@@ -1209,8 +1348,12 @@ def pool_actor(
                     )
                     new_node_refs = s.node_refs
                     new_inst_map = s.instance_map
+                    now = datetime.now(UTC)
                     for i, inst in enumerate(new_instances):
                         nid = start_id + i
+                        await _persist_node_waiting(
+                            store, pool_name, nid, inst, s.provider, now,
+                        )
                         ref = _spawn_node(
                             ctx, nid, s.spec, upd_cluster,
                             s.provider, inst, s.ca, s.head_addr,

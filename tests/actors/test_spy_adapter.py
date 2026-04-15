@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from skyward.actors.spy_adapter import _format_task, _node_id_from_path, translate
+from skyward.actors.spy_adapter import _node_id_from_path, _task_label, translate
 from skyward.api.events import (
     Error as ErrorEvent,
     Log as LogEvent,
@@ -280,27 +280,35 @@ class TestTaskEvents:
     def test_submit_task_queued(self):
         from skyward.actors.messages import SubmitTask
 
-        def my_train(): ...
-
-        ev = SubmitTask(fn=my_train, args=(1, 2), kwargs={"lr": 0.01}, reply_to=MagicMock(), task_id="t1")
+        ev = SubmitTask(
+            payload=b"x", reply_to=MagicMock(), task_id="t1",
+            task_key=("mymod", "my_train"),
+        )
         result = translate(_spy(ev), "pool")
 
         assert isinstance(result, Task.Queued)
         assert result.task_id == "t1"
         assert result.kind == "single"
-        assert "my_train" in result.name
+        assert result.name == "mymod.my_train"
 
     def test_submit_broadcast_queued(self):
         from skyward.actors.messages import SubmitBroadcast
 
-        def my_train(): ...
-
-        ev = SubmitBroadcast(fn=my_train, args=(), kwargs={}, reply_to=MagicMock(), task_id="t2")
+        ev = SubmitBroadcast(
+            payload=b"x", reply_to=MagicMock(), task_id="t2",
+            task_key=("", ""),
+        )
         result = translate(_spy(ev), "pool")
 
         assert isinstance(result, Task.Queued)
         assert result.task_id == "t2"
         assert result.kind == "broadcast"
+        assert result.name == "<bytes>"
+
+    def test_task_label_helper(self):
+        assert _task_label(("mod", "fn")) == "mod.fn"
+        assert _task_label(("", "fn")) == "fn"
+        assert _task_label(("", "")) == "<bytes>"
 
     def test_task_submitted_assigned(self):
         from skyward.actors.messages import TaskSubmitted
@@ -315,7 +323,7 @@ class TestTaskEvents:
     def test_task_result_success(self):
         from skyward.actors.messages import TaskSucceeded
 
-        ev = TaskSucceeded(value="ok", node_id=1, task_id="t1")
+        ev = TaskSucceeded(value=b"ok", node_id=1, task_id="t1")
         result = translate(_spy(ev), "pool")
 
         assert isinstance(result, Task.Completed)
@@ -583,7 +591,7 @@ class TestNoOps:
     def test_execute_on_node_returns_none(self):
         from skyward.actors.messages import ExecuteOnNode
 
-        ev = ExecuteOnNode(fn=lambda: None, args=(), kwargs={}, reply_to=MagicMock())
+        ev = ExecuteOnNode(payload=b"x", reply_to=MagicMock(), task_id="t")
         result = translate(_spy(ev), "pool")
         assert result is None
 
@@ -634,27 +642,12 @@ class TestNodeIdFromPath:
         assert _node_id_from_path("/system/pool") is None
 
 
-class TestFormatTask:
-    def test_simple(self):
-        def train(): ...
+class TestTaskLabel:
+    def test_module_and_qualname(self):
+        assert _task_label(("mymod", "train")) == "mymod.train"
 
-        result = _format_task(train, (1, 2), {"lr": 0.01})
-        assert result == "train(1, 2, lr=0.01)"
+    def test_empty_module_keeps_qualname(self):
+        assert _task_label(("", "train")) == "train"
 
-    def test_no_args(self):
-        def train(): ...
-
-        result = _format_task(train, (), {})
-        assert result == "train()"
-
-    def test_truncation(self):
-        def train(): ...
-
-        long_arg = "x" * 100
-        result = _format_task(train, (long_arg,), {})
-        assert len(result) <= 81  # 80 + ellipsis char
-        assert result.endswith("\u2026")
-
-    def test_non_callable_uses_str(self):
-        result = _format_task(42, (), {})
-        assert result == "42()"
+    def test_empty_both_fallback(self):
+        assert _task_label(("", "")) == "<bytes>"

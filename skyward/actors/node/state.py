@@ -32,12 +32,12 @@ def check_python_version(remote_version: str) -> None:
 
 @dataclass(frozen=True, slots=True)
 class PendingTask:
-    fn: Any
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
+    payload: bytes
     reply_to: ActorRef[Any]
     task_id: str
     timeout: float
+    input_streams: tuple[tuple[int, ActorRef[Any]], ...] = ()
+    is_generator: bool = False
 
 
 @dataclass(frozen=True, slots=True)

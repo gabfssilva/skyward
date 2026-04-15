@@ -430,62 +430,19 @@ async def setup_worker_env(
         )
 
 
-async def execute_with_streaming(
-    client: Any,
-    worker_ref: Any,
-    fn: Any,
-    args: tuple[Any, ...],
-    kwargs: dict[str, Any],
-    timeout: float,
-) -> Any:
-    from skyward.infra.streaming import _stream_param_indices, _StreamHandle, _SyncSource
-    from skyward.infra.worker import ExecuteTask
-    from skyward.infra.worker import TaskSucceeded as WorkerTaskSucceeded
-
-    indices = _stream_param_indices(fn)
-    pump_tasks: list[asyncio.Task[None]] = []
-    resolved_args = args
-    stream_refs: tuple[tuple[int, Any], ...] = ()
-
-    if indices:
-        resolved_args, pump_tasks, stream_refs = await _setup_input_streams(
-            client,
-            args,
-            indices,
-        )
-
-    result = await asyncio.wait_for(
-        client.ask(
-            worker_ref,
-            lambda rto: ExecuteTask(
-                fn=fn,
-                args=resolved_args,
-                kwargs=kwargs,
-                reply_to=rto,
-                input_streams=stream_refs,
-            ),
-            timeout=timeout,
-        ),
-        timeout=timeout,
-    )
-
-    for t in pump_tasks:
-        await t
-
-    match result:
-        case WorkerTaskSucceeded(result=_StreamHandle(producer_ref=pref)):
-            source = await _resolve_output_stream(client, pref)
-            loop = asyncio.get_running_loop()
-            return WorkerTaskSucceeded(result=_SyncSource(source, loop), node_id=result.node_id)
-        case _:
-            return result
-
-
-async def _setup_input_streams(
+async def setup_input_streams(
     client: Any,
     args: tuple[Any, ...],
     indices: tuple[int, ...],
 ) -> tuple[tuple[Any, ...], list[asyncio.Task[None]], tuple[tuple[int, Any], ...]]:
+    """Extract generator-valued arguments into Casty stream producers.
+
+    Replaces each generator positional arg at ``indices`` with ``None``
+    and returns a parallel tuple of ``(index, producer_ref)`` so the
+    worker can rebuild a source on the other side. Background pump
+    tasks feed the producers and are returned so the caller can await
+    them after the remote execution completes.
+    """
     from uuid import uuid4
 
     from casty import GetSink, stream_producer

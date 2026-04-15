@@ -1,8 +1,16 @@
+from __future__ import annotations
+
+import asyncio
 from dataclasses import replace
+from datetime import UTC, datetime
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING
 
 from casty import ActorContext, Behavior, Behaviors
+
+if TYPE_CHECKING:
+    from skyward.server.host.domain import ExecutionStatus
+    from skyward.server.host.store import Store
 
 from skyward.actors.messages import (
     ExecuteOnNode,
@@ -32,11 +40,40 @@ from .state import (
 
 log = logger.bind(actor="task_manager")
 
+_background_persist_tasks: set[asyncio.Task[None]] = set()
+
+
+def _persist(store: Store | None, execution_id: str, status: ExecutionStatus) -> None:
+    """Fire-and-forget status update on the ``task_executions`` row.
+
+    The task manager owns every post-insert transition (§3.2 single-writer).
+    Writes are scheduled on the running event loop rather than awaited so
+    message processing stays low-latency; on process crash the
+    ``PoolHost._run_recovery`` sweep reconciles any lost updates.
+    """
+    if store is None:
+        return
+    loop = asyncio.get_event_loop()
+    task = loop.create_task(store.update_execution_status(execution_id, status))
+    _background_persist_tasks.add(task)
+    task.add_done_callback(_background_persist_tasks.discard)
+    task.add_done_callback(
+        lambda t: log.warning(
+            "Failed to persist execution status {eid}: {err}",
+            eid=execution_id, err=t.exception(),
+        )
+        if t.exception() else None
+    )
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
 
 def _handle_broadcast_result(
     broadcasts: MappingProxyType[str, PendingBroadcast],
     node_id: int,
-    value: Any,
+    value: object,
 ) -> tuple[bool, MappingProxyType[str, PendingBroadcast]]:
     for bid, bc in broadcasts.items():
         if node_id in bc.pending:
@@ -87,7 +124,36 @@ def _free_slot_and_drain(
     )
 
 
-def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMsg]:
+def task_manager_actor(
+    retry_on_interruption: int = 3,
+    *,
+    store: Store | None,
+) -> Behavior[TaskManagerMsg]:
+    """Task manager actor — single writer for ``task_executions`` transitions.
+
+    Parameters
+    ----------
+    retry_on_interruption
+        Maximum retries when a node reports ``TaskInterrupted``.
+    store
+        Persistence layer. Every post-insert execution status write flows
+        through here; ``None`` disables persistence (unit tests that
+        don't exercise the Store).
+    """
+    from skyward.server.host.domain import (
+        FailedExec,
+        InterruptedExec,
+        Queued,
+        RunningExec,
+        SucceededExec,
+    )
+
+    def _persist_dispatched(
+        before: MappingProxyType[str, SubmitTask],
+        after: MappingProxyType[str, SubmitTask],
+    ) -> None:
+        for tid in after.keys() - before.keys():
+            _persist(store, tid, RunningExec())
 
     def active(s: _State) -> Behavior[TaskManagerMsg]:
 
@@ -107,6 +173,7 @@ def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMs
                     remaining, new_nodes, rr, new_inflight, new_nt = _drain_queue(
                         s.queue, new_nodes, s.round_robin, ctx.self, s.inflight, s.node_tasks,
                     )
+                    _persist_dispatched(s.inflight, new_inflight)
                     if len(remaining) < len(s.queue):
                         log.debug("Drained {n} queued tasks", n=len(s.queue) - len(remaining))
                     new_s = replace(s, nodes=new_nodes, queue=remaining, round_robin=rr, inflight=new_inflight, node_tasks=new_nt)
@@ -120,6 +187,10 @@ def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMs
                             "Node {nid} unavailable, re-enqueuing {n} orphaned tasks",
                             nid=node_id, n=len(orphaned_tids),
                         )
+                        for _orphan in orphaned_tids:
+                            _persist(store, _orphan, InterruptedExec(
+                                interrupted_at=_now(), reason="node_unavailable",
+                            ))
                     else:
                         log.info("Node {nid} unavailable", nid=node_id)
                     new_nodes = MappingProxyType({k: v for k, v in s.nodes.items() if k != node_id})
@@ -155,9 +226,11 @@ def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMs
                             task.reply_to.tell(TaskSucceeded(
                                 value=value, node_id=node_id, task_id=tid, elapsed=elapsed,
                             ))
+                            _persist(store, tid, SucceededExec(finished_at=_now()))
                             new_inflight = MappingProxyType({k: v for k, v in s.inflight.items() if k != tid})
                     new_nt = _remove_task_from_node(s.node_tasks, node_id, tid)
                     new_s = _free_slot_and_drain(s, node_id, ctx, new_inflight, new_broadcasts, new_retries, new_node_tasks=new_nt)
+                    _persist_dispatched(new_inflight, new_s.inflight)
                     _emit_pressure(new_s)
                     return _check_broadcasts(new_s) if broadcast_hit else active(new_s)
 
@@ -171,9 +244,11 @@ def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMs
                             task.reply_to.tell(TaskFailed(
                                 error=err, node_id=node_id, task_id=tid,
                             ))
+                            _persist(store, tid, FailedExec(finished_at=_now()))
                             new_inflight = MappingProxyType({k: v for k, v in s.inflight.items() if k != tid})
                     new_nt = _remove_task_from_node(s.node_tasks, node_id, tid)
                     new_s = _free_slot_and_drain(s, node_id, ctx, new_inflight, new_broadcasts, new_retries, new_node_tasks=new_nt)
+                    _persist_dispatched(new_inflight, new_s.inflight)
                     _emit_pressure(new_s)
                     return _check_broadcasts(new_s) if broadcast_hit else active(new_s)
 
@@ -194,6 +269,7 @@ def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMs
                                 )
                                 new_retries = MappingProxyType({**s.retries, tid: attempt})
                                 new_queue = (*s.queue, task)
+                                _persist(store, tid, Queued())
                             else:
                                 log.warning(
                                     "Task {tid} interrupted on node {nid}, retries exhausted ({max})",
@@ -203,10 +279,12 @@ def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMs
                                 task.reply_to.tell(TaskFailed(
                                     error=err, node_id=node_id, task_id=tid,
                                 ))
+                                _persist(store, tid, FailedExec(finished_at=_now()))
                     new_nt = _remove_task_from_node(s.node_tasks, node_id, tid)
                     new_s = _free_slot_and_drain(
                         s, node_id, ctx, new_inflight, new_broadcasts, new_retries, new_queue=new_queue, new_node_tasks=new_nt,
                     )
+                    _persist_dispatched(new_inflight, new_s.inflight)
                     _emit_pressure(new_s)
                     return _check_broadcasts(new_s) if broadcast_hit else active(new_s)
 
@@ -224,6 +302,7 @@ def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMs
                     new_nodes, new_inflight, new_nt = _dispatch(
                         nid, task, s.nodes, ctx.self, s.inflight, s.node_tasks,
                     )
+                    _persist(store, task.task_id, RunningExec())
                     return active(replace(s, nodes=new_nodes, inflight=new_inflight, node_tasks=new_nt, round_robin=s.round_robin + 1))
 
                 case SubmitBroadcast() as bcast:
@@ -234,12 +313,16 @@ def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMs
                     for nid, slot in s.nodes.items():
                         ctx.self.tell(TaskSubmitted(task_id=bcast.task_id, node_id=nid))
                         slot.ref.tell(ExecuteOnNode(
-                            fn=bcast.fn, args=bcast.args, kwargs=bcast.kwargs,
-                            reply_to=ctx.self, task_id=bcast.task_id,
+                            payload=bcast.payload,
+                            reply_to=ctx.self,
+                            task_id=bcast.task_id,
                             timeout=bcast.timeout,
+                            input_streams=bcast.input_streams,
+                            is_generator=bcast.is_generator,
                         ))
                         new_nodes[nid] = NodeSlots(slot.ref, slot.total, slot.used + 1)
                         pending_nodes = pending_nodes | {nid}
+                    _persist(store, bcast.task_id, RunningExec())
                     new_broadcasts = MappingProxyType({
                         **s.broadcasts,
                         bcast.task_id: PendingBroadcast(
@@ -263,6 +346,12 @@ def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMs
             if not bc.pending:
                 ordered = [bc.results[nid] for nid in sorted(bc.results)]
                 bc.caller.tell(ordered)
+                any_error = any(isinstance(r, BaseException) for r in ordered)
+                _persist(
+                    store, bid,
+                    FailedExec(finished_at=_now()) if any_error
+                    else SucceededExec(finished_at=_now()),
+                )
                 del new_broadcasts[bid]
         return active(replace(s, broadcasts=MappingProxyType(new_broadcasts)))
 
