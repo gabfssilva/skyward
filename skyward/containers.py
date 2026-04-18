@@ -36,7 +36,7 @@ _PYTORCH_CUDA: dict[str, str] = {
 
 _RUNPOD_BASE_TAGS: dict[str, str] = {
     "12.6": "runpod/base:1.0.3-cuda1260-ubuntu2204",
-    "12.8": "runpod/base:1.0.3-cuda1280-ubuntu2204",
+    "12.8": "runpod/base:1.0.3-cuda1281-ubuntu2204",
     "12.9": "runpod/base:1.0.3-cuda1290-ubuntu2204",
 }
 

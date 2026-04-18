@@ -474,19 +474,24 @@ class TestSummary:
 
 
 class TestResolveConsole:
-    def test_true_maps_to_rich(self) -> None:
+    def test_true_maps_to_rich(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from skyward.actors.console import console_actor, resolve_console
 
+        monkeypatch.setenv("SKYWARD_CONSOLE_FORCE_TTY", "1")
         assert resolve_console(True) is console_actor
 
-    def test_rich_literal_maps_to_rich(self) -> None:
+    def test_rich_literal_maps_to_rich(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from skyward.actors.console import console_actor, resolve_console
 
+        monkeypatch.setenv("SKYWARD_CONSOLE_FORCE_TTY", "1")
         assert resolve_console("rich") is console_actor
 
-    def test_minimal_literal_maps_to_minimal(self) -> None:
+    def test_minimal_literal_maps_to_minimal(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         from skyward.actors.console import minimal_console_actor, resolve_console
 
+        monkeypatch.setenv("SKYWARD_CONSOLE_FORCE_TTY", "1")
         assert resolve_console("minimal") is minimal_console_actor
 
     def test_false_maps_to_none(self) -> None:

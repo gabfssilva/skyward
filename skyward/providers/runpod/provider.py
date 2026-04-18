@@ -47,12 +47,17 @@ _KNOWN_CUDA_VERSIONS = [
 ]
 _SSH_SETUP_CMD = (
     "(sleep $INSTANCE_TIMEOUT && kill 1) & "
-    "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server "
-    '&& mkdir -p ~/.ssh && echo "$PUBLIC_KEY" >> ~/.ssh/authorized_keys '
-    "&& chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys "
-    "&& mkdir -p /run/sshd && ssh-keygen -A "
-    '&& sed -i "s/#PermitRootLogin.*/PermitRootLogin yes/" /etc/ssh/sshd_config '
-    "&& /usr/sbin/sshd && sleep infinity"
+    "{ [ -x /usr/sbin/sshd ] || ("
+    "apt-get -o DPkg::Lock::Timeout=-1 update && "
+    "DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=-1 "
+    "install -y --no-install-recommends openssh-server"
+    "); "
+    "mkdir -p /run/sshd ~/.ssh; "
+    'echo "$PUBLIC_KEY" >> ~/.ssh/authorized_keys; '
+    "chmod 700 ~/.ssh; chmod 600 ~/.ssh/authorized_keys; "
+    "ssh-keygen -A; "
+    'sed -i "s/#PermitRootLogin.*/PermitRootLogin yes/" /etc/ssh/sshd_config; '
+    "/usr/sbin/sshd; }; sleep infinity"
 )
 
 

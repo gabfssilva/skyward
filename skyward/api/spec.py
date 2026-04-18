@@ -61,13 +61,20 @@ type WorkerExecutor = Literal["auto", "thread", "process"]
 """
 
 
-type ConsoleMode = Literal["rich", "minimal", "silent"]
+type ConsoleMode = Literal["rich", "minimal", "log", "silent"]
 """Console renderer selection.
 
 - ``"rich"`` -- verbose dashboard with per-event labels, banner, and
-  progress footer (default).
+  progress footer (default). Falls back to ``"log"`` when stderr is not
+  a TTY.
 - ``"minimal"`` -- single live status line with cluster identity header,
-  bootstrap tail per node, and compact task counters.
+  bootstrap tail per node, and compact task counters. Falls back to
+  ``"log"`` when stderr is not a TTY.
+- ``"log"`` -- plain line-based output to stderr with absolute
+  timestamps; one line per lifecycle event plus a periodic metrics
+  snapshot (30s default, override via ``SKYWARD_LOG_METRICS_INTERVAL``).
+  Chosen automatically when ``rich`` or ``minimal`` is requested but
+  stderr is not a TTY (pipe, CI, daemon).
 - ``"silent"`` -- no console output; projection state still accumulates
   and can be inspected programmatically.
 """
