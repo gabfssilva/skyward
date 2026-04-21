@@ -128,6 +128,11 @@ class _EnvSetupFailed:
     error: str
 
 
+@dataclass(frozen=True, slots=True)
+class _IdleTick:
+    pass
+
+
 type NodeMsg = (
     Provision
     | ExecuteOnNode
@@ -147,6 +152,7 @@ type NodeMsg = (
     | _RemoteTaskDone
     | _WorkerDiscovered | _WorkerDiscoveryFailed
     | _EnvSetupDone | _EnvSetupFailed
+    | _IdleTick
     | ConnectionLost | ConnectionRestored | ConnectionFailed | PortReForwarded
     | Terminated
 )

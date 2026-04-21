@@ -1,5 +1,17 @@
+import asyncio
 from dataclasses import replace
+from unittest.mock import MagicMock
 
+import pytest
+from casty import ActorSystem
+
+from skyward.actors.messages import (
+    NodeJoined,
+    ReapIdleNodes,
+    RequestDrainNodes,
+    RequestScaleDown,
+)
+from skyward.actors.reconciler import reconciler_actor
 from skyward.actors.reconciler.state import _State
 
 
@@ -101,3 +113,80 @@ class TestReconcilerState:
         assert not hasattr(s, "cluster")
         assert not hasattr(s, "instance_map")
         assert not hasattr(s, "next_node_id")
+
+
+class TestReapIdleNodes:
+    @pytest.mark.asyncio
+    async def test_safe_reap_drains_nodes_and_decrements_desired(self) -> None:
+        sent: list[object] = []
+        pool = MagicMock()
+        pool.tell = lambda msg: sent.append(msg)
+
+        async with ActorSystem("test-reconciler-reap-safe") as system:
+            ref = system.spawn(
+                reconciler_actor(
+                    pool=pool,
+                    min_nodes=1,
+                    max_nodes=8,
+                    initial_node_ids=frozenset({0, 1, 2, 3}),
+                    tick_interval=3600.0,
+                ),
+                "reconciler-reap-safe",
+            )
+            await asyncio.sleep(0.1)
+            sent.clear()
+
+            ref.tell(ReapIdleNodes(
+                node_ids=frozenset({2, 3}),
+                reason="idle-test",
+            ))
+            await asyncio.sleep(0.1)
+
+            drain_msgs = [m for m in sent if isinstance(m, RequestDrainNodes)]
+            assert len(drain_msgs) == 1
+            assert drain_msgs[0].node_ids == frozenset({2, 3})
+
+            sent.clear()
+            ref.tell(NodeJoined(node_id=5))
+            await asyncio.sleep(0.1)
+
+        scale_down_msgs = [m for m in sent if isinstance(m, RequestScaleDown)]
+        assert len(scale_down_msgs) == 1
+        assert scale_down_msgs[0].count == 3
+
+    @pytest.mark.asyncio
+    async def test_reap_violating_min_nodes_is_ignored(self) -> None:
+        sent: list[object] = []
+        pool = MagicMock()
+        pool.tell = lambda msg: sent.append(msg)
+
+        async with ActorSystem("test-reconciler-reap-floor") as system:
+            ref = system.spawn(
+                reconciler_actor(
+                    pool=pool,
+                    min_nodes=2,
+                    max_nodes=8,
+                    initial_node_ids=frozenset({0, 1, 2}),
+                    tick_interval=3600.0,
+                ),
+                "reconciler-reap-floor",
+            )
+            await asyncio.sleep(0.1)
+            sent.clear()
+
+            ref.tell(ReapIdleNodes(
+                node_ids=frozenset({1, 2}),
+                reason="would-violate-min",
+            ))
+            await asyncio.sleep(0.1)
+
+            drain_msgs = [m for m in sent if isinstance(m, RequestDrainNodes)]
+            assert drain_msgs == []
+
+            sent.clear()
+            ref.tell(NodeJoined(node_id=5))
+            await asyncio.sleep(0.1)
+
+        scale_down_msgs = [m for m in sent if isinstance(m, RequestScaleDown)]
+        assert len(scale_down_msgs) == 1
+        assert scale_down_msgs[0].count == 1

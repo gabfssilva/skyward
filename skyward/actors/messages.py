@@ -512,6 +512,19 @@ class PressureReport:
     node_count: int
 
 
+# ── Idle tracking ─────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class NodeBecameIdle:
+    node_id: NodeId
+
+
+@dataclass(frozen=True, slots=True)
+class NodeBecameBusy:
+    node_id: NodeId
+
+
 
 # ── Reconciler ────────────────────────────────────────────────────
 
@@ -540,6 +553,13 @@ class NodeJoined:
     node_id: NodeId
 
 
+@dataclass(frozen=True, slots=True)
+class ReapIdleNodes:
+    """Reconciler asks pool to drain a specific set of idle nodes."""
+    node_ids: frozenset[NodeId]
+    reason: str
+
+
 # ── Pool ↔ Reconciler ────────────────────────────────────────────
 
 
@@ -559,6 +579,12 @@ class RequestScaleUp:
 class RequestScaleDown:
     """Reconciler asks pool to drain excess nodes."""
     count: int
+
+
+@dataclass(frozen=True, slots=True)
+class RequestDrainNodes:
+    """Reconciler asks pool to drain a specific set of nodes by id."""
+    node_ids: frozenset[NodeId]
 
 
 @dataclass(frozen=True, slots=True)

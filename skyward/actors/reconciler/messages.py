@@ -6,6 +6,7 @@ from skyward.actors.messages import (
     DesiredCountChanged,
     DrainComplete,
     NodeJoined,
+    ReapIdleNodes,
     ReconcilerNodeLost,
     ScaleDownComplete,
     ScaleUpComplete,
@@ -26,5 +27,6 @@ type ReconcilerMsg = (
     | ScaleUpComplete
     | ScaleUpFailed
     | ScaleDownComplete
+    | ReapIdleNodes
     | _ReconcileTick
 )

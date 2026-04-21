@@ -21,8 +21,7 @@ class TestComputeDesired:
         result = _compute_desired(
             _report(node_count=0),
             current_desired=0, min_nodes=1, max_nodes=8,
-            slots_per_node=2, now=100.0, last_busy_time=100.0,
-            scale_down_idle_seconds=60.0,
+            slots_per_node=2,
         )
         assert result == 1
 
@@ -30,8 +29,7 @@ class TestComputeDesired:
         result = _compute_desired(
             _report(queued=6, inflight=4, total_capacity=4, node_count=2),
             current_desired=2, min_nodes=1, max_nodes=8,
-            slots_per_node=2, now=100.0, last_busy_time=100.0,
-            scale_down_idle_seconds=60.0,
+            slots_per_node=2,
         )
         assert result == 5  # 2 existing + ceil(6/2)=3
 
@@ -39,84 +37,23 @@ class TestComputeDesired:
         result = _compute_desired(
             _report(queued=100, inflight=4, total_capacity=4, node_count=2),
             current_desired=2, min_nodes=1, max_nodes=4,
-            slots_per_node=2, now=100.0, last_busy_time=100.0,
-            scale_down_idle_seconds=60.0,
+            slots_per_node=2,
         )
         assert result == 4
-
-    def test_idle_scales_down_to_min(self) -> None:
-        result = _compute_desired(
-            _report(queued=0, inflight=0, total_capacity=8, node_count=4),
-            current_desired=4, min_nodes=1, max_nodes=8,
-            slots_per_node=2, now=200.0, last_busy_time=100.0,
-            scale_down_idle_seconds=60.0,
-        )
-        assert result == 1
-
-    def test_idle_not_long_enough_keeps_current(self) -> None:
-        result = _compute_desired(
-            _report(queued=0, inflight=0, total_capacity=8, node_count=4),
-            current_desired=4, min_nodes=1, max_nodes=8,
-            slots_per_node=2, now=130.0, last_busy_time=100.0,
-            scale_down_idle_seconds=60.0,
-        )
-        assert result == 4
-
-    def test_partial_utilization_scale_down(self) -> None:
-        result = _compute_desired(
-            _report(queued=0, inflight=1, total_capacity=16, node_count=8),
-            current_desired=8, min_nodes=1, max_nodes=16,
-            slots_per_node=2, now=200.0, last_busy_time=100.0,
-            scale_down_idle_seconds=60.0,
-        )
-        # utilization = 1/16 = 0.0625 < 0.5
-        # needed = ceil(1/2) + 1 = 2
-        assert result == 2
-
-    def test_scale_down_while_tasks_running(self) -> None:
-        result = _compute_desired(
-            _report(queued=0, inflight=5, total_capacity=10, node_count=10),
-            current_desired=10, min_nodes=1, max_nodes=10,
-            slots_per_node=1, now=100.0, last_busy_time=100.0,
-            scale_down_idle_seconds=60.0,
-        )
-        # utilization = 5/10 = 0.5, not < 0.5 → no scale-down
-        assert result == 10
-
-    def test_scale_down_under_half_utilization(self) -> None:
-        result = _compute_desired(
-            _report(queued=0, inflight=4, total_capacity=10, node_count=10),
-            current_desired=10, min_nodes=1, max_nodes=10,
-            slots_per_node=1, now=100.0, last_busy_time=100.0,
-            scale_down_idle_seconds=60.0,
-        )
-        # utilization = 4/10 = 0.4 < 0.5 → needed = ceil(4/1) + 1 = 5
-        assert result == 5
 
     def test_steady_state_no_change(self) -> None:
         result = _compute_desired(
             _report(queued=0, inflight=3, total_capacity=4, node_count=2),
             current_desired=2, min_nodes=1, max_nodes=8,
-            slots_per_node=2, now=100.0, last_busy_time=100.0,
-            scale_down_idle_seconds=60.0,
+            slots_per_node=2,
         )
         assert result == 2
-
-    def test_respects_min_on_scale_down(self) -> None:
-        result = _compute_desired(
-            _report(queued=0, inflight=0, total_capacity=4, node_count=2),
-            current_desired=2, min_nodes=2, max_nodes=8,
-            slots_per_node=2, now=200.0, last_busy_time=100.0,
-            scale_down_idle_seconds=60.0,
-        )
-        assert result == 2  # min_nodes is 2
 
     def test_slots_per_node_zero_handled(self) -> None:
         result = _compute_desired(
             _report(queued=4, inflight=0, total_capacity=2, node_count=2),
             current_desired=2, min_nodes=1, max_nodes=8,
-            slots_per_node=0, now=100.0, last_busy_time=100.0,
-            scale_down_idle_seconds=60.0,
+            slots_per_node=0,
         )
         assert result == 6  # 2 + ceil(4/1)=4
 
@@ -124,9 +61,8 @@ class TestComputeDesired:
         result = _compute_desired(
             _report(queued=10, inflight=4, total_capacity=4, node_count=2),
             current_desired=2, min_nodes=1, max_nodes=8,
-            slots_per_node=2, now=200.0, last_busy_time=200.0,
-            scale_down_idle_seconds=60.0,
-            deadline=150.0,  # expired 50s ago
+            slots_per_node=2,
+            deadline=150.0, now=200.0,  # expired 50s ago
         )
         assert result == 0
 
@@ -134,9 +70,8 @@ class TestComputeDesired:
         result = _compute_desired(
             _report(queued=6, inflight=4, total_capacity=4, node_count=2),
             current_desired=2, min_nodes=1, max_nodes=8,
-            slots_per_node=2, now=100.0, last_busy_time=100.0,
-            scale_down_idle_seconds=60.0,
-            deadline=200.0,  # still 100s left
+            slots_per_node=2,
+            deadline=200.0, now=100.0,  # still 100s left
         )
         assert result == 5  # normal scale-up
 
@@ -144,8 +79,7 @@ class TestComputeDesired:
         result = _compute_desired(
             _report(queued=6, inflight=4, total_capacity=4, node_count=2),
             current_desired=2, min_nodes=1, max_nodes=8,
-            slots_per_node=2, now=100.0, last_busy_time=100.0,
-            scale_down_idle_seconds=60.0,
+            slots_per_node=2,
             deadline=None,  # no deadline
         )
         assert result == 5

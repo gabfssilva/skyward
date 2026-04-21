@@ -41,6 +41,7 @@ class PoolState:
     ready_nodes: frozenset[int] = frozenset()
     dead_nodes: frozenset[int] = frozenset()
     reconciler_ref: ActorRef | None = None
+    autoscaler_ref: ActorRef | None = None
     instance_map: MappingProxyType[NodeId, str] = MappingProxyType({})
     attempt: int = 1
     ca: CertificateAuthority | None = None

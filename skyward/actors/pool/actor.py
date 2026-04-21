@@ -25,6 +25,7 @@ from skyward.actors.messages import (
     NodeBecameUnready,
     NodeConnected,
     NodeExhausted,
+    NodeId,
     NodeInstance,
     NodeJoined,
     NodeLost,
@@ -33,6 +34,7 @@ from skyward.actors.messages import (
     ReconcilerNodeLost,
     ReconciliationExhausted,
     RegisterPressureObserver,
+    RequestDrainNodes,
     RequestScaleDown,
     RequestScaleUp,
     ScaleDownComplete,
@@ -137,6 +139,16 @@ def _build_pool_info_json(
         workers_per_node=wpn,
     )
     return pool_info.model_dump_json()
+
+
+def _notify_scaling(
+    s: PoolState, msg: NodeJoined | DrainComplete,
+) -> None:
+    """Broadcast a scaling event to reconciler and autoscaler (if present)."""
+    if s.reconciler_ref is not None:
+        s.reconciler_ref.tell(msg)
+    if s.autoscaler_ref is not None:
+        s.autoscaler_ref.tell(msg)
 
 
 async def _shutdown_cluster(
@@ -250,7 +262,9 @@ def pool_actor(
         instance: Any,
         ca: Any,
         head_addr: str | None,
+        autoscaler: ActorRef | None = None,
     ) -> ActorRef:
+        tick_interval = max(1.0, spec.autoscale_idle_timeout / 4)
         ref = ctx.spawn(
             node_actor(
                 node_id=nid, pool=ctx.self,
@@ -259,6 +273,9 @@ def pool_actor(
                 poll_timeout=spec.provision_timeout,
                 bootstrap_timeout=spec.bootstrap_timeout,
                 ca=ca,
+                autoscaler=autoscaler,
+                scale_down_idle_seconds=spec.autoscale_idle_timeout,
+                idle_tick_interval=tick_interval,
             ),
             f"node-{nid}",
         )
@@ -294,6 +311,40 @@ def pool_actor(
         return replace(
             cluster,
             instances=tuple(i for i in cluster.instances if i.id != iid),
+        )
+
+    def _drain_victims(
+        ctx: ActorContext[PoolMsg],
+        s: PoolState,
+        victims: list[NodeId],
+    ) -> PoolState:
+        """Drain a set of nodes: stop refs, terminate instances, notify reconciler."""
+        tm = s.tm_ref
+        new_node_refs = s.node_refs
+        for nid in victims:
+            if tm is not None:
+                tm.tell(NodeUnavailable(node_id=nid))
+            iid = s.instance_map.get(nid, "")
+            _notify_scaling(s, DrainComplete(node_id=nid, instance_id=iid))
+            node_ref = s.node_refs.get(nid)
+            if node_ref:
+                ctx.stop(node_ref)
+            new_node_refs = MappingProxyType({k: v for k, v in new_node_refs.items() if k != nid})
+            if iid and s.cluster is not None:
+                ctx.pipe_to_self(
+                    s.provider.terminate(s.cluster, (iid,)),
+                    mapper=lambda _: _ShutdownDone(),
+                    on_failure=lambda _err: _ShutdownDone(),
+                )
+
+        if s.reconciler_ref is not None:
+            s.reconciler_ref.tell(ScaleDownComplete(drained=len(victims)))
+
+        return replace(
+            s,
+            node_refs=new_node_refs,
+            ready_nodes=s.ready_nodes - frozenset(victims),
+            scaling=replace(s.scaling, draining_nodes=s.scaling.draining_nodes + len(victims)),
         )
 
     # ── idle ──────────────────────────────────────────────────────
@@ -509,21 +560,21 @@ def pool_actor(
                         instances=(*updated_cluster.instances, *to_spawn),
                     )
 
-                    for instance in to_spawn:
-                        nid = len(new_spawned)
-                        ref = _spawn_node(
-                            ctx, nid, s.spec, updated_cluster,
-                            s.provider, instance, s.ca, None,
-                        )
-                        new_spawned = MappingProxyType({**new_spawned, nid: ref})
-
                     min_needed = s.spec.nodes.min or s.spec.nodes.desired
+                    threshold_will_cross = (
+                        s.reconciler_ref is None
+                        and len(new_spawned) + len(to_spawn) >= min_needed
+                    )
 
-                    if len(new_spawned) >= min_needed:
+                    tm_ref = s.tm_ref
+                    rec_ref = s.reconciler_ref
+                    as_ref = s.autoscaler_ref
+
+                    if threshold_will_cross:
                         log.info(
                             "Provisioned {got}/{desired} instances "
                             "(min={min}), spawning task manager",
-                            got=len(new_spawned),
+                            got=len(new_spawned) + len(to_spawn),
                             desired=s.spec.nodes.desired,
                             min=min_needed,
                         )
@@ -538,18 +589,46 @@ def pool_actor(
 
                         min_n = s.spec.nodes.min or s.spec.nodes.desired
                         max_n = s.spec.nodes.max or s.spec.nodes.desired
+                        future_ids = frozenset(
+                            range(len(new_spawned), len(new_spawned) + len(to_spawn)),
+                        )
                         rec_ref = ctx.spawn(
                             reconciler_actor(
                                 pool=ctx.self,
                                 min_nodes=min_n,
                                 max_nodes=max_n,
-                                initial_node_ids=frozenset(new_spawned.keys()),
+                                initial_node_ids=frozenset(new_spawned.keys()) | future_ids,
                                 tick_interval=s.spec.reconcile_tick_interval,
                                 max_provision_retries=s.spec.max_provision_attempts,
                             ),
                             "reconciler",
                         )
 
+                        if s.spec.nodes.auto_scaling and s.spec.nodes.max is not None:
+                            from skyward.actors.autoscaler import autoscaler_actor
+
+                            as_ref = ctx.spawn(
+                                autoscaler_actor(
+                                    min_nodes=s.spec.nodes.desired,
+                                    max_nodes=s.spec.nodes.max,
+                                    reconciler=rec_ref,
+                                    slots_per_node=s.spec.worker.concurrency + s.spec.worker.buffer,
+                                    initial_count=s.spec.nodes.desired,
+                                    cooldown=s.spec.autoscale_cooldown,
+                                ),
+                                "autoscaler",
+                            )
+
+                    for instance in to_spawn:
+                        nid = len(new_spawned)
+                        ref = _spawn_node(
+                            ctx, nid, s.spec, updated_cluster,
+                            s.provider, instance, s.ca, None,
+                            autoscaler=as_ref,
+                        )
+                        new_spawned = MappingProxyType({**new_spawned, nid: ref})
+
+                    if len(new_spawned) >= min_needed:
                         return provisioning(replace(
                             s,
                             cluster=updated_cluster,
@@ -557,6 +636,7 @@ def pool_actor(
                             node_refs=new_spawned,
                             tm_ref=tm_ref,
                             reconciler_ref=rec_ref,
+                            autoscaler_ref=as_ref,
                         ))
 
                     still_needed = s.spec.nodes.desired - len(new_spawned)
@@ -905,6 +985,7 @@ def pool_actor(
                         ref = _spawn_node(
                             ctx, nid, s.spec, upd_cluster,
                             s.provider, inst, s.ca, s.head_addr,
+                            autoscaler=s.autoscaler_ref,
                         )
                         new_node_refs = MappingProxyType({**new_node_refs, nid: ref})
                         new_inst_map = MappingProxyType({**new_inst_map, nid: inst.id})
@@ -972,24 +1053,8 @@ def pool_actor(
                     s.reply_to.tell(started)
 
                     is_elastic = s.spec.nodes.auto_scaling
-                    if is_elastic:
-                        from skyward.actors.autoscaler import autoscaler_actor
-
-                        assert s.spec.nodes.max is not None
-                        assert s.reconciler_ref is not None
-                        as_ref = ctx.spawn(
-                            autoscaler_actor(
-                                min_nodes=s.spec.nodes.desired,
-                                max_nodes=s.spec.nodes.max,
-                                reconciler=s.reconciler_ref,
-                                slots_per_node=s.spec.worker.concurrency + s.spec.worker.buffer,
-                                initial_count=s.spec.nodes.desired,
-                                cooldown=s.spec.autoscale_cooldown,
-                                scale_down_idle_seconds=s.spec.autoscale_idle_timeout,
-                            ),
-                            "autoscaler",
-                        )
-                        tm.tell(RegisterPressureObserver(observer=as_ref))
+                    if is_elastic and s.autoscaler_ref is not None:
+                        tm.tell(RegisterPressureObserver(observer=s.autoscaler_ref))
 
                     min_n = s.spec.nodes.desired
                     inst_map = MappingProxyType({nid: ni.instance.id for nid, ni in s.instances.items()})
@@ -1031,8 +1096,7 @@ def pool_actor(
                             client, nbr, s.node_refs[nid],
                             s.spec, s.cluster, effective_head,
                         )
-                        if s.reconciler_ref is not None:
-                            s.reconciler_ref.tell(NodeJoined(node_id=nid))
+                        _notify_scaling(s, NodeJoined(node_id=nid))
                         return ready(replace(
                             s,
                             node_statuses=new_statuses,
@@ -1053,8 +1117,7 @@ def pool_actor(
                         if old:
                             with suppress(Exception):
                                 await old.__aexit__(None, None, None)
-                        if s.reconciler_ref is not None:
-                            s.reconciler_ref.tell(NodeJoined(node_id=nid))
+                        _notify_scaling(s, NodeJoined(node_id=nid))
                         return ready(replace(
                             s,
                             clients=MappingProxyType({**s.clients, nid: node_client}),
@@ -1214,6 +1277,7 @@ def pool_actor(
                         ref = _spawn_node(
                             ctx, nid, s.spec, upd_cluster,
                             s.provider, inst, s.ca, s.head_addr,
+                            autoscaler=s.autoscaler_ref,
                         )
                         new_node_refs = MappingProxyType({**new_node_refs, nid: ref})
                         new_inst_map = MappingProxyType({**new_inst_map, nid: inst.id})
@@ -1231,39 +1295,21 @@ def pool_actor(
 
                 case RequestScaleDown(count=count):
                     log.info("Reconciler requested scale-down of {n} nodes", n=count)
-                    victims = sorted(s.node_refs.keys(), reverse=True)[:count]
-                    victims = [nid for nid in victims if nid != 0][:count]
+                    victims = [nid for nid in sorted(s.node_refs.keys(), reverse=True) if nid != 0][:count]
                     if not victims:
                         if s.reconciler_ref is not None:
                             s.reconciler_ref.tell(ScaleDownComplete(drained=0))
                         return ready(s)
+                    return ready(_drain_victims(ctx, s, victims))
 
-                    new_node_refs = s.node_refs
-                    for nid in victims:
-                        tm.tell(NodeUnavailable(node_id=nid))
-                        iid = s.instance_map.get(nid, "")
+                case RequestDrainNodes(node_ids=ids):
+                    log.info("Reconciler requested targeted drain of {n} nodes", n=len(ids))
+                    victims = [nid for nid in ids if nid != 0 and nid in s.node_refs]
+                    if not victims:
                         if s.reconciler_ref is not None:
-                            s.reconciler_ref.tell(DrainComplete(node_id=nid, instance_id=iid))
-                        node_ref = s.node_refs.get(nid)
-                        if node_ref:
-                            ctx.stop(node_ref)
-                        new_node_refs = MappingProxyType({k: v for k, v in new_node_refs.items() if k != nid})
-                        if iid and s.cluster is not None:
-                            ctx.pipe_to_self(
-                                s.provider.terminate(s.cluster, (iid,)),
-                                mapper=lambda _: _ShutdownDone(),
-                                on_failure=lambda _err: _ShutdownDone(),
-                            )
-
-                    if s.reconciler_ref is not None:
-                        s.reconciler_ref.tell(ScaleDownComplete(drained=len(victims)))
-
-                    return ready(replace(
-                        s,
-                        node_refs=new_node_refs,
-                        ready_nodes=s.ready_nodes - frozenset(victims),
-                        scaling=replace(s.scaling, draining_nodes=s.scaling.draining_nodes + len(victims)),
-                    ))
+                            s.reconciler_ref.tell(ScaleDownComplete(drained=0))
+                        return ready(s)
+                    return ready(_drain_victims(ctx, s, victims))
 
                 case _ShutdownDone():
                     return Behaviors.same()

@@ -8,7 +8,12 @@ from casty import ActorContext, ActorRef, Behavior, Behaviors
 
 from skyward.actors.messages import (
     DesiredCountChanged,
+    DrainComplete,
+    NodeBecameBusy,
+    NodeBecameIdle,
+    NodeJoined,
     PressureReport,
+    ReapIdleNodes,
 )
 from skyward.actors.reconciler.messages import ReconcilerMsg
 from skyward.observability.logger import logger
@@ -26,7 +31,6 @@ def autoscaler_actor(
     slots_per_node: int,
     initial_count: int,
     cooldown: float = 30.0,
-    scale_down_idle_seconds: float = 60.0,
 ) -> Behavior[AutoscalerMsg]:
 
     async def setup(ctx: ActorContext[AutoscalerMsg]) -> Behavior[AutoscalerMsg]:
@@ -35,7 +39,9 @@ def autoscaler_actor(
             desired=initial_count,
             last_scale_time=now,
             last_pressure=None,
-            last_busy_time=now,
+            idle=frozenset(),
+            reaping=frozenset(),
+            known_nodes=frozenset(),
         )
 
         async def _tick() -> _ScaleTick:
@@ -57,15 +63,13 @@ def autoscaler_actor(
             match msg:
                 case PressureReport() as report:
                     now = time.monotonic()
-                    busy = now if report.inflight > 0 or report.queued > 0 else s.last_busy_time
-                    new_s = replace(s, last_pressure=report, last_busy_time=busy)
+                    new_s = replace(s, last_pressure=report)
 
                     if now - s.last_scale_time < cooldown:
                         return observing(new_s)
 
                     new_desired = _compute_desired(
-                        report, s.desired, min_nodes, max_nodes,
-                        slots_per_node, now, busy, scale_down_idle_seconds,
+                        report, s.desired, min_nodes, max_nodes, slots_per_node,
                     )
                     if new_desired != s.desired:
                         direction = "up" if new_desired > s.desired else "down"
@@ -84,9 +88,37 @@ def autoscaler_actor(
                         ))
                     return observing(new_s)
 
+                case NodeBecameIdle(node_id=nid):
+                    return observing(replace(s, idle=s.idle | {nid}))
+
+                case NodeBecameBusy(node_id=nid):
+                    return observing(replace(s, idle=s.idle - {nid}))
+
+                case NodeJoined(node_id=nid):
+                    return observing(replace(s, known_nodes=s.known_nodes | {nid}))
+
+                case DrainComplete(node_id=nid):
+                    return observing(replace(
+                        s,
+                        known_nodes=s.known_nodes - {nid},
+                        idle=s.idle - {nid},
+                        reaping=s.reaping - {nid},
+                    ))
+
                 case _ScaleTick():
                     if s.last_pressure is not None:
                         ctx.self.tell(s.last_pressure)
+
+                    budget = len(s.known_nodes) - len(s.reaping) - min_nodes
+                    new_s = s
+                    if s.idle and budget > 0:
+                        k = min(len(s.idle), budget)
+                        chosen = frozenset(list(s.idle)[:k])
+                        reconciler.tell(ReapIdleNodes(
+                            node_ids=chosen,
+                            reason=f"node-announced idle, budget={budget}",
+                        ))
+                        new_s = replace(s, reaping=s.reaping | chosen, idle=s.idle - chosen)
 
                     async def _tick() -> _ScaleTick:
                         await asyncio.sleep(cooldown)
@@ -97,7 +129,7 @@ def autoscaler_actor(
                         mapper=lambda r: r,
                         on_failure=lambda _: _ScaleTick(),
                     )
-                    return Behaviors.same()
+                    return observing(new_s)
 
             return Behaviors.same()
         return Behaviors.receive(receive)

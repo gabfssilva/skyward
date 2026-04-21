@@ -17,6 +17,7 @@ from skyward.actors.messages import (
     NodeExhausted,
     NodeLost,
     ReconciliationExhausted,
+    RequestDrainNodes,
     RequestScaleDown,
     RequestScaleUp,
     SubmitBroadcast,
@@ -108,6 +109,7 @@ type PoolMsg = (
     | _ShutdownDone
     | RequestScaleUp
     | RequestScaleDown
+    | RequestDrainNodes
     | GetCurrentNodes
     | GetPoolSnapshot
 )

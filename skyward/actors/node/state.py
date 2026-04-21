@@ -57,3 +57,5 @@ class NodeState:
     around_process_hooks: tuple[tuple[str, Any], ...] = ()
     inflight: MappingProxyType[str, ActorRef] = MappingProxyType({})
     task_counter: int = 0
+    last_task_at: float = 0.0
+    idle_announced: bool = False

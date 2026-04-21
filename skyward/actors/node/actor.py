@@ -29,6 +29,8 @@ from skyward.actors.messages import (
     ExecuteOnNode,
     HeadAddressKnown,
     NodeActivated,
+    NodeBecameBusy,
+    NodeBecameIdle,
     NodeBecameReady,
     NodeConnected,
     NodeExhausted,
@@ -77,6 +79,7 @@ from .messages import (
     _ConnectionFailed,
     _EnvSetupDone,
     _EnvSetupFailed,
+    _IdleTick,
     _LocalInstallDone,
     _PollResult,
     _PostBootstrapFailed,
@@ -92,6 +95,41 @@ from .messages import (
 from .state import NodeId, NodeState, PendingTask
 
 
+def _should_announce_idle(
+    inflight_count: int,
+    last_task_at: float,
+    now: float,
+    threshold: float,
+    announced: bool,
+) -> bool:
+    """Decide whether to emit NodeBecameIdle on this idle tick.
+
+    Parameters
+    ----------
+    inflight_count : int
+        Number of tasks currently inflight on the node.
+    last_task_at : float
+        Monotonic timestamp of the most recent task activity.
+    now : float
+        Current monotonic time.
+    threshold : float
+        Idle window in seconds required before announcing.
+    announced : bool
+        Whether idle has already been announced in the current idle window.
+
+    Returns
+    -------
+    bool
+        True iff the node is empty, has been quiet longer than ``threshold``,
+        and has not yet announced this idle window.
+    """
+    return (
+        inflight_count == 0
+        and now - last_task_at > threshold
+        and not announced
+    )
+
+
 def node_actor(
     node_id: NodeId,
     pool: ActorRef,
@@ -102,6 +140,9 @@ def node_actor(
     bootstrap_timeout: float = float(DEFAULT_BOOTSTRAP_TIMEOUT),
     _skip_monitor: bool = False,
     ca: CertificateAuthority | None = None,
+    autoscaler: ActorRef | None = None,
+    scale_down_idle_seconds: float = 60.0,
+    idle_tick_interval: float = 15.0,
 ) -> Behavior[NodeMsg]:
     """A merged node tells this story: idle → polling → … → active."""
 
@@ -595,6 +636,17 @@ def node_actor(
 
     # ── active ────────────────────────────────────────────────────────
 
+    def _schedule_idle_tick(ctx: ActorContext[NodeMsg]) -> None:
+        async def _tick() -> _IdleTick:
+            await asyncio.sleep(idle_tick_interval)
+            return _IdleTick()
+
+        ctx.pipe_to_self(
+            _tick(),
+            mapper=lambda r: r,
+            on_failure=lambda _: _IdleTick(),
+        )
+
     def _enter_active(ctx: ActorContext[NodeMsg], s: NodeState) -> Behavior[NodeMsg]:
         new_inflight: MappingProxyType[str, ActorRef] = MappingProxyType({})
         counter = 0
@@ -609,7 +661,16 @@ def node_actor(
             node_ref=ctx.self,
             slots=s.cluster.spec.worker.concurrency,
         ))
-        return active(replace(s, inflight=new_inflight, task_counter=counter, pending_tasks=()))
+        now = time.monotonic()
+        _schedule_idle_tick(ctx)
+        return active(replace(
+            s,
+            inflight=new_inflight,
+            task_counter=counter,
+            pending_tasks=(),
+            last_task_at=now,
+            idle_announced=False,
+        ))
 
     def _dispatch_task(
         ctx: ActorContext[NodeMsg],
@@ -693,7 +754,16 @@ def node_actor(
                     log.debug("Node {nid} dispatching task {tid}", nid=node_id, tid=local_tid)
                     _dispatch_task(ctx, s, local_tid, ex.fn, ex.args, ex.kwargs, ex.timeout)
                     new_inflight = MappingProxyType({**s.inflight, local_tid: ex.reply_to})
-                    return active(replace(s, inflight=new_inflight, task_counter=s.task_counter + 1))
+                    new_s = replace(
+                        s,
+                        inflight=new_inflight,
+                        task_counter=s.task_counter + 1,
+                        last_task_at=time.monotonic(),
+                    )
+                    if s.idle_announced and autoscaler is not None:
+                        autoscaler.tell(NodeBecameBusy(node_id=node_id))
+                        new_s = replace(new_s, idle_announced=False)
+                    return active(new_s)
                 case _RemoteTaskDone(task_id=tid, value=value, error=is_err, connection_error=conn_err, elapsed=elapsed):
                     log.debug("Node {nid} received task result (tid={tid})", nid=node_id, tid=tid)
                     if conn_err:
@@ -721,7 +791,7 @@ def node_actor(
                         )
                         caller.tell(result)
                         new_inflight = MappingProxyType({k: v for k, v in s.inflight.items() if k != tid})
-                        return active(replace(s, inflight=new_inflight))
+                        return active(replace(s, inflight=new_inflight, last_task_at=time.monotonic()))
                     return Behaviors.same()
                 case ConnectionLost(error=error):
                     log.warning(
@@ -801,6 +871,20 @@ def node_actor(
                     iid = s.ni.instance.id if s.ni else None
                     pool.tell(NodeExhausted(node_id=node_id, reason="child stopped", instance_id=iid))
                     return Behaviors.stopped()
+                case _IdleTick():
+                    now = time.monotonic()
+                    new_s = s
+                    if _should_announce_idle(
+                        inflight_count=len(s.inflight),
+                        last_task_at=s.last_task_at,
+                        now=now,
+                        threshold=scale_down_idle_seconds,
+                        announced=s.idle_announced,
+                    ) and autoscaler is not None:
+                        autoscaler.tell(NodeBecameIdle(node_id=node_id))
+                        new_s = replace(s, idle_announced=True)
+                    _schedule_idle_tick(ctx)
+                    return active(new_s)
                 case _SnapshotSaved():
                     log.info("Snapshot saved")
                 case _SnapshotFailed(error=error):

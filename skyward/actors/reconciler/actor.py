@@ -11,8 +11,10 @@ from skyward.actors.messages import (
     DrainComplete,
     NodeId,
     NodeJoined,
+    ReapIdleNodes,
     ReconcilerNodeLost,
     ReconciliationExhausted,
+    RequestDrainNodes,
     RequestScaleDown,
     RequestScaleUp,
     ScaleDownComplete,
@@ -119,6 +121,22 @@ def reconciler_actor(
                         s,
                         current=s.current - {nid},
                         draining=max(0, s.draining - 1),
+                    ))
+
+                case ReapIdleNodes(node_ids=ids, reason=reason):
+                    if len(s.current) - len(ids) < min_nodes:
+                        log.warning(
+                            "Ignoring ReapIdleNodes: would violate min_nodes "
+                            "(current={c}, reap={r}, min={m})",
+                            c=len(s.current), r=len(ids), m=min_nodes,
+                        )
+                        return Behaviors.same()
+                    log.info("Reaping {n} idle nodes ({reason})", n=len(ids), reason=reason)
+                    pool.tell(RequestDrainNodes(node_ids=ids))
+                    return watching(replace(
+                        s,
+                        desired=s.desired - len(ids),
+                        draining=s.draining + len(ids),
                     ))
 
                 case ScaleDownComplete(drained=n):
