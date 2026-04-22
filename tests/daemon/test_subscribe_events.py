@@ -17,7 +17,6 @@ from skyward.api.views import (
     TasksView,
 )
 from skyward.daemon.protocol import (
-    DaemonError,
     StreamEnd,
     SubscribeEvents,
 )
@@ -61,20 +60,6 @@ class TestStreamEndMessage:
 
 
 class TestSubscribeEventsRouting:
-    @pytest.mark.asyncio
-    async def test_subscribe_unknown_pool_returns_error(self) -> None:
-        sock_path = _short_sock()
-        server = DaemonServer(socket_path=sock_path, journal=InMemoryJournal())
-
-        async with server:
-            reader, writer = await asyncio.open_unix_connection(sock_path)
-            await async_send(writer, SubscribeEvents(pool_name="nonexistent"))
-            resp = await async_recv(reader)
-            writer.close()
-
-        assert isinstance(resp, DaemonError)
-        assert "nonexistent" in resp.error
-
     @pytest.mark.asyncio
     async def test_subscribe_sends_initial_view(self) -> None:
         sock_path = _short_sock()

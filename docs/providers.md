@@ -371,7 +371,6 @@ with sky.Compute(
 | `request_timeout` | `int` | `30` | HTTP request timeout in seconds |
 | `docker_image` | `str or None` | `None` | Base Docker image for containers |
 | `disk_gb` | `int` | `100` | Disk space in GB |
-| `use_overlay` | `bool` | `True` | Enable overlay networking for multi-node clusters |
 | `overlay_timeout` | `int` | `120` | Timeout for overlay operations in seconds |
 | `require_direct_port` | `bool` | `False` | Only select offers with direct port access |
 

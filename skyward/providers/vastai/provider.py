@@ -70,7 +70,7 @@ class VastAIProvider(Provider[VastAI, VastAISpecific]):
             overlay_name: str | None = None
             overlay_cluster_id: int | None = None
 
-            if spec.nodes.desired > 1 and self._config.use_overlay:
+            if spec.nodes.desired > 1 and spec.cluster:
                 overlay_name, overlay_cluster_id = await _setup_overlay_network(
                     client, self._config, spec,
                 )

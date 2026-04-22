@@ -419,8 +419,6 @@ class VastAI:
         Custom Docker image. ``None`` uses Skyward's default.
     disk_gb
         Disk space in GB.
-    use_overlay
-        Enable overlay networking for multi-node clusters.
     overlay_timeout
         Seconds to wait for overlay network setup.
     require_direct_port
@@ -448,7 +446,6 @@ class VastAI:
         request_timeout: int = 30,
         docker_image: DockerImage | None = None,
         disk_gb: int = 100,
-        use_overlay: bool = True,
         overlay_timeout: int = 120,
         require_direct_port: bool = False,
         min_inet_down: float | None = None,

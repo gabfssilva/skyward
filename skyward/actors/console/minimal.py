@@ -237,8 +237,6 @@ def _node_label(n: NodeView) -> str:
 
 
 def _node_tails(pool: PoolView) -> list[Text]:
-    if pool.phase not in (PoolPhase.SSH, PoolPhase.BOOTSTRAP, PoolPhase.WORKERS):
-        return []
     tails: list[Text] = []
     for n in sorted(pool.nodes.values(), key=lambda n: n.node_id):
         if n.status is NodeStatus.READY:

@@ -25,28 +25,36 @@ class TestDockerImage:
 
 
 class TestCuda:
-    def test_known_version_runtime(self) -> None:
+    def test_known_version_default(self) -> None:
         img = cuda("12.9")
-        assert str(img) == "nvcr.io/nvidia/cuda:12.9.1-runtime-ubuntu24.04"
+        assert str(img) == "nvidia/cuda:12.9.1-cudnn-runtime-ubuntu22.04"
         assert img.cuda == "12.9"
-        assert img.ubuntu == "24.04"
+        assert img.ubuntu == "22.04"
+
+    def test_known_version_runtime(self) -> None:
+        img = cuda("12.9", variant="runtime", ubuntu="24.04")
+        assert str(img) == "nvidia/cuda:12.9.1-runtime-ubuntu24.04"
 
     def test_known_version_devel(self) -> None:
-        img = cuda("12.9", variant="devel")
-        assert str(img) == "nvcr.io/nvidia/cuda:12.9.1-devel-ubuntu24.04"
+        img = cuda("12.9", variant="devel", ubuntu="24.04")
+        assert str(img) == "nvidia/cuda:12.9.1-devel-ubuntu24.04"
 
     def test_known_version_cudnn_runtime(self) -> None:
-        img = cuda("12.8", variant="cudnn-runtime")
-        assert str(img) == "nvcr.io/nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04"
+        img = cuda("12.8", variant="cudnn-runtime", ubuntu="24.04")
+        assert str(img) == "nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04"
+
+    def test_nvidia_repository(self) -> None:
+        img = cuda("12.9", variant="runtime", ubuntu="24.04", repository="nvidia")
+        assert str(img) == "nvcr.io/nvidia/cuda:12.9.1-runtime-ubuntu24.04"
 
     def test_custom_ubuntu(self) -> None:
-        img = cuda("12.9", ubuntu="22.04")
-        assert str(img) == "nvcr.io/nvidia/cuda:12.9.1-runtime-ubuntu22.04"
-        assert img.ubuntu == "22.04"
+        img = cuda("12.9", ubuntu="20.04")
+        assert str(img) == "nvidia/cuda:12.9.1-cudnn-runtime-ubuntu20.04"
+        assert img.ubuntu == "20.04"
 
     def test_unknown_version_fallback(self) -> None:
         img = cuda("13.0")
-        assert str(img) == "nvcr.io/nvidia/cuda:13.0.0-runtime-ubuntu24.04"
+        assert str(img) == "nvidia/cuda:13.0.0-cudnn-runtime-ubuntu22.04"
         assert img.cuda == "13.0"
 
 

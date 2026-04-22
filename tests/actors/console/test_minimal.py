@@ -439,6 +439,27 @@ class TestNodeTails:
         assert len(tails) == 1
         assert "node-1" in _text(tails[0])
 
+    def test_tails_visible_during_ready_when_node_joins_late(self) -> None:
+        """Late joiners (replacement / scale-up) surface bootstrap output
+        even though the pool itself is already READY."""
+        nodes = MappingProxyType({
+            0: NodeView(node_id=0, status=NodeStatus.READY, bootstrap=None),
+            1: NodeView(node_id=1, status=NodeStatus.READY, bootstrap=None),
+            2: NodeView(
+                node_id=2, status=NodeStatus.BOOTSTRAPPING,
+                bootstrap=BootstrapView(
+                    phases=("apt", "deps"), completed=frozenset({"apt"}),
+                    active="deps", output="Installing torch==2.4.0",
+                ),
+            ),
+        })
+        pool = _pool(phase=PoolPhase.READY, nodes=nodes, total_nodes=3)
+        tails = _node_tails(pool)
+        assert len(tails) == 1
+        txt = _text(tails[0])
+        assert "node-2" in txt
+        assert "Installing torch==2.4.0" in txt
+
 
 # ── Renderable ───────────────────────────────────────────────────
 

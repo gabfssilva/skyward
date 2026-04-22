@@ -553,9 +553,12 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
 
         _, ssh_public_key = get_local_ssh_key()
 
+        start_idx = max((nid for nid, _ in specific.pod_ids), default=-1) + 1
+
         instances: list[Instance] = []
         async with RunPodClient(api_key, config=self._config) as client:
-            for idx in range(count):
+            for offset in range(count):
+                idx = start_idx + offset
                 try:
                     pod = (
                         await _create_gpu_pod(client, self._config, cluster, idx, ssh_public_key)
@@ -563,7 +566,7 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                         else await _create_cpu_pod(client, self._config, cluster, ssh_public_key)
                     )
                 except RunPodError as e:
-                    log.error("Failed to create pod {idx}/{count}: {err}", idx=idx + 1, count=count, err=e)
+                    log.error("Failed to create pod {idx}/{count}: {err}", idx=offset + 1, count=count, err=e)
                     continue
                 instances.append(_build_runpod_instance(pod, "provisioning", cluster))
         return cluster, instances
