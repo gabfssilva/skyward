@@ -21,6 +21,35 @@ if typing.TYPE_CHECKING:
 # Configuration
 # =============================================================================
 
+type Datacenter = Literal[
+    'EU-RO-1',
+    'CA-MTL-1',
+    'EU-SE-1',
+    'US-IL-1',
+    'EUR-IS-1',
+    'EU-CZ-1',
+    'US-TX-3',
+    'EUR-IS-2',
+    'US-KS-2',
+    'US-GA-2',
+    'US-WA-1',
+    'US-TX-1',
+    'CA-MTL-3',
+    'EU-NL-1',
+    'US-TX-4',
+    'US-CA-2',
+    'US-NC-1',
+    'OC-AU-1',
+    'US-DE-1',
+    'EUR-IS-3',
+    'CA-MTL-2',
+    'AP-JP-1',
+    'EUR-NO-1',
+    'EU-FR-1',
+    'US-KS-3',
+    'US-GA-1',
+] | str
+
 
 @dataclass(frozen=True, slots=True)
 class RunPod(ProviderConfig):
@@ -35,6 +64,7 @@ class RunPod(ProviderConfig):
     Example:
         >>> from skyward.providers.runpod import RunPod
         >>> config = RunPod(data_center_ids=("EU-RO-1",))
+        >>> config = RunPod(data_center_ids="EU-RO-1")  # single datacenter
 
     Args:
         api_key: RunPod API key. Falls back to RUNPOD_API_KEY env var.
@@ -42,7 +72,8 @@ class RunPod(ProviderConfig):
         container_disk_gb: Container disk size in GB. Default: 50.
         volume_gb: Persistent volume size in GB. Default: 20.
         volume_mount_path: Volume mount path. Default: /workspace.
-        data_center_ids: Preferred data center IDs or "global" for auto-selection.
+        data_center_ids: Preferred data center IDs — tuple of IDs, a single ID
+            string, or ``"global"`` for auto-selection.
         ports: Port mappings (e.g., ["22/tcp", "8888/http"]). Default: ["22/tcp"].
         container_image: Override the container image for pods. When set, skips
             automatic image resolution from Docker Hub. Example:
@@ -67,7 +98,7 @@ class RunPod(ProviderConfig):
     container_disk_gb: int = 50
     volume_gb: int = 20
     volume_mount_path: str = "/workspace"
-    data_center_ids: tuple[str, ...] | Literal["global"] = "global"
+    data_center_ids: tuple[Datacenter, ...] | Datacenter | Literal["global"] = "global"
     ports: tuple[str, ...] = ("22/tcp",)
     request_timeout: int = 30
     cpu_clock: Literal["3c", "5c"] | str = "3c"
@@ -76,6 +107,13 @@ class RunPod(ProviderConfig):
     registry_auth: str | None = "docker hub"
     min_inet_down: float | None = None
     min_inet_up: float | None = None
+
+    def __post_init__(self) -> None:
+        match self.data_center_ids:
+            case "global" | tuple():
+                return
+            case str(dc):
+                object.__setattr__(self, "data_center_ids", (dc,))
 
     async def create_provider(self) -> RunPodProvider:
         from skyward.providers.runpod.provider import RunPodProvider

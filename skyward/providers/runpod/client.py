@@ -162,7 +162,7 @@ class RunPodClient:
     async def __aenter__(self) -> RunPodClient:
         return self
 
-    async def __aexit__(self, *_args: object) -> None:
+    async def __aexit__(self, *_: object) -> None:
         await self._http.aclose()
 
     async def _request(
@@ -172,11 +172,16 @@ class RunPodClient:
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
+        self._log.debug(
+            "HTTP {method} {path} json={json} params={params}",
+            method=method, path=path, json=json, params=params,
+        )
         resp = await self._http.request(method, path, json=json, params=params)
         if resp.status_code >= 400:
             self._log.warning(
-                "API error {method} {path}: {status}",
-                method=method, path=path, status=resp.status_code,
+                "API error {method} {url}: {status} body={body}",
+                method=method, url=str(resp.request.url),
+                status=resp.status_code, body=resp.text[:500],
             )
             raise RunPodError(
                 f"API error {resp.status_code}: {resp.text}",
@@ -312,16 +317,25 @@ class RunPodClient:
         already gone (404).  Never returns without one of those two
         confirmations.
         """
-        self._log.debug("Terminating pod {pod_id}", pod_id=pod_id)
+        url = f"{RUNPOD_API_BASE}/pods/{pod_id}"
+        self._log.info("Terminating pod {pod_id} via DELETE {url}", pod_id=pod_id, url=url)
         try:
-            await self._request("DELETE", f"/pods/{pod_id}")
+            result = await self._request("DELETE", f"/pods/{pod_id}")
+            self._log.info(
+                "Terminate pod {pod_id} response: {result}",
+                pod_id=pod_id, result=result,
+            )
         except RunPodError as e:
             if e.status == 404:
-                self._log.debug(
+                self._log.info(
                     "Pod {pod_id} already terminated (404)",
                     pod_id=pod_id,
                 )
                 return
+            self._log.error(
+                "Terminate pod {pod_id} failed: status={status} body={body}",
+                pod_id=pod_id, status=e.status, body=str(e)[:500],
+            )
             raise
 
     # =========================================================================
@@ -334,7 +348,10 @@ class RunPodClient:
         variables: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         op_name = query.strip().split("(")[0].split("{")[0].strip().split()[-1]
-        self._log.debug("Executing GraphQL: {op}", op=op_name)
+        self._log.debug(
+            "GraphQL {op} variables={vars}",
+            op=op_name, vars=variables,
+        )
         async with httpx.AsyncClient(
             headers={
                 "Authorization": f"Bearer {self._api_key}",

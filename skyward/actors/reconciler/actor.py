@@ -96,7 +96,11 @@ def reconciler_actor(
 
                 case ReconcilerNodeLost(node_id=nid, reason=reason):
                     log.warning("Node {nid} lost: {reason}", nid=nid, reason=reason)
-                    new_s = replace(s, current=s.current - {nid})
+                    new_s = (
+                        replace(s, current=s.current - {nid})
+                        if nid in s.current
+                        else replace(s, pending=max(0, s.pending - 1))
+                    )
                     if new_s.desired > new_s.effective:
                         count = new_s.desired - new_s.effective
                         log.info("Auto-repair: requesting {n} instances", n=count)
@@ -108,10 +112,11 @@ def reconciler_actor(
 
                 case NodeJoined(node_id=nid):
                     log.info("Node {nid} joined", nid=nid)
+                    was_new = nid not in s.current
                     new_s = replace(
                         s,
                         current=s.current | {nid},
-                        pending=max(0, s.pending - 1),
+                        pending=max(0, s.pending - 1) if was_new else s.pending,
                         consecutive_failures=0,
                     )
                     return _maybe_scale(ctx, new_s)
@@ -252,14 +257,20 @@ def reconciler_actor(
 
                 case ReconcilerNodeLost(node_id=nid, reason=reason):
                     log.warning("Node {nid} lost during scale-up: {reason}", nid=nid, reason=reason)
-                    return waiting_for_scale_up(replace(s, current=s.current - {nid}))
+                    new_s = (
+                        replace(s, current=s.current - {nid})
+                        if nid in s.current
+                        else replace(s, pending=max(0, s.pending - 1))
+                    )
+                    return waiting_for_scale_up(new_s)
 
                 case NodeJoined(node_id=nid):
                     log.info("Node {nid} joined during scale-up", nid=nid)
+                    was_new = nid not in s.current
                     new_s = replace(
                         s,
                         current=s.current | {nid},
-                        pending=max(0, s.pending - 1),
+                        pending=max(0, s.pending - 1) if was_new else s.pending,
                         consecutive_failures=0,
                     )
                     if new_s.desired <= new_s.effective:

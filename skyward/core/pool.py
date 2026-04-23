@@ -1009,13 +1009,13 @@ class ComputePool:
         if self._pool_ref is not None and self._system is not None:
             from skyward.actors.pool.messages import StopPool
 
-            logger.debug("Sending StopPool to pool actor...")
+            logger.info("Sending StopPool (timeout={t}s)...", t=self.shutdown_timeout)
             await self._system.ask(
                 self._pool_ref,
                 lambda reply_to: StopPool(reply_to=reply_to),
                 timeout=self.shutdown_timeout,
             )
-            logger.debug("StopPool ask resolved")
+            logger.info("StopPool ask resolved (PoolStopped received)")
 
     @property
     def concurrency(self) -> int:

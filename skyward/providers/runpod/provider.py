@@ -556,6 +556,7 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
         start_idx = max((nid for nid, _ in specific.pod_ids), default=-1) + 1
 
         instances: list[Instance] = []
+        new_pod_ids: list[tuple[int, str]] = []
         async with RunPodClient(api_key, config=self._config) as client:
             for offset in range(count):
                 idx = start_idx + offset
@@ -569,7 +570,13 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
                     log.error("Failed to create pod {idx}/{count}: {err}", idx=offset + 1, count=count, err=e)
                     continue
                 instances.append(_build_runpod_instance(pod, "provisioning", cluster))
-        return cluster, instances
+                new_pod_ids.append((idx, pod["id"]))
+
+        updated_cluster = replace(
+            cluster,
+            specific=replace(specific, pod_ids=specific.pod_ids + tuple(new_pod_ids)),
+        )
+        return updated_cluster, instances
 
     async def get_instance(
         self, cluster: Cluster[RunPodSpecific], instance_id: str,
@@ -685,17 +692,39 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
 
     async def teardown(self, cluster: Cluster[RunPodSpecific]) -> Cluster[RunPodSpecific]:
         specific = cluster.specific
-        if not specific.is_instant_cluster:
-            return cluster
-
         api_key = get_api_key(self._config.api_key)
         async with RunPodClient(api_key, config=self._config) as client:
+            if specific.is_instant_cluster:
+                try:
+                    await client.delete_cluster(specific.runpod_cluster_id)  # type: ignore[arg-type]
+                except Exception as e:
+                    log.error(
+                        "Failed to delete cluster {cid}: {err}",
+                        cid=specific.runpod_cluster_id, err=e,
+                    )
+                return cluster
+
+            prefix = f"skyward-{cluster.id}-"
             try:
-                await client.delete_cluster(specific.runpod_cluster_id)  # type: ignore[arg-type]
+                pods = await client.list_pods()
             except Exception as e:
-                log.error(
-                    "Failed to delete cluster {cid}: {err}",
-                    cid=specific.runpod_cluster_id, err=e,
+                log.warning(
+                    "Could not list pods for orphan sweep (prefix={p}): {err}",
+                    p=prefix, err=e,
+                )
+                return cluster
+
+            orphans = tuple(
+                p["id"] for p in pods if (p.get("name") or "").startswith(prefix)
+            )
+            if orphans:
+                log.warning(
+                    "Orphan sweep for {prefix}: terminating {n} leftover pod(s): {ids}",
+                    prefix=prefix, n=len(orphans), ids=orphans,
+                )
+                await asyncio.gather(
+                    *(client.terminate_pod(pid) for pid in orphans),
+                    return_exceptions=True,
                 )
         return cluster
 

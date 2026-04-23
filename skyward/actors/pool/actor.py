@@ -154,15 +154,25 @@ def _notify_scaling(
 async def _shutdown_cluster(
     provider: Any, cluster: Any, instance_ids: tuple[str, ...],
 ) -> None:
+    log = logger.bind(actor="pool")
     if instance_ids and cluster is not None:
+        log.info("Terminating {n} instances: {ids}", n=len(instance_ids), ids=instance_ids)
         try:
             await provider.terminate(cluster, instance_ids)
-        except Exception:
-            logger.bind(actor="pool").error(
+            log.info("Terminate OK for {n} instances", n=len(instance_ids))
+        except Exception as e:
+            log.error(
                 "CRITICAL: FAILED to terminate instances "
-                "{ids} — they may still be running!",
-                ids=instance_ids,
+                "{ids} — they may still be running! err={err}",
+                ids=instance_ids, err=e,
             )
+    elif not instance_ids:
+        log.warning(
+            "Shutdown called with 0 instance_ids — no terminate requested "
+            "(cluster={cl_none}); this WILL leak pods if provider-side pods "
+            "exist but pool state forgot them.",
+            cl_none=(cluster is None),
+        )
     if cluster is not None:
         with suppress(Exception):
             await provider.teardown(cluster)
@@ -294,6 +304,8 @@ def pool_actor(
     def _collect_instance_ids(s: PoolState) -> tuple[str, ...]:
         known_iids = {ni.instance.id for ni in s.instances.values()}
         known_iids |= {iid for iid in s.instance_map.values() if iid}
+        if s.cluster is not None:
+            known_iids |= {inst.id for inst in s.cluster.instances if inst.id}
         return tuple(known_iids)
 
     def _resolve_dead_iid(s: PoolState, nid: int) -> str | None:
@@ -973,6 +985,11 @@ def pool_actor(
                             s.reconciler_ref.tell(ScaleUpComplete(provisioned=0))
                         return provisioning(s)
 
+                    upd_cluster = replace(
+                        upd_cluster,
+                        instances=(*upd_cluster.instances, *new_instances),
+                    )
+
                     start_id = max((*s.node_refs.keys(), *s.dead_nodes), default=-1) + 1
                     log.info(
                         "Scale-up: spawning {n} nodes from id {sid}",
@@ -1265,6 +1282,11 @@ def pool_actor(
                             s.reconciler_ref.tell(ScaleUpComplete(provisioned=0))
                         return ready(s)
 
+                    upd_cluster = replace(
+                        upd_cluster,
+                        instances=(*upd_cluster.instances, *new_instances),
+                    )
+
                     start_id = max((*s.node_refs.keys(), *s.dead_nodes), default=-1) + 1
                     log.info(
                         "Scale-up: spawning {n} nodes from id {sid}",
@@ -1325,15 +1347,15 @@ def pool_actor(
                     return Behaviors.same()
 
                 case StopPool(reply_to=stop_reply):
-                    log.debug(
-                        "StopPool, shutting down cluster {cid}",
-                        cid=s.cluster_id,
-                    )
                     for node_ref in s.node_refs.values():
                         ctx.stop(node_ref)
                     if s.reconciler_ref is not None:
                         ctx.stop(s.reconciler_ref)
                     instance_ids = _collect_instance_ids(s)
+                    log.info(
+                        "StopPool in READY, terminating cluster {cid}: {n} iids {ids}",
+                        cid=s.cluster_id, n=len(instance_ids), ids=instance_ids,
+                    )
                     ctx.pipe_to_self(
                         _shutdown_cluster(s.provider, s.cluster, instance_ids),
                         mapper=lambda _: _ShutdownDone(),
