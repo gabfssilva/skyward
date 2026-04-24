@@ -22,7 +22,6 @@ if TYPE_CHECKING:
 def Compute(
     *specs: Spec,
     options: Options = ...,  # type: ignore[assignment]
-    daemon: bool = ...,
 ) -> Generator[Pool, None, None]:
     pass
 
@@ -39,7 +38,6 @@ def Compute(
 @contextmanager
 def Compute(
     options: Options = ...,  # type: ignore[assignment]
-    daemon: bool = ...,
     **kwargs: Unpack[SpecKwargs],
 ) -> Generator[Pool, None, None]:
     pass
@@ -49,7 +47,6 @@ def Compute(
     *specs: Spec,
     name: str | None = None,
     options: Options = ...,  # type: ignore[assignment]
-    daemon: bool = False,
     **kwargs: Unpack[SpecKwargs],
 ) -> Generator[Pool, None, None]:
     """Single-pool convenience — creates a Session, provisions one pool, yields it.
@@ -57,17 +54,11 @@ def Compute(
     Three calling conventions (mutually exclusive):
 
     - **Named pool**: ``sky.Compute(name="train")`` — loads from
-      ``skyward.toml``. When ``daemon = true``, connects to the
-      background daemon (auto-spawning if needed).
+      ``skyward.toml``.
     - **Flat kwargs** (most common): pass ``Spec`` fields directly as
       keyword arguments.  A single ``Spec`` is assembled automatically.
     - **Explicit specs**: pass one or more ``Spec`` objects positionally
       for multi-provider fallback or advanced configuration.
-
-    When ``daemon=True``, routes through the background daemon
-    instead of creating a full Session.  The daemon is auto-spawned
-    if not already running.  A fingerprint is computed from the spec
-    to identify the pool across script runs.
 
     Parameters
     ----------
@@ -82,11 +73,6 @@ def Compute(
         Operational tuning (timeouts, retries, autoscaling, worker
         config, console, logging, shutdown timeout).  Defaults are
         sensible for most workloads.
-    daemon
-        When ``True``, dispatch through the background daemon
-        instead of creating an inline Session.  The pool persists
-        after the script exits and can be reused by matching
-        fingerprint.
     **kwargs
         Flat keyword arguments matching ``Spec`` fields (e.g.,
         ``provider``, ``accelerator``, ``nodes``).  Assembled into a
@@ -115,9 +101,6 @@ def Compute(
     ...     result = train(data) >> pool
 
     >>> with sky.Compute(name="train") as pool:
-    ...     result = train(data) >> pool
-
-    >>> with sky.Compute(provider=sky.AWS(), accelerator="A100", daemon=True) as pool:
     ...     result = train(data) >> pool
     """
     ...  # type: ignore[misc]

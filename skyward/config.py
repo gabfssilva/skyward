@@ -330,8 +330,6 @@ class PoolResolution:
     """Result of resolving a named pool from TOML."""
     pool: ComputePool
     specs: tuple[Spec, ...] = ()
-    daemon: bool = False
-    ttl: int = 1200
 
 
 def resolve_pool_config(
@@ -340,16 +338,12 @@ def resolve_pool_config(
     project_dir: Path | None = None,
     global_path: Path | None = None,
 ) -> PoolResolution:
-    """Resolve a named pool, extracting the daemon flag."""
+    """Resolve a named pool from ``skyward.toml``."""
     config = load_config(project_dir=project_dir, global_path=global_path)
 
     pools = config["pools"]
     if name not in pools:
         raise KeyError(f"Pool '{name}' not found. Available: {', '.join(pools) or 'none'}")
 
-    raw_pool = dict(pools[name])
-    daemon = raw_pool.pop("daemon", False)
-    ttl = raw_pool.pop("ttl", 1200)
-
-    pool = _build_pool_from_raw(name, raw_pool, config)
-    return PoolResolution(pool=pool, specs=pool._specs, daemon=daemon, ttl=ttl)
+    pool = _build_pool_from_raw(name, dict(pools[name]), config)
+    return PoolResolution(pool=pool, specs=pool._specs)

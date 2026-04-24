@@ -36,7 +36,11 @@ def _mock_conn_with_forward(local_port: int = 12345) -> MagicMock:
 
     conn.forward_local_port = mock_forward
     conn.close = MagicMock()
-    conn.wait_closed = AsyncMock()
+
+    async def _never_close() -> None:
+        await asyncio.Future()  # never resolves
+
+    conn.wait_closed = _never_close
 
     return conn
 

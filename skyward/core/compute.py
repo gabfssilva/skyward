@@ -24,7 +24,6 @@ def Compute(
     *specs: Spec,
     name: str | None = None,
     options: Options = _DEFAULT_OPTIONS,
-    daemon: bool = False,
     **kwargs: Unpack[SpecKwargs],
 ) -> Generator[Pool, None, None]:
     """Single-pool convenience: creates a Session and provisions one pool.
@@ -32,17 +31,11 @@ def Compute(
     Three calling conventions (mutually exclusive):
 
     - **Named pool**: ``sky.Compute(name="train")`` — loads from
-      ``skyward.toml``. When ``daemon = true``, connects to the
-      background daemon (auto-spawning if needed).
+      ``skyward.toml``.
     - **Flat kwargs**: ``sky.Compute(provider=sky.AWS(), ...)`` —
       assembles a single ``Spec`` from keyword arguments.
     - **Explicit specs**: ``sky.Compute(Spec(...), Spec(...))`` —
       multi-provider fallback.
-
-    When ``daemon=True``, routes through the background daemon
-    instead of creating a full Session. The daemon is auto-spawned
-    if not already running. A fingerprint is computed from the spec
-    to identify the pool across script runs.
 
     Parameters
     ----------
@@ -55,10 +48,6 @@ def Compute(
     options
         Operational tuning (timeouts, retries, autoscaling, session
         settings). Defaults are sensible for most workloads.
-    daemon
-        When ``True``, dispatch through the background daemon
-        instead of creating an inline Session. The daemon is
-        auto-spawned if not already running.
     **kwargs
         Flat keyword arguments matching ``Spec`` fields. Assembled
         into a single ``Spec`` when no positional specs are given.
@@ -81,9 +70,6 @@ def Compute(
 
     >>> with sky.Compute(name="train") as pool:
     ...     result = train(data) >> pool
-
-    >>> with sky.Compute(provider=sky.AWS(), accelerator="A100", daemon=True) as pool:
-    ...     result = train(data) >> pool
     """
     from skyward.core.context import _active_pool
 
@@ -93,30 +79,6 @@ def Compute(
         from skyward.core.pool import ComputePool
 
         pool = ComputePool.Named(name)
-        with pool:
-            token = _active_pool.set(pool)
-            try:
-                yield pool
-            finally:
-                _active_pool.reset(token)
-        return
-
-    if daemon:
-        import cloudpickle
-
-        from skyward.daemon.fingerprint import compute_fingerprint
-        from skyward.daemon.pool import DaemonPool
-        from skyward.daemon.spawn import ensure_daemon
-
-        built_specs = specs if specs else (Spec(**kwargs),)
-        fingerprint = compute_fingerprint(built_specs[0])
-
-        ensure_daemon()
-        pool = DaemonPool(
-            name=fingerprint,
-            spec_bytes=cloudpickle.dumps(built_specs),
-            console=options.console,
-        )
         with pool:
             token = _active_pool.set(pool)
             try:

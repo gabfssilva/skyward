@@ -1110,21 +1110,14 @@ class ComputePool:
         return pool
 
     @classmethod
-    def Named(cls, name: str, *, shutdown_on_exit: bool = False) -> ComputePool:
+    def Named(cls, name: str) -> ComputePool:
         """Create a pool from a named configuration in ``skyward.toml``.
-
-        When the pool config has ``daemon = true``, returns a ``DaemonPool``
-        that connects to the background daemon process (auto-spawning it
-        if needed). Otherwise returns a regular ``ComputePool``.
 
         Parameters
         ----------
         name
             Pool name as defined in the ``[pools.<name>]`` section of
             ``skyward.toml``.
-        shutdown_on_exit
-            If ``True`` and using daemon mode, shut down the daemon pool
-            on context exit.
 
         Returns
         -------
@@ -1138,19 +1131,4 @@ class ComputePool:
         """
         from skyward.config import resolve_pool_config
 
-        resolution = resolve_pool_config(name)
-
-        if resolution.daemon:
-            import cloudpickle
-
-            from skyward.daemon.pool import DaemonPool
-            from skyward.daemon.spawn import ensure_daemon
-
-            ensure_daemon()
-            return DaemonPool(  # type: ignore[return-value]
-                name=name,
-                shutdown_on_exit=shutdown_on_exit,
-                spec_bytes=cloudpickle.dumps(resolution.specs),
-            )
-
-        return resolution.pool
+        return resolve_pool_config(name).pool
