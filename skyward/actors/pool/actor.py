@@ -13,8 +13,10 @@ if TYPE_CHECKING:
     from skyward.actors.session.messages import SessionMsg
 
 from skyward.actors.messages import (
+    BoundsChanged,
     ClusterReady,
     CurrentNodeCount,
+    DesiredCountChanged,
     DrainComplete,
     GetCurrentNodes,
     GetPoolSnapshot,
@@ -46,6 +48,7 @@ from skyward.actors.node import node_actor
 from skyward.actors.node.messages import JoinCluster
 from skyward.actors.snapshot import NodeStatus, PoolPhase, ScalingSnapshot
 from skyward.actors.task_manager import task_manager_actor
+from skyward.api.spec import Nodes
 from skyward.core.model import Cluster
 from skyward.observability.logger import logger
 
@@ -56,6 +59,7 @@ from .messages import (
     PoolStopped,
     ProvisionFailed,
     RecoverPool,
+    Resize,
     StartPool,
     StopPool,
     _ShutdownDone,
@@ -149,6 +153,33 @@ def _notify_scaling(
         s.reconciler_ref.tell(msg)
     if s.autoscaler_ref is not None:
         s.autoscaler_ref.tell(msg)
+
+
+def _apply_resize(
+    s: PoolState, new_nodes: Nodes,
+) -> tuple[PoolState, BoundsChanged, DesiredCountChanged]:
+    """Pure reducer for a ``Resize`` request.
+
+    Returns the new pool state together with the two messages that must
+    be forwarded to the autoscaler and reconciler respectively.  Kept
+    TOTAL — ``Nodes.__post_init__`` is the sole guardian of invariants.
+    """
+    min_n = new_nodes.min or new_nodes.desired
+    max_n = new_nodes.max or new_nodes.desired
+    desired = new_nodes.desired
+    new_spec = replace(s.spec, nodes=new_nodes)
+    new_scaling = replace(
+        s.scaling,
+        desired_nodes=desired,
+        is_elastic=new_nodes.auto_scaling,
+        min_nodes=min_n,
+        max_nodes=max_n,
+    )
+    return (
+        replace(s, spec=new_spec, scaling=new_scaling),
+        BoundsChanged(min=min_n, max=max_n, desired=desired),
+        DesiredCountChanged(desired=desired, reason="resize"),
+    )
 
 
 async def _shutdown_cluster(
@@ -616,20 +647,19 @@ def pool_actor(
                             "reconciler",
                         )
 
-                        if s.spec.nodes.auto_scaling and s.spec.nodes.max is not None:
-                            from skyward.actors.autoscaler import autoscaler_actor
+                        from skyward.actors.autoscaler import autoscaler_actor
 
-                            as_ref = ctx.spawn(
-                                autoscaler_actor(
-                                    min_nodes=s.spec.nodes.desired,
-                                    max_nodes=s.spec.nodes.max,
-                                    reconciler=rec_ref,
-                                    slots_per_node=s.spec.worker.concurrency + s.spec.worker.buffer,
-                                    initial_count=s.spec.nodes.desired,
-                                    cooldown=s.spec.autoscale_cooldown,
-                                ),
-                                "autoscaler",
-                            )
+                        as_ref = ctx.spawn(
+                            autoscaler_actor(
+                                min_nodes=min_n,
+                                max_nodes=max_n,
+                                reconciler=rec_ref,
+                                slots_per_node=s.spec.worker.concurrency + s.spec.worker.buffer,
+                                initial_count=s.spec.nodes.desired,
+                                cooldown=s.spec.autoscale_cooldown,
+                            ),
+                            "autoscaler",
+                        )
 
                     for instance in to_spawn:
                         nid = len(new_spawned)
@@ -1069,17 +1099,20 @@ def pool_actor(
                 case PoolStarted() as started:
                     s.reply_to.tell(started)
 
-                    is_elastic = s.spec.nodes.auto_scaling
-                    if is_elastic and s.autoscaler_ref is not None:
+                    nodes = s.spec.nodes
+                    is_elastic = nodes.auto_scaling
+                    min_n = nodes.min or nodes.desired
+                    max_n = nodes.max or nodes.desired
+
+                    if s.autoscaler_ref is not None:
                         tm.tell(RegisterPressureObserver(observer=s.autoscaler_ref))
 
-                    min_n = s.spec.nodes.desired
                     inst_map = MappingProxyType({nid: ni.instance.id for nid, ni in s.instances.items()})
                     new_scaling = ScalingSnapshot(
-                        desired_nodes=min_n,
+                        desired_nodes=nodes.desired,
                         is_elastic=is_elastic,
-                        min_nodes=min_n if is_elastic else None,
-                        max_nodes=s.spec.nodes.max if is_elastic else None,
+                        min_nodes=min_n,
+                        max_nodes=max_n,
                     )
                     return ready(replace(
                         s,
@@ -1335,6 +1368,18 @@ def pool_actor(
 
                 case _ShutdownDone():
                     return Behaviors.same()
+
+                case Resize(nodes=new_nodes):
+                    assert s.autoscaler_ref is not None
+                    assert s.reconciler_ref is not None
+                    new_s, bounds, desired = _apply_resize(s, new_nodes)
+                    log.info(
+                        "Resize: desired={desired}, min={min}, max={max}",
+                        desired=bounds.desired, min=bounds.min, max=bounds.max,
+                    )
+                    s.autoscaler_ref.tell(bounds)
+                    s.reconciler_ref.tell(desired)
+                    return ready(new_s)
 
                 case GetCurrentNodes(reply_to=query_reply):
                     query_reply.tell(CurrentNodeCount(

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 from skyward.actors.messages import (
+    BoundsChanged,
     DrainComplete,
     NodeBecameBusy,
     NodeBecameIdle,
@@ -17,6 +18,7 @@ class _ScaleTick:
 type AutoscalerMsg = (
     PressureReport
     | _ScaleTick
+    | BoundsChanged
     | NodeBecameIdle
     | NodeBecameBusy
     | NodeJoined

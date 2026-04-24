@@ -38,3 +38,23 @@ class TestNodes:
     def test_min_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="min must be >= 1"):
             Nodes(desired=4, min=0)
+
+
+class TestFromSpec:
+    def test_int_becomes_fixed_nodes(self) -> None:
+        result = Nodes.from_spec(3)
+        assert result == Nodes(desired=3)
+        assert result.auto_scaling is False
+
+    def test_tuple_becomes_elastic_nodes(self) -> None:
+        result = Nodes.from_spec((2, 5))
+        assert result == Nodes(desired=2, max=5)
+        assert result.auto_scaling is True
+
+    def test_nodes_passes_through(self) -> None:
+        spec = Nodes(desired=4, min=2, max=8)
+        assert Nodes.from_spec(spec) is spec
+
+    def test_invalid_type_raises(self) -> None:
+        with pytest.raises(TypeError, match="NodeSpec"):
+            Nodes.from_spec("4")  # type: ignore[arg-type]

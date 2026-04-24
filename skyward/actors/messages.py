@@ -512,6 +512,19 @@ class PressureReport:
     node_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class BoundsChanged:
+    """Pool notifies autoscaler/reconciler of new (min, max, desired) bounds.
+
+    ``desired`` is the caller's target — the autoscaler rebases its internal
+    ``desired`` to this value before the next pressure evaluation.
+    """
+
+    min: int
+    max: int
+    desired: int
+
+
 # ── Idle tracking ─────────────────────────────────────────────────
 
 

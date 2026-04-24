@@ -7,6 +7,7 @@ from dataclasses import replace
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 
 from skyward.actors.messages import (
+    BoundsChanged,
     DesiredCountChanged,
     DrainComplete,
     NodeBecameBusy,
@@ -19,7 +20,7 @@ from skyward.actors.reconciler.messages import ReconcilerMsg
 from skyward.observability.logger import logger
 
 from .messages import AutoscalerMsg, _ScaleTick
-from .state import _compute_desired, _State
+from .state import _apply_bounds, _compute_desired, _State
 
 log = logger.bind(actor="autoscaler")
 
@@ -39,6 +40,8 @@ def autoscaler_actor(
             desired=initial_count,
             last_scale_time=now,
             last_pressure=None,
+            min_nodes=min_nodes,
+            max_nodes=max_nodes,
             idle=frozenset(),
             reaping=frozenset(),
             known_nodes=frozenset(),
@@ -69,7 +72,7 @@ def autoscaler_actor(
                         return observing(new_s)
 
                     new_desired = _compute_desired(
-                        report, s.desired, min_nodes, max_nodes, slots_per_node,
+                        report, s.desired, s.min_nodes, s.max_nodes, slots_per_node,
                     )
                     if new_desired != s.desired:
                         direction = "up" if new_desired > s.desired else "down"
@@ -105,11 +108,18 @@ def autoscaler_actor(
                         reaping=s.reaping - {nid},
                     ))
 
+                case BoundsChanged() as bmsg:
+                    log.info(
+                        "Bounds changed: min={min}, max={max}, desired={desired}",
+                        min=bmsg.min, max=bmsg.max, desired=bmsg.desired,
+                    )
+                    return observing(_apply_bounds(s, bmsg))
+
                 case _ScaleTick():
                     if s.last_pressure is not None:
                         ctx.self.tell(s.last_pressure)
 
-                    budget = len(s.known_nodes) - len(s.reaping) - min_nodes
+                    budget = len(s.known_nodes) - len(s.reaping) - s.min_nodes
                     new_s = s
                     if s.idle and budget > 0:
                         k = min(len(s.idle), budget)

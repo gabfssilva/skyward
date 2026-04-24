@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from math import ceil
 
-from skyward.actors.messages import PressureReport
+from skyward.actors.messages import BoundsChanged, PressureReport
 from skyward.actors.node.state import NodeId
 
 
@@ -31,6 +31,13 @@ class _State:
     desired: int
     last_scale_time: float
     last_pressure: PressureReport | None
-    idle: frozenset[NodeId]
-    reaping: frozenset[NodeId]
-    known_nodes: frozenset[NodeId]
+    min_nodes: int
+    max_nodes: int
+    idle: frozenset[NodeId] = field(default_factory=frozenset)
+    reaping: frozenset[NodeId] = field(default_factory=frozenset)
+    known_nodes: frozenset[NodeId] = field(default_factory=frozenset)
+
+
+def _apply_bounds(s: _State, msg: BoundsChanged) -> _State:
+    clamped = max(msg.min, min(msg.desired, msg.max))
+    return replace(s, min_nodes=msg.min, max_nodes=msg.max, desired=clamped)

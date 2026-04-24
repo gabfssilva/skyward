@@ -101,13 +101,7 @@ async def select_offers(
         provider_config = s.provider
         region = s.region or catalog_offers[0].region
 
-        match s.nodes:
-            case Nodes() as spec_nodes:
-                pass
-            case (min_n, max_n):
-                spec_nodes = Nodes(desired=min_n, max=max_n)
-            case int(n):
-                spec_nodes = Nodes(desired=n)
+        spec_nodes = Nodes.from_spec(s.nodes)
 
         pool_spec = PoolSpec(
             nodes=spec_nodes,

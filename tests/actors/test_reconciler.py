@@ -6,13 +6,14 @@ import pytest
 from casty import ActorSystem
 
 from skyward.actors.messages import (
+    BoundsChanged,
     NodeJoined,
     ReapIdleNodes,
     RequestDrainNodes,
     RequestScaleDown,
 )
 from skyward.actors.reconciler import reconciler_actor
-from skyward.actors.reconciler.state import _State
+from skyward.actors.reconciler.state import _State, _apply_bounds
 
 
 def _make_state(
@@ -190,3 +191,15 @@ class TestReapIdleNodes:
         scale_down_msgs = [m for m in sent if isinstance(m, RequestScaleDown)]
         assert len(scale_down_msgs) == 1
         assert scale_down_msgs[0].count == 1
+
+
+class TestReconcilerApplyBounds:
+    def test_updates_min_nodes(self) -> None:
+        s = _State(desired=4, current=frozenset({1, 2, 3, 4}))
+        new_s = _apply_bounds(s, BoundsChanged(min=2, max=8, desired=4))
+        assert new_s.min_nodes == 2
+
+    def test_desired_rebased_to_message(self) -> None:
+        s = _State(desired=4, current=frozenset({1, 2, 3, 4}))
+        new_s = _apply_bounds(s, BoundsChanged(min=1, max=8, desired=6))
+        assert new_s.desired == 6

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from skyward.actors.messages import (
+    BoundsChanged,
     DesiredCountChanged,
     DrainComplete,
     NodeJoined,
@@ -21,6 +22,7 @@ class _ReconcileTick:
 
 type ReconcilerMsg = (
     DesiredCountChanged
+    | BoundsChanged
     | ReconcilerNodeLost
     | NodeJoined
     | DrainComplete

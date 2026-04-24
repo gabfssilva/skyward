@@ -118,6 +118,38 @@ class Nodes:
         if effective_min < 1:
             raise ValueError(f"min must be >= 1, got {effective_min}")
 
+    @classmethod
+    def from_spec(cls, spec: NodeSpec) -> Nodes:
+        """Normalize any ``NodeSpec`` form into a ``Nodes`` instance.
+
+        Parameters
+        ----------
+        spec
+            One of ``int`` (fixed count), ``tuple[int, int]`` (``(desired, max)``
+            elastic), or an existing ``Nodes`` instance (returned unchanged).
+
+        Returns
+        -------
+        Nodes
+            A normalized specification.
+
+        Raises
+        ------
+        TypeError
+            When *spec* is not a valid ``NodeSpec`` form.
+        """
+        match spec:
+            case Nodes() as n:
+                return n
+            case int() as n:
+                return cls(desired=n)
+            case (int() as lo, int() as hi):
+                return cls(desired=lo, max=hi)
+            case _:
+                raise TypeError(
+                    f"NodeSpec must be int, tuple[int, int], or Nodes; got {type(spec).__name__}"
+                )
+
 
 type NodeSpec = int | tuple[int, int] | Nodes
 

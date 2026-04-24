@@ -23,6 +23,7 @@ from skyward.actors.messages import (
     SubmitBroadcast,
     SubmitTask,
 )
+from skyward.api.spec import Nodes
 
 if TYPE_CHECKING:
     from skyward.core.model import Cluster, Instance, Offer
@@ -88,6 +89,18 @@ class _ShutdownDone:
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class Resize:
+    """Reshape pool bounds and desired count in-flight.
+
+    Accepted in the ``ready`` state only.  ``nodes`` is always a
+    normalized ``Nodes`` instance — callers use ``Nodes.from_spec`` at
+    the edge.
+    """
+
+    nodes: Nodes
+
+
 type PoolMsg = (
     StartPool
     | StopPool
@@ -112,4 +125,5 @@ type PoolMsg = (
     | RequestDrainNodes
     | GetCurrentNodes
     | GetPoolSnapshot
+    | Resize
 )

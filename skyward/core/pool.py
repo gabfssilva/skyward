@@ -310,32 +310,19 @@ class ComputePool:
 
         first = self._specs[0]
         fd_nodes: int = 1
-        match first.nodes:
-            case Nodes() as n:
-                if n.auto_scaling:
-                    logger.info(
-                        "Starting pool with {min}-{max} nodes ({accel})",
-                        min=n.desired, max=n.max, accel=first.accelerator,
-                    )
-                    fd_nodes = n.max or n.desired
-                else:
-                    logger.info(
-                        "Starting pool with {n} nodes ({accel})",
-                        n=n.desired, accel=first.accelerator,
-                    )
-                    fd_nodes = n.desired
-            case (min_n, max_n):
-                logger.info(
-                    "Starting pool with {min}-{max} nodes ({accel})",
-                    min=min_n, max=max_n, accel=first.accelerator,
-                )
-                fd_nodes = max_n
-            case int(n):
-                logger.info(
-                    "Starting pool with {n} nodes ({accel})",
-                    n=n, accel=first.accelerator,
-                )
-                fd_nodes = n
+        nodes_spec = Nodes.from_spec(first.nodes)
+        if nodes_spec.auto_scaling:
+            logger.info(
+                "Starting pool with {min}-{max} nodes ({accel})",
+                min=nodes_spec.desired, max=nodes_spec.max, accel=first.accelerator,
+            )
+            fd_nodes = nodes_spec.max or nodes_spec.desired
+        else:
+            logger.info(
+                "Starting pool with {n} nodes ({accel})",
+                n=nodes_spec.desired, accel=first.accelerator,
+            )
+            fd_nodes = nodes_spec.desired
 
         from skyward.core.context import get_session
         from skyward.core.session import Session
@@ -938,6 +925,44 @@ class ComputePool:
             raise RuntimeError("Pool is not active")
         logger.debug("Creating distributed lock: {name}", name=name)
         return self._registry.lock(name, timeout)
+
+    def resize(self, *spec: int | Nodes) -> None:
+        """Dynamically reshape the pool's node bounds and desired count.
+
+        Accepts the same forms as ``nodes=`` in ``Spec``:
+
+        - ``pool.resize(2)`` — fixed at 2 nodes.
+        - ``pool.resize(1, 4)`` — elastic between 1 and 4 (desired=1).
+        - ``pool.resize(Nodes(desired=4, min=2, max=8))`` — full control.
+
+        Non-blocking: returns immediately.  The reconciler provisions or
+        drains asynchronously to reach the new target.  Inspect
+        ``pool.current_nodes()`` to observe progress.
+
+        Raises
+        ------
+        RuntimeError
+            When the pool is not active.
+        TypeError
+            When *spec* is not a recognized form.
+        """
+        from skyward.actors.pool.messages import Resize
+
+        self._assert_active()
+        match spec:
+            case (Nodes() as n,):
+                nodes = n
+            case (int() as lo, int() as hi):
+                nodes = Nodes(desired=lo, max=hi)
+            case (int() as n,):
+                nodes = Nodes(desired=n)
+            case _:
+                raise TypeError(
+                    f"resize accepts resize(int), resize(int, int), or "
+                    f"resize(Nodes); got {spec!r}",
+                )
+        assert self._pool_ref is not None
+        self._pool_ref.tell(Resize(nodes=nodes))
 
     def current_nodes(self) -> int:
         """Return the number of ready nodes in the pool.

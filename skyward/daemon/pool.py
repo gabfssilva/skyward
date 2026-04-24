@@ -300,6 +300,9 @@ class DaemonPool:
         assert self._client is not None and self._loop is not None
         return run_sync(self._loop, self._client.get_node_count(self._name))
 
+    def resize(self, *spec: Any) -> None:
+        raise NotImplementedError("Dynamic resize not yet available in daemon mode")
+
     def dict(self, name: str, **kwargs: Any) -> Any:
         raise NotImplementedError("Distributed collections not available in daemon mode")
 

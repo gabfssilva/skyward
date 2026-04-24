@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from skyward.api.distributed import Consistency
     from skyward.api.function import PendingFunction, PendingFunctionGroup
+    from skyward.api.spec import Nodes
     from skyward.distributed import (
         BarrierProxy,
         CounterProxy,
@@ -185,6 +186,20 @@ class Pool(Protocol):
         -------
         int
             Count of ready nodes.
+        """
+        ...
+
+    def resize(self, *spec: int | Nodes) -> None:
+        """Dynamically reshape the pool's node bounds.
+
+        Accepts the same forms as ``nodes=`` in ``Spec``:
+
+        - ``pool.resize(2)`` — fixed at 2 nodes.
+        - ``pool.resize(1, 4)`` — elastic between 1 and 4 (desired=1).
+        - ``pool.resize(Nodes(desired=4, min=2, max=8))`` — full control.
+
+        Non-blocking.  The reconciler provisions or drains asynchronously
+        to reach the new target.
         """
         ...
 
