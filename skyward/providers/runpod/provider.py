@@ -469,17 +469,20 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
         image_candidates = await _resolve_image_candidates(spec, self._config)
         image_name = image_candidates[0]
 
-        match self._config.global_networking:
-            case True:
-                effective_global_networking = True
-            case False:
-                effective_global_networking = False
-            case None:
-                effective_global_networking = (
-                    self._config.cluster_mode == "individual"
-                    and spec.nodes.desired >= 2
-                    and gpu_type_id is not None
-                )
+        if spec.cluster is False:
+            effective_global_networking = False
+        else:
+            match self._config.global_networking:
+                case True:
+                    effective_global_networking = True
+                case False:
+                    effective_global_networking = False
+                case None:
+                    effective_global_networking = (
+                        self._config.cluster_mode == "individual"
+                        and spec.nodes.desired >= 2
+                        and gpu_type_id is not None
+                    )
 
         runpod_cluster_id: str | None = None
         pod_ids: tuple[tuple[int, str], ...] = ()
@@ -487,7 +490,12 @@ class RunPodProvider(Provider[RunPod, RunPodSpecific]):
 
         _, ssh_public_key = get_local_ssh_key()
 
-        if self._config.cluster_mode == "instant" and spec.nodes.desired >= 2 and gpu_type_id:
+        if (
+            spec.cluster is not False
+            and self._config.cluster_mode == "instant"
+            and spec.nodes.desired >= 2
+            and gpu_type_id
+        ):
             runpod_cluster_id, pod_ids, cluster_ips = await _create_instant_cluster(
                 self._config, spec, gpu_type_id, image_name, ssh_public_key,
                 registry_auth_id=registry_auth_id,

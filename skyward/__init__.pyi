@@ -121,6 +121,7 @@ from skyward.providers import TensorDock as TensorDock
 from skyward.providers import VastAI as VastAI
 from skyward.providers import Verda as Verda
 from skyward.providers import Vultr as Vultr
+from skyward.server.client import Client as Client
 
 # ── Storage ──────────────────────────────────────────────────
 from skyward.storage import Storage as Storage
@@ -140,6 +141,7 @@ async def offers(providers: list[Any]) -> OfferRepository:
 __all__ = [
     "__version__",
     "App",
+    "Client",
     "Compute",
     "Session",
     "sky",

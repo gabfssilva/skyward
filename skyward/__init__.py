@@ -102,6 +102,7 @@ from .distributed import (
 )
 from .offers.repository import OfferRepository
 from .providers import AWS, GCP, Container, Hyperstack, JarvisLabs, LambdaCloud, MassedCompute, Novita, RunPod, Scaleway, TensorDock, VastAI, Verda, Vultr
+from .server.client import Client as Client
 
 
 async def offers(providers: list[Any]) -> OfferRepository:
@@ -119,6 +120,7 @@ async def offers(providers: list[Any]) -> OfferRepository:
 __all__ = [
     "__version__",
     "App",
+    "Client",
     "Compute",
     "Session",
     "sky",

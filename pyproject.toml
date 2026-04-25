@@ -57,7 +57,11 @@ pandas = [
     "pandas==2.3.3"
 ]
 cli = ["cyclopts>=4.7"]
-all = ["skyward[providers,pytorch,huggingface,cli]"]
+server = [
+    "starlette>=0.40",
+    "uvicorn>=0.30",
+]
+all = ["skyward[providers,pytorch,huggingface,cli,server]"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=4.0",

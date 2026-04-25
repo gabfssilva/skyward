@@ -124,6 +124,7 @@ class _Connected:
 @dataclass(frozen=True, slots=True)
 class _ConnectFailed:
     error: str
+    permanent: bool = False
 
 @dataclass(frozen=True, slots=True)
 class _StreamedLine:
@@ -227,6 +228,13 @@ async def _default_connect(
     )
 
 
+def _classify_connect_error(e: Exception) -> _ConnectFailed:
+    """Tag permanent (non-retryable) SSH auth failures."""
+    import asyncssh
+    permanent = isinstance(e, (asyncssh.PermissionDenied, asyncssh.PasswordChangeRequired))
+    return _ConnectFailed(error=str(e), permanent=permanent)
+
+
 def ssh_transport(
     host: str,
     user: str,
@@ -260,7 +268,7 @@ def ssh_transport(
         async def setup(ctx: ActorContext[TransportMsg]) -> Behavior[TransportMsg]:
             ctx.pipe_to_self(
                 _try_connect(),
-                on_failure=lambda e: _ConnectFailed(error=str(e)),
+                on_failure=_classify_connect_error,
             )
             return _connecting_receive(attempts, pending)
 
@@ -276,6 +284,15 @@ def ssh_transport(
                     log.info("SSH connected to {host}:{port}", host=host, port=port)
                     state = TransportState(conn=conn)
                     return _enter_connected(ctx, state, pending)
+
+                case _ConnectFailed(error=error, permanent=True):
+                    log.error(
+                        "SSH connection failed permanently (auth): {err}",
+                        err=error,
+                    )
+                    if parent:
+                        parent.tell(ConnectionFailed(error=error))
+                    return Behaviors.stopped()
 
                 case _ConnectFailed(error=error):
                     new_attempts = attempts + 1
@@ -300,7 +317,7 @@ def ssh_transport(
 
                     ctx.pipe_to_self(
                         _retry(),
-                        on_failure=lambda e: _ConnectFailed(error=str(e)),
+                        on_failure=_classify_connect_error,
                     )
                     return _connecting_receive(new_attempts, pending)
 
