@@ -6,6 +6,7 @@ Each operation is a function returning an Op (string or callable).
 
 from __future__ import annotations
 
+import shlex
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
@@ -68,7 +69,7 @@ def pip(*packages: str) -> Op:
     if not packages:
         return lambda: "# No pip packages to install"
 
-    pkg_list = " ".join(packages)
+    pkg_list = " ".join(shlex.quote(p) for p in packages)
 
     return lambda: f"uv pip install {pkg_list}"
 
@@ -113,7 +114,7 @@ def uv_add(*packages: str) -> Op:
     if not packages:
         return lambda: "# No pip packages to install"
 
-    pkg_list = " ".join(packages)
+    pkg_list = " ".join(shlex.quote(p) for p in packages)
 
     return lambda: f"cd {SKYWARD_DIR} && uv add {pkg_list}"
 

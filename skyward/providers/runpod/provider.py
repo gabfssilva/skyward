@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import re
 import uuid
 from collections.abc import AsyncIterator, Sequence
@@ -864,6 +865,8 @@ async def _create_instant_cluster(
 
     if config.data_center_ids != "global":
         params["dataCenterId"] = config.data_center_ids[0]
+    if countries := config.effective_country_codes():
+        params["countryCode"] = countries[0]
     if registry_auth_id:
         params["containerRegistryAuthId"] = registry_auth_id
 
@@ -909,6 +912,11 @@ async def _create_gpu_pod(
             image_name=candidates[0], use_spot=use_spot,
         )
 
+    countries = config.effective_country_codes()
+    country_attempts: tuple[str | None, ...] = (
+        tuple(random.sample(countries, len(countries))) if countries else (None,)
+    )
+
     last_error: RunPodError | None = None
     for image_name in candidates:
         image_cuda = _extract_image_cuda(image_name)
@@ -926,40 +934,42 @@ async def _create_gpu_pod(
         nv_id = hints.get("networkVolumeId")
         mount_path = hints.get("volumeMountPath", config.volume_mount_path)
 
-        try:
-            return await client.deploy_gpu_pod(
-                name=f"skyward-{cluster.id}-{node_index}",
-                image_name=image_name,
-                gpu_type_id=specific.gpu_type_id or "",
-                gpu_count=int(cluster.spec.accelerator_count or 1),
-                cloud_type=config.cloud_type.upper(),
-                container_disk_gb=cluster.spec.disk_gb or config.container_disk_gb,
-                volume_gb=config.volume_gb,
-                volume_mount_path=mount_path,
-                ports=",".join(config.ports),
-                interruptible=use_spot,
-                data_center_id=config.data_center_ids[0] if config.data_center_ids != "global" else None,
-                deploy_cost=cluster.spec.max_hourly_cost,
-                spot_price=bid_per_gpu,
-                allowed_cuda_versions=allowed_cuda,
-                container_registry_auth_id=specific.registry_auth_id,
-                min_download=int(config.min_inet_down) if config.min_inet_down is not None else None,
-                min_upload=int(config.min_inet_up) if config.min_inet_up is not None else None,
-                docker_args=f"bash -c '{_SSH_SETUP_CMD}'",
-                env=env,
-                network_volume_id=nv_id,
-            )
-        except RunPodError as e:
-            err_str = str(e)
-            if "SUPPLY_CONSTRAINT" not in err_str and "no longer any instances available" not in err_str:
-                raise
-            log.info(
-                "No hosts for CUDA {cuda}, trying next candidate",
-                cuda=image_cuda,
-            )
-            last_error = e
+        for country in country_attempts:
+            try:
+                return await client.deploy_gpu_pod(
+                    name=f"skyward-{cluster.id}-{node_index}",
+                    image_name=image_name,
+                    gpu_type_id=specific.gpu_type_id or "",
+                    gpu_count=int(cluster.spec.accelerator_count or 1),
+                    cloud_type=config.cloud_type.upper(),
+                    container_disk_gb=cluster.spec.disk_gb or config.container_disk_gb,
+                    volume_gb=config.volume_gb,
+                    volume_mount_path=mount_path,
+                    ports=",".join(config.ports),
+                    interruptible=use_spot,
+                    data_center_id=config.data_center_ids[0] if config.data_center_ids != "global" else None,
+                    country_code=country,
+                    deploy_cost=cluster.spec.max_hourly_cost,
+                    spot_price=bid_per_gpu,
+                    allowed_cuda_versions=allowed_cuda,
+                    container_registry_auth_id=specific.registry_auth_id,
+                    min_download=int(config.min_inet_down) if config.min_inet_down is not None else None,
+                    min_upload=int(config.min_inet_up) if config.min_inet_up is not None else None,
+                    docker_args=f"bash -c '{_SSH_SETUP_CMD}'",
+                    env=env,
+                    network_volume_id=nv_id,
+                )
+            except RunPodError as e:
+                err_str = str(e)
+                if "SUPPLY_CONSTRAINT" not in err_str and "no longer any instances available" not in err_str:
+                    raise
+                log.info(
+                    "No hosts for CUDA {cuda} country={country}, trying next",
+                    cuda=image_cuda, country=country,
+                )
+                last_error = e
 
-    raise last_error or RunPodError("All image candidates exhausted")
+    raise last_error or RunPodError("All image/country candidates exhausted")
 
 
 async def _create_gpu_pod_rest(
@@ -993,6 +1003,8 @@ async def _create_gpu_pod_rest(
     }
     if config.data_center_ids != "global":
         params["dataCenterIds"] = list(config.data_center_ids)
+    if countries := config.effective_country_codes():
+        params["countryCodes"] = list(countries)
     if config.min_inet_down is not None:
         params["minDownloadMbps"] = int(config.min_inet_down)
     if config.min_inet_up is not None:
@@ -1028,6 +1040,8 @@ async def _create_cpu_pod(
 
     if config.data_center_ids != "global":
         params["dataCenterId"] = config.data_center_ids[0]
+    if countries := config.effective_country_codes():
+        params["countryCode"] = countries[0]
     if cluster.specific.registry_auth_id:
         params["containerRegistryAuthId"] = cluster.specific.registry_auth_id
 

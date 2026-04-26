@@ -102,6 +102,7 @@ class PodCreateParams(TypedDict, total=False):
     env: dict[str, str]
     interruptible: bool
     dataCenterIds: list[str]
+    countryCodes: list[str]
     minVCPUPerGPU: int
     minRAMPerGPU: int
     minDownloadMbps: int
@@ -184,6 +185,7 @@ class ClusterCreateParams(TypedDict, total=False):
     volumeMountPath: str
     ports: str  # Comma-separated, e.g. "22/tcp,8265/http"
     dataCenterId: str
+    countryCode: str
     env: list[dict[str, str]]  # [{"key": "...", "value": "..."}]
     networkVolumeId: str
     templateId: str
@@ -200,6 +202,7 @@ class CpuPodCreateParams(TypedDict, total=False):
     containerDiskInGb: int
     deployCost: float
     dataCenterId: str | None
+    countryCode: str | None
     networkVolumeId: str | None
     startJupyter: bool
     ports: str  # e.g. "22/tcp"

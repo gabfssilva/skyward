@@ -300,6 +300,15 @@ class RunPod:
     data_center_ids
         Specific data center IDs — a tuple, a single ID string, or
         ``"global"`` for any.
+    country_codes
+        Allowlist of ISO country codes (e.g. ``("US", "CA")``). ``None``
+        means any country. Applied via ``countryCode``/``countryCodes``
+        in deploy requests; useful especially for Community Cloud where
+        hosts often have no ``dataCenterId``.
+    exclude_country_codes
+        Country codes to exclude. Applied on top of ``country_codes``;
+        when ``country_codes`` is ``None``, exclusion runs against the
+        built-in known-country list.
     ports
         Network ports to expose.
     bid_multiplier
@@ -390,6 +399,8 @@ class RunPod:
             'US-GA-1',
             'global',
         ] | str = "global",
+        country_codes: tuple[str, ...] | str | None = None,
+        exclude_country_codes: tuple[str, ...] | str = (),
         ports: tuple[str, ...] = ("22/tcp",),
         request_timeout: int = 30,
         cpu_clock: Literal["3c", "5c"] | str = "3c",

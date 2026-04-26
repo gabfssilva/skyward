@@ -51,6 +51,12 @@ type Datacenter = Literal[
 ] | str
 
 
+_KNOWN_COUNTRIES: tuple[str, ...] = (
+    "US", "CA", "DE", "FR", "NL", "SE", "CZ", "RO",
+    "IS", "NO", "DK", "GB", "JP", "IN", "SG", "AU",
+)
+
+
 @dataclass(frozen=True, slots=True)
 class RunPod(ProviderConfig):
     """RunPod GPU Pods provider configuration.
@@ -99,6 +105,8 @@ class RunPod(ProviderConfig):
     volume_gb: int = 20
     volume_mount_path: str = "/workspace"
     data_center_ids: tuple[Datacenter, ...] | Datacenter | Literal["global"] = "global"
+    country_codes: tuple[str, ...] | str | None = None
+    exclude_country_codes: tuple[str, ...] | str = ()
     ports: tuple[str, ...] = ("22/tcp",)
     request_timeout: int = 30
     cpu_clock: Literal["3c", "5c"] | str = "3c"
@@ -111,9 +119,35 @@ class RunPod(ProviderConfig):
     def __post_init__(self) -> None:
         match self.data_center_ids:
             case "global" | tuple():
-                return
+                pass
             case str(dc):
                 object.__setattr__(self, "data_center_ids", (dc,))
+        match self.country_codes:
+            case None | tuple():
+                pass
+            case str(cc):
+                object.__setattr__(self, "country_codes", (cc,))
+        match self.exclude_country_codes:
+            case tuple():
+                pass
+            case str(cc):
+                object.__setattr__(self, "exclude_country_codes", (cc,))
+
+    def effective_country_codes(self) -> tuple[str, ...]:
+        """Return countries to consider after applying exclusions.
+
+        Empty tuple means "no constraint" (let RunPod choose).
+        """
+        excluded = frozenset(self.exclude_country_codes)
+        match self.country_codes:
+            case None if not excluded:
+                return ()
+            case None:
+                return tuple(c for c in _KNOWN_COUNTRIES if c not in excluded)
+            case tuple() as cs:
+                return tuple(c for c in cs if c not in excluded)
+            case _:
+                return ()
 
     async def create_provider(self) -> RunPodProvider:
         from skyward.providers.runpod.provider import RunPodProvider

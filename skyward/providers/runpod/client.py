@@ -217,6 +217,7 @@ class RunPodClient:
         ports: str = "22/tcp",
         interruptible: bool = False,
         data_center_id: str | None = None,
+        country_code: str | None = None,
         deploy_cost: float | None = None,
         spot_price: float | None = None,
         allowed_cuda_versions: list[str] | None = None,
@@ -247,6 +248,8 @@ class RunPodClient:
             input_vars["env"] = [{"key": k, "value": v} for k, v in env.items()]
         if data_center_id:
             input_vars["dataCenterId"] = data_center_id
+        if country_code:
+            input_vars["countryCode"] = country_code
         if allowed_cuda_versions:
             input_vars["allowedCudaVersions"] = allowed_cuda_versions
         if container_registry_auth_id:
