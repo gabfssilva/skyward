@@ -172,11 +172,24 @@ class Worker:
         Use ``"process"`` explicitly for CPU-bound pure-Python workloads
         that benefit from bypassing the GIL. Thread executor supports
         streaming, distributed collections without IPC, and has lower overhead.
+    reuse_processes
+        Only effective when ``executor="process"``. When ``True`` (default),
+        loky reuses subprocesses across tasks (``reuse="auto"``); when
+        ``False``, every task runs in a fresh subprocess (``reuse=False``) --
+        useful for workloads that leak GPU/CUDA state or otherwise need a
+        clean process per call.
     """
 
     concurrency: int = 1
     buffer: int = 0
     executor: WorkerExecutor = "auto"
+    reuse_processes: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.reuse_processes and self.executor != "process":
+            raise ValueError(
+                "reuse_processes=False only applies when executor='process'"
+            )
 
     @property
     def resolved_executor(self) -> Literal["thread", "process"]:

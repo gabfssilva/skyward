@@ -514,6 +514,7 @@ def node_actor(
                     num_nodes=spec.nodes.desired,
                     worker_concurrency=spec.worker.concurrency,
                     worker_executor=spec.worker.resolved_executor,
+                    worker_reuse_processes=spec.worker.reuse_processes,
                 )
             )
             log.info("Starting worker (role=head)")

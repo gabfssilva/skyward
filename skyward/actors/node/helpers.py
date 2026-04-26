@@ -44,6 +44,9 @@ async def do_start_worker(
     num_nodes = head_info.num_nodes if head_info else spec.nodes.desired
     concurrency = head_info.worker_concurrency if head_info else spec.worker.concurrency
     executor = head_info.worker_executor if head_info else spec.worker.resolved_executor
+    reuse_processes = (
+        head_info.worker_reuse_processes if head_info else spec.worker.reuse_processes
+    )
 
     seeds = f"{head_info.head_addr}:{casty_port}" if head_info and node_id != 0 else ""
 
@@ -72,6 +75,7 @@ async def do_start_worker(
         "SKYWARD_HOST": host,
         "SKYWARD_WORKERS_PER_NODE": str(concurrency),
         "SKYWARD_WORKER_EXECUTOR": executor,
+        "SKYWARD_REUSE_PROCESSES": "true" if reuse_processes else "false",
     }
     if seeds:
         env_vars["SKYWARD_SEEDS"] = seeds

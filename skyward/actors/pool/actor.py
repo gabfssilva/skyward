@@ -329,6 +329,7 @@ def pool_actor(
                 num_nodes=spec.nodes.max or spec.nodes.desired,
                 worker_concurrency=spec.worker.concurrency,
                 worker_executor=spec.worker.resolved_executor,
+                worker_reuse_processes=spec.worker.reuse_processes,
             ))
         return ref
 
@@ -1212,6 +1213,7 @@ def pool_actor(
                             num_nodes=s.spec.nodes.max or s.spec.nodes.desired,
                             worker_concurrency=s.spec.worker.concurrency,
                             worker_executor=s.spec.worker.resolved_executor,
+                            worker_reuse_processes=s.spec.worker.reuse_processes,
                         )
                         s.node_refs[nid].tell(head_msg)
                     elif not s.spec.cluster:

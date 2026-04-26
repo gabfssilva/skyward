@@ -437,6 +437,7 @@ async def main(
     host: str = "0.0.0.0",
     workers_per_node: int = 1,
     worker_executor: str = "thread",
+    reuse_processes: bool = True,
     tls_cert: str | None = None,
     tls_key: str | None = None,
     tls_ca: str | None = None,
@@ -484,6 +485,7 @@ async def main(
         match worker_executor:
             case "process":
                 import multiprocessing
+                from concurrent.futures import ProcessPoolExecutor
 
                 from loky import get_reusable_executor
 
@@ -494,12 +496,21 @@ async def main(
                 index_queue = mp_ctx.Queue()
                 for i in range(workers_per_node):
                     index_queue.put(i)
-                task_executor: Executor = get_reusable_executor(
-                    max_workers=workers_per_node,
-                    initializer=ipc_initializer,
-                    initargs=(ipc_queue, index_queue),
-                    reuse="auto",
-                )
+                if reuse_processes:
+                    task_executor: Executor = get_reusable_executor(
+                        max_workers=workers_per_node,
+                        initializer=ipc_initializer,
+                        initargs=(ipc_queue, index_queue),
+                        reuse="auto",
+                    )
+                else:
+                    task_executor = ProcessPoolExecutor(
+                        max_workers=workers_per_node,
+                        mp_context=mp_ctx,
+                        initializer=ipc_initializer,
+                        initargs=(ipc_queue, index_queue),
+                        max_tasks_per_child=1,
+                    )
             case _:
                 pool_size = max((os.cpu_count() or 1) + 4, workers_per_node)
                 task_executor = ThreadPoolExecutor(max_workers=pool_size)
@@ -609,6 +620,7 @@ def cli() -> None:
     seeds = _parse_seeds(os.environ.get("SKYWARD_SEEDS")) if cluster_mode else None
     workers_per_node = int(os.environ.get("SKYWARD_WORKERS_PER_NODE", "1"))
     worker_executor = os.environ.get("SKYWARD_WORKER_EXECUTOR", "thread")
+    reuse_processes = os.environ.get("SKYWARD_REUSE_PROCESSES", "true").lower() != "false"
     tls_cert = os.environ.get("SKYWARD_TLS_CERT")
     tls_key = os.environ.get("SKYWARD_TLS_KEY")
     tls_ca = os.environ.get("SKYWARD_TLS_CA")
@@ -617,6 +629,7 @@ def cli() -> None:
         node_id, port, seeds, num_nodes, host,
         workers_per_node=workers_per_node,
         worker_executor=worker_executor,
+        reuse_processes=reuse_processes,
         tls_cert=tls_cert,
         tls_key=tls_key,
         tls_ca=tls_ca,

@@ -442,6 +442,7 @@ class HeadAddressKnown:
     num_nodes: int
     worker_concurrency: int
     worker_executor: str
+    worker_reuse_processes: bool = True
 
 
 @dataclass(frozen=True, slots=True)
