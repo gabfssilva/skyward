@@ -6,6 +6,7 @@ the ``generate_bootstrap()`` standalone function.
 
 from __future__ import annotations
 
+from skyward.api.health import HealthChecker as HealthChecker
 from skyward.api.spec import DEFAULT_BOOTSTRAP_TIMEOUT as DEFAULT_BOOTSTRAP_TIMEOUT
 from skyward.api.spec import DEFAULT_IMAGE as DEFAULT_IMAGE
 from skyward.api.spec import DEFAULT_MAX_PROVISION_ATTEMPTS as DEFAULT_MAX_PROVISION_ATTEMPTS

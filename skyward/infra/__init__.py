@@ -6,7 +6,6 @@ from .object_store import S3ObjectStore
 from .pricing import InstancePricing, get_instance_pricing
 from .protocols import (
     Executor,
-    HealthChecker,
     PreemptionChecker,
     Serializable,
     Transport,
@@ -37,7 +36,6 @@ __all__ = [
     "throttle",
     "HttpError",
     "Executor",
-    "HealthChecker",
     "PreemptionChecker",
     "Serializable",
     "Transport",

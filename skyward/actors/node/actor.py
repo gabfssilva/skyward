@@ -19,6 +19,7 @@ import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace
+from functools import partial
 from types import MappingProxyType
 from typing import Any
 
@@ -42,6 +43,7 @@ from skyward.actors.messages import (
     _bind_to_node,
 )
 from skyward.actors.streaming import instance_monitor
+from skyward.api.health import HealthChecker, hc_loop
 from skyward.api.spec import (
     DEFAULT_BOOTSTRAP_TIMEOUT,
     DEFAULT_PROVISION_TIMEOUT,
@@ -62,6 +64,7 @@ from skyward.observability.logger import logger
 from skyward.providers.provider import WarmableProvider
 
 from .helpers import (
+    _resolve_output_stream,
     discover_own_worker,
     do_start_worker,
     execute_with_streaming,
@@ -79,6 +82,8 @@ from .messages import (
     _ConnectionFailed,
     _EnvSetupDone,
     _EnvSetupFailed,
+    _HealthCheckResult,
+    _HealthStreamEnded,
     _IdleTick,
     _LocalInstallDone,
     _PollResult,
@@ -128,6 +133,40 @@ def _should_announce_idle(
         and now - last_task_at > threshold
         and not announced
     )
+
+
+def _evaluate_health(
+    healthy: bool,
+    reason: str | None,
+    current: int,
+    threshold: int,
+) -> tuple[int, str | None]:
+    """Decide the next failure count and Preempted reason for a health tick.
+
+    Parameters
+    ----------
+    healthy : bool
+        Outcome of the most recent check.
+    reason : str | None
+        User-provided failure reason (ignored when ``healthy``).
+    current : int
+        Current consecutive failure count.
+    threshold : int
+        Failures required to trigger replacement.
+
+    Returns
+    -------
+    tuple[int, str | None]
+        ``(new_count, preempt_reason)``. ``preempt_reason`` is non-None
+        iff the actor must send Preempted; ``new_count`` is the updated
+        counter to persist in NodeState.
+    """
+    if healthy:
+        return 0, None
+    new_count = current + 1
+    if new_count >= threshold:
+        return new_count, f"health check failed {new_count}x: {reason or 'unspecified'}"
+    return new_count, None
 
 
 def node_actor(
@@ -648,6 +687,17 @@ def node_actor(
         )
 
     def _enter_active(ctx: ActorContext[NodeMsg], s: NodeState) -> Behavior[NodeMsg]:
+        if (hc := s.cluster.spec.health_checker) is not None:
+            log.info(
+                "Node {nid} warming up, awaiting first health check",
+                nid=node_id,
+            )
+            _dispatch_health_check(ctx, s, hc)
+            return warming(replace(s, health_failures=0))
+        return _activate_now(ctx, s)
+
+    def _activate_now(ctx: ActorContext[NodeMsg], s: NodeState) -> Behavior[NodeMsg]:
+        """Flush queued tasks, announce ready, schedule idle tick."""
         new_inflight: MappingProxyType[str, ActorRef] = MappingProxyType({})
         counter = 0
         for pt in s.pending_tasks:
@@ -670,6 +720,7 @@ def node_actor(
             pending_tasks=(),
             last_task_at=now,
             idle_announced=False,
+            health_failures=0,
         ))
 
     def _dispatch_task(
@@ -702,6 +753,103 @@ def node_actor(
                 elapsed=time.monotonic() - _t0,
             ),
         )
+
+    def _dispatch_health_check(
+        ctx: ActorContext[NodeMsg],
+        s: NodeState,
+        hc: HealthChecker,
+    ) -> None:
+        from skyward.infra.streaming import _StreamHandle
+        from skyward.infra.worker import ExecuteTask
+        from skyward.infra.worker import TaskSucceeded as WorkerTaskSucceeded
+
+        fn = partial(hc_loop, hc.fn, hc.interval, hc.timeout, hc.initial_delay)
+        self_ref = ctx.self
+        client = s.client
+        worker_ref = s.worker_ref
+
+        async def _run() -> _HealthStreamEnded:
+            try:
+                result = await client.ask(
+                    worker_ref,
+                    lambda rto: ExecuteTask(
+                        fn=fn, args=(), kwargs={},
+                        reply_to=rto, input_streams=(),
+                    ),
+                    timeout=60.0,
+                )
+                match result:
+                    case WorkerTaskSucceeded(result=_StreamHandle(producer_ref=pref)):
+                        source = await _resolve_output_stream(client, pref)
+                        async for elem in source:
+                            match elem:
+                                case ("ok", _):
+                                    self_ref.tell(_HealthCheckResult(healthy=True))
+                                case ("fail", reason):
+                                    self_ref.tell(_HealthCheckResult(
+                                        healthy=False, reason=reason,
+                                    ))
+                                case _:
+                                    self_ref.tell(_HealthCheckResult(
+                                        healthy=False,
+                                        reason=f"malformed yield: {elem!r}",
+                                    ))
+                        return _HealthStreamEnded(reason="stream closed")
+                    case _:
+                        err = getattr(result, "error", repr(result))
+                        return _HealthStreamEnded(reason=f"failed to start: {err}")
+            except Exception as e:
+                return _HealthStreamEnded(reason=f"drain failed: {e!r}")
+
+        ctx.pipe_to_self(
+            _run(),
+            mapper=lambda r: r,
+            on_failure=lambda e: _HealthStreamEnded(reason=f"dispatch failed: {e!r}"),
+        )
+
+    def warming(s: NodeState) -> Behavior[NodeMsg]:
+        async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
+            match msg:
+                case _HealthCheckResult(healthy=True):
+                    log.info(
+                        "Node {nid} first health check passed, activating",
+                        nid=node_id,
+                    )
+                    return _activate_now(ctx, s)
+                case _HealthCheckResult(healthy=False, reason=reason):
+                    hc = s.cluster.spec.health_checker
+                    if hc is None:
+                        return Behaviors.same()
+                    new_count, preempt_reason = _evaluate_health(
+                        healthy=False, reason=reason,
+                        current=s.health_failures,
+                        threshold=hc.consecutive_failures,
+                    )
+                    log.warning(
+                        "Node {nid} warming health check failed ({n}/{max}): {reason}",
+                        nid=node_id, n=new_count,
+                        max=hc.consecutive_failures,
+                        reason=reason or "(no reason)",
+                    )
+                    if preempt_reason is not None:
+                        ctx.self.tell(Preempted(reason=preempt_reason))
+                    return warming(replace(s, health_failures=new_count))
+                case _HealthStreamEnded(reason=reason):
+                    log.error(
+                        "Node {nid} health stream ended during warming: {reason}",
+                        nid=node_id, reason=reason,
+                    )
+                    ctx.self.tell(Preempted(reason=f"health stream ended: {reason}"))
+                    return Behaviors.same()
+                case ConnectionFailed(error=error):
+                    log.error(
+                        "Transport permanently failed during warming on node {nid}: {err}",
+                        nid=node_id, err=error,
+                    )
+                    return _fail_and_stop(s, f"connection failed: {error}")
+            return _common(ctx, msg, s, warming)
+
+        return Behaviors.receive(receive)
 
     def active(s: NodeState) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
@@ -885,6 +1033,36 @@ def node_actor(
                         new_s = replace(s, idle_announced=True)
                     _schedule_idle_tick(ctx)
                     return active(new_s)
+                case _HealthCheckResult(healthy=healthy, reason=reason):
+                    hc = s.cluster.spec.health_checker
+                    if hc is None:
+                        return Behaviors.same()
+                    new_count, preempt_reason = _evaluate_health(
+                        healthy=healthy, reason=reason,
+                        current=s.health_failures,
+                        threshold=hc.consecutive_failures,
+                    )
+                    if healthy:
+                        log.debug("Node {nid} health check ok", nid=node_id)
+                    else:
+                        log.warning(
+                            "Node {nid} health check failed ({n}/{max}): {reason}",
+                            nid=node_id, n=new_count,
+                            max=hc.consecutive_failures,
+                            reason=reason or "(no reason)",
+                        )
+                    if preempt_reason is not None:
+                        ctx.self.tell(Preempted(reason=preempt_reason))
+                    if new_count == s.health_failures:
+                        return Behaviors.same()
+                    return active(replace(s, health_failures=new_count))
+                case _HealthStreamEnded(reason=reason):
+                    log.error(
+                        "Node {nid} health stream ended: {reason}",
+                        nid=node_id, reason=reason,
+                    )
+                    ctx.self.tell(Preempted(reason=f"health stream ended: {reason}"))
+                    return Behaviors.same()
                 case _SnapshotSaved():
                     log.info("Snapshot saved")
                 case _SnapshotFailed(error=error):

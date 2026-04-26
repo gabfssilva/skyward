@@ -28,6 +28,7 @@ from .session import Session
 from .spec import DEFAULT_IMAGE as DEFAULT_IMAGE
 from .spec import AllocationStrategy as AllocationStrategy
 from .spec import Architecture as Architecture
+from .spec import HealthChecker as HealthChecker
 from .spec import Image as Image
 from .spec import Nodes as Nodes
 from .spec import NodeSpec as NodeSpec
@@ -51,6 +52,7 @@ __all__ = [
     "AllocationStrategy",
     "Architecture",
     "DEFAULT_IMAGE",
+    "HealthChecker",
     "Image",
     "PoolSpec",
     "PoolState",

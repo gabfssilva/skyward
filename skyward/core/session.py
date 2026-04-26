@@ -419,6 +419,7 @@ class Session:
             plugins=tuple(first_spec.plugins),
             cluster=options.cluster,
             retry_on_interruption=options.retry_on_interruption,
+            health_checker=options.health_checker,
         )
 
         envelope = float(provision_timeout + ssh_timeout + bootstrap_timeout + 30)

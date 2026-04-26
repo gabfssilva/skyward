@@ -133,6 +133,17 @@ class _IdleTick:
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class _HealthCheckResult:
+    healthy: bool
+    reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _HealthStreamEnded:
+    reason: str
+
+
 type NodeMsg = (
     Provision
     | ExecuteOnNode
@@ -153,6 +164,7 @@ type NodeMsg = (
     | _WorkerDiscovered | _WorkerDiscoveryFailed
     | _EnvSetupDone | _EnvSetupFailed
     | _IdleTick
+    | _HealthCheckResult | _HealthStreamEnded
     | ConnectionLost | ConnectionRestored | ConnectionFailed | PortReForwarded
     | Terminated
 )

@@ -58,6 +58,7 @@ from skyward.api.function import PendingFunction as PendingFunction
 from skyward.api.function import PendingFunctionGroup as PendingFunctionGroup
 from skyward.api.function import function as function
 from skyward.api.function import gather as gather
+from skyward.api.health import HealthChecker as HealthChecker
 from skyward.api.logging import LogConfig as LogConfig
 from skyward.api.main import main as main
 from skyward.api.model import Cluster as Cluster
@@ -172,6 +173,7 @@ __all__ = [
     "VastAI",
     "Verda",
     "Vultr",
+    "HealthChecker",
     "Image",
     "Options",
     "PipIndex",

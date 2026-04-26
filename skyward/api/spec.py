@@ -17,6 +17,7 @@ from skyward.api.metrics import Metric, MetricsConfig
 if TYPE_CHECKING:
     from skyward.accelerators import Accelerator
     from skyward.actors.messages import ProviderName
+    from skyward.api.health import HealthChecker
     from skyward.api.logging import LogConfig
     from skyward.api.plugin import Plugin
     from skyward.api.provider import ProviderConfig
@@ -337,6 +338,10 @@ class Options:
         runs each worker independently.
     retry_on_interruption
         Maximum retries per task on infrastructure interruption.  ``0`` disables.
+    health_checker
+        Optional periodic remote health probe.  When set, each node runs
+        the configured predicate on an interval; consecutive failures
+        trigger node replacement via the existing reconciler path.
 
     Examples
     --------
@@ -364,6 +369,7 @@ class Options:
     logging: LogConfig | bool = True
     cluster: bool = True
     retry_on_interruption: int = 3
+    health_checker: HealthChecker | None = None
 
 
 def _detect_skyward_source() -> SkywardSource:
@@ -529,6 +535,8 @@ class PoolSpec:
         runs each worker independently.
     retry_on_interruption
         Maximum retries per task on infrastructure interruption.  ``0`` disables.
+    health_checker
+        Optional periodic remote health probe.  ``None`` disables.
 
     Examples
     --------
@@ -567,6 +575,7 @@ class PoolSpec:
     plugins: tuple[Plugin, ...] = ()
     cluster: bool = True
     retry_on_interruption: int = 3
+    health_checker: HealthChecker | None = None
 
     @property
     def accelerator_name(self) -> str | None:

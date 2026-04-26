@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from skyward.api.health import HealthChecker
 from skyward.api.plugin import Plugin
 from skyward.api.spec import Nodes
 from skyward.core.model import Offer
@@ -28,6 +29,7 @@ class PoolConfig:
     plugins: tuple[Plugin, ...]
     cluster: bool = True
     retry_on_interruption: int = 3
+    health_checker: HealthChecker | None = None
 
 
 async def select_offers(
@@ -129,6 +131,7 @@ async def select_offers(
             reconcile_tick_interval=config.reconcile_tick_interval,
             plugins=config.plugins,
             cluster=config.cluster,
+            health_checker=config.health_checker,
         )
 
         for co in catalog_offers:

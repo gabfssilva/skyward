@@ -160,28 +160,6 @@ class TransportFactory(Protocol):
 
 
 # =============================================================================
-# Health Check Protocol
-# =============================================================================
-
-
-@runtime_checkable
-class HealthChecker(Protocol):
-    """Protocol for instance health checking."""
-
-    async def check(self, host: str, port: int = 22) -> bool:
-        """Check if instance is healthy.
-
-        Args:
-            host: Hostname or IP address.
-            port: Port to check.
-
-        Returns:
-            True if healthy, False otherwise.
-        """
-        ...
-
-
-# =============================================================================
 # Preemption Checker Protocol
 # =============================================================================
 

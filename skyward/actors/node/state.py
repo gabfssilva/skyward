@@ -59,3 +59,4 @@ class NodeState:
     task_counter: int = 0
     last_task_at: float = 0.0
     idle_announced: bool = False
+    health_failures: int = 0
