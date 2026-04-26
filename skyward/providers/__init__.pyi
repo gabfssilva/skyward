@@ -536,6 +536,13 @@ class Verda:
         OAuth client secret. ``None`` reads from ``VERDA_CLIENT_SECRET``.
     ssh_key_id
         Pre-registered SSH key ID.
+    image
+        Full Verda image name to use verbatim (e.g.
+        ``"ubuntu-22.04-cuda-12.4-docker"``). Bypasses the CUDA template.
+    cuda
+        Exact CUDA version substituted into the default image template
+        ``ubuntu-24.04-cuda-{cuda}-open``. Ignored when ``image`` is set.
+        Default ``"13.0"``.
     instance_timeout
         Seconds to wait for instance to become running.
     request_timeout
@@ -544,6 +551,8 @@ class Verda:
     Examples
     --------
     >>> sky.Verda(region="FIN-01")
+    >>> sky.Verda(cuda="12.8")
+    >>> sky.Verda(image="ubuntu-22.04-cuda-12.4-docker")
     """
 
     def __init__(
@@ -553,6 +562,8 @@ class Verda:
         client_id: str | None = None,
         client_secret: str | None = None,
         ssh_key_id: str | None = None,
+        image: str | None = None,
+        cuda: str = "13.0",
         instance_timeout: int = 300,
         request_timeout: int = 30,
     ) -> None: ...

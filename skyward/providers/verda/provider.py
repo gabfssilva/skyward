@@ -22,7 +22,6 @@ from .types import (
     get_price_on_demand,
     get_price_spot,
     get_vcpu,
-    select_os_image,
 )
 
 log = logger.bind(provider="verda")
@@ -107,8 +106,6 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
 
             spot_price = get_price_spot(itype_data)
             on_demand_price = get_price_on_demand(itype_data)
-            supported = itype_data.get("supported_os", [])
-            os_image = select_os_image(supported) if accel else _select_cpu_image(supported)
 
             yield Offer(
                 id=f"verda-{itype_name}",
@@ -116,7 +113,7 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
                 spot_price=spot_price,
                 on_demand_price=on_demand_price,
                 billing_unit="hour",
-                specific=os_image,
+                specific=None,
             )
 
     async def prepare(self, spec: PoolSpec, offer: Offer) -> Cluster[VerdaSpecific]:
@@ -129,11 +126,7 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
         ssh_key_path = get_ssh_key_path()
 
         instance_type = offer.instance_type.name
-        match offer.specific:
-            case str() as os_image:
-                pass
-            case _:
-                os_image = "ubuntu-22.04"
+        os_image = self._resolve_os_image(offer)
 
         use_spot = spec.allocation in ("spot", "spot-if-available")
         hourly_rate = (
@@ -254,6 +247,13 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
         await self._client.close()
         return cluster
 
+    def _resolve_os_image(self, offer: Offer) -> str:
+        if self._config.image is not None:
+            return self._config.image
+        if offer.instance_type.accelerator is not None:
+            return f"ubuntu-24.04-cuda-{self._config.cuda}-open"
+        return "ubuntu-24.04"
+
 
 def _self_destruction_script(ttl: int, shutdown_command: str) -> str:
     from skyward.providers.bootstrap.compose import resolve
@@ -295,14 +295,3 @@ async def _find_available_region(
             return region
 
     raise RuntimeError(f"No region has instance type '{instance_type}' available")
-
-
-def _select_cpu_image(supported_os: list[str]) -> str:
-    """Select a plain Ubuntu image for CPU-only instances (no CUDA)."""
-    import re
-
-    ubuntu = [img for img in supported_os if img.lower().startswith("ubuntu-") and "cuda" not in img.lower()]
-    if ubuntu:
-        ubuntu.sort(key=lambda img: tuple(int(x) for x in re.findall(r"\d+", img)), reverse=True)
-        return ubuntu[0]
-    return supported_os[0] if supported_os else "ubuntu-22.04"

@@ -129,10 +129,8 @@ def _tensordock_specific(raw: dict[str, Any] | None) -> Any:
     )
 
 
-def _verda_specific(raw: dict[str, Any] | None) -> str:
-    if raw is None:
-        return "ubuntu-22.04"
-    return raw.get("os_image", "ubuntu-22.04")
+def _verda_specific(_raw: dict[str, Any] | None) -> None:
+    return None
 
 
 def _serialize_specific(specific: Any) -> dict[str, Any] | None:

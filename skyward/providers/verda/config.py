@@ -33,12 +33,17 @@ class Verda(ProviderConfig):
     Example:
         >>> from skyward.providers.verda import Verda
         >>> config = Verda(region="FIN-01")
+        >>> Verda(cuda="12.8")  # pin a different CUDA build
+        >>> Verda(image="ubuntu-22.04-cuda-12.4-docker")  # full override
 
     Args:
         region: Preferred region (e.g., "FIN-01"). Default: FIN-01.
         client_id: Verda client ID. Falls back to VERDA_CLIENT_ID env var.
         client_secret: Verda client secret. Falls back to VERDA_CLIENT_SECRET env var.
         ssh_key_id: Specific SSH key ID to use (optional).
+        image: Full Verda image name to use verbatim. Bypasses the CUDA template.
+        cuda: Exact CUDA version substituted into ``ubuntu-24.04-cuda-{cuda}-open``.
+            Ignored when ``image`` is set. Default: ``"13.0"``.
         instance_timeout: Safety timeout in seconds. Default: 300.
     """
 
@@ -46,6 +51,8 @@ class Verda(ProviderConfig):
     client_id: str | None = None
     client_secret: str | None = None
     ssh_key_id: str | None = None
+    image: str | None = None
+    cuda: str = "13.0"
     instance_timeout: int = 300
     request_timeout: int = 30
 
