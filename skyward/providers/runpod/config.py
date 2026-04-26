@@ -57,6 +57,20 @@ _KNOWN_COUNTRIES: tuple[str, ...] = (
 )
 
 
+def _str_to_tuple[T: str](
+    v: T | tuple[T, ...] | None,
+    *,
+    keep: tuple[T, ...] = (),
+) -> T | tuple[T, ...] | None:
+    match v:
+        case str() as s if s in keep:
+            return s
+        case str() as s:
+            return (s,)
+        case _:
+            return v
+
+
 @dataclass(frozen=True, slots=True)
 class RunPod(ProviderConfig):
     """RunPod GPU Pods provider configuration.
@@ -117,21 +131,9 @@ class RunPod(ProviderConfig):
     min_inet_up: float | None = None
 
     def __post_init__(self) -> None:
-        match self.data_center_ids:
-            case "global" | tuple():
-                pass
-            case str(dc):
-                object.__setattr__(self, "data_center_ids", (dc,))
-        match self.country_codes:
-            case None | tuple():
-                pass
-            case str(cc):
-                object.__setattr__(self, "country_codes", (cc,))
-        match self.exclude_country_codes:
-            case tuple():
-                pass
-            case str(cc):
-                object.__setattr__(self, "exclude_country_codes", (cc,))
+        object.__setattr__(self, "data_center_ids", _str_to_tuple(self.data_center_ids, keep=("global",)))
+        object.__setattr__(self, "country_codes", _str_to_tuple(self.country_codes))
+        object.__setattr__(self, "exclude_country_codes", _str_to_tuple(self.exclude_country_codes))
 
     def effective_country_codes(self) -> tuple[str, ...]:
         """Return countries to consider after applying exclusions.

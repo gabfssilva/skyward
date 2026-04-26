@@ -16,10 +16,12 @@ from skyward.observability.logger import logger
 from .types import (
     ClusterCreateParams,
     ClusterResponse,
-    CpuPodCreateParams,
+    CpuCompute,
+    GpuCompute,
+    GpuImage,
     GpuTypeResponse,
     NetworkVolumeResponse,
-    PodCreateParams,
+    PodDeploySpec,
     PodResponse,
 )
 
@@ -193,90 +195,162 @@ class RunPodClient:
     # Pod Management
     # =========================================================================
 
+    async def deploy_pod(self, spec: PodDeploySpec) -> PodResponse:
+        match spec.compute, spec.placement.global_networking:
+            case CpuCompute() as compute, _:
+                return await self._deploy_cpu_pod(spec, compute)
+            case GpuCompute() as compute, True:
+                return await self._deploy_pod_via_rest(spec, compute)
+            case GpuCompute() as compute, False:
+                return await self._deploy_gpu_pod_via_graphql(spec, compute)
+
+    async def _deploy_gpu_pod_via_graphql(
+        self, spec: PodDeploySpec, compute: GpuCompute,
+    ) -> PodResponse:
+        last_error: RunPodError | None = None
+        for image in compute.image_candidates:
+            self._log.debug(
+                "Trying pod {name}: image={image} cuda={cuda} spot={spot}",
+                name=spec.name, image=image.name,
+                cuda=image.allowed_cuda_versions, spot=spec.interruptible,
+            )
+            for country in spec.placement.country_candidates:
+                try:
+                    return await self._deploy_gpu_pod_once(spec, compute, image, country)
+                except RunPodError as e:
+                    err_str = str(e)
+                    if "SUPPLY_CONSTRAINT" not in err_str and "no longer any instances available" not in err_str:
+                        raise
+                    self._log.info(
+                        "No hosts for image={image} country={country}, trying next",
+                        image=image.name, country=country,
+                    )
+                    last_error = e
+        raise last_error or RunPodError("All image/country candidates exhausted")
+
     @retry(on=on_status_code(429, 503), max_attempts=3, base_delay=1.0)
-    async def create_pod(self, params: PodCreateParams) -> PodResponse:
-        """Create a new pod via REST API."""
-        self._log.debug("Creating pod")
-        result: PodResponse | None = await self._request("POST", "/pods", json=dict(params))
+    async def _deploy_gpu_pod_once(
+        self,
+        spec: PodDeploySpec,
+        compute: GpuCompute,
+        image: GpuImage,
+        country: str | None,
+    ) -> PodResponse:
+        input_vars: dict[str, Any] = {
+            "name": spec.name,
+            "imageName": image.name,
+            "gpuTypeId": compute.gpu_type_id,
+            "gpuCount": compute.gpu_count,
+            "cloudType": spec.cloud_type,
+            "containerDiskInGb": spec.storage.container_disk_gb,
+            "volumeInGb": spec.storage.volume_gb,
+            "volumeMountPath": spec.storage.volume_mount_path,
+            "ports": ",".join(spec.ports),
+            "supportPublicIp": True,
+            "dockerArgs": f"bash -c '{spec.docker_args}'",
+            "env": [{"key": k, "value": v} for k, v in spec.env.items()],
+        }
+        if spec.placement.data_center_id:
+            input_vars["dataCenterId"] = spec.placement.data_center_id
+        if country:
+            input_vars["countryCode"] = country
+        if image.allowed_cuda_versions:
+            input_vars["allowedCudaVersions"] = list(image.allowed_cuda_versions)
+        if spec.container_registry_auth_id:
+            input_vars["containerRegistryAuthId"] = spec.container_registry_auth_id
+        if spec.placement.min_download_mbps is not None:
+            input_vars["minDownload"] = spec.placement.min_download_mbps
+        if spec.placement.min_upload_mbps is not None:
+            input_vars["minUpload"] = spec.placement.min_upload_mbps
+        if spec.storage.network_volume_id:
+            input_vars["networkVolumeId"] = spec.storage.network_volume_id
+
+        if spec.interruptible:
+            input_vars["bidPerGpu"] = spec.deploy_cost or compute.bid_per_gpu or 0.0
+            mutation, result_key, op_name = DEPLOY_SPOT_MUTATION, "podRentInterruptable", "DeploySpot"
+        else:
+            if spec.deploy_cost:
+                input_vars["deployCost"] = spec.deploy_cost
+            mutation, result_key, op_name = DEPLOY_ON_DEMAND_MUTATION, "podFindAndDeployOnDemand", "DeployOnDemand"
+
+        data = await self._graphql(mutation, {"input": input_vars}, op_name=op_name)
+        pod: PodResponse | None = data.get(result_key)
+        if not pod:
+            raise RunPodError(f"Failed to deploy pod: empty response from {result_key}")
+        return pod
+
+    @retry(on=on_status_code(429, 503), max_attempts=3, base_delay=1.0)
+    async def _deploy_pod_via_rest(
+        self, spec: PodDeploySpec, compute: GpuCompute,
+    ) -> PodResponse:
+        """REST ``POST /pods`` — sole path that accepts ``globalNetworking``.
+
+        GraphQL ``podFindAndDeployOnDemand`` and ``podRentInterruptable`` do not
+        carry the field — verified against runpod/runpodctl@v2.0.0
+        (``CreatePodGQLInput``, no ``GlobalNetworking``) and runpod/runpod-python
+        (``generate_pod_deployment_mutation``). Issue runpod/runpodctl#190 was
+        closed but the resolution is a CLI-side validation flag, not a payload
+        field.
+        """
+        image = compute.image_candidates[0].name
+        countries = tuple(c for c in spec.placement.country_candidates if c is not None)
+        params: dict[str, Any] = {
+            "name": spec.name,
+            "imageName": image,
+            "gpuTypeIds": [compute.gpu_type_id],
+            "gpuCount": compute.gpu_count,
+            "cloudType": spec.cloud_type,
+            "containerDiskInGb": spec.storage.container_disk_gb,
+            "volumeInGb": spec.storage.volume_gb,
+            "volumeMountPath": spec.storage.volume_mount_path,
+            "ports": list(spec.ports),
+            "dockerStartCmd": ["bash", "-c", spec.docker_args],
+            "env": dict(spec.env),
+            "interruptible": spec.interruptible,
+            "globalNetworking": True,
+            "supportPublicIp": True,
+        }
+        if spec.placement.data_center_id:
+            params["dataCenterIds"] = [spec.placement.data_center_id]
+        if countries:
+            params["countryCodes"] = list(countries)
+        if spec.placement.min_download_mbps is not None:
+            params["minDownloadMbps"] = spec.placement.min_download_mbps
+        if spec.placement.min_upload_mbps is not None:
+            params["minUploadMbps"] = spec.placement.min_upload_mbps
+        if spec.storage.network_volume_id:
+            params["networkVolumeId"] = spec.storage.network_volume_id
+        if spec.container_registry_auth_id:
+            params["containerRegistryAuthId"] = spec.container_registry_auth_id
+
+        result: PodResponse | None = await self._request("POST", "/pods", json=params)
         if not result:
             raise RunPodError("Failed to create pod: empty response")
         return result
 
     @retry(on=on_status_code(429, 503), max_attempts=3, base_delay=1.0)
-    async def deploy_gpu_pod(
-        self,
-        *,
-        name: str,
-        image_name: str,
-        gpu_type_id: str,
-        gpu_count: int = 1,
-        cloud_type: str = "SECURE",
-        container_disk_gb: int = 50,
-        volume_gb: int = 20,
-        volume_mount_path: str = "/workspace",
-        ports: str = "22/tcp",
-        interruptible: bool = False,
-        data_center_id: str | None = None,
-        country_code: str | None = None,
-        deploy_cost: float | None = None,
-        spot_price: float | None = None,
-        allowed_cuda_versions: list[str] | None = None,
-        container_registry_auth_id: str | None = None,
-        min_download: int | None = None,
-        min_upload: int | None = None,
-        docker_args: str | None = None,
-        env: dict[str, str] | None = None,
-        network_volume_id: str | None = None,
+    async def _deploy_cpu_pod(
+        self, spec: PodDeploySpec, compute: CpuCompute,
     ) -> PodResponse:
-        """Deploy a GPU pod via GraphQL."""
-        input_vars: dict[str, Any] = {
-            "name": name,
-            "imageName": image_name,
-            "gpuTypeId": gpu_type_id,
-            "gpuCount": gpu_count,
-            "cloudType": cloud_type,
-            "containerDiskInGb": container_disk_gb,
-            "volumeInGb": volume_gb,
-            "volumeMountPath": volume_mount_path,
-            "ports": ports,
-            "supportPublicIp": True,
+        countries = tuple(c for c in spec.placement.country_candidates if c is not None)
+        params: dict[str, Any] = {
+            "instanceId": compute.instance_id,
+            "cloudType": spec.cloud_type,
+            "containerDiskInGb": spec.storage.container_disk_gb,
+            "dockerArgs": f"bash -c '{spec.docker_args}'",
+            "ports": ",".join(spec.ports),
+            "deployCost": spec.deploy_cost or 0.50,
+            "env": [{"key": k, "value": v} for k, v in spec.env.items()],
         }
+        if spec.placement.data_center_id:
+            params["dataCenterId"] = spec.placement.data_center_id
+        if countries:
+            params["countryCode"] = countries[0]
+        if spec.container_registry_auth_id:
+            params["containerRegistryAuthId"] = spec.container_registry_auth_id
 
-        if docker_args:
-            input_vars["dockerArgs"] = docker_args
-        if env:
-            input_vars["env"] = [{"key": k, "value": v} for k, v in env.items()]
-        if data_center_id:
-            input_vars["dataCenterId"] = data_center_id
-        if country_code:
-            input_vars["countryCode"] = country_code
-        if allowed_cuda_versions:
-            input_vars["allowedCudaVersions"] = allowed_cuda_versions
-        if container_registry_auth_id:
-            input_vars["containerRegistryAuthId"] = container_registry_auth_id
-        if min_download is not None:
-            input_vars["minDownload"] = min_download
-        if min_upload is not None:
-            input_vars["minUpload"] = min_upload
-        if network_volume_id:
-            input_vars["networkVolumeId"] = network_volume_id
-
-        if interruptible:
-            input_vars["bidPerGpu"] = deploy_cost or spot_price or 0.0
-            mutation = DEPLOY_SPOT_MUTATION
-            result_key = "podRentInterruptable"
-        else:
-            if deploy_cost:
-                input_vars["deployCost"] = deploy_cost
-            mutation = DEPLOY_ON_DEMAND_MUTATION
-            result_key = "podFindAndDeployOnDemand"
-
-        self._log.debug("Deploying GPU pod via GraphQL ({key})", key=result_key)
-        data = await self._graphql(mutation, {"input": input_vars})
-
-        pod: PodResponse | None = data.get(result_key)
-        if not pod:
-            raise RunPodError(f"Failed to deploy pod: empty response from {result_key}")
+        data = await self._graphql(DEPLOY_CPU_POD_MUTATION, {"input": params}, op_name="DeployCpuPod")
+        pod: PodResponse = data["deployCpuPod"]
         return pod
 
     @retry(on=on_status_code(429, 503), max_attempts=3, base_delay=1.0)
@@ -303,10 +377,6 @@ class RunPodClient:
             "GET", "/networkvolumes",
         )
         return result or []
-
-    async def stop_pod(self, pod_id: str) -> None:
-        """Stop a pod (pause)."""
-        await self._request("POST", f"/pods/{pod_id}/stop")
 
     @retry(
         on=lambda e: not (isinstance(e, RunPodError) and e.status == 404),
@@ -349,27 +419,21 @@ class RunPodClient:
         self,
         query: str,
         variables: dict[str, Any] | None = None,
+        *,
+        op_name: str = "graphql",
     ) -> dict[str, Any]:
-        op_name = query.strip().split("(")[0].split("{")[0].strip().split()[-1]
         self._log.debug(
             "GraphQL {op} variables={vars}",
             op=op_name, vars=variables,
         )
-        async with httpx.AsyncClient(
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            },
+        resp = await self._http.post(
+            RUNPOD_GRAPHQL_URL,
+            json={"query": query, "variables": variables or {}},
             timeout=httpx.Timeout(self._config.request_timeout * 2),
-        ) as http:
-            resp = await http.post(
-                RUNPOD_GRAPHQL_URL,
-                json={"query": query, "variables": variables or {}},
-            )
-            if resp.status_code >= 400:
-                raise RunPodError(f"API error {resp.status_code}: {resp.text}")
-            data = resp.json() if resp.content else None
+        )
+        if resp.status_code >= 400:
+            raise RunPodError(f"API error {resp.status_code}: {resp.text}")
+        data = resp.json() if resp.content else None
 
         match data:
             case dict() as d if "errors" in d:
@@ -392,7 +456,7 @@ class RunPodClient:
 
         Returns None if no credential matches the given name.
         """
-        data = await self._graphql(REGISTRY_AUTHS_QUERY)
+        data = await self._graphql(REGISTRY_AUTHS_QUERY, op_name="RegistryAuths")
         auths: list[dict[str, str]] = (
             data.get("myself", {}).get("containerRegistryCreds") or []
         )
@@ -418,7 +482,7 @@ class RunPodClient:
             variables["minCudaVersion"] = min_cuda_version
         if secure_cloud is not None:
             variables["secureCloud"] = secure_cloud
-        data = await self._graphql(GPU_TYPES_QUERY, variables or None)
+        data = await self._graphql(GPU_TYPES_QUERY, variables or None, op_name="GpuTypes")
         gpu_types: list[GpuTypeResponse] = data.get("gpuTypes", [])
         return gpu_types
 
@@ -441,7 +505,7 @@ class RunPodClient:
             ClusterResponse with cluster id, name, and pods list.
         """
         self._log.debug("Creating instant cluster")
-        data = await self._graphql(CREATE_CLUSTER_MUTATION, {"input": dict(params)})
+        data = await self._graphql(CREATE_CLUSTER_MUTATION, {"input": dict(params)}, op_name="CreateCluster")
         cluster: ClusterResponse = data["createCluster"]
         return cluster
 
@@ -452,23 +516,7 @@ class RunPodClient:
         Args:
             cluster_id: The cluster ID to delete.
         """
-        await self._graphql(DELETE_CLUSTER_MUTATION, {"input": {"clusterId": cluster_id}})
-
-    # =========================================================================
-    # CPU-only Pods (via GraphQL)
-    # =========================================================================
-
-    @retry(on=on_status_code(429, 503), max_attempts=3, base_delay=1.0)
-    async def create_cpu_pod(self, params: CpuPodCreateParams) -> PodResponse:
-        """Create a CPU-only pod via GraphQL.
-
-        The REST API doesn't support gpuCount=0, so we use the
-        deployCpuPod GraphQL mutation instead.
-        """
-        data = await self._graphql(DEPLOY_CPU_POD_MUTATION, {"input": dict(params)})
-        pod: PodResponse = data["deployCpuPod"]
-        return pod
-
+        await self._graphql(DELETE_CLUSTER_MUTATION, {"input": {"clusterId": cluster_id}}, op_name="DeleteCluster")
 
 # =============================================================================
 # Utility Functions

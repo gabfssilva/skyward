@@ -257,7 +257,7 @@ class TestNativeMountPlan:
             plan.deploy_hints["networkVolumeId"] = "hacked"  # type: ignore[index]
 
 
-def _minimal_runpod_cluster(*, mount_plan=None):
+def _minimal_runpod_cluster(*, mount_plan=None, global_networking=False):
     """Build a Cluster[RunPodSpecific] for unit tests — no real API."""
     from skyward.api.spec import Nodes, PoolSpec
     from skyward.core.model import Cluster, InstanceType, Offer
@@ -272,7 +272,11 @@ def _minimal_runpod_cluster(*, mount_plan=None):
         ),
         spot_price=0.5, on_demand_price=0.8, billing_unit="hour", specific=None,
     )
-    specific = RunPodSpecific(gpu_type_id="NVIDIA RTX A6000", cloud_type="SECURE")
+    specific = RunPodSpecific(
+        gpu_type_id="NVIDIA RTX A6000",
+        cloud_type="SECURE",
+        global_networking=global_networking,
+    )
     return Cluster(
         id="c-1", status="provisioning", spec=spec, offer=offer,
         ssh_key_path="/tmp/key", ssh_user="root", use_sudo=False,
@@ -420,61 +424,61 @@ class TestRunPodMountPlan:
 
 
 class TestCreateGpuPodRestPayload:
-    """_create_gpu_pod_rest should propagate deploy_hints into PodCreateParams."""
+    """REST payload (global_networking path) should propagate deploy_hints."""
 
     @pytest.mark.asyncio
     async def test_rest_payload_carries_network_volume_id(self, monkeypatch):
         from skyward.api.model import MountPlan
         from skyward.providers.runpod.client import RunPodClient
         from skyward.providers.runpod.config import RunPod
-        from skyward.providers.runpod.provider import _create_gpu_pod_rest
+        from skyward.providers.runpod.provider import _build_pod_deploy_spec
 
         captured: dict[str, object] = {}
 
-        async def fake_create_pod(self, params):  # noqa: ANN001
-            captured["params"] = params
+        async def fake_request(self, method, path, json=None, params=None):  # noqa: ANN001
+            captured["method"], captured["path"], captured["json"] = method, path, json
             return {"id": "pod-1", "imageName": "img", "desiredStatus": "RUNNING"}
 
-        monkeypatch.setattr(RunPodClient, "create_pod", fake_create_pod)
+        monkeypatch.setattr(RunPodClient, "_request", fake_request)
 
         config = RunPod(api_key="k", data_center_ids=("EU-RO-1",))
         plan = MountPlan(deploy_hints={"networkVolumeId": "nv-1", "volumeMountPath": "/mnt/nv"})
-        cluster = _minimal_runpod_cluster(mount_plan=plan)
+        cluster = _minimal_runpod_cluster(mount_plan=plan, global_networking=True)
 
         async with RunPodClient(api_key="k", config=config) as client:
-            await _create_gpu_pod_rest(
-                client, config, cluster, node_index=0, ssh_public_key="k",
-                image_name="img", use_spot=False,
-            )
+            spec = _build_pod_deploy_spec(config, cluster, node_index=0, ssh_public_key="k")
+            await client.deploy_pod(spec)
 
-        params = captured["params"]
-        assert params["networkVolumeId"] == "nv-1"
-        assert params["volumeMountPath"] == "/mnt/nv"
+        body = captured["json"]
+        assert isinstance(body, dict)
+        assert body["networkVolumeId"] == "nv-1"
+        assert body["volumeMountPath"] == "/mnt/nv"
+        assert body["globalNetworking"] is True
 
     @pytest.mark.asyncio
     async def test_rest_payload_omits_network_volume_id_when_no_plan(self, monkeypatch):
         from skyward.providers.runpod.client import RunPodClient
         from skyward.providers.runpod.config import RunPod
-        from skyward.providers.runpod.provider import _create_gpu_pod_rest
+        from skyward.providers.runpod.provider import _build_pod_deploy_spec
 
         captured: dict[str, object] = {}
 
-        async def fake_create_pod(self, params):  # noqa: ANN001
-            captured["params"] = params
+        async def fake_request(self, method, path, json=None, params=None):  # noqa: ANN001
+            captured["method"], captured["path"], captured["json"] = method, path, json
             return {"id": "pod-1", "imageName": "img", "desiredStatus": "RUNNING"}
 
-        monkeypatch.setattr(RunPodClient, "create_pod", fake_create_pod)
+        monkeypatch.setattr(RunPodClient, "_request", fake_request)
 
         config = RunPod(api_key="k", data_center_ids=("EU-RO-1",))
-        cluster = _minimal_runpod_cluster(mount_plan=None)
+        cluster = _minimal_runpod_cluster(mount_plan=None, global_networking=True)
 
         async with RunPodClient(api_key="k", config=config) as client:
-            await _create_gpu_pod_rest(
-                client, config, cluster, node_index=0, ssh_public_key="k",
-                image_name="img", use_spot=False,
-            )
+            spec = _build_pod_deploy_spec(config, cluster, node_index=0, ssh_public_key="k")
+            await client.deploy_pod(spec)
 
-        assert "networkVolumeId" not in captured["params"]  # type: ignore[operator]
+        body = captured["json"]
+        assert isinstance(body, dict)
+        assert "networkVolumeId" not in body
 
 
 class TestBuildMountPlan:
@@ -550,6 +554,35 @@ class TestBuildMountPlan:
 class TestDeployGpuPodPayload:
     """GraphQL payload should carry networkVolumeId when requested."""
 
+    @staticmethod
+    def _gpu_spec(*, network_volume_id: str | None = None, volume_mount_path: str = "/workspace"):
+        from skyward.providers.runpod.types import (
+            GpuCompute,
+            GpuImage,
+            Placement,
+            PodDeploySpec,
+            Storage,
+        )
+        return PodDeploySpec(
+            name="n",
+            cloud_type="SECURE",
+            compute=GpuCompute(
+                gpu_type_id="t",
+                gpu_count=1,
+                image_candidates=(GpuImage(name="img"),),
+            ),
+            storage=Storage(
+                container_disk_gb=50,
+                volume_gb=20,
+                volume_mount_path=volume_mount_path,
+                network_volume_id=network_volume_id,
+            ),
+            placement=Placement(),
+            ports=("22/tcp",),
+            docker_args="sleep infinity",
+            env={},
+        )
+
     @pytest.mark.asyncio
     async def test_graphql_input_includes_network_volume_id(self, monkeypatch):
         from skyward.providers.runpod.client import RunPodClient
@@ -557,18 +590,14 @@ class TestDeployGpuPodPayload:
 
         captured: dict[str, object] = {}
 
-        async def fake_graphql(self, query, variables=None):  # noqa: ANN001
+        async def fake_graphql(self, query, variables=None, *, op_name="graphql"):  # noqa: ANN001
             captured["variables"] = variables
             return {"podFindAndDeployOnDemand": {"id": "pod-1"}}
 
         monkeypatch.setattr(RunPodClient, "_graphql", fake_graphql)
 
         async with RunPodClient(api_key="k", config=RunPod()) as client:
-            await client.deploy_gpu_pod(
-                name="n", image_name="img", gpu_type_id="t",
-                network_volume_id="nv-xyz",
-                volume_mount_path="/workspace",
-            )
+            await client.deploy_pod(self._gpu_spec(network_volume_id="nv-xyz"))
 
         variables = captured["variables"]
         assert isinstance(variables, dict)
@@ -583,14 +612,14 @@ class TestDeployGpuPodPayload:
 
         captured: dict[str, object] = {}
 
-        async def fake_graphql(self, query, variables=None):  # noqa: ANN001
+        async def fake_graphql(self, query, variables=None, *, op_name="graphql"):  # noqa: ANN001
             captured["variables"] = variables
             return {"podFindAndDeployOnDemand": {"id": "pod-1"}}
 
         monkeypatch.setattr(RunPodClient, "_graphql", fake_graphql)
 
         async with RunPodClient(api_key="k", config=RunPod()) as client:
-            await client.deploy_gpu_pod(name="n", image_name="img", gpu_type_id="t")
+            await client.deploy_pod(self._gpu_spec())
 
         input_vars = captured["variables"]["input"]  # type: ignore[index]
         assert "networkVolumeId" not in input_vars

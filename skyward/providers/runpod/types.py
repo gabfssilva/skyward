@@ -1,11 +1,10 @@
-"""RunPod API response types.
-
-TypedDicts for API responses - no conversion needed.
-"""
+"""RunPod API response types and deploy spec."""
 
 from __future__ import annotations
 
-from typing import NotRequired, TypedDict
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Literal, NotRequired, TypedDict
 
 # =============================================================================
 # Response Types
@@ -235,3 +234,60 @@ def get_gpu_model(pod: PodResponse) -> str:
     if gpu:
         return gpu.get("displayName") or gpu.get("gpuType") or ""
     return ""
+
+
+type CloudType = Literal["SECURE", "COMMUNITY"]
+
+
+@dataclass(frozen=True, slots=True)
+class GpuImage:
+    name: str
+    allowed_cuda_versions: tuple[str, ...] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GpuCompute:
+    gpu_type_id: str
+    gpu_count: int
+    image_candidates: tuple[GpuImage, ...]
+    bid_per_gpu: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CpuCompute:
+    instance_id: str
+
+
+type Compute = GpuCompute | CpuCompute
+
+
+@dataclass(frozen=True, slots=True)
+class Storage:
+    container_disk_gb: int
+    volume_gb: int
+    volume_mount_path: str
+    network_volume_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Placement:
+    data_center_id: str | None = None
+    country_candidates: tuple[str | None, ...] = (None,)
+    global_networking: bool = False
+    min_download_mbps: int | None = None
+    min_upload_mbps: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PodDeploySpec:
+    name: str
+    cloud_type: CloudType
+    compute: Compute
+    storage: Storage
+    placement: Placement
+    ports: tuple[str, ...]
+    docker_args: str
+    env: Mapping[str, str]
+    interruptible: bool = False
+    deploy_cost: float | None = None
+    container_registry_auth_id: str | None = None
