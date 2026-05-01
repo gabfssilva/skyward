@@ -111,6 +111,41 @@ class ExecuteTask:
     kwargs: dict[str, Any]
     reply_to: ActorRef[TaskResult]
     input_streams: tuple[tuple[int, Any], ...] = ()
+    task_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class GetResult:
+    """Reconciliation probe — fetch a previously-dispatched task's result.
+
+    Returned by the worker when the client asks for a ``task_id`` it
+    previously dispatched via ``ExecuteTask``. Used to recover from
+    SSH/Casty connection blips that drop the original ``ExecuteTask``
+    reply mid-flight.
+    """
+
+    task_id: str
+    reply_to: ActorRef[GetResultReply]
+
+
+@dataclass(frozen=True, slots=True)
+class ResultPending:
+    """Worker has the task but it hasn't completed yet."""
+
+
+@dataclass(frozen=True, slots=True)
+class ResultDone:
+    """Worker completed the task; result is the original outcome."""
+
+    result: TaskResult
+
+
+@dataclass(frozen=True, slots=True)
+class ResultUnknown:
+    """Worker has no record of this ``task_id`` (never seen, evicted, or restarted)."""
+
+
+type GetResultReply = ResultPending | ResultDone | ResultUnknown
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,12 +158,14 @@ class EnterContext:
 class _TaskDone:
     result: TaskResult
     reply_to: ActorRef[TaskResult]
+    task_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
 class _TaskErrored:
     error: Exception
     reply_to: ActorRef[TaskResult]
+    task_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,7 +187,7 @@ class _ContextFailed:
 
 
 type WorkerMsg = (
-    ExecuteTask | EnterContext | SetProcessHooks
+    ExecuteTask | EnterContext | SetProcessHooks | GetResult
     | _TaskDone | _TaskErrored | _ContextEntered | _ContextFailed
 )
 
@@ -253,9 +290,64 @@ def worker_behavior(
     system: ClusteredActorSystem | None = None,
     executor: str = "thread",
     executor_pool: Executor | None = None,
+    result_cache_ttl: float = 600.0,
+    result_cache_max: int = 2048,
 ) -> Behavior[WorkerMsg]:
+    """Spawn the worker actor's behavior.
+
+    The worker accepts ``ExecuteTask`` requests, runs them via the chosen
+    executor, and replies on ``reply_to``. To survive transient SSH/Casty
+    connection blips that drop the original reply mid-flight, every result
+    keyed by a non-empty ``task_id`` is cached locally (TTL + size cap);
+    a client that lost a reply can recover via ``GetResult(task_id)``.
+
+    Streaming results (``_StreamHandle``) are intentionally **not** cached
+    because their producer is a live actor and the underlying stream may
+    have been partially consumed; reconciliation will report
+    ``ResultUnknown`` and the caller will retry on another node.
+
+    Parameters
+    ----------
+    node_id : int
+        Logical node index.
+    concurrency : int, optional
+        Maximum concurrent tasks. Default 1.
+    registry : Any, optional
+        Distributed registry to install in the task thread.
+    system : ClusteredActorSystem | None, optional
+        Cluster system used for stream-related spawns.
+    executor : str, optional
+        ``"thread"`` or ``"process"``. Default ``"thread"``.
+    executor_pool : Executor | None, optional
+        Pre-built pool for ``"process"`` mode.
+    result_cache_ttl : float, optional
+        Per-entry TTL in seconds. Default 600.
+    result_cache_max : int, optional
+        Hard cap on cache entries; oldest by deadline are evicted. Default 2048.
+    """
     log = logger.bind(component="worker", node_id=node_id)
     sem = asyncio.Semaphore(concurrency)
+    result_cache: dict[str, tuple[float, TaskResult | None]] = {}
+
+    def _evict_expired(now: float) -> None:
+        expired = [k for k, (deadline, _) in result_cache.items() if deadline < now]
+        for k in expired:
+            del result_cache[k]
+        if len(result_cache) > result_cache_max:
+            sorted_items = sorted(result_cache.items(), key=lambda kv: kv[1][0])
+            for k, _ in sorted_items[: len(result_cache) - result_cache_max]:
+                result_cache.pop(k, None)
+
+    def _cache_result(task_id: str, result: TaskResult) -> None:
+        if not task_id:
+            return
+        # don't cache live stream handles — producer_ref is not replayable
+        from skyward.infra.streaming import _StreamHandle
+
+        if isinstance(result, TaskSucceeded) and isinstance(result.result, _StreamHandle):
+            result_cache.pop(task_id, None)
+            return
+        result_cache[task_id] = (asyncio.get_event_loop().time() + result_cache_ttl, result)
 
     async def _resolve_input_streams(
         args: tuple[Any, ...],
@@ -394,27 +486,48 @@ def worker_behavior(
                 return Behaviors.same()
             case ExecuteTask(
                 fn=fn, args=args, kwargs=kwargs,
-                reply_to=reply_to, input_streams=streams,
+                reply_to=reply_to, input_streams=streams, task_id=task_id,
             ):
                 fn_name = getattr(fn, "__name__", str(fn))
                 log.debug("ExecuteTask received, fn={fn_name}", fn_name=fn_name)
+                now = asyncio.get_event_loop().time()
+                _evict_expired(now)
+                if task_id:
+                    result_cache[task_id] = (now + result_cache_ttl, None)
                 ctx.pipe_to_self(
                     coro=_execute(fn, args, kwargs, streams),
-                    mapper=lambda result: _TaskDone(result=result, reply_to=reply_to),
-                    on_failure=lambda e: _TaskErrored(error=e, reply_to=reply_to),
+                    mapper=lambda result, _tid=task_id: _TaskDone(
+                        result=result, reply_to=reply_to, task_id=_tid,
+                    ),
+                    on_failure=lambda e, _tid=task_id: _TaskErrored(
+                        error=e, reply_to=reply_to, task_id=_tid,
+                    ),
                 )
                 return Behaviors.same()
-            case _TaskDone(result=result, reply_to=reply_to):
+            case _TaskDone(result=result, reply_to=reply_to, task_id=task_id):
                 log.debug("Task completed successfully")
+                _cache_result(task_id, result)
                 reply_to.tell(result)
                 return Behaviors.same()
-            case _TaskErrored(error=error, reply_to=reply_to):
+            case _TaskErrored(error=error, reply_to=reply_to, task_id=task_id):
                 log.debug("Task errored: {error}", error=error)
-                reply_to.tell(TaskFailed(
+                failed = TaskFailed(
                     error=str(error),
                     traceback=traceback.format_exc(),
                     node_id=node_id,
-                ))
+                )
+                _cache_result(task_id, failed)
+                reply_to.tell(failed)
+                return Behaviors.same()
+            case GetResult(task_id=task_id, reply_to=reply_to):
+                _evict_expired(asyncio.get_event_loop().time())
+                match result_cache.get(task_id):
+                    case None:
+                        reply_to.tell(ResultUnknown())
+                    case (_, None):
+                        reply_to.tell(ResultPending())
+                    case (_, result):
+                        reply_to.tell(ResultDone(result=result))
                 return Behaviors.same()
 
     async def _post_stop(_ctx: ActorContext[WorkerMsg]) -> None:
