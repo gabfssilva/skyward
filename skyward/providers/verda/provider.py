@@ -179,9 +179,16 @@ class VerdaProvider(Provider[Verda, VerdaSpecific]):
         instances: list[Instance] = []
         for i in range(count):
             log.info("Provisioning instance {i}/{count}", i=i + 1, count=count)
-            region = await _find_available_region(
-                self._client, specific.instance_type, use_spot, specific.region,
-            )
+            try:
+                region = await _find_available_region(
+                    self._client, specific.instance_type, use_spot, specific.region,
+                )
+            except RuntimeError as e:
+                log.warning(
+                    "No region available for instance {i}/{count}: {err}",
+                    i=i + 1, count=count, err=e,
+                )
+                break
 
             hostname = f"skyward-{cluster.id}-{i}"
             try:

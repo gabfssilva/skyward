@@ -92,20 +92,21 @@ class AvailabilityRegion(TypedDict):
 
 GPU_MODEL_NORMALIZATIONS = {
     "Tesla V100": "V100",
-    "RTX A6000": "A6000",
-    "RTX 6000 Ada": "RTX6000Ada",
-    "RTX PRO 6000": "RTXPRO6000",
 }
 
 
 def parse_gpu_model(description: str) -> str | None:
     """Parse GPU model from Verda description string.
 
+    Returns the model with original spacing (e.g., ``"RTX PRO 6000"``). The
+    central offers normalizer (``skyward.offers.feed._normalize_gpu_name``)
+    canonicalizes against the accelerator catalog.
+
     Args:
-        description: GPU description (e.g., "8x H100 SXM5 80GB")
+        description: GPU description (e.g., ``"8x H100 SXM5 80GB"``).
 
     Returns:
-        Normalized GPU model (e.g., "H100") or None.
+        GPU model name or None.
     """
     if not description:
         return None
@@ -114,13 +115,8 @@ def parse_gpu_model(description: str) -> str | None:
     if not match:
         return None
 
-    model_raw = match.group(1)
-    model_clean = re.sub(r"\s+SXM\d+", "", model_raw)
-
-    if model_clean in GPU_MODEL_NORMALIZATIONS:
-        return GPU_MODEL_NORMALIZATIONS[model_clean]
-
-    return model_clean.replace(" ", "")
+    model = re.sub(r"\s+SXM\d+", "", match.group(1))
+    return GPU_MODEL_NORMALIZATIONS.get(model, model)
 
 
 def get_vcpu(instance_type: InstanceTypeResponse) -> int:
