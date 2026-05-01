@@ -86,7 +86,7 @@ class RecoverPool:
 
 @dataclass(frozen=True, slots=True)
 class _ShutdownDone:
-    pass
+    error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

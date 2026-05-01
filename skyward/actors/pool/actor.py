@@ -378,7 +378,7 @@ def pool_actor(
                 ctx.pipe_to_self(
                     s.provider.terminate(s.cluster, (iid,)),
                     mapper=lambda _: _ShutdownDone(),
-                    on_failure=lambda _err: _ShutdownDone(),
+                    on_failure=lambda _err: _ShutdownDone(error=str(_err) or repr(_err)),
                 )
 
         if s.reconciler_ref is not None:
@@ -977,7 +977,7 @@ def pool_actor(
                         ctx.pipe_to_self(
                             s.provider.terminate(s.cluster, (dead_iid,)),
                             mapper=lambda _: _ShutdownDone(),
-                            on_failure=lambda _err: _ShutdownDone(),
+                            on_failure=lambda _err: _ShutdownDone(error=str(_err) or repr(_err)),
                         )
 
                     if s.reconciler_ref is not None:
@@ -1050,8 +1050,15 @@ def pool_actor(
                         scaling=replace(s.scaling, pending_nodes=s.scaling.pending_nodes + len(new_instances)),
                     ))
 
-                case _ShutdownDone():
+                case _ShutdownDone(error=None):
                     log.debug("Dead instance terminated")
+                    return Behaviors.same()
+                case _ShutdownDone(error=err):
+                    log.warning(
+                        "Terminate request failed; instance may still be"
+                        " alive at provider: {err}",
+                        err=err,
+                    )
                     return Behaviors.same()
 
                 case StopPool(reply_to=stop_reply):
@@ -1246,7 +1253,7 @@ def pool_actor(
                         ctx.pipe_to_self(
                             s.provider.terminate(s.cluster, (dead_iid,)),
                             mapper=lambda _: _ShutdownDone(),
-                            on_failure=lambda _err: _ShutdownDone(),
+                            on_failure=lambda _err: _ShutdownDone(error=str(_err) or repr(_err)),
                         )
 
                     if s.reconciler_ref is not None:
@@ -1369,7 +1376,14 @@ def pool_actor(
                         return ready(s)
                     return ready(_drain_victims(ctx, s, victims))
 
-                case _ShutdownDone():
+                case _ShutdownDone(error=None):
+                    return Behaviors.same()
+                case _ShutdownDone(error=err):
+                    log.warning(
+                        "Terminate request failed; instance may still be"
+                        " alive at provider: {err}",
+                        err=err,
+                    )
                     return Behaviors.same()
 
                 case Resize(nodes=new_nodes):
@@ -1438,8 +1452,17 @@ def pool_actor(
         async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
             log.debug("received: {message}", message=type(msg).__name__)
             match msg:
-                case _ShutdownDone():
+                case _ShutdownDone(error=None):
                     log.info("Cluster {cid} shutdown confirmed", cid=cluster_id)
+                    if stop_reply is not None:
+                        stop_reply.tell(PoolStopped())
+                    return Behaviors.stopped()
+                case _ShutdownDone(error=err):
+                    log.warning(
+                        "Cluster {cid} shutdown reported failure; instance(s)"
+                        " may still be alive at provider: {err}",
+                        cid=cluster_id, err=err,
+                    )
                     if stop_reply is not None:
                         stop_reply.tell(PoolStopped())
                     return Behaviors.stopped()
@@ -1455,7 +1478,7 @@ def pool_actor(
                     ctx.pipe_to_self(
                         s.provider.terminate(s.cluster, late_iids),
                         mapper=lambda _: _ShutdownDone(),
-                        on_failure=lambda _err: _ShutdownDone(),
+                        on_failure=lambda _err: _ShutdownDone(error=str(_err) or repr(_err)),
                     )
                     return Behaviors.same()
                 case InstancesProvisioned():
