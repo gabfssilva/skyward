@@ -38,6 +38,7 @@ def reconciler_actor(
     pool: ActorRef[PoolMsg],
     min_nodes: int,
     max_nodes: int,
+    desired_count: int,
     initial_node_ids: frozenset[NodeId],
     tick_interval: float = 15.0,
     max_provision_retries: int = 10,
@@ -56,9 +57,8 @@ def reconciler_actor(
 
     async def setup(ctx: ActorContext[ReconcilerMsg]) -> Behavior[ReconcilerMsg]:
         _schedule_tick(ctx)
-        desired = len(initial_node_ids)
-        state = _State(desired=desired, current=initial_node_ids, min_nodes=min_nodes)
-        ctx.self.tell(DesiredCountChanged(desired=desired, reason="initial"))
+        state = _State(desired=desired_count, current=initial_node_ids, min_nodes=min_nodes)
+        ctx.self.tell(DesiredCountChanged(desired=desired_count, reason="initial"))
         log.info(
             "Reconciler started: desired={d}, current={c}",
             d=state.desired, c=len(state.current),

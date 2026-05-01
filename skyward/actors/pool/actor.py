@@ -641,6 +641,7 @@ def pool_actor(
                                 pool=ctx.self,
                                 min_nodes=min_n,
                                 max_nodes=max_n,
+                                desired_count=s.spec.nodes.desired,
                                 initial_node_ids=frozenset(new_spawned.keys()) | future_ids,
                                 tick_interval=s.spec.reconcile_tick_interval,
                                 max_provision_retries=s.spec.max_provision_attempts,

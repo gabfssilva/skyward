@@ -11,9 +11,10 @@ from skyward.actors.messages import (
     ReapIdleNodes,
     RequestDrainNodes,
     RequestScaleDown,
+    RequestScaleUp,
 )
 from skyward.actors.reconciler import reconciler_actor
-from skyward.actors.reconciler.state import _State, _apply_bounds
+from skyward.actors.reconciler.state import _apply_bounds, _State
 
 
 def _make_state(
@@ -129,6 +130,7 @@ class TestReapIdleNodes:
                     pool=pool,
                     min_nodes=1,
                     max_nodes=8,
+                    desired_count=4,
                     initial_node_ids=frozenset({0, 1, 2, 3}),
                     tick_interval=3600.0,
                 ),
@@ -167,6 +169,7 @@ class TestReapIdleNodes:
                     pool=pool,
                     min_nodes=2,
                     max_nodes=8,
+                    desired_count=3,
                     initial_node_ids=frozenset({0, 1, 2}),
                     tick_interval=3600.0,
                 ),
@@ -191,6 +194,32 @@ class TestReapIdleNodes:
         scale_down_msgs = [m for m in sent if isinstance(m, RequestScaleDown)]
         assert len(scale_down_msgs) == 1
         assert scale_down_msgs[0].count == 1
+
+
+class TestPartialInitialProvisioning:
+    @pytest.mark.asyncio
+    async def test_requests_scale_up_when_initial_provision_returned_less(self) -> None:
+        sent: list[object] = []
+        pool = MagicMock()
+        pool.tell = lambda msg: sent.append(msg)
+
+        async with ActorSystem("test-reconciler-partial-initial") as system:
+            system.spawn(
+                reconciler_actor(
+                    pool=pool,
+                    min_nodes=1,
+                    max_nodes=3,
+                    desired_count=3,
+                    initial_node_ids=frozenset({0, 1}),
+                    tick_interval=3600.0,
+                ),
+                "reconciler-partial-initial",
+            )
+            await asyncio.sleep(0.1)
+
+        scale_up_msgs = [m for m in sent if isinstance(m, RequestScaleUp)]
+        assert len(scale_up_msgs) == 1
+        assert scale_up_msgs[0].count == 1
 
 
 class TestReconcilerApplyBounds:
