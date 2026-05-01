@@ -12,7 +12,6 @@ from skyward.infra.ssh_actor import (
     ConnectionRestored,
     ForwardPort,
     PortForwarded,
-    PortReForwarded,
     RunCommand,
     ssh_transport,
 )

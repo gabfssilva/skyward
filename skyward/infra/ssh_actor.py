@@ -103,16 +103,11 @@ class ConnectionLost:
 
 @dataclass(frozen=True, slots=True)
 class ConnectionRestored:
-    local_port: int = 0
+    pass
 
 @dataclass(frozen=True, slots=True)
 class ConnectionFailed:
     error: str
-
-@dataclass(frozen=True, slots=True)
-class PortReForwarded:
-    old_port: int
-    new_port: int
 
 
 # ── Internal ──────────────────────────────────────────────────────────
@@ -184,10 +179,18 @@ class _ForwardError:
 # ── State ─────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True, slots=True)
+class _Forward:
+    """Forward already allocated — local_port is stable across reconnects."""
+    remote_host: str
+    remote_port: int
+    local_port: int
+
+
+@dataclass(frozen=True, slots=True)
 class TransportState:
     conn: Any  # asyncssh.SSHClientConnection
     listeners: tuple[Any, ...] = ()  # asyncssh.SSHListener
-    forward_requests: tuple[ForwardPort, ...] = ()
+    forwards: tuple[_Forward, ...] = ()
     subscribers: tuple[ActorRef[StreamEvent], ...] = ()
     stream_offset: int = 0
 
@@ -440,10 +443,15 @@ def ssh_transport(
 
                 case _ForwardDone(local_port=lp, listener=lis, request=req):
                     req.reply_to.tell(PortForwarded(local_port=lp))
+                    fwd = _Forward(
+                        remote_host=req.remote_host,
+                        remote_port=req.remote_port,
+                        local_port=lp,
+                    )
                     new_state = replace(
                         state,
                         listeners=(*state.listeners, lis),
-                        forward_requests=(*state.forward_requests, req),
+                        forwards=(*state.forwards, fwd),
                     )
                     return connected(new_state)
 
@@ -532,19 +540,14 @@ def ssh_transport(
                         subscribers=state.subscribers,
                         stream_offset=state.stream_offset,
                     )
-                    reforwarded = await _reforward_ports(conn, state.forward_requests)
+                    reforwarded = await _reforward_ports(conn, state.forwards)
                     new_state = replace(
                         new_state,
                         listeners=tuple(lis for _, lis in reforwarded),
-                        forward_requests=state.forward_requests,
+                        forwards=state.forwards,
                     )
                     if parent:
-                        new_port = reforwarded[0][0] if reforwarded else 0
-                        parent.tell(ConnectionRestored(local_port=new_port))
-                        for i, (rp, _) in enumerate(reforwarded):
-                            old_port = state.listeners[i].get_port() if i < len(state.listeners) else -1
-                            if old_port != rp:
-                                parent.tell(PortReForwarded(old_port=old_port, new_port=rp))
+                        parent.tell(ConnectionRestored())
                     if new_state.subscribers:
                         _start_stream(ctx, new_state, new_state.stream_offset)
                     return _enter_connected(ctx, new_state, pending)
@@ -597,11 +600,10 @@ def ssh_transport(
         await asyncssh.scp(local, (conn, remote))
 
     async def _do_forward(
-        conn: Any, remote_host: str, remote_port: int,
+        conn: Any, remote_host: str, remote_port: int, local_port: int = 0,
     ) -> tuple[int, Any]:
-        listener = await conn.forward_local_port("", 0, remote_host, remote_port)
-        local_port = listener.get_port()
-        return local_port, listener
+        listener = await conn.forward_local_port("", local_port, remote_host, remote_port)
+        return listener.get_port(), listener
 
     def _start_stream(
         ctx: ActorContext[TransportMsg],
@@ -657,11 +659,13 @@ def ssh_transport(
 
     async def _reforward_ports(
         conn: Any,
-        forward_requests: tuple[ForwardPort, ...],
+        forwards: tuple[_Forward, ...],
     ) -> list[tuple[int, Any]]:
         results: list[tuple[int, Any]] = []
-        for req in forward_requests:
-            local_port, listener = await _do_forward(conn, req.remote_host, req.remote_port)
+        for fwd in forwards:
+            local_port, listener = await _do_forward(
+                conn, fwd.remote_host, fwd.remote_port, fwd.local_port,
+            )
             results.append((local_port, listener))
         return results
 
