@@ -132,7 +132,7 @@ def uv_init(python: str = "3.12", name: str | None = None) -> Op:
               installing a package with the same name as the directory.
     """
     name_flag = f"--name {name} " if name else ""
-    return lambda: f"cd {SKYWARD_DIR} && uv init {name_flag}--python {python} --no-readme"
+    return lambda: f"cd {SKYWARD_DIR} && uv init {name_flag}--managed-python --python {python} --no-readme"
 
 
 def _extract_package_name(spec: str) -> str:
