@@ -493,16 +493,15 @@ def _styled_badge(label: str, style_key: str) -> Text:
     return t
 
 
-def _workers_badge(ready: int, desired: int) -> Text:
-    label = f"workers {ready}/{desired}"
-    if ready >= desired:
+def _progress_badge(label: str, current: int, total: int) -> Text:
+    if total > 0 and current >= total:
         style = _make_badge(120, 0.50)
-    elif ready == 0:
+    elif current == 0:
         style = _make_badge(0, 0.60)
     else:
         style = _make_badge(45, 0.45)
     t = Text()
-    t.append(f" {label} ", style=style)
+    t.append(f" {label} {current}/{total} ", style=style)
     return t
 
 
@@ -564,107 +563,87 @@ def _collect_badges(state: _State) -> tuple[list[Text], list[Text], list[Text]]:
             mem_str = f" {mem}" if mem else ""
             infra.append(_inline_badge(f"\u26a1 {total_str}\u00d7 {accel.name}{mem_str}"))
 
-    # --- Line 2: Status (phase + workers + metrics + reconciler + cost) ---
-    match state.phase:
-        case _Phase.PROVISIONING:
-            status.append(_inline_badge("provisioning"))
-            cost = _cost_badges(state)
-            if cost:
-                status.extend(cost)
-        case _Phase.SSH:
-            count = sum(1 for s in state.nodes.values() if s.value >= _NodeStatus.SSH.value)
-            status.append(_inline_badge("connecting"))
-            status.append(_styled_badge(f"ssh {count}/{state.total_nodes}", "connecting"))
-            cost = _cost_badges(state)
-            if cost:
-                status.extend(cost)
-        case _Phase.BOOTSTRAP | _Phase.WORKERS:
-            phase_name = "bootstrap" if state.phase == _Phase.BOOTSTRAP else "workers"
-            target = (
-                _NodeStatus.BOOTSTRAPPING if state.phase == _Phase.BOOTSTRAP
-                else _NodeStatus.READY
-            )
-            count = sum(1 for s in state.nodes.values() if s.value >= target.value)
-            status.append(_inline_badge(phase_name))
-            status.append(_styled_badge(f"{count}/{state.total_nodes} ready", phase_name))
-            cost = _cost_badges(state)
-            if cost:
-                status.extend(cost)
-        case _Phase.READY:
-            status.append(_inline_badge("ready"))
-            ready_count = sum(1 for s in state.nodes.values() if s == _NodeStatus.READY)
-            desired = state.desired_nodes or state.total_nodes
-            status.append(_workers_badge(ready_count, desired))
+    # --- Line 2: Status (progress + metrics + reconciler + cost) ---
+    if state.phase == _Phase.STOPPED:
+        status.append(_inline_badge("shutting down"))
+        if state.tasks_done:
+            status.append(_styled_badge(f"\u2714 {state.tasks_done} done", "done"))
+        rate = _throughput(state)
+        if rate > 0:
+            status.append(_styled_badge(f"{rate:.1f}/min", "running"))
+        cost = _cost_badges(state)
+        if cost:
+            status.extend(cost)
+        return infra, status, tasks
 
-            # Metrics
-            cpu_vals = _collect_metric_vals(state, "cpu")
-            mem_vals = _collect_metric_vals(state, "mem")
-            gpu_vals = _collect_metric_vals(state, "gpu_util")
-            gpu_mem_vals = _collect_metric_vals(state, "gpu_mem_mb")
-            gpu_mem_total = _collect_metric_vals(state, "gpu_mem_total_mb")
-            if cpu_vals:
-                status.append(_gauge_inline("cpu", sum(cpu_vals) / len(cpu_vals)))
-            if mem_vals:
-                status.append(_gauge_inline("mem", sum(mem_vals) / len(mem_vals)))
-            if gpu_vals:
-                status.append(_gauge_inline("gpu", sum(gpu_vals) / len(gpu_vals)))
-            if gpu_mem_vals and gpu_mem_total:
-                avg_used = sum(gpu_mem_vals) / len(gpu_mem_vals)
-                avg_total = sum(gpu_mem_total) / len(gpu_mem_total)
-                pct = (avg_used / avg_total * 100) if avg_total > 0 else 0
-                status.append(_gauge_inline("vram", pct))
+    total = state.desired_nodes or state.total_nodes or len(state.nodes)
+    if state.phase == _Phase.PROVISIONING and total == 0:
+        status.append(_inline_badge("provisioning"))
+    elif total > 0:
+        ssh_count = sum(1 for s in state.nodes.values() if s.value >= _NodeStatus.SSH.value)
+        bs_count = sum(1 for s in state.nodes.values() if s.value >= _NodeStatus.BOOTSTRAPPING.value)
+        ready_count = sum(1 for s in state.nodes.values() if s == _NodeStatus.READY)
+        status.append(_progress_badge("ssh", ssh_count, total))
+        status.append(_progress_badge("bootstrap", bs_count, total))
+        status.append(_progress_badge("ready", ready_count, total))
 
-            # Reconciler
-            match state.reconciler_state:
-                case "scaling_up":
-                    status.append(_styled_badge(
-                        f"\u25cf scaling \u2192 {state.desired_nodes}", "scaling",
-                    ))
-                    if state.pending_nodes:
-                        status.append(_styled_badge(f"pending {state.pending_nodes}", "scaling"))
-                case "draining":
-                    status.append(_styled_badge(
-                        f"\u25cf draining {state.draining_nodes}", "drifted",
-                    ))
-                case _:
-                    status.append(_inline_badge("in sync"))
-            if state.is_elastic:
-                if state.min_nodes is not None:
-                    status.append(_inline_badge(f"min {state.min_nodes}"))
-                status.append(_styled_badge(f"cur {len(state.nodes)}", "cluster"))
-                if state.max_nodes is not None:
-                    status.append(_inline_badge(f"max {state.max_nodes}"))
+    cpu_vals = _collect_metric_vals(state, "cpu")
+    mem_vals = _collect_metric_vals(state, "mem")
+    gpu_vals = _collect_metric_vals(state, "gpu_util")
+    gpu_mem_vals = _collect_metric_vals(state, "gpu_mem_mb")
+    gpu_mem_total = _collect_metric_vals(state, "gpu_mem_total_mb")
+    if cpu_vals:
+        status.append(_gauge_inline("cpu", sum(cpu_vals) / len(cpu_vals)))
+    if mem_vals:
+        status.append(_gauge_inline("mem", sum(mem_vals) / len(mem_vals)))
+    if gpu_vals:
+        status.append(_gauge_inline("gpu", sum(gpu_vals) / len(gpu_vals)))
+    if gpu_mem_vals and gpu_mem_total:
+        avg_used = sum(gpu_mem_vals) / len(gpu_mem_vals)
+        avg_total = sum(gpu_mem_total) / len(gpu_mem_total)
+        pct = (avg_used / avg_total * 100) if avg_total > 0 else 0
+        status.append(_gauge_inline("vram", pct))
 
-            # Cost
-            cost = _cost_badges(state)
-            if cost:
-                status.extend(cost)
+    match state.reconciler_state:
+        case "scaling_up":
+            status.append(_styled_badge(
+                f"\u25cf scaling \u2192 {state.desired_nodes}", "scaling",
+            ))
+            if state.pending_nodes:
+                status.append(_styled_badge(f"pending {state.pending_nodes}", "scaling"))
+        case "draining":
+            status.append(_styled_badge(
+                f"\u25cf draining {state.draining_nodes}", "drifted",
+            ))
+        case _ if state.phase == _Phase.READY:
+            status.append(_inline_badge("in sync"))
 
-            # --- Line 3: Tasks ---
-            if state.tasks_queued:
-                tasks.append(_styled_badge(f"{state.tasks_queued} queued", "queued"))
-            tasks.append(_styled_badge(f"\u25cf {state.tasks_running} running", "running"))
-            tasks.append(_styled_badge(f"\u2714 {state.tasks_done} done", "done"))
-            if state.tasks_failed:
-                tasks.append(_styled_badge(f"\u2717 {state.tasks_failed} failed", "failed"))
-            rate = _throughput(state)
-            if rate > 0:
-                tasks.append(_styled_badge(f"{rate:.1f} tasks/min", "running"))
-                remaining = state.tasks_queued + state.tasks_running
-                if remaining > 0:
-                    eta_min = remaining / rate
-                    tasks.append(_styled_badge(f"est. {_format_duration(eta_min * 60)}", "cost"))
+    if state.is_elastic:
+        if state.min_nodes is not None:
+            status.append(_inline_badge(f"min {state.min_nodes}"))
+        status.append(_styled_badge(f"cur {len(state.nodes)}", "cluster"))
+        if state.max_nodes is not None:
+            status.append(_inline_badge(f"max {state.max_nodes}"))
 
-        case _Phase.STOPPED:
-            status.append(_inline_badge("shutting down"))
-            if state.tasks_done:
-                status.append(_styled_badge(f"\u2714 {state.tasks_done} done", "done"))
-            rate = _throughput(state)
-            if rate > 0:
-                status.append(_styled_badge(f"{rate:.1f}/min", "running"))
-            cost = _cost_badges(state)
-            if cost:
-                status.extend(cost)
+    cost = _cost_badges(state)
+    if cost:
+        status.extend(cost)
+
+    # --- Line 3: Tasks ---
+    if state.tasks_queued or state.tasks_running or state.tasks_done or state.tasks_failed:
+        if state.tasks_queued:
+            tasks.append(_styled_badge(f"{state.tasks_queued} queued", "queued"))
+        tasks.append(_styled_badge(f"\u25cf {state.tasks_running} running", "running"))
+        tasks.append(_styled_badge(f"\u2714 {state.tasks_done} done", "done"))
+        if state.tasks_failed:
+            tasks.append(_styled_badge(f"\u2717 {state.tasks_failed} failed", "failed"))
+        rate = _throughput(state)
+        if rate > 0:
+            tasks.append(_styled_badge(f"{rate:.1f} tasks/min", "running"))
+            remaining = state.tasks_queued + state.tasks_running
+            if remaining > 0:
+                eta_min = remaining / rate
+                tasks.append(_styled_badge(f"est. {_format_duration(eta_min * 60)}", "cost"))
 
     return infra, status, tasks
 

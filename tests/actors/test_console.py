@@ -97,7 +97,9 @@ class TestFooter:
         footer.state = _State(total_nodes=4, phase=_Phase.PROVISIONING)
         console.print(footer)
         output = buf.getvalue()
-        assert "provisioning" in output.lower()
+        assert "ssh 0/4" in output
+        assert "bootstrap 0/4" in output
+        assert "ready 0/4" in output
 
     def test_bootstrap_footer_shows_progress(self) -> None:
         from skyward.actors.console.state import _NodeStatus, _Phase, _State
@@ -435,8 +437,9 @@ class TestCollectBadges:
             nodes=MappingProxyType(dict.fromkeys(range(4), _NodeStatus.READY)),
         )
         plain = self._badges_plain(state)
-        assert "ready" in plain
-        assert "workers 4/4" in plain
+        assert "ssh 4/4" in plain
+        assert "bootstrap 4/4" in plain
+        assert "ready 4/4" in plain
 
     def test_ready_static_shows_reconciler(self) -> None:
         from skyward.actors.console.state import _NodeStatus, _Phase, _State
