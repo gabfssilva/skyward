@@ -11,9 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from skyward.infra.threaded import ThreadPoolRunner
+from skyward.observability.logger import logger
 
 from .model import CatalogOffer
 from .query import OfferQuery
+
+log = logger.bind(component="offers")
 
 _DEFAULT_DB_PATH = Path.home() / ".skyward" / "offers.db"
 
@@ -219,7 +222,8 @@ class OfferRepository:
             try:
                 async for offer in provider_instance.offers():
                     feed_offers.append(_offer_from_runtime(offer, name))
-            except Exception:
+            except Exception as e:
+                log.warning("Failed to fetch offers from {name}: {err}", name=name, err=e)
                 continue
 
             if not feed_offers:
@@ -252,7 +256,8 @@ class OfferRepository:
             try:
                 async for offer in provider_instance.offers():
                     feed_offers.append(_offer_from_runtime(offer, name))
-            except Exception:
+            except Exception as e:
+                log.warning("Failed to fetch offers from {name}: {err}", name=name, err=e)
                 continue
 
             if not feed_offers:
@@ -292,7 +297,8 @@ class OfferRepository:
             try:
                 async for offer in provider_instance.offers():
                     feed_offers.append(_offer_from_runtime(offer, name))
-            except Exception:
+            except Exception as e:
+                log.warning("Failed to fetch offers from {name}: {err}", name=name, err=e)
                 continue
 
             if not feed_offers:
