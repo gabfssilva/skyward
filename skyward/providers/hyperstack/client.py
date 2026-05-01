@@ -224,9 +224,25 @@ class HyperstackClient:
         result = await self._request("GET", "/core/virtual-machines")
         return result.get("virtual_machines", []) if result else []
 
+    @retry(
+        on=lambda e: not (isinstance(e, HyperstackError) and e.status == 404),
+        max_attempts=10,
+        base_delay=2.0,
+    )
     async def delete_vm(self, vm_id: int) -> None:
-        """Delete a VM."""
-        await self._request("DELETE", f"/core/virtual-machines/{vm_id}")
+        """Delete a VM. Idempotent — 404 is treated as success.
+
+        Retries until the API confirms deletion (200) or the VM is gone
+        (404). Hyperstack returns 400 with "currently being created and
+        cannot be deleted yet" while a VM is mid-create — this resolves
+        once create finishes, so retry covers it.
+        """
+        try:
+            await self._request("DELETE", f"/core/virtual-machines/{vm_id}")
+        except HyperstackError as e:
+            if e.status == 404:
+                return
+            raise
 
     async def add_firewall_rule(
         self,

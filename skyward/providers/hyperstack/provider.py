@@ -246,9 +246,14 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific], Mountable[Hyp
             if not info:
                 return cluster, None
 
-            match info.get("status", "").upper():
-                case "SHUTOFF" | "HIBERNATED" | "ERROR" | "DELETING" | "DELETED":
-                    return cluster, None
+            vm_status = info.get("status", "").upper()
+            match vm_status:
+                case "ERROR" | "SHUTOFF" | "HIBERNATED" | "DELETING" | "DELETED":
+                    log.warning(
+                        "VM {vm_id} in terminal state {status} — signalling exited",
+                        vm_id=vm_id, status=vm_status,
+                    )
+                    return cluster, _build_instance(info, "exited", cluster)
                 case "ACTIVE" if info.get("floating_ip"):
                     cluster, ready = await _ensure_firewall(client, cluster, vm_id)
                     status = "provisioned" if ready else "provisioning"
@@ -267,14 +272,9 @@ class HyperstackProvider(Provider[Hyperstack, HyperstackSpecific], Mountable[Hyp
         api_key = get_api_key(self._config)
 
         async with HyperstackClient(api_key, config=self._config) as client:
-
-            async def _destroy(iid: str) -> None:
-                try:
-                    await client.delete_vm(int(iid))
-                except Exception as e:
-                    log.error("Failed to delete VM {iid}: {err}", iid=iid, err=e)
-
-            await asyncio.gather(*(_destroy(iid) for iid in instance_ids))
+            await asyncio.gather(*(
+                client.delete_vm(int(iid)) for iid in instance_ids
+            ))
 
         return cluster
 

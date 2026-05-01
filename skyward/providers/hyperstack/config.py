@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from skyward.core.provider import ProviderConfig
 
 if TYPE_CHECKING:
+    from skyward.api.spec import Options
     from skyward.providers.hyperstack.provider import HyperstackProvider
 
 
@@ -66,8 +67,13 @@ class Hyperstack(ProviderConfig):
     def type(self) -> str:
         return "hyperstack"
 
-    def default_options(self) -> None:
-        return None
+    def default_options(self) -> Options:
+        from skyward.api.spec import Options
+
+        return Options(
+            provision_timeout=600,
+            bootstrap_timeout=300,
+        )
 
     async def create_provider(self) -> HyperstackProvider:
         from skyward.providers.hyperstack.provider import HyperstackProvider
