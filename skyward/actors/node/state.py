@@ -60,3 +60,4 @@ class NodeState:
     last_task_at: float = 0.0
     idle_announced: bool = False
     health_failures: int = 0
+    transport_connected: bool = True

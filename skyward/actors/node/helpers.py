@@ -441,6 +441,7 @@ async def execute_with_streaming(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
     timeout: float,
+    task_id: str = "",
 ) -> Any:
     from skyward.infra.streaming import _stream_param_indices, _StreamHandle, _SyncSource
     from skyward.infra.worker import ExecuteTask
@@ -467,6 +468,7 @@ async def execute_with_streaming(
                 kwargs=kwargs,
                 reply_to=rto,
                 input_streams=stream_refs,
+                task_id=task_id,
             ),
             timeout=timeout,
         ),

@@ -17,11 +17,10 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
-from contextlib import suppress
 from dataclasses import replace
 from functools import partial
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors, Terminated
 
@@ -54,7 +53,6 @@ from skyward.infra.ssh_actor import (
     ConnectionLost,
     ConnectionRestored,
     ForwardPort,
-    PortReForwarded,
     StopTransport,
     ssh_transport,
     transport_ask,
@@ -89,6 +87,7 @@ from .messages import (
     _PollResult,
     _PostBootstrapFailed,
     _RemoteTaskDone,
+    _ResultReconciled,
     _SnapshotFailed,
     _SnapshotSaved,
     _UserCodeSyncDone,
@@ -167,6 +166,56 @@ def _evaluate_health(
     if new_count >= threshold:
         return new_count, f"health check failed {new_count}x: {reason or 'unspecified'}"
     return new_count, None
+
+
+type ReconcileDecision = Literal["succeeded", "failed", "wait", "interrupted"]
+
+
+def _classify_reconcile_result(
+    reply: Any,
+    error: str | None,
+) -> ReconcileDecision:
+    """Map a ``GetResult`` reply to a reconciliation decision.
+
+    Parameters
+    ----------
+    reply : ResultPending | ResultDone | ResultUnknown | None
+        Worker's response to ``GetResult``. ``None`` means the
+        reconciliation ask itself raised (network failure, timeout).
+    error : str | None
+        Error string when ``reply`` is ``None``.
+
+    Returns
+    -------
+    ReconcileDecision
+        - ``"succeeded"`` / ``"failed"``: surface to caller and remove from inflight.
+        - ``"wait"``: task still running on worker; original ask will resolve.
+        - ``"interrupted"``: reply lost or worker has no record; surface
+          ``TaskInterrupted`` so the task manager retries on another node.
+    """
+    from skyward.infra.worker import (
+        ResultDone,
+        ResultPending,
+        ResultUnknown,
+    )
+    from skyward.infra.worker import (
+        TaskFailed as WorkerTaskFailed,
+    )
+    from skyward.infra.worker import (
+        TaskSucceeded as WorkerTaskSucceeded,
+    )
+
+    match reply:
+        case ResultPending():
+            return "wait"
+        case ResultDone(result=WorkerTaskSucceeded()):
+            return "succeeded"
+        case ResultDone(result=WorkerTaskFailed()):
+            return "failed"
+        case ResultUnknown():
+            return "interrupted"
+        case _:
+            return "interrupted"
 
 
 def node_actor(
@@ -603,32 +652,12 @@ def node_actor(
                         env_vars=MappingProxyType(ev), around_app_hooks=hooks,
                         around_process_hooks=phooks,
                     ))
-                case PortReForwarded(old_port=_, new_port=new_port):
-                    log.info("Port re-forwarded to {port} while ready", port=new_port)
-                    pool.tell(
-                        NodeBecameReady(
-                            node_id=node_id,
-                            instance=ni,
-                            local_port=new_port,
-                            private_ip=ni.instance.private_ip or ni.instance.ip or "",
-                        )
-                    )
-                    return ready(replace(s, local_port=new_port))
                 case ConnectionLost():
                     log.warning("Connection lost while ready, transport reconnecting")
                     return Behaviors.same()
-                case ConnectionRestored(local_port=new_port):
-                    effective_port = new_port or s.local_port
-                    log.info("Connection restored while ready (port={port})", port=effective_port)
-                    pool.tell(
-                        NodeBecameReady(
-                            node_id=node_id,
-                            instance=ni,
-                            local_port=effective_port,
-                            private_ip=ni.instance.private_ip or ni.instance.ip or "",
-                        )
-                    )
-                    return ready(replace(s, local_port=effective_port))
+                case ConnectionRestored():
+                    log.info("Connection restored while ready")
+                    return Behaviors.same()
                 case ConnectionFailed(error=error):
                     log.error("Transport permanently failed while ready: {err}", err=error)
                     return _fail_and_stop(s, "connection lost")
@@ -735,7 +764,9 @@ def node_actor(
     ) -> None:
         t0 = time.monotonic()
         ctx.pipe_to_self(
-            execute_with_streaming(s.client, s.worker_ref, fn, args, kwargs, timeout),
+            execute_with_streaming(
+                s.client, s.worker_ref, fn, args, kwargs, timeout, task_id=tid,
+            ),
             mapper=lambda result, _tid=tid, _t0=t0: _RemoteTaskDone(  # type: ignore[return-value]
                 task_id=_tid,
                 value=(result.result if hasattr(result, "result") else RuntimeError(result.error)),
@@ -750,7 +781,6 @@ def node_actor(
                 node_id=node_id,
                 reply_to=ctx.self,
                 error=True,
-                connection_error=True,
                 elapsed=time.monotonic() - _t0,
             ),
         )
@@ -857,48 +887,16 @@ def node_actor(
             match msg:
                 case HeadAddressKnown() as h:
                     return active(replace(s, head_info=h))
-                case JoinCluster(client=client):
-                    log.info("Re-joining cluster on node {nid}", nid=node_id)
-                    if s.client and s.client is not client:
-                        with suppress(Exception):
-                            await s.client.__aexit__(None, None, None)
-                    ni = s.ni
-                    if ni is None:
-                        log.error("Cannot re-join: no node instance")
-                        return Behaviors.same()
-                    ctx.pipe_to_self(
-                        discover_own_worker(client, ni, standalone=not s.cluster.spec.cluster),
-                        mapper=lambda ref: _WorkerDiscovered(worker_ref=ref),
-                        on_failure=lambda e: _WorkerDiscoveryFailed(error=str(e)),
-                    )
-                    return active(replace(s, client=client))
-                case _WorkerDiscovered(worker_ref=wref):
-                    log.info("Worker re-discovered on node {nid}", nid=node_id)
-                    ctx.pipe_to_self(
-                        setup_worker_env(
-                            s.client, wref, s.pool_info_json,
-                            s.env_vars, s.around_app_hooks, s.around_process_hooks,
-                        ),
-                        mapper=lambda _: _EnvSetupDone(),
-                        on_failure=lambda e: _EnvSetupFailed(error=str(e)),
-                    )
-                    return active(replace(s, worker_ref=wref))
-                case _WorkerDiscoveryFailed(error=error):
-                    log.warning(
-                        "Worker re-discovery failed on node {nid}: {error}",
-                        nid=node_id, error=error,
-                    )
-                    return Behaviors.same()
-                case _EnvSetupDone():
-                    log.info("Worker env re-setup complete on node {nid}", nid=node_id)
-                    return Behaviors.same()
-                case _EnvSetupFailed(error=error):
-                    log.warning(
-                        "Worker env re-setup failed on node {nid}: {error}",
-                        nid=node_id, error=error,
-                    )
-                    return Behaviors.same()
                 case ExecuteOnNode() as ex:
+                    if not s.transport_connected:
+                        pt = PendingTask(
+                            ex.fn, ex.args, ex.kwargs, ex.reply_to, ex.task_id, ex.timeout,
+                        )
+                        log.debug(
+                            "Node {nid} transport down, queuing task {tid} (queue={n})",
+                            nid=node_id, tid=ex.task_id, n=len(s.pending_tasks) + 1,
+                        )
+                        return active(replace(s, pending_tasks=(*s.pending_tasks, pt)))
                     local_tid = ex.task_id or str(s.task_counter)
                     log.debug("Node {nid} dispatching task {tid}", nid=node_id, tid=local_tid)
                     _dispatch_task(ctx, s, local_tid, ex.fn, ex.args, ex.kwargs, ex.timeout)
@@ -913,58 +911,115 @@ def node_actor(
                         autoscaler.tell(NodeBecameBusy(node_id=node_id))
                         new_s = replace(new_s, idle_announced=False)
                     return active(new_s)
-                case _RemoteTaskDone(task_id=tid, value=value, error=is_err, connection_error=conn_err, elapsed=elapsed):
+                case _RemoteTaskDone(task_id=tid, value=value, error=is_err, elapsed=elapsed):
                     log.debug("Node {nid} received task result (tid={tid})", nid=node_id, tid=tid)
-                    if conn_err:
-                        log.warning(
-                            "Connection error on node {nid}, interrupting inflight tasks",
-                            nid=node_id,
-                        )
-                        conn_error = RuntimeError(f"Node {node_id} connection lost")
-                        for inflight_tid, inflight_caller in s.inflight.items():
-                            inflight_caller.tell(
-                                TaskInterrupted(
-                                    error=conn_error, node_id=node_id, task_id=inflight_tid,
-                                )
-                            )
-                        _stop_transport(s.transport_ref)
-                        iid = s.ni.instance.id if s.ni else None
-                        pool.tell(NodeExhausted(node_id=node_id, reason="connection lost", instance_id=iid))
-                        return Behaviors.stopped()
                     caller = s.inflight.get(tid)
-                    if caller:
-                        result = (
-                            TaskFailed(error=value, node_id=node_id, task_id=tid)
-                            if is_err
-                            else TaskSucceeded(value=value, node_id=node_id, task_id=tid, elapsed=elapsed)
-                        )
-                        caller.tell(result)
-                        new_inflight = MappingProxyType({k: v for k, v in s.inflight.items() if k != tid})
-                        return active(replace(s, inflight=new_inflight, last_task_at=time.monotonic()))
-                    return Behaviors.same()
+                    if caller is None:
+                        # already reconciled via GetResult — discard duplicate
+                        return Behaviors.same()
+                    result = (
+                        TaskFailed(error=value, node_id=node_id, task_id=tid)
+                        if is_err
+                        else TaskSucceeded(value=value, node_id=node_id, task_id=tid, elapsed=elapsed)
+                    )
+                    caller.tell(result)
+                    new_inflight = MappingProxyType({k: v for k, v in s.inflight.items() if k != tid})
+                    return active(replace(s, inflight=new_inflight, last_task_at=time.monotonic()))
+                case _ResultReconciled(task_id=tid, reply=reply, error=err):
+                    caller = s.inflight.get(tid)
+                    if caller is None:
+                        return Behaviors.same()  # original ask resolved first
+                    from skyward.infra.worker import (
+                        ResultDone,
+                        TaskFailed as WorkerTaskFailed,
+                        TaskSucceeded as WorkerTaskSucceeded,
+                    )
+
+                    match reply:
+                        case ResultDone(result=WorkerTaskSucceeded() as ws):
+                            log.info(
+                                "Reconcile {tid} on node {nid}: recovered TaskSucceeded",
+                                tid=tid, nid=node_id,
+                            )
+                            caller.tell(TaskSucceeded(
+                                value=ws.result,
+                                node_id=node_id, task_id=tid, elapsed=0.0,
+                            ))
+                        case ResultDone(result=WorkerTaskFailed() as wf):
+                            log.info(
+                                "Reconcile {tid} on node {nid}: recovered TaskFailed",
+                                tid=tid, nid=node_id,
+                            )
+                            caller.tell(TaskFailed(
+                                error=RuntimeError(f"{wf.error}\n{wf.traceback}"),
+                                node_id=node_id, task_id=tid,
+                            ))
+                        case _ if _classify_reconcile_result(reply, err) == "wait":
+                            log.debug(
+                                "Reconcile {tid} on node {nid}: still running",
+                                tid=tid, nid=node_id,
+                            )
+                            return Behaviors.same()
+                        case _:
+                            log.warning(
+                                "Reconcile {tid} on node {nid} unrecoverable: {err}",
+                                tid=tid, nid=node_id,
+                                err=err or "worker has no record",
+                            )
+                            caller.tell(TaskInterrupted(
+                                error=RuntimeError(f"Result lost on node {node_id}"),
+                                node_id=node_id, task_id=tid,
+                            ))
+                    new_inflight = MappingProxyType({k: v for k, v in s.inflight.items() if k != tid})
+                    return active(replace(s, inflight=new_inflight, last_task_at=time.monotonic()))
                 case ConnectionLost(error=error):
                     log.warning(
-                        "Connection lost on node {nid}: {err}, transport reconnecting",
+                        "Connection lost on node {nid}: {err}, transport reconnecting; pausing dispatch",
                         nid=node_id, err=error,
                     )
-                    return Behaviors.same()
-                case ConnectionRestored(local_port=new_port):
-                    effective_port = new_port or s.local_port
+                    return active(replace(s, transport_connected=False))
+                case ConnectionRestored():
                     log.info(
-                        "Transport reconnected on node {nid} (port={port})",
-                        nid=node_id, port=effective_port,
+                        "Transport reconnected on node {nid}: reconciling {n_inflight} inflight, draining {n_pending} pending",
+                        nid=node_id,
+                        n_inflight=len(s.inflight),
+                        n_pending=len(s.pending_tasks),
                     )
-                    ni = s.ni
-                    if ni:
-                        pool.tell(
-                            NodeBecameReady(
-                                node_id=node_id,
-                                instance=ni,
-                                local_port=effective_port,
-                                private_ip=ni.instance.private_ip or ni.instance.ip or "",
-                            )
+                    # fan out a GetResult ask per inflight tid to recover lost replies
+                    from skyward.infra.worker import GetResult
+
+                    for inflight_tid in list(s.inflight):
+                        ctx.pipe_to_self(
+                            s.client.ask(
+                                s.worker_ref,
+                                lambda rto, _tid=inflight_tid: GetResult(
+                                    task_id=_tid, reply_to=rto,
+                                ),
+                                timeout=10.0,
+                            ),
+                            mapper=lambda reply, _tid=inflight_tid: _ResultReconciled(
+                                task_id=_tid, reply=reply,
+                            ),
+                            on_failure=lambda e, _tid=inflight_tid: _ResultReconciled(
+                                task_id=_tid, reply=None, error=repr(e),
+                            ),
                         )
-                    return active(replace(s, local_port=effective_port))
+                    # drain pending normally
+                    new_inflight = s.inflight
+                    new_counter = s.task_counter
+                    for pt in s.pending_tasks:
+                        tid = pt.task_id or str(new_counter)
+                        _dispatch_task(ctx, s, tid, pt.fn, pt.args, pt.kwargs, pt.timeout)
+                        new_inflight = MappingProxyType({**new_inflight, tid: pt.reply_to})
+                        new_counter += 1
+                    return active(replace(
+                        s,
+                        transport_connected=True,
+                        pending_tasks=(),
+                        inflight=new_inflight,
+                        task_counter=new_counter,
+                        last_task_at=time.monotonic() if s.pending_tasks else s.last_task_at,
+                    ))
                 case ConnectionFailed(error=error):
                     log.error(
                         "Transport permanently failed on node {nid}: {err}",
@@ -981,19 +1036,6 @@ def node_actor(
                     iid = s.ni.instance.id if s.ni else None
                     pool.tell(NodeExhausted(node_id=node_id, reason=f"connection failed: {error}", instance_id=iid))
                     return Behaviors.stopped()
-                case PortReForwarded(old_port=_, new_port=new_port):
-                    log.info("Port re-forwarded to {port}", port=new_port)
-                    ni = s.ni
-                    if ni:
-                        pool.tell(
-                            NodeBecameReady(
-                                node_id=node_id,
-                                instance=ni,
-                                local_port=new_port,
-                                private_ip=ni.instance.private_ip or ni.instance.ip or "",
-                            )
-                        )
-                    return active(replace(s, local_port=new_port))
                 case Preempted(reason=reason):
                     log.warning("Preempted while active: {reason}", reason=reason)
                     _stop_transport(s.transport_ref)

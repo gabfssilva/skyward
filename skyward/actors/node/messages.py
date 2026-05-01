@@ -16,12 +16,13 @@ from skyward.actors.messages import (
     TaskInterrupted,
     TaskSucceeded,
 )
-from skyward.infra.ssh_actor import ConnectionFailed, ConnectionLost, ConnectionRestored, PortReForwarded
+from skyward.infra.ssh_actor import ConnectionFailed, ConnectionLost, ConnectionRestored
 
 if TYPE_CHECKING:
     from casty import ClusterClient
 
     from skyward.api.plugin import AppLifecycle, ProcessLifecycle
+    from skyward.infra.worker import GetResultReply
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,7 +96,6 @@ class _RemoteTaskDone:
     node_id: int
     reply_to: ActorRef[Any]
     error: bool = False
-    connection_error: bool = False
     elapsed: float = 0.0
 
 
@@ -144,6 +144,13 @@ class _HealthStreamEnded:
     reason: str
 
 
+@dataclass(frozen=True, slots=True)
+class _ResultReconciled:
+    task_id: str
+    reply: GetResultReply | None
+    error: str | None = None
+
+
 type NodeMsg = (
     Provision
     | ExecuteOnNode
@@ -165,6 +172,7 @@ type NodeMsg = (
     | _EnvSetupDone | _EnvSetupFailed
     | _IdleTick
     | _HealthCheckResult | _HealthStreamEnded
-    | ConnectionLost | ConnectionRestored | ConnectionFailed | PortReForwarded
+    | _ResultReconciled
+    | ConnectionLost | ConnectionRestored | ConnectionFailed
     | Terminated
 )
