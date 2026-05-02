@@ -153,12 +153,6 @@ def create_pool(
 
         sys.stdout.write(_json.dumps(info) + "\n")
         return
-    print_table(_POOL_COLUMNS, [_pool_row(info)])
-    if info.get("status") == "creating" and not watch:
-        console.print(
-            f"[dim]Provisioning in background.[/dim] "
-            f"Follow with: [bold]sky compute view {info['name']}[/bold]"
-        )
 
     if watch:
         import asyncio
@@ -168,6 +162,14 @@ def create_pool(
         exit_code = asyncio.run(_render(target, info["name"], json_mode=False, once=False))
         if exit_code != 0:
             raise SystemExit(exit_code)
+        return
+
+    print_table(_POOL_COLUMNS, [_pool_row(info)])
+    if info.get("status") == "creating":
+        console.print(
+            f"[dim]Provisioning in background.[/dim] "
+            f"Follow with: [bold]sky compute view {info['name']}[/bold]"
+        )
 
 
 @compute_app.command(name="list")
