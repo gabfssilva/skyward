@@ -35,7 +35,7 @@ sky.Compute(
 )
 ```
 
-One caveat for multi-node training: RunPod's individual pods don't share a private network. Each pod gets its own IP, but pods can't reach each other directly. Skyward handles this transparently for task dispatch (everything goes over SSH), but if your workload needs inter-node communication (NCCL for distributed training), you'll need RunPod's global networking — which only works with NVIDIA GPUs on on-demand instances. Otherwise, run in standalone mode with `options=sky.Options(cluster=False)`.
+One caveat for multi-node training: RunPod's individual pods don't share a private network. Each pod gets its own IP, but pods can't reach each other directly. Skyward handles this transparently for task dispatch (everything goes over SSH), and RunPod defaults to standalone mode for that reason. If your workload needs inter-node communication (NCCL for distributed training), you'll need RunPod's global networking — which only works with NVIDIA GPUs on on-demand instances — and you'll need to opt into cluster mode explicitly with `options=sky.Options(cluster=True)`.
 
 ### AWS
 

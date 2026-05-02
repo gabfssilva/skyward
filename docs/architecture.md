@@ -63,7 +63,7 @@ The alternative would be running a separate coordination service on every epheme
 
 ## Standalone mode
 
-The cluster architecture described above assumes nodes can reach each other on private IPs. Some providers — RunPod's individual pods, certain VastAI marketplace hosts — don't provide this. When you set `Options(cluster=False)`, Skyward skips cluster formation entirely.
+The cluster architecture described above assumes nodes can reach each other on private IPs. Providers that don't offer this — RunPod, VastAI, TensorDock, JarvisLabs, Novita, MassedCompute — default to standalone mode in their `default_options()`. On providers with private networking, you can opt out via `Options(cluster=False)`. Either way, Skyward skips cluster formation entirely.
 
 Each worker runs its own `ClusteredActorSystem` without seed nodes, so it never discovers peers and operates in isolation. The pool actor on your laptop creates a separate `ClusterClient` for each worker, each connected through its own SSH tunnel:
 

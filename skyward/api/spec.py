@@ -346,9 +346,10 @@ class Options:
         Logging configuration. ``True`` uses sensible defaults,
         ``False`` disables logging, or pass a ``LogConfig`` instance.
     cluster
-        Whether workers form a Casty cluster.  ``True`` (default) enables
-        distributed collections and cluster-aware coordination.  ``False``
-        runs each worker independently.
+        Whether workers form a Casty cluster.  ``True`` enables distributed
+        collections and cluster-aware coordination; ``False`` runs each
+        worker independently.  ``None`` (default) defers to the provider's
+        ``default_options()``; the system fallback is ``True``.
     retry_on_interruption
         Maximum retries per task on infrastructure interruption.  ``0`` disables.
     health_checker
@@ -380,7 +381,7 @@ class Options:
     shutdown_timeout: float = 120.0
     console: bool | ConsoleMode = True
     logging: LogConfig | bool = True
-    cluster: bool = True
+    cluster: bool | None = None
     retry_on_interruption: int = 3
     health_checker: HealthChecker | None = None
 

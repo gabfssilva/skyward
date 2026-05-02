@@ -1,6 +1,6 @@
 # Standalone workers
 
-Some cloud providers launch instances as isolated pods or VMs without private networking between them. RunPod individual pods, for example, have no shared VLAN — nodes cannot reach each other on internal addresses. Skyward's default cluster mode requires intra-node connectivity to form a Casty mesh, so these providers need a different topology. Standalone worker mode (`Options(cluster=False)`) disables cluster formation entirely, running each worker as an independent process that communicates only with your client machine.
+Some cloud providers launch instances as isolated pods or VMs without private networking between them. RunPod individual pods, for example, have no shared VLAN — nodes cannot reach each other on internal addresses. Cluster mode requires intra-node connectivity to form a Casty mesh, so these providers default to standalone instead: **RunPod, VastAI, TensorDock, JarvisLabs, Novita, and MassedCompute** all set `cluster=False` in their `default_options()`. Providers with private networking (AWS, GCP, Hyperstack, Lambda, Scaleway, Verda, Vultr, Container) default to cluster mode. Standalone mode disables cluster formation entirely, running each worker as an independent process that communicates only with your client machine.
 
 ## The topology
 
@@ -42,15 +42,17 @@ Your compute function does not change. The `@sky.function` decorator, lazy evalu
 
 The function runs on a single node, receives its arguments via cloudpickle, and returns its result over SSH. `sky.instance_info()` still works — each worker knows its own node index, accelerator info, and total node count. The difference is purely in how workers relate to each other: they don't.
 
-## Disabling the cluster
+## Activating standalone mode
 
-Pass `Options(cluster=False)` to your `Compute` context manager:
+For providers that default to standalone (RunPod, VastAI, TensorDock, JarvisLabs, Novita, MassedCompute), nothing extra is needed — the pool comes up in standalone mode automatically:
 
 ```python
 --8<-- "guides/21_standalone_workers.py:pool"
 ```
 
-Behind the scenes, this changes two things. First, each worker starts its `ClusteredActorSystem` without seed nodes, so it never joins a cluster and operates in isolation. There is no head election and no seed broadcast — every node is an island. Second, the pool actor creates a separate `ClusterClient` per worker, each connected through its own SSH tunnel, rather than sharing one client across the cluster.
+For providers that default to cluster mode (AWS, GCP, etc.), pass `options=sky.Options(cluster=False)` to `Compute` to opt out. Conversely, on a standalone-default provider that exposes private networking (e.g. RunPod with global networking enabled), pass `options=sky.Options(cluster=True)` to force cluster mode.
+
+Behind the scenes, standalone mode changes two things. First, each worker starts its `ClusteredActorSystem` without seed nodes, so it never joins a cluster and operates in isolation. There is no head election and no seed broadcast — every node is an island. Second, the pool actor creates a separate `ClusterClient` per worker, each connected through its own SSH tunnel, rather than sharing one client across the cluster.
 
 Task dispatch is unaffected. `>>` sends to one node (round-robin), `@` broadcasts to all nodes, `&` runs tasks in parallel, `>` returns a future. `sky.gather` distributes work across all available workers. The operators are client-side constructs — they don't depend on inter-node communication.
 
@@ -82,8 +84,8 @@ uv run python guides/21_standalone_workers.py
 
 **What you learned:**
 
-- **`Options(cluster=False)`** disables Casty cluster formation — workers run as independent processes connected only to your client via SSH.
+- **Standalone is the default on RunPod, VastAI, TensorDock, JarvisLabs, Novita, and MassedCompute** — workers run as independent processes connected only to your client via SSH. Override with `Options(cluster=True)` when the provider supports it (e.g. RunPod global networking).
+- **`Options(cluster=False)` opts out of cluster mode** on providers that default to it (AWS, GCP, etc.).
 - **Star topology** replaces the cluster mesh — the client opens per-node tunnels, and workers have no knowledge of each other.
 - **All operators work unchanged** — `>>`, `@`, `&`, `>`, and `sky.gather` dispatch tasks from the client without relying on inter-node communication.
 - **Distributed collections and distributed training are unavailable** — they require the cluster mesh for replication and peer discovery.
-- **Use it for providers without private networking** (RunPod pods, isolated VMs) or embarrassingly parallel workloads that need no shared state.

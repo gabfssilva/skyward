@@ -12,6 +12,7 @@ from skyward.containers import DockerImage
 from skyward.core.provider import ProviderConfig
 
 if TYPE_CHECKING:
+    from skyward.api.spec import Options
     from skyward.providers.vastai.provider import VastAIProvider
 
 # =============================================================================
@@ -72,5 +73,6 @@ class VastAI(ProviderConfig):
     @property
     def type(self) -> str: return "vastai"
 
-    def default_options(self) -> None:
-        return None
+    def default_options(self) -> Options:
+        from skyward.api.spec import Options
+        return Options(cluster=False)

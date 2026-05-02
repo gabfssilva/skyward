@@ -9,6 +9,7 @@ from skyward.providers.container.config import Container
 from skyward.providers.gcp.config import GCP
 from skyward.providers.hyperstack.config import Hyperstack
 from skyward.providers.jarvislabs.config import JarvisLabs
+from skyward.providers.massed_compute.config import MassedCompute
 from skyward.providers.novita.config import Novita
 from skyward.providers.runpod.config import RunPod
 from skyward.providers.scaleway.config import Scaleway
@@ -33,26 +34,53 @@ class TestNovitaDefaultOptions:
         opts = Novita().default_options()
         assert opts.bootstrap_timeout == 600
 
+    def test_cluster_false(self):
+        opts = Novita().default_options()
+        assert opts.cluster is False
 
-class TestOtherProvidersDefaultOptions:
+
+class TestStandaloneProviders:
+    """Providers without private networking default to cluster=False."""
+
+    @pytest.mark.parametrize(
+        "provider",
+        [
+            VastAI(),
+            RunPod(),
+            TensorDock(),
+            JarvisLabs(),
+            MassedCompute(),
+            Novita(),
+        ],
+        ids=lambda p: type(p).__name__,
+    )
+    def test_cluster_false(self, provider):
+        opts = provider.default_options()
+        assert opts is not None
+        assert opts.cluster is False
+
+
+class TestClusterCapableProviders:
+    """Providers with private networking inherit the system default (cluster=True)."""
+
     @pytest.mark.parametrize(
         "provider",
         [
             AWS(),
             GCP(),
-            Hyperstack(),
-            VastAI(),
-            RunPod(),
-            TensorDock(),
             Verda(),
             Vultr(),
             Scaleway(),
-            JarvisLabs(),
             Container(),
         ],
         ids=lambda p: type(p).__name__,
     )
     def test_returns_none(self, provider):
         assert provider.default_options() is None
+
+    def test_hyperstack_cluster_unset(self):
+        opts = Hyperstack().default_options()
+        assert opts is not None
+        assert opts.cluster is None
 
 

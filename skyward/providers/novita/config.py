@@ -69,4 +69,5 @@ class Novita(ProviderConfig):
             provision_timeout=600,
             ssh_timeout=600,
             bootstrap_timeout=600,
+            cluster=False,
         )

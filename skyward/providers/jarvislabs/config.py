@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from skyward.core.provider import ProviderConfig
 
 if typing.TYPE_CHECKING:
+    from skyward.api.spec import Options
     from skyward.providers.jarvislabs.provider import JarvisLabsProvider
 
 
@@ -45,8 +46,9 @@ class JarvisLabs(ProviderConfig):
     def type(self) -> str:
         return "jarvislabs"
 
-    def default_options(self) -> None:
-        return None
+    def default_options(self) -> Options:
+        from skyward.api.spec import Options
+        return Options(cluster=False)
 
     async def create_provider(self) -> JarvisLabsProvider:
         from skyward.providers.jarvislabs.provider import JarvisLabsProvider

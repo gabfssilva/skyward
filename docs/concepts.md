@@ -158,18 +158,17 @@ For a practical comparison with benchmarks, see the [Worker Executors](guides/wo
 
 ### Standalone mode
 
-By default, workers form a Casty cluster — a peer-to-peer actor system that enables distributed collections and inter-node coordination. Some providers (RunPod individual pods, some VastAI configurations) don't provide private networking between instances, which prevents cluster formation. For these cases, standalone mode runs each worker independently:
+On providers with private networking (AWS, GCP, Hyperstack, Lambda, Scaleway, Verda, Vultr, Container), workers form a Casty cluster — a peer-to-peer actor system that enables distributed collections and inter-node coordination. Providers that don't offer private networking between instances (RunPod, VastAI, TensorDock, JarvisLabs, Novita, MassedCompute) default to standalone mode, where each worker runs independently:
 
 ```python
 with sky.Compute(
     provider=sky.RunPod(),
     nodes=4,
-    options=sky.Options(cluster=False),
 ) as compute:
     results = sky.gather(*tasks) >> compute
 ```
 
-In standalone mode, the client connects to each worker directly via its own SSH tunnel. Task dispatch works identically — `>>`, `@`, `&`, and `gather()` behave the same — but distributed collections (`sky.dict()`, `sky.barrier()`, etc.) are not available. For a detailed walkthrough, see the [Standalone Workers](guides/standalone-workers.md) guide.
+To force standalone on a cluster-capable provider, pass `options=sky.Options(cluster=False)`; to force cluster mode on a standalone-default provider that supports private networking, pass `options=sky.Options(cluster=True)`. In standalone mode, the client connects to each worker directly via its own SSH tunnel. Task dispatch works identically — `>>`, `@`, `&`, and `gather()` behave the same — but distributed collections (`sky.dict()`, `sky.barrier()`, etc.) are not available. For a detailed walkthrough, see the [Standalone Workers](guides/standalone-workers.md) guide.
 
 ## Operators
 

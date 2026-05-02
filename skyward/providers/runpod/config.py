@@ -15,6 +15,7 @@ from skyward.core.provider import ProviderConfig
 type ClusterMode = Literal["instant", "individual"]
 
 if typing.TYPE_CHECKING:
+    from skyward.api.spec import Options
     from skyward.providers.runpod.provider import RunPodProvider
 
 # =============================================================================
@@ -110,7 +111,7 @@ class RunPod(ProviderConfig):
     """
 
     cluster_mode: ClusterMode = "individual"
-    base_image: Literal["nvidia", "runpod-base", "runpod-pytorch"] = "runpod-base"
+    base_image: Literal["nvidia", "runpod-base", "runpod-pytorch"] = "nvidia"
     global_networking: bool | None = None
     api_key: str | None = None
     cloud_type: Literal["community", "secure"] = "secure"
@@ -158,8 +159,13 @@ class RunPod(ProviderConfig):
     @property
     def type(self) -> str: return "runpod"
 
-    def default_options(self) -> None:
-        return None
+    def default_options(self) -> Options:
+        from skyward.api.spec import Options
+        return Options(
+            cluster=False,
+            provision_timeout=240,
+            bootstrap_timeout=240
+        )
 
     @property
     def region(self) -> str:

@@ -33,7 +33,6 @@ if __name__ == "__main__":
     with sky.Compute(
         provider=sky.RunPod(),
         nodes=4,
-        options=sky.Options(cluster=False),
     ) as compute:
         results = sky.gather(*(process_chunk(i) for i in range(8))) >> compute
         for r in results:

@@ -10,6 +10,7 @@ from skyward.core.provider import ProviderConfig
 if typing.TYPE_CHECKING:
     from typing import Literal
 
+    from skyward.api.spec import Options
     from skyward.providers.tensordock.provider import TensorDockProvider
 
 
@@ -55,8 +56,9 @@ class TensorDock(ProviderConfig):
     def type(self) -> str:
         return "tensordock"
 
-    def default_options(self) -> None:
-        return None
+    def default_options(self) -> Options:
+        from skyward.api.spec import Options
+        return Options(cluster=False)
 
     async def create_provider(self) -> TensorDockProvider:
         from skyward.providers.tensordock.provider import TensorDockProvider
