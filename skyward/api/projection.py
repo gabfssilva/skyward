@@ -191,6 +191,23 @@ class SessionProjection:
 
         return unsubscribe
 
+    def seed(self, name: str, view: PoolView) -> None:
+        """Replace the projection's state for one pool with ``view``.
+
+        Useful for clients that join a stream mid-flight and receive a
+        snapshot of the current pool state — the snapshot replaces any
+        partial state, then ``handle`` continues from there.
+
+        Parameters
+        ----------
+        name : str
+            Pool name keyed in :attr:`view.pools`.
+        view : PoolView
+            Replacement state for the pool.
+        """
+        self._pools[name] = view
+        self._view = SessionView(pools=MappingProxyType(dict(self._pools)))
+
     def _is_duplicate(self, event: SessionEvent) -> bool:
         match event:
             case Task.Queued(pool_name=name, task_id=tid):

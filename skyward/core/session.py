@@ -47,7 +47,7 @@ from .spec import (
 _DEFAULT_OPTIONS = Options()
 
 
-def _resolve[T: (int, float)](user: T | None, provider: T | None, default: T) -> T:
+def _resolve[T: (int, float, bool)](user: T | None, provider: T | None, default: T) -> T:
     if user is not None:
         return user
     if provider is not None:
@@ -300,6 +300,66 @@ class Session:
         """The session projection accumulating domain events."""
         return self._projection
 
+    def stop_pool(self, name: str) -> bool:
+        """Stop a pool by name, whether ready or still provisioning.
+
+        Looks the pool up in two places:
+
+        - ``self._pools`` — fully started pools (``ComputePool.__exit__``
+          path).
+        - ``self._pending_pool_refs`` — pools whose actor was spawned but
+          whose ``StartPool`` hasn't finished yet (so the pool is mid-
+          provisioning). The actor is signalled via ``StopPool`` and will
+          tear down any cloud instances it has already created.
+
+        Returns
+        -------
+        bool
+            ``True`` when the pool was found (in either map) and the stop
+            was issued, ``False`` when no pool with that name exists.
+        """
+        if not self._active or self._loop is None:
+            return False
+
+        pool = self._pools.pop(name, None)
+        if pool is not None:
+            try:
+                run_sync(
+                    self._loop,
+                    pool._stop_pool_actor(),
+                    timeout=self._shutdown_timeout,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Error stopping pool {name}: {err}", name=name, err=e,
+                )
+            self._pending_pool_refs.pop(name, None)
+            return True
+
+        ref = self._pending_pool_refs.pop(name, None)
+        if ref is not None and self._system is not None:
+            from skyward.actors.pool.messages import StopPool
+
+            system = self._system
+
+            async def _stop() -> None:
+                await system.ask(
+                    ref,
+                    lambda reply_to: StopPool(reply_to=reply_to),
+                    timeout=self._shutdown_timeout,
+                )
+
+            try:
+                run_sync(self._loop, _stop(), timeout=self._shutdown_timeout)
+            except Exception as e:
+                logger.warning(
+                    "Error stopping pending pool {name}: {err}",
+                    name=name, err=e,
+                )
+            return True
+
+        return False
+
     @overload
     def compute(
         self,
@@ -417,7 +477,11 @@ class Session:
             autoscale_idle_timeout=options.autoscale_idle_timeout,
             reconcile_tick_interval=options.reconcile_tick_interval,
             plugins=tuple(first_spec.plugins),
-            cluster=options.cluster,
+            cluster=_resolve(
+                options.cluster,
+                provider_opts.cluster if provider_opts else None,
+                True,
+            ),
             retry_on_interruption=options.retry_on_interruption,
             health_checker=options.health_checker,
         )

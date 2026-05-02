@@ -2,32 +2,70 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from skyward.api.pool import Pool
     from skyward.api.session import Session
 
 
+type PoolStatus = Literal["creating", "ready", "failed", "stopping"]
+
+
+@dataclass(slots=True)
+class PoolEntry:
+    name: str
+    status: PoolStatus
+    pool: Pool | None = None
+    error: str | None = None
+    task: asyncio.Task | None = None
+
+
 @dataclass
 class ServerState:
     session: Session
-    pools: dict[str, Pool] = field(default_factory=dict)
+    pools: dict[str, PoolEntry] = field(default_factory=dict)
     executions: dict[str, Future] = field(default_factory=dict)
     broadcast_executor: ThreadPoolExecutor = field(
         default_factory=lambda: ThreadPoolExecutor(max_workers=8, thread_name_prefix="sky-bcast"),
     )
 
-    def register_pool(self, name: str, pool: Pool) -> None:
-        self.pools[name] = pool
+    def register_creating(self, name: str, task: asyncio.Task) -> PoolEntry:
+        entry = PoolEntry(name=name, status="creating", task=task)
+        self.pools[name] = entry
+        return entry
 
-    def get_pool(self, name: str) -> Pool | None:
+    def set_ready(self, name: str, pool: Pool) -> None:
+        entry = self.pools.get(name)
+        if entry is None:
+            return
+        entry.status = "ready"
+        entry.pool = pool
+        entry.error = None
+        entry.task = None
+
+    def set_failed(self, name: str, error: str) -> None:
+        entry = self.pools.get(name)
+        if entry is None:
+            return
+        entry.status = "failed"
+        entry.error = error
+        entry.task = None
+
+    def set_stopping(self, name: str) -> None:
+        entry = self.pools.get(name)
+        if entry is None:
+            return
+        entry.status = "stopping"
+
+    def get_pool(self, name: str) -> PoolEntry | None:
         return self.pools.get(name)
 
-    def drop_pool(self, name: str) -> Pool | None:
+    def drop_pool(self, name: str) -> PoolEntry | None:
         return self.pools.pop(name, None)
 
     def register_execution(self, future: Future) -> str:

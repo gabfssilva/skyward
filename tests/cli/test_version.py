@@ -23,3 +23,5 @@ def test_help_shows_all_subcommands(capsys):
     assert "providers" in out
     assert "config" in out
     assert "version" in out
+    assert "compute" in out
+    assert "server" in out

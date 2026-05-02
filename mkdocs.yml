@@ -82,6 +82,7 @@ nav:
       - Skyward: index.md
       - Getting started: getting-started.md
       - Core concepts: concepts.md
+      - CLI: cli.md
       - Infrastructure:
           - Providers: providers.md
           - Accelerators: accelerators.md

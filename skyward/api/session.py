@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Unpack, overload
 if TYPE_CHECKING:
     from skyward.api.logging import LogConfig
     from skyward.api.pool import Pool
+    from skyward.api.projection import SessionProjection
     from skyward.api.spec import Options, Spec, SpecKwargs
 
 
@@ -135,6 +136,26 @@ class Session:
         -------
         bool
             ``True`` when the session can create new pools.
+        """
+        ...
+
+    @property
+    def projection(self) -> SessionProjection:
+        """The session-wide projection accumulating domain events.
+
+        Subscribe to receive lifecycle events from any pool managed by
+        this session.
+        """
+        ...
+
+    def stop_pool(self, name: str) -> bool:
+        """Stop a pool by name, whether ready or still provisioning.
+
+        Returns
+        -------
+        bool
+            ``True`` if the pool was found and signalled, ``False`` if
+            no pool with that name exists.
         """
         ...
 
