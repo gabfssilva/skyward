@@ -159,7 +159,8 @@ def create_pool(
 
         from ._view import render as _render
 
-        exit_code = asyncio.run(_render(target, info["name"], json_mode=False, once=False))
+        watch_mode = "rich" if sys.stderr.isatty() else "log"
+        exit_code = asyncio.run(_render(target, info["name"], mode=watch_mode))
         if exit_code != 0:
             raise SystemExit(exit_code)
         return
@@ -263,23 +264,52 @@ def delete_pool(
 def view_pool(
     name: Annotated[str, Parameter(help="Pool name on the server")],
     *,
-    once: Annotated[bool, Parameter(name="--once", help="Print one snapshot and exit")] = False,
-    json: Annotated[bool, Parameter(name="--json", help="Emit NDJSON (snapshot + each event)")] = False,
+    mode: Annotated[
+        str,
+        Parameter(
+            name="--mode",
+            help="rich | log | json | once. 'auto' picks rich on a TTY, log otherwise.",
+        ),
+    ] = "auto",
+    once: Annotated[bool, Parameter(name="--once", help="Alias for --mode=once")] = False,
+    json: Annotated[bool, Parameter(name="--json", help="Alias for --mode=json")] = False,
     url: Annotated[str | None, Parameter(name="--url", help="Server URL")] = None,
 ) -> None:
     """Follow live pool/node events from the server.
 
-    Connects to ``GET /compute/{name}/events`` (Server-Sent Events). The
-    default mode renders a Rich live layout; use ``--once`` for a static
-    snapshot or ``--json`` for NDJSON suitable for piping to ``jq``.
+    Connects to ``GET /compute/{name}/events`` (Server-Sent Events).
+
+    Modes
+    -----
+    - ``rich`` — full Rich live layout (TTY).
+    - ``log``  — plain ``HH:MM:SS  label  message`` lines (grep-friendly).
+    - ``json`` — NDJSON (snapshot + each event), suitable for piping to ``jq``.
+    - ``once`` — render the snapshot once and exit.
+    - ``auto`` (default) — ``rich`` if stderr is a TTY, ``log`` otherwise.
     """
     import asyncio
 
+    from ._view import ViewMode
     from ._view import render as _render
+
+    resolved: ViewMode
+    if json:
+        resolved = "json"
+    elif once:
+        resolved = "once"
+    elif mode == "auto":
+        resolved = "rich" if sys.stderr.isatty() else "log"
+    elif mode in ("rich", "log", "json", "once"):
+        resolved = mode  # type: ignore[assignment]
+    else:
+        console.print(
+            f"[red]Unknown --mode '{mode}'. Valid: rich, log, json, once, auto.[/red]"
+        )
+        raise SystemExit(2)
 
     target = resolve_server_url(url)
     try:
-        exit_code = asyncio.run(_render(target, name, json_mode=json, once=once))
+        exit_code = asyncio.run(_render(target, name, mode=resolved))
     except httpx.ConnectError:
         console.print(f"[red]Could not reach server at {target}[/red]")
         raise SystemExit(1) from None

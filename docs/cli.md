@@ -161,13 +161,19 @@ The most useful command for understanding what a pool is doing right now. Connec
 sky compute view demo
 ```
 
-Three modes:
+Four modes selectable via `--mode`:
 
-- **Default** — Rich live layout. Persists until the pool reaches a terminal status (`ready`, `failed`, `stopping`) or you Ctrl+C. Disconnecting doesn't affect the pool; only the view detaches.
-- **`--once`** — render the initial snapshot once and exit. Good for a quick "what's happening?" without committing the terminal.
-- **`--json`** — emit NDJSON (snapshot frame plus each subsequent event on its own line). Designed to pipe into `jq` or feed into other tooling. The wire format mirrors Skyward's domain events: `{"event": "Pool.PhaseChanged", "data": {"type": "Pool.PhaseChanged", "fields": {...}}}`.
+- **`rich`** — full Rich live layout. Persists until the pool reaches a terminal status (`ready`, `failed`, `stopping`) or you Ctrl+C. Disconnecting doesn't affect the pool; only the view detaches.
+- **`log`** — plain `HH:MM:SS  label  message` lines on stderr. No cursor tricks, no buffering — grep-friendly, suitable for CI logs, `journalctl`, redirected pipes, `docker logs`-style consumption.
+- **`json`** — NDJSON (snapshot frame plus each subsequent event on its own line). Designed to pipe into `jq` or feed into other tooling. The wire format mirrors Skyward's domain events: `{"event": "Pool.PhaseChanged", "data": {"type": "Pool.PhaseChanged", "fields": {...}}}`.
+- **`once`** — render the initial snapshot once and exit. Good for a quick "what's happening?" without committing the terminal.
+
+`--mode auto` (the default) picks `rich` when stderr is a TTY and falls back to `log` when it isn't, mirroring the in-process `console_actor` behavior. The legacy `--once` and `--json` flags still work as shortcuts for `--mode=once` and `--mode=json`.
 
 ```bash
+sky compute view demo                       # auto: rich on a TTY, log when piped
+sky compute view demo --mode log            # force log lines even on a TTY
+sky compute view demo > pool.log            # auto-falls back to log mode
 sky compute view demo --once
 sky compute view demo --json | jq 'select(.event == "Node.Ready")'
 ```

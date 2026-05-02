@@ -22,7 +22,7 @@ import json as _json
 import sys
 from dataclasses import replace
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import httpx
 
@@ -306,10 +306,128 @@ async def render_live(url: str, name: str) -> int:
     return exit_code
 
 
-async def render(url: str, name: str, *, json_mode: bool, once: bool) -> int:
-    """Dispatch to the right renderer based on flags."""
-    if json_mode:
-        return await render_ndjson(url, name)
-    if once:
-        return await render_once(url, name)
-    return await render_live(url, name)
+# ── Mode 4: log (plain HH:MM:SS lines, non-TTY) ──────────────────
+
+
+def _log_emit(label: str, message: str) -> None:
+    """Print ``HH:MM:SS  label  message`` to stderr, flushed."""
+    import time as _time
+
+    ts = _time.strftime("%H:%M:%S", _time.localtime())
+    sys.stderr.write(f"{ts}  {label:<18}  {message}\n")
+    sys.stderr.flush()
+
+
+def _log_node_label(pools: object, node_id: int) -> str:
+    """Best-effort node label: ``<instance_id[:8]>/<node_id>`` or ``node-<id>``."""
+    for pool in getattr(pools, "values", lambda: ())():
+        node = pool.nodes.get(node_id)
+        if node is not None and node.instance is not None and (iid := node.instance.id):
+            return f"{iid[:8]}/{node_id}"
+    return f"node-{node_id}"
+
+
+def _log_dispatch(event: object, pools: object) -> None:
+    """Translate one domain event into a single log line on stderr."""
+    match event:
+        case Pool.ProvisionFailed(reason=reason):
+            _log_emit("pool", f"provision failed: {reason}")
+        case Pool.Stopped():
+            _log_emit("pool", "stopped")
+        case Node.Connected(node_id=nid):
+            _log_emit(_log_node_label(pools, nid), "ssh connected")
+        case Node.Ready(node_id=nid):
+            _log_emit(_log_node_label(pools, nid), "ready")
+        case Node.Lost(node_id=nid, reason=reason):
+            _log_emit(_log_node_label(pools, nid), f"lost: {reason}")
+        case Node.Preempted(reason=reason):
+            _log_emit("pool", f"node preempted: {reason}")
+        case Node.ConnectionFailed(error=error):
+            _log_emit("pool", f"ssh failed: {error}")
+        case Node.WorkerFailed(error=error):
+            _log_emit("pool", f"worker failed: {error}")
+        case Node.Bootstrap.Started(node_id=nid, phase=phase):
+            _log_emit(_log_node_label(pools, nid), f"bootstrap: {phase}")
+        case Node.Bootstrap.Failed(node_id=nid, phase=phase, error=err):
+            _log_emit(_log_node_label(pools, nid), f"bootstrap failed at {phase}: {err}")
+        case Task.Queued(name=tname, kind="broadcast"):
+            _log_emit("skyward", f"queued (broadcast): {tname}")
+        case Task.Queued(name=tname):
+            _log_emit("skyward", f"queued: {tname}")
+        case Task.Completed(node_id=nid, elapsed=elapsed):
+            _log_emit(_log_node_label(pools, nid), f"task done in {elapsed:.1f}s")
+        case Task.Failed(node_id=nid, error=error):
+            _log_emit(_log_node_label(pools, nid), f"task failed: {error}")
+        case Error.Occurred(message=message, fatal=True):
+            _log_emit("pool", f"fatal: {message}")
+        case Error.Occurred(message=message):
+            _log_emit("pool", f"error: {message}")
+
+
+async def render_log(url: str, name: str) -> int:
+    """Stream the SSE feed as plain ``HH:MM:SS  label  message`` lines.
+
+    Output mirrors the in-process ``log_console_actor`` style — one line
+    per event, no cursor tricks, no buffering. Suitable for non-TTY
+    contexts (CI logs, ``journalctl``, redirected pipes).
+    """
+    projection = SessionProjection()
+    started = False
+    exit_code = 0
+    try:
+        async for event_type, payload in iter_sse(url, name):
+            if event_type == "snapshot":
+                if payload is not None:
+                    projection.seed(name, pool_view_from_json(payload))
+                continue
+            if event_type == "done":
+                status = (payload or {}).get("status")
+                if status == "failed":
+                    exit_code = 1
+                    err = (payload or {}).get("error") or "(no error message)"
+                    _log_emit("pool", f"failed: {err}")
+                elif status == "deleted":
+                    _log_emit("pool", "deleted")
+                elif status == "stopping":
+                    _log_emit("pool", "stopping")
+                elif status == "ready":
+                    _log_emit("pool", "ready")
+                return exit_code
+
+            event = event_from_json(payload or {})
+            if event is None:
+                continue
+
+            if isinstance(event, Log.Emitted):
+                _log_emit(_log_node_label(projection.view.pools, event.node_id), event.message)
+                continue
+
+            if isinstance(event, Pool.Provisioning) and not started:
+                _log_emit("pool", f"provisioning {event.total_nodes} nodes")
+                started = True
+
+            projection.handle(event)
+            _log_dispatch(event, projection.view.pools)
+    except (httpx.ConnectError, RuntimeError) as exc:
+        _cli_console.print(f"[red]{exc}[/red]")
+        return 2
+    return exit_code
+
+
+# ── Dispatcher ───────────────────────────────────────────────────
+
+
+type ViewMode = Literal["rich", "log", "json", "once"]
+
+
+async def render(url: str, name: str, *, mode: ViewMode) -> int:
+    """Dispatch to the right renderer based on ``mode``."""
+    match mode:
+        case "json":
+            return await render_ndjson(url, name)
+        case "once":
+            return await render_once(url, name)
+        case "log":
+            return await render_log(url, name)
+        case "rich":
+            return await render_live(url, name)

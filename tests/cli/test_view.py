@@ -161,6 +161,42 @@ def test_live_returns_1_on_failed_done(fake_iter_sse):
     assert asyncio.run(render_live("http://x", "p")) == 1
 
 
+# ── log mode ─────────────────────────────────────────────────────
+
+
+def test_log_emits_plain_lines_for_lifecycle_events(fake_iter_sse, capsys):
+    from skyward.cli._view import render_log
+
+    fake_iter_sse(
+        ("snapshot", _snapshot()),
+        ("Pool.Provisioning", {
+            "type": "Pool.Provisioning",
+            "fields": {"pool_name": "p", "total_nodes": 1, "started_at": 0.0},
+        }),
+        ("Node.Ready", {
+            "type": "Node.Ready",
+            "fields": {"pool_name": "p", "node_id": 0},
+        }),
+        ("done", {"status": "ready"}),
+    )
+    code = asyncio.run(render_log("http://x", "p"))
+    assert code == 0
+    err = capsys.readouterr().err
+    assert "provisioning 1 nodes" in err
+    assert "ready" in err
+
+
+def test_log_returns_1_on_failed_done(fake_iter_sse, capsys):
+    from skyward.cli._view import render_log
+
+    fake_iter_sse(
+        ("snapshot", _snapshot()),
+        ("done", {"status": "failed", "error": "no offers"}),
+    )
+    assert asyncio.run(render_log("http://x", "p")) == 1
+    assert "failed: no offers" in capsys.readouterr().err
+
+
 # ── render() dispatcher ──────────────────────────────────────────
 
 
@@ -168,7 +204,7 @@ def test_render_dispatches_to_json(fake_iter_sse, capsys):
     from skyward.cli._view import render
 
     fake_iter_sse(("snapshot", _snapshot()), ("done", {"status": "ready"}))
-    code = asyncio.run(render("http://x", "p", json_mode=True, once=False))
+    code = asyncio.run(render("http://x", "p", mode="json"))
     assert code == 0
     assert capsys.readouterr().out  # NDJSON written
 
@@ -177,7 +213,7 @@ def test_render_dispatches_to_once(fake_iter_sse, capsys):
     from skyward.cli._view import render
 
     fake_iter_sse(("snapshot", _snapshot()))
-    code = asyncio.run(render("http://x", "p", json_mode=False, once=True))
+    code = asyncio.run(render("http://x", "p", mode="once"))
     assert code == 0
 
 
