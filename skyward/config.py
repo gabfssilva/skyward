@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from skyward.api.logging import LogConfig
     from skyward.api.metrics import MetricsConfig
     from skyward.api.plugin import Plugin
-    from skyward.api.spec import Nodes, Spec, Volume, Worker
+    from skyward.api.spec import Nodes, Options, Spec, Volume, Worker
     from skyward.core.pool import ComputePool
     from skyward.core.spec import Image
     from skyward.providers.aws.config import AWS
@@ -347,3 +347,99 @@ def resolve_pool_config(
 
     pool = _build_pool_from_raw(name, dict(pools[name]), config)
     return PoolResolution(pool=pool, specs=pool._specs)
+
+
+_SPEC_FIELDS = frozenset({
+    "accelerator", "vcpus", "memory_gb", "disk_gb", "architecture",
+    "allocation", "region", "max_hourly_cost", "ttl",
+})
+
+_OPTIONS_FIELDS = frozenset({
+    "selection", "default_compute_timeout", "provision_timeout", "ssh_timeout",
+    "bootstrap_timeout", "ssh_retry_interval", "provision_retry_delay",
+    "max_provision_attempts", "autoscale_cooldown", "autoscale_idle_timeout",
+    "reconcile_tick_interval", "shutdown_timeout", "cluster",
+    "retry_on_interruption",
+})
+
+
+def resolve_pool_specs(
+    name: str,
+    *,
+    project_dir: Path | None = None,
+    global_path: Path | None = None,
+) -> tuple[tuple[Spec, ...], Options]:
+    """Resolve a TOML named pool into ``(specs, options)`` for ``Session.compute()``.
+
+    Unlike :func:`resolve_pool_config` (which builds a local ``ComputePool``),
+    this returns the raw building blocks suitable for cloudpickle wire transport
+    to a remote Skyward server. Plugins, image, and volumes are attached to the
+    spec (rather than to a ``ComputePool``) so the server's session sees the full
+    user intent on the receiving end.
+    """
+    from skyward.api.spec import Options, Spec
+    from skyward.core.spec import Image
+
+    config = load_config(project_dir=project_dir, global_path=global_path)
+    pools = config["pools"]
+    if name not in pools:
+        raise KeyError(
+            f"Pool '{name}' not found. Available: {', '.join(pools) or 'none'}"
+        )
+
+    raw = dict(pools[name])
+
+    provider_ref = raw.pop("provider", None)
+    if provider_ref is None:
+        raise ValueError(f"Pool '{name}' missing 'provider' field")
+
+    providers = config["providers"]
+    if provider_ref not in providers:
+        raise KeyError(
+            f"Provider '{provider_ref}' not found. "
+            f"Available: {', '.join(providers) or 'none'}"
+        )
+
+    provider = _build_provider(provider_ref, providers[provider_ref])
+
+    raw_image = raw.pop("image", None)
+    image = _build_image(raw_image) if raw_image else Image()
+
+    raw_volumes = raw.pop("volumes", None)
+    volumes = _build_volumes(raw_volumes) if raw_volumes else ()
+
+    raw_worker = raw.pop("worker", None)
+    worker = _build_worker(raw_worker) if raw_worker else None
+
+    raw_nodes = raw.pop("nodes", 1)
+    nodes = _build_nodes(raw_nodes)
+
+    raw_logging = raw.pop("logging", None)
+    logging_cfg = _build_logging(raw_logging) if raw_logging is not None else True
+
+    raw_plugins = raw.pop("plugins", None)
+    plugins = _build_plugins(raw_plugins) if raw_plugins else ()
+
+    if isinstance(raw.get("accelerator"), str):
+        from skyward.accelerators import Accelerator
+
+        raw["accelerator"] = Accelerator.from_name(raw["accelerator"])
+
+    spec_kwargs = {k: raw.pop(k) for k in list(raw) if k in _SPEC_FIELDS}
+    options_kwargs = {k: raw.pop(k) for k in list(raw) if k in _OPTIONS_FIELDS}
+    if raw:
+        raise ValueError(
+            f"Unknown keys in pool '{name}': {sorted(raw)}"
+        )
+
+    spec = Spec(
+        provider=provider,
+        nodes=nodes,
+        image=image,
+        volumes=volumes,
+        plugins=plugins,
+        **spec_kwargs,
+    )
+    options = Options(worker=worker, logging=logging_cfg, **options_kwargs)
+
+    return (spec,), options
