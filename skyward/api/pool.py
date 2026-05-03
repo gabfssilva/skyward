@@ -71,7 +71,7 @@ class Pool(Protocol):
         """
         ...
 
-    def run[T](self, pending: PendingFunction[T]) -> T:
+    def run[T](self, pending: PendingFunction[T], *, task_id: str | None = None) -> T:
         """Execute a pending function on one node (round-robin).
 
         This is the method behind the ``task() >> compute`` operator.
@@ -81,6 +81,10 @@ class Pool(Protocol):
         ----------
         pending
             A ``PendingFunction`` produced by calling a ``@sky.function``.
+        task_id
+            Optional explicit id for this task. When omitted, an internal
+            uuid is generated. The HTTP server passes its execution id
+            here so worker-side log events can be correlated to the call.
 
         Returns
         -------
@@ -94,7 +98,9 @@ class Pool(Protocol):
         """
         ...
 
-    def run_async[T](self, pending: PendingFunction[T]) -> Future[T]:
+    def run_async[T](
+        self, pending: PendingFunction[T], *, task_id: str | None = None,
+    ) -> Future[T]:
         """Submit a pending function for non-blocking execution.
 
         This is the method behind the ``task() > compute`` operator.
@@ -105,6 +111,8 @@ class Pool(Protocol):
         ----------
         pending
             A ``PendingFunction`` produced by calling a ``@sky.function``.
+        task_id
+            Optional explicit id for this task. See :meth:`run`.
 
         Returns
         -------
@@ -113,7 +121,9 @@ class Pool(Protocol):
         """
         ...
 
-    def broadcast[T](self, pending: PendingFunction[T]) -> list[T]:
+    def broadcast[T](
+        self, pending: PendingFunction[T], *, task_id: str | None = None,
+    ) -> list[T]:
         """Execute a pending function on every node in the pool.
 
         This is the method behind the ``task() @ compute`` operator.

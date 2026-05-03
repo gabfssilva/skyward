@@ -145,14 +145,17 @@ async def submit_execution(request: Request) -> Response:
     except Exception as e:
         return JSONResponse({"error": f"invalid payload: {e!r}"}, status_code=400)
 
+    eid = uuid.uuid4().hex
     future: Future
     match mode:
         case "run":
-            future = pool.run_async(pending)
+            future = pool.run_async(pending, task_id=eid)
         case _:
-            future = state.broadcast_executor.submit(pool.broadcast, pending)
+            future = state.broadcast_executor.submit(
+                pool.broadcast, pending, task_id=eid,
+            )
 
-    eid = state.register_execution(future)
+    state.register_execution(eid, future)
     location = f"/compute/{name}/executions/{eid}"
     return JSONResponse(
         {"id": eid},
@@ -250,7 +253,10 @@ async def stream_events(request: Request) -> Response:
             loop.call_soon_threadsafe(queue.put_nowait, event)
 
     projection = state.session.projection
-    unsubscribe = projection.subscribe(on_event=_enqueue, on_log=_enqueue)
+    # ``on_event`` already fires for every dispatched event including
+    # ``Log.Emitted`` (see ``SessionProjection.handle``). Subscribing
+    # ``on_log`` too would enqueue every log twice.
+    unsubscribe = projection.subscribe(on_event=_enqueue)
 
     async def gen() -> AsyncIterator[bytes]:
         try:

@@ -9,6 +9,7 @@ consumed by console actors, CLI dashboards, and programmatic introspection.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable
 from dataclasses import replace
@@ -36,6 +37,15 @@ from skyward.api.views import (
     TaskEntry,
     TasksView,
 )
+
+_TASK_PREFIX_RE = re.compile(
+    r"^(?:\[casty\]\s+)?\[task-id=([^\]]+)\] ?(.*)$",
+    re.DOTALL,
+)
+"""Match optional ``[casty] `` prefix (added by the JSONL shell pipeline in
+``providers/bootstrap/casty.py``) followed by ``[task-id=<eid>] message``.
+The optional group lets the same regex work for both raw worker output and
+the wrapped form that reaches the server."""
 
 __all__ = [
     "SessionProjection",
@@ -433,7 +443,17 @@ class SessionProjection:
                 pool = self._pools[name]
                 node = self._get_node(pool, nid)
                 if node.bootstrap is None:
-                    self.handle(Log.Emitted(name, nid, output, overwrite=ow))
+                    # Post-Ready output is task stdout/stderr captured by the
+                    # worker's stdio writer. The writer prefixes each line
+                    # with ``[task-id=<eid>] ``; strip and split into the
+                    # structured ``task_id`` field on Log.Emitted.
+                    if (m := _TASK_PREFIX_RE.match(output)) is not None:
+                        tid, message = m.group(1), m.group(2)
+                    else:
+                        tid, message = None, output
+                    self.handle(Log.Emitted(
+                        name, nid, message, overwrite=ow, task_id=tid,
+                    ))
                     return
                 bootstrap = replace(node.bootstrap, output=output)
                 node = replace(node, bootstrap=bootstrap)

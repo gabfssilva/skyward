@@ -20,6 +20,7 @@ import traceback
 import types
 from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
@@ -40,6 +41,16 @@ from casty import (
 from skyward.observability.logger import logger
 
 _background_tasks: set[asyncio.Task[None]] = set()
+
+_active_task_id: ContextVar[str | None] = ContextVar("_active_task_id", default=None)
+"""Task id of the currently-executing function on this worker.
+
+The stdio writer (:class:`_UnbufferedWriter`) prepends ``[task-id=<eid>] ``
+to each write while this is set, letting the client correlate output
+with the originating task. Set/reset around :func:`_execute` in the
+``ExecuteTask`` handler. Inherited automatically by ``asyncio.Task``s
+spawned during execution.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,6 +260,7 @@ def _run_in_process(
     payload: bytes,
     env: dict[str, str],
     around_process_hooks: tuple[tuple[str, Any], ...] = (),
+    task_id: str = "",
 ) -> Any:
     """Execute a pre-serialized task in a subprocess."""
     os.environ.update(env)
@@ -276,11 +288,17 @@ def _run_in_process(
     import cloudpickle
 
     fn, args, kwargs = cloudpickle.loads(payload)
+    # ContextVars don't cross process boundaries — set explicitly so the
+    # subprocess's ``_UnbufferedWriter`` (installed by ``ipc_initializer``)
+    # prepends ``[task-id=<eid>] `` to each line.
+    token = _active_task_id.set(task_id) if task_id else None
     try:
         return fn(*args, **kwargs)
     finally:
         sys.stdout.flush()
         sys.stderr.flush()
+        if token is not None:
+            _active_task_id.reset(token)
 
 
 def worker_behavior(
@@ -402,9 +420,10 @@ def worker_behavior(
 
                     loop = asyncio.get_running_loop()
                     payload = await asyncio.to_thread(cloudpickle.dumps, (fn, args, kwargs))
+                    current_tid = _active_task_id.get() or ""
                     result = await loop.run_in_executor(
                         executor_pool, _run_in_process, payload,
-                        dict(os.environ), tuple(process_hooks),
+                        dict(os.environ), tuple(process_hooks), current_tid,
                     )
                 else:
                     args = await _resolve_input_streams(args, input_streams)
@@ -494,8 +513,18 @@ def worker_behavior(
                 _evict_expired(now)
                 if task_id:
                     result_cache[task_id] = (now + result_cache_ttl, None)
+
+                async def _execute_scoped(_tid: str = task_id) -> Any:
+                    if not _tid:
+                        return await _execute(fn, args, kwargs, streams)
+                    token = _active_task_id.set(_tid)
+                    try:
+                        return await _execute(fn, args, kwargs, streams)
+                    finally:
+                        _active_task_id.reset(token)
+
                 ctx.pipe_to_self(
-                    coro=_execute(fn, args, kwargs, streams),
+                    coro=_execute_scoped(),
                     mapper=lambda result, _tid=task_id: _TaskDone(
                         result=result, reply_to=reply_to, task_id=_tid,
                     ),
@@ -675,23 +704,45 @@ def _parse_seeds(seeds_str: str | None) -> list[tuple[str, int]] | None:
 
 
 class _UnbufferedWriter:
-    """Text file writer that flushes after every write."""
+    """Text file writer that flushes after every write.
 
-    __slots__ = ("_f", "_pending_cr")
+    When ``_active_task_id`` is set, each *line start* is prefixed with
+    ``[task-id=<eid>] ``. ``print(a, b)`` emits multiple ``write()``
+    calls (``"a"``, ``" "``, ``"b"``, ``"\\n"``) — naive prepending
+    would put the prefix in the middle of the rendered line. The
+    ``_at_line_start`` flag tracks whether the next char begins a fresh
+    line across calls so the prefix appears once per logical line.
+    """
+
+    __slots__ = ("_at_line_start", "_f", "_pending_cr")
 
     def __init__(self, path: str) -> None:
         self._f = open(path, "a")  # noqa: SIM115
         self._pending_cr = False
+        self._at_line_start = True
 
     def write(self, s: str) -> int:
         if not s:
             return 0
+        if (tid := _active_task_id.get()) is not None:
+            s = self._prefix_line_starts(s, f"[task-id={tid}] ")
         if self._pending_cr and not s.startswith("\r"):
             self._f.write("\r\n")
         self._pending_cr = "\r" in s and not s.endswith("\n")
         n = self._f.write(s)
         self._f.flush()
         return n
+
+    def _prefix_line_starts(self, s: str, prefix: str) -> str:
+        out: list[str] = []
+        for ch in s:
+            if self._at_line_start:
+                out.append(prefix)
+                self._at_line_start = False
+            out.append(ch)
+            if ch in ("\n", "\r"):
+                self._at_line_start = True
+        return "".join(out)
 
     def flush(self) -> None:
         self._f.flush()

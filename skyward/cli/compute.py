@@ -328,10 +328,14 @@ def run_script(
 ) -> None:
     """Run a local Python script remotely on a pool.
 
-    The script source is sent to the server, exec'd inside a worker, and the
-    captured stdout/stderr are streamed back at the end.
+    The script source is sent to the server, exec'd inside a worker, and
+    stdout/stderr stream back live via SSE — the CLI subscribes to the
+    pool's event stream and prints each ``Log.Emitted`` whose ``task_id``
+    matches this execution. The CLI exits with the script's exit code.
     """
-    import skyward as sky
+    import asyncio
+
+    from skyward.server.wire import encode
 
     from ._script import build_exec_pending
 
@@ -340,25 +344,92 @@ def run_script(
         raise SystemExit(2)
 
     pending = build_exec_pending(script, list(args or []))
+    body = encode(pending)
     target = resolve_server_url(url)
+    mode = "broadcast" if broadcast else "run"
 
     try:
-        with sky.Client(name, url=target) as client:
-            results = client.broadcast(pending) if broadcast else [client.run(pending)]
+        with make_client(url) as client:
+            r = client.post(
+                f"/compute/{name}/executions",
+                params={"mode": mode},
+                content=body,
+                headers={"Content-Type": "application/octet-stream"},
+            )
     except httpx.ConnectError:
         console.print(f"[red]Could not reach server at {target}[/red]")
         raise SystemExit(1) from None
-    except RuntimeError as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise SystemExit(1) from None
 
-    exit_code = 0
-    for idx, result in enumerate(results):
-        if broadcast and len(results) > 1:
-            console.print(f"[dim]── node {idx} ──[/dim]")
-        sys.stdout.write(result["stdout"])
-        sys.stderr.write(result["stderr"])
-        if result["exit"] != 0:
-            exit_code = result["exit"]
+    if r.status_code == 404:
+        console.print(f"[red]Pool {name!r} not found[/red]")
+        raise SystemExit(1)
+    if r.status_code != 202:
+        console.print(f"[red]{format_http_error(r)}[/red]")
+        raise SystemExit(1)
+
+    eid = r.json()["id"]
+
+    exit_code = asyncio.run(_stream_run(target, name, eid))
     if exit_code != 0:
         raise SystemExit(exit_code)
+
+
+async def _stream_run(target: str, pool_name: str, eid: str) -> int:
+    """Tail the pool's SSE for ``Log.Emitted`` events tagged with ``eid``,
+    while polling the execution endpoint for the final result.
+
+    Returns the script's exit code (max across nodes for broadcast).
+    """
+    import asyncio
+    import contextlib
+
+    from skyward.api.events import Log
+    from skyward.server.wire import decode, event_from_json
+
+    from ._view import iter_sse
+
+    async def stream_logs() -> None:
+        try:
+            async for event_type, payload in iter_sse(target, pool_name):
+                if event_type == "done":
+                    return
+                event = event_from_json(payload or {})
+                if isinstance(event, Log.Emitted) and event.task_id == eid:
+                    sys.stdout.write(event.message + "\n")
+                    sys.stdout.flush()
+        except (httpx.ConnectError, RuntimeError):
+            return
+
+    async def wait_result() -> int:
+        backoff = 0.1
+        async with httpx.AsyncClient(
+            base_url=target, timeout=httpx.Timeout(30.0, read=None),
+        ) as client:
+            while True:
+                r = await client.get(f"/compute/{pool_name}/executions/{eid}")
+                if r.status_code == 200:
+                    payload = decode(r.content)
+                    if isinstance(payload, list):
+                        return max((int(p.get("exit", 0)) for p in payload), default=0)
+                    return int(payload.get("exit", 0))
+                if r.status_code == 202:
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 1.5, 2.0)
+                    continue
+                if r.status_code == 500 and r.headers.get("X-Skyward-Error") == "1":
+                    err = decode(r.content)
+                    sys.stderr.write(f"execution error: {err!r}\n")
+                    return 1
+                console.print(f"[red]{format_http_error(r)}[/red]")
+                return 1
+
+    log_task = asyncio.create_task(stream_logs())
+    try:
+        exit_code = await wait_result()
+        # Brief grace period so any in-flight log lines flush before we cancel.
+        await asyncio.sleep(0.3)
+    finally:
+        log_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await log_task
+    return exit_code

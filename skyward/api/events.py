@@ -192,6 +192,7 @@ class Log:
         message: str
         level: str = "info"
         overwrite: bool = False
+        task_id: str | None = None
 
 
 class Scaling:

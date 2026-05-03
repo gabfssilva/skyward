@@ -30,6 +30,7 @@ from contextvars import Token
 from dataclasses import dataclass
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Literal, overload
+from uuid import uuid4
 
 from casty import ActorRef, ActorSystem
 
@@ -447,12 +448,18 @@ class ComputePool:
     def _resolve_timeout(self, pending: PendingFunction[Any]) -> float:
         return pending.timeout if pending.timeout is not None else self.default_compute_timeout
 
-    def _submit(self, pending: PendingFunction[Any]) -> Callable[[ActorRef[Any]], SubmitTask]:
+    def _submit(
+        self,
+        pending: PendingFunction[Any],
+        *,
+        task_id: str | None = None,
+    ) -> Callable[[ActorRef[Any]], SubmitTask]:
         timeout = self._resolve_timeout(pending)
         fn = self._decorate_fn(pending.fn)
+        tid = task_id or uuid4().hex[:8]
         return lambda reply_to: SubmitTask(
             fn=fn, args=pending.args, kwargs=pending.kwargs,
-            reply_to=reply_to, timeout=timeout,
+            reply_to=reply_to, timeout=timeout, task_id=tid,
         )
 
     def _assert_active(self) -> None:
@@ -467,7 +474,7 @@ class ComputePool:
             raise RuntimeError("Pool is not active")
         return system, ref
 
-    def run[T](self, pending: PendingFunction[T]) -> T:
+    def run[T](self, pending: PendingFunction[T], *, task_id: str | None = None) -> T:
         """Execute a pending function on one node via round-robin scheduling.
 
         This is the method behind the ``task() >> compute`` operator.
@@ -476,6 +483,11 @@ class ComputePool:
         ----------
         pending
             Frozen snapshot of the function, args, and kwargs to execute.
+        task_id
+            Optional explicit id for this task. When omitted, an internal
+            uuid is generated. Used by the HTTP server to align its
+            execution id with the worker-side ``task_id`` so log events
+            can be correlated back to the originating call.
 
         Returns
         -------
@@ -497,12 +509,14 @@ class ComputePool:
         logger.debug("Submitting task: {fn}", fn=getattr(pending.fn, "__name__", repr(pending.fn)))
         result: TaskResult = run_sync(
             self._get_loop(),
-            system.ask(ref, self._submit(pending), timeout=timeout),
+            system.ask(ref, self._submit(pending, task_id=task_id), timeout=timeout),
             timeout=timeout,
         )
         return self._unwrap_result(result)
 
-    def run_async[T](self, pending: PendingFunction[T]) -> Future[T]:
+    def run_async[T](
+        self, pending: PendingFunction[T], *, task_id: str | None = None,
+    ) -> Future[T]:
         """Submit a pending function for asynchronous execution, returning a future.
 
         This is the method behind the ``task() > compute`` operator. The function
@@ -539,13 +553,15 @@ class ComputePool:
         async def _run() -> T:
             assert self._pool_ref is not None
             result: TaskResult = await self._system.ask(  # type: ignore[union-attr]
-                self._pool_ref, self._submit(pending), timeout=timeout,
+                self._pool_ref, self._submit(pending, task_id=task_id), timeout=timeout,
             )
             return self._unwrap_result(result)
 
         return asyncio.run_coroutine_threadsafe(_run(), loop)
 
-    def broadcast[T](self, pending: PendingFunction[T]) -> list[T]:
+    def broadcast[T](
+        self, pending: PendingFunction[T], *, task_id: str | None = None,
+    ) -> list[T]:
         """Execute a pending function on ALL nodes simultaneously.
 
         This is the method behind the ``task() @ compute`` operator. The function
@@ -577,13 +593,15 @@ class ComputePool:
         fn_name = getattr(pending.fn, "__name__", repr(pending.fn))
         logger.debug("Broadcasting task: {fn} to {n} nodes", fn=fn_name, n=self._specs[0].nodes)
 
+        tid = task_id or uuid4().hex[:8]
+
         async def _broadcast() -> list[T]:
             assert self._pool_ref is not None
             result = await self._system.ask(  # type: ignore[union-attr]
                 self._pool_ref,
                 lambda reply_to: SubmitBroadcast(
                     fn=fn, args=pending.args, kwargs=pending.kwargs,
-                    reply_to=reply_to, timeout=timeout,
+                    reply_to=reply_to, timeout=timeout, task_id=tid,
                 ),
                 timeout=timeout + 30,
             )
