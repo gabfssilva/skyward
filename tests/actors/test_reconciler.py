@@ -12,6 +12,8 @@ from skyward.actors.messages import (
     RequestDrainNodes,
     RequestScaleDown,
     RequestScaleUp,
+    ScaleUpComplete,
+    ScaleUpFailed,
 )
 from skyward.actors.reconciler import reconciler_actor
 from skyward.actors.reconciler.state import _apply_bounds, _State
@@ -220,6 +222,60 @@ class TestPartialInitialProvisioning:
         scale_up_msgs = [m for m in sent if isinstance(m, RequestScaleUp)]
         assert len(scale_up_msgs) == 1
         assert scale_up_msgs[0].count == 1
+
+
+class TestSupplyConstraintDoesNotGiveUp:
+    @pytest.mark.asyncio
+    async def test_keeps_retrying_after_partial_then_failed_provision(self) -> None:
+        """A late ScaleUpComplete/ScaleUpFailed must not be dropped.
+
+        Reproduces the supply-constraint deadlock: a partial provision makes
+        the reconciler re-request while still in ``waiting_for_scale_up``;
+        the first batch's ``NodeJoined`` events then arrive before the
+        second request resolves. The reconciler must stay in the chapter
+        until the outcome lands, keep ``pending`` honest, and keep asking
+        for more nodes — instead of silently giving up.
+        """
+        sent: list[object] = []
+        pool = MagicMock()
+        pool.tell = lambda msg: sent.append(msg)
+
+        async with ActorSystem("test-reconciler-supply-constraint") as system:
+            ref = system.spawn(
+                reconciler_actor(
+                    pool=pool,
+                    min_nodes=1,
+                    max_nodes=20,
+                    desired_count=20,
+                    initial_node_ids=frozenset({0}),
+                    tick_interval=0.05,
+                ),
+                "reconciler-supply-constraint",
+            )
+            await asyncio.sleep(0.1)
+            initial = [m for m in sent if isinstance(m, RequestScaleUp)]
+            assert len(initial) == 1
+            assert initial[0].count == 19
+
+            sent.clear()
+            ref.tell(ScaleUpComplete(provisioned=2))
+            await asyncio.sleep(0.1)
+            re_request = [m for m in sent if isinstance(m, RequestScaleUp)]
+            assert len(re_request) == 1
+            assert re_request[0].count == 17
+
+            sent.clear()
+            ref.tell(NodeJoined(node_id=1))
+            ref.tell(NodeJoined(node_id=2))
+            await asyncio.sleep(0.1)
+
+            sent.clear()
+            ref.tell(ScaleUpFailed(error="SUPPLY_CONSTRAINT"))
+            await asyncio.sleep(0.3)
+
+        recovered = [m for m in sent if isinstance(m, RequestScaleUp)]
+        assert len(recovered) >= 1
+        assert recovered[0].count == 17
 
 
 class TestReconcilerApplyBounds:

@@ -258,20 +258,14 @@ def reconciler_actor(
                         "Desired changed during scale-up: {old} → {new} ({reason})",
                         old=s.desired, new=desired, reason=reason,
                     )
-                    new_s = replace(s, desired=desired)
-                    if desired <= new_s.effective:
-                        return watching(new_s)
-                    return waiting_for_scale_up(new_s)
+                    return waiting_for_scale_up(replace(s, desired=desired))
 
                 case BoundsChanged() as msg:
                     log.info(
                         "Bounds changed during scale-up: min={min}, desired={desired}",
                         min=msg.min, desired=msg.desired,
                     )
-                    new_s = _apply_bounds(s, msg)
-                    if new_s.desired <= new_s.effective:
-                        return watching(new_s)
-                    return waiting_for_scale_up(new_s)
+                    return waiting_for_scale_up(_apply_bounds(s, msg))
 
                 case ReconcilerNodeLost(node_id=nid, reason=reason):
                     log.warning("Node {nid} lost during scale-up: {reason}", nid=nid, reason=reason)
@@ -291,8 +285,6 @@ def reconciler_actor(
                         pending=max(0, s.pending - 1) if was_new else s.pending,
                         consecutive_failures=0,
                     )
-                    if new_s.desired <= new_s.effective:
-                        return watching(new_s)
                     return waiting_for_scale_up(new_s)
 
                 case _ReconcileTick():
