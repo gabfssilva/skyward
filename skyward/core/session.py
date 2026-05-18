@@ -548,9 +548,17 @@ class Session:
         session_ref = self._session_ref
         assert system is not None and session_ref is not None
 
-        offers, provider_config, cloud_provider, spec = run_sync(
-            loop, select_offers(built_specs, pool_config),
-        )
+        from skyward.core.errors import NoOffersError
+
+        try:
+            offers, provider_config, cloud_provider, spec = run_sync(
+                loop, select_offers(built_specs, pool_config),
+            )
+        except NoOffersError as e:
+            from skyward.actors.console import print_no_offers_error
+
+            print_no_offers_error(e, self._console)
+            raise
 
         check_fd_budget(spec.nodes.max or spec.nodes.desired)
 
