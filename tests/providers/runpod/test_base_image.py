@@ -147,14 +147,14 @@ class TestResolveImageCandidates:
             return_value=[],
         ):
             result = await _resolve_image_candidates(_spec_with_cuda(), config)
-        assert "runpod/base:" in result[0]
+        assert "nvidia/cuda:" in result[0]
 
     @pytest.mark.asyncio
     async def test_no_cuda_range_uses_fallback(self) -> None:
         config = RunPod()
         spec = PoolSpec(nodes=Nodes(desired=1), region="global", accelerator=None)
         result = await _resolve_image_candidates(spec, config)
-        assert "runpod/base:" in result[0]
+        assert "nvidia/cuda:" in result[0]
 
     @pytest.mark.asyncio
     async def test_ubuntu_filter(self) -> None:
