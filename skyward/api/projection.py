@@ -287,6 +287,9 @@ class SessionProjection:
             case Pool.ProvisionFailed():
                 return
 
+            case Pool.NoOffers():
+                return
+
             case Pool.Reconciled(pool_name=name, snapshot=snapshot):
                 if name not in self._pools or snapshot is None:
                     return

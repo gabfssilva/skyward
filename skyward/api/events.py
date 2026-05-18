@@ -64,6 +64,11 @@ class Pool:
         pool_name: str
         reason: str
 
+    @dataclass(frozen=True, slots=True)
+    class NoOffers:
+        pool_name: str
+        specs: tuple[tuple[str, str, str], ...]
+
 
 class Node:
     @dataclass(frozen=True, slots=True)
@@ -236,6 +241,7 @@ type PoolEvent = (
     | Pool.Stopped
     | Pool.Reconciled
     | Pool.ProvisionFailed
+    | Pool.NoOffers
 )
 
 type NodeEvent = (

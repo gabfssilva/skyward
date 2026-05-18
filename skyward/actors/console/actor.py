@@ -23,6 +23,7 @@ from .view import (
     _LiveFooter,
     _make_badge,
     _node_label,
+    _print_no_offers,
     _print_provisioning_error,
     _render_summary,
     _ssh_url,
@@ -40,6 +41,8 @@ def _print_event(console: Console, event: object, state: _State) -> None:
     match event:
         case Pool.ProvisionFailed(reason=reason):
             _print_provisioning_error(console, reason)
+        case Pool.NoOffers(specs=specs):
+            _print_no_offers(console, specs)
         case Node.Ready(node_id=nid):
             label = _node_label(state, nid)
             _emit(console, label, "\u2713 Joined", "green bold", link=_ssh_url(state, nid))
@@ -203,10 +206,10 @@ def console_actor() -> Behavior[ConsoleInput]:
                 case EventReceived(event=event):
                     state = _get_state(view, progress)
                     match event:
-                        case Pool.Stopped() | Pool.ProvisionFailed():
+                        case Pool.Stopped() | Pool.ProvisionFailed() | Pool.NoOffers():
                             for nid, content in progress.items():
                                 _emit(console, _node_label(state, nid), content)
-                            _stop_live(clear=isinstance(event, Pool.ProvisionFailed))
+                            _stop_live(clear=isinstance(event, Pool.ProvisionFailed | Pool.NoOffers))
                             _print_event(console, event, state)
                             if isinstance(event, Pool.Stopped):
                                 _emit(console, "skyward", "Shutting down...", WARNING_STYLE)

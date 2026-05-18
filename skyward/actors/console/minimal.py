@@ -317,6 +317,8 @@ def _print_event(live: Live, event: Any) -> None:
             live.console.print(f"[red]✗[/] {m}")
         case Pool.ProvisionFailed(reason=r):
             live.console.print(f"[red bold]✗[/] provision failed: {r}")
+        case Pool.NoOffers():
+            live.console.print("[red bold]✗[/] no matching offers found")
         case _:
             pass
 

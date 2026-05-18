@@ -555,9 +555,14 @@ class Session:
                 loop, select_offers(built_specs, pool_config),
             )
         except NoOffersError as e:
-            from skyward.actors.console import print_no_offers_error
+            from skyward.api.events import Pool
 
-            print_no_offers_error(e, self._console)
+            self._projection.handle(Pool.NoOffers(
+                pool_name=pool_name,
+                specs=tuple(
+                    (s.provider, s.accelerator, s.allocation) for s in e.specs
+                ),
+            ))
             raise
 
         check_fd_budget(spec.nodes.max or spec.nodes.desired)

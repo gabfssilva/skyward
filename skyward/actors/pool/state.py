@@ -44,6 +44,7 @@ class PoolState:
     autoscaler_ref: ActorRef | None = None
     instance_map: MappingProxyType[NodeId, str] = MappingProxyType({})
     attempt: int = 1
+    spawn_gen: int = 0
     ca: CertificateAuthority | None = None
     client_tls: Any | None = None
     phase: PoolPhase = PoolPhase.PROVISIONING

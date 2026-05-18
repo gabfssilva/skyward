@@ -274,6 +274,10 @@ def log_console_actor() -> Behavior[ConsoleInput]:
                 _emit("pool", f"provision failed: {reason}")
                 return state
 
+            case Pool.NoOffers():
+                _emit("pool", "no matching offers found")
+                return state
+
             case Pool.Stopped() if not state.pool_stopped:
                 pool = _first_pool(view)
                 tail = ""

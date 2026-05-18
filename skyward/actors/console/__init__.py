@@ -28,7 +28,6 @@ __all__ = [
     "console_actor",
     "log_console_actor",
     "minimal_console_actor",
-    "print_no_offers_error",
     "resolve_console",
 ]
 
@@ -78,27 +77,3 @@ def resolve_console(
             return log_console_actor
         case False | "silent":
             return None
-
-
-def print_no_offers_error(error: BaseException, mode: bool | ConsoleMode) -> None:
-    """Render a *no matching offers* panel to stderr when a console is enabled.
-
-    Offer selection fails before any pool or console actor exists, so this is
-    a synchronous render at the startup boundary rather than an event-driven
-    one. No-op when the console is disabled (``silent``/``False``) — headless
-    callers let the exception propagate instead of presenting it.
-
-    Parameters
-    ----------
-    error
-        The ``NoOffersError`` to render (ignored if a different type).
-    mode
-        The session console mode, used to decide whether to render.
-    """
-    if resolve_console(mode) is None:
-        return
-    from rich.console import Console
-
-    from skyward.actors.console.view import _print_no_offers_error
-
-    _print_no_offers_error(Console(stderr=True), error)

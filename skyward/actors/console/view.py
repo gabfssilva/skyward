@@ -342,21 +342,16 @@ def _print_provisioning_error(console: Console, reason: str) -> None:
     console.print()
 
 
-def _print_no_offers_error(console: Console, error: object) -> None:
+def _print_no_offers(console: Console, specs: tuple[tuple[str, str, str], ...]) -> None:
     from rich.panel import Panel
-
-    from skyward.core.errors import NoOffersError
-
-    if not isinstance(error, NoOffersError):
-        return
 
     body = Text()
     body.append("No matching offers found.\n\n")
     body.append("Searched:\n", style="bold")
-    for spec in error.specs:
-        body.append(f"  • {spec.provider}", style="cyan")
-        body.append(f"  {spec.accelerator}", style="white bold")
-        body.append(f"  ({spec.allocation})\n", style=DIM)
+    for provider, accelerator, allocation in specs:
+        body.append(f"  • {provider}", style="cyan")
+        body.append(f"  {accelerator}", style="white bold")
+        body.append(f"  ({allocation})\n", style=DIM)
     body.append("\n")
     body.append("Suggestions:\n", style="bold")
     body.append("  • Check if the accelerator name is correct\n")

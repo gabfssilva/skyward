@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import logging as _logging
 import time
 from contextlib import suppress
@@ -297,6 +298,7 @@ def pool_actor(
     def _spawn_node(
         ctx: ActorContext[PoolMsg],
         nid: int,
+        gen: int,
         spec: Any,
         cluster: Any,
         provider: Any,
@@ -318,7 +320,7 @@ def pool_actor(
                 scale_down_idle_seconds=spec.autoscale_idle_timeout,
                 idle_tick_interval=tick_interval,
             ),
-            f"node-{nid}",
+            f"node-{nid}-{gen}",
         )
         ref.tell(Provision(
             cluster=cluster, provider=provider, instance=instance,
@@ -450,10 +452,10 @@ def pool_actor(
                     client_tls = issue_client_config(ca)
 
                     new_refs: MappingProxyType[int, ActorRef] = MappingProxyType({})
-                    for instance in instances:
+                    for gen, instance in enumerate(instances):
                         nid = len(new_refs)
                         ref = _spawn_node(
-                            ctx, nid, spec, cluster, provider, instance, ca, None,
+                            ctx, nid, gen, spec, cluster, provider, instance, ca, None,
                         )
                         new_refs = MappingProxyType({**new_refs, nid: ref})
 
@@ -465,6 +467,7 @@ def pool_actor(
                         pool_started_at=time.monotonic(),
                         cluster=cluster, cluster_id=cluster.id,
                         node_refs=new_refs, tm_ref=tm_ref,
+                        spawn_gen=len(instances),
                     ))
 
                 case StopPool(reply_to=stop_reply):
@@ -663,10 +666,10 @@ def pool_actor(
                             "autoscaler",
                         )
 
-                    for instance in to_spawn:
+                    for i, instance in enumerate(to_spawn):
                         nid = len(new_spawned)
                         ref = _spawn_node(
-                            ctx, nid, s.spec, updated_cluster,
+                            ctx, nid, s.spawn_gen + i, s.spec, updated_cluster,
                             s.provider, instance, s.ca, None,
                             autoscaler=as_ref,
                         )
@@ -681,6 +684,7 @@ def pool_actor(
                             tm_ref=tm_ref,
                             reconciler_ref=rec_ref,
                             autoscaler_ref=as_ref,
+                            spawn_gen=s.spawn_gen + len(to_spawn),
                         ))
 
                     still_needed = s.spec.nodes.desired - len(new_spawned)
@@ -727,6 +731,7 @@ def pool_actor(
                             cluster=updated_cluster,
                             node_refs=new_spawned,
                             attempt=s.attempt + 1,
+                            spawn_gen=s.spawn_gen + len(to_spawn),
                         ))
 
                     if s.remaining_offers:
@@ -781,6 +786,7 @@ def pool_actor(
                             remaining_offers=tuple(rest),
                             attempt=1,
                             node_refs=MappingProxyType({}),
+                            spawn_gen=s.spawn_gen + len(to_spawn),
                         ))
 
                     log.error(
@@ -1022,17 +1028,21 @@ def pool_actor(
                         instances=(*upd_cluster.instances, *new_instances),
                     )
 
-                    start_id = max((*s.node_refs.keys(), *s.dead_nodes), default=-1) + 1
+                    free_ids = list(itertools.islice(
+                        itertools.filterfalse(s.node_refs.__contains__, itertools.count()),
+                        len(new_instances),
+                    ))
                     log.info(
-                        "Scale-up: spawning {n} nodes from id {sid}",
-                        n=len(new_instances), sid=start_id,
+                        "Scale-up: spawning {n} nodes, reusing ids {ids}",
+                        n=len(new_instances), ids=free_ids,
                     )
                     new_node_refs = s.node_refs
                     new_inst_map = s.instance_map
-                    for i, inst in enumerate(new_instances):
-                        nid = start_id + i
+                    for i, (nid, inst) in enumerate(
+                        zip(free_ids, new_instances, strict=True),
+                    ):
                         ref = _spawn_node(
-                            ctx, nid, s.spec, upd_cluster,
+                            ctx, nid, s.spawn_gen + i, s.spec, upd_cluster,
                             s.provider, inst, s.ca, s.head_addr,
                             autoscaler=s.autoscaler_ref,
                         )
@@ -1047,6 +1057,7 @@ def pool_actor(
                         cluster=upd_cluster,
                         node_refs=new_node_refs,
                         instance_map=new_inst_map,
+                        spawn_gen=s.spawn_gen + len(new_instances),
                         scaling=replace(s.scaling, pending_nodes=s.scaling.pending_nodes + len(new_instances)),
                     ))
 
@@ -1330,17 +1341,21 @@ def pool_actor(
                         instances=(*upd_cluster.instances, *new_instances),
                     )
 
-                    start_id = max((*s.node_refs.keys(), *s.dead_nodes), default=-1) + 1
+                    free_ids = list(itertools.islice(
+                        itertools.filterfalse(s.node_refs.__contains__, itertools.count()),
+                        len(new_instances),
+                    ))
                     log.info(
-                        "Scale-up: spawning {n} nodes from id {sid}",
-                        n=len(new_instances), sid=start_id,
+                        "Scale-up: spawning {n} nodes, reusing ids {ids}",
+                        n=len(new_instances), ids=free_ids,
                     )
                     new_node_refs = s.node_refs
                     new_inst_map = s.instance_map
-                    for i, inst in enumerate(new_instances):
-                        nid = start_id + i
+                    for i, (nid, inst) in enumerate(
+                        zip(free_ids, new_instances, strict=True),
+                    ):
                         ref = _spawn_node(
-                            ctx, nid, s.spec, upd_cluster,
+                            ctx, nid, s.spawn_gen + i, s.spec, upd_cluster,
                             s.provider, inst, s.ca, s.head_addr,
                             autoscaler=s.autoscaler_ref,
                         )
@@ -1355,6 +1370,7 @@ def pool_actor(
                         cluster=upd_cluster,
                         node_refs=new_node_refs,
                         instance_map=new_inst_map,
+                        spawn_gen=s.spawn_gen + len(new_instances),
                         scaling=replace(s.scaling, pending_nodes=s.scaling.pending_nodes + len(new_instances)),
                     ))
 
