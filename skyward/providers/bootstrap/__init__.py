@@ -64,6 +64,7 @@ from .ops import (
     uv_add,
     uv_configure_indexes,
     uv_init,
+    uv_set_environments,
     wait_for_port,
 )
 
@@ -81,6 +82,7 @@ __all__ = [
     "uv_add",
     "uv_configure_indexes",
     "uv_init",
+    "uv_set_environments",
     "checkpoint",
     "emit_bootstrap_complete",
     "mkdir",

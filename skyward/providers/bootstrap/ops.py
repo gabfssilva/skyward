@@ -182,6 +182,30 @@ def uv_configure_indexes(indexes: tuple[PipIndex, ...] | list[PipIndex]) -> Op:
     return generate
 
 
+def uv_set_environments(environments: tuple[str, ...] | list[str]) -> Op:
+    """Append ``[tool.uv]`` ``environments`` to pyproject.toml.
+
+    Restricts the resolver to the listed PEP 508 environment markers, so the
+    universal lockfile only considers matching splits. Useful when remote-only
+    deps have markers that confuse the resolver on irrelevant splits (e.g.
+    ``mlx[cuda12]`` failing on ``win32`` even though it's Linux-only).
+
+    Parameters
+    ----------
+    environments : tuple[str, ...]
+        PEP 508 marker strings, e.g. ``("sys_platform == 'linux'",)``.
+    """
+    if not environments:
+        return lambda: "# No uv environments to configure"
+
+    def generate() -> str:
+        markers = ", ".join(f'"{m}"' for m in environments)
+        content = f"[tool.uv]\nenvironments = [{markers}]"
+        return f"cd {SKYWARD_DIR} && cat >> pyproject.toml << 'EOF'\n\n{content}\nEOF"
+
+    return generate
+
+
 # =============================================================================
 # File Operations
 # =============================================================================

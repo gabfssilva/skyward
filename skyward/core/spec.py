@@ -47,6 +47,7 @@ from skyward.providers.bootstrap import (
     uv_add,
     uv_configure_indexes,
     uv_init,
+    uv_set_environments,
 )
 
 
@@ -78,6 +79,7 @@ def generate_bootstrap(
             "uv",
             install_uv(),
             uv_init(image.python, name="skyward-bootstrap"),
+            uv_set_environments((f"sys_platform == 'linux' and python_version == '{image.python}'",)),
             uv_configure_indexes(image.pip_indexes),
         ),
         phase("deps", uv_add("cloudpickle", "lz4", *image.pip)),
