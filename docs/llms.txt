@@ -1,0 +1,45 @@
+# Skyward
+
+> Distributed compute orchestration for ML/AI. Decorate a Python function with `@sky.function`, and Skyward provisions cloud GPUs, ships your code over SSH, runs it remotely, and returns the result - behind a synchronous, operator-based API.
+
+Skyward turns ordinary functions into remote GPU jobs: define lazily with `@sky.function`, provision with `with sky.Compute(...) as pool:`, dispatch with an operator (`>>` one node, `@` broadcast, `&` parallel, `>` async). Works across AWS, GCP, RunPod, VastAI, Lambda, and more, with multi-provider fallback, autoscaling, distributed collections, and framework plugins (PyTorch, JAX, Keras, Accelerate).
+
+## Complete reference
+
+- [Skyward for LLMs (full, single file)](https://gabfssilva.github.io/skyward/llms-full.txt): the entire usage surface - mental model, operators, specs, accelerators, runtime API, distributed collections, plugins, storage, options, observability, config, offers, CLI, recipes, gotchas, and a quick API index. Start here.
+
+## Docs
+
+- [Getting started](https://gabfssilva.github.io/skyward/getting-started/): install and first job.
+- [Core concepts](https://gabfssilva.github.io/skyward/concepts/): lazy functions, operators, pools, sessions.
+- [Providers](https://gabfssilva.github.io/skyward/providers/): supported clouds and their config classes.
+- [Accelerators](https://gabfssilva.github.io/skyward/accelerators/): full GPU/accelerator catalog.
+- [Distributed training](https://gabfssilva.github.io/skyward/distributed-training/): multi-node PyTorch/JAX/Keras.
+- [Distributed collections](https://gabfssilva.github.io/skyward/distributed-collections/): dict, set, counter, queue, barrier, lock.
+- [Plugins](https://gabfssilva.github.io/skyward/plugins/): torch, jax, keras, cuml, accelerate, mig, mps, and custom plugins.
+- [Volumes](https://gabfssilva.github.io/skyward/volumes/): mount S3/GCS buckets as a filesystem.
+- [CLI](https://gabfssilva.github.io/skyward/cli/): the `sky` command-line client and long-lived server.
+
+## Guides (runnable)
+
+- [Hello, Skyward!](https://gabfssilva.github.io/skyward/guides/hello-skyward/): minimal end-to-end example.
+- [Parallel execution](https://gabfssilva.github.io/skyward/guides/parallel-execution/): the `&` and `gather` patterns.
+- [Broadcast](https://gabfssilva.github.io/skyward/guides/broadcast/): run on every node with `@`.
+- [Data sharding](https://gabfssilva.github.io/skyward/guides/data-sharding/): `sky.shard` for data parallelism.
+- [PyTorch distributed](https://gabfssilva.github.io/skyward/guides/pytorch-distributed/): DDP across nodes.
+- [Multi-provider selection](https://gabfssilva.github.io/skyward/guides/multi-provider/): cheapest across clouds.
+
+## API reference
+
+- [Pool & compute](https://gabfssilva.github.io/skyward/reference/pool/): `Compute`, `Pool`, `Session`.
+- [Runtime](https://gabfssilva.github.io/skyward/reference/runtime/): `instance_info`, `shard`, output control.
+- [Distributed collections](https://gabfssilva.github.io/skyward/reference/distributed/)
+- [Events](https://gabfssilva.github.io/skyward/reference/events/)
+- [Plugins](https://gabfssilva.github.io/skyward/reference/plugins/)
+
+## Optional
+
+- [Configuration](https://gabfssilva.github.io/skyward/reference/config/): `skyward.toml` named pools.
+- [Choosing a provider](https://gabfssilva.github.io/skyward/choosing-a-provider/): opinionated guide.
+- [Architecture](https://gabfssilva.github.io/skyward/architecture/): actor system internals.
+- [Repository](https://github.com/gabfssilva/skyward): source and issues.
