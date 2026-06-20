@@ -151,3 +151,6 @@ nav:
       - Events: reference/events.md
       - Plugins: reference/plugins.md
       - Accelerators: reference/accelerators.md
+  - For LLMs:
+      - Overview (llms.txt): llms.txt
+      - Full reference (llms-full.txt): llms-full.txt
