@@ -1,17 +1,32 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from casty import ActorRef
 
-from skyward.actors.messages import NodeInstance
-from skyward.infra.ssh_actor import transport_run, transport_write_bytes, transport_write_file
+from skyward.actors.messages import NodeFileResult, NodeInstance
+from skyward.infra.ssh_actor import (
+    CommandResult,
+    Download,
+    DownloadResult,
+    RunCommand,
+    WriteBytes,
+    WriteResult,
+    transport_ask,
+    transport_run,
+    transport_write_bytes,
+    transport_write_file,
+)
 from skyward.infra.tls import CertificateAuthority
 from skyward.observability.logger import logger
 
 from .state import check_python_version
+
+if TYPE_CHECKING:
+    from skyward.actors.messages import FileOpKind
 
 
 def resolve_ssh_user(ni: NodeInstance, cluster: Any) -> tuple[str, str]:
@@ -542,3 +557,57 @@ async def _resolve_output_stream(client: Any, producer_ref: Any) -> Any:
         name,
     )
     return await client.ask(consumer_ref, lambda r: GetSource(reply_to=r), timeout=10.0)
+
+
+async def _run_file_op(
+    transport_ref: ActorRef,
+    node_id: int,
+    op: FileOpKind,
+    path: str,
+    content: bytes,
+    timeout: float,
+) -> NodeFileResult:
+    """Run one file operation over a node's SSH transport.
+
+    ``ls``/``rm`` go through ``RunCommand`` (the argv is shell-joined by the
+    transport, so the path is ``shlex.quote``-d and ``--``-guarded);
+    ``upload`` reuses ``WriteBytes``; ``download`` uses SFTP via ``Download``.
+    """
+    quoted = shlex.quote(path)
+    match op:
+        case "ls":
+            cmd: CommandResult = await transport_ask(
+                transport_ref,
+                lambda rt: RunCommand(command=("ls", "-la", "--", quoted), timeout=timeout, reply_to=rt),
+                timeout=timeout,
+            )
+            if cmd.exit_code != 0:
+                return NodeFileResult(node_id=node_id, success=False, error=cmd.stderr or f"ls exit {cmd.exit_code}")
+            return NodeFileResult(node_id=node_id, success=True, listing=cmd.stdout)
+        case "rm":
+            cmd = await transport_ask(
+                transport_ref,
+                lambda rt: RunCommand(command=("rm", "-rf", "--", quoted), timeout=timeout, reply_to=rt),
+                timeout=timeout,
+            )
+            if cmd.exit_code != 0:
+                return NodeFileResult(node_id=node_id, success=False, error=cmd.stderr or f"rm exit {cmd.exit_code}")
+            return NodeFileResult(node_id=node_id, success=True)
+        case "upload":
+            wr: WriteResult = await transport_ask(
+                transport_ref,
+                lambda rt: WriteBytes(remote=path, content=content, reply_to=rt),
+                timeout=timeout,
+            )
+            if not wr.success:
+                return NodeFileResult(node_id=node_id, success=False, error=wr.error)
+            return NodeFileResult(node_id=node_id, success=True)
+        case "download":
+            dr: DownloadResult = await transport_ask(
+                transport_ref,
+                lambda rt: Download(remote=path, reply_to=rt),
+                timeout=timeout,
+            )
+            if not dr.success:
+                return NodeFileResult(node_id=node_id, success=False, error=dr.error)
+            return NodeFileResult(node_id=node_id, success=True, content=dr.content)

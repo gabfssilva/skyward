@@ -164,3 +164,36 @@ class TestUrlResolution:
 
         monkeypatch.delenv("SKYWARD_SERVER_URL", raising=False)
         assert resolve_server_url(None) == "http://localhost:7590"
+
+
+class TestRunParams:
+    def test_default_round_robin(self):
+        from skyward.cli.compute import _run_params
+
+        assert _run_params(None, False) == {"mode": "run"}
+
+    def test_broadcast_flag(self):
+        from skyward.cli.compute import _run_params
+
+        assert _run_params(None, True) == {"mode": "broadcast"}
+
+    def test_node_all(self):
+        from skyward.cli.compute import _run_params
+
+        assert _run_params("all", False) == {"mode": "broadcast"}
+
+    def test_node_head(self):
+        from skyward.cli.compute import _run_params
+
+        assert _run_params("head", False) == {"mode": "run", "node": "head"}
+
+    def test_node_rank(self):
+        from skyward.cli.compute import _run_params
+
+        assert _run_params("3", False) == {"mode": "run", "node": "3"}
+
+    def test_node_invalid_exits(self):
+        from skyward.cli.compute import _run_params
+
+        with pytest.raises(SystemExit):
+            _run_params("bogus", False)

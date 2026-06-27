@@ -37,8 +37,15 @@ from casty import ActorRef, ActorSystem
 from skyward.accelerators import Accelerator
 from skyward.actors.messages import (
     CurrentNodeCount,
+    FileOpKind,
+    FileOpOnNodes,
+    FileOpReplies,
     GetCurrentNodes,
+    GetPoolSnapshot,
+    NodeFileResult,
     NodeInstance,
+    NodeSelection,
+    NodeTarget,
     SubmitBroadcast,
     SubmitTask,
     TaskFailed,
@@ -46,6 +53,7 @@ from skyward.actors.messages import (
     TaskResult,
     TaskSucceeded,
 )
+from skyward.actors.snapshot import PoolSnapshot
 from skyward.api.plugin import Plugin
 from skyward.api.spec import (
     DEFAULT_BOOTSTRAP_TIMEOUT,
@@ -453,13 +461,14 @@ class ComputePool:
         pending: PendingFunction[Any],
         *,
         task_id: str | None = None,
+        target: NodeTarget | None = None,
     ) -> Callable[[ActorRef[Any]], SubmitTask]:
         timeout = self._resolve_timeout(pending)
         fn = self._decorate_fn(pending.fn)
         tid = task_id or uuid4().hex[:8]
         return lambda reply_to: SubmitTask(
             fn=fn, args=pending.args, kwargs=pending.kwargs,
-            reply_to=reply_to, timeout=timeout, task_id=tid,
+            reply_to=reply_to, timeout=timeout, task_id=tid, target=target,
         )
 
     def _assert_active(self) -> None:
@@ -474,7 +483,10 @@ class ComputePool:
             raise RuntimeError("Pool is not active")
         return system, ref
 
-    def run[T](self, pending: PendingFunction[T], *, task_id: str | None = None) -> T:
+    def run[T](
+        self, pending: PendingFunction[T], *,
+        task_id: str | None = None, target: NodeTarget | None = None,
+    ) -> T:
         """Execute a pending function on one node via round-robin scheduling.
 
         This is the method behind the ``task() >> compute`` operator.
@@ -488,6 +500,9 @@ class ComputePool:
             uuid is generated. Used by the HTTP server to align its
             execution id with the worker-side ``task_id`` so log events
             can be correlated back to the originating call.
+        target
+            Pin execution to a specific rank (``int``) or the head
+            (``"head"``). ``None`` keeps the default round-robin.
 
         Returns
         -------
@@ -509,13 +524,14 @@ class ComputePool:
         logger.debug("Submitting task: {fn}", fn=getattr(pending.fn, "__name__", repr(pending.fn)))
         result: TaskResult = run_sync(
             self._get_loop(),
-            system.ask(ref, self._submit(pending, task_id=task_id), timeout=timeout),
+            system.ask(ref, self._submit(pending, task_id=task_id, target=target), timeout=timeout),
             timeout=timeout,
         )
         return self._unwrap_result(result)
 
     def run_async[T](
-        self, pending: PendingFunction[T], *, task_id: str | None = None,
+        self, pending: PendingFunction[T], *,
+        task_id: str | None = None, target: NodeTarget | None = None,
     ) -> Future[T]:
         """Submit a pending function for asynchronous execution, returning a future.
 
@@ -553,7 +569,7 @@ class ComputePool:
         async def _run() -> T:
             assert self._pool_ref is not None
             result: TaskResult = await self._system.ask(  # type: ignore[union-attr]
-                self._pool_ref, self._submit(pending, task_id=task_id), timeout=timeout,
+                self._pool_ref, self._submit(pending, task_id=task_id, target=target), timeout=timeout,
             )
             return self._unwrap_result(result)
 
@@ -591,7 +607,10 @@ class ComputePool:
         timeout = self._resolve_timeout(pending)
         fn = self._decorate_fn(pending.fn)
         fn_name = getattr(pending.fn, "__name__", repr(pending.fn))
-        logger.debug("Broadcasting task: {fn} to {n} nodes", fn=fn_name, n=self._specs[0].nodes)
+        logger.debug(
+            "Broadcasting task: {fn} to {n} nodes",
+            fn=fn_name, n=self._specs[0].nodes if self._specs else "all",
+        )
 
         tid = task_id or uuid4().hex[:8]
 
@@ -1014,6 +1033,81 @@ class ComputePool:
         )
         return result.ready
 
+    def snapshot(self) -> PoolSnapshot:
+        """Return a point-in-time snapshot of the pool's internal state.
+
+        Asks the pool actor for its current ``PoolSnapshot`` — phase,
+        per-node status, resolved cluster, and instances. Backs the
+        server's per-node SSH addressing route.
+
+        Returns
+        -------
+        PoolSnapshot
+            Phase, per-node ``NodeSnapshot``, cluster, and instances.
+
+        Raises
+        ------
+        RuntimeError
+            When the pool is not active.
+        """
+        system, ref = self._get_system_and_ref()
+        return run_sync(
+            self._get_loop(),
+            system.ask(
+                ref,
+                lambda reply_to: GetPoolSnapshot(reply_to=reply_to),
+                timeout=5.0,
+            ),
+        )
+
+    def _file_op(
+        self,
+        op: FileOpKind,
+        path: str,
+        *,
+        content: bytes = b"",
+        node: NodeSelection,
+        timeout: float,
+    ) -> tuple[NodeFileResult, ...]:
+        system, ref = self._get_system_and_ref()
+        result: FileOpReplies = run_sync(
+            self._get_loop(),
+            system.ask(
+                ref,
+                lambda reply_to: FileOpOnNodes(
+                    op=op, path=path, content=content,
+                    selection=node, timeout=timeout, reply_to=reply_to,
+                ),
+                timeout=timeout + 10.0,
+            ),
+            timeout=timeout + 10.0,
+        )
+        return result.results
+
+    def ls(
+        self, path: str, node: NodeSelection = "head", timeout: float = 30.0,
+    ) -> tuple[NodeFileResult, ...]:
+        """List ``path`` on the selected node(s) (``ls -la``). Server-internal."""
+        return self._file_op("ls", path, node=node, timeout=timeout)
+
+    def rm(
+        self, path: str, node: NodeSelection = "all", timeout: float = 30.0,
+    ) -> tuple[NodeFileResult, ...]:
+        """Remove ``path`` (``rm -rf``) on the selected node(s). Server-internal."""
+        return self._file_op("rm", path, node=node, timeout=timeout)
+
+    def upload_file(
+        self, content: bytes, remote: str, node: NodeSelection = "all", timeout: float = 120.0,
+    ) -> tuple[NodeFileResult, ...]:
+        """Write ``content`` to ``remote`` on the selected node(s). Server-internal."""
+        return self._file_op("upload", remote, content=content, node=node, timeout=timeout)
+
+    def download_file(
+        self, remote: str, node: NodeSelection = "head", timeout: float = 120.0,
+    ) -> tuple[NodeFileResult, ...]:
+        """Read ``remote`` from the selected node(s). Server-internal."""
+        return self._file_op("download", remote, node=node, timeout=timeout)
+
     def _pool_config(self) -> PoolConfig:
         return PoolConfig(
             image=self.image,
@@ -1072,6 +1166,8 @@ class ComputePool:
 
     def __repr__(self) -> str:
         status = "active" if self._active else "inactive"
+        if not self._specs:
+            return f"ComputePool(reattached, {status})"
         first = self._specs[0]
         return f"ComputePool(nodes={first.nodes}, accelerator={first.accelerator}, {status})"
 

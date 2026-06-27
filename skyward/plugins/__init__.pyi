@@ -123,6 +123,24 @@ def sklearn(*, version: str | None = None) -> Plugin:
     """
     ...
 
+def huggingface(*, models: list[str], token: str | None = None) -> Plugin:
+    """Hugging Face model pre-download plugin.
+
+    Install ``huggingface_hub`` and download each requested model snapshot
+    into the shared HF cache during bootstrap, before the worker starts.
+    ``from_pretrained`` calls inside ``@sky.function`` then read from disk
+    instead of fetching over the network.
+
+    Parameters
+    ----------
+    models
+        Repo ids to pre-download (e.g., ``["meta-llama/Llama-3.1-8B"]``).
+    token
+        Hugging Face token for gated or private repos. Exported as
+        ``HF_TOKEN`` on every worker.
+    """
+    ...
+
 def mig(profile: str) -> Plugin:
     """NVIDIA MIG (Multi-Instance GPU) partitioning plugin.
 
@@ -165,6 +183,7 @@ __all__ = [
     "jax",
     "keras",
     "cuml",
+    "huggingface",
     "joblib",
     "sklearn",
     "mig",

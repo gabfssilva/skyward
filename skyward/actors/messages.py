@@ -450,11 +450,60 @@ class ClusterReady:
     cluster: Cluster
 
 
+# =============================================================================
+# File Operations (ls / rm / upload / download on selected nodes)
+# =============================================================================
+
+
+type FileOpKind = Literal["ls", "rm", "upload", "download"]
+type NodeSelection = int | Literal["head", "all"]
+
+
+@dataclass(frozen=True, slots=True)
+class NodeFileOp:
+    """A single file operation routed to one node's transport."""
+
+    op: FileOpKind
+    path: str
+    content: bytes
+    timeout: float
+    reply_to: ActorRef[NodeFileResult]
+
+
+@dataclass(frozen=True, slots=True)
+class NodeFileResult:
+    node_id: NodeId
+    success: bool
+    listing: str = ""
+    content: bytes = b""
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FileOpOnNodes:
+    """Pool-level fan-out of a file operation across selected nodes."""
+
+    op: FileOpKind
+    path: str
+    content: bytes
+    selection: NodeSelection
+    timeout: float
+    reply_to: ActorRef[FileOpReplies]
+
+
+@dataclass(frozen=True, slots=True)
+class FileOpReplies:
+    results: tuple[NodeFileResult, ...]
+
+
 
 
 # =============================================================================
 # TaskManager Actor Messages
 # =============================================================================
+
+
+type NodeTarget = int | Literal["head"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -465,6 +514,7 @@ class SubmitTask:
     reply_to: ActorRef[Any]
     task_id: str = field(default_factory=lambda: uuid4().hex[:8])
     timeout: float = 600.0
+    target: NodeTarget | None = None
 
 
 @dataclass(frozen=True, slots=True)

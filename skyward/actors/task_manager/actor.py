@@ -26,8 +26,10 @@ from .state import (
     _dispatch,
     _drain_queue,
     _emit_pressure,
+    _pick_target,
     _pick_with_free_slot,
     _State,
+    _target_rank,
 )
 
 log = logger.bind(actor="task_manager")
@@ -209,6 +211,28 @@ def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMs
                     )
                     _emit_pressure(new_s)
                     return _check_broadcasts(new_s) if broadcast_hit else active(new_s)
+
+                case SubmitTask(target=target) as task if target is not None:
+                    rank = _pick_target(s.nodes, target)
+                    if rank is None:
+                        requested = _target_rank(target)
+                        log.warning("Targeted task to absent rank {r}", r=requested)
+                        task.reply_to.tell(TaskFailed(
+                            error=RuntimeError(f"no such node rank {requested}"),
+                            node_id=requested, task_id=task.task_id,
+                        ))
+                        return Behaviors.same()
+                    slot = s.nodes[rank]
+                    if slot.used >= slot.total:
+                        log.debug("Rank {r} busy, queuing targeted task", r=rank)
+                        new_s = replace(s, queue=(*s.queue, task))
+                        _emit_pressure(new_s)
+                        return active(new_s)
+                    log.debug("Dispatching targeted task to rank {r}", r=rank)
+                    new_nodes, new_inflight, new_nt = _dispatch(
+                        rank, task, s.nodes, ctx.self, s.inflight, s.node_tasks,
+                    )
+                    return active(replace(s, nodes=new_nodes, inflight=new_inflight, node_tasks=new_nt))
 
                 case SubmitTask() as task:
                     nid = _pick_with_free_slot(s.nodes, s.round_robin)

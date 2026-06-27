@@ -7,6 +7,8 @@ from casty import ActorSystem
 
 from skyward.infra.ssh_actor import (
     CommandResult,
+    Download,
+    DownloadResult,
     RunCommand,
     StopTransport,
     Upload,
@@ -160,6 +162,54 @@ class TestUpload:
 
         assert isinstance(result, UploadResult)
         assert result.success is True
+
+
+class TestDownload:
+    @pytest.mark.asyncio
+    async def test_download_returns_bytes(self, system: ActorSystem) -> None:
+        conn = _mock_conn()
+        sftp = conn.start_sftp_client.return_value
+        file_mock = sftp.open.return_value
+        file_mock.read = AsyncMock(return_value=b"remote-bytes")
+
+        ref = system.spawn(
+            ssh_transport(host="x", user="u", key_path="k", connect_fn=lambda: _as_coro(conn)),
+            "transport",
+        )
+        await asyncio.sleep(0.2)
+
+        future = asyncio.get_event_loop().create_future()
+        reply = MagicMock()
+        reply.tell = lambda msg: future.set_result(msg) if not future.done() else None
+
+        ref.tell(Download(remote="/tmp/r.bin", reply_to=reply))
+        result = await asyncio.wait_for(future, timeout=2.0)
+
+        assert isinstance(result, DownloadResult)
+        assert result.success is True
+        assert result.content == b"remote-bytes"
+
+    @pytest.mark.asyncio
+    async def test_download_failure_returns_error(self, system: ActorSystem) -> None:
+        conn = _mock_conn()
+        conn.start_sftp_client = MagicMock(side_effect=OSError("sftp boom"))
+
+        ref = system.spawn(
+            ssh_transport(host="x", user="u", key_path="k", connect_fn=lambda: _as_coro(conn)),
+            "transport",
+        )
+        await asyncio.sleep(0.2)
+
+        future = asyncio.get_event_loop().create_future()
+        reply = MagicMock()
+        reply.tell = lambda msg: future.set_result(msg) if not future.done() else None
+
+        ref.tell(Download(remote="/tmp/missing", reply_to=reply))
+        result = await asyncio.wait_for(future, timeout=2.0)
+
+        assert isinstance(result, DownloadResult)
+        assert result.success is False
+        assert "sftp boom" in (result.error or "")
 
 
 async def _as_coro(val: MagicMock) -> MagicMock:

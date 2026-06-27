@@ -52,6 +52,11 @@ class Upload:
     reply_to: ActorRef[UploadResult] = field(default=None)  # type: ignore[assignment]
 
 @dataclass(frozen=True, slots=True)
+class Download:
+    remote: str
+    reply_to: ActorRef[DownloadResult] = field(default=None)  # type: ignore[assignment]
+
+@dataclass(frozen=True, slots=True)
 class ForwardPort:
     remote_host: str
     remote_port: int
@@ -83,6 +88,12 @@ class WriteResult:
 @dataclass(frozen=True, slots=True)
 class UploadResult:
     success: bool
+    error: str | None = None
+
+@dataclass(frozen=True, slots=True)
+class DownloadResult:
+    success: bool
+    content: bytes = b""
     error: str | None = None
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +176,16 @@ class _UploadError:
     reply_to: ActorRef[UploadResult]
 
 @dataclass(frozen=True, slots=True)
+class _DownloadDone:
+    content: bytes
+    reply_to: ActorRef[DownloadResult]
+
+@dataclass(frozen=True, slots=True)
+class _DownloadError:
+    error: str
+    reply_to: ActorRef[DownloadResult]
+
+@dataclass(frozen=True, slots=True)
 class _ForwardDone:
     local_port: int
     listener: Any  # asyncssh.SSHListener
@@ -198,13 +219,14 @@ class TransportState:
 # ── Message union ─────────────────────────────────────────────────────
 
 type TransportMsg = (
-    RunCommand | WriteFile | WriteBytes | Upload
+    RunCommand | WriteFile | WriteBytes | Upload | Download
     | ForwardPort | SubscribeEvents | StopTransport
     | _Connected | _ConnectFailed
     | _StreamedLine | _StreamEnded | _ConnectionDropped
     | _CommandDone | _CommandError
     | _WriteDone | _WriteError
     | _UploadDone | _UploadError
+    | _DownloadDone | _DownloadError
     | _ForwardDone | _ForwardError
 )
 
@@ -431,6 +453,22 @@ def ssh_transport(
                     rt.tell(UploadResult(success=False, error=error))
                     return Behaviors.same()
 
+                case Download(remote=remote, reply_to=rt):
+                    ctx.pipe_to_self(
+                        _do_download(state.conn, remote),
+                        mapper=lambda content: _DownloadDone(content=content, reply_to=rt),
+                        on_failure=lambda e: _DownloadError(error=str(e), reply_to=rt),
+                    )
+                    return Behaviors.same()
+
+                case _DownloadDone(content=content, reply_to=rt):
+                    rt.tell(DownloadResult(success=True, content=content))
+                    return Behaviors.same()
+
+                case _DownloadError(error=error, reply_to=rt):
+                    rt.tell(DownloadResult(success=False, error=error))
+                    return Behaviors.same()
+
                 case ForwardPort(remote_host=rh, remote_port=rp, reply_to=rt):
                     ctx.pipe_to_self(
                         _do_forward(state.conn, rh, rp),
@@ -598,6 +636,10 @@ def ssh_transport(
     async def _do_upload(conn: Any, local: str, remote: str) -> None:
         import asyncssh
         await asyncssh.scp(local, (conn, remote))
+
+    async def _do_download(conn: Any, remote: str) -> bytes:
+        async with conn.start_sftp_client() as sftp, sftp.open(remote, "rb") as f:
+            return await f.read()
 
     async def _do_forward(
         conn: Any, remote_host: str, remote_port: int, local_port: int = 0,

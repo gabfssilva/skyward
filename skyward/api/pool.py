@@ -13,6 +13,8 @@ from concurrent.futures import Future
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from skyward.actors.messages import NodeTarget
+    from skyward.actors.snapshot import PoolSnapshot
     from skyward.api.distributed import Consistency
     from skyward.api.function import PendingFunction, PendingFunctionGroup
     from skyward.api.spec import Nodes
@@ -71,7 +73,10 @@ class Pool(Protocol):
         """
         ...
 
-    def run[T](self, pending: PendingFunction[T], *, task_id: str | None = None) -> T:
+    def run[T](
+        self, pending: PendingFunction[T], *,
+        task_id: str | None = None, target: NodeTarget | None = None,
+    ) -> T:
         """Execute a pending function on one node (round-robin).
 
         This is the method behind the ``task() >> compute`` operator.
@@ -85,6 +90,9 @@ class Pool(Protocol):
             Optional explicit id for this task. When omitted, an internal
             uuid is generated. The HTTP server passes its execution id
             here so worker-side log events can be correlated to the call.
+        target
+            Pin execution to a specific rank (``int``) or the head
+            (``"head"``). ``None`` keeps the default round-robin.
 
         Returns
         -------
@@ -99,7 +107,8 @@ class Pool(Protocol):
         ...
 
     def run_async[T](
-        self, pending: PendingFunction[T], *, task_id: str | None = None,
+        self, pending: PendingFunction[T], *,
+        task_id: str | None = None, target: NodeTarget | None = None,
     ) -> Future[T]:
         """Submit a pending function for non-blocking execution.
 
@@ -113,6 +122,9 @@ class Pool(Protocol):
             A ``PendingFunction`` produced by calling a ``@sky.function``.
         task_id
             Optional explicit id for this task. See :meth:`run`.
+        target
+            Pin execution to a specific rank (``int``) or the head
+            (``"head"``). ``None`` keeps the default round-robin.
 
         Returns
         -------
@@ -196,6 +208,25 @@ class Pool(Protocol):
         -------
         int
             Count of ready nodes.
+        """
+        ...
+
+    def snapshot(self) -> PoolSnapshot:
+        """Return a point-in-time snapshot of the pool's internal state.
+
+        Carries the pool phase, per-node status, the resolved cluster,
+        and the current instances — the data behind ``sky status`` and
+        the per-node SSH addressing route.
+
+        Returns
+        -------
+        PoolSnapshot
+            Phase, per-node ``NodeSnapshot``, cluster, and instances.
+
+        Raises
+        ------
+        RuntimeError
+            When the pool is not active.
         """
         ...
 

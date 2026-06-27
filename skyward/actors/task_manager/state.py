@@ -7,6 +7,7 @@ from casty import ActorRef
 from skyward.actors.messages import (
     ExecuteOnNode,
     NodeSlots,
+    NodeTarget,
     PressureReport,
     SubmitTask,
     TaskSubmitted,
@@ -50,6 +51,20 @@ def _pick_with_free_slot(
     return None
 
 
+def _target_rank(target: NodeTarget) -> NodeId:
+    """Resolve a ``NodeTarget`` to a concrete rank (``"head"`` → 0)."""
+    return 0 if target == "head" else int(target)
+
+
+def _pick_target(
+    nodes: MappingProxyType[NodeId, NodeSlots],
+    target: NodeTarget,
+) -> NodeId | None:
+    """Return the resolved rank if it is present, else ``None`` (absent rank)."""
+    rank = _target_rank(target)
+    return rank if rank in nodes else None
+
+
 def _dispatch(
     nid: NodeId,
     task: SubmitTask,
@@ -81,6 +96,14 @@ def _drain_queue(
 ) -> tuple[tuple[SubmitTask, ...], MappingProxyType[NodeId, NodeSlots], int, MappingProxyType[str, SubmitTask], MappingProxyType[NodeId, frozenset[str]]]:
     remaining: list[SubmitTask] = []
     for task in queue:
+        if task.target is not None:
+            rank = _target_rank(task.target)
+            slot = nodes.get(rank)
+            if slot is not None and slot.used < slot.total:
+                nodes, inflight, node_tasks = _dispatch(rank, task, nodes, tm_ref, inflight, node_tasks)
+            else:
+                remaining.append(task)
+            continue
         nid = _pick_with_free_slot(nodes, round_robin)
         if nid is None:
             remaining.append(task)

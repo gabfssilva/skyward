@@ -105,7 +105,7 @@ def _wait_for_exit(pid: int, *, timeout: float) -> bool:
 def _run_foreground(host: str, port: int, *, reload: bool) -> None:
     import uvicorn
 
-    config = uvicorn.Config("skyward.server:app", host=host, port=port, reload=reload)
+    config = uvicorn.Config("skyward.server:create_app", factory=True, host=host, port=port, reload=reload)
     uvicorn.Server(config).run()
 
 
@@ -115,7 +115,7 @@ def _spawn_daemon(host: str, port: int) -> subprocess.Popen:
     log = _LOG_FILE.open("ab")  # noqa: SIM115 — handed to subprocess; closed on its exit
     cmd = [
         sys.executable, "-m", "uvicorn",
-        "skyward.server:app",
+        "skyward.server:create_app", "--factory",
         "--host", host,
         "--port", str(port),
     ]

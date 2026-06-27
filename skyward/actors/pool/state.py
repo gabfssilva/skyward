@@ -18,7 +18,12 @@ from skyward.actors.snapshot import (
 )
 
 if TYPE_CHECKING:
-    from skyward.actors.messages import ClusterId, NodeId
+    from skyward.actors.messages import (
+        ClusterId,
+        HeadAddressKnown,
+        NodeBecameReady,
+        NodeId,
+    )
     from skyward.core.model import Offer
     from skyward.core.spec import PoolSpec
     from skyward.infra.tls import CertificateAuthority
@@ -53,6 +58,7 @@ class PoolState:
     task_counters: TaskCounters = TaskCounters()
     scaling: ScalingSnapshot = ScalingSnapshot()
     pool_started_at: float = 0.0
+    buffered_events: tuple[NodeBecameReady | HeadAddressKnown, ...] = ()
 
 
 def _derive_phase(s: PoolState) -> PoolPhase:

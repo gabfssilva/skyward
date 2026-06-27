@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
+
+from skyward.server.history import HistoryStore
 
 if TYPE_CHECKING:
     from skyward.api.pool import Pool
@@ -32,6 +35,8 @@ class ServerState:
     broadcast_executor: ThreadPoolExecutor = field(
         default_factory=lambda: ThreadPoolExecutor(max_workers=8, thread_name_prefix="sky-bcast"),
     )
+    history: HistoryStore = field(default_factory=HistoryStore)
+    reattach_unsubs: dict[str, Callable[[], None]] = field(default_factory=dict)
 
     def register_creating(self, name: str, task: asyncio.Task) -> PoolEntry:
         entry = PoolEntry(name=name, status="creating", task=task)
@@ -46,6 +51,15 @@ class ServerState:
         entry.pool = pool
         entry.error = None
         entry.task = None
+
+    def register_adopted(self, name: str, pool: Pool) -> None:
+        """Insert a ready entry for a reattached pool.
+
+        ``set_ready`` is a no-op without a prior ``register_creating``; the
+        reattach path never goes through ``creating``, so it inserts the
+        ``PoolEntry`` directly.
+        """
+        self.pools[name] = PoolEntry(name=name, status="ready", pool=pool)
 
     def set_failed(self, name: str, error: str) -> None:
         entry = self.pools.get(name)

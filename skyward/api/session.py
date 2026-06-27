@@ -9,7 +9,7 @@ implementation lives in ``skyward.core.session``.
 from __future__ import annotations
 
 from types import TracebackType
-from typing import TYPE_CHECKING, Unpack, overload
+from typing import TYPE_CHECKING, Any, Unpack, overload
 
 if TYPE_CHECKING:
     from skyward.api.logging import LogConfig
@@ -242,4 +242,46 @@ class Session:
         ... )
         >>> result = train(data) >> pool
         """
+        ...
+
+    def adopt(
+        self,
+        *,
+        name: str,
+        provider_config: Any,
+        cluster: Any,
+        instances: tuple[Any, ...],
+        node_ids: tuple[int, ...],
+        timeout: float = ...,
+    ) -> Pool:
+        """Re-adopt a previously-running pool from persisted live instances.
+
+        Server-internal reattach entry point: recreates the provider from
+        *provider_config* and re-adopts the live instances, skipping
+        bootstrap and worker launch.
+
+        Parameters
+        ----------
+        name
+            Server-side pool name to restore.
+        provider_config
+            Persisted ``ProviderConfig`` used to recreate the provider.
+        cluster
+            Persisted cluster (its ``spec`` is reused).
+        instances
+            Live instances to re-adopt, aligned with *node_ids*.
+        node_ids
+            Persisted ranks parallel to *instances* (head = 0).
+        timeout
+            Maximum seconds to wait for re-adoption.
+
+        Returns
+        -------
+        Pool
+            A pool bound to this session over the re-adopted nodes.
+        """
+        ...
+
+    def discard(self, *, provider_config: Any, cluster: Any) -> None:
+        """Tear down a cluster's instances (cleanup for a failed reattach)."""
         ...

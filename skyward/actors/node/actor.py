@@ -34,6 +34,8 @@ from skyward.actors.messages import (
     NodeBecameReady,
     NodeConnected,
     NodeExhausted,
+    NodeFileOp,
+    NodeFileResult,
     Preempted,
     Provision,
     TaskFailed,
@@ -63,6 +65,7 @@ from skyward.providers.provider import WarmableProvider
 
 from .helpers import (
     _resolve_output_stream,
+    _run_file_op,
     discover_own_worker,
     do_start_worker,
     execute_with_streaming,
@@ -72,6 +75,7 @@ from .helpers import (
     sync_user_code,
 )
 from .messages import (
+    Adopt,
     JoinCluster,
     NodeMsg,
     _BootstrapUploaded,
@@ -80,6 +84,7 @@ from .messages import (
     _ConnectionFailed,
     _EnvSetupDone,
     _EnvSetupFailed,
+    _FileOpDone,
     _HealthCheckResult,
     _HealthStreamEnded,
     _IdleTick,
@@ -282,6 +287,10 @@ def node_actor(
                     log.info("Node {nid} provisioning instance {iid}", nid=node_id, iid=instance.id)
                     s = NodeState(cluster=cluster, provider=provider)
                     return _start_polling(ctx, s, instance)
+                case Adopt(cluster=cluster, provider=provider, instance=instance):
+                    log.info("Node {nid} adopting instance {iid}", nid=node_id, iid=instance.id)
+                    s = NodeState(cluster=cluster, provider=provider)
+                    return _start_polling(ctx, s, instance, reattach=True)
             return Behaviors.same()
 
         return Behaviors.receive(receive)
@@ -292,6 +301,7 @@ def node_actor(
         ctx: ActorContext[NodeMsg],
         s: NodeState,
         instance: Any,
+        reattach: bool = False,
     ) -> Behavior[NodeMsg]:
         instance_id = instance.id
         provider_name = s.cluster.spec.provider or "aws"
@@ -307,12 +317,13 @@ def node_actor(
             _do_poll(),
             on_failure=lambda e: _PollResult(instance=None),
         )
-        return polling(s, instance_id, start_time)
+        return polling(s, instance_id, start_time, reattach)
 
     def polling(
         s: NodeState,
         instance_id: str,
         start_time: float,
+        reattach: bool = False,
     ) -> Behavior[NodeMsg]:
         provider_name = s.cluster.spec.provider or "aws"
 
@@ -324,7 +335,7 @@ def node_actor(
                     c = updated or s.cluster
                     ni = _bind_to_node(inst, node_id, provider_name, c)
                     log.info("Instance ready at {ip}", ip=inst.ip)
-                    return _start_connecting(ctx, replace(s, cluster=c, ni=ni))
+                    return _start_connecting(ctx, replace(s, cluster=c, ni=ni), reattach)
                 case _PollResult(instance=inst, cluster=updated) if (
                     inst and inst.status == "exited"
                 ):
@@ -352,14 +363,16 @@ def node_actor(
                         _poll_after_delay(),
                         on_failure=lambda e: _PollResult(instance=None),
                     )
-                    return polling(ns, instance_id, start_time)
-            return _common(ctx, msg, s, lambda ns: polling(ns, instance_id, start_time))
+                    return polling(ns, instance_id, start_time, reattach)
+            return _common(ctx, msg, s, lambda ns: polling(ns, instance_id, start_time, reattach))
 
         return Behaviors.receive(receive)
 
     # ── connecting ────────────────────────────────────────────────────
 
-    def _start_connecting(ctx: ActorContext[NodeMsg], s: NodeState) -> Behavior[NodeMsg]:
+    def _start_connecting(
+        ctx: ActorContext[NodeMsg], s: NodeState, reattach: bool = False,
+    ) -> Behavior[NodeMsg]:
         ni = s.ni
         assert ni is not None
         log.info("Spawning transport actor for {ip}", ip=ni.instance.ip)
@@ -393,25 +406,50 @@ def node_actor(
             _await_forward(),
             on_failure=lambda e: _ConnectionFailed(error=str(e)),
         )
-        return connecting(replace(s, transport_ref=transport_ref))
+        return connecting(replace(s, transport_ref=transport_ref), reattach)
 
-    def connecting(s: NodeState) -> Behavior[NodeMsg]:
+    def connecting(s: NodeState, reattach: bool = False) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
             match msg:
                 case _Connected(transport_ref=tref, local_port=lp, instance=ni):
                     log.info("SSH tunnel established (port={port})", port=lp)
                     if ni is not None:
                         pool.tell(NodeConnected(node_id=node_id, instance=ni))
-                    return _start_bootstrapping(ctx, replace(s, transport_ref=tref, local_port=lp))
+                    ns = replace(s, transport_ref=tref, local_port=lp)
+                    if reattach:
+                        return _enter_reattach_ready(ctx, ns)
+                    return _start_bootstrapping(ctx, ns)
                 case _ConnectionFailed(error=error):
                     log.error("SSH connection failed: {error}", error=error)
                     return _fail_and_stop(s, error)
                 case ConnectionFailed(error=error):
                     log.error("Transport permanently failed: {error}", error=error)
                     return _fail_and_stop(s, error)
-            return _common(ctx, msg, s, connecting)
+            return _common(ctx, msg, s, lambda ns: connecting(ns, reattach))
 
         return Behaviors.receive(receive)
+
+    # ── reattach ready (skip bootstrap + worker launch) ───────────────
+
+    def _enter_reattach_ready(ctx: ActorContext[NodeMsg], s: NodeState) -> Behavior[NodeMsg]:
+        ni = s.ni
+        tref = s.transport_ref
+        assert ni is not None
+        assert tref is not None
+        if not _skip_monitor:
+            monitor_ref = ctx.spawn(
+                instance_monitor(
+                    info=ni, transport=tref, event_listener=pool, reply_to=ctx.self,
+                ),
+                f"monitor-{ni.instance.id}",
+            )
+            ctx.watch(monitor_ref)
+        private_ip = ni.instance.private_ip or ni.instance.ip or ""
+        log.info("Node {nid} reattached, entering ready", nid=node_id)
+        pool.tell(NodeBecameReady(
+            node_id=node_id, instance=ni, local_port=s.local_port, private_ip=private_ip,
+        ))
+        return ready(s)
 
     # ── bootstrapping ─────────────────────────────────────────────────
 
@@ -887,6 +925,22 @@ def node_actor(
             match msg:
                 case HeadAddressKnown() as h:
                     return active(replace(s, head_info=h))
+                case NodeFileOp(op=op, path=path, content=content, timeout=fo_timeout, reply_to=fo_rt):
+                    if s.transport_ref is None:
+                        fo_rt.tell(NodeFileResult(node_id=node_id, success=False, error="transport not connected"))
+                        return Behaviors.same()
+                    ctx.pipe_to_self(
+                        _run_file_op(s.transport_ref, node_id, op, path, content, fo_timeout),
+                        mapper=lambda result, _rt=fo_rt: _FileOpDone(result=result, reply_to=_rt),
+                        on_failure=lambda e, _rt=fo_rt: _FileOpDone(
+                            result=NodeFileResult(node_id=node_id, success=False, error=str(e)),
+                            reply_to=_rt,
+                        ),
+                    )
+                    return Behaviors.same()
+                case _FileOpDone(result=result, reply_to=fo_rt):
+                    fo_rt.tell(result)
+                    return Behaviors.same()
                 case ExecuteOnNode() as ex:
                     if not s.transport_connected:
                         pt = PendingTask(
@@ -931,7 +985,11 @@ def node_actor(
                         return Behaviors.same()  # original ask resolved first
                     from skyward.infra.worker import (
                         ResultDone,
+                    )
+                    from skyward.infra.worker import (
                         TaskFailed as WorkerTaskFailed,
+                    )
+                    from skyward.infra.worker import (
                         TaskSucceeded as WorkerTaskSucceeded,
                     )
 

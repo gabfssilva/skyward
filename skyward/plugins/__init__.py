@@ -26,6 +26,7 @@ from skyward.api.plugin import around_process as around_process
 if TYPE_CHECKING:
     from .accelerate import accelerate
     from .cuml import cuml
+    from .huggingface import huggingface
     from .jax import jax
     from .joblib import joblib
     from .keras import keras
@@ -43,6 +44,7 @@ __all__ = [
     "jax",
     "keras",
     "cuml",
+    "huggingface",
     "joblib",
     "mig",
     "mps",
@@ -58,6 +60,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "jax": ("skyward.plugins.jax", "jax"),
     "keras": ("skyward.plugins.keras", "keras"),
     "cuml": ("skyward.plugins.cuml", "cuml"),
+    "huggingface": ("skyward.plugins.huggingface", "huggingface"),
     "joblib": ("skyward.plugins.joblib", "joblib"),
     "mig": ("skyward.plugins.mig", "mig"),
     "mps": ("skyward.plugins.mps", "mps"),

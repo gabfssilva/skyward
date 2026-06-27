@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from skyward.observability.logger import logger
+from skyward.server import reattach
 from skyward.server.wire import decode, encode, event_to_json, pool_view_to_json
 
 if TYPE_CHECKING:
@@ -19,6 +22,10 @@ if TYPE_CHECKING:
 
     from starlette.requests import Request
 
+    from skyward.actors.messages import NodeFileResult, NodeSelection, NodeTarget
+    from skyward.actors.snapshot import NodeSnapshot, PoolSnapshot
+    from skyward.core.model import Cluster, Instance
+    from skyward.core.pool import ComputePool
     from skyward.server.state import PoolEntry, ServerState
 
 
@@ -72,6 +79,10 @@ async def create_pool(request: Request) -> Response:
             state.set_failed(name, repr(exc))
             return
         state.set_ready(name, pool)
+        provider_config = specs[0].provider if specs else None
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(reattach.persist_handle, name, provider_config, pool)
+            reattach.subscribe_repersist(state, name, provider_config, pool)
         logger.info(f"pool {name!r} ready")
 
     task = asyncio.create_task(_provision(), name=f"create-pool:{name}")
@@ -91,6 +102,197 @@ async def get_pool(request: Request) -> Response:
     if entry is None:
         return JSONResponse({"error": "not found"}, status_code=404)
     return JSONResponse(_pool_info(entry))
+
+
+def _node_info(
+    ns: NodeSnapshot, inst: Instance | None, cluster: Cluster | None,
+) -> dict:
+    """Build per-node SSH addressing JSON from a live snapshot.
+
+    No password value is returned; only ``has_password`` signals
+    password-only auth so the client can refuse interactive mode.
+    """
+    ssh_key_path = cluster.ssh_key_path if cluster is not None else None
+    return {
+        "rank": ns.node_id,
+        "status": ns.status.name.lower(),
+        "is_head": ns.node_id == 0,
+        "instance_id": ns.instance_id or None,
+        "ip": inst.ip if inst is not None else None,
+        "private_ip": inst.private_ip if inst is not None else None,
+        "ssh_port": inst.ssh_port if inst is not None else None,
+        "ssh_user": cluster.ssh_user if cluster is not None else None,
+        "ssh_key_path": ssh_key_path,
+        "has_password": inst.ssh_password is not None if inst is not None else False,
+        "key_exists_on_server": bool(ssh_key_path) and Path(ssh_key_path).exists(),
+    }
+
+
+async def list_nodes(request: Request) -> Response:
+    """Return per-node SSH addressing for a ready session as rank-ordered JSON.
+
+    404 if unknown; 409 (with ``status``) if not ready. Each node:
+    ``{rank, status, is_head, instance_id, ip, private_ip, ssh_port,
+    ssh_user, ssh_key_path, has_password, key_exists_on_server}``.
+    """
+    state = _state(request)
+    name = request.path_params["name"]
+    entry = state.get_pool(name)
+    if entry is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if entry.status != "ready" or entry.pool is None:
+        return JSONResponse(
+            {"error": "pool not ready", "status": entry.status},
+            status_code=409,
+        )
+
+    pool = entry.pool
+    snap: PoolSnapshot = await asyncio.to_thread(pool.snapshot)
+    instances = {i.id: i for i in snap.instances}
+    nodes = [
+        _node_info(ns, instances.get(ns.instance_id), snap.cluster)
+        for ns in sorted(snap.nodes, key=lambda n: n.node_id)
+    ]
+    return JSONResponse({"name": name, "nodes": nodes})
+
+
+async def get_pool_log(request: Request) -> Response:
+    """Return recorded event history for a pool.
+
+    Body: ``{"name", "count", "events": [...], "sources": {eid: source}}``.
+    404 if no history exists. Reads ``history`` independent of live pool
+    existence, so deleted pools still export until server restart.
+    """
+    state = _state(request)
+    name = request.path_params["name"]
+    if not state.history.has(name):
+        return JSONResponse({"error": "no history"}, status_code=404)
+    limit_q = request.query_params.get("limit")
+    limit = int(limit_q) if limit_q and limit_q.isdigit() else None
+    events = state.history.get(name, limit)
+    return JSONResponse({
+        "name": name,
+        "count": len(events),
+        "events": events,
+        "sources": state.history.sources(name),
+    })
+
+
+def _ready_pool(state: ServerState, name: str) -> tuple[ComputePool | None, Response | None]:
+    """Resolve a ready pool (with file-op facades) or the matching error response."""
+    from skyward.core.pool import ComputePool
+
+    entry = state.get_pool(name)
+    if entry is None:
+        return None, JSONResponse({"error": "not found"}, status_code=404)
+    if entry.status != "ready" or entry.pool is None:
+        return None, JSONResponse(
+            {"error": "pool not ready", "status": entry.status}, status_code=409,
+        )
+    if not isinstance(entry.pool, ComputePool):
+        return None, JSONResponse(
+            {"error": "pool does not support file operations"}, status_code=500,
+        )
+    return entry.pool, None
+
+
+def _parse_node(value: str | None, default: NodeSelection, *, allow_all: bool = True) -> NodeSelection:
+    """Parse the ``?node=`` query into a ``NodeSelection`` (raises on invalid)."""
+    if value is None:
+        return default
+    if value == "head":
+        return "head"
+    if value == "all":
+        if not allow_all:
+            raise ValueError("node=all not supported here")
+        return "all"
+    if value.lstrip("-").isdigit():
+        return int(value)
+    raise ValueError(f"invalid node: {value!r}")
+
+
+def _file_result_json(r: NodeFileResult) -> dict:
+    return {"node_id": r.node_id, "success": r.success, "listing": r.listing, "error": r.error}
+
+
+async def list_files(request: Request) -> Response:
+    """``ls -la`` ``?path=`` on the selected node(s) (default head)."""
+    state = _state(request)
+    pool, err = _ready_pool(state, request.path_params["name"])
+    if err is not None:
+        return err
+    assert pool is not None
+    path = request.query_params.get("path")
+    if not path:
+        return JSONResponse({"error": "path required"}, status_code=400)
+    try:
+        sel = _parse_node(request.query_params.get("node"), "head")
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    results = await asyncio.to_thread(pool.ls, path, sel)
+    return JSONResponse({"results": [_file_result_json(r) for r in results]})
+
+
+async def remove_file(request: Request) -> Response:
+    """``rm -rf`` ``?path=`` on the selected node(s) (default all)."""
+    state = _state(request)
+    pool, err = _ready_pool(state, request.path_params["name"])
+    if err is not None:
+        return err
+    assert pool is not None
+    path = request.query_params.get("path")
+    if not path:
+        return JSONResponse({"error": "path required"}, status_code=400)
+    try:
+        sel = _parse_node(request.query_params.get("node"), "all")
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    results = await asyncio.to_thread(pool.rm, path, sel)
+    return JSONResponse({"results": [_file_result_json(r) for r in results]})
+
+
+async def upload_file(request: Request) -> Response:
+    """Write the octet-stream body to ``?path=`` on the selected node(s) (default all)."""
+    state = _state(request)
+    pool, err = _ready_pool(state, request.path_params["name"])
+    if err is not None:
+        return err
+    assert pool is not None
+    path = request.query_params.get("path")
+    if not path:
+        return JSONResponse({"error": "path required"}, status_code=400)
+    try:
+        sel = _parse_node(request.query_params.get("node"), "all")
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    content = await request.body()
+    results = await asyncio.to_thread(pool.upload_file, content, path, sel)
+    return JSONResponse({"results": [_file_result_json(r) for r in results]})
+
+
+async def download_file(request: Request) -> Response:
+    """Stream ``?path=`` from a single node as octet-stream (``node=all`` → 422)."""
+    state = _state(request)
+    pool, err = _ready_pool(state, request.path_params["name"])
+    if err is not None:
+        return err
+    assert pool is not None
+    path = request.query_params.get("path")
+    if not path:
+        return JSONResponse({"error": "path required"}, status_code=400)
+    if request.query_params.get("node") == "all":
+        return JSONResponse({"error": "download does not support node=all"}, status_code=422)
+    try:
+        sel = _parse_node(request.query_params.get("node"), "head", allow_all=False)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    results = await asyncio.to_thread(pool.download_file, path, sel)
+    if not results:
+        return JSONResponse({"error": "no such node"}, status_code=404)
+    first = results[0]
+    if not first.success:
+        return JSONResponse({"error": first.error or "download failed"}, status_code=404)
+    return Response(first.content, media_type="application/octet-stream")
 
 
 async def delete_pool(request: Request) -> Response:
@@ -119,6 +321,7 @@ async def delete_pool(request: Request) -> Response:
             await asyncio.wait_for(asyncio.shield(entry.task), timeout=10.0)
 
     state.drop_pool(name)
+    reattach.drop_persistence(state, name)
     return Response(status_code=204)
 
 
@@ -146,10 +349,24 @@ async def submit_execution(request: Request) -> Response:
         return JSONResponse({"error": f"invalid payload: {e!r}"}, status_code=400)
 
     eid = uuid.uuid4().hex
+    source_b64 = request.headers.get("X-Skyward-Source")
+    if source_b64:
+        with contextlib.suppress(Exception):
+            state.history.set_source(
+                name, eid, base64.b64decode(source_b64).decode("utf-8"),
+            )
     future: Future
     match mode:
         case "run":
-            future = pool.run_async(pending, task_id=eid)
+            node = request.query_params.get("node")
+            target: NodeTarget | None = None
+            if node == "head":
+                target = "head"
+            elif node is not None:
+                if not node.lstrip("-").isdigit():
+                    return JSONResponse({"error": f"invalid node: {node!r}"}, status_code=400)
+                target = int(node)
+            future = pool.run_async(pending, task_id=eid, target=target)
         case _:
             future = state.broadcast_executor.submit(
                 pool.broadcast, pending, task_id=eid,

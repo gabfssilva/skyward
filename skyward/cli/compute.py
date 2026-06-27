@@ -10,7 +10,7 @@ from typing import Annotated
 import httpx
 from cyclopts import Parameter
 
-from . import compute_app
+from . import app, compute_app
 from ._client import format_http_error, make_client, resolve_server_url
 from ._output import console, print_status, print_table
 
@@ -27,39 +27,26 @@ def _pool_row(info: dict) -> tuple:
     )
 
 
-@compute_app.command(name="create")
-def create_pool(
-    pool: Annotated[str | None, Parameter(help="Named pool from skyward.toml")] = None,
+def _create_session(
     *,
-    name: Annotated[str | None, Parameter(name="--name", help="Server-side pool name (defaults to TOML name or auto-generated)")] = None,
-    provider: Annotated[str | None, Parameter(name="--provider", help="Provider type (aws, vastai, runpod, …) when not using a TOML pool")] = None,
-    region: Annotated[str | None, Parameter(name="--region", help="Override region on the resolved spec")] = None,
-    nodes: Annotated[int | None, Parameter(name="--nodes", help="Override node count")] = None,
-    accelerator: Annotated[str | None, Parameter(name="--accelerator", help="Override accelerator (e.g. A100, H100)")] = None,
-    allocation: Annotated[
-        str | None,
-        Parameter(name="--allocation", help="Override allocation (spot, on-demand, spot-if-available, cheapest)"),
-    ] = None,
-    pip: Annotated[
-        list[str] | None,
-        Parameter(name="--pip", help="Extra pip packages to install (repeatable; appends to TOML image.pip)"),
-    ] = None,
-    apt: Annotated[
-        list[str] | None,
-        Parameter(name="--apt", help="Extra apt packages to install (repeatable; appends to TOML image.apt)"),
-    ] = None,
-    python: Annotated[
-        str | None,
-        Parameter(name="--python", help="Python version on the worker (e.g. 3.12, 3.13). Overrides TOML"),
-    ] = None,
-    watch: Annotated[
-        bool,
-        Parameter(name="--watch", help="After creating, follow pool events live until ready/failed"),
-    ] = False,
-    url: Annotated[str | None, Parameter(name="--url", help="Server URL")] = None,
-    json: Annotated[bool, Parameter(name="--json", help="JSON output")] = False,
-) -> None:
-    """Create a remote compute pool."""
+    pool: str | None,
+    name: str | None,
+    provider: str | None,
+    region: str | None,
+    nodes: int | None,
+    accelerator: str | None,
+    allocation: str | None,
+    pip: list[str] | None,
+    apt: list[str] | None,
+    python: str | None,
+    url: str | None,
+) -> dict:
+    """Resolve specs, ``POST /compute``, and return the server's pool-info dict.
+
+    Shared by ``sky compute create`` and ``sky new``. Exits the process
+    on bad input, an unreachable server, or a non-201/202 response — the
+    established CLI error pattern.
+    """
     from skyward.api.spec import Options, Spec
     from skyward.config import _get_provider_map, resolve_pool_specs
     from skyward.server.wire import encode
@@ -147,7 +134,52 @@ def create_pool(
         console.print(f"[red]{format_http_error(r)}[/red]")
         raise SystemExit(1)
 
-    info = r.json()
+    return r.json()
+
+
+@compute_app.command(name="create")
+def create_pool(
+    pool: Annotated[str | None, Parameter(help="Named pool from skyward.toml")] = None,
+    *,
+    name: Annotated[str | None, Parameter(name="--name", help="Server-side pool name (defaults to TOML name or auto-generated)")] = None,
+    provider: Annotated[str | None, Parameter(name="--provider", help="Provider type (aws, vastai, runpod, …) when not using a TOML pool")] = None,
+    region: Annotated[str | None, Parameter(name="--region", help="Override region on the resolved spec")] = None,
+    nodes: Annotated[int | None, Parameter(name="--nodes", help="Override node count")] = None,
+    accelerator: Annotated[str | None, Parameter(name="--accelerator", help="Override accelerator (e.g. A100, H100)")] = None,
+    allocation: Annotated[
+        str | None,
+        Parameter(name="--allocation", help="Override allocation (spot, on-demand, spot-if-available, cheapest)"),
+    ] = None,
+    pip: Annotated[
+        list[str] | None,
+        Parameter(name="--pip", help="Extra pip packages to install (repeatable; appends to TOML image.pip)"),
+    ] = None,
+    apt: Annotated[
+        list[str] | None,
+        Parameter(name="--apt", help="Extra apt packages to install (repeatable; appends to TOML image.apt)"),
+    ] = None,
+    python: Annotated[
+        str | None,
+        Parameter(name="--python", help="Python version on the worker (e.g. 3.12, 3.13). Overrides TOML"),
+    ] = None,
+    watch: Annotated[
+        bool,
+        Parameter(name="--watch", help="After creating, follow pool events live until ready/failed"),
+    ] = False,
+    url: Annotated[str | None, Parameter(name="--url", help="Server URL")] = None,
+    json: Annotated[bool, Parameter(name="--json", help="JSON output")] = False,
+) -> None:
+    """Create a remote compute pool."""
+    info = _create_session(
+        pool=pool, name=name, provider=provider, region=region, nodes=nodes,
+        accelerator=accelerator, allocation=allocation, pip=pip, apt=apt,
+        python=python, url=url,
+    )
+    _present_pool_created(info, target=resolve_server_url(url), watch=watch, json=json)
+
+
+def _present_pool_created(info: dict, *, target: str, watch: bool, json: bool) -> None:
+    """Render the result of a pool creation (json | watch | table)."""
     if json:
         import json as _json
 
@@ -169,7 +201,7 @@ def create_pool(
     if info.get("status") == "creating":
         console.print(
             f"[dim]Provisioning in background.[/dim] "
-            f"Follow with: [bold]sky compute view {info['name']}[/bold]"
+            f"Follow with: [bold]sky status {info['name']}[/bold]"
         )
 
 
@@ -317,13 +349,35 @@ def view_pool(
         raise SystemExit(exit_code)
 
 
+def _run_params(node: str | None, broadcast: bool) -> dict[str, str]:
+    """Resolve ``--node``/``--broadcast`` to ``executions`` query params.
+
+    ``all`` (or legacy ``--broadcast``) → ``mode=broadcast``; ``head`` or a
+    rank number → ``mode=run`` plus ``node=``; omitted → round-robin ``run``.
+    """
+    if node is None:
+        return {"mode": "broadcast"} if broadcast else {"mode": "run"}
+    if node == "all":
+        return {"mode": "broadcast"}
+    if node == "head":
+        return {"mode": "run", "node": "head"}
+    if node.lstrip("-").isdigit():
+        return {"mode": "run", "node": node}
+    console.print(f"[red]Invalid --node '{node}'. Use head, all, or a rank number.[/red]")
+    raise SystemExit(2)
+
+
 @compute_app.command(name="run")
 def run_script(
     name: Annotated[str, Parameter(help="Pool name on the server")],
     script: Annotated[Path, Parameter(help="Path to the .py script to execute")],
     args: Annotated[list[str] | None, Parameter(help="Arguments forwarded as sys.argv to the script")] = None,
     *,
-    broadcast: Annotated[bool, Parameter(name="--broadcast", help="Run on every node instead of one (round-robin)")] = False,
+    node: Annotated[
+        str | None,
+        Parameter(name="--node", help="Target a node: head, all, or a rank number (default round-robin)"),
+    ] = None,
+    broadcast: Annotated[bool, Parameter(name="--broadcast", help="Alias for --node all")] = False,
     url: Annotated[str | None, Parameter(name="--url", help="Server URL")] = None,
 ) -> None:
     """Run a local Python script remotely on a pool.
@@ -343,18 +397,24 @@ def run_script(
         console.print(f"[red]Script not found: {script}[/red]")
         raise SystemExit(2)
 
+    import base64
+
     pending = build_exec_pending(script, list(args or []))
     body = encode(pending)
     target = resolve_server_url(url)
-    mode = "broadcast" if broadcast else "run"
+    params = _run_params(node, broadcast)
+    source_header = base64.b64encode(script.read_text().encode()).decode("ascii")
 
     try:
         with make_client(url) as client:
             r = client.post(
                 f"/compute/{name}/executions",
-                params={"mode": mode},
+                params=params,
                 content=body,
-                headers={"Content-Type": "application/octet-stream"},
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "X-Skyward-Source": source_header,
+                },
             )
     except httpx.ConnectError:
         console.print(f"[red]Could not reach server at {target}[/red]")
@@ -433,3 +493,230 @@ async def _stream_run(target: str, pool_name: str, eid: str) -> int:
         with contextlib.suppress(asyncio.CancelledError):
             await log_task
     return exit_code
+
+
+# ── file operations ──────────────────────────────────────────────
+
+
+def _raise_for_file_error(r: httpx.Response, name: str, *, expected: int = 200) -> None:
+    """Exit with a clean message on the file-route 404/409/other errors."""
+    if r.status_code == 404:
+        console.print(f"[red]Session {name!r} not found[/red]")
+        raise SystemExit(1)
+    if r.status_code == 409:
+        try:
+            status = r.json().get("status", "?")
+        except ValueError:
+            status = "?"
+        console.print(f"[red]session not ready ({status})[/red]")
+        raise SystemExit(1)
+    if r.status_code != expected:
+        console.print(f"[red]{format_http_error(r)}[/red]")
+        raise SystemExit(1)
+
+
+def _print_file_results(results: list[dict]) -> None:
+    print_table(
+        ["Node", "Status", "Error"],
+        [(res["node_id"], "ok" if res["success"] else "fail", res.get("error") or "") for res in results],
+    )
+
+
+@compute_app.command(name="ls")
+def ls_files(
+    name: Annotated[str, Parameter(help="Session/pool name on the server")],
+    path: Annotated[str, Parameter(help="Remote path to list")],
+    *,
+    node: Annotated[str, Parameter(name="--node", help="head, all, or a rank number")] = "head",
+    url: Annotated[str | None, Parameter(name="--url", help="Server URL")] = None,
+    json: Annotated[bool, Parameter(name="--json", help="JSON output")] = False,
+) -> None:
+    """List a remote path on the session's node(s)."""
+    target = resolve_server_url(url)
+    try:
+        with make_client(url) as client:
+            r = client.get(f"/compute/{name}/files", params={"path": path, "node": node})
+    except httpx.ConnectError:
+        console.print(f"[red]Could not reach server at {target}[/red]")
+        raise SystemExit(1) from None
+    _raise_for_file_error(r, name)
+    results = r.json()["results"]
+    if json:
+        import json as _json
+
+        sys.stdout.write(_json.dumps(results) + "\n")
+        return
+    for res in results:
+        if res["success"]:
+            console.print(f"[bold]node {res['node_id']}[/bold]")
+            console.print(res["listing"].rstrip())
+        else:
+            console.print(f"[red]node {res['node_id']}: {res['error']}[/red]")
+
+
+@compute_app.command(name="rm")
+def rm_files(
+    name: Annotated[str, Parameter(help="Session/pool name on the server")],
+    path: Annotated[str, Parameter(help="Remote path to remove (rm -rf)")],
+    *,
+    node: Annotated[str, Parameter(name="--node", help="head, all, or a rank number")] = "all",
+    url: Annotated[str | None, Parameter(name="--url", help="Server URL")] = None,
+    json: Annotated[bool, Parameter(name="--json", help="JSON output")] = False,
+) -> None:
+    """Remove a remote path on the session's node(s)."""
+    target = resolve_server_url(url)
+    try:
+        with make_client(url) as client:
+            r = client.delete(f"/compute/{name}/files", params={"path": path, "node": node})
+    except httpx.ConnectError:
+        console.print(f"[red]Could not reach server at {target}[/red]")
+        raise SystemExit(1) from None
+    _raise_for_file_error(r, name)
+    results = r.json()["results"]
+    if json:
+        import json as _json
+
+        sys.stdout.write(_json.dumps(results) + "\n")
+        return
+    _print_file_results(results)
+
+
+@compute_app.command(name="upload")
+def upload(
+    name: Annotated[str, Parameter(help="Session/pool name on the server")],
+    local: Annotated[Path, Parameter(help="Local file to upload")],
+    remote: Annotated[str, Parameter(help="Destination path on the node(s)")],
+    *,
+    node: Annotated[str, Parameter(name="--node", help="head, all, or a rank number")] = "all",
+    url: Annotated[str | None, Parameter(name="--url", help="Server URL")] = None,
+    json: Annotated[bool, Parameter(name="--json", help="JSON output")] = False,
+) -> None:
+    """Upload a local file to the session's node(s)."""
+    if not local.is_file():
+        console.print(f"[red]File not found: {local}[/red]")
+        raise SystemExit(2)
+    target = resolve_server_url(url)
+    try:
+        with make_client(url) as client:
+            r = client.put(
+                f"/compute/{name}/files",
+                params={"path": remote, "node": node},
+                content=local.read_bytes(),
+                headers={"Content-Type": "application/octet-stream"},
+            )
+    except httpx.ConnectError:
+        console.print(f"[red]Could not reach server at {target}[/red]")
+        raise SystemExit(1) from None
+    _raise_for_file_error(r, name)
+    results = r.json()["results"]
+    if json:
+        import json as _json
+
+        sys.stdout.write(_json.dumps(results) + "\n")
+        return
+    _print_file_results(results)
+
+
+@compute_app.command(name="download")
+def download(
+    name: Annotated[str, Parameter(help="Session/pool name on the server")],
+    remote: Annotated[str, Parameter(help="Remote path to download")],
+    local: Annotated[Path, Parameter(help="Local destination file")],
+    *,
+    node: Annotated[str, Parameter(name="--node", help="head or a rank number")] = "head",
+    url: Annotated[str | None, Parameter(name="--url", help="Server URL")] = None,
+) -> None:
+    """Download a file from a single session node to a local path."""
+    target = resolve_server_url(url)
+    try:
+        with make_client(url) as client, client.stream(
+            "GET", f"/compute/{name}/files/content",
+            params={"path": remote, "node": node},
+        ) as r:
+            if r.status_code != 200:
+                r.read()
+                _raise_for_file_error(r, name)
+            with local.open("wb") as f:
+                for chunk in r.iter_bytes():
+                    f.write(chunk)
+    except httpx.ConnectError:
+        console.print(f"[red]Could not reach server at {target}[/red]")
+        raise SystemExit(1) from None
+    print_status(f"{remote}", "ok", f"→ {local}")
+
+
+# ── imperative install ───────────────────────────────────────────
+
+
+def _resolve_specifiers(packages: list[str] | None, requirements: Path | None) -> tuple[str, ...]:
+    """Merge positional specifiers with non-comment requirements lines."""
+    specs: list[str] = list(packages or [])
+    if requirements is not None:
+        if not requirements.is_file():
+            console.print(f"[red]Requirements file not found: {requirements}[/red]")
+            raise SystemExit(2)
+        specs.extend(
+            line.strip()
+            for line in requirements.read_text().splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        )
+    if not specs:
+        console.print("[red]No packages to install[/red]")
+        raise SystemExit(2)
+    return tuple(specs)
+
+
+@app.command(name="install")
+def install(
+    pool: Annotated[str, Parameter(help="Session/pool name")],
+    packages: Annotated[list[str] | None, Parameter(help="Package specifiers")] = None,
+    *,
+    requirements: Annotated[
+        Path | None, Parameter(name=("-r", "--requirements"), help="requirements.txt to install"),
+    ] = None,
+    one: Annotated[bool, Parameter(name="--one", help="Install on a single node (inspection only)")] = False,
+    url: Annotated[str | None, Parameter(name="--url", help="Server URL")] = None,
+) -> None:
+    """Install dependencies into a live session's worker venv via uv.
+
+    Broadcasts ``uv add`` to every node by default (each node has its own
+    ``/opt/skyward/.venv``); ``--one`` targets a single node. Output streams
+    back live and the CLI exits with the worst node's exit code.
+    """
+    import asyncio
+
+    from skyward.server.wire import encode
+
+    from ._install import build_install_pending
+
+    specs = _resolve_specifiers(packages, requirements)
+    body = encode(build_install_pending(specs))
+    target = resolve_server_url(url)
+    mode = "run" if one else "broadcast"
+
+    try:
+        with make_client(url) as client:
+            r = client.post(
+                f"/compute/{pool}/executions",
+                params={"mode": mode},
+                content=body,
+                headers={"Content-Type": "application/octet-stream"},
+            )
+    except httpx.ConnectError:
+        console.print(f"[red]Could not reach server at {target}[/red]")
+        raise SystemExit(1) from None
+
+    if r.status_code == 404:
+        console.print(f"[red]Session {pool!r} not found[/red]")
+        raise SystemExit(1)
+    if r.status_code == 409:
+        console.print("[red]session not ready[/red]")
+        raise SystemExit(1)
+    if r.status_code != 202:
+        console.print(f"[red]{format_http_error(r)}[/red]")
+        raise SystemExit(1)
+
+    eid = r.json()["id"]
+    exit_code = asyncio.run(_stream_run(target, pool, eid))
+    if exit_code != 0:
+        raise SystemExit(exit_code)

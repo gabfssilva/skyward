@@ -6,6 +6,7 @@ Skipped when the ``[server]`` extra (starlette + uvicorn) is not installed.
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import Future
 
 import pytest
 
@@ -47,11 +48,11 @@ def request_factory(state):
 
     app = _FakeApp(state)
 
-    def make(method: str, path: str, *, query: bytes = b"", body: bytes = b"", path_params: dict | None = None) -> Request:
+    def make(method: str, path: str, *, query: bytes = b"", body: bytes = b"", path_params: dict | None = None, headers: list | None = None) -> Request:
         scope = {
             "type": "http",
             "method": method,
-            "headers": [],
+            "headers": headers or [],
             "path": path,
             "raw_path": path.encode(),
             "query_string": query,
@@ -492,3 +493,381 @@ async def test_get_includes_status(state, request_factory):
     body = _json.loads(response.body)
     assert body["status"] == "ready"
     assert body["current_nodes"] == 1
+
+
+# ── node listing (W0) ────────────────────────────────────────────
+
+
+def _node_snapshot(node_id: int, instance_id: str):
+    from skyward.actors.snapshot import NodeSnapshot, NodeStatus
+
+    return NodeSnapshot(
+        node_id=node_id, instance_id=instance_id, status=NodeStatus.READY,
+    )
+
+
+def _instance(instance_id: str, ip: str, *, ssh_password: str | None = None):
+    from skyward.api.model import Instance, InstanceType, Offer
+
+    itype = InstanceType(
+        name="t", accelerator=None, vcpus=1, memory_gb=1,
+        architecture="x86_64", specific=None,
+    )
+    offer = Offer(
+        id="o", instance_type=itype, spot_price=1.0, on_demand_price=2.0,
+        billing_unit="hour", specific=None,
+    )
+    return Instance(
+        id=instance_id, status="ready", offer=offer, ip=ip,
+        private_ip="10.0.0." + instance_id[-1], ssh_port=2222,
+        ssh_password=ssh_password,
+    )
+
+
+def _two_node_snapshot():
+    """Snapshot with rank 0 (head) + rank 1, both ready with instances."""
+    from skyward.actors.snapshot import (
+        PoolPhase,
+        PoolSnapshot,
+        ScalingSnapshot,
+        TaskCounters,
+    )
+    from skyward.api.model import Cluster
+    from skyward.api.spec import PoolSpec
+
+    inst0 = _instance("i-0", "1.1.1.1")
+    inst1 = _instance("i-1", "2.2.2.2", ssh_password="secret")
+    cluster = Cluster(
+        id="c", status="ready", spec=PoolSpec.__new__(PoolSpec),
+        offer=inst0.offer, ssh_key_path="/tmp/does-not-exist-key",
+        ssh_user="ubuntu", use_sudo=False, shutdown_command="",
+        specific=None, instances=(inst0, inst1),
+    )
+    return PoolSnapshot(
+        name="n", phase=PoolPhase.READY,
+        nodes=(_node_snapshot(1, "i-1"), _node_snapshot(0, "i-0")),
+        tasks=TaskCounters(), scaling=ScalingSnapshot(),
+        cluster=cluster, instances=(inst0, inst1),
+    )
+
+
+class _NodesPool(_FakePool):
+    def snapshot(self):
+        return _two_node_snapshot()
+
+
+class _CapturePool(_FakePool):
+    """Captures the target passed to run_async for node-targeting tests."""
+
+    def __init__(self):
+        super().__init__()
+        self.captured: dict = {}
+
+    def run_async(self, pending, *, task_id=None, target=None):
+        self.captured["target"] = target
+        fut: Future = Future()
+        fut.set_result({"exit": 0})
+        return fut
+
+
+async def test_list_nodes_404_when_missing(state, request_factory):
+    from skyward.server import routes
+
+    req = request_factory("GET", "/compute/none/nodes", path_params={"name": "none"})
+    response = await routes.list_nodes(req)
+    assert response.status_code == 404
+
+
+async def test_list_nodes_409_when_not_ready(state, request_factory):
+    from skyward.server import routes
+
+    release = asyncio.Event()
+
+    def slow_compute(*s, **kw):
+        import time
+        while not release.is_set():
+            time.sleep(0.01)
+        return _NodesPool()
+
+    state.session.compute = slow_compute
+    await routes.create_pool(
+        request_factory("POST", "/compute", query=b"name=nn", body=_encoded_payload()),
+    )
+    req = request_factory("GET", "/compute/nn/nodes", path_params={"name": "nn"})
+    response = await routes.list_nodes(req)
+    assert response.status_code == 409
+    import json as _json
+    assert _json.loads(response.body)["status"] == "creating"
+    release.set()
+    entry = state.get_pool("nn")
+    if entry is not None and entry.task is not None:
+        await entry.task
+
+
+async def test_list_nodes_returns_rank_ordered(state, request_factory):
+    from skyward.server import routes
+
+    state.session.compute = lambda *s, **kw: _NodesPool()
+    await routes.create_pool(
+        request_factory("POST", "/compute", query=b"name=ln", body=_encoded_payload()),
+    )
+    entry = state.get_pool("ln")
+    await entry.task
+
+    req = request_factory("GET", "/compute/ln/nodes", path_params={"name": "ln"})
+    response = await routes.list_nodes(req)
+    assert response.status_code == 200
+    import json as _json
+    body = _json.loads(response.body)
+    ranks = [n["rank"] for n in body["nodes"]]
+    assert ranks == [0, 1]
+    head, second = body["nodes"]
+    assert head["is_head"] is True
+    assert head["ip"] == "1.1.1.1"
+    assert head["ssh_user"] == "ubuntu"
+    assert head["ssh_port"] == 2222
+    assert head["has_password"] is False
+    assert head["key_exists_on_server"] is False
+    assert second["is_head"] is False
+    assert second["has_password"] is True
+    assert "secret" not in response.body.decode()
+
+
+# ── node-targeted execution (W2) ─────────────────────────────────
+
+
+async def _ready_capture_pool(state, request_factory, name: str) -> _CapturePool:
+    from skyward.server import routes
+
+    pool = _CapturePool()
+    state.session.compute = lambda *s, **kw: pool
+    await routes.create_pool(
+        request_factory("POST", "/compute", query=f"name={name}".encode(), body=_encoded_payload()),
+    )
+    await state.get_pool(name).task
+    return pool
+
+
+async def test_submit_run_node_head_threads_target(state, request_factory):
+    from skyward.server import routes
+    from skyward.server.wire import encode
+
+    pool = await _ready_capture_pool(state, request_factory, "tgh")
+    req = request_factory(
+        "POST", "/compute/tgh/executions", query=b"mode=run&node=head",
+        path_params={"name": "tgh"}, body=encode({"x": 1}),
+    )
+    resp = await routes.submit_execution(req)
+    assert resp.status_code == 202
+    assert pool.captured["target"] == "head"
+
+
+async def test_submit_run_node_int_threads_target(state, request_factory):
+    from skyward.server import routes
+    from skyward.server.wire import encode
+
+    pool = await _ready_capture_pool(state, request_factory, "tgi")
+    req = request_factory(
+        "POST", "/compute/tgi/executions", query=b"mode=run&node=2",
+        path_params={"name": "tgi"}, body=encode({"x": 1}),
+    )
+    resp = await routes.submit_execution(req)
+    assert resp.status_code == 202
+    assert pool.captured["target"] == 2
+
+
+async def test_submit_run_node_invalid_400(state, request_factory):
+    from skyward.server import routes
+    from skyward.server.wire import encode
+
+    await _ready_capture_pool(state, request_factory, "tgx")
+    req = request_factory(
+        "POST", "/compute/tgx/executions", query=b"mode=run&node=abc",
+        path_params={"name": "tgx"}, body=encode({"x": 1}),
+    )
+    resp = await routes.submit_execution(req)
+    assert resp.status_code == 400
+
+
+# ── file operations (W3) ─────────────────────────────────────────
+
+
+def _file_pool():
+    from skyward.actors.messages import NodeFileResult
+    from skyward.core.pool import ComputePool
+
+    class _FilePool(ComputePool):
+        def __init__(self):
+            self._store: dict[str, bytes] = {}
+
+        def current_nodes(self):
+            return 1
+
+        @property
+        def concurrency(self):
+            return 1
+
+        @property
+        def is_active(self):
+            return True
+
+        def __exit__(self, *_):
+            return False
+
+        def ls(self, path, node="head", timeout=30.0):
+            return (NodeFileResult(node_id=0, success=True, listing=f"total 0\n{path}"),)
+
+        def rm(self, path, node="all", timeout=30.0):
+            return (NodeFileResult(node_id=0, success=True),)
+
+        def upload_file(self, content, remote, node="all", timeout=120.0):
+            self._store[remote] = content
+            return (NodeFileResult(node_id=0, success=True),)
+
+        def download_file(self, remote, node="head", timeout=120.0):
+            if remote in self._store:
+                return (NodeFileResult(node_id=0, success=True, content=self._store[remote]),)
+            return (NodeFileResult(node_id=0, success=False, error="not found"),)
+
+    return _FilePool()
+
+
+async def _ready_file_pool(state, request_factory, name: str):
+    from skyward.server import routes
+
+    pool = _file_pool()
+    state.session.compute = lambda *s, **kw: pool
+    await routes.create_pool(
+        request_factory("POST", "/compute", query=f"name={name}".encode(), body=_encoded_payload()),
+    )
+    await state.get_pool(name).task
+    return pool
+
+
+async def test_files_404_when_missing(state, request_factory):
+    from skyward.server import routes
+
+    req = request_factory("GET", "/compute/none/files", query=b"path=/x", path_params={"name": "none"})
+    resp = await routes.list_files(req)
+    assert resp.status_code == 404
+
+
+async def test_files_path_required_400(state, request_factory):
+    from skyward.server import routes
+
+    await _ready_file_pool(state, request_factory, "fp0")
+    req = request_factory("GET", "/compute/fp0/files", path_params={"name": "fp0"})
+    resp = await routes.list_files(req)
+    assert resp.status_code == 400
+
+
+async def test_ls_returns_results(state, request_factory):
+    from skyward.server import routes
+
+    await _ready_file_pool(state, request_factory, "fp1")
+    req = request_factory("GET", "/compute/fp1/files", query=b"path=/opt&node=head", path_params={"name": "fp1"})
+    resp = await routes.list_files(req)
+    assert resp.status_code == 200
+    import json as _json
+    body = _json.loads(resp.body)
+    assert body["results"][0]["success"] is True
+    assert "/opt" in body["results"][0]["listing"]
+
+
+async def test_upload_then_download_round_trips(state, request_factory):
+    from skyward.server import routes
+
+    await _ready_file_pool(state, request_factory, "fp2")
+    payload = b"\x00\x01binary\xff"
+    put = request_factory(
+        "PUT", "/compute/fp2/files", query=b"path=/tmp/x.bin&node=all",
+        path_params={"name": "fp2"}, body=payload,
+    )
+    assert (await routes.upload_file(put)).status_code == 200
+
+    get = request_factory(
+        "GET", "/compute/fp2/files/content", query=b"path=/tmp/x.bin&node=head",
+        path_params={"name": "fp2"},
+    )
+    resp = await routes.download_file(get)
+    assert resp.status_code == 200
+    assert resp.body == payload
+
+
+async def test_download_all_rejected_422(state, request_factory):
+    from skyward.server import routes
+
+    await _ready_file_pool(state, request_factory, "fp3")
+    get = request_factory(
+        "GET", "/compute/fp3/files/content", query=b"path=/tmp/x&node=all",
+        path_params={"name": "fp3"},
+    )
+    assert (await routes.download_file(get)).status_code == 422
+
+
+async def test_download_missing_file_404(state, request_factory):
+    from skyward.server import routes
+
+    await _ready_file_pool(state, request_factory, "fp4")
+    get = request_factory(
+        "GET", "/compute/fp4/files/content", query=b"path=/nope&node=head",
+        path_params={"name": "fp4"},
+    )
+    assert (await routes.download_file(get)).status_code == 404
+
+
+# ── log export (W6) ──────────────────────────────────────────────
+
+
+async def test_get_pool_log_404_when_no_history(state, request_factory):
+    from skyward.server import routes
+
+    req = request_factory("GET", "/compute/nohist/log", path_params={"name": "nohist"})
+    assert (await routes.get_pool_log(req)).status_code == 404
+
+
+async def test_get_pool_log_returns_events(state, request_factory):
+    from skyward.api.events import Log
+    from skyward.server import routes
+
+    for i in range(3):
+        state.history.append(Log.Emitted(pool_name="lg", node_id=0, message=f"m{i}", task_id="t"))
+    req = request_factory("GET", "/compute/lg/log", path_params={"name": "lg"})
+    resp = await routes.get_pool_log(req)
+    assert resp.status_code == 200
+    import json as _json
+    body = _json.loads(resp.body)
+    assert body["count"] == 3
+    assert body["events"][0]["fields"]["message"] == "m0"
+
+
+async def test_get_pool_log_limit(state, request_factory):
+    from skyward.api.events import Log
+    from skyward.server import routes
+
+    for i in range(5):
+        state.history.append(Log.Emitted(pool_name="lq", node_id=0, message=f"m{i}", task_id="t"))
+    req = request_factory("GET", "/compute/lq/log", query=b"limit=2", path_params={"name": "lq"})
+    body = __import__("json").loads((await routes.get_pool_log(req)).body)
+    assert body["count"] == 2
+    assert body["events"][-1]["fields"]["message"] == "m4"
+
+
+async def test_submit_captures_source_header(state, request_factory):
+    import base64
+
+    from skyward.server import routes
+    from skyward.server.wire import encode
+
+    await _ready_capture_pool(state, request_factory, "src")
+    source = "print('hello')\nx = 1\n"
+    header = base64.b64encode(source.encode()).decode("ascii")
+    req = request_factory(
+        "POST", "/compute/src/executions", query=b"mode=run",
+        path_params={"name": "src"}, body=encode({"x": 1}),
+        headers=[(b"x-skyward-source", header.encode())],
+    )
+    resp = await routes.submit_execution(req)
+    assert resp.status_code == 202
+    eid = __import__("json").loads(resp.body)["id"]
+    assert state.history.sources("src")[eid] == source

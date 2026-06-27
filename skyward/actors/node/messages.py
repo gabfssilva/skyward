@@ -9,6 +9,8 @@ from skyward.actors.messages import (
     BootstrapDone,
     ExecuteOnNode,
     HeadAddressKnown,
+    NodeFileOp,
+    NodeFileResult,
     NodeInstance,
     Preempted,
     Provision,
@@ -22,7 +24,9 @@ if TYPE_CHECKING:
     from casty import ClusterClient
 
     from skyward.api.plugin import AppLifecycle, ProcessLifecycle
+    from skyward.core.model import Cluster, Instance
     from skyward.infra.worker import GetResultReply
+    from skyward.providers.provider import Provider
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,12 +155,34 @@ class _ResultReconciled:
     error: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _FileOpDone:
+    result: NodeFileResult
+    reply_to: ActorRef[NodeFileResult]
+
+
+@dataclass(frozen=True, slots=True)
+class Adopt:
+    """Re-attach to an already-provisioned, bootstrapped, worker-running node.
+
+    Enters at ``connecting`` (SSH tunnel + port-forward + worker
+    discovery), skipping provisioning, bootstrap, post-bootstrap, and
+    worker launch — those already ran on the live instance.
+    """
+
+    cluster: Cluster[Any]
+    provider: Provider[Any, Any]
+    instance: Instance
+
+
 type NodeMsg = (
     Provision
+    | Adopt
     | ExecuteOnNode
     | TaskSucceeded | TaskFailed | TaskInterrupted
     | HeadAddressKnown
     | JoinCluster
+    | NodeFileOp | _FileOpDone
     | Preempted
     | BootstrapDone
     | _PollResult

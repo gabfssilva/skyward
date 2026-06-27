@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import itertools
 import logging as _logging
 import time
@@ -11,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from casty import ActorContext, ActorRef, Behavior, Behaviors, ClusterClient
 
 if TYPE_CHECKING:
+    from skyward.actors.messages import FileOpKind, NodeSelection
     from skyward.actors.session.messages import SessionMsg
 
 from skyward.actors.messages import (
@@ -19,6 +21,8 @@ from skyward.actors.messages import (
     CurrentNodeCount,
     DesiredCountChanged,
     DrainComplete,
+    FileOpOnNodes,
+    FileOpReplies,
     GetCurrentNodes,
     GetPoolSnapshot,
     HeadAddressKnown,
@@ -28,6 +32,8 @@ from skyward.actors.messages import (
     NodeBecameUnready,
     NodeConnected,
     NodeExhausted,
+    NodeFileOp,
+    NodeFileResult,
     NodeId,
     NodeInstance,
     NodeJoined,
@@ -46,7 +52,7 @@ from skyward.actors.messages import (
     SubmitTask,
 )
 from skyward.actors.node import node_actor
-from skyward.actors.node.messages import JoinCluster
+from skyward.actors.node.messages import Adopt, JoinCluster
 from skyward.actors.snapshot import NodeStatus, PoolPhase, ScalingSnapshot
 from skyward.actors.task_manager import task_manager_actor
 from skyward.api.spec import Nodes
@@ -63,11 +69,53 @@ from .messages import (
     Resize,
     StartPool,
     StopPool,
+    _FileOpGathered,
     _ShutdownDone,
 )
 from .state import PoolState, build_pool_snapshot
 
 _logging.getLogger("casty").setLevel(_logging.ERROR)
+
+
+def _select_node_refs(
+    s: PoolState, sel: NodeSelection,
+) -> tuple[tuple[NodeId, ActorRef], ...]:
+    """Resolve a node selection to ``(rank, ref)`` pairs over ready nodes."""
+    match sel:
+        case "head":
+            return ((0, s.node_refs[0]),) if 0 in s.ready_nodes and 0 in s.node_refs else ()
+        case "all":
+            return tuple(
+                (nid, s.node_refs[nid]) for nid in sorted(s.ready_nodes) if nid in s.node_refs
+            )
+        case _:
+            return ((sel, s.node_refs[sel]),) if sel in s.ready_nodes and sel in s.node_refs else ()
+
+
+async def _gather_file_op(
+    system: Any,
+    targets: tuple[tuple[NodeId, ActorRef], ...],
+    op: FileOpKind,
+    path: str,
+    content: bytes,
+    timeout: float,
+) -> tuple[NodeFileResult, ...]:
+    """Fan a file op out to each target node, collecting one result each.
+
+    Timeouts and node errors become failed ``NodeFileResult`` rather than
+    raising, so one dead node never sinks the whole operation.
+    """
+    async def _ask_one(nid: NodeId, ref: ActorRef) -> NodeFileResult:
+        try:
+            return await system.ask(
+                ref,
+                lambda r: NodeFileOp(op=op, path=path, content=content, timeout=timeout, reply_to=r),
+                timeout=timeout + 5.0,
+            )
+        except Exception as e:  # noqa: BLE001
+            return NodeFileResult(node_id=nid, success=False, error=str(e))
+
+    return tuple(await asyncio.gather(*(_ask_one(nid, ref) for nid, ref in targets)))
 
 
 async def _build_mount_plan(
@@ -306,6 +354,7 @@ def pool_actor(
         ca: Any,
         head_addr: str | None,
         autoscaler: ActorRef | None = None,
+        adopt: bool = False,
     ) -> ActorRef:
         tick_interval = max(1.0, spec.autoscale_idle_timeout / 4)
         ref = ctx.spawn(
@@ -322,9 +371,12 @@ def pool_actor(
             ),
             f"node-{nid}-{gen}",
         )
-        ref.tell(Provision(
-            cluster=cluster, provider=provider, instance=instance,
-        ))
+        if adopt:
+            ref.tell(Adopt(cluster=cluster, provider=provider, instance=instance))
+        else:
+            ref.tell(Provision(
+                cluster=cluster, provider=provider, instance=instance,
+            ))
         if spec.cluster and head_addr:
             ref.tell(HeadAddressKnown(
                 head_addr=head_addr, casty_port=25520,
@@ -436,7 +488,7 @@ def pool_actor(
 
                 case RecoverPool(
                     spec=spec, provider=provider, cluster=cluster,
-                    instances=instances, reply_to=reply_to,
+                    instances=instances, reply_to=reply_to, node_ids=node_ids,
                 ):
                     logger.bind(actor="pool").info(
                         "RecoverPool: recovering {n} instances for cluster {cid}",
@@ -453,9 +505,10 @@ def pool_actor(
 
                     new_refs: MappingProxyType[int, ActorRef] = MappingProxyType({})
                     for gen, instance in enumerate(instances):
-                        nid = len(new_refs)
+                        nid = node_ids[gen] if gen < len(node_ids) else len(new_refs)
                         ref = _spawn_node(
                             ctx, nid, gen, spec, cluster, provider, instance, ca, None,
+                            adopt=True,
                         )
                         new_refs = MappingProxyType({**new_refs, nid: ref})
 
@@ -582,12 +635,14 @@ def pool_actor(
                     iid = meta.instance.id
                     new_statuses = MappingProxyType({**s.node_statuses, iid: NodeStatus.SSH})
                     return provisioning_instances(replace(s, node_statuses=new_statuses))
-                case NodeBecameReady():
+                case NodeBecameReady() | HeadAddressKnown():
                     log.debug(
-                        "Node {nid} ready early (ignored during provisioning_instances)",
-                        nid=msg.node_id,
+                        "Buffering early {ev} during provisioning_instances",
+                        ev=type(msg).__name__,
                     )
-                    return Behaviors.same()
+                    return provisioning_instances(replace(
+                        s, buffered_events=(*s.buffered_events, msg),
+                    ))
                 case InstancesProvisioned(
                     instances=instances, cluster=updated_cluster,
                 ):
@@ -676,6 +731,8 @@ def pool_actor(
                         new_spawned = MappingProxyType({**new_spawned, nid: ref})
 
                     if len(new_spawned) >= min_needed:
+                        for ev in s.buffered_events:
+                            ctx.self.tell(ev)
                         return provisioning(replace(
                             s,
                             cluster=updated_cluster,
@@ -685,6 +742,7 @@ def pool_actor(
                             reconciler_ref=rec_ref,
                             autoscaler_ref=as_ref,
                             spawn_gen=s.spawn_gen + len(to_spawn),
+                            buffered_events=(),
                         ))
 
                     still_needed = s.spec.nodes.desired - len(new_spawned)
@@ -787,6 +845,7 @@ def pool_actor(
                             attempt=1,
                             node_refs=MappingProxyType({}),
                             spawn_gen=s.spawn_gen + len(to_spawn),
+                            buffered_events=(),
                         ))
 
                     log.error(
@@ -1150,6 +1209,21 @@ def pool_actor(
                     tm.tell(bcast)
                     new_counters = replace(s.task_counters, queued=s.task_counters.queued + 1)
                     return ready(replace(s, task_counters=new_counters))
+                case FileOpOnNodes(op=op, path=path, content=content, selection=sel, timeout=fo_timeout, reply_to=fo_rt):
+                    targets = _select_node_refs(s, sel)
+                    log.debug("File op {op} on {n} nodes", op=op, n=len(targets))
+                    ctx.pipe_to_self(
+                        _gather_file_op(ctx.system, targets, op, path, content, fo_timeout),
+                        mapper=lambda results, _rt=fo_rt: _FileOpGathered(results=results, reply_to=_rt),
+                        on_failure=lambda e, _rt=fo_rt: _FileOpGathered(
+                            results=(NodeFileResult(node_id=-1, success=False, error=str(e)),),
+                            reply_to=_rt,
+                        ),
+                    )
+                    return Behaviors.same()
+                case _FileOpGathered(results=results, reply_to=fo_rt):
+                    fo_rt.tell(FileOpReplies(results=results))
+                    return Behaviors.same()
                 case NodeConnected(node_id=nid, instance=meta):
                     iid = meta.instance.id
                     new_statuses = MappingProxyType({**s.node_statuses, iid: NodeStatus.SSH})

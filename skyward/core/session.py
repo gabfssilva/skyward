@@ -509,6 +509,112 @@ class Session:
         self._pools[pool_name] = pool
         return pool
 
+    def adopt(
+        self,
+        *,
+        name: str,
+        provider_config: Any,
+        cluster: Any,
+        instances: tuple[Any, ...],
+        node_ids: tuple[int, ...],
+        timeout: float = 600.0,
+    ) -> ComputePool:
+        """Re-adopt a previously-running pool from persisted live instances.
+
+        Recreates the provider from *provider_config*, then asks the pool
+        actor to ``RecoverPool`` — each node ``Adopt``s its instance,
+        skipping bootstrap/worker-launch (coordinates are refreshed via one
+        ``get_instance``) — and returns a ``ComputePool`` bound to this
+        session.
+
+        Parameters
+        ----------
+        name
+            Server-side pool name to restore.
+        provider_config
+            The persisted ``ProviderConfig`` used to recreate the provider.
+        cluster
+            The persisted cluster (its ``spec`` is reused).
+        instances
+            Live instances to re-adopt, aligned with *node_ids*.
+        node_ids
+            Persisted ranks, parallel to *instances* (head = rank 0).
+        timeout
+            Maximum seconds to wait for re-adoption.
+
+        Returns
+        -------
+        ComputePool
+            A pool bound to this session over the re-adopted nodes.
+
+        Raises
+        ------
+        ProvisioningError
+            If re-adoption fails (e.g. the instances are gone).
+        """
+        if not self._active:
+            raise RuntimeError("Session is not active")
+
+        from skyward.actors.pool.messages import PoolStarted, ProvisionFailed, RecoverPool
+        from skyward.core.errors import ProvisioningError
+
+        loop = self._get_loop()
+        system = self._system
+        assert system is not None
+
+        provider = run_sync(loop, provider_config.create_provider())
+        spec = cluster.spec
+        pool_ref = self._create_pool_actor(name)
+        try:
+            result: PoolStarted | ProvisionFailed = run_sync(
+                loop,
+                system.ask(
+                    pool_ref,
+                    lambda reply_to: RecoverPool(
+                        spec=spec, provider=provider, cluster=cluster,
+                        instances=instances, reply_to=reply_to,  # type: ignore[arg-type]
+                        node_ids=node_ids,
+                    ),
+                    timeout=timeout,
+                ),
+            )
+        finally:
+            self._pending_pool_refs.pop(name, None)
+
+        match result:
+            case ProvisionFailed(reason=reason):
+                raise ProvisioningError(pool_name=name, reason=reason)
+            case PoolStarted() as started:
+                from .pool import ComputePool as _ComputePool
+
+                pool = _ComputePool._from_session(
+                    session=self,
+                    pool_ref=pool_ref,
+                    spec=spec,
+                    specs=(),
+                    plugins=tuple(getattr(spec, "plugins", ())),
+                    cluster_id=started.cluster_id,
+                    cluster=started.cluster,
+                    instances=started.instances,
+                    image=spec.image,
+                    worker=spec.worker,
+                    default_compute_timeout=300.0,
+                )
+                self._pools[name] = pool
+                return pool
+
+        raise RuntimeError(f"Unexpected result from pool actor: {result}")
+
+    def discard(self, *, provider_config: Any, cluster: Any) -> None:
+        """Tear down a cluster's instances — cleanup for a failed reattach.
+
+        Best-effort: recreates the provider and calls ``teardown`` so a
+        reattach that finds its instances unreachable does not leak them.
+        """
+        loop = self._get_loop()
+        provider = run_sync(loop, provider_config.create_provider())
+        run_sync(loop, provider.teardown(cluster))
+
     def _spawn_pool(
         self,
         built_specs: list[Spec],

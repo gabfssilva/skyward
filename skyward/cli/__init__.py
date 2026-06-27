@@ -13,12 +13,14 @@ providers_app = App(name="providers", help="Check cloud provider status")
 config_app = App(name="config", help="Inspect configuration")
 server_app = App(name="server", help="Manage the Skyward HTTP server")
 compute_app = App(name="compute", help="Manage compute pools and run scripts via HTTP")
+log_app = App(name="log", help="Export a session's execution history")
 
 app.command(offers_app)
 app.command(providers_app)
 app.command(config_app)
 app.command(server_app)
 app.command(compute_app)
+app.command(log_app)
 
 
 @app.command
@@ -31,8 +33,19 @@ def version() -> None:
 
 from skyward.cli import compute as compute  # noqa: F401, E402
 from skyward.cli import config as config  # noqa: F401, E402
+from skyward.cli import interactive as interactive  # noqa: F401, E402
+from skyward.cli import log as log  # noqa: F401, E402
 from skyward.cli import offers as offers  # noqa: F401, E402
 from skyward.cli import providers as providers  # noqa: F401, E402
 from skyward.cli import server as server  # noqa: F401, E402
+from skyward.cli import sessions as sessions  # noqa: F401, E402
 
-__all__ = ["app", "compute_app", "config_app", "offers_app", "providers_app", "server_app"]
+__all__ = [
+    "app",
+    "compute_app",
+    "config_app",
+    "log_app",
+    "offers_app",
+    "providers_app",
+    "server_app",
+]

@@ -7,6 +7,8 @@ from casty import ActorRef
 
 from skyward.actors.messages import (
     ClusterReady,
+    FileOpOnNodes,
+    FileOpReplies,
     GetCurrentNodes,
     GetPoolSnapshot,
     HeadAddressKnown,
@@ -15,6 +17,7 @@ from skyward.actors.messages import (
     NodeBecameUnready,
     NodeConnected,
     NodeExhausted,
+    NodeFileResult,
     NodeLost,
     ReconciliationExhausted,
     RequestDrainNodes,
@@ -74,14 +77,17 @@ class InstancesProvisioned:
 class RecoverPool:
     """Recover a pool from pre-existing instances (crash recovery).
 
-    Skips prepare() and provision() -- goes directly to spawning
-    node actors with already-provisioned instances.
+    Skips prepare() and provision() -- spawns node actors that ``Adopt``
+    already-provisioned, bootstrapped, worker-running instances. ``node_ids``
+    carries the persisted ranks so head (rank 0) is restored to its original
+    node; ``()`` falls back to enumeration.
     """
     spec: PoolSpec
     provider: Any
     cluster: Cluster[Any]
     instances: tuple[Instance, ...]
     reply_to: ActorRef[PoolStarted | ProvisionFailed]
+    node_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +107,12 @@ class Resize:
     nodes: Nodes
 
 
+@dataclass(frozen=True, slots=True)
+class _FileOpGathered:
+    results: tuple[NodeFileResult, ...]
+    reply_to: ActorRef[FileOpReplies]
+
+
 type PoolMsg = (
     StartPool
     | StopPool
@@ -117,6 +129,8 @@ type PoolMsg = (
     | ReconciliationExhausted
     | SubmitTask
     | SubmitBroadcast
+    | FileOpOnNodes
+    | _FileOpGathered
     | ClusterReady
     | InstancesProvisioned
     | _ShutdownDone
