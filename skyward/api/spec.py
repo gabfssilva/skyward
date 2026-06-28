@@ -88,12 +88,14 @@ class Nodes:
     Parameters
     ----------
     desired
-        Number of nodes to eagerly provision. Must be >= 1.
+        Number of nodes to eagerly provision. Must be >= 0; ``0`` enables
+        lazy start (pool born with zero nodes, provisions on first task).
     max
         Maximum node count for autoscaling. ``None`` disables autoscaling.
     min
         Minimum nodes needed before pool becomes operational.
-        ``None`` waits for all ``desired`` nodes.
+        ``None`` waits for all ``desired`` nodes. ``0`` enables scale-to-zero
+        (idle nodes reaped down to zero; pool wakes on demand).
     """
 
     desired: int
@@ -106,8 +108,8 @@ class Nodes:
         return self.max is not None
 
     def __post_init__(self) -> None:
-        if self.desired < 1:
-            raise ValueError(f"desired must be >= 1, got {self.desired}")
+        if self.desired < 0:
+            raise ValueError(f"desired must be >= 0, got {self.desired}")
         if self.max is not None and self.max < self.desired:
             raise ValueError(f"max ({self.max}) must be >= desired ({self.desired})")
         upper = self.max if self.max is not None else self.desired
@@ -116,8 +118,8 @@ class Nodes:
             raise ValueError(
                 f"min ({effective_min}) must be <= {'max' if self.max is not None else 'desired'} ({upper})"
             )
-        if effective_min < 1:
-            raise ValueError(f"min must be >= 1, got {effective_min}")
+        if effective_min < 0:
+            raise ValueError(f"min must be >= 0, got {effective_min}")
 
     @classmethod
     def from_spec(cls, spec: NodeSpec) -> Nodes:

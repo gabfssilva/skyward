@@ -197,6 +197,37 @@ class TestReapIdleNodes:
         assert len(scale_down_msgs) == 1
         assert scale_down_msgs[0].count == 1
 
+    @pytest.mark.asyncio
+    async def test_reap_all_nodes_allowed_when_min_zero(self) -> None:
+        sent: list[object] = []
+        pool = MagicMock()
+        pool.tell = lambda msg: sent.append(msg)
+
+        async with ActorSystem("test-reconciler-reap-to-zero") as system:
+            ref = system.spawn(
+                reconciler_actor(
+                    pool=pool,
+                    min_nodes=0,
+                    max_nodes=8,
+                    desired_count=2,
+                    initial_node_ids=frozenset({0, 1}),
+                    tick_interval=3600.0,
+                ),
+                "reconciler-reap-to-zero",
+            )
+            await asyncio.sleep(0.1)
+            sent.clear()
+
+            ref.tell(ReapIdleNodes(
+                node_ids=frozenset({0, 1}),
+                reason="scale-to-zero",
+            ))
+            await asyncio.sleep(0.1)
+
+            drain_msgs = [m for m in sent if isinstance(m, RequestDrainNodes)]
+            assert len(drain_msgs) == 1
+            assert drain_msgs[0].node_ids == frozenset({0, 1})
+
 
 class TestPartialInitialProvisioning:
     @pytest.mark.asyncio

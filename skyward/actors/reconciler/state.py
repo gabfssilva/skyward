@@ -13,7 +13,7 @@ class _State:
     draining: int = 0
     consecutive_failures: int = 0
     last_requested: int = 0
-    min_nodes: int = 1
+    min_nodes: int = 0
 
     @property
     def effective(self) -> int:

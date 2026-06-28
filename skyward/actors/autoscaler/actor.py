@@ -12,6 +12,7 @@ from skyward.actors.messages import (
     DrainComplete,
     NodeBecameBusy,
     NodeBecameIdle,
+    NodeId,
     NodeJoined,
     PressureReport,
     ReapIdleNodes,
@@ -31,6 +32,7 @@ def autoscaler_actor(
     reconciler: ActorRef[ReconcilerMsg],
     slots_per_node: int,
     initial_count: int,
+    initial_nodes: frozenset[NodeId] = frozenset(),
     cooldown: float = 30.0,
 ) -> Behavior[AutoscalerMsg]:
 
@@ -44,7 +46,7 @@ def autoscaler_actor(
             max_nodes=max_nodes,
             idle=frozenset(),
             reaping=frozenset(),
-            known_nodes=frozenset(),
+            known_nodes=initial_nodes,
         )
 
         async def _tick() -> _ScaleTick:

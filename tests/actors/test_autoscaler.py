@@ -1,5 +1,17 @@
+import asyncio
+from unittest.mock import MagicMock
+
+import pytest
+from casty import ActorSystem
+
+from skyward.actors.autoscaler.actor import autoscaler_actor
 from skyward.actors.autoscaler.state import _apply_bounds, _compute_desired, _State
-from skyward.actors.messages import BoundsChanged, PressureReport
+from skyward.actors.messages import (
+    BoundsChanged,
+    NodeBecameIdle,
+    PressureReport,
+    ReapIdleNodes,
+)
 
 
 def _report(
@@ -83,6 +95,71 @@ class TestComputeDesired:
             deadline=None,  # no deadline
         )
         assert result == 5
+
+
+class TestScaleToZero:
+    """With min_nodes=0 the autoscaler scales to zero when idle and wakes on demand."""
+
+    def test_idle_zero_nodes_converges_to_zero(self) -> None:
+        result = _compute_desired(
+            _report(queued=0, node_count=0, total_capacity=0),
+            current_desired=0, min_nodes=0, max_nodes=8,
+            slots_per_node=2,
+        )
+        assert result == 0
+
+    def test_queued_zero_nodes_wakes_up(self) -> None:
+        result = _compute_desired(
+            _report(queued=1, node_count=0, total_capacity=0),
+            current_desired=0, min_nodes=0, max_nodes=8,
+            slots_per_node=2,
+        )
+        assert result == 1  # ceil(1/2)=1
+
+    def test_idle_with_nodes_keeps_current(self) -> None:
+        result = _compute_desired(
+            _report(queued=0, inflight=2, total_capacity=4, node_count=2),
+            current_desired=2, min_nodes=0, max_nodes=8,
+            slots_per_node=2,
+        )
+        assert result == 2  # scale-down is the reaper's job, not this function
+
+    def test_queued_wake_respects_max(self) -> None:
+        result = _compute_desired(
+            _report(queued=100, node_count=0, total_capacity=0),
+            current_desired=0, min_nodes=0, max_nodes=4,
+            slots_per_node=2,
+        )
+        assert result == 4
+
+
+class TestReapBudget:
+    """The idle-reap budget is len(known_nodes) - reaping - min_nodes. A pool
+    that starts full seeds known_nodes via ``initial_nodes``; without it the
+    budget is 0 and the startup cohort is never reaped to zero."""
+
+    @pytest.mark.asyncio
+    async def test_seeded_initial_cohort_is_reaped_when_idle(self) -> None:
+        reaped: list[object] = []
+        reconciler = MagicMock()
+        reconciler.tell = lambda msg: reaped.append(msg)
+
+        async with ActorSystem("autoscaler-reap") as system:
+            ref = system.spawn(
+                autoscaler_actor(
+                    min_nodes=0, max_nodes=8, reconciler=reconciler,
+                    slots_per_node=2, initial_count=2,
+                    initial_nodes=frozenset({0, 1}), cooldown=0.05,
+                ),
+                "autoscaler",
+            )
+            ref.tell(NodeBecameIdle(node_id=0))
+            ref.tell(NodeBecameIdle(node_id=1))
+            await asyncio.sleep(0.3)
+
+        msgs = [m for m in reaped if isinstance(m, ReapIdleNodes)]
+        assert msgs, "idle nodes from the initial cohort must be reaped"
+        assert frozenset().union(*(m.node_ids for m in msgs)) == frozenset({0, 1})
 
 
 class TestApplyBounds:

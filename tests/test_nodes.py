@@ -15,9 +15,10 @@ class TestNodes:
         assert n.min == 2
         assert not n.auto_scaling
 
-    def test_desired_must_be_positive(self) -> None:
-        with pytest.raises(ValueError, match="desired must be >= 1"):
-            Nodes(desired=0)
+    def test_desired_must_be_nonnegative(self) -> None:
+        assert Nodes(desired=0).desired == 0
+        with pytest.raises(ValueError, match="desired must be >= 0"):
+            Nodes(desired=-1)
 
     def test_max_must_be_gte_desired(self) -> None:
         with pytest.raises(ValueError, match="max .* must be >= desired"):
@@ -35,9 +36,21 @@ class TestNodes:
         with pytest.raises(ValueError, match="min .* must be <= max"):
             Nodes(desired=1, min=5, max=3)
 
-    def test_min_must_be_positive(self) -> None:
-        with pytest.raises(ValueError, match="min must be >= 1"):
-            Nodes(desired=4, min=0)
+    def test_min_must_be_nonnegative(self) -> None:
+        assert Nodes(desired=4, min=0).min == 0
+        with pytest.raises(ValueError, match="min must be >= 0"):
+            Nodes(desired=4, min=-1)
+
+    def test_scale_to_zero_floor(self) -> None:
+        n = Nodes(desired=2, min=0, max=8)
+        assert n.min == 0
+        assert n.auto_scaling
+
+    def test_lazy_start(self) -> None:
+        n = Nodes(desired=0, min=0, max=8)
+        assert n.desired == 0
+        assert n.min == 0
+        assert n.auto_scaling
 
 
 class TestFromSpec:

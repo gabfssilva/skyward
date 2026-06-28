@@ -89,3 +89,10 @@ class TestApplyResize:
         assert s.scaling.desired_nodes == 2
         assert new_s is not s
         assert replace(new_s.scaling, desired_nodes=s.scaling.desired_nodes) != new_s.scaling
+
+    def test_scale_to_zero_floor_propagates_min_zero(self) -> None:
+        s = _state(Nodes(desired=2, max=8))
+        new_s, bounds, _desired = _apply_resize(s, Nodes(desired=2, min=0, max=8))
+        assert bounds == BoundsChanged(min=0, max=8, desired=2)
+        assert new_s.scaling.min_nodes == 0
+        assert new_s.scaling.max_nodes == 8
