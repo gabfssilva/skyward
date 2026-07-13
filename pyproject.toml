@@ -23,7 +23,7 @@ dependencies = [
     "cloudpickle>=3.1.2",
     "lz4>=4.4.0",
     "pydantic>=2.12.5",
-    "casty>=0.23.0",
+    "casty>=0.22.1",
     "rich>=14.3.2",
     "asyncssh>=2.22.0",
     "httpx>=0.28",
@@ -178,7 +178,6 @@ dev = [
     "textual-dev>=1.8.0",
 ]
 
-# TEMPORARY: local casty v2 source until casty 0.23.0 is published to PyPI.
-# Remove this [tool.uv.sources] block after publishing.
-[tool.uv.sources]
-casty = { path = "../casty", editable = true }
+[tool.uv]
+# casty is ours; opt it out of the global 7-day exclude-newer quarantine.
+exclude-newer-package = { casty = "0 seconds" }

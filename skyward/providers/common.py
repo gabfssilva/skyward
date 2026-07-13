@@ -87,7 +87,7 @@ def build_casty_wheel() -> Path | None:
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
-        env={**os.environ, "SETUPTOOLS_SCM_PRETEND_VERSION": "0.23.0"},
+        env={**os.environ, "SETUPTOOLS_SCM_PRETEND_VERSION": "0.22.1"},
     )
     if result.returncode != 0:
         logger.error("Failed to build casty wheel: {err}", err=result.stderr)

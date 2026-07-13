@@ -17,6 +17,9 @@ resolution-markers = [
 exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
 exclude-newer-span = "P7D"
 
+[options.exclude-newer-package]
+casty = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
+
 [[package]]
 name = "absl-py"
 version = "2.3.1"
@@ -378,32 +381,14 @@ wheels = [
 
 [[package]]
 name = "casty"
-source = { editable = "../casty" }
+version = "0.22.1"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "msgpack" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "lz4", marker = "extra == 'lz4'", specifier = ">=4.0" },
-    { name = "msgpack", specifier = ">=1.0" },
-    { name = "pandas", marker = "extra == 'pandas'", specifier = ">=3.0" },
-    { name = "pyarrow", marker = "extra == 'pandas'", specifier = ">=17" },
-    { name = "uvloop", marker = "extra == 'uvloop'", specifier = ">=0.21" },
-    { name = "zstandard", marker = "extra == 'zstd'", specifier = ">=0.22" },
-]
-provides-extras = ["lz4", "pandas", "uvloop", "zstd"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "msgpack-types", specifier = ">=0.3" },
-    { name = "mypy", specifier = ">=1.11" },
-    { name = "pandas", specifier = ">=3.0" },
-    { name = "pandas-stubs", specifier = ">=2.2" },
-    { name = "pyarrow", specifier = ">=17" },
-    { name = "pytest", specifier = ">=8.0" },
-    { name = "pytest-asyncio", specifier = ">=0.24" },
-    { name = "ruff", specifier = ">=0.6" },
+sdist = { url = "https://files.pythonhosted.org/packages/99/16/a4b4f4a4a1b09d90a234af5485f846f822c9f60d21393731d8dc3fb9830a/casty-0.22.1.tar.gz", hash = "sha256:733ae63acc7e2b394d986f9970345299319f8d0ff85d17d5ea45ed702f56ee27", size = 862249, upload-time = "2026-07-13T05:26:44.135Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/86/bf/097c3d55b561ba789e077b7b51477496bbfe4bbe170cb9c644d70f453627/casty-0.22.1-py3-none-any.whl", hash = "sha256:b0f80142decb39dc071c39283553ab219a01989098e97fbd10978e768bf52d6c", size = 142353, upload-time = "2026-07-13T05:26:42.808Z" },
 ]
 
 [[package]]
@@ -3574,7 +3559,7 @@ requires-dist = [
     { name = "boto3-stubs", extras = ["ec2", "ecr", "iam", "s3", "sts"], marker = "extra == 'all'", specifier = ">=1.35.0" },
     { name = "boto3-stubs", extras = ["ec2", "ecr", "iam", "s3", "sts"], marker = "extra == 'aws'", specifier = ">=1.35.0" },
     { name = "boto3-stubs", extras = ["ec2", "ecr", "iam", "s3", "sts"], marker = "extra == 'providers'", specifier = ">=1.35.0" },
-    { name = "casty", editable = "../casty" },
+    { name = "casty", specifier = ">=0.22.1" },
     { name = "cloudpickle", specifier = ">=3.1.2" },
     { name = "cyclopts", marker = "extra == 'all'", specifier = ">=4.7" },
     { name = "cyclopts", marker = "extra == 'cli'", specifier = ">=4.7" },
