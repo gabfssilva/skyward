@@ -10,10 +10,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from skyward.actors.snapshot import PoolSnapshot
     from skyward.api.model import Instance
 
 __all__ = [
+    "Emit",
     "Error",
     "ErrorEvent",
     "Log",
@@ -289,3 +292,5 @@ type SessionEvent = (
     | ScalingEvent
     | ErrorEvent
 )
+
+type Emit = Callable[[SessionEvent], None]

@@ -30,13 +30,14 @@ from skyward.actors.messages import (
     Metric,
     NodeInstance,
 )
+from skyward.api import events as domain
 from skyward.observability.logger import logger
 
 from .messages import (
     MonitorMsg,
     StopMonitor,
 )
-from .state import MonitorState
+from .state import MonitorState, _no_emit
 
 
 def instance_monitor(
@@ -44,6 +45,8 @@ def instance_monitor(
     transport: ActorRef,  # ActorRef[TransportMsg]
     event_listener: ActorRef,
     reply_to: ActorRef[BootstrapDone],
+    emit: domain.Emit | None = None,
+    pool_name: str = "",
 ) -> Behavior[MonitorMsg | StreamEvent]:
     """streaming → stopped."""
 
@@ -55,6 +58,8 @@ def instance_monitor(
         s = MonitorState(
             info=info, transport=transport,
             event_listener=event_listener, reply_to=reply_to,
+            emit=emit if emit is not None else _no_emit,
+            pool_name=pool_name,
         )
         return streaming(s)
 
@@ -78,20 +83,29 @@ def streaming(
                     return Behaviors.same()
 
                 match event:
-                    case Metric():
-                        log.trace("metric: {name}={value}", name=event.name, value=event.value)
-                    case Log():
-                        log.info("{line}", line=event.line.rstrip())
+                    case Metric(name=name, value=value):
+                        log.trace("metric: {name}={value}", name=name, value=value)
+                        s.emit(domain.Metric.Sampled(
+                            s.pool_name, s.info.node, name, value,
+                        ))
+                    case Log(line=line, overwrite=ow):
+                        log.info("{line}", line=line.rstrip())
+                        if stripped := line.strip():
+                            s.emit(domain.Log.Emitted(
+                                s.pool_name, s.info.node, stripped, overwrite=ow,
+                            ))
                     case BootstrapPhase():
                         log.info("Phase {phase}: {ev}", phase=event.phase, ev=event.event)
+                        s.event_listener.tell(event)
                     case BootstrapCommand():
                         log.info("Command: {cmd}", cmd=event.command)
+                        s.event_listener.tell(event)
                     case ConsoleOutput():
                         log.info("{content}", content=event.content.rstrip())
+                        s.event_listener.tell(event)
                     case BootstrapFailed():
                         log.error("Bootstrap failed: {err}", err=event.error)
-
-                s.event_listener.tell(event)
+                        s.event_listener.tell(event)
 
                 signaled = s.bootstrap_signaled
                 if not signaled:

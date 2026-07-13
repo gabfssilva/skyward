@@ -6,7 +6,11 @@ from typing import TYPE_CHECKING, Any
 from casty import ActorRef
 
 from skyward.actors.messages import (
+    BootstrapCommand,
+    BootstrapFailed,
+    BootstrapPhase,
     ClusterReady,
+    ConsoleOutput,
     FileOpOnNodes,
     FileOpReplies,
     GetCurrentNodes,
@@ -132,6 +136,10 @@ type PoolMsg = (
     | FileOpOnNodes
     | _FileOpGathered
     | ClusterReady
+    | BootstrapPhase
+    | BootstrapCommand
+    | BootstrapFailed
+    | ConsoleOutput
     | InstancesProvisioned
     | _ShutdownDone
     | RequestScaleUp

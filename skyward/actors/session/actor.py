@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from types import MappingProxyType
+from typing import TYPE_CHECKING
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors
 
 from skyward.observability.logger import logger
+
+if TYPE_CHECKING:
+    from skyward.api.events import Emit
 
 from .adapter import start_adapter
 from .messages import (
@@ -30,12 +34,13 @@ _EMPTY_POOLS: _Pools = MappingProxyType({})
 _EMPTY_PENDING: _PendingReplies = MappingProxyType({})
 
 
-def session_actor() -> Behavior[SessionMsg]:
+def session_actor(emit: Emit | None = None) -> Behavior[SessionMsg]:
     """Session actor managing the lifecycle of multiple named compute pools.
 
     Parameters
     ----------
-    None
+    emit
+        Sink for domain ``SessionEvent``s, threaded down to every pool.
 
     Returns
     -------
@@ -43,12 +48,13 @@ def session_actor() -> Behavior[SessionMsg]:
         A behavior that tracks spawned pools, relays lifecycle events,
         and responds to snapshot queries.
     """
-    return active(pools=_EMPTY_POOLS, pending_replies=_EMPTY_PENDING)
+    return active(pools=_EMPTY_POOLS, pending_replies=_EMPTY_PENDING, emit=emit)
 
 
 def active(
     pools: _Pools,
     pending_replies: _PendingReplies,
+    emit: Emit | None = None,
 ) -> Behavior[SessionMsg]:
 
     async def receive(
@@ -59,13 +65,14 @@ def active(
                 from skyward.actors.pool.actor import pool_actor
 
                 pool_ref = ctx.spawn(
-                    pool_actor(session_ref=ctx.self, pool_name=name),
+                    pool_actor(session_ref=ctx.self, pool_name=name, emit=emit),
                     f"pool-{name}",
                 )
                 info = PoolInfo(name=name, ref=pool_ref)
                 reply_to.tell(PoolCreated(pool_ref=pool_ref))
                 log.info("Created pool actor {name}", name=name)
                 return active(
+                    emit=emit,
                     pools=MappingProxyType({**pools, name: info}),
                     pending_replies=pending_replies,
                 )
@@ -79,7 +86,7 @@ def active(
                 from skyward.actors.pool.messages import StartPool
 
                 pool_ref = ctx.spawn(
-                    pool_actor(session_ref=ctx.self, pool_name=name),
+                    pool_actor(session_ref=ctx.self, pool_name=name, emit=emit),
                     f"pool-{name}",
                 )
                 adapter_ref = ctx.spawn(
@@ -94,6 +101,7 @@ def active(
                 log.info("Spawning pool {name}", name=name)
                 info = PoolInfo(name=name, ref=pool_ref)
                 return active(
+                    emit=emit,
                     pools=MappingProxyType({**pools, name: info}),
                     pending_replies=MappingProxyType({**pending_replies, name: reply_to}),
                 )
@@ -113,12 +121,14 @@ def active(
                 if name in pools:
                     updated = PoolInfo(name=name, ref=pool_ref)
                     return active(
+                        emit=emit,
                         pools=MappingProxyType({**pools, name: updated}),
                         pending_replies=MappingProxyType(
                             {k: v for k, v in pending_replies.items() if k != name},
                         ),
                     )
                 return active(
+                    emit=emit,
                     pools=pools,
                     pending_replies=MappingProxyType(
                         {k: v for k, v in pending_replies.items() if k != name},
@@ -130,6 +140,7 @@ def active(
                     reply_to.tell(PoolSpawnFailed(name=name, reason=reason))
                     log.warning("Pool {name} failed: {reason}", name=name, reason=reason)
                 return active(
+                    emit=emit,
                     pools=MappingProxyType(
                         {k: v for k, v in pools.items() if k != name},
                     ),

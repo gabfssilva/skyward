@@ -22,7 +22,7 @@ from contextvars import Token
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Unpack, overload
 
-from casty import ActorRef, ActorSystem, Behaviors, CastyConfig
+from casty import ActorRef, ActorSystem, CastyConfig
 
 from skyward.api.spec import ConsoleMode
 from skyward.observability.logger import logger
@@ -187,7 +187,6 @@ class Session:
             ViewUpdated,
             resolve_console,
         )
-        from skyward.actors.projection import projection_actor
         from skyward.actors.session.actor import session_actor
 
         self._system = ActorSystem(
@@ -204,13 +203,9 @@ class Session:
                 on_event=lambda ev: console_ref.tell(EventReceived(event=ev)),
             )
 
-        proj_ref = self._system.spawn(
-            projection_actor(self._projection), "projection",
+        self._session_ref = self._system.spawn(
+            session_actor(emit=self._projection.handle), "session",
         )
-        session_behavior = Behaviors.spy(
-            session_actor(), proj_ref, spy_children=True,
-        )
-        self._session_ref = self._system.spawn(session_behavior, "session")
 
     async def _stop_async(self) -> None:
         """Stop all pools, then the session actor, then the actor system."""

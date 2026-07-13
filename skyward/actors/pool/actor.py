@@ -16,8 +16,12 @@ if TYPE_CHECKING:
     from skyward.actors.session.messages import SessionMsg
 
 from skyward.actors.messages import (
+    BootstrapCommand,
+    BootstrapFailed,
+    BootstrapPhase,
     BoundsChanged,
     ClusterReady,
+    ConsoleOutput,
     CurrentNodeCount,
     DesiredCountChanged,
     DrainComplete,
@@ -58,6 +62,7 @@ from skyward.actors.task_manager import task_manager_actor
 from skyward.actors.tcp_proxy import NodeDown as ProxyNodeDown
 from skyward.actors.tcp_proxy import NodeUp as ProxyNodeUp
 from skyward.actors.tcp_proxy import tcp_proxy
+from skyward.api import events
 from skyward.api.spec import Nodes
 from skyward.core.model import Cluster
 from skyward.observability.logger import logger
@@ -75,9 +80,23 @@ from .messages import (
     _FileOpGathered,
     _ShutdownDone,
 )
-from .state import PoolState, build_pool_snapshot
+from .state import PoolState, apply_stream_event, build_pool_snapshot
 
 _logging.getLogger("casty").setLevel(_logging.ERROR)
+
+type _StreamMsg = BootstrapPhase | BootstrapCommand | BootstrapFailed | ConsoleOutput
+
+
+
+def _no_emit(_event: events.SessionEvent) -> None:
+    pass
+
+def _format_task(fn: object, args: tuple, kwargs: dict) -> str:
+    name = getattr(fn, "__name__", str(fn))
+    parts = [repr(a) for a in args]
+    parts.extend(f"{k}={v!r}" for k, v in kwargs.items())
+    call = f"{name}({', '.join(parts)})"
+    return call[:80] + "…" if len(call) > 80 else call
 
 
 def _select_node_refs(
@@ -300,8 +319,45 @@ def pool_actor(
     *,
     session_ref: ActorRef[SessionMsg] | None = None,
     pool_name: str = "",
+    emit: events.Emit | None = None,
 ) -> Behavior[PoolMsg]:
     """idle -> requesting -> provisioning_instances -> provisioning -> ready -> stopping."""
+
+    emit = emit or _no_emit
+
+    def _emit_provisioned(
+        instances: tuple[Any, ...], cluster: Any,
+    ) -> None:
+        emit(events.Pool.Provisioned(pool_name, cluster, instances))
+        if instances:
+            emit(events.Scaling.Spawning(pool_name, len(instances), instances))
+
+    def _on_stream(s: PoolState, msg: _StreamMsg) -> PoolState:
+        ni = msg.instance
+        match msg:
+            case BootstrapPhase(event="started", phase=p) if p != "bootstrap":
+                emit(events.Node.Bootstrap.Started(pool_name, ni.node, p))
+            case BootstrapPhase(event="completed", phase=p) if p != "bootstrap":
+                emit(events.Node.Bootstrap.Completed(pool_name, ni.node, p))
+            case BootstrapPhase(event="failed", phase=p, error=err):
+                emit(events.Node.Bootstrap.Failed(pool_name, ni.node, p, err or ""))
+            case BootstrapFailed(phase=p, error=err):
+                emit(events.Node.Bootstrap.Failed(pool_name, ni.node, p, err))
+            case BootstrapCommand(command=cmd):
+                emit(events.Node.Bootstrap.Command(pool_name, ni.node, cmd))
+            case ConsoleOutput(content=c, overwrite=ow):
+                stripped = c.strip()
+                if stripped and not stripped.startswith("#"):
+                    emit(events.Node.Bootstrap.Output(
+                        pool_name, ni.node, stripped, overwrite=ow,
+                    ))
+        match msg:
+            case BootstrapFailed():
+                return s
+            case _:
+                return replace(s, bootstrap_timelines=apply_stream_event(
+                    s.bootstrap_timelines, ni.instance.id, msg,
+                ))
 
     tunnel_map: dict[tuple[str, int], tuple[str, int]] = {}
 
@@ -398,6 +454,7 @@ def pool_actor(
         ref = ctx.spawn(
             node_actor(
                 node_id=nid, pool=ctx.self,
+                pool_name=pool_name, emit=emit,
                 ssh_timeout=spec.ssh_timeout,
                 ssh_retry_interval=spec.ssh_retry_interval,
                 poll_timeout=spec.provision_timeout,
@@ -461,6 +518,7 @@ def pool_actor(
             if tm is not None:
                 tm.tell(NodeUnavailable(node_id=nid))
             iid = s.instance_map.get(nid, "")
+            emit(events.Scaling.DrainCompleted(pool_name, nid))
             _notify_scaling(s, DrainComplete(node_id=nid, instance_id=iid))
             _notify_proxies(s, ProxyNodeDown(node_id=nid))
             node_ref = s.node_refs.get(nid)
@@ -512,6 +570,9 @@ def pool_actor(
                     spec=spec, provider_config=_, provider=provider,
                     offers=offers, reply_to=reply_to,
                 ):
+                    emit(events.Pool.Provisioning(
+                        pool_name, spec.nodes.desired, time.monotonic(),
+                    ))
                     if not offers:
                         reply_to.tell(ProvisionFailed(reason="No offers available"))
                         return Behaviors.stopped()
@@ -546,6 +607,9 @@ def pool_actor(
                     spec=spec, provider=provider, cluster=cluster,
                     instances=instances, reply_to=reply_to, node_ids=node_ids,
                 ):
+                    emit(events.Pool.Provisioning(
+                        pool_name, len(instances), time.monotonic(),
+                    ))
                     logger.bind(actor="pool").info(
                         "RecoverPool: recovering {n} instances for cluster {cid}",
                         n=len(instances), cid=cluster.id,
@@ -568,7 +632,10 @@ def pool_actor(
                         )
                         new_refs = MappingProxyType({**new_refs, nid: ref})
 
-                    tm_ref = ctx.spawn(task_manager_actor(), "task-manager")
+                    tm_ref = ctx.spawn(
+                        task_manager_actor(emit=emit, pool_name=pool_name),
+                        "task-manager",
+                    )
 
                     return provisioning(PoolState(
                         spec=spec, provider=provider, reply_to=reply_to,
@@ -580,6 +647,7 @@ def pool_actor(
                     ))
 
                 case StopPool(reply_to=stop_reply):
+                    emit(events.Pool.Stopped(pool_name))
                     stop_reply.tell(PoolStopped())
                     return Behaviors.stopped()
 
@@ -594,6 +662,7 @@ def pool_actor(
         async def receive(ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
             match msg:
                 case ProvisionFailed() as pf:
+                    emit(events.Pool.ProvisionFailed(pool_name, pf.reason))
                     if s.remaining_offers:
                         offer, *rest = s.remaining_offers
                         log.warning(
@@ -665,6 +734,7 @@ def pool_actor(
                         s, spec=effective_spec, cluster=cluster,
                     ))
                 case StopPool(reply_to=stop_reply):
+                    emit(events.Pool.Stopped(pool_name))
                     log.debug("StopPool during requesting")
                     s.reply_to.tell(ProvisionFailed(reason="Interrupted"))
                     _iids = (
@@ -705,6 +775,7 @@ def pool_actor(
                 case InstancesProvisioned(
                     instances=instances, cluster=updated_cluster,
                 ):
+                    _emit_provisioned(instances, updated_cluster)
                     log.info(
                         "Instances provisioned ({n}), attempt "
                         "{attempt}/{max}",
@@ -742,6 +813,7 @@ def pool_actor(
                         tm_ref = ctx.spawn(
                             task_manager_actor(
                                 retry_on_interruption=s.spec.retry_on_interruption,
+                                emit=emit, pool_name=pool_name,
                             ),
                             "task-manager",
                         )
@@ -756,6 +828,7 @@ def pool_actor(
                         rec_ref = ctx.spawn(
                             reconciler_actor(
                                 pool=ctx.self,
+                                emit=emit, pool_name=pool_name,
                                 min_nodes=min_n,
                                 max_nodes=max_n,
                                 desired_count=s.spec.nodes.desired,
@@ -947,7 +1020,14 @@ def pool_actor(
                     )
                     return _cleanup_awaiting(reply_to)
 
+                case (
+                    BootstrapPhase() | BootstrapCommand()
+                    | BootstrapFailed() | ConsoleOutput()
+                ) as sev:
+                    return provisioning_instances(_on_stream(s, sev))
+
                 case StopPool(reply_to=stop_reply):
+                    emit(events.Pool.Stopped(pool_name))
                     log.debug("StopPool during provisioning_instances")
                     for node_ref in s.node_refs.values():
                         ctx.stop(node_ref)
@@ -975,10 +1055,12 @@ def pool_actor(
         async def receive(_ctx: ActorContext[PoolMsg], msg: PoolMsg) -> Behavior[PoolMsg]:
             match msg:
                 case ProvisionFailed() as pf:
+                    emit(events.Pool.ProvisionFailed(pool_name, pf.reason))
                     clog.info("Cleanup complete, reporting failure")
                     reply_to.tell(pf)
                     return Behaviors.stopped()
                 case StopPool(reply_to=stop_reply):
+                    emit(events.Pool.Stopped(pool_name))
                     stop_reply.tell(PoolStopped())
                     return Behaviors.same()
             return Behaviors.same()
@@ -1007,6 +1089,10 @@ def pool_actor(
                     log.debug("Node {nid} SSH connected", nid=nid)
                     return provisioning(replace(s, node_statuses=new_statuses))
                 case NodeBecameReady(node_id=nid, instance=meta):
+                    new_timelines = MappingProxyType({
+                        k: v for k, v in s.bootstrap_timelines.items()
+                        if k != meta.instance.id
+                    })
                     new_instances = MappingProxyType({**s.instances, nid: meta})
                     log.info(
                         "Node {nid} ready ({n}/{total})",
@@ -1042,6 +1128,7 @@ def pool_actor(
                             head_addr=effective_head,
                             node_statuses=new_statuses,
                             node_transports=new_transports,
+                            bootstrap_timelines=new_timelines,
                         ))
                     else:
                         node_client = await _create_standalone_client(
@@ -1060,6 +1147,7 @@ def pool_actor(
                             head_addr=effective_head,
                             node_statuses=new_statuses,
                             node_transports=new_transports,
+                            bootstrap_timelines=new_timelines,
                         ))
                 case NodeActivated(node_id=nid, node_ref=nref, slots=slots):
                     log.info("Node {nid} activated", nid=nid)
@@ -1108,6 +1196,7 @@ def pool_actor(
                         s, ready_nodes=s.ready_nodes - {nid},
                     ))
                 case NodeLost(node_id=nid, reason=reason):
+                    emit(events.Node.Lost(pool_name, nid, reason))
                     log.warning(
                         "Node {nid} lost during provisioning: {reason}",
                         nid=nid, reason=reason,
@@ -1117,6 +1206,9 @@ def pool_actor(
                         s, ready_nodes=s.ready_nodes - {nid},
                     ))
                 case NodeExhausted(node_id=nid, reason=reason, instance_id=ev_iid):
+                    emit(events.Node.Lost(
+                        pool_name, nid, f"permanently lost: {reason}", instance_id=ev_iid,
+                    ))
                     tm.tell(NodeUnavailable(node_id=nid))
                     new_dead = s.dead_nodes | {nid}
 
@@ -1160,6 +1252,7 @@ def pool_actor(
                     return provisioning(s)
 
                 case InstancesProvisioned(instances=new_instances, cluster=upd_cluster):
+                    _emit_provisioned(new_instances, upd_cluster)
                     if not new_instances:
                         if s.reconciler_ref is not None:
                             s.reconciler_ref.tell(ScaleUpComplete(provisioned=0))
@@ -1214,7 +1307,14 @@ def pool_actor(
                     )
                     return Behaviors.same()
 
+                case (
+                    BootstrapPhase() | BootstrapCommand()
+                    | BootstrapFailed() | ConsoleOutput()
+                ) as sev:
+                    return provisioning(_on_stream(s, sev))
+
                 case StopPool(reply_to=stop_reply):
+                    emit(events.Pool.Stopped(pool_name))
                     log.debug("StopPool during provisioning")
                     for node_ref in s.node_refs.values():
                         ctx.stop(node_ref)
@@ -1284,11 +1384,19 @@ def pool_actor(
                         proxy_refs=_spawn_proxies(ctx, s),
                     ))
                 case SubmitTask() as task:
+                    emit(events.Task.Queued(
+                        pool_name, task.task_id,
+                        _format_task(task.fn, task.args, task.kwargs), "single",
+                    ))
                     log.debug("Task submitted")
                     tm.tell(task)
                     new_counters = replace(s.task_counters, queued=s.task_counters.queued + 1)
                     return ready(replace(s, task_counters=new_counters))
                 case SubmitBroadcast() as bcast:
+                    emit(events.Task.Queued(
+                        pool_name, bcast.task_id,
+                        _format_task(bcast.fn, bcast.args, bcast.kwargs), "broadcast",
+                    ))
                     log.debug("Broadcast submitted to {n} nodes", n=len(s.ready_nodes))
                     tm.tell(bcast)
                     new_counters = replace(s.task_counters, queued=s.task_counters.queued + 1)
@@ -1313,6 +1421,10 @@ def pool_actor(
                     new_statuses = MappingProxyType({**s.node_statuses, iid: NodeStatus.SSH})
                     return ready(replace(s, node_statuses=new_statuses))
                 case NodeBecameReady(node_id=nid, instance=meta) as nbr:
+                    new_timelines = MappingProxyType({
+                        k: v for k, v in s.bootstrap_timelines.items()
+                        if k != meta.instance.id
+                    })
                     iid = meta.instance.id
                     new_statuses = MappingProxyType({**s.node_statuses, iid: NodeStatus.BOOTSTRAPPING})
                     new_instances = MappingProxyType({**s.instances, nid: meta})
@@ -1344,6 +1456,7 @@ def pool_actor(
                             instances=new_instances,
                             instance_map=MappingProxyType({**s.instance_map, nid: meta.instance.id}),
                             node_transports=new_transports,
+                            bootstrap_timelines=new_timelines,
                         ))
                     else:
                         node_client = await _create_standalone_client(
@@ -1367,6 +1480,7 @@ def pool_actor(
                             instances=new_instances,
                             instance_map=MappingProxyType({**s.instance_map, nid: meta.instance.id}),
                             node_transports=new_transports,
+                            bootstrap_timelines=new_timelines,
                         ))
                 case NodeActivated(node_id=nid, node_ref=nref, slots=slots):
                     log.info("Node {nid} activated", nid=nid)
@@ -1397,6 +1511,7 @@ def pool_actor(
                         node_transports=_retire_from_proxies(s, nid),
                     ))
                 case NodeLost(node_id=nid, reason=reason):
+                    emit(events.Node.Lost(pool_name, nid, reason))
                     log.warning(
                         "Node {nid} lost: {reason}, {remaining} nodes remaining",
                         nid=nid, reason=reason,
@@ -1429,6 +1544,9 @@ def pool_actor(
                         node_transports=_retire_from_proxies(s, nid),
                     ))
                 case NodeExhausted(node_id=nid, reason=reason, instance_id=ev_iid):
+                    emit(events.Node.Lost(
+                        pool_name, nid, f"permanently lost: {reason}", instance_id=ev_iid,
+                    ))
                     if nid not in s.node_refs:
                         return Behaviors.same()
                     log.error(
@@ -1512,6 +1630,7 @@ def pool_actor(
                     return ready(s)
 
                 case InstancesProvisioned(instances=new_instances, cluster=upd_cluster):
+                    _emit_provisioned(new_instances, upd_cluster)
                     if not new_instances:
                         if s.reconciler_ref is not None:
                             s.reconciler_ref.tell(ScaleUpComplete(provisioned=0))
@@ -1556,6 +1675,7 @@ def pool_actor(
                     ))
 
                 case RequestScaleDown(count=count):
+                    emit(events.Scaling.Draining(pool_name, count))
                     log.info("Reconciler requested scale-down of {n} nodes", n=count)
                     victims = [nid for nid in sorted(s.node_refs.keys(), reverse=True) if nid != 0][:count]
                     if not victims:
@@ -1610,7 +1730,14 @@ def pool_actor(
                     snap_reply.tell(build_pool_snapshot(s, pool_name))
                     return Behaviors.same()
 
+                case (
+                    BootstrapPhase() | BootstrapCommand()
+                    | BootstrapFailed() | ConsoleOutput()
+                ) as sev:
+                    return ready(_on_stream(s, sev))
+
                 case StopPool(reply_to=stop_reply):
+                    emit(events.Pool.Stopped(pool_name))
                     for node_ref in s.node_refs.values():
                         ctx.stop(node_ref)
                     for proxy_ref in s.proxy_refs:

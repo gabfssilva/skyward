@@ -26,6 +26,7 @@ from skyward.actors.messages import (
 if TYPE_CHECKING:
     from skyward.actors.pool.messages import PoolMsg
 
+from skyward.api import events
 from skyward.observability.logger import logger
 
 from .messages import ReconcilerMsg, _ReconcileTick
@@ -33,6 +34,10 @@ from .state import _apply_bounds, _State
 
 log = logger.bind(actor="reconciler")
 
+
+
+def _no_emit(_event: events.SessionEvent) -> None:
+    pass
 
 def reconciler_actor(
     pool: ActorRef[PoolMsg],
@@ -42,7 +47,11 @@ def reconciler_actor(
     initial_node_ids: frozenset[NodeId],
     tick_interval: float = 15.0,
     max_provision_retries: int = 10,
+    emit: events.Emit | None = None,
+    pool_name: str = "",
 ) -> Behavior[ReconcilerMsg]:
+
+    emit = emit or _no_emit
 
     def _schedule_tick(ctx: ActorContext[ReconcilerMsg]) -> None:
         async def _tick() -> _ReconcileTick:
@@ -89,6 +98,7 @@ def reconciler_actor(
         ) -> Behavior[ReconcilerMsg]:
             match msg:
                 case DesiredCountChanged(desired=desired, reason=reason):
+                    emit(events.Scaling.DesiredChanged(pool_name, desired, reason))
                     log.info(
                         "Desired count changed: {old} → {new} ({reason})",
                         old=s.desired, new=desired, reason=reason,
@@ -254,6 +264,7 @@ def reconciler_actor(
                     return watching(new_s)
 
                 case DesiredCountChanged(desired=desired, reason=reason):
+                    emit(events.Scaling.DesiredChanged(pool_name, desired, reason))
                     log.info(
                         "Desired changed during scale-up: {old} → {new} ({reason})",
                         old=s.desired, new=desired, reason=reason,

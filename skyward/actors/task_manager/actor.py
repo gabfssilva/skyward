@@ -17,6 +17,7 @@ from skyward.actors.messages import (
     TaskSubmitted,
     TaskSucceeded,
 )
+from skyward.api import events
 from skyward.observability.logger import logger
 
 from .messages import TaskManagerMsg
@@ -34,6 +35,10 @@ from .state import (
 
 log = logger.bind(actor="task_manager")
 
+
+
+def _no_emit(_event: events.SessionEvent) -> None:
+    pass
 
 def _handle_broadcast_result(
     broadcasts: MappingProxyType[str, PendingBroadcast],
@@ -89,7 +94,14 @@ def _free_slot_and_drain(
     )
 
 
-def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMsg]:
+def task_manager_actor(
+    retry_on_interruption: int = 3,
+    *,
+    emit: events.Emit | None = None,
+    pool_name: str = "",
+) -> Behavior[TaskManagerMsg]:
+
+    emit = emit or _no_emit
 
     def active(s: _State) -> Behavior[TaskManagerMsg]:
 
@@ -148,6 +160,7 @@ def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMs
                     return _check_broadcasts(new_s)
 
                 case TaskSucceeded(value=value, node_id=node_id, task_id=tid, elapsed=elapsed):
+                    emit(events.Task.Completed(pool_name, tid, node_id, elapsed))
                     broadcast_hit, new_broadcasts = _handle_broadcast_result(s.broadcasts, node_id, value)
                     new_inflight = s.inflight
                     new_retries = MappingProxyType({k: v for k, v in s.retries.items() if k != tid})
@@ -164,6 +177,7 @@ def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMs
                     return _check_broadcasts(new_s) if broadcast_hit else active(new_s)
 
                 case TaskFailed(error=err, node_id=node_id, task_id=tid):
+                    emit(events.Task.Failed(pool_name, tid, node_id, ""))
                     broadcast_hit, new_broadcasts = _handle_broadcast_result(s.broadcasts, node_id, err)
                     new_inflight = s.inflight
                     new_retries = MappingProxyType({k: v for k, v in s.retries.items() if k != tid})
@@ -271,6 +285,10 @@ def task_manager_actor(retry_on_interruption: int = 3) -> Behavior[TaskManagerMs
                         ),
                     })
                     return active(replace(s, nodes=MappingProxyType(new_nodes), broadcasts=new_broadcasts))
+
+                case TaskSubmitted(task_id=tid, node_id=node_id):
+                    emit(events.Task.Assigned(pool_name, tid, node_id))
+                    return Behaviors.same()
 
                 case RegisterPressureObserver(observer=observer):
                     log.info("Pressure observer registered")

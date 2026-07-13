@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from casty import ActorRef, ClusterClient
 
-from skyward.actors.messages import NodeInstance
+from skyward.actors.messages import (
+    BootstrapCommand,
+    BootstrapPhase,
+    ConsoleOutput,
+    NodeInstance,
+)
 from skyward.actors.snapshot import (
     BootstrapTimeline,
     NodeSnapshot,
@@ -61,6 +66,38 @@ class PoolState:
     buffered_events: tuple[NodeBecameReady | HeadAddressKnown, ...] = ()
     node_transports: MappingProxyType[NodeId, ActorRef] = MappingProxyType({})
     proxy_refs: tuple[ActorRef, ...] = ()
+
+
+def apply_stream_event(
+    timelines: MappingProxyType[str, BootstrapTimeline],
+    iid: str,
+    msg: BootstrapPhase | BootstrapCommand | ConsoleOutput,
+) -> MappingProxyType[str, BootstrapTimeline]:
+    """Fold a monitor stream message into the per-instance bootstrap timeline."""
+    tl = timelines.get(iid)
+    match msg:
+        case BootstrapPhase(event="started", phase=p) if p != "bootstrap":
+            if tl is None:
+                new = BootstrapTimeline(
+                    phases=(p,), completed=frozenset(), active=p, output="",
+                )
+            else:
+                completed = tl.completed | {tl.active} if tl.active else tl.completed
+                phases = tl.phases if p in tl.phases else (*tl.phases, p)
+                new = BootstrapTimeline(
+                    phases=phases, completed=completed, active=p, output="",
+                )
+        case BootstrapPhase(event="completed", phase=p) if tl is not None and p != "bootstrap":
+            new = replace(tl, completed=tl.completed | {p})
+        case BootstrapCommand(command=cmd) if tl is not None:
+            new = replace(tl, output=cmd[:80])
+        case ConsoleOutput(content=c) if (
+            tl is not None and (stripped := c.strip()) and not stripped.startswith("#")
+        ):
+            new = replace(tl, output=stripped)
+        case _:
+            return timelines
+    return MappingProxyType({**timelines, iid: new})
 
 
 def _derive_phase(s: PoolState) -> PoolPhase:

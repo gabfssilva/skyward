@@ -44,6 +44,7 @@ from skyward.actors.messages import (
     _bind_to_node,
 )
 from skyward.actors.streaming import instance_monitor
+from skyward.api import events
 from skyward.api.health import HealthChecker, hc_loop
 from skyward.api.spec import (
     DEFAULT_BOOTSTRAP_TIMEOUT,
@@ -103,6 +104,9 @@ from .messages import (
 )
 from .state import NodeId, NodeState, PendingTask
 
+
+def _no_emit(_event: events.SessionEvent) -> None:
+    pass
 
 def _should_announce_idle(
     inflight_count: int,
@@ -236,8 +240,12 @@ def node_actor(
     autoscaler: ActorRef | None = None,
     scale_down_idle_seconds: float = 60.0,
     idle_tick_interval: float = 15.0,
+    pool_name: str = "",
+    emit: events.Emit | None = None,
 ) -> Behavior[NodeMsg]:
     """A merged node tells this story: idle → polling → … → active."""
+
+    emit = emit or _no_emit
 
     log = logger.bind(actor="node", node_id=node_id)
 
@@ -269,6 +277,7 @@ def node_actor(
             case ExecuteOnNode() as ex:
                 return reenter(_enqueue(s, ex))
             case Preempted(reason=reason):
+                emit(events.Node.Preempted(pool_name, reason))
                 return _fail_and_stop(s, reason)
             case Terminated():
                 return _fail_and_stop(s, "child stopped")
@@ -413,6 +422,9 @@ def node_actor(
             match msg:
                 case _Connected(transport_ref=tref, local_port=lp, instance=ni):
                     log.info("SSH tunnel established (port={port})", port=lp)
+                    emit(events.Node.Connected(
+                        pool_name, node_id, ni.instance if ni else None,
+                    ))
                     if ni is not None:
                         pool.tell(NodeConnected(node_id=node_id, instance=ni))
                     ns = replace(s, transport_ref=tref, local_port=lp)
@@ -420,6 +432,7 @@ def node_actor(
                         return _enter_reattach_ready(ctx, ns)
                     return _start_bootstrapping(ctx, ns)
                 case _ConnectionFailed(error=error):
+                    emit(events.Node.ConnectionFailed(pool_name, str(error)))
                     log.error("SSH connection failed: {error}", error=error)
                     return _fail_and_stop(s, error)
                 case ConnectionFailed(error=error):
@@ -440,12 +453,14 @@ def node_actor(
             monitor_ref = ctx.spawn(
                 instance_monitor(
                     info=ni, transport=tref, event_listener=pool, reply_to=ctx.self,
+                    emit=emit, pool_name=pool_name,
                 ),
                 f"monitor-{ni.instance.id}",
             )
             ctx.watch(monitor_ref)
         private_ip = ni.instance.private_ip or ni.instance.ip or ""
         log.info("Node {nid} reattached, entering ready", nid=node_id)
+        emit(events.Node.Ready(pool_name, node_id))
         pool.tell(NodeBecameReady(
             node_id=node_id, instance=ni, local_port=s.local_port, private_ip=private_ip,
             transport_ref=s.transport_ref,
@@ -469,6 +484,8 @@ def node_actor(
                     transport=tref,
                     event_listener=pool,
                     reply_to=ctx.self,
+                    emit=emit,
+                    pool_name=pool_name,
                 ),
                 f"monitor-{ni.instance.id}",
             )
@@ -500,6 +517,7 @@ def node_actor(
                 return timeout_behavior
             match msg:
                 case BootstrapDone(success=True, instance=done_info):
+                    emit(events.Node.Bootstrap.Done(pool_name, node_id, True))
                     log.info("Bootstrap completed successfully")
                     final_ni = done_info or s.ni
                     match s.provider:
@@ -512,6 +530,7 @@ def node_actor(
                             )
                     return _enter_post_bootstrap(ctx, replace(s, ni=final_ni), bs_start)
                 case BootstrapDone(success=False, error=error):
+                    emit(events.Node.Bootstrap.Done(pool_name, node_id, False, error))
                     log.error("Bootstrap failed: {error}", error=error)
                     return _fail_and_stop(s, error or "bootstrap failed")
                 case _BootstrapUploaded():
@@ -573,6 +592,9 @@ def node_actor(
                 case _UserCodeSyncDone():
                     return _enter_ready(ctx, s, bs_start)
                 case _PostBootstrapFailed(error=err):
+                    emit(events.Error.Occurred(
+                        pool_name, f"Post-bootstrap failed: {err}",
+                    ))
                     return _fail_and_stop(s, err)
             return _common(ctx, msg, s, lambda ns: post_bootstrap(ns, bs_start))
 
@@ -652,6 +674,7 @@ def node_actor(
             match msg:
                 case _WorkerStarted(local_port=lp, private_ip=pip):
                     log.info("Worker started, tunnel port={port}", port=lp)
+                    emit(events.Node.Ready(pool_name, node_id))
                     pool.tell(
                         NodeBecameReady(
                             node_id=node_id,
@@ -663,6 +686,7 @@ def node_actor(
                     )
                     return ready(s)
                 case _WorkerFailed(error=error):
+                    emit(events.Node.WorkerFailed(pool_name, str(error)))
                     log.error("Worker failed to start: {error}", error=error)
                     return _fail_and_stop(s, error)
             return _common(ctx, msg, s, lambda ns: starting_worker(ns, bs_start))
@@ -1097,6 +1121,7 @@ def node_actor(
                     pool.tell(NodeExhausted(node_id=node_id, reason=f"connection failed: {error}", instance_id=iid))
                     return Behaviors.stopped()
                 case Preempted(reason=reason):
+                    emit(events.Node.Preempted(pool_name, reason))
                     log.warning("Preempted while active: {reason}", reason=reason)
                     _stop_transport(s.transport_ref)
                     for tid, caller in s.inflight.items():
