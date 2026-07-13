@@ -18,13 +18,14 @@ from skyward.actors.messages import (
     TaskInterrupted,
     TaskSucceeded,
 )
-from skyward.infra.ssh_actor import ConnectionFailed, ConnectionLost, ConnectionRestored
+from skyward.infra.ssh_transport import ConnectionFailed, ConnectionLost, ConnectionRestored
 
 if TYPE_CHECKING:
     from casty import ClusterClient
 
     from skyward.api.plugin import AppLifecycle, ProcessLifecycle
     from skyward.core.model import Cluster, Instance
+    from skyward.infra.ssh_transport import SshTransport
     from skyward.infra.worker import GetResultReply
     from skyward.providers.provider import Provider
 
@@ -52,7 +53,7 @@ class _UserCodeSyncDone:
 
 @dataclass(frozen=True, slots=True)
 class _Connected:
-    transport_ref: ActorRef  # ActorRef[TransportMsg]
+    transport: SshTransport
     local_port: int
     instance: NodeInstance | None = None
 

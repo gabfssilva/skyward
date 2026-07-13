@@ -5,21 +5,8 @@ import shlex
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
-from casty import ActorRef
-
 from skyward.actors.messages import NodeFileResult, NodeInstance
-from skyward.infra.ssh_actor import (
-    CommandResult,
-    Download,
-    DownloadResult,
-    RunCommand,
-    WriteBytes,
-    WriteResult,
-    transport_ask,
-    transport_run,
-    transport_write_bytes,
-    transport_write_file,
-)
+from skyward.infra.ssh_transport import SshTransport
 from skyward.infra.tls import CertificateAuthority
 from skyward.observability.logger import logger
 
@@ -37,7 +24,7 @@ def resolve_ssh_user(ni: NodeInstance, cluster: Any) -> tuple[str, str]:
 
 
 async def do_start_worker(
-    transport_ref: ActorRef,
+    transport: SshTransport,
     local_port: int,
     ni: NodeInstance,
     head_info: Any,
@@ -104,11 +91,10 @@ async def do_start_worker(
         sudo = "sudo " if use_sudo else ""
         cert_pem, key_pem = issue_node_cert(ca, private_ip)
         tls_dir = f"{SKYWARD_DIR}/tls"
-        await transport_write_bytes(transport_ref, "/tmp/_node.crt", cert_pem)
-        await transport_write_bytes(transport_ref, "/tmp/_node.key", key_pem)
-        await transport_write_bytes(transport_ref, "/tmp/_ca.crt", ca.cert_pem)
-        await transport_run(
-            transport_ref,
+        await transport.write_bytes("/tmp/_node.crt", cert_pem)
+        await transport.write_bytes("/tmp/_node.key", key_pem)
+        await transport.write_bytes("/tmp/_ca.crt", ca.cert_pem)
+        await transport.run(
             f"{sudo}mkdir -p {tls_dir} && "
             f"{sudo}mv /tmp/_node.crt {tls_dir}/node.crt && "
             f"{sudo}mv /tmp/_node.key {tls_dir}/node.key && "
@@ -165,7 +151,7 @@ async def do_start_worker(
         tail_cmd = f"nohup bash -c '{tail_inner}' </dev/null >/dev/null 2>&1 &"
     else:
         tail_script_path = f"{SKYWARD_DIR}/tail-casty.sh"
-        await transport_write_file(transport_ref, tail_script_path, f"#!/bin/bash\n{tail_inner}\n")
+        await transport.write_file(tail_script_path, f"#!/bin/bash\n{tail_inner}\n")
         tail_cmd = f"nohup bash {tail_script_path} </dev/null >/dev/null 2>&1 &"
 
     if use_sudo:
@@ -173,12 +159,12 @@ async def do_start_worker(
         tail_cmd = f"sudo {tail_cmd}"
 
     log.info("Launch command: {cmd}", cmd=launch_cmd.render())
-    exit_code, stdout, stderr = await transport_run(transport_ref, casty_cmd, timeout=60.0)
-    if exit_code != 0:
-        raise RuntimeError(f"Failed to start Casty node {node_id}: {stderr}")
+    launch = await transport.run(casty_cmd, timeout=60.0)
+    if launch.exit_code != 0:
+        raise RuntimeError(f"Failed to start Casty node {node_id}: {launch.stderr}")
 
-    pid = stdout.strip()
-    await transport_run(transport_ref, tail_cmd, timeout=10.0)
+    pid = launch.stdout.strip()
+    await transport.run(tail_cmd, timeout=10.0)
     log.info("Casty worker started, PID: {pid}", pid=pid)
 
 
@@ -188,7 +174,7 @@ async def do_start_worker(
     return local_port, private_ip
 
 
-async def install_local_skyward(transport_ref: ActorRef, ni: NodeInstance, cluster: Any) -> None:
+async def install_local_skyward(transport: SshTransport, ni: NodeInstance, cluster: Any) -> None:
     from skyward.providers.common import _build_wheel_install_script, build_wheel
 
     log = logger.bind(component="bootstrap_ssh")
@@ -203,24 +189,24 @@ async def install_local_skyward(transport_ref: ActorRef, ni: NodeInstance, clust
     wheel_size, wheel_data = await asyncio.to_thread(_read_wheel)
     log.debug("Wheel size: {size:.1f} KB", size=wheel_size / 1024)
     log.info("Uploading wheel {name}", name=wheel_path.name)
-    await transport_write_bytes(transport_ref, f"/tmp/{wheel_path.name}", wheel_data)
+    await transport.write_bytes(f"/tmp/{wheel_path.name}", wheel_data)
 
-    await transport_write_file(transport_ref, "/tmp/.install-wheel.sh", install_script)
+    await transport.write_file("/tmp/.install-wheel.sh", install_script)
 
     _, sudo = resolve_ssh_user(ni, cluster)
     log.info("Running wheel install script on {iid}", iid=ni.instance.id)
-    exit_code, stdout, stderr = await transport_run(
-        transport_ref, f"{sudo}bash /tmp/.install-wheel.sh", timeout=180.0,
-    )
-    log.debug("Install script output:\n{out}", out=stdout)
+    install = await transport.run(f"{sudo}bash /tmp/.install-wheel.sh", timeout=180.0)
+    log.debug("Install script output:\n{out}", out=install.stdout)
 
-    if exit_code != 0:
-        raise RuntimeError(f"Wheel install failed (exit {exit_code}): {stderr or stdout}")
+    if install.exit_code != 0:
+        raise RuntimeError(
+            f"Wheel install failed (exit {install.exit_code}): {install.stderr or install.stdout}"
+        )
 
     log.info("Local skyward wheel installed on {iid}", iid=ni.instance.id)
 
 
-async def sync_user_code(transport_ref: ActorRef, ni: NodeInstance, spec: Any, cluster: Any) -> None:
+async def sync_user_code(transport: SshTransport, ni: NodeInstance, spec: Any, cluster: Any) -> None:
     from skyward.providers.bootstrap.compose import SKYWARD_DIR
     from skyward.providers.common import build_user_code_tarball
 
@@ -242,36 +228,36 @@ async def sync_user_code(transport_ref: ActorRef, ni: NodeInstance, spec: Any, c
     ssh_pty = getattr(cluster, "ssh_pty", True)
 
     if ssh_pty:
-        await transport_write_bytes(transport_ref, remote_tar, tarball)
+        await transport.write_bytes(remote_tar, tarball)
     else:
         import base64
         encoded = base64.b64encode(tarball).decode()
-        await transport_write_file(transport_ref, f"{remote_tar}.b64", encoded)
-        await transport_run(
-            transport_ref,
+        await transport.write_file(f"{remote_tar}.b64", encoded)
+        await transport.run(
             f"base64 -d {remote_tar}.b64 > {remote_tar} && rm -f {remote_tar}.b64",
         )
 
-    _, sp_out, _ = await transport_run(
-        transport_ref,
+    sp = await transport.run(
         f"""{python_bin} -c "import sysconfig; print(sysconfig.get_path('purelib'))" """,
     )
-    site_packages = sp_out.strip()
+    site_packages = sp.stdout.strip()
 
-    exit_code, stdout, stderr = await transport_run(
-        transport_ref,
+    extract = await transport.run(
         f"{sudo}tar xzf {remote_tar} -C {site_packages} && rm -f {remote_tar}",
         timeout=60.0,
     )
 
-    if exit_code != 0:
-        raise RuntimeError(f"User code extraction failed (exit {exit_code}): {stderr or stdout}")
+    if extract.exit_code != 0:
+        raise RuntimeError(
+            f"User code extraction failed (exit {extract.exit_code}): "
+            f"{extract.stderr or extract.stdout}"
+        )
 
     log.info("User code uploaded and extracted to site-packages")
 
 
 async def run_bootstrap(
-    transport_ref: ActorRef,
+    transport: SshTransport,
     ni: NodeInstance,
     cluster: Any,
     spec: Any,
@@ -315,29 +301,22 @@ async def run_bootstrap(
 
     if ssh_pty:
         encoded = base64.b64encode(bootstrap_script.encode()).decode()
-        exit_code, _, stderr = await transport_run(
-            transport_ref,
+        upload = await transport.run(
             f"{sudo}bash -c \""
             f"mkdir -p /opt/skyward && "
             f"echo '{encoded}' | base64 -d > /opt/skyward/bootstrap.sh && "
             f"chmod +x /opt/skyward/bootstrap.sh\"",
         )
     else:
-        await transport_run(transport_ref, f"{sudo}mkdir -p /opt/skyward")
-        await transport_write_file(
-            transport_ref, "/opt/skyward/bootstrap.sh", bootstrap_script,
-        )
-        exit_code, _, stderr = await transport_run(
-            transport_ref,
-            f"{sudo}chmod +x /opt/skyward/bootstrap.sh",
-        )
+        await transport.run(f"{sudo}mkdir -p /opt/skyward")
+        await transport.write_file("/opt/skyward/bootstrap.sh", bootstrap_script)
+        upload = await transport.run(f"{sudo}chmod +x /opt/skyward/bootstrap.sh")
 
-    if exit_code != 0:
-        raise RuntimeError(f"Bootstrap upload failed: {stderr}")
+    if upload.exit_code != 0:
+        raise RuntimeError(f"Bootstrap upload failed: {upload.stderr}")
 
     log.info("Running bootstrap on {iid}", iid=ni.instance.id)
-    await transport_run(
-        transport_ref,
+    await transport.run(
         f"{sudo}bash -c 'nohup /opt/skyward/bootstrap.sh > /opt/skyward/bootstrap.log 2>&1 &'",
     )
 
@@ -560,7 +539,7 @@ async def _resolve_output_stream(client: Any, producer_ref: Any) -> Any:
 
 
 async def _run_file_op(
-    transport_ref: ActorRef,
+    transport: SshTransport,
     node_id: int,
     op: FileOpKind,
     path: str,
@@ -569,45 +548,35 @@ async def _run_file_op(
 ) -> NodeFileResult:
     """Run one file operation over a node's SSH transport.
 
-    ``ls``/``rm`` go through ``RunCommand`` (the argv is shell-joined by the
+    ``ls``/``rm`` go through ``run`` (the argv is shell-joined by the
     transport, so the path is ``shlex.quote``-d and ``--``-guarded);
-    ``upload`` reuses ``WriteBytes``; ``download`` uses SFTP via ``Download``.
+    ``upload`` reuses ``write_bytes``; ``download`` uses SFTP.
     """
     quoted = shlex.quote(path)
-    match op:
-        case "ls":
-            cmd: CommandResult = await transport_ask(
-                transport_ref,
-                lambda rt: RunCommand(command=("ls", "-la", "--", quoted), timeout=timeout, reply_to=rt),
-                timeout=timeout,
-            )
-            if cmd.exit_code != 0:
-                return NodeFileResult(node_id=node_id, success=False, error=cmd.stderr or f"ls exit {cmd.exit_code}")
-            return NodeFileResult(node_id=node_id, success=True, listing=cmd.stdout)
-        case "rm":
-            cmd = await transport_ask(
-                transport_ref,
-                lambda rt: RunCommand(command=("rm", "-rf", "--", quoted), timeout=timeout, reply_to=rt),
-                timeout=timeout,
-            )
-            if cmd.exit_code != 0:
-                return NodeFileResult(node_id=node_id, success=False, error=cmd.stderr or f"rm exit {cmd.exit_code}")
-            return NodeFileResult(node_id=node_id, success=True)
-        case "upload":
-            wr: WriteResult = await transport_ask(
-                transport_ref,
-                lambda rt: WriteBytes(remote=path, content=content, reply_to=rt),
-                timeout=timeout,
-            )
-            if not wr.success:
-                return NodeFileResult(node_id=node_id, success=False, error=wr.error)
-            return NodeFileResult(node_id=node_id, success=True)
-        case "download":
-            dr: DownloadResult = await transport_ask(
-                transport_ref,
-                lambda rt: Download(remote=path, reply_to=rt),
-                timeout=timeout,
-            )
-            if not dr.success:
-                return NodeFileResult(node_id=node_id, success=False, error=dr.error)
-            return NodeFileResult(node_id=node_id, success=True, content=dr.content)
+    try:
+        async with asyncio.timeout(timeout):
+            match op:
+                case "ls":
+                    cmd = await transport.run("ls", "-la", "--", quoted, timeout=timeout)
+                    if cmd.exit_code != 0:
+                        return NodeFileResult(
+                            node_id=node_id, success=False,
+                            error=cmd.stderr or f"ls exit {cmd.exit_code}",
+                        )
+                    return NodeFileResult(node_id=node_id, success=True, listing=cmd.stdout)
+                case "rm":
+                    cmd = await transport.run("rm", "-rf", "--", quoted, timeout=timeout)
+                    if cmd.exit_code != 0:
+                        return NodeFileResult(
+                            node_id=node_id, success=False,
+                            error=cmd.stderr or f"rm exit {cmd.exit_code}",
+                        )
+                    return NodeFileResult(node_id=node_id, success=True)
+                case "upload":
+                    await transport.write_bytes(path, content)
+                    return NodeFileResult(node_id=node_id, success=True)
+                case "download":
+                    data = await transport.download(path)
+                    return NodeFileResult(node_id=node_id, success=True, content=data)
+    except Exception as e:
+        return NodeFileResult(node_id=node_id, success=False, error=str(e))

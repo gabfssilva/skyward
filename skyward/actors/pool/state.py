@@ -31,6 +31,8 @@ if TYPE_CHECKING:
     )
     from skyward.core.model import Offer
     from skyward.core.spec import PoolSpec
+    from skyward.infra.ssh_transport import SshTransport
+    from skyward.infra.tcp_proxy import TcpProxy
     from skyward.infra.tls import CertificateAuthority
 
 
@@ -64,8 +66,8 @@ class PoolState:
     scaling: ScalingSnapshot = ScalingSnapshot()
     pool_started_at: float = 0.0
     buffered_events: tuple[NodeBecameReady | HeadAddressKnown, ...] = ()
-    node_transports: MappingProxyType[NodeId, ActorRef] = MappingProxyType({})
-    proxy_refs: tuple[ActorRef, ...] = ()
+    node_transports: MappingProxyType[NodeId, SshTransport] = MappingProxyType({})
+    proxies: tuple[TcpProxy, ...] = ()
 
 
 def apply_stream_event(

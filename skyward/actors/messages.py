@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from skyward.actors.snapshot import PoolSnapshot
     from skyward.core.model import Cluster, Instance
     from skyward.core.spec import PoolSpec
+    from skyward.infra.ssh_transport import SshTransport
     from skyward.providers.provider import Provider
 
 type RequestId = str
@@ -405,7 +406,7 @@ class NodeBecameReady:
     local_port: int = 0
     private_ip: str = ""
     casty_port: int = 25520
-    transport_ref: ActorRef | None = None
+    transport: SshTransport | None = None
 
 
 @dataclass(frozen=True, slots=True)

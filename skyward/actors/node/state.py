@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from casty import ActorRef
 
 from skyward.actors.messages import HeadAddressKnown, NodeInstance
+
+if TYPE_CHECKING:
+    from skyward.infra.ssh_transport import SshTransport
 
 type NodeId = int
 
@@ -45,7 +49,8 @@ class NodeState:
     cluster: Any
     provider: Any
     ni: NodeInstance | None = None
-    transport_ref: ActorRef | None = None
+    transport: SshTransport | None = None
+    monitor_task: asyncio.Task[None] | None = None
     local_port: int = 0
     head_info: HeadAddressKnown | None = None
     pending_tasks: tuple[PendingTask, ...] = ()

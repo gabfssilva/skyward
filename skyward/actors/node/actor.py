@@ -7,9 +7,9 @@ Tells this story:
 On failure the node sends NodeExhausted and stops; the reconciler
 handles termination and replacement provisioning.
 
-The transport actor (child) fully encapsulates SSH connection, port
+The ``SshTransport`` object fully encapsulates SSH connection, port
 forwarding, event streaming, and auto-reconnection. The node actor
-communicates with it via messages, never touching asyncssh directly.
+holds it and awaits its methods, never touching asyncssh directly.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from typing import Any, Literal
 
 from casty import ActorContext, ActorRef, Behavior, Behaviors, Terminated
 
+from skyward.actors.instance_monitor import monitor_instance
 from skyward.actors.messages import (
     BootstrapDone,
     ExecuteOnNode,
@@ -43,7 +44,6 @@ from skyward.actors.messages import (
     TaskSucceeded,
     _bind_to_node,
 )
-from skyward.actors.streaming import instance_monitor
 from skyward.api import events
 from skyward.api.health import HealthChecker, hc_loop
 from skyward.api.spec import (
@@ -51,14 +51,11 @@ from skyward.api.spec import (
     DEFAULT_PROVISION_TIMEOUT,
     DEFAULT_SSH_TIMEOUT,
 )
-from skyward.infra.ssh_actor import (
+from skyward.infra.ssh_transport import (
     ConnectionFailed,
     ConnectionLost,
     ConnectionRestored,
-    ForwardPort,
-    StopTransport,
-    ssh_transport,
-    transport_ask,
+    SshTransport,
 )
 from skyward.infra.tls import CertificateAuthority
 from skyward.observability.logger import logger
@@ -251,12 +248,12 @@ def node_actor(
 
     # ── common handlers ──────────────────────────────────────────────
 
-    def _stop_transport(ref: ActorRef | None) -> None:
-        if ref:
-            ref.tell(StopTransport())
+    def _stop_monitor(s: NodeState) -> None:
+        if s.monitor_task is not None:
+            s.monitor_task.cancel()
 
     def _fail_and_stop(s: NodeState, reason: str) -> Behavior[NodeMsg]:
-        _stop_transport(s.transport_ref)
+        _stop_monitor(s)
         iid = s.ni.instance.id if s.ni else None
         pool.tell(NodeExhausted(node_id=node_id, reason=reason, instance_id=iid))
         return Behaviors.stopped()
@@ -384,50 +381,45 @@ def node_actor(
     ) -> Behavior[NodeMsg]:
         ni = s.ni
         assert ni is not None
-        log.info("Spawning transport actor for {ip}", ip=ni.instance.ip)
+        log.info("Creating SSH transport for {ip}", ip=ni.instance.ip)
 
-        transport_ref = ctx.spawn(
-            ssh_transport(
-                host=ni.instance.ip or "",
-                user=ni.ssh_user or s.cluster.ssh_user,
-                key_path=ni.ssh_key_path or s.cluster.ssh_key_path,
-                port=ni.instance.ssh_port,
-                retry_max_attempts=int(ssh_timeout / ssh_retry_interval) + 1,
-                retry_delay=ssh_retry_interval,
-                connect_timeout=min(ssh_retry_interval * 2, 10.0),
-                reconnect_max_attempts=5,
-                parent=ctx.self,
-                password=ni.ssh_password,
-            ),
-            f"transport-{ni.instance.id}",
+        self_ref = ctx.self
+        transport = SshTransport(
+            host=ni.instance.ip or "",
+            user=ni.ssh_user or s.cluster.ssh_user,
+            key_path=ni.ssh_key_path or s.cluster.ssh_key_path,
+            port=ni.instance.ssh_port,
+            retry_max_attempts=int(ssh_timeout / ssh_retry_interval) + 1,
+            retry_delay=ssh_retry_interval,
+            connect_timeout=min(ssh_retry_interval * 2, 10.0),
+            reconnect_max_attempts=5,
+            password=ni.ssh_password,
+            on_event=self_ref.tell,
         )
-        ctx.watch(transport_ref)
+        ctx.on_stop(transport.close)
 
-        async def _await_forward() -> _Connected:
-            result = await transport_ask(
-                transport_ref,
-                lambda rt: ForwardPort(remote_host="127.0.0.1", remote_port=25520, reply_to=rt),
-                timeout=ssh_timeout,
-            )
-            return _Connected(transport_ref=transport_ref, local_port=result.local_port, instance=ni)
+        async def _connect_and_forward() -> _Connected:
+            await transport.connect()
+            local_port = await transport.forward_port("127.0.0.1", 25520)
+            return _Connected(transport=transport, local_port=local_port, instance=ni)
 
         ctx.pipe_to_self(
-            _await_forward(),
+            _connect_and_forward(),
             on_failure=lambda e: _ConnectionFailed(error=str(e)),
         )
-        return connecting(replace(s, transport_ref=transport_ref), reattach)
+        return connecting(replace(s, transport=transport), reattach)
 
     def connecting(s: NodeState, reattach: bool = False) -> Behavior[NodeMsg]:
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
             match msg:
-                case _Connected(transport_ref=tref, local_port=lp, instance=ni):
+                case _Connected(transport=tr, local_port=lp, instance=ni):
                     log.info("SSH tunnel established (port={port})", port=lp)
                     emit(events.Node.Connected(
                         pool_name, node_id, ni.instance if ni else None,
                     ))
                     if ni is not None:
                         pool.tell(NodeConnected(node_id=node_id, instance=ni))
-                    ns = replace(s, transport_ref=tref, local_port=lp)
+                    ns = replace(s, transport=tr, local_port=lp)
                     if reattach:
                         return _enter_reattach_ready(ctx, ns)
                     return _start_bootstrapping(ctx, ns)
@@ -446,24 +438,20 @@ def node_actor(
 
     def _enter_reattach_ready(ctx: ActorContext[NodeMsg], s: NodeState) -> Behavior[NodeMsg]:
         ni = s.ni
-        tref = s.transport_ref
+        transport = s.transport
         assert ni is not None
-        assert tref is not None
+        assert transport is not None
         if not _skip_monitor:
-            monitor_ref = ctx.spawn(
-                instance_monitor(
-                    info=ni, transport=tref, event_listener=pool, reply_to=ctx.self,
-                    emit=emit, pool_name=pool_name,
-                ),
-                f"monitor-{ni.instance.id}",
-            )
-            ctx.watch(monitor_ref)
+            s = replace(s, monitor_task=asyncio.create_task(monitor_instance(
+                transport, ni, event_listener=pool, reply_to=ctx.self,
+                emit=emit, pool_name=pool_name,
+            )))
         private_ip = ni.instance.private_ip or ni.instance.ip or ""
         log.info("Node {nid} reattached, entering ready", nid=node_id)
         emit(events.Node.Ready(pool_name, node_id))
         pool.tell(NodeBecameReady(
             node_id=node_id, instance=ni, local_port=s.local_port, private_ip=private_ip,
-            transport_ref=s.transport_ref,
+            transport=transport,
         ))
         return ready(s)
 
@@ -471,32 +459,24 @@ def node_actor(
 
     def _start_bootstrapping(ctx: ActorContext[NodeMsg], s: NodeState) -> Behavior[NodeMsg]:
         ni = s.ni
-        tref = s.transport_ref
+        transport = s.transport
         assert ni is not None
-        assert tref is not None
+        assert transport is not None
         log.info("Starting bootstrap")
         bs_start = asyncio.get_event_loop().time()
 
         if not _skip_monitor:
-            monitor_ref = ctx.spawn(
-                instance_monitor(
-                    info=ni,
-                    transport=tref,
-                    event_listener=pool,
-                    reply_to=ctx.self,
-                    emit=emit,
-                    pool_name=pool_name,
-                ),
-                f"monitor-{ni.instance.id}",
-            )
-            ctx.watch(monitor_ref)
+            s = replace(s, monitor_task=asyncio.create_task(monitor_instance(
+                transport, ni, event_listener=pool, reply_to=ctx.self,
+                emit=emit, pool_name=pool_name,
+            )))
 
         if s.cluster.prebaked:
             log.info("Prebaked image detected, skipping bootstrap")
             return _enter_post_bootstrap(ctx, s, bs_start)
 
         ctx.pipe_to_self(
-            run_bootstrap(tref, ni, s.cluster, s.cluster.spec),
+            run_bootstrap(transport, ni, s.cluster, s.cluster.spec),
             mapper=lambda _: _BootstrapUploaded(),
             on_failure=lambda e: _BootstrapUploadFailed(error=str(e)),
         )
@@ -549,14 +529,14 @@ def node_actor(
         ctx: ActorContext[NodeMsg], s: NodeState, bs_start: float,
     ) -> Behavior[NodeMsg]:
         ni = s.ni
-        tref = s.transport_ref
+        transport = s.transport
         assert ni is not None
-        assert tref is not None
+        assert transport is not None
         spec = s.cluster.spec
 
         if spec.image and getattr(spec.image, "skyward_source", None) == "local":
             ctx.pipe_to_self(
-                install_local_skyward(tref, ni, s.cluster),
+                install_local_skyward(transport, ni, s.cluster),
                 mapper=lambda _, m=ni: _LocalInstallDone(instance=m),
                 on_failure=lambda e: _PostBootstrapFailed(error=str(e)),
             )
@@ -564,7 +544,7 @@ def node_actor(
 
         if spec.image and getattr(spec.image, "includes", None):
             ctx.pipe_to_self(
-                sync_user_code(tref, ni, spec, s.cluster),
+                sync_user_code(transport, ni, spec, s.cluster),
                 mapper=lambda _, m=ni: _UserCodeSyncDone(instance=m),
                 on_failure=lambda e: _PostBootstrapFailed(error=str(e)),
             )
@@ -576,14 +556,14 @@ def node_actor(
         async def receive(ctx: ActorContext[NodeMsg], msg: NodeMsg) -> Behavior[NodeMsg]:
             if timeout_behavior := _check_bootstrap_timeout(s, bs_start):
                 return timeout_behavior
-            tref = s.transport_ref
-            assert tref is not None
+            transport = s.transport
+            assert transport is not None
             match msg:
                 case _LocalInstallDone(instance=info):
                     spec = s.cluster.spec
                     if spec.image and getattr(spec.image, "includes", None):
                         ctx.pipe_to_self(
-                            sync_user_code(tref, info, spec, s.cluster),
+                            sync_user_code(transport, info, spec, s.cluster),
                             mapper=lambda _, m=info: _UserCodeSyncDone(instance=m),
                             on_failure=lambda e: _PostBootstrapFailed(error=str(e)),
                         )
@@ -655,11 +635,11 @@ def node_actor(
         ctx: ActorContext[NodeMsg], s: NodeState, bs_start: float,
     ) -> Behavior[NodeMsg]:
         ni = s.ni
-        tref = s.transport_ref
+        transport = s.transport
         assert ni is not None
-        assert tref is not None
+        assert transport is not None
         ctx.pipe_to_self(
-            do_start_worker(tref, s.local_port, ni, s.head_info, node_id, s.cluster, s.cluster.spec, ca=ca),
+            do_start_worker(transport, s.local_port, ni, s.head_info, node_id, s.cluster, s.cluster.spec, ca=ca),
             mapper=lambda result: _WorkerStarted(local_port=result[0], private_ip=result[1]),
             on_failure=lambda e: _WorkerFailed(error=str(e)),
         )
@@ -681,7 +661,7 @@ def node_actor(
                             instance=ni,
                             local_port=lp,
                             private_ip=pip,
-                            transport_ref=s.transport_ref,
+                            transport=s.transport,
                         )
                     )
                     return ready(s)
@@ -952,11 +932,11 @@ def node_actor(
                 case HeadAddressKnown() as h:
                     return active(replace(s, head_info=h))
                 case NodeFileOp(op=op, path=path, content=content, timeout=fo_timeout, reply_to=fo_rt):
-                    if s.transport_ref is None:
+                    if s.transport is None:
                         fo_rt.tell(NodeFileResult(node_id=node_id, success=False, error="transport not connected"))
                         return Behaviors.same()
                     ctx.pipe_to_self(
-                        _run_file_op(s.transport_ref, node_id, op, path, content, fo_timeout),
+                        _run_file_op(s.transport, node_id, op, path, content, fo_timeout),
                         mapper=lambda result, _rt=fo_rt: _FileOpDone(result=result, reply_to=_rt),
                         on_failure=lambda e, _rt=fo_rt: _FileOpDone(
                             result=NodeFileResult(node_id=node_id, success=False, error=str(e)),
@@ -1116,14 +1096,14 @@ def node_actor(
                                 node_id=node_id, task_id=tid,
                             )
                         )
-                    _stop_transport(s.transport_ref)
+                    _stop_monitor(s)
                     iid = s.ni.instance.id if s.ni else None
                     pool.tell(NodeExhausted(node_id=node_id, reason=f"connection failed: {error}", instance_id=iid))
                     return Behaviors.stopped()
                 case Preempted(reason=reason):
                     emit(events.Node.Preempted(pool_name, reason))
                     log.warning("Preempted while active: {reason}", reason=reason)
-                    _stop_transport(s.transport_ref)
+                    _stop_monitor(s)
                     for tid, caller in s.inflight.items():
                         caller.tell(
                             TaskInterrupted(
@@ -1143,7 +1123,7 @@ def node_actor(
                                 node_id=node_id, task_id=tid,
                             )
                         )
-                    _stop_transport(s.transport_ref)
+                    _stop_monitor(s)
                     iid = s.ni.instance.id if s.ni else None
                     pool.tell(NodeExhausted(node_id=node_id, reason="child stopped", instance_id=iid))
                     return Behaviors.stopped()

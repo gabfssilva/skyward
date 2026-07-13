@@ -13,7 +13,6 @@ from skyward.actors.messages import NodeBecameReady, NodeConnected
 from skyward.actors.node.actor import node_actor
 from skyward.actors.node.messages import Adopt
 from skyward.api.model import Instance, InstanceType, Offer
-from skyward.infra.ssh_actor import ForwardPort, PortForwarded
 
 pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
 
@@ -30,12 +29,18 @@ def _instance() -> Instance:
     return Instance(id="i-0", status="ready", offer=offer, ip="1.2.3.4", private_ip="10.0.0.1")
 
 
-def _fake_transport(**_kwargs: object) -> Behavior:
-    async def receive(ctx: ActorContext, msg: object) -> Behavior:
-        if isinstance(msg, ForwardPort):
-            msg.reply_to.tell(PortForwarded(local_port=12345))
-        return Behaviors.same()
-    return Behaviors.receive(receive)
+class _FakeTransport:
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        pass
+
+    async def connect(self) -> None:
+        pass
+
+    async def forward_port(self, remote_host: str, remote_port: int) -> int:
+        return 12345
+
+    async def close(self) -> None:
+        pass
 
 
 def _probe(events: list[object]) -> Behavior:
@@ -55,7 +60,7 @@ async def test_adopt_skips_bootstrap_and_worker(monkeypatch):
         calls["worker"] += 1
         return (0, "")
 
-    monkeypatch.setattr("skyward.actors.node.actor.ssh_transport", _fake_transport)
+    monkeypatch.setattr("skyward.actors.node.actor.SshTransport", _FakeTransport)
     monkeypatch.setattr("skyward.actors.node.actor.run_bootstrap", _no_bootstrap)
     monkeypatch.setattr("skyward.actors.node.actor.do_start_worker", _no_worker)
 

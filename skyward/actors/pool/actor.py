@@ -14,6 +14,7 @@ from casty import ActorContext, ActorRef, Behavior, Behaviors, ClusterClient
 if TYPE_CHECKING:
     from skyward.actors.messages import FileOpKind, NodeSelection
     from skyward.actors.session.messages import SessionMsg
+    from skyward.infra.ssh_transport import SshTransport
 
 from skyward.actors.messages import (
     BootstrapCommand,
@@ -59,12 +60,10 @@ from skyward.actors.node import node_actor
 from skyward.actors.node.messages import Adopt, JoinCluster
 from skyward.actors.snapshot import NodeStatus, PoolPhase, ScalingSnapshot
 from skyward.actors.task_manager import task_manager_actor
-from skyward.actors.tcp_proxy import NodeDown as ProxyNodeDown
-from skyward.actors.tcp_proxy import NodeUp as ProxyNodeUp
-from skyward.actors.tcp_proxy import tcp_proxy
 from skyward.api import events
 from skyward.api.spec import Nodes
 from skyward.core.model import Cluster
+from skyward.infra.tcp_proxy import TcpProxy
 from skyward.observability.logger import logger
 
 from .messages import (
@@ -226,22 +225,20 @@ def _notify_scaling(
         s.autoscaler_ref.tell(msg)
 
 
-def _notify_proxies(s: PoolState, msg: ProxyNodeUp | ProxyNodeDown) -> None:
-    """Fan a rotation change out to every port proxy."""
-    for proxy in s.proxy_refs:
-        proxy.tell(msg)
+def _proxies_remove_node(s: PoolState, nid: NodeId) -> None:
+    """Drop a node from every port proxy's rotation."""
+    for proxy in s.proxies:
+        proxy.remove_node(nid)
 
 
-def _retire_from_proxies(s: PoolState, nid: NodeId) -> MappingProxyType[NodeId, ActorRef]:
-    """Drop a node from the rotation: notify proxies and forget its transport."""
-    _notify_proxies(s, ProxyNodeDown(node_id=nid))
+def _retire_from_proxies(s: PoolState, nid: NodeId) -> MappingProxyType[NodeId, SshTransport]:
+    """Drop a node from the rotation and forget its transport."""
+    _proxies_remove_node(s, nid)
     return MappingProxyType({k: v for k, v in s.node_transports.items() if k != nid})
 
 
-def _spawn_proxies(
-    ctx: ActorContext[PoolMsg], s: PoolState,
-) -> tuple[ActorRef, ...]:
-    """Spawn one TCP proxy per declared port, seeded with the ready nodes."""
+async def _start_proxies(s: PoolState) -> tuple[TcpProxy, ...]:
+    """Start one TCP proxy per declared port, seeded with the ready nodes."""
     if not s.spec.ports:
         return ()
     seed = tuple(
@@ -249,16 +246,21 @@ def _spawn_proxies(
         for nid in sorted(s.ready_nodes)
         if nid in s.node_transports
     )
-    return tuple(
-        ctx.spawn(
-            tcp_proxy(
-                remote_port=p.remote, local_port=p.local,
-                route=p.route, initial_nodes=seed,
-            ),
-            f"proxy-{p.remote}",
+    started: list[TcpProxy] = []
+    for p in s.spec.ports:
+        proxy = TcpProxy(
+            remote_port=p.remote, local_port=p.local,
+            route=p.route, initial_nodes=seed,
         )
-        for p in s.spec.ports
-    )
+        try:
+            await proxy.start()
+        except OSError as e:
+            logger.bind(actor="pool").error(
+                "Port {lp} bind failed: {err}", lp=p.local, err=e,
+            )
+            continue
+        started.append(proxy)
+    return tuple(started)
 
 
 def _apply_resize(
@@ -520,7 +522,7 @@ def pool_actor(
             iid = s.instance_map.get(nid, "")
             emit(events.Scaling.DrainCompleted(pool_name, nid))
             _notify_scaling(s, DrainComplete(node_id=nid, instance_id=iid))
-            _notify_proxies(s, ProxyNodeDown(node_id=nid))
+            _proxies_remove_node(s, nid)
             node_ref = s.node_refs.get(nid)
             if node_ref:
                 ctx.stop(node_ref)
@@ -1102,8 +1104,8 @@ def pool_actor(
                     new_statuses = MappingProxyType({**s.node_statuses, iid: NodeStatus.BOOTSTRAPPING})
                     effective_head = s.head_addr or msg.private_ip or ""
                     new_transports = (
-                        MappingProxyType({**s.node_transports, nid: msg.transport_ref})
-                        if msg.transport_ref is not None else s.node_transports
+                        MappingProxyType({**s.node_transports, nid: msg.transport})
+                        if msg.transport is not None else s.node_transports
                     )
 
                     if s.spec.cluster:
@@ -1381,7 +1383,7 @@ def pool_actor(
                         instance_map=inst_map,
                         phase=PoolPhase.READY,
                         scaling=new_scaling,
-                        proxy_refs=_spawn_proxies(ctx, s),
+                        proxies=await _start_proxies(s),
                     ))
                 case SubmitTask() as task:
                     emit(events.Task.Queued(
@@ -1429,8 +1431,8 @@ def pool_actor(
                     new_statuses = MappingProxyType({**s.node_statuses, iid: NodeStatus.BOOTSTRAPPING})
                     new_instances = MappingProxyType({**s.instances, nid: meta})
                     new_transports = (
-                        MappingProxyType({**s.node_transports, nid: nbr.transport_ref})
-                        if nbr.transport_ref is not None else s.node_transports
+                        MappingProxyType({**s.node_transports, nid: nbr.transport})
+                        if nbr.transport is not None else s.node_transports
                     )
                     if s.spec.cluster:
                         active_client = client
@@ -1486,7 +1488,8 @@ def pool_actor(
                     log.info("Node {nid} activated", nid=nid)
                     tm.tell(NodeAvailable(node_id=nid, node_ref=nref, slots=slots + s.spec.worker.buffer))
                     if (tref := s.node_transports.get(nid)) is not None:
-                        _notify_proxies(s, ProxyNodeUp(node_id=nid, transport_ref=tref))
+                        for proxy in s.proxies:
+                            proxy.add_node(nid, tref)
                     ni = s.instances.get(nid)
                     new_statuses = s.node_statuses
                     if ni:
@@ -1740,8 +1743,8 @@ def pool_actor(
                     emit(events.Pool.Stopped(pool_name))
                     for node_ref in s.node_refs.values():
                         ctx.stop(node_ref)
-                    for proxy_ref in s.proxy_refs:
-                        ctx.stop(proxy_ref)
+                    for proxy in s.proxies:
+                        await proxy.stop()
                     if s.reconciler_ref is not None:
                         ctx.stop(s.reconciler_ref)
                     instance_ids = _collect_instance_ids(s)
