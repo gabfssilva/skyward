@@ -28,6 +28,11 @@ from skyward.observability.logger import logger
 if TYPE_CHECKING:
     from skyward.server.state import ServerState
 
+ADOPT_TIMEOUT = 60.0
+"""Per-handle bound on re-adoption. Adopt skips bootstrap entirely, so a
+healthy node reattaches in seconds; anything slower is a dead or
+unreachable instance and falls through to cleanup."""
+
 
 def _node_handle(ns: Any, inst: Any, cluster: Any) -> NodeHandle:
     return NodeHandle(
@@ -123,6 +128,7 @@ def reattach_pools(state: ServerState) -> None:
                 cluster=cluster,
                 instances=tuple(inst for _, inst in adopted),
                 node_ids=tuple(nid for nid, _ in adopted),
+                timeout=ADOPT_TIMEOUT,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(

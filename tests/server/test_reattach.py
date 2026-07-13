@@ -138,6 +138,49 @@ def test_reattach_pools_cleans_up_dead(monkeypatch):
     state.session.discard.assert_called_once()
 
 
+def test_reattach_pools_bounds_adopt_timeout(monkeypatch):
+    monkeypatch.setattr("skyward.server.reattach.list_handles", lambda **k: (_handle("a"),))
+    state = ServerState(session=MagicMock())
+    state.session.adopt = MagicMock(return_value=object())
+    state.session.projection.subscribe = MagicMock(return_value=lambda: None)
+
+    reattach.reattach_pools(state)
+
+    kwargs = state.session.adopt.call_args.kwargs
+    assert kwargs["timeout"] == reattach.ADOPT_TIMEOUT
+    assert reattach.ADOPT_TIMEOUT <= 60.0
+
+
+def test_lifespan_does_not_block_on_reattach(monkeypatch):
+    import threading
+    import time
+
+    from starlette.testclient import TestClient
+
+    from skyward.server.app import create_app
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def _slow_reattach(state):
+        started.set()
+        release.wait(timeout=30)
+
+    monkeypatch.setattr("skyward.server.reattach.reattach_pools", _slow_reattach)
+    monkeypatch.setattr("skyward.Session", MagicMock())
+    try:
+        t0 = time.monotonic()
+        with TestClient(create_app()) as client:
+            response = client.get("/health")
+            elapsed = time.monotonic() - t0
+            assert response.status_code == 200
+            assert elapsed < 2.0
+            assert started.wait(timeout=5.0)
+            release.set()
+    finally:
+        release.set()
+
+
 def test_drop_persistence_unsubscribes_and_removes(monkeypatch):
     removed: list[str] = []
     monkeypatch.setattr("skyward.server.reattach.remove_handle", lambda n: removed.append(n))

@@ -29,13 +29,18 @@ async def _lifespan(app: Starlette) -> AsyncIterator[None]:
     state = ServerState(session=session)
     app.state.server_state = state
     unsubscribe_history = attach_history(session.projection, state.history)
-    with contextlib.suppress(Exception):
-        await asyncio.to_thread(reattach.reattach_pools, state)
+
+    async def _reattach() -> None:
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(reattach.reattach_pools, state)
+
+    reattach_task = asyncio.create_task(_reattach())
     logger.info("skyward server: session ready")
     try:
         yield
     finally:
         logger.info("skyward server: shutting down")
+        reattach_task.cancel()
         with contextlib.suppress(Exception):
             unsubscribe_history()
         for name, entry in list(state.pools.items()):
