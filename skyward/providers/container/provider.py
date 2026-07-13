@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
 import tempfile
 import uuid
 from collections.abc import AsyncIterator, Sequence
@@ -182,7 +183,11 @@ class ContainerProvider(WarmableProvider[Container, ContainerSpecific]):
             specific=ContainerSpecific(
                 network=network_name,
                 base_image=base_image,
-                context=await run(self._config.binary, 'context', 'show'),
+                context=(
+                    ""
+                    if _is_apple_container(self._bin)
+                    else await run(self._config.binary, 'context', 'show')
+                ),
             ),
             prebaked=prebaked,
         )
@@ -212,17 +217,18 @@ class ContainerProvider(WarmableProvider[Container, ContainerSpecific]):
             self._bin, "run", "-d",
             "--name", container_name,
             "-e", f"SSH_PUB_KEY={pub_key}",
-            "-p", "0:22",
             "--network", cluster.specific.network,
             "-l", f"{_CLUSTER_LABEL}={cluster.id}",
         ]
 
         vcpus = cluster.spec.vcpus or 0.5
         memory_gb = cluster.spec.memory_gb or 0.5
-        cmd.extend(["--cpus", str(vcpus)])
         if _is_apple_container(self._bin):
+            cmd.extend(["--cpus", str(max(1, math.ceil(vcpus)))])
             cmd.extend(["--memory", f"{int(memory_gb * 1024)}M"])
         else:
+            cmd.extend(["-p", "0:22"])
+            cmd.extend(["--cpus", str(vcpus)])
             cmd.extend(["--memory", f"{memory_gb}g"])
 
         image = self._image_name(cluster.spec) if cluster.prebaked else cluster.specific.base_image
@@ -253,11 +259,12 @@ class ContainerProvider(WarmableProvider[Container, ContainerSpecific]):
         if not running:
             return cluster, None
 
+        ip = private_ip if _is_apple_container(self._bin) and private_ip else "127.0.0.1"
         return cluster, Instance(
             id=instance_id,
             status="provisioned",
             offer=cluster.offer,
-            ip="127.0.0.1",
+            ip=ip,
             private_ip=private_ip,
             ssh_port=ssh_port,
         )
@@ -314,14 +321,16 @@ class ContainerProvider(WarmableProvider[Container, ContainerSpecific]):
 
 def _parse_inspect(data: dict, binary: str) -> tuple[bool, str | None, int]:
     if _is_apple_container(binary):
-        running = data.get("status") == "running"
-        net_list = data.get("networks", [])
+        status = data.get("status")
+        match status:
+            case {"state": str(state)}:
+                running = state == "running"
+                net_list = status.get("networks") or []
+            case _:
+                running = status == "running"
+                net_list = data.get("networks") or []
         private_ip = net_list[0]["ipv4Address"].split("/")[0] if net_list else None
-        published = data.get("configuration", {}).get("publishedPorts", [])
-        ssh_port = next(
-            (p["hostPort"] for p in published if p.get("containerPort") == 22),
-            22,
-        )
+        ssh_port = 22
     else:
         running = data.get("State", {}).get("Running", False)
         networks = data.get("NetworkSettings", {}).get("Networks", {})
@@ -349,6 +358,16 @@ async def _stop_and_remove(binary: str, container_id: str) -> None:
 
 
 async def _list_cluster_containers(binary: str, cluster_id: str) -> list[str]:
+    if _is_apple_container(binary):
+        try:
+            containers = await run_json(binary, "list", "-a", "--format", "json")
+        except RuntimeError:
+            return []
+        return [
+            c["configuration"]["id"]
+            for c in containers
+            if c.get("configuration", {}).get("labels", {}).get(_CLUSTER_LABEL) == cluster_id
+        ]
     try:
         raw = await run(
             binary, "ps", "-a",
