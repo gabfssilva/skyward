@@ -10,13 +10,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Generator, Sequence
 from concurrent.futures import Future
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from skyward.actors.messages import NodeTarget
-    from skyward.actors.snapshot import PoolSnapshot
     from skyward.api.distributed import Consistency
+    from skyward.api.facts import NodeId
     from skyward.api.function import PendingFunction, PendingFunctionGroup
+    from skyward.api.snapshot import PoolSnapshot
     from skyward.api.spec import Nodes
     from skyward.distributed import (
         BarrierProxy,
@@ -26,6 +27,23 @@ if TYPE_CHECKING:
         QueueProxy,
         SetProxy,
     )
+
+# ── Node addressing & file operations ─────────────────────────
+
+type FileOpKind = Literal["ls", "rm", "upload", "download"]
+type NodeSelection = int | Literal["head", "all"]
+type NodeTarget = int | Literal["head"]
+
+
+@dataclass(frozen=True, slots=True)
+class NodeFileResult:
+    """Outcome of a file operation on one node."""
+
+    node_id: NodeId
+    success: bool
+    listing: str = ""
+    content: bytes = b""
+    error: str | None = None
 
 
 @runtime_checkable

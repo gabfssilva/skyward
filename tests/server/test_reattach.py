@@ -8,7 +8,7 @@ import pytest
 
 pytest.importorskip("starlette")
 
-from skyward.actors.snapshot import (  # noqa: E402
+from skyward.api.snapshot import (  # noqa: E402
     NodeSnapshot,
     NodeStatus,
     PoolPhase,

@@ -75,11 +75,10 @@ def cleanup_loop(
 def _drain_pending_tasks(loop: asyncio.AbstractEventLoop) -> None:
     """Cancel lingering asyncio tasks and await their cancellation.
 
-    During shutdown, a race between ``_stop_async`` resolving ask-futures
-    and actors finishing their ``_do_stop`` child-cleanup can leave actor
-    ``_run_loop`` tasks still pending when the event loop stops.  Cancelling
-    and draining them here prevents 'Task was destroyed but it is pending'
-    warnings and 'Event loop is closed' errors.
+    During shutdown, the control plane's background tasks (node lifecycles,
+    tick loops, transports) can still be pending when the event loop stops.
+    Cancelling and draining them here prevents 'Task was destroyed but it is
+    pending' warnings and 'Event loop is closed' errors.
     """
 
     async def _cancel_all() -> None:

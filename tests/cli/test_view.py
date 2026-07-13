@@ -225,7 +225,7 @@ def test_dispatch_event_runs_for_each_known_type():
     renderer produces output without raising."""
     from rich.console import Console
 
-    from skyward.actors.console.state import _State
+    from skyward.console.state import _State
     from skyward.api.events import Error, Node, Pool, Task
     from skyward.cli._view import _dispatch_event
 

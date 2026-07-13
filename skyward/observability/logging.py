@@ -30,7 +30,7 @@ from skyward.api.logging import LogLevel as LogLevel
 from skyward.observability.logger import logger
 
 _CONTEXT_KEYS = (
-    "actor", "component", "integration", "provider",
+    "component", "integration", "provider",
     "cluster_id", "node_id", "instance_id", "collection", "name",
 )
 

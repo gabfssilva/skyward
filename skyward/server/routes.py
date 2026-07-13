@@ -22,8 +22,8 @@ if TYPE_CHECKING:
 
     from starlette.requests import Request
 
-    from skyward.actors.messages import NodeFileResult, NodeSelection, NodeTarget
-    from skyward.actors.snapshot import NodeSnapshot, PoolSnapshot
+    from skyward.api.pool import NodeFileResult, NodeSelection, NodeTarget
+    from skyward.api.snapshot import NodeSnapshot, PoolSnapshot
     from skyward.core.model import Cluster, Instance
     from skyward.core.pool import ComputePool
     from skyward.server.state import PoolEntry, ServerState

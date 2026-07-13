@@ -4,7 +4,7 @@ Reactive via :meth:`SessionProjection.subscribe` — consumers register
 ``on_change``/``on_log``/``on_event`` callbacks and receive an idempotent
 unsubscribe handle.  Multiple subscribers are fanned out in registration
 order.  This is the single source of truth for the current session state,
-consumed by console actors, CLI dashboards, and programmatic introspection.
+consumed by the console, CLI dashboards, and programmatic introspection.
 """
 
 from __future__ import annotations
@@ -692,7 +692,7 @@ class SessionProjection:
             cb(old, self._view)
 
     def _on_reconciled(self, name: str, snapshot: object) -> None:
-        from skyward.actors.snapshot import PoolSnapshot
+        from skyward.api.snapshot import PoolSnapshot
 
         if not isinstance(snapshot, PoolSnapshot):
             return

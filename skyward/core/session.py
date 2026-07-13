@@ -53,9 +53,9 @@ def _resolve[T: (int, float, bool)](user: T | None, provider: T | None, default:
 
 
 if TYPE_CHECKING:
-    from skyward.actors.console import ConsoleConsumer
-    from skyward.actors.pool.pool import Pool, PoolStarted
     from skyward.api.projection import SessionProjection
+    from skyward.console import ConsoleConsumer
+    from skyward.control.pool import Pool, PoolStarted
     from skyward.core.pool import ComputePool
 
 
@@ -178,7 +178,7 @@ class Session:
 
     async def _start_async(self) -> None:
         """Wire the console consumer to the projection."""
-        from skyward.actors.console import (
+        from skyward.console import (
             ConsoleConsumer,
             EventReceived,
             LogReceived,
@@ -619,7 +619,7 @@ class Session:
 
     def _create_pool(self, pool_name: str) -> Pool:
         """Create a pool object and track it for interrupt-time shutdown."""
-        from skyward.actors.pool.pool import Pool
+        from skyward.control.pool import Pool
 
         pool_obj = Pool(pool_name=pool_name, emit=self._projection.handle)
         self._pending_pools[pool_name] = pool_obj

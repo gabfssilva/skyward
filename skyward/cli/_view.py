@@ -2,7 +2,7 @@
 
 Consumes the SSE stream at ``GET /compute/{name}/events`` and renders the
 same Rich layout the in-process console actor uses (``_LiveFooter`` from
-:mod:`skyward.actors.console.view`). Events are reconstructed via
+:mod:`skyward.console.view`). Events are reconstructed via
 :mod:`skyward.server.wire` and fed to a local :class:`SessionProjection`,
 which gives the renderer the same ``PoolView`` it would see in-process.
 
@@ -26,8 +26,10 @@ from typing import TYPE_CHECKING, Literal
 
 import httpx
 
-from skyward.actors.console.state import _State
-from skyward.actors.console.view import (
+from skyward.api.events import Error, Log, Node, Pool, Task
+from skyward.api.projection import SessionProjection
+from skyward.console.state import _State
+from skyward.console.view import (
     WARNING_STYLE,
     _emit,
     _emit_task,
@@ -38,8 +40,6 @@ from skyward.actors.console.view import (
     _ssh_url,
     _state_from_pool_view,
 )
-from skyward.api.events import Error, Log, Node, Pool, Task
-from skyward.api.projection import SessionProjection
 from skyward.server.wire import event_from_json, pool_view_from_json
 
 from ._output import console as _cli_console
@@ -158,9 +158,9 @@ async def render_once(url: str, name: str) -> int:
 def _dispatch_event(console: Console, event: object, state: _State) -> None:
     """Print a one-line update for a domain event.
 
-    Mirrors ``skyward.actors.console.actor._print_event`` but kept here so
+    Mirrors ``skyward.console.renderer._print_event`` but kept here so
     the CLI stays decoupled from the actor module. All emitters come from
-    ``skyward.actors.console.view`` (``_emit``, ``_emit_task``, etc.).
+    ``skyward.console.view`` (``_emit``, ``_emit_task``, etc.).
     """
     match event:
         case Pool.ProvisionFailed(reason=reason):

@@ -21,29 +21,6 @@ from skyward import plugins as plugins
 from skyward import storage as storage
 from skyward import time as time
 
-# ── Re-exported events (frozen dataclasses — not in api/) ─────
-from skyward.actors.messages import ClusterDestroyed as ClusterDestroyed
-from skyward.actors.messages import ClusterId as ClusterId
-from skyward.actors.messages import ClusterProvisioned as ClusterProvisioned
-from skyward.actors.messages import ClusterReady as ClusterReady
-from skyward.actors.messages import Error as Error
-from skyward.actors.messages import Event as Event
-from skyward.actors.messages import Fact as Fact
-from skyward.actors.messages import InstanceBootstrapped as InstanceBootstrapped
-from skyward.actors.messages import InstanceDestroyed as InstanceDestroyed
-from skyward.actors.messages import InstanceId as InstanceId
-from skyward.actors.messages import InstancePreempted as InstancePreempted
-from skyward.actors.messages import InstanceProvisioned as InstanceProvisioned
-from skyward.actors.messages import InstanceReplaced as InstanceReplaced
-from skyward.actors.messages import Log as Log
-from skyward.actors.messages import Metric as Metric
-from skyward.actors.messages import NodeId as NodeId
-from skyward.actors.messages import NodeInstance as NodeInstance
-from skyward.actors.messages import ProviderName as ProviderName
-from skyward.actors.messages import RequestId as RequestId
-from skyward.actors.messages import TaskCompleted as TaskCompleted
-from skyward.actors.messages import TaskStarted as TaskStarted
-
 # ── Re-exported from skyward.api ─────────────────────────────
 from skyward.api.app import App as App
 from skyward.api.application import Application as Application
@@ -51,6 +28,29 @@ from skyward.api.application import app as app
 from skyward.api.compute import Compute as Compute
 from skyward.api.context import sky as sky
 from skyward.api.distributed import Consistency as Consistency
+
+# ── Re-exported events (frozen dataclasses — not in api/) ─────
+from skyward.api.facts import ClusterDestroyed as ClusterDestroyed
+from skyward.api.facts import ClusterId as ClusterId
+from skyward.api.facts import ClusterProvisioned as ClusterProvisioned
+from skyward.api.facts import ClusterReady as ClusterReady
+from skyward.api.facts import Error as Error
+from skyward.api.facts import Event as Event
+from skyward.api.facts import Fact as Fact
+from skyward.api.facts import InstanceBootstrapped as InstanceBootstrapped
+from skyward.api.facts import InstanceDestroyed as InstanceDestroyed
+from skyward.api.facts import InstanceId as InstanceId
+from skyward.api.facts import InstancePreempted as InstancePreempted
+from skyward.api.facts import InstanceProvisioned as InstanceProvisioned
+from skyward.api.facts import InstanceReplaced as InstanceReplaced
+from skyward.api.facts import Log as Log
+from skyward.api.facts import Metric as Metric
+from skyward.api.facts import NodeId as NodeId
+from skyward.api.facts import NodeInstance as NodeInstance
+from skyward.api.facts import ProviderName as ProviderName
+from skyward.api.facts import RequestId as RequestId
+from skyward.api.facts import TaskCompleted as TaskCompleted
+from skyward.api.facts import TaskStarted as TaskStarted
 from skyward.api.function import PendingFunction as PendingFunction
 from skyward.api.function import PendingFunctionGroup as PendingFunctionGroup
 from skyward.api.function import function as function

@@ -702,14 +702,14 @@ class TestHelpers:
 
 class TestReconciled:
     def test_reconciled_syncs_from_snapshot(self) -> None:
-        from skyward.actors.snapshot import (
+        from skyward.api.snapshot import (
             NodeSnapshot,
             PoolSnapshot,
             ScalingSnapshot,
             TaskCounters,
         )
-        from skyward.actors.snapshot import NodeStatus as SnapshotNodeStatus
-        from skyward.actors.snapshot import PoolPhase as SnapshotPhase
+        from skyward.api.snapshot import NodeStatus as SnapshotNodeStatus
+        from skyward.api.snapshot import PoolPhase as SnapshotPhase
 
         proj = _make_projection()
         _provision(proj, total_nodes=2)

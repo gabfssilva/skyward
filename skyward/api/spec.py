@@ -16,7 +16,7 @@ from skyward.api.metrics import Metric, MetricsConfig
 
 if TYPE_CHECKING:
     from skyward.accelerators import Accelerator
-    from skyward.actors.messages import ProviderName
+    from skyward.api.facts import ProviderName
     from skyward.api.health import HealthChecker
     from skyward.api.logging import LogConfig
     from skyward.api.plugin import Plugin

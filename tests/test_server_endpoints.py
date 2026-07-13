@@ -499,7 +499,7 @@ async def test_get_includes_status(state, request_factory):
 
 
 def _node_snapshot(node_id: int, instance_id: str):
-    from skyward.actors.snapshot import NodeSnapshot, NodeStatus
+    from skyward.api.snapshot import NodeSnapshot, NodeStatus
 
     return NodeSnapshot(
         node_id=node_id, instance_id=instance_id, status=NodeStatus.READY,
@@ -526,7 +526,7 @@ def _instance(instance_id: str, ip: str, *, ssh_password: str | None = None):
 
 def _two_node_snapshot():
     """Snapshot with rank 0 (head) + rank 1, both ready with instances."""
-    from skyward.actors.snapshot import (
+    from skyward.api.snapshot import (
         PoolPhase,
         PoolSnapshot,
         ScalingSnapshot,
@@ -693,7 +693,7 @@ async def test_submit_run_node_invalid_400(state, request_factory):
 
 
 def _file_pool():
-    from skyward.actors.messages import NodeFileResult
+    from skyward.api.pool import NodeFileResult
     from skyward.core.pool import ComputePool
 
     class _FilePool(ComputePool):

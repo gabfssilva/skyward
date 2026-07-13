@@ -100,7 +100,7 @@ pip install skyward      # or: uv add skyward
 import skyward as sky
 ```
 
-Requires Python 3.12+ (3.12, 3.13, 3.14). Always use the `sky` alias; everything public hangs off it (`sky.function`, `sky.Compute`, `sky.AWS`, `sky.accelerators.*`, `sky.plugins.*`, `sky.dict`, ...). Do not import from internal modules like `skyward.actors.*` or `skyward.core.*`.
+Requires Python 3.12+ (3.12, 3.13, 3.14). Always use the `sky` alias; everything public hangs off it (`sky.function`, `sky.Compute`, `sky.AWS`, `sky.accelerators.*`, `sky.plugins.*`, `sky.dict`, ...). Do not import from internal modules like `skyward.control.*` or `skyward.core.*`.
 
 ---
 

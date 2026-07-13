@@ -26,7 +26,7 @@ from skyward.observability import LogConfig
 from skyward.observability import metrics as metrics
 from skyward.storage import Storage as Storage
 
-from .actors.messages import (
+from .api.facts import (
     ClusterDestroyed,
     ClusterId,
     ClusterProvisioned,

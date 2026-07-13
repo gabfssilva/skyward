@@ -33,15 +33,15 @@ from typing import TYPE_CHECKING, Any, Literal, overload
 from uuid import uuid4
 
 from skyward.accelerators import Accelerator
-from skyward.actors.messages import (
+from skyward.api.facts import NodeInstance
+from skyward.api.plugin import Plugin
+from skyward.api.pool import (
     FileOpKind,
     NodeFileResult,
-    NodeInstance,
     NodeSelection,
     NodeTarget,
 )
-from skyward.actors.snapshot import PoolSnapshot
-from skyward.api.plugin import Plugin
+from skyward.api.snapshot import PoolSnapshot
 from skyward.api.spec import (
     DEFAULT_BOOTSTRAP_TIMEOUT,
     DEFAULT_PROVISION_TIMEOUT,
@@ -70,7 +70,7 @@ from .offers import PoolConfig
 from .spec import DEFAULT_IMAGE, Image, PoolSpec, SelectionStrategy, Spec, Volume, Worker
 
 if TYPE_CHECKING:
-    from skyward.actors.pool.pool import Pool
+    from skyward.control.pool import Pool
     from skyward.core.model import Cluster
 
 

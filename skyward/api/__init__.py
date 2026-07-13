@@ -2,7 +2,7 @@
 
 This package is the stable, user-facing surface of Skyward.  It defines
 protocols, specs, model types, runtime utilities, and stubs that consumer
-code depends on.  No module in this package imports from ``skyward.actors``,
+code depends on.  No module in this package imports from ``skyward.control``,
 ``skyward.infra``, or ``skyward.providers`` (except stubs that are wired at
 the edge).
 

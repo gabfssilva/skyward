@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from skyward.actors.snapshot import PoolSnapshot
     from skyward.api.model import Instance
+    from skyward.api.snapshot import PoolSnapshot
 
 __all__ = [
     "Emit",
