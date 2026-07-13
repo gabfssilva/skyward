@@ -145,6 +145,9 @@ class Session:
                 _active_session.reset(self._context_token)
             self._context_token = None
 
+        for pool in self._pools.values():
+            pool._exit_client_plugins(exc_type, exc_val, exc_tb)
+
         try:
             if self._active and self._loop is not None:
                 if interrupted:
@@ -290,6 +293,7 @@ class Session:
 
         pool = self._pools.pop(name, None)
         if pool is not None:
+            pool._exit_client_plugins()
             try:
                 run_sync(
                     self._loop,
@@ -465,6 +469,7 @@ class Session:
             worker=effective_worker,
             default_compute_timeout=options.default_compute_timeout,
         )
+        pool._enter_client_plugins()
         self._pools[pool_name] = pool
         return pool
 

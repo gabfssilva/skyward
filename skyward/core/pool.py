@@ -341,12 +341,7 @@ class ComputePool:
             self._active = True
             self._context_token = _active_pool.set(self)
 
-            assert self._cluster is not None
-            for plugin in self._plugins:
-                if plugin.around_client is not None:
-                    ctx = plugin.around_client(self, self._cluster)
-                    ctx.__enter__()
-                    self._plugin_client_contexts.append(ctx)
+            self._enter_client_plugins()
 
             logger.info("Pool ready")
         except Exception as e:
@@ -362,6 +357,34 @@ class ComputePool:
 
         return self
 
+    def _enter_client_plugins(self) -> None:
+        """Enter every ``around_client`` context, on the caller's thread.
+
+        Must run on the thread the user dispatches from: joblib keeps its
+        active backend in a ``threading.local()``, so a context entered on
+        the event-loop thread would leave the user's thread untouched.
+        """
+        assert self._cluster is not None
+        for plugin in self._plugins:
+            if plugin.around_client is not None:
+                ctx = plugin.around_client(self, self._cluster)
+                ctx.__enter__()
+                self._plugin_client_contexts.append(ctx)
+
+    def _exit_client_plugins(
+        self,
+        exc_type: type[BaseException] | None = None,
+        exc_val: BaseException | None = None,
+        exc_tb: TracebackType | None = None,
+    ) -> None:
+        """Exit the ``around_client`` contexts — same thread that entered them."""
+        for ctx in reversed(self._plugin_client_contexts):
+            try:
+                ctx.__exit__(exc_type, exc_val, exc_tb)
+            except Exception as e:
+                logger.warning("Plugin around_client exit error: {err}", err=e)
+        self._plugin_client_contexts.clear()
+
     def __exit__(
         self,
         exc_type: type[BaseException] | None,
@@ -369,12 +392,7 @@ class ComputePool:
         exc_tb: TracebackType | None,
     ) -> None:
         """Stop pool and release resources."""
-        for ctx in reversed(self._plugin_client_contexts):
-            try:
-                ctx.__exit__(exc_type, exc_val, exc_tb)
-            except Exception as e:
-                logger.warning("Plugin around_client exit error: {err}", err=e)
-        self._plugin_client_contexts.clear()
+        self._exit_client_plugins(exc_type, exc_val, exc_tb)
 
         logger.info("Stopping pool...")
         logger.debug(
