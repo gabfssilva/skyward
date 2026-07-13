@@ -51,6 +51,8 @@ from skyward.actors.messages import TaskStarted as TaskStarted
 
 # ── Re-exported from skyward.api ─────────────────────────────
 from skyward.api.app import App as App
+from skyward.api.application import Application as Application
+from skyward.api.application import app as app
 from skyward.api.compute import Compute as Compute
 from skyward.api.context import sky as sky
 from skyward.api.distributed import Consistency as Consistency
@@ -143,10 +145,12 @@ async def offers(providers: list[Any]) -> OfferRepository:
 __all__ = [
     "__version__",
     "App",
+    "Application",
     "Client",
     "Compute",
     "Session",
     "sky",
+    "app",
     "function",
     "gather",
     "PendingFunction",

@@ -59,6 +59,7 @@ from .app import App
 from .core import (
     DEFAULT_IMAGE,
     AllocationStrategy,
+    Application,
     CallbackWriter,
     Compute,
     HealthChecker,
@@ -72,6 +73,7 @@ from .core import (
     PoolSpec,
     ProvisioningError,
     Session,
+    app,
     function,
     gather,
     instance_info,
@@ -122,10 +124,12 @@ async def offers(providers: list[Any]) -> OfferRepository:
 __all__ = [
     "__version__",
     "App",
+    "Application",
     "Client",
     "Compute",
     "Session",
     "sky",
+    "app",
     "function",
     "gather",
     "main",

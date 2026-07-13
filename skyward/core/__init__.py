@@ -1,6 +1,7 @@
 """User-facing API — pool, compute, runtime."""
 
 from ..api.main import main as main
+from .application import Application, app
 from .compute import Compute
 from .context import sky
 from .errors import NoOffersError as NoOffersError
@@ -48,10 +49,12 @@ from .spec import WorkerExecutor as WorkerExecutor
 __all__ = [
     "PendingFunction",
     "PendingFunctionGroup",
+    "app",
     "function",
     "gather",
     "sky",
     "AllocationStrategy",
+    "Application",
     "Architecture",
     "DEFAULT_IMAGE",
     "HealthChecker",

@@ -1,0 +1,100 @@
+Screen {
+    layout: vertical;
+    background: $background;
+    color: $foreground;
+}
+
+#topbar {
+    height: auto;
+    padding: 0 1;
+    border-bottom: solid $edge;
+    color: $foreground;
+}
+
+#dash-body, #node-body {
+    height: 1fr;
+    layout: vertical;
+    padding: 1 1 0 1;
+}
+
+#summary {
+    height: auto;
+    padding: 0 1 1 1;
+    border-bottom: solid $edge;
+}
+
+#breadcrumb {
+    height: auto;
+    padding: 0 1 1 1;
+    border-bottom: solid $edge;
+}
+
+#phasebar {
+    height: auto;
+    padding: 1 1;
+    border-bottom: solid $edge;
+}
+
+#phasebar.-hidden {
+    display: none;
+}
+
+#dash-cols, #node-cols {
+    height: 1fr;
+    layout: horizontal;
+    padding-top: 1;
+}
+
+Panel {
+    border: solid $edge;
+    border-title-color: $dim;
+    border-title-align: left;
+    border-subtitle-color: $dim;
+    border-subtitle-align: right;
+    padding: 0 1;
+    height: 1fr;
+}
+
+#nodes-panel {
+    width: 22%;
+    margin-right: 1;
+}
+
+#metrics-panel {
+    width: 44%;
+    margin-right: 1;
+}
+
+#log-panel, #node-log-panel {
+    width: 1fr;
+}
+
+LogView {
+    height: 1fr;
+    background: $surface;
+    scrollbar-size-vertical: 1;
+}
+
+LogView > Static {
+    height: 1;
+    width: auto;
+}
+
+#tree, #metrics {
+    height: 1fr;
+}
+
+#dash-body.-expanded #summary,
+#dash-body.-expanded #nodes-panel {
+    display: none;
+}
+
+#node-body.-expanded #breadcrumb,
+#node-body.-expanded #phasebar,
+#node-body.-expanded #metrics-panel {
+    display: none;
+}
+
+Footer {
+    background: $panel;
+}
