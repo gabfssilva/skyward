@@ -63,6 +63,12 @@ class ForwardPort:
     reply_to: ActorRef[PortForwarded] = field(default=None)  # type: ignore[assignment]
 
 @dataclass(frozen=True, slots=True)
+class OpenChannel:
+    remote_host: str
+    remote_port: int
+    reply_to: ActorRef[ChannelOpened | ChannelFailed] = field(default=None)  # type: ignore[assignment]
+
+@dataclass(frozen=True, slots=True)
 class SubscribeEvents:
     start_line: int
     subscriber: ActorRef[StreamEvent]
@@ -99,6 +105,15 @@ class DownloadResult:
 @dataclass(frozen=True, slots=True)
 class PortForwarded:
     local_port: int
+
+@dataclass(frozen=True, slots=True)
+class ChannelOpened:
+    reader: Any  # asyncssh.SSHReader
+    writer: Any  # asyncssh.SSHWriter
+
+@dataclass(frozen=True, slots=True)
+class ChannelFailed:
+    error: str
 
 
 # ── Events (pushed to parent/subscribers) ─────────────────────────────
@@ -196,6 +211,17 @@ class _ForwardError:
     error: str
     reply_to: ActorRef[PortForwarded]
 
+@dataclass(frozen=True, slots=True)
+class _ChannelOpened:
+    reader: Any
+    writer: Any
+    reply_to: ActorRef[ChannelOpened | ChannelFailed]
+
+@dataclass(frozen=True, slots=True)
+class _ChannelFailed:
+    error: str
+    reply_to: ActorRef[ChannelOpened | ChannelFailed]
+
 
 # ── State ─────────────────────────────────────────────────────────────
 
@@ -220,7 +246,7 @@ class TransportState:
 
 type TransportMsg = (
     RunCommand | WriteFile | WriteBytes | Upload | Download
-    | ForwardPort | SubscribeEvents | StopTransport
+    | ForwardPort | OpenChannel | SubscribeEvents | StopTransport
     | _Connected | _ConnectFailed
     | _StreamedLine | _StreamEnded | _ConnectionDropped
     | _CommandDone | _CommandError
@@ -228,6 +254,7 @@ type TransportMsg = (
     | _UploadDone | _UploadError
     | _DownloadDone | _DownloadError
     | _ForwardDone | _ForwardError
+    | _ChannelOpened | _ChannelFailed
 )
 
 
@@ -497,6 +524,22 @@ def ssh_transport(
                     rt.tell(PortForwarded(local_port=-1))
                     return Behaviors.same()
 
+                case OpenChannel(remote_host=rh, remote_port=rp, reply_to=rt):
+                    ctx.pipe_to_self(
+                        _do_open_channel(state.conn, rh, rp),
+                        mapper=lambda s: _ChannelOpened(reader=s[0], writer=s[1], reply_to=rt),
+                        on_failure=lambda e: _ChannelFailed(error=str(e), reply_to=rt),
+                    )
+                    return Behaviors.same()
+
+                case _ChannelOpened(reader=r, writer=w, reply_to=rt):
+                    rt.tell(ChannelOpened(reader=r, writer=w))
+                    return Behaviors.same()
+
+                case _ChannelFailed(error=error, reply_to=rt):
+                    rt.tell(ChannelFailed(error=error))
+                    return Behaviors.same()
+
                 case SubscribeEvents(start_line=start, subscriber=sub):
                     new_state = replace(
                         state,
@@ -599,6 +642,10 @@ def ssh_transport(
                 case _StreamEnded():
                     return Behaviors.same()
 
+                case OpenChannel(reply_to=rt):
+                    rt.tell(ChannelFailed(error="transport reconnecting"))
+                    return Behaviors.same()
+
                 case _:
                     return _reconnect_receive(state, attempts, (*pending, msg))
 
@@ -640,6 +687,12 @@ def ssh_transport(
     async def _do_download(conn: Any, remote: str) -> bytes:
         async with conn.start_sftp_client() as sftp, sftp.open(remote, "rb") as f:
             return await f.read()
+
+    async def _do_open_channel(
+        conn: Any, remote_host: str, remote_port: int,
+    ) -> tuple[Any, Any]:
+        reader, writer = await conn.open_connection(remote_host, remote_port)
+        return reader, writer
 
     async def _do_forward(
         conn: Any, remote_host: str, remote_port: int, local_port: int = 0,
@@ -752,6 +805,19 @@ async def transport_run(
         timeout=timeout or 120.0,
     )
     return result.exit_code, result.stdout, result.stderr
+
+
+async def transport_open_channel(
+    transport_ref: ActorRef,
+    remote_host: str,
+    remote_port: int,
+    timeout: float = 30.0,
+) -> ChannelOpened | ChannelFailed:
+    return await transport_ask(
+        transport_ref,
+        lambda rt: OpenChannel(remote_host=remote_host, remote_port=remote_port, reply_to=rt),
+        timeout=timeout,
+    )
 
 
 async def transport_write_file(

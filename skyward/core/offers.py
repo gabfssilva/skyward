@@ -8,7 +8,7 @@ from skyward.api.plugin import Plugin
 from skyward.api.spec import Nodes
 from skyward.core.model import Offer
 from skyward.core.provider import ProviderConfig
-from skyward.core.spec import Image, PoolSpec, Spec, Volume, Worker
+from skyward.core.spec import Image, PoolSpec, Port, Spec, Volume, Worker
 from skyward.observability.logger import logger
 
 
@@ -30,6 +30,7 @@ class PoolConfig:
     cluster: bool = True
     retry_on_interruption: int = 3
     health_checker: HealthChecker | None = None
+    ports: tuple[Port, ...] = ()
 
 
 async def select_offers(
@@ -132,6 +133,7 @@ async def select_offers(
             plugins=config.plugins,
             cluster=config.cluster,
             health_checker=config.health_checker,
+            ports=config.ports,
         )
 
         for co in catalog_offers:

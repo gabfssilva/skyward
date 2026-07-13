@@ -87,6 +87,7 @@ from .core import (
 from .core import InstanceType as InstanceType
 from .core import Nodes as Nodes
 from .core import Offer as Offer
+from .core import Port as Port
 from .core import SelectionStrategy as SelectionStrategy
 from .core import Spec as Spec
 from .core import SpecKwargs as SpecKwargs
@@ -163,6 +164,7 @@ __all__ = [
     "DEFAULT_IMAGE",
     "Pool",
     "PoolSpec",
+    "Port",
     "AllocationStrategy",
     "InstanceType",
     "Offer",

@@ -405,6 +405,7 @@ class NodeBecameReady:
     local_port: int = 0
     private_ip: str = ""
     casty_port: int = 25520
+    transport_ref: ActorRef | None = None
 
 
 @dataclass(frozen=True, slots=True)

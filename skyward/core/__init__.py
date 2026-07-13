@@ -36,6 +36,8 @@ from .spec import Options as Options
 from .spec import PipIndex as PipIndex
 from .spec import PoolSpec as PoolSpec
 from .spec import PoolState as PoolState
+from .spec import Port as Port
+from .spec import Route as Route
 from .spec import SelectionStrategy as SelectionStrategy
 from .spec import Spec as Spec
 from .spec import SpecKwargs as SpecKwargs
@@ -74,7 +76,9 @@ __all__ = [
     "NodeSpec",
     "Nodes",
     "Options",
+    "Port",
     "ProviderConfig",
+    "Route",
     "SpecKwargs",
     "SelectionStrategy",
     "Spec",

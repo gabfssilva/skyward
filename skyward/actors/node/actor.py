@@ -448,6 +448,7 @@ def node_actor(
         log.info("Node {nid} reattached, entering ready", nid=node_id)
         pool.tell(NodeBecameReady(
             node_id=node_id, instance=ni, local_port=s.local_port, private_ip=private_ip,
+            transport_ref=s.transport_ref,
         ))
         return ready(s)
 
@@ -657,6 +658,7 @@ def node_actor(
                             instance=ni,
                             local_port=lp,
                             private_ip=pip,
+                            transport_ref=s.transport_ref,
                         )
                     )
                     return ready(s)

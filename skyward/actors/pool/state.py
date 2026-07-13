@@ -59,6 +59,8 @@ class PoolState:
     scaling: ScalingSnapshot = ScalingSnapshot()
     pool_started_at: float = 0.0
     buffered_events: tuple[NodeBecameReady | HeadAddressKnown, ...] = ()
+    node_transports: MappingProxyType[NodeId, ActorRef] = MappingProxyType({})
+    proxy_refs: tuple[ActorRef, ...] = ()
 
 
 def _derive_phase(s: PoolState) -> PoolPhase:
@@ -109,6 +111,11 @@ def build_pool_snapshot(s: PoolState, name: str) -> PoolSnapshot:
         tasks=s.task_counters,
         scaling=s.scaling,
         cluster=s.cluster,
-        instances=tuple(s.cluster.instances) if s.cluster and s.cluster.instances else (),
+        instances=tuple(
+            {
+                **{i.id: i for i in (s.cluster.instances if s.cluster else ())},
+                **{ni.instance.id: ni.instance for ni in s.instances.values()},
+            }.values()
+        ),
         started_at=s.pool_started_at,
     )

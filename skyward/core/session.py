@@ -484,6 +484,7 @@ class Session:
             ),
             retry_on_interruption=options.retry_on_interruption,
             health_checker=options.health_checker,
+            ports=tuple(first_spec.ports),
         )
 
         envelope = float(provision_timeout + ssh_timeout + bootstrap_timeout + 30)

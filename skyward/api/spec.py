@@ -48,6 +48,12 @@ type SelectionStrategy = Literal["first", "cheapest"]
 - ``"cheapest"`` -- compare all specs, pick the lowest price.
 """
 
+type Route = Literal["round_robin"]
+"""Selection policy for distributing local connections across ready nodes.
+
+- ``"round_robin"`` -- cycle through the ready nodes, one per connection.
+"""
+
 type SkywardSource = Literal["auto", "local", "github", "pypi"]
 """Skyward installation source for remote workers."""
 
@@ -247,6 +253,9 @@ class Spec:
         S3/GCS volumes to mount on workers.
     plugins
         Composable plugins to apply to the pool.
+    ports
+        Node ports to expose locally (``sky.Port``). Each connection is
+        bridged round-robin across ready nodes over their SSH connections.
 
     Examples
     --------
@@ -270,6 +279,7 @@ class Spec:
     ttl: int = 600
     volumes: list[Volume] | tuple[Volume, ...] = ()
     plugins: list[Plugin] | tuple[Plugin, ...] = ()
+    ports: list[Port] | tuple[Port, ...] = ()
 
 
 class _SpecRequired(TypedDict):
@@ -296,6 +306,7 @@ class SpecKwargs(_SpecRequired, total=False):
     ttl: int
     volumes: list[Volume] | tuple[Volume, ...]
     plugins: list[Plugin] | tuple[Plugin, ...]
+    ports: list[Port] | tuple[Port, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -487,6 +498,34 @@ class Volume:
 
 
 @dataclass(frozen=True, slots=True)
+class Port:
+    """Expose a node port on a fixed local port.
+
+    Each connection to ``127.0.0.1:<local>`` is bridged to ``remote`` on a
+    ready node, selected by ``route``, over that node's existing SSH
+    connection. The local listener binds loopback only.
+
+    Parameters
+    ----------
+    remote
+        Port the service listens on inside the node.
+    local
+        Local port to bind. ``0`` lets the OS choose.
+    route
+        Policy for distributing connections across ready nodes.
+
+    Examples
+    --------
+    >>> with sky.Compute(provider=sky.AWS(), nodes=2, ports=[sky.Port(remote=8080, local=8080)]) as pool:
+    ...     serve() @ pool  # curl 127.0.0.1:8080 round-robins across nodes
+    """
+
+    remote: int
+    local: int = 0
+    route: Route = "round_robin"
+
+
+@dataclass(frozen=True, slots=True)
 class PoolSpec:
     """Resolved pool specification — the internal, fully-normalized form.
 
@@ -592,6 +631,7 @@ class PoolSpec:
     cluster: bool = True
     retry_on_interruption: int = 3
     health_checker: HealthChecker | None = None
+    ports: tuple[Port, ...] = ()
 
     @property
     def accelerator_name(self) -> str | None:

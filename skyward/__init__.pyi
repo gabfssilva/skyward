@@ -85,6 +85,7 @@ from skyward.api.spec import NodeSpec as NodeSpec
 from skyward.api.spec import Options as Options
 from skyward.api.spec import PipIndex as PipIndex
 from skyward.api.spec import PoolSpec as PoolSpec
+from skyward.api.spec import Port as Port
 from skyward.api.spec import SelectionStrategy as SelectionStrategy
 from skyward.api.spec import Spec as Spec
 from skyward.api.spec import SpecKwargs as SpecKwargs
@@ -179,6 +180,7 @@ __all__ = [
     "PipIndex",
     "DEFAULT_IMAGE",
     "PoolSpec",
+    "Port",
     "AllocationStrategy",
     "InstanceType",
     "Offer",

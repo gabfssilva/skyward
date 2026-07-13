@@ -23,6 +23,8 @@ from skyward.api.spec import Options as Options
 from skyward.api.spec import PipIndex as PipIndex
 from skyward.api.spec import PoolSpec as PoolSpec
 from skyward.api.spec import PoolState as PoolState
+from skyward.api.spec import Port as Port
+from skyward.api.spec import Route as Route
 from skyward.api.spec import SelectionStrategy as SelectionStrategy
 from skyward.api.spec import SkywardSource as SkywardSource
 from skyward.api.spec import Spec as Spec
