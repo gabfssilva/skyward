@@ -19,6 +19,7 @@ Skyward turns ordinary functions into remote GPU jobs: define lazily with `@sky.
 - [Plugins](https://gabfssilva.github.io/skyward/plugins/): torch, jax, keras, cuml, accelerate, mig, mps, and custom plugins.
 - [Volumes](https://gabfssilva.github.io/skyward/volumes/): mount S3/GCS buckets as a filesystem.
 - [CLI](https://gabfssilva.github.io/skyward/cli/): the `sky` command-line client and long-lived server.
+- [Jupyter notebooks](https://gabfssilva.github.io/skyward/notebook/): local Jupyter, remote kernel - every cell runs on a Skyward node.
 
 ## Guides (runnable)
 

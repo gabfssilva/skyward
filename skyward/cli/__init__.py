@@ -36,6 +36,7 @@ from skyward.cli import config as config  # noqa: F401, E402
 from skyward.cli import interactive as interactive  # noqa: F401, E402
 from skyward.cli import log as log  # noqa: F401, E402
 from skyward.cli import monitor as monitor  # noqa: F401, E402
+from skyward.cli import notebook as notebook  # noqa: F401, E402
 from skyward.cli import offers as offers  # noqa: F401, E402
 from skyward.cli import providers as providers  # noqa: F401, E402
 from skyward.cli import server as server  # noqa: F401, E402

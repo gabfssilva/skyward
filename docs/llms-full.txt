@@ -907,6 +907,21 @@ sky compute run demo train.py -- --epochs 10   # ship & run a local script; args
 sky compute run demo setup.py --broadcast      # run on every node (alias for --node all)
 sky compute delete demo               # tears down server state AND cloud instances
 
+# sessions (Colab-style verbs over the same pools; a "current session" is remembered)
+sky new demo --provider runpod --accelerator A100 --watch   # create + make current
+sky sessions                          # list sessions (current marked)
+sky status                            # current session + per-node table (-s NAME to target)
+sky stop                              # tear down current session (-s NAME)
+
+# inside a session
+sky console demo                      # raw shell (PTY) on the head node (--rank N)
+sky repl demo                         # Python REPL inside the worker venv (/opt/skyward/.venv)
+sky install demo numpy "torch==2.3"   # uv add on every node (-r reqs.txt; --one = single node)
+sky compute ls demo /opt/skyward --node all
+sky compute upload demo model.pt /data/model.pt     # default --node all
+sky compute download demo /data/out.json out.json   # default --node head
+sky compute run demo job.py --node 2  # pin a run to a rank (head|all|<rank>)
+
 # offers / providers / config / logs
 sky offers fetch
 sky offers list --accelerator H100 --vram 80 --spot --limit 10
@@ -917,6 +932,8 @@ sky config validate
 sky log demo -n 50 -o history.md      # export history (jsonl|md|ipynb; format from suffix)
 sky version
 ```
+
+Interactive mode (`console`/`repl`) opens the CLI's own SSH connection with a real PTY; it requires the CLI on the same host as the server and key-based auth (password-only nodes are refused).
 
 `create` override flags: `--name --provider --region --nodes --accelerator --allocation --pip (repeatable) --apt (repeatable) --python --watch`. Inline overrides require a single-spec pool; multi-spec pools must live in TOML. `run` ships a local `.py`, runs it in a worker with `sys.argv` from the trailing args, and streams stdout/stderr back; its exit code is the script's.
 
@@ -930,6 +947,26 @@ with sky.Client(name="train", url="http://localhost:7590") as compute:
 ```
 
 Full CLI reference: https://gabfssilva.github.io/skyward/cli/
+
+---
+
+## Jupyter notebooks (remote kernel)
+
+Skyward registers a **Jupyter kernel provisioner**: Jupyter runs locally, the kernel runs on a session's head node, every cell executes remotely as plain Python (no `import skyward` needed in the notebook). The provisioner tunnels the five ZMQ channels over SSH; iopub output, interrupts, and heartbeat all work through the tunnels.
+
+```bash
+pip install "skyward[notebook]"
+sky server start
+sky notebook install --session research   # kernelspec "Skyward (research)"
+jupyter lab                               # pick the kernel; done
+sky notebook remove --session research    # unregister
+```
+
+The session provisions **on demand**: if `research` doesn't exist when the kernel starts, the provisioner creates it from the `[pools.research]` entry in `skyward.toml` and waits for readiness. Install deps into the live session with `sky install research <pkgs>` — cells see them without a kernel restart.
+
+Lifecycle: kernel *restart* = fresh remote process on the same node (venv and packages survive, in-memory state doesn't); kernel *shutdown* keeps the pool running — tear it down explicitly with `sky stop research`. Constraints: Jupyter must run on the same host as `sky server` (SSH key is read locally; key-auth only), and cells execute on the head node (rank 0) — use the embedded API for multi-node work.
+
+Full notebook docs: https://gabfssilva.github.io/skyward/notebook/
 
 ---
 
@@ -1075,5 +1112,6 @@ Everything below is reachable as `sky.<name>` unless noted.
 - Distributed collections - https://gabfssilva.github.io/skyward/distributed-collections/
 - Plugins - https://gabfssilva.github.io/skyward/plugins/
 - CLI - https://gabfssilva.github.io/skyward/cli/
+- Jupyter notebooks - https://gabfssilva.github.io/skyward/notebook/
 - Guides (runnable) - https://gabfssilva.github.io/skyward/guides/hello-skyward/
 - API reference - https://gabfssilva.github.io/skyward/reference/pool/

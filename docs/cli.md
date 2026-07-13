@@ -216,6 +216,81 @@ sky compute delete demo
 
 Returns `204 No Content` on success. `404` if the pool doesn't exist.
 
+## Sessions (`sky new` / `sessions` / `status` / `stop`)
+
+The session verbs are a Colab-shaped layer over the same pools — same routes, same server state, shorter commands. A "session" *is* a pool; the verbs add one convenience the `sky compute` group doesn't have: a **current session**. `sky new` records the name it created in `~/.skyward/current-session`, and every session-aware command resolves its target as: explicit `-s/--session` flag → the persisted current session, if still alive on the server → the only live session, when exactly one exists. Zero or multiple candidates produce an error telling you what to do, never a guess.
+
+```bash
+sky new demo --provider runpod --accelerator A100 --watch   # create + make current
+sky new                                # name auto-generated, spec from skyward.toml
+sky sessions                           # list all sessions, current one marked
+sky status                             # current session: header + per-node table
+sky status -s other --json             # a specific one, machine-readable
+sky stop                               # tear down the current session
+```
+
+`sky new` accepts the same override flags as `sky compute create` (`--pool`, `--provider`, `--nodes`, `--accelerator`, `--allocation`, `--pip`, `--apt`, `--python`, `--watch`). `sky status` shows the pool header plus one row per node — rank, head marker, status, instance id, and SSH address. `sky stop` performs a real cloud teardown and clears the current-session file when it pointed at the stopped session.
+
+## Interactive access (`sky console` / `sky repl`)
+
+Two commands open a live PTY on a node, straight from your terminal:
+
+```bash
+sky console demo                       # login shell on the head node
+sky console demo --rank 2              # a specific rank
+sky repl demo                          # Python REPL inside /opt/skyward/.venv
+```
+
+`console` is a raw shell — inspect GPUs with `nvidia-smi`, tail logs, poke the filesystem. `repl` starts the worker virtualenv's own interpreter in `/opt/skyward`, so it imports the exact packages your tasks see; it does not share in-memory state with running tasks, only the environment.
+
+The byte stream never touches the server: the CLI fetches the node's SSH coordinates over HTTP, then opens its **own** SSH connection with a real PTY (terminal size and `$TERM` propagate; resize works). That transport imposes two boundaries — the CLI must run on the same host as the server (the SSH key path the server reports must exist locally), and password-only nodes are refused, since no password ever crosses the API.
+
+## Files, dependencies, and history
+
+Four file verbs on the `sky compute` group move bytes between your machine and the nodes, each taking `--node head|all|<rank>`:
+
+```bash
+sky compute ls demo /opt/skyward --node all      # listing per node
+sky compute upload demo model.pt /data/model.pt  # default --node all
+sky compute download demo /data/out.json out.json  # default --node head
+sky compute rm demo /data/tmp --node all         # rm -rf, so mind the path
+```
+
+Uploads default to **all** nodes because each node has its own disk — uploading to one leaves the cluster inconsistent for round-robin tasks. Downloads default to **head**, since one output stream maps to one file. The same rank-targeting works on `sky compute run` via `--node head|all|<rank>` (default remains round-robin).
+
+`sky install` adds packages to the live session's worker virtualenv on every node, streaming `uv`'s output back:
+
+```bash
+sky install demo numpy "torch==2.3"    # uv add, broadcast to all nodes
+sky install demo -r requirements.txt   # plain specifier lines only
+sky install demo cowsay --one          # single node — inspection only
+```
+
+Installs persist in the node's `pyproject.toml`, so tasks and REPLs see the packages immediately — no re-bootstrap. The `--one` flag exists for quick experiments; using it on a multi-node pool leaves nodes inconsistent, which is why broadcast is the default.
+
+`sky log` exports a session's execution history — every task, its output, and lifecycle events — from the server's in-memory record. The format follows the output suffix, or `--format`:
+
+```bash
+sky log demo -n 50                     # last 50 events as JSONL to stdout
+sky log demo -o history.md             # Markdown grouped by task
+sky log demo -o session.ipynb          # notebook: code cells carry the executed scripts
+```
+
+The ipynb export reconstructs a notebook from history: each `sky compute run` becomes a code cell with the script's actual source and its captured stdout as the cell output. History survives pool deletion — you can export a post-mortem — but not a server restart.
+
+## Remote Jupyter kernels (`sky notebook`)
+
+`sky notebook` binds a Jupyter kernelspec to a session, so that opening a notebook executes every cell on the session's head node. Two verbs: `install` and `remove`.
+
+```bash
+sky notebook install --session research   # registers "Skyward (research)"
+sky notebook remove --session research    # unregisters it
+```
+
+`install` writes a kernelspec named `skyward-research` into your user Jupyter kernels directory; open Jupyter as usual and pick the **Skyward (research)** kernel. Without `--session`, both verbs target the current session. The session doesn't need to exist yet — if `skyward.toml` defines a pool with the same name, the kernel provisions it on first start.
+
+The kernel transport is direct SSH from the Jupyter host to the node, so it carries the same constraint as interactive mode: Jupyter must run on the same host as the server, and password-only nodes are refused. The full mental model — tunnels, lifecycle, on-demand sessions — is covered in [Jupyter notebooks](notebook.md).
+
 ## Browsing offers (`sky offers`)
 
 The `sky offers` group queries provider catalogs — useful for picking an accelerator, comparing prices across providers, or scripting against the catalog. Offers are cached locally in DuckDB; `fetch` refreshes the cache, the rest read from it.
@@ -286,6 +361,7 @@ The `--url` flag and `SKYWARD_SERVER_URL` environment variable both override the
 
 ## Next steps
 
+- **[Jupyter notebooks](notebook.md)** — run notebook cells on a session via the remote kernel.
 - **[Getting Started](getting-started.md)** — Installation, credentials, and your first remote computation.
 - **[Core concepts](concepts.md)** — Pool, operators, runtime, and the model the CLI exposes.
 - **[Configuration](reference/config.md)** — `skyward.toml` reference for named pools.

@@ -62,6 +62,7 @@ server = [
     "starlette>=0.40",
     "uvicorn>=0.30",
 ]
+notebook = ["jupyter_client>=8"]
 all = ["skyward[providers,pytorch,huggingface,cli,server]"]
 dev = [
     "pytest>=8.0",
@@ -71,6 +72,7 @@ dev = [
     "torch>=2.8.0",
     "jax>=0.8.1",
     "keras>=3.12.0",
+    "jupyter_client>=8",
     "boto3-stubs[ec2,ecr,iam,s3,ssm,sts]>=1.42.3",
 ]
 openai = [
@@ -79,6 +81,9 @@ openai = [
 
 [project.scripts]
 sky = "skyward.cli:app"
+
+[project.entry-points."jupyter_client.kernel_provisioners"]
+skyward = "skyward.notebook.provisioner:SkywardKernelProvisioner"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
@@ -158,6 +163,7 @@ dev = [
     "pyright>=1.1",
     "ruff>=0.9",
     "jax>=0.8.2",
+    "jupyter_client>=8",
     "keras>=3.13.0",
     "scikit-learn>=1.8.0",
     "pytest-timeout>=2.4.0",
