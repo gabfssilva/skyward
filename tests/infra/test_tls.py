@@ -63,10 +63,12 @@ class TestIssueNodeCert:
 
 class TestIssueClientConfig:
     def test_returns_tls_config(self, tmp_path: Path) -> None:
-        from casty.remote.tls import Config
+        from casty import TLS
 
         ca = ensure_ca(tls_dir=tmp_path)
-        config = issue_client_config(ca)
-        assert isinstance(config, Config)
-        assert isinstance(config.server_context, ssl.SSLContext)
-        assert isinstance(config.client_context, ssl.SSLContext)
+        config = issue_client_config(ca, tls_dir=tmp_path)
+        assert isinstance(config, TLS)
+        assert Path(config.cert).exists()
+        assert Path(config.key).exists()
+        assert Path(config.ca).exists()
+        assert config.require_client_cert

@@ -378,11 +378,32 @@ wheels = [
 
 [[package]]
 name = "casty"
-version = "0.21.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/94/f3/ced7ea3c3fcb78c8c7bf97e41228b207d900bf6d4a682cf106b1babb87f9/casty-0.21.0.tar.gz", hash = "sha256:e89e3e66770b8afc8b475b16fb26a0b9372e663c1739a73ece782a054b458abd", size = 1331590, upload-time = "2026-03-13T12:02:15.941Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ca/2f/7f1d799df64e3ff8f6840645e4058f13aa32d4d3d84aa59f447589904c57/casty-0.21.0-py3-none-any.whl", hash = "sha256:6d59df9c1318b029485a3cc63f51bf25fca6a5b9eef1313a3b268bd4ab115568", size = 125632, upload-time = "2026-03-13T12:02:14.393Z" },
+source = { editable = "../casty" }
+dependencies = [
+    { name = "msgpack" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "lz4", marker = "extra == 'lz4'", specifier = ">=4.0" },
+    { name = "msgpack", specifier = ">=1.0" },
+    { name = "pandas", marker = "extra == 'pandas'", specifier = ">=3.0" },
+    { name = "pyarrow", marker = "extra == 'pandas'", specifier = ">=17" },
+    { name = "uvloop", marker = "extra == 'uvloop'", specifier = ">=0.21" },
+    { name = "zstandard", marker = "extra == 'zstd'", specifier = ">=0.22" },
+]
+provides-extras = ["lz4", "pandas", "uvloop", "zstd"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "msgpack-types", specifier = ">=0.3" },
+    { name = "mypy", specifier = ">=1.11" },
+    { name = "pandas", specifier = ">=3.0" },
+    { name = "pandas-stubs", specifier = ">=2.2" },
+    { name = "pyarrow", specifier = ">=17" },
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "pytest-asyncio", specifier = ">=0.24" },
+    { name = "ruff", specifier = ">=0.6" },
 ]
 
 [[package]]
@@ -3553,7 +3574,7 @@ requires-dist = [
     { name = "boto3-stubs", extras = ["ec2", "ecr", "iam", "s3", "sts"], marker = "extra == 'all'", specifier = ">=1.35.0" },
     { name = "boto3-stubs", extras = ["ec2", "ecr", "iam", "s3", "sts"], marker = "extra == 'aws'", specifier = ">=1.35.0" },
     { name = "boto3-stubs", extras = ["ec2", "ecr", "iam", "s3", "sts"], marker = "extra == 'providers'", specifier = ">=1.35.0" },
-    { name = "casty", specifier = "==0.21.0" },
+    { name = "casty", editable = "../casty" },
     { name = "cloudpickle", specifier = ">=3.1.2" },
     { name = "cyclopts", marker = "extra == 'all'", specifier = ">=4.7" },
     { name = "cyclopts", marker = "extra == 'cli'", specifier = ">=4.7" },

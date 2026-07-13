@@ -1,8 +1,8 @@
-"""Tests for the worker's result cache + GetResult reconciliation path.
+"""Tests for the worker's result cache + get_result reconciliation path.
 
-Validates the contract used by the node actor on ``ConnectionRestored``:
+Validates the contract used by the node on a dropped ``run`` RPC:
 after a task is dispatched with a non-empty ``task_id``, the worker can
-later answer ``GetResult(task_id)`` with one of:
+later answer ``WorkerControl.get_result(task_id)`` with one of:
 
 - ``ResultPending`` — task accepted, still running
 - ``ResultDone(result)`` — task completed; payload is the original outcome
@@ -11,186 +11,121 @@ later answer ``GetResult(task_id)`` with one of:
 from __future__ import annotations
 
 import asyncio
-import threading
 
+import casty
 import pytest
-from casty import ActorRef, ActorSystem
 
-from skyward.infra.streaming import _StreamHandle
+import skyward.infra.worker as worker_mod
 from skyward.infra.worker import (
-    ExecuteTask,
-    GetResult,
-    GetResultReply,
     ResultDone,
     ResultPending,
     ResultUnknown,
+    StreamStarted,
     TaskFailed,
-    TaskResult,
     TaskSucceeded,
-    worker_behavior,
+    WorkerControl,
+    WorkerService,
+    _Runtime,
+    dumps,
+    loads,
 )
-
 
 pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
 
 
 @pytest.fixture
 async def system():
-    s = ActorSystem("test-worker-cache")
-    yield s
-    await s.shutdown()
+    async with casty.local() as s:
+        worker_mod._runtime = _Runtime(
+            node_id=0, loop=asyncio.get_running_loop(),
+        )
+        yield s
+        worker_mod._runtime = None
 
 
-def _capture(loop: asyncio.AbstractEventLoop) -> tuple[ActorRef, asyncio.Future]:
-    """Return a one-shot reply ref and its result future.
-
-    The ref is a thin shim that fulfils the future on first ``tell``.
-    """
-    fut: asyncio.Future = loop.create_future()
-
-    class _Ref:
-        def tell(self, msg: object) -> None:
-            if not fut.done():
-                fut.set_result(msg)
-
-    return _Ref(), fut  # type: ignore[return-value]
+def _payload(fn, args=(), kwargs=None) -> bytes:
+    return dumps((fn, args, kwargs or {}, ()))
 
 
-async def _ask_get_result(
-    system: ActorSystem,
-    worker_ref: ActorRef,
-    task_id: str,
-    timeout: float = 2.0,
-) -> GetResultReply:
-    """Send ``GetResult`` and await the reply."""
-    loop = asyncio.get_running_loop()
-    reply_ref, fut = _capture(loop)
-    worker_ref.tell(GetResult(task_id=task_id, reply_to=reply_ref))
-    return await asyncio.wait_for(fut, timeout=timeout)
+async def _run(system, task_id: str, fn) -> object:
+    service = system.service(WorkerService)
+    return loads(await service.run(task_id, _payload(fn)))
+
+
+async def _get_result(system, task_id: str) -> object:
+    control = system.service(WorkerControl)
+    return loads(await control.get_result(task_id))
 
 
 class TestResultCache:
-    @pytest.mark.asyncio
-    async def test_pending_then_done(self, system: ActorSystem) -> None:
+    async def test_pending_then_done(self, system, tmp_path) -> None:
         """A still-running task reports Pending; once finished, Done."""
-        worker = system.spawn(worker_behavior(node_id=0), "worker")
+        gate_file = str(tmp_path / "gate")
 
-        gate = threading.Event()
+        def slow_task(path: str = gate_file) -> int:
+            import os
+            import time
 
-        def slow_task() -> int:
-            # block on a real threading event — the task runs in to_thread
-            gate.wait(timeout=5.0)
+            deadline = time.monotonic() + 5.0
+            while not os.path.exists(path) and time.monotonic() < deadline:
+                time.sleep(0.01)
             return 42
 
-        loop = asyncio.get_running_loop()
-        reply_ref, exec_fut = _capture(loop)
-        worker.tell(ExecuteTask(
-            fn=slow_task, args=(), kwargs={},
-            reply_to=reply_ref, task_id="t1",
-        ))
+        run_task = asyncio.ensure_future(_run(system, "t1", slow_task))
+        await asyncio.sleep(0.1)
 
-        # give the actor a tick to register "running"
-        await asyncio.sleep(0.05)
+        assert isinstance(await _get_result(system, "t1"), ResultPending)
 
-        pending_reply = await _ask_get_result(system, worker, "t1")
-        assert isinstance(pending_reply, ResultPending)
-
-        # release the task
-        gate.set()
-        result: TaskResult = await asyncio.wait_for(exec_fut, timeout=2.0)
+        (tmp_path / "gate").touch()
+        result = await asyncio.wait_for(run_task, timeout=2.0)
         assert isinstance(result, TaskSucceeded)
         assert result.result == 42
 
-        done_reply = await _ask_get_result(system, worker, "t1")
+        done_reply = await _get_result(system, "t1")
         assert isinstance(done_reply, ResultDone)
         assert isinstance(done_reply.result, TaskSucceeded)
         assert done_reply.result.result == 42
 
-    @pytest.mark.asyncio
-    async def test_unknown_task_id(self, system: ActorSystem) -> None:
+    async def test_unknown_task_id(self, system) -> None:
         """Asking for a task_id never dispatched returns ResultUnknown."""
-        worker = system.spawn(worker_behavior(node_id=0), "worker")
-        reply = await _ask_get_result(system, worker, "never-seen")
-        assert isinstance(reply, ResultUnknown)
+        assert isinstance(await _get_result(system, "never-seen"), ResultUnknown)
 
-    @pytest.mark.asyncio
-    async def test_failed_task_cached(self, system: ActorSystem) -> None:
+    async def test_failed_task_cached(self, system) -> None:
         """A task that raises is cached as ResultDone(TaskFailed)."""
-        worker = system.spawn(worker_behavior(node_id=0), "worker")
 
         def boom() -> int:
             raise RuntimeError("bang")
 
-        loop = asyncio.get_running_loop()
-        reply_ref, exec_fut = _capture(loop)
-        worker.tell(ExecuteTask(
-            fn=boom, args=(), kwargs={},
-            reply_to=reply_ref, task_id="t-fail",
-        ))
-        result = await asyncio.wait_for(exec_fut, timeout=2.0)
+        result = await _run(system, "t-fail", boom)
         assert isinstance(result, TaskFailed)
 
-        reply = await _ask_get_result(system, worker, "t-fail")
+        reply = await _get_result(system, "t-fail")
         assert isinstance(reply, ResultDone)
         assert isinstance(reply.result, TaskFailed)
         assert "bang" in reply.result.error
 
-    @pytest.mark.asyncio
-    async def test_ttl_eviction(self, system: ActorSystem) -> None:
+    async def test_ttl_eviction(self, system) -> None:
         """Entries past TTL are evicted on the next cache read."""
-        worker = system.spawn(
-            worker_behavior(node_id=0, result_cache_ttl=0.05),
-            "worker-short-ttl",
-        )
+        worker_mod._runtime.result_cache_ttl = 0.05
 
-        loop = asyncio.get_running_loop()
-        reply_ref, exec_fut = _capture(loop)
-        worker.tell(ExecuteTask(
-            fn=lambda: 1, args=(), kwargs={},
-            reply_to=reply_ref, task_id="t-ttl",
-        ))
-        await asyncio.wait_for(exec_fut, timeout=2.0)
-
+        await _run(system, "t-ttl", lambda: 1)
         await asyncio.sleep(0.15)
-        reply = await _ask_get_result(system, worker, "t-ttl")
-        assert isinstance(reply, ResultUnknown)
+        assert isinstance(await _get_result(system, "t-ttl"), ResultUnknown)
 
-    @pytest.mark.asyncio
-    async def test_streamhandle_not_cached(self, system: ActorSystem) -> None:
-        """Generator results carry a live producer_ref and must not be cached."""
-        worker = system.spawn(worker_behavior(node_id=0, system=system), "worker-gen")
+    async def test_stream_not_cached(self, system) -> None:
+        """Generator results are live pull streams and must not be cached."""
 
         def gen():
             yield 1
             yield 2
 
-        loop = asyncio.get_running_loop()
-        reply_ref, exec_fut = _capture(loop)
-        worker.tell(ExecuteTask(
-            fn=gen, args=(), kwargs={},
-            reply_to=reply_ref, task_id="t-stream",
-        ))
-        result = await asyncio.wait_for(exec_fut, timeout=2.0)
-        assert isinstance(result, TaskSucceeded)
-        assert isinstance(result.result, _StreamHandle)
+        result = await _run(system, "t-stream", gen)
+        assert isinstance(result, StreamStarted)
 
-        reply = await _ask_get_result(system, worker, "t-stream")
-        assert isinstance(reply, ResultUnknown)
+        assert isinstance(await _get_result(system, "t-stream"), ResultUnknown)
 
-    @pytest.mark.asyncio
-    async def test_no_task_id_skips_cache(self, system: ActorSystem) -> None:
+    async def test_no_task_id_skips_cache(self, system) -> None:
         """A task dispatched with empty task_id leaves no cache entry."""
-        worker = system.spawn(worker_behavior(node_id=0), "worker-notid")
-
-        loop = asyncio.get_running_loop()
-        reply_ref, exec_fut = _capture(loop)
-        worker.tell(ExecuteTask(
-            fn=lambda: 7, args=(), kwargs={},
-            reply_to=reply_ref, task_id="",
-        ))
-        await asyncio.wait_for(exec_fut, timeout=2.0)
-
-        reply = await _ask_get_result(system, worker, "")
-        assert isinstance(reply, ResultUnknown)
-
-
+        result = await _run(system, "", lambda: 7)
+        assert isinstance(result, TaskSucceeded)
+        assert isinstance(await _get_result(system, ""), ResultUnknown)

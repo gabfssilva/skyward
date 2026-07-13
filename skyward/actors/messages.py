@@ -11,11 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
-from casty import ActorRef
-
 if TYPE_CHECKING:
     from skyward.core.model import Cluster, Instance
-    from skyward.core.spec import PoolSpec
 
 type RequestId = str
 type ClusterId = str
@@ -73,58 +70,6 @@ class NodeInterruptedError(Exception):
         self.node_id = node_id
         self.reason = reason
         super().__init__(f"Node {node_id} interrupted: {reason}")
-
-
-# =============================================================================
-# System Events — Requests (Commands)
-# =============================================================================
-
-
-@dataclass(frozen=True, slots=True)
-class ClusterRequested:
-    """Pool requests a new cluster from a provider."""
-
-    request_id: RequestId
-    provider: ProviderName
-    spec: PoolSpec
-    reply_to: ActorRef | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class InstanceRequested:
-    """Node requests an instance (new or replacement)."""
-
-    request_id: RequestId
-    provider: ProviderName
-    cluster_id: ClusterId
-    node_id: NodeId
-    reply_to: ActorRef | None = None
-    replacing: InstanceId | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ShutdownRequested:
-    """Pool requests cluster shutdown."""
-
-    cluster_id: ClusterId
-    reply_to: ActorRef[ShutdownCompleted] | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ShutdownCompleted:
-    """Provider confirms cluster shutdown is done."""
-
-    cluster_id: ClusterId
-
-
-@dataclass(frozen=True, slots=True)
-class BootstrapRequested:
-    """Request bootstrap on a running instance."""
-
-    request_id: RequestId
-    instance: NodeInstance
-    cluster_id: ClusterId
-    reply_to: ActorRef | None = None
 
 
 # =============================================================================
@@ -305,8 +250,6 @@ class Error:
     fatal: bool = False
 
 
-type Request = ClusterRequested | InstanceRequested | ShutdownRequested | BootstrapRequested
-
 type Fact = (
     ClusterProvisioned
     | InstanceLaunched
@@ -329,7 +272,7 @@ type Fact = (
     | Error
 )
 
-type Event = Request | Fact
+type Event = Fact
 
 
 # =============================================================================

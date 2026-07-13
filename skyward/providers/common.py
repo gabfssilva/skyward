@@ -51,27 +51,84 @@ def build_wheel() -> Path:
     return wheel_path
 
 
-def _build_wheel_install_script(wheel_name: str) -> str:
+def casty_source_dir() -> Path | None:
+    """The casty source checkout, when casty is installed from a local path."""
+    import casty
+
+    pkg_dir = Path(casty.__file__).resolve().parent
+    return next(
+        (
+            parent for parent in pkg_dir.parents
+            if (parent / "pyproject.toml").exists()
+            and 'name = "casty"' in (parent / "pyproject.toml").read_text()
+        ),
+        None,
+    )
+
+
+def build_casty_wheel() -> Path | None:
+    """Build a casty wheel from the local source checkout, if any.
+
+    Returns None when casty came from a registry (the skyward wheel's own
+    dependency resolution installs it remotely). The version is pinned to
+    the declared minimum so the locally-built wheel satisfies skyward's
+    ``casty>=`` requirement even from an untagged checkout.
+    """
+    import os
+
+    source_dir = casty_source_dir()
+    if source_dir is None:
+        return None
+
+    build_dir = tempfile.mkdtemp(prefix="casty-wheel-")
+    result = subprocess.run(
+        ["uv", "build", "--wheel", "-o", build_dir],
+        cwd=source_dir,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "SETUPTOOLS_SCM_PRETEND_VERSION": "0.23.0"},
+    )
+    if result.returncode != 0:
+        logger.error("Failed to build casty wheel: {err}", err=result.stderr)
+        raise RuntimeError(f"Failed to build casty wheel: {result.stderr}")
+
+    wheel_path = next(Path(build_dir).glob("*.whl"))
+    logger.info("Built casty wheel: {name}", name=wheel_path.name)
+    return wheel_path
+
+
+def _build_wheel_install_script(
+    wheel_name: str, casty_wheel_name: str | None = None,
+) -> str:
     """Build wheel installation script.
 
-    Installs the skyward wheel into the venv. Service startup (Casty)
-    is handled by bootstrap, not this script.
+    Installs the skyward wheel (and, when built locally, the casty wheel)
+    into the venv. Service startup is handled by bootstrap, not this script.
 
     Parameters
     ----------
     wheel_name
-        Name of the wheel file to install.
+        Name of the skyward wheel file to install.
+    casty_wheel_name
+        Name of a locally-built casty wheel to install alongside, or None
+        when casty resolves from a package registry.
 
     Returns
     -------
     str
         Shell script string.
     """
+    wheels = [wheel_name] if casty_wheel_name is None else [casty_wheel_name, wheel_name]
+    mv_lines = "\n".join(
+        f"mv /tmp/{w} {SKYWARD_DIR}/{w} 2>/dev/null || true" for w in wheels
+    )
+    wheel_paths = " ".join(f"{SKYWARD_DIR}/{w}" for w in wheels)
     script = f"""#!/bin/bash
 set -e
 
-# Move wheel from /tmp to SKYWARD_DIR (uploaded to /tmp for permission reasons)
-mv /tmp/{wheel_name} {SKYWARD_DIR}/{wheel_name} 2>/dev/null || true
+# Move wheels from /tmp to SKYWARD_DIR (uploaded to /tmp for permission reasons)
+{mv_lines}
 
 # Find uv
 UV_PATH=$(which uv 2>/dev/null || find /root /home -name uv -type f 2>/dev/null | head -1)
@@ -79,9 +136,9 @@ if [ -z "$UV_PATH" ]; then
     UV_PATH="/root/.local/bin/uv"
 fi
 
-# Install wheel
+# Install wheels
 cd {SKYWARD_DIR}
-$UV_PATH pip install {SKYWARD_DIR}/{wheel_name}
+$UV_PATH pip install {wheel_paths}
 
 # Verify installation
 {SKYWARD_DIR}/.venv/bin/python -c 'import skyward; print(skyward.__file__)'

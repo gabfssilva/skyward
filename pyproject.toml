@@ -23,7 +23,7 @@ dependencies = [
     "cloudpickle>=3.1.2",
     "lz4>=4.4.0",
     "pydantic>=2.12.5",
-    "casty==0.21.0",
+    "casty>=0.23.0",
     "rich>=14.3.2",
     "asyncssh>=2.22.0",
     "httpx>=0.28",
@@ -177,3 +177,8 @@ dev = [
     "openai>=2.43.0",
     "textual-dev>=1.8.0",
 ]
+
+# TEMPORARY: local casty v2 source until casty 0.23.0 is published to PyPI.
+# Remove this [tool.uv.sources] block after publishing.
+[tool.uv.sources]
+casty = { path = "../casty", editable = true }

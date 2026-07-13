@@ -16,15 +16,6 @@ Example:
 
 from __future__ import annotations
 
-# Casty operations
-from .casty import (
-    casty_install,
-    casty_service,
-)
-from .casty import (
-    server_ops as casty_server_ops,
-)
-
 # Core types and composition
 from .compose import (
     EMIT_SH_PATH,
@@ -104,8 +95,4 @@ __all__ = [
     "native_mount_plan",
     # AWS operations
     "grid_driver",
-    # Casty operations
-    "casty_install",
-    "casty_service",
-    "casty_server_ops",
 ]

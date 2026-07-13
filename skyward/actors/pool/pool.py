@@ -19,7 +19,7 @@ from contextlib import suppress
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from casty import ClusterClient
+import casty
 
 from skyward.actors.messages import (
     BootstrapCommand,
@@ -61,6 +61,42 @@ _logging.getLogger("casty").setLevel(_logging.ERROR)
 
 def _no_emit(_event: events.SessionEvent) -> None:
     pass
+
+
+def _client_config() -> casty.Config:
+    # Task RPCs stay open for the task's whole runtime; the per-task timeout
+    # is enforced client-side (asyncio.wait_for), not by the transport.
+    return casty.Config(call_timeout=7 * 24 * 3600.0)
+
+
+async def _connect_with_retry(
+    *,
+    seeds: list[str],
+    address_map: Any,
+    tls: Any,
+    timeout: float = 120.0,
+) -> casty.Client:
+    """Connect as a lite member, retrying until a seed is reachable.
+
+    The worker process was launched moments ago — ``casty.connect`` fails
+    fast while its listener isn't up yet.
+    """
+    deadline = time.monotonic() + timeout
+    delay = 0.5
+    while True:
+        try:
+            return await casty.connect(
+                seeds=seeds,
+                cluster_name="skyward",
+                address_map=address_map,
+                config=_client_config(),
+                tls=tls,
+            )
+        except Exception:
+            if time.monotonic() > deadline:
+                raise
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.5, 5.0)
 
 
 def _format_task(fn: object, args: tuple, kwargs: dict) -> str:
@@ -238,8 +274,8 @@ class Pool:
         self._tm: TaskManager | None = None
         self._reconciler: Reconciler | None = None
         self._autoscaler: Autoscaler | None = None
-        self._client: ClusterClient | None = None
-        self._clients: dict[NodeId, ClusterClient] = {}
+        self._client: casty.Client | None = None
+        self._clients: dict[NodeId, casty.Client] = {}
         self._head_addr: str | None = None
         self._ca: Any = None
         self._client_tls: Any = None
@@ -248,7 +284,7 @@ class Pool:
         self._operational = False
         self._stopped = False
         self._started_event = asyncio.Event()
-        self._tunnel_map: dict[tuple[str, int], tuple[str, int]] = {}
+        self._tunnel_map: dict[str, str] = {}
         self._bg_tasks: set[asyncio.Task[Any]] = set()
 
     # ── start / recover / stop ────────────────────────────────────
@@ -578,11 +614,11 @@ class Pool:
     async def _close_clients(self) -> None:
         if self._client is not None:
             with suppress(Exception):
-                await self._client.__aexit__(None, None, None)
+                await self._client.close()
             self._client = None
         for c in self._clients.values():
             with suppress(Exception):
-                await c.__aexit__(None, None, None)
+                await c.close()
         self._clients.clear()
 
     def _collect_instance_ids(self) -> tuple[str, ...]:
@@ -850,7 +886,7 @@ class Pool:
 
             async def _close() -> None:
                 with suppress(Exception):
-                    await old_client.__aexit__(None, None, None)
+                    await old_client.close()
 
             self._spawn_bg(_close())
         return len(victims)
@@ -954,7 +990,7 @@ class Pool:
                 )
                 self._log.info("ClusterClient created")
             else:
-                self._tunnel_map[(private_ip, 25520)] = ("127.0.0.1", local_port)
+                self._tunnel_map[f"{private_ip}:25520"] = f"127.0.0.1:{local_port}"
             client = self._client
         else:
             effective_head = private_ip or ""
@@ -964,7 +1000,7 @@ class Pool:
             old = self._clients.get(nid)
             if old:
                 with suppress(Exception):
-                    await old.__aexit__(None, None, None)
+                    await old.close()
             self._clients[nid] = client
             self._log.info("Standalone client created for node {nid}", nid=nid)
 
@@ -1067,40 +1103,29 @@ class Pool:
 
     # ── clients & proxies ─────────────────────────────────────────
 
-    def _address_resolver(self, addr: tuple[str, int]) -> tuple[str, int]:
+    def _address_resolver(self, addr: str) -> str:
         return self._tunnel_map.get(addr, addr)
 
     async def _create_client(
         self, private_ip: str, casty_port: int, local_port: int,
-    ) -> ClusterClient:
-        from skyward.infra.worker import skyward_serializer
-
-        self._tunnel_map[(private_ip, casty_port)] = ("127.0.0.1", local_port)
-        client = ClusterClient(
-            contact_points=[(private_ip, casty_port)],
-            system_name="skyward",
+    ) -> casty.Client:
+        self._tunnel_map[f"{private_ip}:{casty_port}"] = f"127.0.0.1:{local_port}"
+        return await _connect_with_retry(
+            seeds=[f"{private_ip}:{casty_port}"],
             address_map=self._address_resolver,
-            serializer=skyward_serializer(),
             tls=self._client_tls,
         )
-        await client.__aenter__()
-        return client
 
     async def _create_standalone_client(
         self, private_ip: str, casty_port: int, local_port: int,
-    ) -> ClusterClient:
-        from skyward.infra.worker import skyward_serializer
-
-        local_map = {(private_ip, casty_port): ("127.0.0.1", local_port)}
-        client = ClusterClient(
-            contact_points=[(private_ip, casty_port)],
-            system_name="skyward",
-            address_map=lambda addr, _m=local_map: _m.get(addr, addr),
-            serializer=skyward_serializer(),
+    ) -> casty.Client:
+        # A standalone node is a one-member cluster: whatever address it
+        # announces, the only way in is this node's tunnel.
+        return await _connect_with_retry(
+            seeds=[f"{private_ip}:{casty_port}"],
+            address_map=lambda _addr: f"127.0.0.1:{local_port}",
             tls=self._client_tls,
         )
-        await client.__aenter__()
-        return client
 
     async def _start_proxies(self) -> tuple[TcpProxy, ...]:
         if not self.spec.ports:

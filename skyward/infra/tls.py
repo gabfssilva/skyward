@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from cryptography import x509
 
 if TYPE_CHECKING:
-    from casty.remote.tls import Config
+    from casty import TLS
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric.ec import SECP256R1, EllipticCurvePrivateKey, generate_private_key
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
@@ -139,31 +139,26 @@ def issue_node_cert(ca: CertificateAuthority, ip: str) -> tuple[bytes, bytes]:
     return cert_pem, key_pem
 
 
-def issue_client_config(ca: CertificateAuthority) -> Config:
-    import ssl
-    import tempfile
-
-    from casty.remote.tls import Config
+def issue_client_config(
+    ca: CertificateAuthority, *, tls_dir: Path = _DEFAULT_TLS_DIR,
+) -> TLS:
+    """Issue a client certificate and return casty v2 TLS material (paths)."""
+    from casty import TLS
 
     cert_pem, key_pem = issue_node_cert(ca, "127.0.0.1")
-    with tempfile.NamedTemporaryFile(suffix=".crt") as cert_f, \
-         tempfile.NamedTemporaryFile(suffix=".key") as key_f, \
-         tempfile.NamedTemporaryFile(suffix=".crt") as ca_f:
-        cert_f.write(cert_pem)
-        cert_f.flush()
-        key_f.write(key_pem)
-        key_f.flush()
-        ca_f.write(ca.cert_pem)
-        ca_f.flush()
+    tls_dir.mkdir(parents=True, exist_ok=True)
+    cert_path = tls_dir / "client.crt"
+    key_path = tls_dir / "client.key"
+    ca_path = tls_dir / "ca.crt"
+    cert_path.write_bytes(cert_pem)
+    key_path.write_bytes(key_pem)
+    key_path.chmod(0o600)
+    if not ca_path.exists():
+        ca_path.write_bytes(ca.cert_pem)
 
-        server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        server_context.load_cert_chain(cert_f.name, key_f.name)
-        server_context.verify_mode = ssl.CERT_REQUIRED
-        server_context.load_verify_locations(ca_f.name)
-
-        client_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        client_context.load_cert_chain(cert_f.name, key_f.name)
-        client_context.load_verify_locations(ca_f.name)
-        client_context.check_hostname = False
-
-        return Config(server_context=server_context, client_context=client_context)
+    return TLS(
+        cert=str(cert_path),
+        key=str(key_path),
+        ca=str(ca_path),
+        require_client_cert=True,
+    )

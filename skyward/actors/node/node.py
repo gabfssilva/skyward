@@ -44,7 +44,6 @@ from skyward.observability.logger import logger
 from skyward.providers.provider import WarmableProvider
 
 from .helpers import (
-    _resolve_output_stream,
     _run_file_op,
     discover_own_worker,
     do_start_worker,
@@ -171,8 +170,7 @@ class Node:
         self.ni: NodeInstance | None = None
         self.transport: SshTransport | None = None
         self._local_port = 0
-        self._client: Any = None
-        self._worker_ref: Any = None
+        self._worker: Any = None
         self._head_info: HeadAddressKnown | None = None
         self._head_event = asyncio.Event()
         self._bootstrap_result: asyncio.Future[tuple[bool, str | None]] | None = None
@@ -424,13 +422,12 @@ class Node:
         around_process_hooks: tuple[tuple[str, Any], ...] = (),
     ) -> None:
         self._log.info("Joining: discovering worker")
-        self._client = client
-        self._worker_ref = await discover_own_worker(
+        self._worker = await discover_own_worker(
             client, self.ni, standalone=not self._cluster.spec.cluster,
         )
         self._log.info("Worker discovered, setting up env")
         await setup_worker_env(
-            client, self._worker_ref, pool_info_json,
+            self._worker, pool_info_json,
             env_vars, around_app_hooks, around_process_hooks,
         )
         if (hc := self._cluster.spec.health_checker) is not None:
@@ -465,9 +462,8 @@ class Node:
     async def _health_loop(
         self, hc: HealthChecker, first_healthy: asyncio.Future[None],
     ) -> None:
-        from skyward.infra.streaming import _StreamHandle
-        from skyward.infra.worker import ExecuteTask
-        from skyward.infra.worker import TaskSucceeded as WorkerTaskSucceeded
+        from skyward.infra.streaming import iter_output_stream
+        from skyward.infra.worker import StreamStarted, dumps, loads
 
         fn = partial(hc_loop, hc.fn, hc.interval, hc.timeout, hc.initial_delay)
 
@@ -492,17 +488,14 @@ class Node:
                 self._preempt(preempt_reason)
 
         try:
-            result = await self._client.ask(
-                self._worker_ref,
-                lambda rto: ExecuteTask(
-                    fn=fn, args=(), kwargs={}, reply_to=rto, input_streams=(),
-                ),
+            tid = f"health-{self.node_id}"
+            raw = await asyncio.wait_for(
+                self._worker.service.run(tid, dumps((fn, (), {}, ()))),
                 timeout=60.0,
             )
-            match result:
-                case WorkerTaskSucceeded(result=_StreamHandle(producer_ref=pref)):
-                    source = await _resolve_output_stream(self._client, pref)
-                    async for elem in source:
+            match loads(raw):
+                case StreamStarted():
+                    async for elem in iter_output_stream(self._worker.control, tid):
                         match elem:
                             case ("ok", _):
                                 _on_result(True, None)
@@ -511,7 +504,7 @@ class Node:
                             case _:
                                 _on_result(False, f"malformed yield: {elem!r}")
                     ended = "stream closed"
-                case _:
+                case result:
                     ended = f"failed to start: {getattr(result, 'error', repr(result))}"
         except asyncio.CancelledError:
             raise
@@ -569,14 +562,27 @@ class Node:
         timeout: float,
         fut: asyncio.Future[Any],
     ) -> None:
+        from casty import ActorUnavailableError, ConnectionLostError, TransportError
+
+        deadline = time.monotonic() + timeout
         try:
             await self._transport_up.wait()
             result = await execute_with_streaming(
-                self._client, self._worker_ref, fn, args, kwargs, timeout,
+                self._worker, fn, args, kwargs, timeout,
                 task_id=tid,
             )
         except asyncio.CancelledError:
             raise
+        except (ConnectionLostError, TransportError, ActorUnavailableError) as e:
+            # The RPC died with the tunnel — the task may still be running
+            # remotely. Wait for the transport to come back and recover the
+            # result from the worker's cache.
+            self._log.warning(
+                "Dispatch {tid} lost mid-flight ({err}), reconciling",
+                tid=tid, err=e,
+            )
+            await self._reconcile(tid, fut, deadline)
+            return
         except Exception as e:
             if not fut.done():
                 fut.set_exception(RuntimeError(str(e) or repr(e)))
@@ -588,50 +594,67 @@ class Node:
         else:
             fut.set_exception(RuntimeError(result.error))
 
-    async def _reconcile(self, tid: str, fut: asyncio.Future[Any]) -> None:
-        from skyward.infra.worker import GetResult, ResultDone, ResultPending
-        from skyward.infra.worker import TaskFailed as WorkerTaskFailed
-        from skyward.infra.worker import TaskSucceeded as WorkerTaskSucceeded
+    async def _reconcile(
+        self, tid: str, fut: asyncio.Future[Any], deadline: float,
+    ) -> None:
+        """Poll the worker's result cache until the task resolves.
 
-        try:
-            reply = await self._client.ask(
-                self._worker_ref,
-                lambda rto: GetResult(task_id=tid, reply_to=rto),
-                timeout=10.0,
-            )
-        except Exception as e:  # noqa: BLE001 — reconcile failure means retry elsewhere
-            reply = None
-            err = repr(e)
-        else:
-            err = None
-        if fut.done():
-            return
-        match reply:
-            case ResultDone(result=WorkerTaskSucceeded() as ws):
-                self._log.info(
-                    "Reconcile {tid} on node {nid}: recovered TaskSucceeded",
-                    tid=tid, nid=self.node_id,
-                )
-                fut.set_result(ws.result)
-            case ResultDone(result=WorkerTaskFailed() as wf):
-                self._log.info(
-                    "Reconcile {tid} on node {nid}: recovered TaskFailed",
-                    tid=tid, nid=self.node_id,
-                )
-                fut.set_exception(RuntimeError(f"{wf.error}\n{wf.traceback}"))
-            case ResultPending():
-                self._log.debug(
-                    "Reconcile {tid} on node {nid}: still running",
-                    tid=tid, nid=self.node_id,
-                )
-            case _:
-                self._log.warning(
-                    "Reconcile {tid} on node {nid} unrecoverable: {err}",
-                    tid=tid, nid=self.node_id, err=err or "worker has no record",
-                )
-                fut.set_exception(NodeInterruptedError(
-                    self.node_id, f"result lost on node {self.node_id}",
+        Runs after a connection blip killed the original ``run`` RPC.
+        ``ResultPending`` keeps polling (the task is still executing);
+        ``ResultUnknown`` or an unreachable worker raises
+        ``NodeInterruptedError`` so the TaskManager retries elsewhere.
+        """
+        from skyward.infra.worker import (
+            ResultDone,
+            ResultPending,
+            TaskFailed,
+            TaskSucceeded,
+            loads,
+        )
+
+        while not fut.done():
+            await self._transport_up.wait()
+            try:
+                reply = loads(await asyncio.wait_for(
+                    self._worker.control.get_result(tid), timeout=10.0,
                 ))
+            except Exception as e:  # noqa: BLE001 — reconcile failure means retry elsewhere
+                reply = None
+                err = repr(e)
+            else:
+                err = None
+            if fut.done():
+                return
+            match reply:
+                case ResultDone(result=TaskSucceeded() as ws):
+                    self._log.info(
+                        "Reconcile {tid} on node {nid}: recovered TaskSucceeded",
+                        tid=tid, nid=self.node_id,
+                    )
+                    fut.set_result(ws.result)
+                    return
+                case ResultDone(result=TaskFailed() as wf):
+                    self._log.info(
+                        "Reconcile {tid} on node {nid}: recovered TaskFailed",
+                        tid=tid, nid=self.node_id,
+                    )
+                    fut.set_exception(RuntimeError(f"{wf.error}\n{wf.traceback}"))
+                    return
+                case ResultPending() if time.monotonic() < deadline:
+                    self._log.debug(
+                        "Reconcile {tid} on node {nid}: still running",
+                        tid=tid, nid=self.node_id,
+                    )
+                    await asyncio.sleep(2.0)
+                case _:
+                    self._log.warning(
+                        "Reconcile {tid} on node {nid} unrecoverable: {err}",
+                        tid=tid, nid=self.node_id, err=err or "worker has no record",
+                    )
+                    fut.set_exception(NodeInterruptedError(
+                        self.node_id, f"result lost on node {self.node_id}",
+                    ))
+                    return
 
     # ── file ops ──────────────────────────────────────────────────
 
@@ -659,13 +682,12 @@ class Node:
                 self._transport_up.clear()
             case ConnectionRestored():
                 self._log.info(
-                    "Transport reconnected on node {nid}: reconciling {n} inflight",
+                    "Transport reconnected on node {nid}: {n} inflight resume",
                     nid=self.node_id, n=len(self._inflight),
                 )
+                # Recovery is owned by each task's _dispatch: the failed RPC
+                # falls into _reconcile, which is gated on _transport_up.
                 self._transport_up.set()
-                for tid, fut in list(self._inflight.items()):
-                    if not fut.done():
-                        self._spawn_aux(self._reconcile(tid, fut))
             case ConnectionFailed(error=error):
                 self._log.error(
                     "Transport permanently failed on node {nid}: {err}",

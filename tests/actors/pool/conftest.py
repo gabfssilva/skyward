@@ -81,12 +81,8 @@ class FakeClusterClient:
     def __init__(self, **_kwargs: Any) -> None:
         self.closed = False
 
-    async def __aenter__(self) -> FakeClusterClient:
-        return self
-
-    async def __aexit__(self, *_exc: object) -> bool:
+    async def close(self) -> None:
         self.closed = True
-        return False
 
 
 def make_spec(nodes: Nodes, **kw: Any) -> PoolSpec:
@@ -160,7 +156,15 @@ class FakeProvider:
 
 @pytest.fixture
 def patch_pool(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("skyward.actors.pool.pool.ClusterClient", FakeClusterClient)
+    import casty
+
+    def fake_connect(*_a: Any, **_k: Any) -> Any:
+        async def _run() -> FakeClusterClient:
+            return FakeClusterClient()
+
+        return _run()
+
+    monkeypatch.setattr(casty, "connect", fake_connect)
     monkeypatch.setattr(
         "skyward.actors.pool.pool._build_pool_info_json", lambda *_a, **_k: "{}",
     )

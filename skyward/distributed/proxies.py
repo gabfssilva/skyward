@@ -1,7 +1,10 @@
-"""Proxy wrappers for Casty's native distributed collections.
+"""Proxy wrappers for casty v2's distributed collections.
 
 Casty collections are async-only. These proxies provide synchronous
 access by submitting coroutines to the system's event loop from any thread.
+
+Values are cloudpickled to ``bytes`` before hitting casty's msgpack wire,
+so arbitrary Python objects (including ``None``) round-trip unchanged.
 """
 
 from __future__ import annotations
@@ -10,6 +13,8 @@ import asyncio
 import time
 from collections.abc import Coroutine
 from typing import Any
+
+import cloudpickle
 
 from skyward.observability.logger import logger
 
@@ -56,6 +61,14 @@ def _run_sync[T](coro: Coroutine[Any, Any, T], *, timeout: float = 30) -> T:
         raise
 
 
+def _enc(value: Any) -> bytes:
+    return cloudpickle.dumps(value)
+
+
+def _dec(data: bytes | None) -> Any:
+    return None if data is None else cloudpickle.loads(data)
+
+
 class CounterProxy:
     """Synchronous proxy for a distributed counter.
 
@@ -71,7 +84,7 @@ class CounterProxy:
     >>> int(counter)          # 6
     """
 
-    __slots__ = ("_counter", "_consistency")
+    __slots__ = ("_consistency", "_counter")
 
     def __init__(self, counter: Any, consistency: Consistency = "eventual") -> None:
         self._counter = counter
@@ -82,29 +95,33 @@ class CounterProxy:
         return _run_sync(self._counter.get())
 
     def increment(self, n: int = 1) -> None:
-        _run_sync(self._counter.increment(n))
+        _run_sync(self._counter.add(n))
 
     def decrement(self, n: int = 1) -> None:
-        _run_sync(self._counter.decrement(n))
+        _run_sync(self._counter.add(-n))
 
     def reset(self, value: int = 0) -> None:
-        _run_sync(self._counter.increment(value - _run_sync(self._counter.get())))
+        _run_sync(self._reset_to(value))
 
     def __int__(self) -> int:
         return self.value
+
+    async def _reset_to(self, value: int) -> None:
+        await self._counter.reset()
+        if value:
+            await self._counter.add(value)
 
     async def value_async(self) -> int:
         return await self._counter.get()
 
     async def increment_async(self, n: int = 1) -> None:
-        await self._counter.increment(n)
+        await self._counter.add(n)
 
     async def decrement_async(self, n: int = 1) -> None:
-        await self._counter.decrement(n)
+        await self._counter.add(-n)
 
     async def reset_async(self, value: int = 0) -> None:
-        current = await self._counter.get()
-        await self._counter.increment(value - current)
+        await self._reset_to(value)
 
 
 class DictProxy:
@@ -123,7 +140,7 @@ class DictProxy:
     >>> metrics.update({"a": 1, "b": 2})
     """
 
-    __slots__ = ("_map", "_consistency")
+    __slots__ = ("_consistency", "_map")
 
     def __init__(self, map_: Any, consistency: Consistency = "eventual") -> None:
         self._map = map_
@@ -133,48 +150,48 @@ class DictProxy:
         result = _run_sync(self._map.get(key))
         if result is None:
             raise KeyError(key)
-        return result
+        return _dec(result)
 
     def __setitem__(self, key: str, value: Any) -> None:
-        _run_sync(self._map.put(key, value))
+        _run_sync(self._map.put(key, _enc(value)))
 
     def __delitem__(self, key: str) -> None:
-        _run_sync(self._map.delete(key))
+        _run_sync(self._map.remove(key))
 
     def __contains__(self, key: str) -> bool:
         return _run_sync(self._map.contains(key))
 
     def get(self, key: str, default: Any = None) -> Any:
         result = _run_sync(self._map.get(key))
-        return result if result is not None else default
+        return _dec(result) if result is not None else default
 
     def update(self, items: dict[str, Any]) -> None:
         for k, v in items.items():
-            _run_sync(self._map.put(k, v))
+            _run_sync(self._map.put(k, _enc(v)))
 
     def pop(self, key: str, default: Any = None) -> Any:
         result = _run_sync(self._map.get(key))
         if result is not None:
-            _run_sync(self._map.delete(key))
-            return result
+            _run_sync(self._map.remove(key))
+            return _dec(result)
         return default
 
     async def get_async(self, key: str, default: Any = None) -> Any:
         result = await self._map.get(key)
-        return result if result is not None else default
+        return _dec(result) if result is not None else default
 
     async def set_async(self, key: str, value: Any) -> None:
-        await self._map.put(key, value)
+        await self._map.put(key, _enc(value))
 
     async def update_async(self, items: dict[str, Any]) -> None:
         for k, v in items.items():
-            await self._map.put(k, v)
+            await self._map.put(k, _enc(v))
 
     async def pop_async(self, key: str, default: Any = None) -> Any:
         result = await self._map.get(key)
         if result is not None:
-            await self._map.delete(key)
-            return result
+            await self._map.remove(key)
+            return _dec(result)
         return default
 
 
@@ -191,32 +208,32 @@ class SetProxy:
     >>> seen.discard("abc")
     """
 
-    __slots__ = ("_set", "_consistency")
+    __slots__ = ("_consistency", "_set")
 
     def __init__(self, set_: Any, consistency: Consistency = "eventual") -> None:
         self._set = set_
         self._consistency = consistency
 
     def __contains__(self, value: Any) -> bool:
-        return _run_sync(self._set.contains(value))
+        return _run_sync(self._set.contains(_enc(value)))
 
     def __len__(self) -> int:
         return _run_sync(self._set.size())
 
     def add(self, value: Any) -> None:
-        _run_sync(self._set.add(value))
+        _run_sync(self._set.add(_enc(value)))
 
     def discard(self, value: Any) -> None:
-        _run_sync(self._set.remove(value))
+        _run_sync(self._set.remove(_enc(value)))
 
     async def add_async(self, value: Any) -> None:
-        await self._set.add(value)
+        await self._set.add(_enc(value))
 
     async def discard_async(self, value: Any) -> None:
-        await self._set.remove(value)
+        await self._set.remove(_enc(value))
 
     async def contains_async(self, value: Any) -> bool:
-        return await self._set.contains(value)
+        return await self._set.contains(_enc(value))
 
 
 class QueueProxy:
@@ -242,15 +259,15 @@ class QueueProxy:
         return _run_sync(self._queue.size())
 
     def put(self, value: Any) -> None:
-        _run_sync(self._queue.enqueue(value))
+        _run_sync(self._queue.offer(_enc(value)))
 
     def get(self, timeout: float | None = None) -> Any:
         start = time.monotonic()
         delay = 0.01
         while True:
-            result = _run_sync(self._queue.dequeue())
+            result = _run_sync(self._queue.poll())
             if result is not None:
-                return result
+                return _dec(result)
             if timeout is not None and time.monotonic() - start >= timeout:
                 return None
             time.sleep(delay)
@@ -260,15 +277,15 @@ class QueueProxy:
         return _run_sync(self._queue.size()) == 0
 
     async def put_async(self, value: Any) -> None:
-        await self._queue.enqueue(value)
+        await self._queue.offer(_enc(value))
 
     async def get_async(self, timeout: float | None = None) -> Any:
         start = time.monotonic()
         delay = 0.01
         while True:
-            result = await self._queue.dequeue()
+            result = await self._queue.poll()
             if result is not None:
-                return result
+                return _dec(result)
             if timeout is not None and time.monotonic() - start >= timeout:
                 return None
             await asyncio.sleep(delay)
@@ -294,19 +311,22 @@ class BarrierProxy:
         self._n = n
 
     def wait(self) -> None:
-        _run_sync(self._barrier.arrive(self._n))
+        _run_sync(self._barrier.wait(), timeout=86400.0)
 
     def reset(self) -> None:
-        pass
+        """No-op: the casty v2 barrier is cyclic — completing a generation
+        resets it for the next round automatically."""
 
     async def wait_async(self) -> None:
-        await self._barrier.arrive(self._n)
+        await self._barrier.wait()
 
 
 class LockProxy:
     """Synchronous proxy for a distributed lock.
 
     Support both explicit ``acquire``/``release`` and context manager usage.
+    The underlying lock is a TTL lease; the proxy renews it in the background
+    while held, so long critical sections don't lose the lock.
 
     Examples
     --------
@@ -322,18 +342,42 @@ class LockProxy:
     ...     lock.release()
     """
 
-    __slots__ = ("_lock", "_timeout")
+    _TTL = 60.0
+
+    __slots__ = ("_lease", "_lock", "_renewer", "_timeout")
 
     def __init__(self, lock: Any, timeout: float) -> None:
         self._lock = lock
         self._timeout = timeout
+        self._lease: Any = None
+        self._renewer: Any = None
+
+    async def _renew_loop(self, lease: Any) -> None:
+        while True:
+            await asyncio.sleep(self._TTL / 2)
+            if not await lease.renew(self._TTL):
+                return
+
+    async def _acquire(self) -> None:
+        self._lease = await self._lock.acquire(ttl=self._TTL, timeout=self._timeout)
+        self._renewer = asyncio.get_running_loop().create_task(
+            self._renew_loop(self._lease),
+        )
+
+    async def _release(self) -> None:
+        if self._renewer is not None:
+            self._renewer.cancel()
+            self._renewer = None
+        if self._lease is not None:
+            lease, self._lease = self._lease, None
+            await lease.release()
 
     def acquire(self) -> bool:
-        _run_sync(self._lock.acquire(), timeout=self._timeout)
+        _run_sync(self._acquire(), timeout=self._timeout + 5.0)
         return True
 
     def release(self) -> None:
-        _run_sync(self._lock.release())
+        _run_sync(self._release())
 
     def __enter__(self) -> LockProxy:
         self.acquire()
@@ -343,11 +387,11 @@ class LockProxy:
         self.release()
 
     async def acquire_async(self) -> bool:
-        await asyncio.wait_for(self._lock.acquire(), timeout=self._timeout)
+        await self._acquire()
         return True
 
     async def release_async(self) -> None:
-        await self._lock.release()
+        await self._release()
 
     async def __aenter__(self) -> LockProxy:
         await self.acquire_async()

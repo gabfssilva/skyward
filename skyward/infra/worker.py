@@ -1,14 +1,20 @@
-"""Casty worker service for remote nodes.
+"""Casty v2 worker services for remote nodes.
 
-Runs as a long-lived process on each node in the cluster.
-Starts a ClusteredActorSystem and spawns discoverable worker actors
-for direct task execution via ClusterClient.
+Runs as a long-lived process on each node in the cluster. Starts a casty
+node (rank 0 is the seed, port 25520) hosting two stateless services:
 
-Architecture:
-- Each node spawns a local worker actor wrapped in Behaviors.discoverable().
-- Workers register with WORKER_KEY for service discovery.
-- The executor discovers workers via ClusterClient.lookup(WORKER_KEY).
-- All nodes are symmetric (no head-only HTTP server).
+- ``WorkerService.run`` — task execution, bounded by the framework's
+  ``concurrency=`` (read from ``SKYWARD_WORKERS_PER_NODE`` at import).
+- ``WorkerControl`` — unbounded control channel: discovery ping, worker
+  lifecycle contexts, result reconciliation, and the pull/push endpoints
+  that back generator output streams and ``Iterator`` input params.
+
+The client is a casty lite member (``casty.connect``) that pins every
+call to this node's ``Member`` (``service(Cls, at=member)``); all bytes
+travel through the SSH port-forward via ``address_map``.
+
+Payloads are lz4-compressed cloudpickle ``bytes`` end to end — casty's
+msgpack wire never sees user objects.
 """
 
 from __future__ import annotations
@@ -16,41 +22,52 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 import traceback
 import types
 from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import suppress
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
-from casty import (
-    ActorContext,
-    ActorRef,
-    Behavior,
-    Behaviors,
-    CastyConfig,
-    CloudPickleSerializer,
-    ClusteredActorSystem,
-    FailureDetectorConfig,
-    HeartbeatConfig,
-    Lz4CompressedSerializer,
-    ServiceKey,
-)
+import casty
+import cloudpickle
+import lz4.frame
 
 from skyward.observability.logger import logger
-
-_background_tasks: set[asyncio.Task[None]] = set()
 
 _active_task_id: ContextVar[str | None] = ContextVar("_active_task_id", default=None)
 """Task id of the currently-executing function on this worker.
 
 The stdio writer (:class:`_UnbufferedWriter`) prepends ``[task-id=<eid>] ``
 to each write while this is set, letting the client correlate output
-with the originating task. Set/reset around :func:`_execute` in the
-``ExecuteTask`` handler. Inherited automatically by ``asyncio.Task``s
-spawned during execution.
+with the originating task.
 """
+
+DEFAULT_CASTY_PORT = 25520
+STREAM_END = "end"
+STREAM_ERROR = "error"
+STREAM_ITEM = "item"
+STREAM_PENDING = "pending"
+
+
+def dumps(obj: Any) -> bytes:
+    return lz4.frame.compress(cloudpickle.dumps(obj))
+
+
+def loads(data: bytes) -> Any:
+    try:
+        return cloudpickle.loads(lz4.frame.decompress(data))
+    except (ModuleNotFoundError, AttributeError, ImportError) as exc:
+        logger.error(
+            "Deserialization failed — likely a library version mismatch "
+            "between local and remote environments. Ensure libraries like "
+            "pandas, numpy, torch, etc. are pinned to the same version in "
+            "Image(pip=[...]). Original error: {exc}",
+            exc=exc,
+        )
+        raise
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,77 +83,14 @@ class TaskFailed:
     node_id: int
 
 
-type TaskResult = TaskSucceeded | TaskFailed
-
-
-class _DiagnosticSerializer:
-    """Wraps a Casty serializer to surface deserialization errors clearly.
-
-    Casty catches all deserialization exceptions as warnings (invisible when
-    log level is ERROR). This wrapper logs at ERROR via Skyward's logger
-    before re-raising, so version-mismatch failures are immediately visible.
-    """
-
-    __slots__ = ("_inner",)
-
-    def __init__(self, inner: Lz4CompressedSerializer) -> None:
-        self._inner = inner
-
-    def serialize[M](self, obj: M) -> bytes:
-        return self._inner.serialize(obj)
-
-    def deserialize[M, R](
-        self,
-        data: bytes,
-        *,
-        ref_factory: Any = None,
-    ) -> M:
-        try:
-            return self._inner.deserialize(data, ref_factory=ref_factory)
-        except (ModuleNotFoundError, AttributeError, ImportError) as exc:
-            logger.error(
-                "Deserialization failed — likely a library version mismatch "
-                "between local and remote environments. Ensure libraries like "
-                "pandas, numpy, torch, etc. are pinned to the same version in "
-                "Image(pip=[...]). Original error: {exc}",
-                exc=exc,
-            )
-            raise
-        except Exception as exc:
-            logger.error(
-                "Deserialization failed: {exc}",
-                exc=exc,
-            )
-            raise
-
-
-def skyward_serializer() -> _DiagnosticSerializer:
-    """Shared wire serializer for all Casty endpoints (worker, executor, instance)."""
-    return _DiagnosticSerializer(Lz4CompressedSerializer(CloudPickleSerializer()))
-
-
 @dataclass(frozen=True, slots=True)
-class ExecuteTask:
-    fn: Any
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
-    reply_to: ActorRef[TaskResult]
-    input_streams: tuple[tuple[int, Any], ...] = ()
-    task_id: str = ""
+class StreamStarted:
+    """The task is a generator; consume it via ``WorkerControl.next_chunk``."""
+
+    node_id: int
 
 
-@dataclass(frozen=True, slots=True)
-class GetResult:
-    """Reconciliation probe — fetch a previously-dispatched task's result.
-
-    Returned by the worker when the client asks for a ``task_id`` it
-    previously dispatched via ``ExecuteTask``. Used to recover from
-    SSH/Casty connection blips that drop the original ``ExecuteTask``
-    reply mid-flight.
-    """
-
-    task_id: str
-    reply_to: ActorRef[GetResultReply]
+type TaskResult = TaskSucceeded | TaskFailed | StreamStarted
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,102 +112,129 @@ class ResultUnknown:
 
 type GetResultReply = ResultPending | ResultDone | ResultUnknown
 
-
-@dataclass(frozen=True, slots=True)
-class EnterContext:
-    factory: Any
-    reply_to: ActorRef[TaskResult]
+_FEED_END = object()
+_STREAM_DONE = object()
 
 
-@dataclass(frozen=True, slots=True)
-class _TaskDone:
-    result: TaskResult
-    reply_to: ActorRef[TaskResult]
-    task_id: str = ""
+class _InFeed:
+    """Worker-side buffer behind an ``Iterator`` parameter.
+
+    The client pushes elements one at a time via ``WorkerControl.feed``
+    (each push awaits the bounded queue — natural backpressure); the task
+    thread pulls through the sync iterator.
+    """
+
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=256)
+        self._loop = loop
+
+    async def put(self, item: Any) -> None:
+        await self._queue.put(item)
+
+    async def close(self) -> None:
+        await self._queue.put(_FEED_END)
+
+    def __iter__(self) -> _InFeed:
+        return self
+
+    def __next__(self) -> Any:
+        fut = asyncio.run_coroutine_threadsafe(self._queue.get(), self._loop)
+        item = fut.result()
+        if item is _FEED_END:
+            raise StopIteration
+        return item
 
 
-@dataclass(frozen=True, slots=True)
-class _TaskErrored:
-    error: Exception
-    reply_to: ActorRef[TaskResult]
-    task_id: str = ""
+class _OutStream:
+    """Worker-side pull handle over a task's generator.
 
+    The generator body runs lazily, one element per ``next_chunk`` call,
+    inside a worker thread — the client's poll cadence is the backpressure.
+    A pull that outlives ``wait`` stays pending and is resumed by the next
+    call, so a blocked ``next()`` never leaks a second thread.
+    """
 
-@dataclass(frozen=True, slots=True)
-class SetProcessHooks:
-    hooks: tuple[tuple[str, Any], ...]
-    reply_to: ActorRef[TaskResult]
+    def __init__(self, gen: types.GeneratorType, task_id: str) -> None:  # type: ignore[type-arg]
+        self._gen = gen
+        self._task_id = task_id
+        self._pending: asyncio.Task[Any] | None = None
 
-
-@dataclass(frozen=True, slots=True)
-class _ContextEntered:
-    cm: Any
-    reply_to: ActorRef[TaskResult]
-
-
-@dataclass(frozen=True, slots=True)
-class _ContextFailed:
-    error: Exception
-    reply_to: ActorRef[TaskResult]
-
-
-type WorkerMsg = (
-    ExecuteTask | EnterContext | SetProcessHooks | GetResult
-    | _TaskDone | _TaskErrored | _ContextEntered | _ContextFailed
-)
-
-WORKER_KEY: ServiceKey[WorkerMsg] = ServiceKey("skyward-worker")
-
-
-async def _wrap_generator(
-    system: ClusteredActorSystem,
-    gen: types.GeneratorType,  # type: ignore[type-arg]
-    node_id: int,
-) -> TaskSucceeded:
-    from uuid import uuid4
-
-    from casty import GetSink, stream_producer
-
-    from skyward.infra.stream import sync_to_async
-    from skyward.infra.streaming import _StreamHandle
-
-    slog = logger.bind(component="wrap-generator", node_id=node_id)
-
-    producer_ref = system.spawn(
-        stream_producer(buffer_size=256),
-        f"out-producer-{uuid4().hex[:8]}",
-    )
-    sink = await system.ask(
-        producer_ref,
-        lambda r: GetSink(reply_to=r),
-        timeout=10.0,
-    )
-
-    async def _drain() -> None:
-        count = 0
+    def _pull(self) -> Any:
+        token = _active_task_id.set(self._task_id)
         try:
-            async for elem in sync_to_async(gen):
-                await sink.put(elem)
-                count += 1
-            slog.info("drain finished, {n} elements", n=count)
-        except Exception as e:
-            slog.error("drain error after {n} elements: {e}", n=count, e=e)
+            return next(self._gen)
+        except StopIteration:
+            return _STREAM_DONE
         finally:
-            await sink.complete()
+            sys.stdout.flush()
+            sys.stderr.flush()
+            _active_task_id.reset(token)
 
-    loop = asyncio.get_running_loop()
-    drain_task = loop.create_task(_drain(), name=f"stream-drain-{node_id}")
-    _background_tasks.add(drain_task)
-    drain_task.add_done_callback(_background_tasks.discard)
-    drain_task.add_done_callback(
-        lambda t: slog.error("drain task failed: {e}", e=t.exception())
-        if t.exception() else None
-    )
+    async def next(self, wait: float) -> tuple[str, Any]:
+        if self._pending is None:
+            self._pending = asyncio.ensure_future(asyncio.to_thread(self._pull))
+        try:
+            item = await asyncio.wait_for(asyncio.shield(self._pending), timeout=wait)
+        except TimeoutError:
+            return (STREAM_PENDING, None)
+        except Exception as e:
+            self._pending = None
+            return (STREAM_ERROR, f"{e}\n{traceback.format_exc()}")
+        self._pending = None
+        if item is _STREAM_DONE:
+            return (STREAM_END, None)
+        return (STREAM_ITEM, item)
 
-    return TaskSucceeded(
-        result=_StreamHandle(producer_ref=producer_ref, node_id=node_id),
-        node_id=node_id,
-    )
+
+@dataclass
+class _Runtime:
+    """Per-process worker state shared by both services."""
+
+    node_id: int
+    loop: asyncio.AbstractEventLoop
+    executor: str = "thread"
+    executor_pool: Executor | None = None
+    registry: Any = None
+    process_hooks: list[tuple[str, Any]] = field(default_factory=list)
+    active_contexts: list[Any] = field(default_factory=list)
+    result_cache: dict[str, tuple[float, TaskResult | None]] = field(default_factory=dict)
+    result_cache_ttl: float = 600.0
+    result_cache_max: int = 2048
+    out_streams: dict[str, _OutStream] = field(default_factory=dict)
+    in_feeds: dict[tuple[str, int], _InFeed] = field(default_factory=dict)
+
+    def evict_expired(self) -> None:
+        now = time.monotonic()
+        for k in [k for k, (deadline, _) in self.result_cache.items() if deadline < now]:
+            del self.result_cache[k]
+        if len(self.result_cache) > self.result_cache_max:
+            oldest = sorted(self.result_cache.items(), key=lambda kv: kv[1][0])
+            for k, _ in oldest[: len(self.result_cache) - self.result_cache_max]:
+                self.result_cache.pop(k, None)
+
+    def cache_result(self, task_id: str, result: TaskResult) -> None:
+        if not task_id:
+            return
+        if isinstance(result, StreamStarted):
+            self.result_cache.pop(task_id, None)
+            return
+        self.result_cache[task_id] = (time.monotonic() + self.result_cache_ttl, result)
+
+    def feed_for(self, task_id: str, index: int) -> _InFeed:
+        key = (task_id, index)
+        feed = self.in_feeds.get(key)
+        if feed is None:
+            feed = _InFeed(self.loop)
+            self.in_feeds[key] = feed
+        return feed
+
+
+_runtime: _Runtime | None = None
+
+
+def _rt() -> _Runtime:
+    assert _runtime is not None, "worker runtime not initialized"
+    return _runtime
 
 
 def _run_in_process(
@@ -285,8 +266,6 @@ def _run_in_process(
         for name, factory in around_process_hooks:
             ensure_around_process(name, factory, info)
 
-    import cloudpickle
-
     fn, args, kwargs = cloudpickle.loads(payload)
     # ContextVars don't cross process boundaries — set explicitly so the
     # subprocess's ``_UnbufferedWriter`` (installed by ``ipc_initializer``)
@@ -301,274 +280,157 @@ def _run_in_process(
             _active_task_id.reset(token)
 
 
-def worker_behavior(
-    node_id: int,
-    concurrency: int = 1,
-    registry: Any = None,
-    system: ClusteredActorSystem | None = None,
-    executor: str = "thread",
-    executor_pool: Executor | None = None,
-    result_cache_ttl: float = 600.0,
-    result_cache_max: int = 2048,
-) -> Behavior[WorkerMsg]:
-    """Spawn the worker actor's behavior.
+async def _execute(
+    rt: _Runtime,
+    task_id: str,
+    fn: Any,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    stream_indices: tuple[int, ...],
+) -> TaskResult:
+    log = logger.bind(component="worker", node_id=rt.node_id)
+    try:
+        from skyward.infra.streaming import is_generator_compute
 
-    The worker accepts ``ExecuteTask`` requests, runs them via the chosen
-    executor, and replies on ``reply_to``. To survive transient SSH/Casty
-    connection blips that drop the original reply mid-flight, every result
-    keyed by a non-empty ``task_id`` is cached locally (TTL + size cap);
-    a client that lost a reply can recover via ``GetResult(task_id)``.
+        use_process = (
+            rt.executor == "process"
+            and not stream_indices
+            and not is_generator_compute(fn)
+        )
 
-    Streaming results (``_StreamHandle``) are intentionally **not** cached
-    because their producer is a live actor and the underlying stream may
-    have been partially consumed; reconciliation will report
-    ``ResultUnknown`` and the caller will retry on another node.
-
-    Parameters
-    ----------
-    node_id : int
-        Logical node index.
-    concurrency : int, optional
-        Maximum concurrent tasks. Default 1.
-    registry : Any, optional
-        Distributed registry to install in the task thread.
-    system : ClusteredActorSystem | None, optional
-        Cluster system used for stream-related spawns.
-    executor : str, optional
-        ``"thread"`` or ``"process"``. Default ``"thread"``.
-    executor_pool : Executor | None, optional
-        Pre-built pool for ``"process"`` mode.
-    result_cache_ttl : float, optional
-        Per-entry TTL in seconds. Default 600.
-    result_cache_max : int, optional
-        Hard cap on cache entries; oldest by deadline are evicted. Default 2048.
-    """
-    log = logger.bind(component="worker", node_id=node_id)
-    sem = asyncio.Semaphore(concurrency)
-    result_cache: dict[str, tuple[float, TaskResult | None]] = {}
-
-    def _evict_expired(now: float) -> None:
-        expired = [k for k, (deadline, _) in result_cache.items() if deadline < now]
-        for k in expired:
-            del result_cache[k]
-        if len(result_cache) > result_cache_max:
-            sorted_items = sorted(result_cache.items(), key=lambda kv: kv[1][0])
-            for k, _ in sorted_items[: len(result_cache) - result_cache_max]:
-                result_cache.pop(k, None)
-
-    def _cache_result(task_id: str, result: TaskResult) -> None:
-        if not task_id:
-            return
-        # don't cache live stream handles — producer_ref is not replayable
-        from skyward.infra.streaming import _StreamHandle
-
-        if isinstance(result, TaskSucceeded) and isinstance(result.result, _StreamHandle):
-            result_cache.pop(task_id, None)
-            return
-        result_cache[task_id] = (asyncio.get_event_loop().time() + result_cache_ttl, result)
-
-    async def _resolve_input_streams(
-        args: tuple[Any, ...],
-        input_streams: tuple[tuple[int, Any], ...],
-    ) -> tuple[Any, ...]:
-        if not input_streams or system is None:
-            return args
-
-        from uuid import uuid4
-
-        from casty import GetSource, stream_consumer
-
-        from skyward.infra.streaming import _SyncSource
-
-        loop = asyncio.get_running_loop()
-        resolved = list(args)
-
-        for idx, producer_ref in input_streams:
-            if idx >= len(resolved):
-                continue
-            consumer_ref = system.spawn(
-                stream_consumer(producer_ref, timeout=60.0, initial_demand=16),
-                f"in-consumer-{idx}-{uuid4().hex[:8]}",
+        if use_process:
+            payload = await asyncio.to_thread(cloudpickle.dumps, (fn, args, kwargs))
+            result = await rt.loop.run_in_executor(
+                rt.executor_pool, _run_in_process, payload,
+                dict(os.environ), tuple(rt.process_hooks), task_id,
             )
-            source = await system.ask(
-                consumer_ref,
-                lambda r: GetSource(reply_to=r),
-                timeout=10.0,
-            )
-            resolved[idx] = _SyncSource(source, loop)
+        else:
+            resolved = list(args)
+            for idx in stream_indices:
+                if idx < len(resolved):
+                    resolved[idx] = rt.feed_for(task_id, idx)
 
-        return tuple(resolved)
+            def _run() -> Any:
+                if rt.registry is not None:
+                    from skyward.distributed import _set_active_registry
 
-    async def _execute(
-        fn: Any,
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
-        input_streams: tuple[tuple[int, Any], ...] = (),
-    ) -> TaskResult:
-        async with sem:
-            try:
-                from skyward.infra.streaming import is_generator_compute
+                    _set_active_registry(rt.registry)
 
-                use_process = (
-                    executor == "process"
-                    and not input_streams
-                    and not is_generator_compute(fn)
-                )
+                if rt.process_hooks:
+                    from skyward.core.runtime import instance_info
+                    from skyward.plugins.process_state import ensure_around_process
 
-                if use_process:
-                    import cloudpickle
+                    info = instance_info()
+                    for name, factory in rt.process_hooks:
+                        ensure_around_process(name, factory, info)
 
-                    loop = asyncio.get_running_loop()
-                    payload = await asyncio.to_thread(cloudpickle.dumps, (fn, args, kwargs))
-                    current_tid = _active_task_id.get() or ""
-                    result = await loop.run_in_executor(
-                        executor_pool, _run_in_process, payload,
-                        dict(os.environ), tuple(process_hooks), current_tid,
-                    )
-                else:
-                    args = await _resolve_input_streams(args, input_streams)
-
-                    def _run() -> Any:
-                        if registry is not None:
-                            from skyward.distributed import _set_active_registry
-
-                            _set_active_registry(registry)
-
-                        if process_hooks:
-                            from skyward.core.runtime import instance_info
-                            from skyward.plugins.process_state import ensure_around_process
-
-                            info = instance_info()
-                            for name, factory in process_hooks:
-                                ensure_around_process(name, factory, info)
-
-                        fn_name = getattr(fn, "__name__", str(fn))
-                        log.info("Executing {fn_name}", fn_name=fn_name)
-                        result = fn(*args, **kwargs)
-                        log.info("Task {fn_name} completed", fn_name=fn_name)
-                        return result
-
-                    result = await asyncio.to_thread(_run)
-
-                match result:
-                    case types.GeneratorType() if system is not None:
-                        return await _wrap_generator(system, result, node_id)
-                    case _:
-                        return TaskSucceeded(result=result, node_id=node_id)
-            except Exception as e:
-                log.error("Task failed: {err}", err=e)
-                return TaskFailed(
-                    error=str(e),
-                    traceback=traceback.format_exc(),
-                    node_id=node_id,
-                )
-
-    active_contexts: list[Any] = []
-    process_hooks: list[tuple[str, Any]] = []
-
-    async def receive(ctx: ActorContext[WorkerMsg], msg: WorkerMsg) -> Behavior[WorkerMsg]:
-        match msg:
-            case SetProcessHooks(hooks=hooks, reply_to=reply_to):
-                process_hooks.clear()
-                process_hooks.extend(hooks)
-                log.debug("Process hooks set ({n} hooks)", n=len(hooks))
-                reply_to.tell(TaskSucceeded(result="ok", node_id=node_id))
-                return Behaviors.same()
-            case EnterContext(factory=factory, reply_to=reply_to):
-                log.debug("EnterContext received")
-
-                async def _enter() -> Any:
-                    def _do() -> Any:
-                        cm = factory()
-                        cm.__enter__()
-                        return cm
-                    return await asyncio.to_thread(_do)
-
-                ctx.pipe_to_self(
-                    coro=_enter(),
-                    mapper=lambda cm: _ContextEntered(cm=cm, reply_to=reply_to),
-                    on_failure=lambda e: _ContextFailed(error=e, reply_to=reply_to),
-                )
-                return Behaviors.same()
-            case _ContextEntered(cm=cm, reply_to=reply_to):
-                active_contexts.append(cm)
-                log.debug("Context entered successfully")
-                reply_to.tell(TaskSucceeded(result="ok", node_id=node_id))
-                return Behaviors.same()
-            case _ContextFailed(error=error, reply_to=reply_to):
-                log.error("Context entry failed: {error}", error=error)
-                reply_to.tell(TaskFailed(
-                    error=str(error),
-                    traceback=traceback.format_exc(),
-                    node_id=node_id,
-                ))
-                return Behaviors.same()
-            case ExecuteTask(
-                fn=fn, args=args, kwargs=kwargs,
-                reply_to=reply_to, input_streams=streams, task_id=task_id,
-            ):
                 fn_name = getattr(fn, "__name__", str(fn))
-                log.debug("ExecuteTask received, fn={fn_name}", fn_name=fn_name)
-                now = asyncio.get_event_loop().time()
-                _evict_expired(now)
-                if task_id:
-                    result_cache[task_id] = (now + result_cache_ttl, None)
+                log.info("Executing {fn_name}", fn_name=fn_name)
+                result = fn(*tuple(resolved), **kwargs)
+                log.info("Task {fn_name} completed", fn_name=fn_name)
+                return result
 
-                async def _execute_scoped(_tid: str = task_id) -> Any:
-                    if not _tid:
-                        return await _execute(fn, args, kwargs, streams)
-                    token = _active_task_id.set(_tid)
-                    try:
-                        return await _execute(fn, args, kwargs, streams)
-                    finally:
-                        _active_task_id.reset(token)
+            result = await asyncio.to_thread(_run)
 
-                ctx.pipe_to_self(
-                    coro=_execute_scoped(),
-                    mapper=lambda result, _tid=task_id: _TaskDone(
-                        result=result, reply_to=reply_to, task_id=_tid,
-                    ),
-                    on_failure=lambda e, _tid=task_id: _TaskErrored(
-                        error=e, reply_to=reply_to, task_id=_tid,
-                    ),
-                )
-                return Behaviors.same()
-            case _TaskDone(result=result, reply_to=reply_to, task_id=task_id):
-                log.debug("Task completed successfully")
-                _cache_result(task_id, result)
-                reply_to.tell(result)
-                return Behaviors.same()
-            case _TaskErrored(error=error, reply_to=reply_to, task_id=task_id):
-                log.debug("Task errored: {error}", error=error)
-                failed = TaskFailed(
-                    error=str(error),
-                    traceback=traceback.format_exc(),
-                    node_id=node_id,
-                )
-                _cache_result(task_id, failed)
-                reply_to.tell(failed)
-                return Behaviors.same()
-            case GetResult(task_id=task_id, reply_to=reply_to):
-                _evict_expired(asyncio.get_event_loop().time())
-                match result_cache.get(task_id):
-                    case None:
-                        reply_to.tell(ResultUnknown())
-                    case (_, None):
-                        reply_to.tell(ResultPending())
-                    case (_, result):
-                        reply_to.tell(ResultDone(result=result))
-                return Behaviors.same()
+        match result:
+            case types.GeneratorType():
+                rt.out_streams[task_id] = _OutStream(result, task_id)
+                return StreamStarted(node_id=rt.node_id)
+            case _:
+                return TaskSucceeded(result=result, node_id=rt.node_id)
+    except Exception as e:
+        log.error("Task failed: {err}", err=e)
+        return TaskFailed(
+            error=str(e), traceback=traceback.format_exc(), node_id=rt.node_id,
+        )
 
-    async def _post_stop(_ctx: ActorContext[WorkerMsg]) -> None:
-        for cm in reversed(active_contexts):
-            with suppress(Exception):
-                cm.__exit__(None, None, None)
-        active_contexts.clear()
 
-    return Behaviors.with_lifecycle(
-        Behaviors.receive(receive),
-        post_stop=_post_stop,
-    )
+def _worker_concurrency() -> int:
+    return int(os.environ.get("SKYWARD_WORKERS_PER_NODE", "1"))
+
+
+@casty.service(name="skyward.Worker", concurrency=_worker_concurrency())
+class WorkerService:
+    """Task execution — one framework concurrency slot per running task."""
+
+    async def run(self, task_id: str, payload: bytes) -> bytes:
+        rt = _rt()
+        rt.evict_expired()
+        if task_id:
+            rt.result_cache[task_id] = (
+                time.monotonic() + rt.result_cache_ttl, None,
+            )
+        fn, args, kwargs, stream_indices = loads(payload)
+        token = _active_task_id.set(task_id) if task_id else None
+        try:
+            result = await _execute(rt, task_id, fn, args, kwargs, stream_indices)
+        finally:
+            if token is not None:
+                _active_task_id.reset(token)
+        rt.cache_result(task_id, result)
+        return dumps(result)
+
+
+@casty.service(name="skyward.WorkerControl")
+class WorkerControl:
+    """Unbounded control channel: discovery, lifecycle, streams, reconciliation."""
+
+    async def ping(self) -> int:
+        return _rt().node_id
+
+    async def enter_context(self, factory: bytes) -> bytes:
+        rt = _rt()
+
+        def _enter() -> Any:
+            cm = loads(factory)()
+            cm.__enter__()
+            return cm
+
+        try:
+            cm = await asyncio.to_thread(_enter)
+        except Exception as e:
+            logger.error("Context entry failed: {error}", error=e)
+            return dumps(TaskFailed(
+                error=str(e), traceback=traceback.format_exc(), node_id=rt.node_id,
+            ))
+        rt.active_contexts.append(cm)
+        return dumps(TaskSucceeded(result="ok", node_id=rt.node_id))
+
+    async def set_process_hooks(self, hooks: bytes) -> None:
+        rt = _rt()
+        decoded = loads(hooks)
+        rt.process_hooks.clear()
+        rt.process_hooks.extend(decoded)
+
+    async def get_result(self, task_id: str) -> bytes:
+        rt = _rt()
+        rt.evict_expired()
+        reply: GetResultReply
+        match rt.result_cache.get(task_id):
+            case None:
+                reply = ResultUnknown()
+            case (_, None):
+                reply = ResultPending()
+            case (_, result):
+                reply = ResultDone(result=result)
+        return dumps(reply)
+
+    async def next_chunk(self, task_id: str, wait: float) -> bytes:
+        stream = _rt().out_streams.get(task_id)
+        if stream is None:
+            return dumps((STREAM_ERROR, f"no stream for task {task_id}"))
+        kind, item = await stream.next(wait)
+        if kind in (STREAM_END, STREAM_ERROR):
+            _rt().out_streams.pop(task_id, None)
+        return dumps((kind, item))
+
+    async def feed(self, task_id: str, index: int, item: bytes) -> None:
+        await _rt().feed_for(task_id, index).put(loads(item))
+
+    async def feed_done(self, task_id: str, index: int) -> None:
+        rt = _rt()
+        await rt.feed_for(task_id, index).close()
+        rt.in_feeds.pop((task_id, index), None)
 
 
 async def main(
@@ -585,40 +447,54 @@ async def main(
     tls_ca: str | None = None,
     cluster_mode: bool = True,
 ) -> None:
-    config = CastyConfig(
-        heartbeat=HeartbeatConfig(interval=2.0, availability_check_interval=5.0),
-        failure_detector=FailureDetectorConfig(
-            threshold=16.0,
-            acceptable_heartbeat_pause_ms=10_000.0,
-        ),
-        suppress_dead_letters_on_shutdown=True
-    )
+    global _runtime
 
     log = logger.bind(component="worker", node_id=node_id)
-    quorum = num_nodes if num_nodes > 1 else None
-    log.debug("Starting casty worker, quorum={quorum} port={port}", quorum=quorum, port=port)
-    log.info("Casty worker starting, quorum={quorum} port={port}", quorum=quorum, port=port)
+    log.info("Casty worker starting, port={port} nodes={n}", port=port, n=num_nodes)
 
     os.environ["SKYWARD_NODE_ID"] = str(node_id)
 
-    tls: Any = None
+    tls: casty.TLS | None = None
     if tls_cert and tls_ca:
-        from casty.remote.tls import Config as TlsConfig
-
-        tls = TlsConfig.from_paths(certfile=tls_cert, cafile=tls_ca, keyfile=tls_key)
+        tls = casty.TLS(
+            cert=tls_cert, key=tls_key or tls_cert, ca=tls_ca,
+            require_client_cert=True,
+        )
         log.info("mTLS enabled")
 
-    async with ClusteredActorSystem(
-        name="skyward",
-        host=host,
-        port=port,
-        node_id=f"node-{node_id}",
-        seed_nodes=tuple(seeds) if seeds else None,
-        bind_host="0.0.0.0",
-        config=config,
-        serializer=skyward_serializer(),
-        tls=tls,
-    ) as system:
+    async def _wait_for_seed(seed_host: str, seed_port: int) -> None:
+        # Non-head workers race the head's listener. `casty.start` binds its
+        # own port before dialing the seed and doesn't release it on a failed
+        # join, so probe the seed with a raw TCP connect first.
+        deadline = asyncio.get_event_loop().time() + 180.0
+        while True:
+            try:
+                _, writer = await asyncio.open_connection(seed_host, seed_port)
+                writer.close()
+                await writer.wait_closed()
+                return
+            except OSError as e:
+                if asyncio.get_event_loop().time() > deadline:
+                    raise
+                log.warning(
+                    "Seed {h}:{p} not reachable ({err}), retrying",
+                    h=seed_host, p=seed_port, err=e,
+                )
+                await asyncio.sleep(2.0)
+
+    async def _start_node() -> Any:
+        if seeds:
+            await _wait_for_seed(*seeds[0])
+        return await casty.start(
+            f"0.0.0.0:{port}",
+            advertise=f"{host}:{port}",
+            seeds=[f"{h}:{p}" for h, p in seeds] if seeds else [],
+            tls=tls,
+            cluster_name="skyward",
+        )
+
+    system = await _start_node()
+    try:
         from skyward.distributed import _set_active_registry
         from skyward.distributed.proxies import set_system_loop
 
@@ -661,7 +537,7 @@ async def main(
         if cluster_mode:
             from skyward.distributed.registry import DistributedRegistry
 
-            registry = DistributedRegistry(system, loop=loop)
+            registry = DistributedRegistry(system, loop=loop, num_nodes=num_nodes)
         else:
             from skyward.distributed.disabled import DisabledRegistry
 
@@ -673,24 +549,29 @@ async def main(
 
             start_bridge(ipc_queue, registry)
 
-        system.spawn(
-            Behaviors.discoverable(
-                worker_behavior(
-                    node_id, concurrency=workers_per_node,
-                    registry=registry, system=system,
-                    executor=worker_executor,
-                    executor_pool=task_executor,
-                ),
-                key=WORKER_KEY,
-            ),
-            "worker",
+        _runtime = _Runtime(
+            node_id=node_id,
+            loop=loop,
+            executor=worker_executor,
+            executor_pool=task_executor,
+            registry=registry,
         )
+
         log.info(
             "Casty worker ready (cluster={num_nodes} nodes, concurrency={concurrency})",
             num_nodes=num_nodes, concurrency=workers_per_node,
         )
 
         await asyncio.Event().wait()
+    finally:
+        rt, _runtime = _runtime, None
+        if rt is not None:
+            for cm in reversed(rt.active_contexts):
+                with suppress(Exception):
+                    cm.__exit__(None, None, None)
+            rt.active_contexts.clear()
+        with suppress(Exception):
+            await system.close()
 
 
 def _parse_seeds(seeds_str: str | None) -> list[tuple[str, int]] | None:
@@ -777,7 +658,7 @@ def cli() -> None:
     _logging.getLogger("casty").addHandler(_h)
 
     node_id = int(os.environ["SKYWARD_NODE_ID"])
-    port = int(os.environ.get("SKYWARD_PORT", "25520"))
+    port = int(os.environ.get("SKYWARD_PORT", str(DEFAULT_CASTY_PORT)))
     num_nodes = int(os.environ.get("SKYWARD_NUM_NODES", "1"))
     host = os.environ.get("SKYWARD_HOST", "0.0.0.0")
     cluster_mode = os.environ.get("SKYWARD_CLUSTER", "true").lower() != "false"
@@ -803,7 +684,7 @@ def cli() -> None:
 
 if __name__ == "__main__":
     # Force-import the module under its canonical name so all class
-    # references (TaskSucceeded, EnterContext, etc.) use
+    # references (TaskSucceeded, WorkerService, etc.) use
     # 'skyward.infra.worker' — not '__main__'. Without this, pickle
     # sends __main__.TaskSucceeded which the client can't resolve.
     import importlib

@@ -1,10 +1,13 @@
-"""Registry for distributed collections backed by Casty's native Distributed API."""
+"""Registry for distributed collections backed by casty v2 collections.
+
+Every collection is replicated across ``min(3, num_nodes)`` physical nodes
+with quorum-acknowledged writes — a pool of one node runs with a single
+replica so writes are never fenced by an unreachable quorum.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
-from collections.abc import Callable
 from typing import Any
 
 from skyward.observability.logger import logger
@@ -22,35 +25,18 @@ from .types import Consistency
 log = logger.bind(component="distributed")
 
 
-def _call_on_loop[T](loop: asyncio.AbstractEventLoop, fn: Callable[[], T]) -> T:
-    try:
-        running = asyncio.get_running_loop()
-        if running is loop:
-            return fn()
-    except RuntimeError:
-        pass
-
-    result_future: concurrent.futures.Future[T] = concurrent.futures.Future()
-
-    def _run() -> None:
-        try:
-            result_future.set_result(fn())
-        except Exception as e:
-            result_future.set_exception(e)
-
-    loop.call_soon_threadsafe(_run)
-    return result_future.result(timeout=10)
-
-
 class DistributedRegistry:
-    __slots__ = ("_distributed", "_loop")
+    __slots__ = ("_loop", "_replicas", "_system")
 
-    def __init__(self, system: Any, loop: asyncio.AbstractEventLoop | None = None) -> None:
+    def __init__(
+        self,
+        system: Any,
+        loop: asyncio.AbstractEventLoop | None = None,
+        num_nodes: int = 1,
+    ) -> None:
         self._loop = loop or asyncio.get_running_loop()
-        self._distributed = system.distributed()
-
-    def _get_distributed(self) -> Any:
-        return self._distributed
+        self._system: Any = system
+        self._replicas = min(3, max(1, num_nodes))
 
     def dict(
         self,
@@ -59,9 +45,10 @@ class DistributedRegistry:
         consistency: Consistency | None = None,
     ) -> DictProxy:
         log.debug("Creating distributed dict name={name}", name=name)
-        d = self._get_distributed()
-        map_ = _call_on_loop(self._loop, lambda: d.map[str, Any](name))
-        return DictProxy(map_, consistency=consistency or "eventual")
+        return DictProxy(
+            self._system.map(name, replicas=self._replicas),
+            consistency=consistency or "eventual",
+        )
 
     def set(
         self,
@@ -70,9 +57,10 @@ class DistributedRegistry:
         consistency: Consistency | None = None,
     ) -> SetProxy:
         log.debug("Creating distributed set name={name}", name=name)
-        d = self._get_distributed()
-        set_ = _call_on_loop(self._loop, lambda: d.set[Any](name))
-        return SetProxy(set_, consistency=consistency or "eventual")
+        return SetProxy(
+            self._system.set(name, replicas=self._replicas),
+            consistency=consistency or "eventual",
+        )
 
     def counter(
         self,
@@ -81,29 +69,28 @@ class DistributedRegistry:
         consistency: Consistency | None = None,
     ) -> CounterProxy:
         log.debug("Creating distributed counter name={name}", name=name)
-        d = self._get_distributed()
-        counter = _call_on_loop(self._loop, lambda: d.counter(name))
-        return CounterProxy(counter, consistency=consistency or "eventual")
+        return CounterProxy(
+            self._system.counter(name, replicas=self._replicas),
+            consistency=consistency or "eventual",
+        )
 
     def queue(self, name: str) -> QueueProxy:
         log.debug("Creating distributed queue name={name}", name=name)
-        d = self._get_distributed()
-        queue = _call_on_loop(self._loop, lambda: d.queue[Any](name))
-        return QueueProxy(queue)
+        return QueueProxy(self._system.queue(name, replicas=self._replicas))
 
     def barrier(self, name: str, n: int) -> BarrierProxy:
         log.debug("Creating distributed barrier name={name} n={n}", name=name, n=n)
-        d = self._get_distributed()
-        barrier = _call_on_loop(self._loop, lambda: d.barrier(name))
-        return BarrierProxy(barrier, n)
+        return BarrierProxy(
+            self._system.barrier(name, parties=n, replicas=self._replicas), n,
+        )
 
     def lock(self, name: str, timeout: float = 30) -> LockProxy:
         log.debug("Creating distributed lock name={name}", name=name)
-        d = self._get_distributed()
-        lock = _call_on_loop(self._loop, lambda: d.lock(name, timeout=timeout))
-        return LockProxy(lock, timeout)
+        return LockProxy(
+            self._system.lock(name, timeout=timeout, replicas=self._replicas),
+            timeout,
+        )
 
     def cleanup(self) -> None:
         log.debug("Cleaning up distributed registry")
-        self._distributed = None
-        log.debug("Distributed registry cleanup complete")
+        self._system = None

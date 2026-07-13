@@ -26,7 +26,6 @@ from skyward.actors.messages import ClusterDestroyed as ClusterDestroyed
 from skyward.actors.messages import ClusterId as ClusterId
 from skyward.actors.messages import ClusterProvisioned as ClusterProvisioned
 from skyward.actors.messages import ClusterReady as ClusterReady
-from skyward.actors.messages import ClusterRequested as ClusterRequested
 from skyward.actors.messages import Error as Error
 from skyward.actors.messages import Event as Event
 from skyward.actors.messages import Fact as Fact
@@ -36,16 +35,12 @@ from skyward.actors.messages import InstanceId as InstanceId
 from skyward.actors.messages import InstancePreempted as InstancePreempted
 from skyward.actors.messages import InstanceProvisioned as InstanceProvisioned
 from skyward.actors.messages import InstanceReplaced as InstanceReplaced
-from skyward.actors.messages import InstanceRequested as InstanceRequested
 from skyward.actors.messages import Log as Log
 from skyward.actors.messages import Metric as Metric
 from skyward.actors.messages import NodeId as NodeId
 from skyward.actors.messages import NodeInstance as NodeInstance
 from skyward.actors.messages import ProviderName as ProviderName
-from skyward.actors.messages import Request as Request
 from skyward.actors.messages import RequestId as RequestId
-from skyward.actors.messages import ShutdownCompleted as ShutdownCompleted
-from skyward.actors.messages import ShutdownRequested as ShutdownRequested
 from skyward.actors.messages import TaskCompleted as TaskCompleted
 from skyward.actors.messages import TaskStarted as TaskStarted
 
@@ -208,10 +203,6 @@ __all__ = [
     "NodeId",
     "ProviderName",
     "NodeInstance",
-    "ClusterRequested",
-    "InstanceRequested",
-    "ShutdownCompleted",
-    "ShutdownRequested",
     "ClusterProvisioned",
     "InstanceProvisioned",
     "InstanceBootstrapped",
@@ -225,7 +216,6 @@ __all__ = [
     "Metric",
     "Log",
     "Error",
-    "Request",
     "Fact",
     "Event",
     "metrics",

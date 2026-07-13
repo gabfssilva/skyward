@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import shlex
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
@@ -175,13 +176,21 @@ async def do_start_worker(
 
 
 async def install_local_skyward(transport: SshTransport, ni: NodeInstance, cluster: Any) -> None:
-    from skyward.providers.common import _build_wheel_install_script, build_wheel
+    from skyward.providers.common import (
+        _build_wheel_install_script,
+        build_casty_wheel,
+        build_wheel,
+    )
 
     log = logger.bind(component="bootstrap_ssh")
     log.info("Building local skyward wheel")
     wheel_path = await asyncio.to_thread(build_wheel)
+    casty_wheel_path = await asyncio.to_thread(build_casty_wheel)
 
-    install_script = _build_wheel_install_script(wheel_name=wheel_path.name)
+    install_script = _build_wheel_install_script(
+        wheel_name=wheel_path.name,
+        casty_wheel_name=casty_wheel_path.name if casty_wheel_path else None,
+    )
 
     def _read_wheel() -> tuple[int, bytes]:
         return wheel_path.stat().st_size, wheel_path.read_bytes()
@@ -190,6 +199,12 @@ async def install_local_skyward(transport: SshTransport, ni: NodeInstance, clust
     log.debug("Wheel size: {size:.1f} KB", size=wheel_size / 1024)
     log.info("Uploading wheel {name}", name=wheel_path.name)
     await transport.write_bytes(f"/tmp/{wheel_path.name}", wheel_data)
+    if casty_wheel_path is not None:
+        log.info("Uploading local casty wheel {name}", name=casty_wheel_path.name)
+        await transport.write_bytes(
+            f"/tmp/{casty_wheel_path.name}",
+            await asyncio.to_thread(casty_wheel_path.read_bytes),
+        )
 
     await transport.write_file("/tmp/.install-wheel.sh", install_script)
 
@@ -323,49 +338,63 @@ async def run_bootstrap(
     log.info("Bootstrap started on {iid}", iid=ni.instance.id)
 
 
+@dataclass(frozen=True, slots=True)
+class WorkerHandle:
+    """Typed proxies to one node's worker services, pinned to its member."""
+
+    service: Any
+    control: Any
+    node_id: int
+
+
 async def discover_own_worker(
     client: Any,
     ni: NodeInstance | None,
     standalone: bool = False,
-) -> Any:
-    from contextlib import contextmanager
-
-    from skyward.infra.worker import WORKER_KEY, EnterContext
+) -> WorkerHandle:
+    from skyward.infra.worker import DEFAULT_CASTY_PORT, WorkerControl, WorkerService
 
     private_ip = ni.instance.private_ip or ni.instance.ip or "" if ni else ""
-
-    @contextmanager
-    def _noop() -> Any:
-        yield
+    target = f"{private_ip}:{DEFAULT_CASTY_PORT}"
 
     deadline = asyncio.get_event_loop().time() + 120.0
     while asyncio.get_event_loop().time() < deadline:
-        listing = client.lookup(WORKER_KEY)
-        for instance in listing.instances:
-            if standalone or instance.node.host == private_ip:
+        for member in client.members():
+            if standalone or member.addr == target:
+                control = client.service(WorkerControl, at=member)
                 try:
-                    await client.ask(
-                        instance.ref,
-                        lambda rto: EnterContext(factory=_noop, reply_to=rto),
-                        timeout=3.0,
-                    )
-                    return instance.ref
+                    node_id = await asyncio.wait_for(control.ping(), timeout=3.0)
                 except Exception:
-                    pass
+                    continue
+                return WorkerHandle(
+                    service=client.service(WorkerService, at=member),
+                    control=control,
+                    node_id=node_id,
+                )
         await asyncio.sleep(1.0)
 
     raise RuntimeError(f"Worker for {private_ip} not discovered within 120s")
 
 
+async def _enter_remote_context(worker: WorkerHandle, factory: Any) -> None:
+    from skyward.infra.worker import TaskFailed, dumps, loads
+
+    outcome = await asyncio.wait_for(
+        worker.control.enter_context(dumps(factory)), timeout=60.0,
+    )
+    match loads(outcome):
+        case TaskFailed(error=error, traceback=tb):
+            raise RuntimeError(f"worker context entry failed: {error}\n{tb}")
+
+
 async def setup_worker_env(
-    client: Any,
-    worker_ref: Any,
+    worker: WorkerHandle,
     pool_info_json: str,
     env_vars: dict[str, str] | MappingProxyType[str, str],
     around_app_hooks: tuple[tuple[str, Any], ...] = (),
     around_process_hooks: tuple[tuple[str, Any], ...] = (),
 ) -> None:
-    from skyward.infra.worker import EnterContext, SetProcessHooks
+    from skyward.infra.worker import dumps
 
     _frozen_env = dict(env_vars)
 
@@ -386,11 +415,7 @@ async def setup_worker_env(
 
         return lifecycle()
 
-    await client.ask(
-        worker_ref,
-        lambda rto: EnterContext(factory=make_env_cm, reply_to=rto),
-        timeout=60.0,
-    )
+    await _enter_remote_context(worker, make_env_cm)
 
     if around_app_hooks:
 
@@ -414,128 +439,82 @@ async def setup_worker_env(
 
             return lifecycle()
 
-        await client.ask(
-            worker_ref,
-            lambda rto: EnterContext(factory=make_hooks_cm, reply_to=rto),
-            timeout=60.0,
-        )
+        await _enter_remote_context(worker, make_hooks_cm)
 
     if around_process_hooks:
-        await client.ask(
-            worker_ref,
-            lambda rto: SetProcessHooks(hooks=around_process_hooks, reply_to=rto),
+        await asyncio.wait_for(
+            worker.control.set_process_hooks(dumps(around_process_hooks)),
             timeout=60.0,
         )
 
 
 async def execute_with_streaming(
-    client: Any,
-    worker_ref: Any,
+    worker: WorkerHandle,
     fn: Any,
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
     timeout: float,
     task_id: str = "",
 ) -> Any:
-    from skyward.infra.streaming import _stream_param_indices, _StreamHandle, _SyncSource
-    from skyward.infra.worker import ExecuteTask
-    from skyward.infra.worker import TaskSucceeded as WorkerTaskSucceeded
+    from skyward.infra.streaming import (
+        _stream_param_indices,
+        _SyncStream,
+        iter_output_stream,
+    )
+    from skyward.infra.worker import StreamStarted, TaskSucceeded, dumps, loads
 
     indices = _stream_param_indices(fn)
     pump_tasks: list[asyncio.Task[None]] = []
-    resolved_args = args
-    stream_refs: tuple[tuple[int, Any], ...] = ()
+    resolved = list(args)
+    for i in indices:
+        if i >= len(resolved):
+            continue
+        pump_tasks.append(asyncio.create_task(
+            _pump_input(worker, task_id, i, resolved[i]),
+        ))
+        resolved[i] = None
 
-    if indices:
-        resolved_args, pump_tasks, stream_refs = await _setup_input_streams(
-            client,
-            args,
-            indices,
+    payload = dumps((fn, tuple(resolved), kwargs, indices))
+    try:
+        raw = await asyncio.wait_for(
+            worker.service.run(task_id, payload), timeout=timeout,
         )
-
-    result = await asyncio.wait_for(
-        client.ask(
-            worker_ref,
-            lambda rto: ExecuteTask(
-                fn=fn,
-                args=resolved_args,
-                kwargs=kwargs,
-                reply_to=rto,
-                input_streams=stream_refs,
-                task_id=task_id,
-            ),
-            timeout=timeout,
-        ),
-        timeout=timeout,
-    )
+    except BaseException:
+        for t in pump_tasks:
+            t.cancel()
+        raise
+    result = loads(raw)
 
     for t in pump_tasks:
         await t
 
     match result:
-        case WorkerTaskSucceeded(result=_StreamHandle(producer_ref=pref)):
-            source = await _resolve_output_stream(client, pref)
+        case StreamStarted(node_id=nid):
             loop = asyncio.get_running_loop()
-            return WorkerTaskSucceeded(result=_SyncSource(source, loop), node_id=result.node_id)
+            source = iter_output_stream(worker.control, task_id)
+            return TaskSucceeded(result=_SyncStream(source, loop), node_id=nid)
         case _:
             return result
 
 
-async def _setup_input_streams(
-    client: Any,
-    args: tuple[Any, ...],
-    indices: tuple[int, ...],
-) -> tuple[tuple[Any, ...], list[asyncio.Task[None]], tuple[tuple[int, Any], ...]]:
-    from uuid import uuid4
+async def _pump_input(
+    worker: WorkerHandle, task_id: str, index: int, iterator: Any,
+) -> None:
+    from skyward.infra.worker import dumps
 
-    from casty import GetSink, stream_producer
-
-    resolved = list(args)
-    pump_tasks: list[asyncio.Task[None]] = []
-    stream_refs: list[tuple[int, Any]] = []
     loop = asyncio.get_running_loop()
 
-    for i in indices:
-        if i >= len(resolved):
-            continue
-        iterator = resolved[i]
+    def _drain() -> None:
+        for elem in iterator:
+            fut = asyncio.run_coroutine_threadsafe(
+                worker.control.feed(task_id, index, dumps(elem)), loop,
+            )
+            fut.result(timeout=300.0)
 
-        producer_ref = client.spawn(
-            stream_producer(buffer_size=256),
-            f"input-{uuid4().hex[:8]}",
-        )
-        sink = await client.ask(producer_ref, lambda r: GetSink(reply_to=r), timeout=10.0)
-        resolved[i] = None
-        stream_refs.append((i, producer_ref))
-
-        async def _pump(_sink: Any = sink, _it: Any = iterator) -> None:
-            def _drain() -> None:
-                try:
-                    for elem in _it:
-                        fut = asyncio.run_coroutine_threadsafe(_sink.put(elem), loop)
-                        fut.result(timeout=300.0)
-                finally:
-                    fut = asyncio.run_coroutine_threadsafe(_sink.complete(), loop)
-                    fut.result(timeout=60.0)
-
-            await asyncio.to_thread(_drain)
-
-        pump_tasks.append(asyncio.create_task(_pump()))
-
-    return tuple(resolved), pump_tasks, tuple(stream_refs)
-
-
-async def _resolve_output_stream(client: Any, producer_ref: Any) -> Any:
-    from uuid import uuid4
-
-    from casty import GetSource, stream_consumer
-
-    name = f"out-consumer-{uuid4().hex[:8]}"
-    consumer_ref = client.spawn(
-        stream_consumer(producer_ref, timeout=60.0, initial_demand=16),
-        name,
-    )
-    return await client.ask(consumer_ref, lambda r: GetSource(reply_to=r), timeout=10.0)
+    try:
+        await asyncio.to_thread(_drain)
+    finally:
+        await worker.control.feed_done(task_id, index)
 
 
 async def _run_file_op(
