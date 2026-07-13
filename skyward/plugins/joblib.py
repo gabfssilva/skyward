@@ -15,6 +15,7 @@ from joblib import parallel_backend
 from joblib.parallel import ParallelBackendBase, register_parallel_backend
 
 from skyward.api.plugin import Plugin
+from skyward.api.spec import Nodes
 from skyward.observability.logger import logger
 
 if TYPE_CHECKING:
@@ -92,15 +93,8 @@ class SkywardBackend(ParallelBackendBase):
     def effective_n_jobs(self, n_jobs: int) -> int:  # type: ignore[override]
         if n_jobs == 0:
             return 0
-        nodes = self.pool._specs[0].nodes  # type: ignore[attr-defined]
-        match nodes:
-            case (first, *_):
-                n = first
-            case int() as n:
-                n = n
-            case _:
-                n = 1
-        return n * self.pool.concurrency
+        nodes = Nodes.from_spec(self.pool._specs[0].nodes)  # type: ignore[attr-defined]
+        return (nodes.max or nodes.desired) * self.pool.concurrency
 
     def submit(
         self,
