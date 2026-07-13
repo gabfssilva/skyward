@@ -1,27 +1,21 @@
-"""The vocabulary of Skyward — every message, event, and type alias.
+"""The vocabulary of Skyward — shared value objects and domain facts.
 
-Two kinds of messages:
-- System events: ClusterRequested, InstanceProvisioned, etc.
-- Actor messages: StartPool, Provision, StopMonitor, etc.
-
-Actor message types (PoolMsg, NodeMsg, MonitorMsg)
-are the contracts — the type union IS the actor's public API.
+These are pure data types: instance bindings (``NodeInstance``), stream
+facts emitted by the instance monitor (``Metric``, ``Log``,
+``BootstrapPhase``, …), file-operation results, and the pressure report
+exchanged between the task manager and the autoscaler.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
-from uuid import uuid4
+from typing import TYPE_CHECKING, Literal
 
 from casty import ActorRef
 
 if TYPE_CHECKING:
-    from skyward.actors.snapshot import PoolSnapshot
     from skyward.core.model import Cluster, Instance
     from skyward.core.spec import PoolSpec
-    from skyward.infra.ssh_transport import SshTransport
-    from skyward.providers.provider import Provider
 
 type RequestId = str
 type ClusterId = str
@@ -70,6 +64,15 @@ class InstanceRegistry:
 
     def get(self, instance_id: InstanceId) -> NodeInstance | None:
         return self._instances.get(instance_id)
+
+
+class NodeInterruptedError(Exception):
+    """Task lost to infrastructure failure (preemption, connection loss)."""
+
+    def __init__(self, node_id: int, reason: str) -> None:
+        self.node_id = node_id
+        self.reason = reason
+        super().__init__(f"Node {node_id} interrupted: {reason}")
 
 
 # =============================================================================
@@ -204,6 +207,11 @@ class InstanceDestroyed:
 
 
 @dataclass(frozen=True, slots=True)
+class ClusterReady:
+    cluster: Cluster
+
+
+@dataclass(frozen=True, slots=True)
 class ClusterDestroyed:
     """Cluster was fully shut down."""
 
@@ -325,116 +333,8 @@ type Event = Request | Fact
 
 
 # =============================================================================
-# Node Actor Messages (shared across actors)
+# Coordination value objects
 # =============================================================================
-
-
-@dataclass(frozen=True, slots=True)
-class Preempted:
-    reason: str = "preempted"
-
-
-# =============================================================================
-# Node Actor Messages
-# =============================================================================
-
-
-@dataclass(frozen=True, slots=True)
-class Provision:
-    cluster: Cluster[Any]
-    provider: Provider[Any, Any]
-    instance: Instance
-
-
-@dataclass(frozen=True, slots=True)
-class ExecuteOnNode:
-    fn: Any
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
-    reply_to: ActorRef[Any]
-    task_id: str = ""
-    timeout: float = 600.0
-
-
-@dataclass(frozen=True, slots=True)
-class TaskSucceeded:
-    """Remote function returned normally."""
-    value: Any
-    node_id: NodeId
-    task_id: str = ""
-    elapsed: float = 0.0
-
-
-@dataclass(frozen=True, slots=True)
-class TaskFailed:
-    """Remote function raised an exception (user error)."""
-    error: Exception
-    node_id: NodeId
-    task_id: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class TaskInterrupted:
-    """Task lost due to infrastructure failure (preemption, connection loss)."""
-    error: Exception
-    node_id: NodeId
-    task_id: str = ""
-
-
-type TaskResult = TaskSucceeded | TaskFailed | TaskInterrupted
-
-
-
-
-# =============================================================================
-# Pool Actor Messages
-# =============================================================================
-
-
-@dataclass(frozen=True, slots=True)
-class NodeConnected:
-    """Node established SSH tunnel — instance is provisioned and reachable."""
-
-    node_id: NodeId
-    instance: NodeInstance
-
-
-@dataclass(frozen=True, slots=True)
-class NodeBecameReady:
-    node_id: NodeId
-    instance: NodeInstance
-    local_port: int = 0
-    private_ip: str = ""
-    casty_port: int = 25520
-    transport: SshTransport | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class NodeActivated:
-    node_id: NodeId
-    node_ref: ActorRef[Any]
-    slots: int
-
-
-@dataclass(frozen=True, slots=True)
-class NodeLost:
-    node_id: NodeId
-    reason: str
-
-
-@dataclass(frozen=True, slots=True)
-class NodeExhausted:
-    """Node exhausted all recovery attempts and is permanently dead."""
-
-    node_id: NodeId
-    reason: str
-    instance_id: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class NodeBecameUnready:
-    node_id: NodeId
-    reason: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -447,11 +347,6 @@ class HeadAddressKnown:
     worker_reuse_processes: bool = True
 
 
-@dataclass(frozen=True, slots=True)
-class ClusterReady:
-    cluster: Cluster
-
-
 # =============================================================================
 # File Operations (ls / rm / upload / download on selected nodes)
 # =============================================================================
@@ -459,17 +354,7 @@ class ClusterReady:
 
 type FileOpKind = Literal["ls", "rm", "upload", "download"]
 type NodeSelection = int | Literal["head", "all"]
-
-
-@dataclass(frozen=True, slots=True)
-class NodeFileOp:
-    """A single file operation routed to one node's transport."""
-
-    op: FileOpKind
-    path: str
-    content: bytes
-    timeout: float
-    reply_to: ActorRef[NodeFileResult]
+type NodeTarget = int | Literal["head"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -481,80 +366,7 @@ class NodeFileResult:
     error: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class FileOpOnNodes:
-    """Pool-level fan-out of a file operation across selected nodes."""
-
-    op: FileOpKind
-    path: str
-    content: bytes
-    selection: NodeSelection
-    timeout: float
-    reply_to: ActorRef[FileOpReplies]
-
-
-@dataclass(frozen=True, slots=True)
-class FileOpReplies:
-    results: tuple[NodeFileResult, ...]
-
-
-
-
-# =============================================================================
-# TaskManager Actor Messages
-# =============================================================================
-
-
-type NodeTarget = int | Literal["head"]
-
-
-@dataclass(frozen=True, slots=True)
-class SubmitTask:
-    fn: Any
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
-    reply_to: ActorRef[Any]
-    task_id: str = field(default_factory=lambda: uuid4().hex[:8])
-    timeout: float = 600.0
-    target: NodeTarget | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class SubmitBroadcast:
-    fn: Any
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
-    reply_to: ActorRef[Any]
-    task_id: str = field(default_factory=lambda: uuid4().hex[:8])
-    timeout: float = 600.0
-
-
-@dataclass(frozen=True, slots=True)
-class NodeAvailable:
-    node_id: NodeId
-    node_ref: ActorRef[Any]
-    slots: int
-
-
-@dataclass(frozen=True, slots=True)
-class NodeUnavailable:
-    node_id: NodeId
-
-
-@dataclass(frozen=True, slots=True)
-class NodeSlots:
-    ref: ActorRef[Any]
-    total: int
-    used: int
-
-
-@dataclass(frozen=True, slots=True)
-class TaskSubmitted:
-    task_id: str
-    node_id: NodeId
-
-
-# ── Autoscaler ────────────────────────────────────────────────────
+# ── Autoscaling ───────────────────────────────────────────────────
 
 
 @dataclass(frozen=True, slots=True)
@@ -563,202 +375,6 @@ class PressureReport:
     inflight: int
     total_capacity: int
     node_count: int
-
-
-@dataclass(frozen=True, slots=True)
-class BoundsChanged:
-    """Pool notifies autoscaler/reconciler of new (min, max, desired) bounds.
-
-    ``desired`` is the caller's target — the autoscaler rebases its internal
-    ``desired`` to this value before the next pressure evaluation.
-    """
-
-    min: int
-    max: int
-    desired: int
-
-
-# ── Idle tracking ─────────────────────────────────────────────────
-
-
-@dataclass(frozen=True, slots=True)
-class NodeBecameIdle:
-    node_id: NodeId
-
-
-@dataclass(frozen=True, slots=True)
-class NodeBecameBusy:
-    node_id: NodeId
-
-
-
-# ── Reconciler ────────────────────────────────────────────────────
-
-
-@dataclass(frozen=True, slots=True)
-class DesiredCountChanged:
-    desired: int
-    reason: str
-
-
-@dataclass(frozen=True, slots=True)
-class ReconcilerNodeLost:
-    node_id: NodeId
-    reason: str
-
-
-@dataclass(frozen=True, slots=True)
-class ReconciliationExhausted:
-    """Reconciler exhausted all provision retry attempts."""
-
-    reason: str
-
-
-@dataclass(frozen=True, slots=True)
-class NodeJoined:
-    node_id: NodeId
-
-
-@dataclass(frozen=True, slots=True)
-class ReapIdleNodes:
-    """Reconciler asks pool to drain a specific set of idle nodes."""
-    node_ids: frozenset[NodeId]
-    reason: str
-
-
-# ── Pool ↔ Reconciler ────────────────────────────────────────────
-
-
-@dataclass(frozen=True, slots=True)
-class DrainComplete:
-    node_id: NodeId
-    instance_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class RequestScaleUp:
-    """Reconciler asks pool to provision more nodes."""
-    count: int
-
-
-@dataclass(frozen=True, slots=True)
-class RequestScaleDown:
-    """Reconciler asks pool to drain excess nodes."""
-    count: int
-
-
-@dataclass(frozen=True, slots=True)
-class RequestDrainNodes:
-    """Reconciler asks pool to drain a specific set of nodes by id."""
-    node_ids: frozenset[NodeId]
-
-
-@dataclass(frozen=True, slots=True)
-class ScaleUpComplete:
-    """Pool reports how many nodes were actually provisioned."""
-    provisioned: int
-
-
-@dataclass(frozen=True, slots=True)
-class ScaleUpFailed:
-    """Pool reports provision failure."""
-    error: str
-
-
-@dataclass(frozen=True, slots=True)
-class ScaleDownComplete:
-    """Pool confirms drain started for N nodes."""
-    drained: int
-
-
-# ── Pool Query ────────────────────────────────────────────────────
-
-
-@dataclass(frozen=True, slots=True)
-class GetCurrentNodes:
-    reply_to: ActorRef[CurrentNodeCount]
-
-
-@dataclass(frozen=True, slots=True)
-class CurrentNodeCount:
-    count: int
-    ready: int
-
-
-@dataclass(frozen=True, slots=True)
-class GetPoolSnapshot:
-    reply_to: ActorRef[PoolSnapshot]
-
-
-@dataclass(frozen=True, slots=True)
-class RegisterPressureObserver:
-    observer: ActorRef[PressureReport]
-
-
-
-# =============================================================================
-# Provider Actor Messages (legacy — kept for old handler.py files)
-# =============================================================================
-
-
-@dataclass(frozen=True, slots=True)
-class InstanceReady:
-    """Internal: polling confirmed instance is running with IP."""
-
-    instance_id: str
-    node_id: int
-    ip: str
-    private_ip: str | None
-    ssh_port: int
-    spot: bool
-    metadata: dict[str, Any]
-
-
-@dataclass(frozen=True, slots=True)
-class BootstrapDone:
-    """Internal: bootstrap monitor signals completion."""
-
-    instance: NodeInstance
-    success: bool
-    error: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _ProvisioningDone:
-    state: Any
-
-
-@dataclass(frozen=True, slots=True)
-class _InstanceNowRunning:
-    event: InstanceRunning
-
-
-@dataclass(frozen=True, slots=True)
-class _InstanceWaitFailed:
-    instance_id: str
-    node_id: int
-    error: str
-
-
-@dataclass(frozen=True, slots=True)
-class _BootstrapScriptDone:
-    instance_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class _BootstrapScriptFailed:
-    instance_id: str
-    error: str
-
-
-# =============================================================================
-# Monitor Actor Messages
-# =============================================================================
-
-
-@dataclass(frozen=True, slots=True)
-class StopMonitor:
-    pass
 
 
 # =============================================================================

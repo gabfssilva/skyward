@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import replace
-from types import MappingProxyType
+import sys
+from collections.abc import Callable
 from typing import Any
 
-from casty import ActorContext, Behavior, Behaviors
 from rich.console import Console
 from rich.live import Live
 from rich.table import Table
@@ -45,7 +44,7 @@ def _print_event(console: Console, event: object, state: _State) -> None:
             _print_no_offers(console, specs)
         case Node.Ready(node_id=nid):
             label = _node_label(state, nid)
-            _emit(console, label, "\u2713 Joined", "green bold", link=_ssh_url(state, nid))
+            _emit(console, label, "✓ Joined", "green bold", link=_ssh_url(state, nid))
         case Node.Lost(node_id=nid, reason=reason):
             _emit(console, "error", f"Node {nid} lost: {reason}", "red")
         case Node.ConnectionFailed(error=error):
@@ -56,10 +55,10 @@ def _print_event(console: Console, event: object, state: _State) -> None:
             _emit(console, "error", f"Worker failed: {error}", "red")
         case Node.Bootstrap.Failed(node_id=nid, phase=phase, error=err):
             label = _node_label(state, nid)
-            _emit(console, label, f"\u2717 {phase}: {err}", "red", link=_ssh_url(state, nid))
+            _emit(console, label, f"✗ {phase}: {err}", "red", link=_ssh_url(state, nid))
         case Task.Queued(name=name, kind="broadcast"):
             n = len(state.instances)
-            _emit_task(console, "skyward", "queued", f"{name} \u2192 all {n} nodes")
+            _emit_task(console, "skyward", "queued", f"{name} → all {n} nodes")
         case Task.Queued(name=name):
             _emit_task(console, "skyward", "queued", name)
         case Task.Completed(node_id=nid, elapsed=elapsed):
@@ -77,180 +76,153 @@ def _print_event(console: Console, event: object, state: _State) -> None:
             pass
 
 
-def console_actor() -> Behavior[ConsoleInput]:
-    """Console tells this story: idle -> rendering."""
+class _Writer:
+    def __init__(self, original: Any, post: Callable[[ConsoleInput], None]) -> None:
+        self._original = original
+        self._post = post
 
-    console = Console(stderr=True)
-    _original_stdout: list[Any] = []
+    def write(self, s: str) -> int:
+        for line in s.splitlines(keepends=True):
+            if stripped := line.rstrip():
+                self._post(LocalOutput(line=stripped))
+        return len(s)
 
-    def _install_stdout_redirect(ctx: ActorContext[ConsoleInput]) -> None:
-        ref = ctx.self
+    def flush(self) -> None:
+        pass
 
-        class _Writer:
-            def __init__(self, original: Any) -> None:
-                self._original = original
+    @property
+    def encoding(self) -> str:
+        return self._original.encoding
 
-            def write(self, s: str) -> int:
-                for line in s.splitlines(keepends=True):
-                    if stripped := line.rstrip():
-                        ref.tell(LocalOutput(line=stripped))
-                return len(s)
+    @property
+    def errors(self) -> str | None:
+        return self._original.errors
 
-            def flush(self) -> None:
-                pass
+    def fileno(self) -> int:
+        return self._original.fileno()
 
-            @property
-            def encoding(self) -> str:
-                return self._original.encoding
+    def isatty(self) -> bool:
+        return False
 
-            @property
-            def errors(self) -> str | None:
-                return self._original.errors
 
-            def fileno(self) -> int:
-                return self._original.fileno()
+class RichConsole:
+    """Rich adaptive console: banner → live footer → event lines → summary."""
 
-            def isatty(self) -> bool:
-                return False
+    tick_interval: float | None = None
 
-        import sys
+    def __init__(self) -> None:
+        self._console = Console(stderr=True)
+        self._original_stdout: Any = None
+        self._live: Live | None = None
+        self._live_stopped = False
+        self._footer = _LiveFooter()
+        self._view = SessionView()
+        self._progress: dict[int, str] = {}
 
-        _original_stdout.append(sys.stdout)
-        sys.stdout = _Writer(sys.stdout)  # type: ignore[assignment]
+    def start(self, post: Callable[[ConsoleInput], None]) -> None:
+        self._original_stdout = sys.stdout
+        sys.stdout = _Writer(sys.stdout, post)  # type: ignore[assignment]
+        from skyward import __version__
 
-    async def _restore_stdout(_ctx: ActorContext[ConsoleInput]) -> None:
-        import sys
+        line1 = Text()
+        line1.append(f" v{__version__} ", style=_make_badge(140, 0.6))
+        line1.append("  Cloud accelerators with a single decorator", style=DIM)
 
-        if _original_stdout:
-            sys.stdout = _original_stdout.pop()
+        line2 = Text()
+        line2.append("https://gabfssilva.github.io/skyward/", style="underline dim")
 
-    live: Live | None = None
-    live_stopped = False
-    footer = _LiveFooter()
+        from .view import _LOGO_LINES
 
-    def _update_footer(state: _State) -> None:
-        nonlocal live
-        if live_stopped:
+        right = [Text(), line1, line2, Text()]
+
+        banner = Table.grid(padding=(0, 2))
+        banner.add_column("logo")
+        banner.add_column("info")
+        for logo_line, info_line in zip(_LOGO_LINES, right, strict=True):
+            banner.add_row(logo_line, info_line)
+        self._console.print()
+        self._console.print(banner)
+        self._console.print()
+
+    def stop(self) -> None:
+        self._stop_live()
+        if self._original_stdout is not None:
+            sys.stdout = self._original_stdout
+            self._original_stdout = None
+
+    def tick(self) -> None:
+        pass
+
+    def _update_footer(self, state: _State) -> None:
+        if self._live_stopped:
             return
-        footer.state = state
-        if live is None:
-            live = Live(
-                footer, console=console,
+        self._footer.state = state
+        if self._live is None:
+            self._live = Live(
+                self._footer, console=self._console,
                 refresh_per_second=8, screen=False,
                 redirect_stdout=False, redirect_stderr=False,
             )
-            live.start()
+            self._live.start()
 
-    def _stop_live(*, clear: bool = False) -> None:
-        nonlocal live, live_stopped
-        live_stopped = True
-        if live is not None:
+    def _stop_live(self, *, clear: bool = False) -> None:
+        self._live_stopped = True
+        if self._live is not None:
             if clear:
-                live.update(Text())
-            live.stop()
-            live = None
+                self._live.update(Text())
+            self._live.stop()
+            self._live = None
 
-    def idle() -> Behavior[ConsoleInput]:
-        async def setup(ctx: ActorContext[ConsoleInput]) -> Behavior[ConsoleInput]:
-            _install_stdout_redirect(ctx)
-            from skyward import __version__
-
-            line1 = Text()
-            line1.append(f" v{__version__} ", style=_make_badge(140, 0.6))
-            line1.append("  Cloud accelerators with a single decorator", style=DIM)
-
-            line2 = Text()
-            line2.append("https://gabfssilva.github.io/skyward/", style="underline dim")
-
-            from .view import _LOGO_LINES
-
-            right = [Text(), line1, line2, Text()]
-
-            banner = Table.grid(padding=(0, 2))
-            banner.add_column("logo")
-            banner.add_column("info")
-            for logo_line, info_line in zip(_LOGO_LINES, right, strict=True):
-                banner.add_row(logo_line, info_line)
-            console.print()
-            console.print(banner)
-            console.print()
-            return Behaviors.with_lifecycle(
-                rendering(SessionView()), post_stop=_restore_stdout,
-            )
-
-        return Behaviors.setup(setup)
-
-    def _get_state(
-        view: SessionView,
-        progress: MappingProxyType[int, str] = MappingProxyType({}),
-    ) -> _State:
-        pool = _first_pool(view)
+    def _get_state(self) -> _State:
+        pool = _first_pool(self._view)
         state = _state_from_pool_view(pool) if pool else _State(total_nodes=0)
-        if progress:
-            state = replace(state, progress_lines=progress)
+        if self._progress:
+            from dataclasses import replace
+            from types import MappingProxyType
+
+            state = replace(state, progress_lines=MappingProxyType(dict(self._progress)))
         return state
 
-    def rendering(
-        view: SessionView,
-        progress: MappingProxyType[int, str] = MappingProxyType({}),
-    ) -> Behavior[ConsoleInput]:
-        async def receive(
-            ctx: ActorContext[ConsoleInput], msg: ConsoleInput,
-        ) -> Behavior[ConsoleInput]:
-            match msg:
-                case ViewUpdated(view=new_view):
-                    state = _get_state(new_view, progress)
-                    _update_footer(state)
-                    return rendering(new_view, progress)
+    def handle(self, msg: ConsoleInput) -> None:
+        match msg:
+            case ViewUpdated(view=new_view):
+                self._view = new_view
+                self._update_footer(self._get_state())
 
-                case EventReceived(event=event):
-                    state = _get_state(view, progress)
-                    match event:
-                        case Pool.Stopped() | Pool.ProvisionFailed() | Pool.NoOffers():
-                            for nid, content in progress.items():
-                                _emit(console, _node_label(state, nid), content)
-                            _stop_live(clear=isinstance(event, Pool.ProvisionFailed | Pool.NoOffers))
-                            _print_event(console, event, state)
-                            if isinstance(event, Pool.Stopped):
-                                _emit(console, "skyward", "Shutting down...", WARNING_STYLE)
-                            summary = _render_summary(state)
-                            console.print(summary)
-                            return rendering(view, MappingProxyType({}))
-                        case Node.Lost(node_id=nid) if nid in progress:
-                            _emit(console, _node_label(state, nid), progress[nid])
-                            _print_event(console, event, state)
-                            new_progress = MappingProxyType({
-                                k: v for k, v in progress.items() if k != nid
-                            })
-                            return rendering(view, new_progress)
-                        case _:
-                            _print_event(console, event, state)
-                    return Behaviors.same()
+            case EventReceived(event=event):
+                state = self._get_state()
+                match event:
+                    case Pool.Stopped() | Pool.ProvisionFailed() | Pool.NoOffers():
+                        for nid, content in self._progress.items():
+                            _emit(self._console, _node_label(state, nid), content)
+                        self._stop_live(
+                            clear=isinstance(event, Pool.ProvisionFailed | Pool.NoOffers),
+                        )
+                        _print_event(self._console, event, state)
+                        if isinstance(event, Pool.Stopped):
+                            _emit(self._console, "skyward", "Shutting down...", WARNING_STYLE)
+                        self._console.print(_render_summary(state))
+                        self._progress = {}
+                    case Node.Lost(node_id=nid) if nid in self._progress:
+                        _emit(self._console, _node_label(state, nid), self._progress[nid])
+                        _print_event(self._console, event, state)
+                        self._progress.pop(nid, None)
+                    case _:
+                        _print_event(self._console, event, state)
 
-                case LogReceived(log=log):
-                    nid = log.node_id
-                    if log.overwrite:
-                        new_progress = MappingProxyType({**progress, nid: log.message})
-                        state = _get_state(view, new_progress)
-                        _update_footer(state)
-                        return rendering(view, new_progress)
-                    if nid in progress:
-                        state = _get_state(view, progress)
-                        _emit(console, _node_label(state, nid), progress[nid])
-                        new_progress = MappingProxyType({
-                            k: v for k, v in progress.items() if k != nid
-                        })
-                    else:
-                        new_progress = progress
-                    state = _get_state(view, new_progress)
-                    _emit(console, _node_label(state, nid), log.message)
-                    return rendering(view, new_progress)
+            case LogReceived(log=log):
+                nid = log.node_id
+                if log.overwrite:
+                    self._progress[nid] = log.message
+                    self._update_footer(self._get_state())
+                    return
+                if nid in self._progress:
+                    state = self._get_state()
+                    _emit(self._console, _node_label(state, nid), self._progress[nid])
+                    self._progress.pop(nid, None)
+                state = self._get_state()
+                _emit(self._console, _node_label(state, nid), log.message)
 
-                case LocalOutput(line=line):
-                    if stripped := line.rstrip():
-                        _emit(console, "local", stripped)
-                    return Behaviors.same()
-
-        return Behaviors.receive(receive)
-
-    return idle()
+            case LocalOutput(line=line):
+                if stripped := line.rstrip():
+                    _emit(self._console, "local", stripped)

@@ -1,224 +1,127 @@
+"""Autoscaler: pressure-driven desired count and idle reaping."""
+
+from __future__ import annotations
+
 import asyncio
-from unittest.mock import MagicMock
 
 import pytest
-from casty import ActorSystem
 
-from skyward.actors.autoscaler.actor import autoscaler_actor
-from skyward.actors.autoscaler.state import _apply_bounds, _compute_desired, _State
-from skyward.actors.messages import (
-    BoundsChanged,
-    NodeBecameIdle,
-    PressureReport,
-    ReapIdleNodes,
-)
+from skyward.actors.autoscaler import Autoscaler
+from skyward.actors.autoscaler.state import _compute_desired
+from skyward.actors.messages import PressureReport
+
+pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
 
 
-def _report(
-    queued: int = 0,
-    inflight: int = 0,
-    total_capacity: int = 4,
-    node_count: int = 2,
-) -> PressureReport:
-    return PressureReport(
-        queued=queued,
-        inflight=inflight,
-        total_capacity=total_capacity,
-        node_count=node_count,
-    )
+class FakeReconciler:
+    def __init__(self) -> None:
+        self.desired: list[tuple[int, str]] = []
+        self.reaped: list[frozenset[int]] = []
+
+    def set_desired(self, desired: int, reason: str) -> None:
+        self.desired.append((desired, reason))
+
+    def reap_idle(self, node_ids: frozenset[int], reason: str) -> None:
+        self.reaped.append(node_ids)
+
+
+def _autoscaler(rec: FakeReconciler, **kw: object) -> Autoscaler:
+    defaults: dict = {
+        "min_nodes": 1,
+        "max_nodes": 8,
+        "reconciler": rec,
+        "slots_per_node": 2,
+        "initial_count": 2,
+        "initial_nodes": frozenset({0, 1}),
+        "cooldown": 0.05,
+    }
+    defaults.update(kw)
+    return Autoscaler(**defaults)
 
 
 class TestComputeDesired:
+    def test_queued_pressure_grows(self) -> None:
+        report = PressureReport(queued=5, inflight=4, total_capacity=4, node_count=2)
+        assert _compute_desired(report, 2, 1, 8, 2) == 5  # 2 nodes + ceil(5/2)
+
+    def test_capped_at_max(self) -> None:
+        report = PressureReport(queued=100, inflight=4, total_capacity=4, node_count=2)
+        assert _compute_desired(report, 2, 1, 8, 2) == 8
+
+    def test_no_queue_keeps_desired(self) -> None:
+        report = PressureReport(queued=0, inflight=1, total_capacity=4, node_count=2)
+        assert _compute_desired(report, 2, 1, 8, 2) == 2
+
     def test_zero_nodes_returns_min(self) -> None:
-        result = _compute_desired(
-            _report(node_count=0),
-            current_desired=0, min_nodes=1, max_nodes=8,
-            slots_per_node=2,
-        )
-        assert result == 1
-
-    def test_queued_tasks_scale_up(self) -> None:
-        result = _compute_desired(
-            _report(queued=6, inflight=4, total_capacity=4, node_count=2),
-            current_desired=2, min_nodes=1, max_nodes=8,
-            slots_per_node=2,
-        )
-        assert result == 5  # 2 existing + ceil(6/2)=3
-
-    def test_queued_tasks_respects_max(self) -> None:
-        result = _compute_desired(
-            _report(queued=100, inflight=4, total_capacity=4, node_count=2),
-            current_desired=2, min_nodes=1, max_nodes=4,
-            slots_per_node=2,
-        )
-        assert result == 4
-
-    def test_steady_state_no_change(self) -> None:
-        result = _compute_desired(
-            _report(queued=0, inflight=3, total_capacity=4, node_count=2),
-            current_desired=2, min_nodes=1, max_nodes=8,
-            slots_per_node=2,
-        )
-        assert result == 2
-
-    def test_slots_per_node_zero_handled(self) -> None:
-        result = _compute_desired(
-            _report(queued=4, inflight=0, total_capacity=2, node_count=2),
-            current_desired=2, min_nodes=1, max_nodes=8,
-            slots_per_node=0,
-        )
-        assert result == 6  # 2 + ceil(4/1)=4
-
-    def test_deadline_expired_returns_zero(self) -> None:
-        result = _compute_desired(
-            _report(queued=10, inflight=4, total_capacity=4, node_count=2),
-            current_desired=2, min_nodes=1, max_nodes=8,
-            slots_per_node=2,
-            deadline=150.0, now=200.0,  # expired 50s ago
-        )
-        assert result == 0
-
-    def test_deadline_not_expired_scales_normally(self) -> None:
-        result = _compute_desired(
-            _report(queued=6, inflight=4, total_capacity=4, node_count=2),
-            current_desired=2, min_nodes=1, max_nodes=8,
-            slots_per_node=2,
-            deadline=200.0, now=100.0,  # still 100s left
-        )
-        assert result == 5  # normal scale-up
-
-    def test_deadline_none_scales_normally(self) -> None:
-        result = _compute_desired(
-            _report(queued=6, inflight=4, total_capacity=4, node_count=2),
-            current_desired=2, min_nodes=1, max_nodes=8,
-            slots_per_node=2,
-            deadline=None,  # no deadline
-        )
-        assert result == 5
+        report = PressureReport(queued=0, inflight=0, total_capacity=0, node_count=0)
+        assert _compute_desired(report, 2, 1, 8, 2) == 1
 
 
-class TestScaleToZero:
-    """With min_nodes=0 the autoscaler scales to zero when idle and wakes on demand."""
-
-    def test_idle_zero_nodes_converges_to_zero(self) -> None:
-        result = _compute_desired(
-            _report(queued=0, node_count=0, total_capacity=0),
-            current_desired=0, min_nodes=0, max_nodes=8,
-            slots_per_node=2,
-        )
-        assert result == 0
-
-    def test_queued_zero_nodes_wakes_up(self) -> None:
-        result = _compute_desired(
-            _report(queued=1, node_count=0, total_capacity=0),
-            current_desired=0, min_nodes=0, max_nodes=8,
-            slots_per_node=2,
-        )
-        assert result == 1  # ceil(1/2)=1
-
-    def test_idle_with_nodes_keeps_current(self) -> None:
-        result = _compute_desired(
-            _report(queued=0, inflight=2, total_capacity=4, node_count=2),
-            current_desired=2, min_nodes=0, max_nodes=8,
-            slots_per_node=2,
-        )
-        assert result == 2  # scale-down is the reaper's job, not this function
-
-    def test_queued_wake_respects_max(self) -> None:
-        result = _compute_desired(
-            _report(queued=100, node_count=0, total_capacity=0),
-            current_desired=0, min_nodes=0, max_nodes=4,
-            slots_per_node=2,
-        )
-        assert result == 4
+async def test_pressure_after_cooldown_sets_desired() -> None:
+    rec = FakeReconciler()
+    scaler = _autoscaler(rec, cooldown=0.0)
+    scaler.report_pressure(
+        PressureReport(queued=4, inflight=4, total_capacity=4, node_count=2),
+    )
+    assert rec.desired
+    assert rec.desired[0][0] == 4
 
 
-class TestReapBudget:
-    """The idle-reap budget is len(known_nodes) - reaping - min_nodes. A pool
-    that starts full seeds known_nodes via ``initial_nodes``; without it the
-    budget is 0 and the startup cohort is never reaped to zero."""
-
-    @pytest.mark.asyncio
-    async def test_seeded_initial_cohort_is_reaped_when_idle(self) -> None:
-        reaped: list[object] = []
-        reconciler = MagicMock()
-        reconciler.tell = lambda msg: reaped.append(msg)
-
-        async with ActorSystem("autoscaler-reap") as system:
-            ref = system.spawn(
-                autoscaler_actor(
-                    min_nodes=0, max_nodes=8, reconciler=reconciler,
-                    slots_per_node=2, initial_count=2,
-                    initial_nodes=frozenset({0, 1}), cooldown=0.05,
-                ),
-                "autoscaler",
-            )
-            ref.tell(NodeBecameIdle(node_id=0))
-            ref.tell(NodeBecameIdle(node_id=1))
-            await asyncio.sleep(0.3)
-
-        msgs = [m for m in reaped if isinstance(m, ReapIdleNodes)]
-        assert msgs, "idle nodes from the initial cohort must be reaped"
-        assert frozenset().union(*(m.node_ids for m in msgs)) == frozenset({0, 1})
+async def test_pressure_within_cooldown_is_deferred() -> None:
+    rec = FakeReconciler()
+    scaler = _autoscaler(rec, cooldown=3600.0)
+    scaler.report_pressure(
+        PressureReport(queued=4, inflight=4, total_capacity=4, node_count=2),
+    )
+    assert rec.desired == []
 
 
-class TestApplyBounds:
-    """The reducer _apply_bounds(state, msg) is the purest way to test BoundsChanged."""
-
-    def _state(self, desired: int, min_n: int, max_n: int) -> _State:
-        return _State(
-            desired=desired,
-            last_scale_time=0.0,
-            last_pressure=None,
-            min_nodes=min_n,
-            max_nodes=max_n,
-        )
-
-    def test_new_bounds_stored(self) -> None:
-        s = self._state(desired=4, min_n=2, max_n=8)
-        new_s = _apply_bounds(s, BoundsChanged(min=1, max=6, desired=3))
-        assert new_s.min_nodes == 1
-        assert new_s.max_nodes == 6
-
-    def test_desired_rebased_to_message(self) -> None:
-        s = self._state(desired=4, min_n=2, max_n=8)
-        new_s = _apply_bounds(s, BoundsChanged(min=1, max=6, desired=3))
-        assert new_s.desired == 3
-
-    def test_desired_clamped_above_new_max(self) -> None:
-        s = self._state(desired=8, min_n=2, max_n=8)
-        new_s = _apply_bounds(s, BoundsChanged(min=1, max=4, desired=10))
-        assert new_s.desired == 4
-
-    def test_desired_clamped_below_new_min(self) -> None:
-        s = self._state(desired=1, min_n=1, max_n=8)
-        new_s = _apply_bounds(s, BoundsChanged(min=3, max=8, desired=1))
-        assert new_s.desired == 3
-
-    def test_no_op_transition(self) -> None:
-        """BoundsChanged with same values should produce state equal to input."""
-        s = self._state(desired=4, min_n=2, max_n=8)
-        new_s = _apply_bounds(s, BoundsChanged(min=2, max=8, desired=4))
-        assert new_s.min_nodes == 2
-        assert new_s.max_nodes == 8
-        assert new_s.desired == 4
-
-    def test_degenerate_band_min_equals_max_equals_desired(self) -> None:
-        """Fixed-pool shape (min==max==desired) should be a stable fixed point."""
-        s = self._state(desired=3, min_n=3, max_n=3)
-        new_s = _apply_bounds(s, BoundsChanged(min=3, max=3, desired=3))
-        assert (new_s.min_nodes, new_s.max_nodes, new_s.desired) == (3, 3, 3)
+async def test_tick_reaps_idle_nodes_within_budget() -> None:
+    rec = FakeReconciler()
+    scaler = _autoscaler(rec, min_nodes=1, cooldown=0.02)
+    scaler.node_idle(0)
+    scaler.node_idle(1)
+    scaler.start()
+    await asyncio.sleep(0.1)
+    await scaler.stop()
+    assert rec.reaped
+    assert len(rec.reaped[0]) == 1  # budget = 2 known - 0 reaping - 1 min
 
 
-class TestComputeDesiredRespectsMutableBounds:
-    """After BoundsChanged shrinks max, compute_desired must not produce values > new max."""
+async def test_no_reap_when_budget_exhausted() -> None:
+    rec = FakeReconciler()
+    scaler = _autoscaler(rec, min_nodes=2, cooldown=0.02)
+    scaler.node_idle(0)
+    scaler.start()
+    await asyncio.sleep(0.1)
+    await scaler.stop()
+    assert rec.reaped == []
 
-    def test_queued_work_capped_by_new_max(self) -> None:
-        report = PressureReport(queued=50, inflight=0, total_capacity=2, node_count=1)
-        # Simulate post-BoundsChanged: max shrunk from 16 → 3.
-        result = _compute_desired(
-            report,
-            current_desired=1, min_nodes=1, max_nodes=3,
-            slots_per_node=1,
-        )
-        assert result == 3
+
+async def test_node_busy_cancels_idle() -> None:
+    rec = FakeReconciler()
+    scaler = _autoscaler(rec, min_nodes=0, cooldown=0.02)
+    scaler.node_idle(0)
+    scaler.node_busy(0)
+    scaler.start()
+    await asyncio.sleep(0.1)
+    await scaler.stop()
+    assert rec.reaped == []
+
+
+async def test_drain_complete_forgets_node() -> None:
+    rec = FakeReconciler()
+    scaler = _autoscaler(rec)
+    scaler.node_idle(1)
+    scaler.drain_complete(1)
+    assert 1 not in scaler._idle
+    assert 1 not in scaler._known_nodes
+
+
+async def test_set_bounds_clamps_desired() -> None:
+    rec = FakeReconciler()
+    scaler = _autoscaler(rec)
+    scaler.set_bounds(2, 4, 10)
+    assert scaler._desired == 4
+    scaler.set_bounds(3, 8, 1)
+    assert scaler._desired == 3

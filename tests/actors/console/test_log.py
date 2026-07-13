@@ -1,4 +1,4 @@
-"""Tests for ``log_console_actor``.
+"""Tests for ``LogConsole``.
 
 Focused on the interaction between ``Node.Bootstrap.Output`` and
 ``Log.Emitted`` — the projection re-dispatches post-Ready bootstrap
@@ -8,17 +8,15 @@ log console must not emit the same line twice.
 
 from __future__ import annotations
 
-import asyncio
 from types import MappingProxyType
 
 import pytest
-from casty import ActorSystem
 
 from skyward.actors.console import (
     EventReceived,
+    LogConsole,
     LogReceived,
     ViewUpdated,
-    log_console_actor,
 )
 from skyward.api.events import Log, Node
 from skyward.api.views import (
@@ -65,24 +63,17 @@ class TestLogConsoleStdoutDuplication:
         deduplicate.
         """
 
-        async def run() -> None:
-            async with ActorSystem("test-log-dup") as system:
-                ref = system.spawn(log_console_actor(), "log-console")
-                ref.tell(ViewUpdated(view=_view(bootstrapping=False)))
-                await asyncio.sleep(0.05)
-
-                ref.tell(EventReceived(event=Node.Bootstrap.Output(
-                    pool_name="pool-1", node_id=0, output="hello from remote",
-                )))
-                ref.tell(EventReceived(event=Log.Emitted(
-                    pool_name="pool-1", node_id=0, message="hello from remote",
-                )))
-                ref.tell(LogReceived(log=Log.Emitted(
-                    pool_name="pool-1", node_id=0, message="hello from remote",
-                )))
-                await asyncio.sleep(0.1)
-
-        asyncio.run(run())
+        console = LogConsole()
+        console.handle(ViewUpdated(view=_view(bootstrapping=False)))
+        console.handle(EventReceived(event=Node.Bootstrap.Output(
+            pool_name="pool-1", node_id=0, output="hello from remote",
+        )))
+        console.handle(EventReceived(event=Log.Emitted(
+            pool_name="pool-1", node_id=0, message="hello from remote",
+        )))
+        console.handle(LogReceived(log=Log.Emitted(
+            pool_name="pool-1", node_id=0, message="hello from remote",
+        )))
 
         _, err = capfd.readouterr()
         occurrences = err.count("hello from remote")
@@ -96,18 +87,11 @@ class TestLogConsoleStdoutDuplication:
         ``Bootstrap.Output`` handler is the only path and must emit.
         """
 
-        async def run() -> None:
-            async with ActorSystem("test-log-bootstrap") as system:
-                ref = system.spawn(log_console_actor(), "log-console")
-                ref.tell(ViewUpdated(view=_view(bootstrapping=True)))
-                await asyncio.sleep(0.05)
-
-                ref.tell(EventReceived(event=Node.Bootstrap.Output(
-                    pool_name="pool-1", node_id=0, output="apt installing",
-                )))
-                await asyncio.sleep(0.1)
-
-        asyncio.run(run())
+        console = LogConsole()
+        console.handle(ViewUpdated(view=_view(bootstrapping=True)))
+        console.handle(EventReceived(event=Node.Bootstrap.Output(
+            pool_name="pool-1", node_id=0, output="apt installing",
+        )))
 
         _, err = capfd.readouterr()
         assert err.count("apt installing") == 1, err

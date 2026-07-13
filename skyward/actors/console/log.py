@@ -1,4 +1,4 @@
-"""Log console actor — plain line-based output for non-TTY environments.
+"""Log console — plain line-based output for non-TTY environments.
 
 Renders an opinionated, grep-friendly projection of the session to
 ``stderr``:
@@ -17,15 +17,13 @@ without ``-t`` and ``python script.py > run.log``.
 
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from statistics import mean
-from typing import Any, cast
-
-from casty import ActorContext, Behavior, Behaviors
+from typing import Any
 
 from skyward.api.events import Error, Node, Pool, Scaling
 from skyward.api.projection import _throughput
@@ -33,20 +31,12 @@ from skyward.api.views import PoolView, SessionView
 
 from .messages import ConsoleInput, EventReceived, LocalOutput, LogReceived, ViewUpdated
 
-__all__ = ["log_console_actor"]
+__all__ = ["LogConsole"]
 
 
 _DEFAULT_INTERVAL = 30.0
 _INSTANCE_ID_WIDTH = 8
 _LABEL_WIDTH = 18
-
-
-@dataclass(frozen=True, slots=True)
-class _Tick:
-    pass
-
-
-type _LogMsg = ConsoleInput | _Tick
 
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -221,7 +211,7 @@ def _metrics_line(pool: PoolView) -> str | None:
     return " · ".join(parts)
 
 
-# ── Actor state ──────────────────────────────────────────────────
+# ── Renderer state ───────────────────────────────────────────────
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,27 +226,45 @@ class _State:
     pool_stopped: bool = False
 
 
-# ── Actor ────────────────────────────────────────────────────────
+# ── Renderer ─────────────────────────────────────────────────────
 
 
-def log_console_actor() -> Behavior[ConsoleInput]:
-    """Log console tells this story: event → one line → flush."""
+class LogConsole:
+    """Log console: event → one line → flush."""
 
-    interval = _metrics_interval()
-    fallback_started_at = time.monotonic()
+    def __init__(self) -> None:
+        self.tick_interval: float | None = _metrics_interval()
+        self._fallback_started_at = time.monotonic()
+        self._state = _State()
 
-    async def _sleep_tick() -> _Tick:
-        await asyncio.sleep(interval)
-        return _Tick()
+    def start(self, post: Callable[[ConsoleInput], None]) -> None:
+        pass
 
-    def _schedule_tick(ctx: ActorContext[_LogMsg]) -> None:
-        ctx.pipe_to_self(
-            _sleep_tick(),
-            mapper=lambda t: t,
-            on_failure=lambda _: _Tick(),
-        )
+    def stop(self) -> None:
+        pass
 
-    def _handle_event(state: _State, event: Any) -> _State:
+    def tick(self) -> None:
+        pool = _first_pool(self._state.view)
+        if pool is not None and (line := _metrics_line(pool)) is not None:
+            _emit("pool", line)
+
+    def handle(self, msg: ConsoleInput) -> None:
+        match msg:
+            case ViewUpdated(view=view):
+                self._state = replace(self._state, view=view)
+
+            case EventReceived(event=event):
+                self._state = self._handle_event(self._state, event)
+
+            case LogReceived(log=log):
+                _emit(_node_label(self._state.view, log.node_id), log.message)
+
+            case LocalOutput(line=line):
+                if stripped := line.rstrip():
+                    _emit("local", stripped)
+
+    def _handle_event(self, state: _State, event: Any) -> _State:
+        fallback_started_at = self._fallback_started_at
         view = state.view
         match event:
             case Pool.Provisioning(total_nodes=n) if not state.started:
@@ -384,38 +392,3 @@ def log_console_actor() -> Behavior[ConsoleInput]:
 
             case _:
                 return state
-
-    def active(state: _State) -> Behavior[_LogMsg]:
-        async def receive(
-            ctx: ActorContext[_LogMsg], msg: _LogMsg,
-        ) -> Behavior[_LogMsg]:
-            match msg:
-                case ViewUpdated(view=view):
-                    return active(replace(state, view=view))
-
-                case EventReceived(event=event):
-                    return active(_handle_event(state, event))
-
-                case LogReceived(log=log):
-                    _emit(_node_label(state.view, log.node_id), log.message)
-                    return Behaviors.same()
-
-                case LocalOutput(line=line):
-                    if stripped := line.rstrip():
-                        _emit("local", stripped)
-                    return Behaviors.same()
-
-                case _Tick():
-                    pool = _first_pool(state.view)
-                    if pool is not None and (line := _metrics_line(pool)) is not None:
-                        _emit("pool", line)
-                    _schedule_tick(ctx)
-                    return Behaviors.same()
-
-        return Behaviors.receive(receive)
-
-    async def setup(ctx: ActorContext[_LogMsg]) -> Behavior[_LogMsg]:
-        _schedule_tick(ctx)
-        return active(_State())
-
-    return cast(Behavior[ConsoleInput], Behaviors.setup(setup))

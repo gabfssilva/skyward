@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from skyward.actors.node.actor import _should_announce_idle
+from skyward.actors.node.node import _should_announce_idle
 
 pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
 

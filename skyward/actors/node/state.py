@@ -1,17 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import sys
-from dataclasses import dataclass
-from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Final
-
-from casty import ActorRef
-
-from skyward.actors.messages import HeadAddressKnown, NodeInstance
-
-if TYPE_CHECKING:
-    from skyward.infra.ssh_transport import SshTransport
+from typing import Final
 
 type NodeId = int
 
@@ -32,37 +22,3 @@ class PythonVersionMismatchError(RuntimeError):
 def check_python_version(remote_version: str) -> None:
     if remote_version != _PYTHON_VERSION:
         raise PythonVersionMismatchError(local=_PYTHON_VERSION, remote=remote_version)
-
-
-@dataclass(frozen=True, slots=True)
-class PendingTask:
-    fn: Any
-    args: tuple[Any, ...]
-    kwargs: dict[str, Any]
-    reply_to: ActorRef[Any]
-    task_id: str
-    timeout: float
-
-
-@dataclass(frozen=True, slots=True)
-class NodeState:
-    cluster: Any
-    provider: Any
-    ni: NodeInstance | None = None
-    transport: SshTransport | None = None
-    monitor_task: asyncio.Task[None] | None = None
-    local_port: int = 0
-    head_info: HeadAddressKnown | None = None
-    pending_tasks: tuple[PendingTask, ...] = ()
-    client: Any = None
-    worker_ref: ActorRef | None = None
-    pool_info_json: str = ""
-    env_vars: MappingProxyType[str, str] = MappingProxyType({})
-    around_app_hooks: tuple[tuple[str, Any], ...] = ()
-    around_process_hooks: tuple[tuple[str, Any], ...] = ()
-    inflight: MappingProxyType[str, ActorRef] = MappingProxyType({})
-    task_counter: int = 0
-    last_task_at: float = 0.0
-    idle_announced: bool = False
-    health_failures: int = 0
-    transport_connected: bool = True

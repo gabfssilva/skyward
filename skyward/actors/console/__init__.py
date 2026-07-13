@@ -4,10 +4,9 @@ import os
 import sys
 from collections.abc import Callable
 
-from casty import Behavior
-
-from skyward.actors.console.actor import console_actor
-from skyward.actors.console.log import log_console_actor
+from skyward.actors.console.actor import RichConsole
+from skyward.actors.console.consumer import ConsoleConsumer, Renderer
+from skyward.actors.console.log import LogConsole
 from skyward.actors.console.messages import (
     ConsoleInput,
     EventReceived,
@@ -15,19 +14,21 @@ from skyward.actors.console.messages import (
     LogReceived,
     ViewUpdated,
 )
-from skyward.actors.console.minimal import minimal_console_actor
+from skyward.actors.console.minimal import MinimalConsole
 from skyward.api.spec import ConsoleMode
 
 __all__ = [
+    "ConsoleConsumer",
     "ConsoleInput",
     "ConsoleMode",
     "EventReceived",
     "LocalOutput",
+    "LogConsole",
     "LogReceived",
+    "MinimalConsole",
+    "Renderer",
+    "RichConsole",
     "ViewUpdated",
-    "console_actor",
-    "log_console_actor",
-    "minimal_console_actor",
     "resolve_console",
 ]
 
@@ -46,34 +47,19 @@ def _is_tty() -> bool:
     return bool(stderr and hasattr(stderr, "isatty") and stderr.isatty())
 
 
-def resolve_console(
-    mode: bool | ConsoleMode,
-) -> Callable[[], Behavior[ConsoleInput]] | None:
-    """Map a console mode to its actor factory.
+def resolve_console(mode: bool | ConsoleMode) -> Callable[[], Renderer] | None:
+    """Map a console mode to its renderer factory.
 
     ``rich`` and ``minimal`` require a TTY on stderr; when stderr is a
     pipe, file, CI log, or otherwise non-interactive, both fall back to
     ``log``.  ``log`` and ``silent`` are honored unconditionally.
-
-    Parameters
-    ----------
-    mode
-        Either a legacy ``bool`` (``True`` → rich, ``False`` → silent)
-        or a ``ConsoleMode`` literal (``"rich"``, ``"minimal"``,
-        ``"log"``, ``"silent"``).
-
-    Returns
-    -------
-    Callable[[], Behavior[ConsoleInput]] | None
-        Factory that constructs the chosen console behavior, or ``None``
-        when no console should be spawned.
     """
     match mode:
         case True | "rich":
-            return console_actor if _is_tty() else log_console_actor
+            return RichConsole if _is_tty() else LogConsole
         case "minimal":
-            return minimal_console_actor if _is_tty() else log_console_actor
+            return MinimalConsole if _is_tty() else LogConsole
         case "log":
-            return log_console_actor
+            return LogConsole
         case False | "silent":
             return None

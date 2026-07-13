@@ -1,3 +1,3 @@
-from skyward.actors.autoscaler.actor import autoscaler_actor
+from skyward.actors.autoscaler.autoscaler import Autoscaler, DesiredSink
 
-__all__ = ["autoscaler_actor"]
+__all__ = ["Autoscaler", "DesiredSink"]

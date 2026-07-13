@@ -484,7 +484,7 @@ class TestCreateGpuPodRestPayload:
 class TestBuildMountPlan:
     @pytest.mark.asyncio
     async def test_all_explicit_storage_builds_fuse_plan_even_for_non_mountable_provider(self):
-        from skyward.actors.pool.actor import _build_mount_plan
+        from skyward.actors.pool.pool import _build_mount_plan
         from skyward.providers.bootstrap.compose import resolve
         from skyward.storage import Storage
 
@@ -502,7 +502,7 @@ class TestBuildMountPlan:
 
     @pytest.mark.asyncio
     async def test_no_storage_non_mountable_raises_with_bucket_names(self):
-        from skyward.actors.pool.actor import _build_mount_plan
+        from skyward.actors.pool.pool import _build_mount_plan
 
         vols = (Volume(bucket="my-bucket", mount="/data"),)
 
@@ -511,7 +511,7 @@ class TestBuildMountPlan:
 
     @pytest.mark.asyncio
     async def test_delegates_to_mountable_provider(self):
-        from skyward.actors.pool.actor import _build_mount_plan
+        from skyward.actors.pool.pool import _build_mount_plan
         from skyward.api.model import MountPlan
 
         called_with: dict[str, object] = {}
@@ -532,7 +532,7 @@ class TestBuildMountPlan:
 
     @pytest.mark.asyncio
     async def test_mixed_explicit_and_provider_managed_rejected(self):
-        from skyward.actors.pool.actor import _build_mount_plan
+        from skyward.actors.pool.pool import _build_mount_plan
         from skyward.storage import Storage
 
         class _StubStorage:

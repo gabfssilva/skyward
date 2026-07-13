@@ -1,321 +1,165 @@
+"""Reconciler: drift correction, auto-repair, drain, exhaustion."""
+
+from __future__ import annotations
+
 import asyncio
-from dataclasses import replace
-from unittest.mock import MagicMock
 
 import pytest
-from casty import ActorSystem
 
-from skyward.actors.messages import (
-    BoundsChanged,
-    NodeJoined,
-    ReapIdleNodes,
-    RequestDrainNodes,
-    RequestScaleDown,
-    RequestScaleUp,
-    ScaleUpComplete,
-    ScaleUpFailed,
-)
-from skyward.actors.reconciler import reconciler_actor
-from skyward.actors.reconciler.state import _apply_bounds, _State
+from skyward.actors.reconciler import Reconciler
+
+pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
 
 
-def _make_state(
-    desired: int = 2,
-    current: frozenset[int] | None = None,
-    pending: int = 0,
-    draining: int = 0,
-    consecutive_failures: int = 0,
-) -> _State:
-    return _State(
-        desired=desired,
-        current=current or frozenset({0, 1}),
-        pending=pending,
-        draining=draining,
-        consecutive_failures=consecutive_failures,
+class FakePool:
+    def __init__(self, *, provision: int | None = None) -> None:
+        self.scale_up_calls: list[int] = []
+        self.scale_down_calls: list[int] = []
+        self.drained: list[frozenset[int]] = []
+        self.exhausted: list[str] = []
+        self._provision = provision
+
+    async def scale_up(self, count: int) -> int:
+        self.scale_up_calls.append(count)
+        return self._provision if self._provision is not None else count
+
+    def scale_down(self, count: int) -> int:
+        self.scale_down_calls.append(count)
+        return count
+
+    def drain_nodes(self, node_ids: frozenset[int]) -> int:
+        self.drained.append(node_ids)
+        return len(node_ids)
+
+    def reconciliation_exhausted(self, reason: str) -> None:
+        self.exhausted.append(reason)
+
+
+def _reconciler(pool: FakePool, **kw: object) -> Reconciler:
+    defaults: dict = {
+        "min_nodes": 1,
+        "desired_count": 2,
+        "initial_node_ids": frozenset({0, 1}),
+        "tick_interval": 3600.0,
+    }
+    defaults.update(kw)
+    return Reconciler(pool, **defaults)
+
+
+async def test_balanced_state_does_nothing() -> None:
+    pool = FakePool()
+    rec = _reconciler(pool)
+    rec.start()
+    await asyncio.sleep(0.05)
+    assert pool.scale_up_calls == []
+    assert pool.scale_down_calls == []
+    await rec.stop()
+
+
+async def test_set_desired_scales_up() -> None:
+    pool = FakePool()
+    rec = _reconciler(pool)
+    rec.start()
+    rec.set_desired(4, "test")
+    await asyncio.sleep(0.05)
+    assert pool.scale_up_calls == [2]
+    await rec.stop()
+
+
+async def test_node_lost_triggers_auto_repair() -> None:
+    pool = FakePool()
+    rec = _reconciler(pool)
+    rec.start()
+    rec.node_lost(1, "preempted")
+    await asyncio.sleep(0.05)
+    assert pool.scale_up_calls == [1]
+    await rec.stop()
+
+
+async def test_set_desired_scales_down() -> None:
+    pool = FakePool()
+    rec = _reconciler(pool)
+    rec.start()
+    rec.set_desired(1, "scale-down")
+    await asyncio.sleep(0.05)
+    assert pool.scale_down_calls == [1]
+    await rec.stop()
+
+
+async def test_node_joined_clears_pending() -> None:
+    pool = FakePool()
+    rec = _reconciler(pool)
+    rec.start()
+    rec.set_desired(3, "test")
+    await asyncio.sleep(0.05)
+    rec.node_joined(2)
+    await asyncio.sleep(0.05)
+    # one scale-up of 1 satisfies desired=3; the join must not re-trigger
+    assert pool.scale_up_calls == [1]
+    await rec.stop()
+
+
+async def test_reap_idle_respects_min_nodes() -> None:
+    pool = FakePool()
+    rec = _reconciler(pool, min_nodes=2)
+    rec.start()
+    rec.reap_idle(frozenset({1}), "idle")
+    assert pool.drained == []
+    await rec.stop()
+
+
+async def test_reap_idle_drains_when_min_satisfied() -> None:
+    pool = FakePool()
+    rec = _reconciler(pool, min_nodes=1)
+    rec.start()
+    rec.reap_idle(frozenset({1}), "idle")
+    assert pool.drained == [frozenset({1})]
+    await rec.stop()
+
+
+async def test_provision_exhaustion_below_min_reports() -> None:
+    pool = FakePool(provision=0)
+    rec = _reconciler(
+        pool,
+        min_nodes=1,
+        desired_count=1,
+        initial_node_ids=frozenset(),
+        max_provision_retries=2,
+        tick_interval=0.01,
     )
+    rec.start()
+    await asyncio.sleep(0.2)
+    assert len(pool.exhausted) >= 1
+    assert len(pool.scale_up_calls) == 2
+    await rec.stop()
 
 
-class TestReconcilerState:
-    def test_effective_count_current_plus_pending(self) -> None:
-        s = _make_state(current=frozenset({0, 1}), pending=1)
-        assert s.effective == 3
-
-    def test_effective_is_property(self) -> None:
-        s = _make_state(current=frozenset({0, 1, 2}), pending=2)
-        assert s.effective == 5
-
-    def test_desired_count_changed_up(self) -> None:
-        s = _make_state(desired=2)
-        new_s = replace(s, desired=4)
-        assert new_s.desired > new_s.effective
-
-    def test_desired_count_changed_down(self) -> None:
-        s = _make_state(desired=4, current=frozenset({0, 1, 2, 3}))
-        new_s = replace(s, desired=2)
-        assert new_s.desired < len(new_s.current)
-
-    def test_node_lost_reduces_current(self) -> None:
-        s = _make_state(current=frozenset({0, 1, 2}))
-        new_s = replace(s, current=s.current - {2})
-        assert 2 not in new_s.current
-        assert len(new_s.current) == 2
-
-    def test_node_lost_triggers_scale_up(self) -> None:
-        s = _make_state(desired=3, current=frozenset({0, 1, 2}))
-        new_s = replace(s, current=s.current - {2})
-        assert new_s.desired > new_s.effective
-
-    def test_node_joined_moves_pending_to_current(self) -> None:
-        s = _make_state(current=frozenset({0, 1}), pending=1)
-        new_s = replace(s, current=s.current | {2}, pending=max(0, s.pending - 1))
-        assert 2 in new_s.current
-        assert new_s.pending == 0
-
-    def test_pending_is_count_not_set(self) -> None:
-        s = _make_state(pending=3)
-        assert isinstance(s.pending, int)
-
-    def test_drain_complete_reduces_draining(self) -> None:
-        s = _make_state(desired=1, current=frozenset({0, 1}), draining=1)
-        new_s = replace(s, draining=s.draining - 1)
-        assert new_s.draining == 0
-
-    def test_head_node_protected_in_drain_logic(self) -> None:
-        """Drain victim selection excludes node 0 — this logic moves to pool,
-        but we verify the pattern still holds."""
-        current = frozenset({0, 1, 2})
-        desired = 1
-        excess = len(current) - desired
-        victims = sorted(current, reverse=True)[:excess]
-        victims = [nid for nid in victims if nid != 0]
-        assert 0 not in victims
-        assert victims == [2, 1]
-
-    def test_consecutive_failures_increments(self) -> None:
-        s = _make_state(consecutive_failures=0)
-        new_s = replace(s, consecutive_failures=s.consecutive_failures + 1)
-        assert new_s.consecutive_failures == 1
-
-    def test_consecutive_failures_resets_on_success(self) -> None:
-        s = _make_state(consecutive_failures=5)
-        new_s = replace(s, consecutive_failures=0)
-        assert new_s.consecutive_failures == 0
-
-    def test_excess_node_triggers_scale_down(self) -> None:
-        s = _make_state(desired=2, current=frozenset({0, 1}))
-        new_s = replace(s, current=s.current | {2})
-        assert new_s.desired < len(new_s.current)
-
-    def test_tick_detects_downward_drift(self) -> None:
-        s = _make_state(desired=2, current=frozenset({0, 1, 2}))
-        assert s.desired < len(s.current)
-        assert s.draining == 0
-
-    def test_no_cluster_or_instance_map_in_state(self) -> None:
-        """Reconciler state must NOT contain provider-level details."""
-        s = _make_state()
-        assert not hasattr(s, "cluster")
-        assert not hasattr(s, "instance_map")
-        assert not hasattr(s, "next_node_id")
+async def test_provision_zero_with_min_satisfied_keeps_retrying() -> None:
+    pool = FakePool(provision=0)
+    rec = _reconciler(
+        pool,
+        min_nodes=1,
+        desired_count=2,
+        initial_node_ids=frozenset({0}),
+        max_provision_retries=2,
+        tick_interval=0.01,
+    )
+    rec.start()
+    await asyncio.sleep(0.2)
+    assert pool.exhausted == []
+    assert len(pool.scale_up_calls) > 2
+    await rec.stop()
 
 
-class TestReapIdleNodes:
-    @pytest.mark.asyncio
-    async def test_safe_reap_drains_nodes_and_decrements_desired(self) -> None:
-        sent: list[object] = []
-        pool = MagicMock()
-        pool.tell = lambda msg: sent.append(msg)
-
-        async with ActorSystem("test-reconciler-reap-safe") as system:
-            ref = system.spawn(
-                reconciler_actor(
-                    pool=pool,
-                    min_nodes=1,
-                    max_nodes=8,
-                    desired_count=4,
-                    initial_node_ids=frozenset({0, 1, 2, 3}),
-                    tick_interval=3600.0,
-                ),
-                "reconciler-reap-safe",
-            )
-            await asyncio.sleep(0.1)
-            sent.clear()
-
-            ref.tell(ReapIdleNodes(
-                node_ids=frozenset({2, 3}),
-                reason="idle-test",
-            ))
-            await asyncio.sleep(0.1)
-
-            drain_msgs = [m for m in sent if isinstance(m, RequestDrainNodes)]
-            assert len(drain_msgs) == 1
-            assert drain_msgs[0].node_ids == frozenset({2, 3})
-
-            sent.clear()
-            ref.tell(NodeJoined(node_id=5))
-            await asyncio.sleep(0.1)
-
-        scale_down_msgs = [m for m in sent if isinstance(m, RequestScaleDown)]
-        assert len(scale_down_msgs) == 1
-        assert scale_down_msgs[0].count == 3
-
-    @pytest.mark.asyncio
-    async def test_reap_violating_min_nodes_is_ignored(self) -> None:
-        sent: list[object] = []
-        pool = MagicMock()
-        pool.tell = lambda msg: sent.append(msg)
-
-        async with ActorSystem("test-reconciler-reap-floor") as system:
-            ref = system.spawn(
-                reconciler_actor(
-                    pool=pool,
-                    min_nodes=2,
-                    max_nodes=8,
-                    desired_count=3,
-                    initial_node_ids=frozenset({0, 1, 2}),
-                    tick_interval=3600.0,
-                ),
-                "reconciler-reap-floor",
-            )
-            await asyncio.sleep(0.1)
-            sent.clear()
-
-            ref.tell(ReapIdleNodes(
-                node_ids=frozenset({1, 2}),
-                reason="would-violate-min",
-            ))
-            await asyncio.sleep(0.1)
-
-            drain_msgs = [m for m in sent if isinstance(m, RequestDrainNodes)]
-            assert drain_msgs == []
-
-            sent.clear()
-            ref.tell(NodeJoined(node_id=5))
-            await asyncio.sleep(0.1)
-
-        scale_down_msgs = [m for m in sent if isinstance(m, RequestScaleDown)]
-        assert len(scale_down_msgs) == 1
-        assert scale_down_msgs[0].count == 1
-
-    @pytest.mark.asyncio
-    async def test_reap_all_nodes_allowed_when_min_zero(self) -> None:
-        sent: list[object] = []
-        pool = MagicMock()
-        pool.tell = lambda msg: sent.append(msg)
-
-        async with ActorSystem("test-reconciler-reap-to-zero") as system:
-            ref = system.spawn(
-                reconciler_actor(
-                    pool=pool,
-                    min_nodes=0,
-                    max_nodes=8,
-                    desired_count=2,
-                    initial_node_ids=frozenset({0, 1}),
-                    tick_interval=3600.0,
-                ),
-                "reconciler-reap-to-zero",
-            )
-            await asyncio.sleep(0.1)
-            sent.clear()
-
-            ref.tell(ReapIdleNodes(
-                node_ids=frozenset({0, 1}),
-                reason="scale-to-zero",
-            ))
-            await asyncio.sleep(0.1)
-
-            drain_msgs = [m for m in sent if isinstance(m, RequestDrainNodes)]
-            assert len(drain_msgs) == 1
-            assert drain_msgs[0].node_ids == frozenset({0, 1})
-
-
-class TestPartialInitialProvisioning:
-    @pytest.mark.asyncio
-    async def test_requests_scale_up_when_initial_provision_returned_less(self) -> None:
-        sent: list[object] = []
-        pool = MagicMock()
-        pool.tell = lambda msg: sent.append(msg)
-
-        async with ActorSystem("test-reconciler-partial-initial") as system:
-            system.spawn(
-                reconciler_actor(
-                    pool=pool,
-                    min_nodes=1,
-                    max_nodes=3,
-                    desired_count=3,
-                    initial_node_ids=frozenset({0, 1}),
-                    tick_interval=3600.0,
-                ),
-                "reconciler-partial-initial",
-            )
-            await asyncio.sleep(0.1)
-
-        scale_up_msgs = [m for m in sent if isinstance(m, RequestScaleUp)]
-        assert len(scale_up_msgs) == 1
-        assert scale_up_msgs[0].count == 1
-
-
-class TestSupplyConstraintDoesNotGiveUp:
-    @pytest.mark.asyncio
-    async def test_keeps_retrying_after_partial_then_failed_provision(self) -> None:
-        """A late ScaleUpComplete/ScaleUpFailed must not be dropped.
-
-        Reproduces the supply-constraint deadlock: a partial provision makes
-        the reconciler re-request while still in ``waiting_for_scale_up``;
-        the first batch's ``NodeJoined`` events then arrive before the
-        second request resolves. The reconciler must stay in the chapter
-        until the outcome lands, keep ``pending`` honest, and keep asking
-        for more nodes — instead of silently giving up.
-        """
-        sent: list[object] = []
-        pool = MagicMock()
-        pool.tell = lambda msg: sent.append(msg)
-
-        async with ActorSystem("test-reconciler-supply-constraint") as system:
-            ref = system.spawn(
-                reconciler_actor(
-                    pool=pool,
-                    min_nodes=1,
-                    max_nodes=20,
-                    desired_count=20,
-                    initial_node_ids=frozenset({0}),
-                    tick_interval=0.05,
-                ),
-                "reconciler-supply-constraint",
-            )
-            await asyncio.sleep(0.1)
-            initial = [m for m in sent if isinstance(m, RequestScaleUp)]
-            assert len(initial) == 1
-            assert initial[0].count == 19
-
-            sent.clear()
-            ref.tell(ScaleUpComplete(provisioned=2))
-            await asyncio.sleep(0.1)
-            re_request = [m for m in sent if isinstance(m, RequestScaleUp)]
-            assert len(re_request) == 1
-            assert re_request[0].count == 17
-
-            sent.clear()
-            ref.tell(NodeJoined(node_id=1))
-            ref.tell(NodeJoined(node_id=2))
-            await asyncio.sleep(0.1)
-
-            sent.clear()
-            ref.tell(ScaleUpFailed(error="SUPPLY_CONSTRAINT"))
-            await asyncio.sleep(0.3)
-
-        recovered = [m for m in sent if isinstance(m, RequestScaleUp)]
-        assert len(recovered) >= 1
-        assert recovered[0].count == 17
-
-
-class TestReconcilerApplyBounds:
-    def test_updates_min_nodes(self) -> None:
-        s = _State(desired=4, current=frozenset({1, 2, 3, 4}))
-        new_s = _apply_bounds(s, BoundsChanged(min=2, max=8, desired=4))
-        assert new_s.min_nodes == 2
-
-    def test_desired_rebased_to_message(self) -> None:
-        s = _State(desired=4, current=frozenset({1, 2, 3, 4}))
-        new_s = _apply_bounds(s, BoundsChanged(min=1, max=8, desired=6))
-        assert new_s.desired == 6
+async def test_drain_complete_updates_current() -> None:
+    pool = FakePool()
+    rec = _reconciler(pool, desired_count=2, initial_node_ids=frozenset({0, 1}))
+    rec.start()
+    rec.set_desired(1, "down")
+    await asyncio.sleep(0.05)
+    rec.drain_complete(1)
+    await asyncio.sleep(0.05)
+    # drain complete; desired==current==1, no further scaling
+    assert pool.scale_up_calls == []
+    assert pool.scale_down_calls == [1]
+    await rec.stop()

@@ -1,3 +1,3 @@
-from skyward.actors.pool.actor import pool_actor
+from skyward.actors.pool.pool import NodeCount, Pool, PoolStarted
 
-__all__ = ["pool_actor"]
+__all__ = ["NodeCount", "Pool", "PoolStarted"]

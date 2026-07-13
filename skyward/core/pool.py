@@ -32,26 +32,13 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, Literal, overload
 from uuid import uuid4
 
-from casty import ActorRef, ActorSystem
-
 from skyward.accelerators import Accelerator
 from skyward.actors.messages import (
-    CurrentNodeCount,
     FileOpKind,
-    FileOpOnNodes,
-    FileOpReplies,
-    GetCurrentNodes,
-    GetPoolSnapshot,
     NodeFileResult,
     NodeInstance,
     NodeSelection,
     NodeTarget,
-    SubmitBroadcast,
-    SubmitTask,
-    TaskFailed,
-    TaskInterrupted,
-    TaskResult,
-    TaskSucceeded,
 )
 from skyward.actors.snapshot import PoolSnapshot
 from skyward.api.plugin import Plugin
@@ -83,7 +70,7 @@ from .offers import PoolConfig
 from .spec import DEFAULT_IMAGE, Image, PoolSpec, SelectionStrategy, Spec, Volume, Worker
 
 if TYPE_CHECKING:
-    from skyward.actors.pool.messages import PoolMsg
+    from skyward.actors.pool.pool import Pool
     from skyward.core.model import Cluster
 
 
@@ -261,8 +248,7 @@ class ComputePool:
         self._active: bool = False
         self._context_token: Token[ComputePool | None] | None = None
         self._registry: DistributedRegistry | None = None
-        self._system: ActorSystem | None = None
-        self._pool_ref: ActorRef[PoolMsg] | None = None
+        self._pool: Pool | None = None
         self._cluster_id: str = ""
         self._cluster: Cluster[Any] | None = None
         self._instances: dict[int, NodeInstance] = {}
@@ -347,7 +333,6 @@ class ComputePool:
             self._owns_session = True
         self._session = session
         self._loop = session._loop
-        self._system = session._system
 
         check_fd_budget(fd_nodes)
 
@@ -371,7 +356,6 @@ class ComputePool:
                 self._session = None
                 self._owns_session = False
             self._loop = None
-            self._system = None
             if self._log_handler_ids:
                 teardown_logging(self._log_handler_ids)
             raise
@@ -394,10 +378,9 @@ class ComputePool:
 
         logger.info("Stopping pool...")
         logger.debug(
-            "ComputePool.__exit__: _active={active}, _pool_ref={ref}, _system={sys}",
+            "ComputePool.__exit__: _active={active}, _pool={ref}",
             active=self._active,
-            ref=self._pool_ref is not None,
-            sys=self._system is not None,
+            ref=self._pool is not None,
         )
         if self._context_token is not None:
             with suppress(ValueError):
@@ -406,7 +389,7 @@ class ComputePool:
 
         try:
             if self._active and self._loop is not None:
-                run_sync(self._loop, self._stop_pool_actor(), timeout=self.shutdown_timeout)
+                run_sync(self._loop, self._stop_pool(), timeout=self.shutdown_timeout)
         except TimeoutError:
             logger.warning(
                 "Pool stop timed out after {t}s, forcing cleanup",
@@ -444,44 +427,35 @@ class ComputePool:
             case _:
                 return value
 
-    def _unwrap_result(self, result: TaskResult) -> Any:
-        match result:
-            case TaskSucceeded(value=value):
-                return value
-            case TaskFailed(error=error):
-                raise error
-            case TaskInterrupted(error=error):
-                raise error
-
     def _resolve_timeout(self, pending: PendingFunction[Any]) -> float:
         return pending.timeout if pending.timeout is not None else self.default_compute_timeout
 
-    def _submit(
+    def _assert_active(self) -> None:
+        if not self._active or self._pool is None:
+            raise RuntimeError("Pool is not active")
+
+    def _get_pool(self) -> Pool:
+        self._assert_active()
+        pool = self._pool
+        if pool is None:
+            raise RuntimeError("Pool is not active")
+        return pool
+
+    def _execute_coro(
         self,
         pending: PendingFunction[Any],
         *,
         task_id: str | None = None,
         target: NodeTarget | None = None,
-    ) -> Callable[[ActorRef[Any]], SubmitTask]:
+    ) -> Any:
+        pool = self._get_pool()
         timeout = self._resolve_timeout(pending)
         fn = self._decorate_fn(pending.fn)
         tid = task_id or uuid4().hex[:8]
-        return lambda reply_to: SubmitTask(
-            fn=fn, args=pending.args, kwargs=pending.kwargs,
-            reply_to=reply_to, timeout=timeout, task_id=tid, target=target,
+        return pool.execute(
+            fn, pending.args, pending.kwargs,
+            timeout=timeout, task_id=tid, target=target,
         )
-
-    def _assert_active(self) -> None:
-        if not self._active or self._pool_ref is None or self._system is None:
-            raise RuntimeError("Pool is not active")
-
-    def _get_system_and_ref(self) -> tuple[ActorSystem, ActorRef[PoolMsg]]:
-        self._assert_active()
-        system = self._system
-        ref = self._pool_ref
-        if system is None or ref is None:
-            raise RuntimeError("Pool is not active")
-        return system, ref
 
     def run[T](
         self, pending: PendingFunction[T], *,
@@ -518,16 +492,13 @@ class ComputePool:
         --------
         >>> result = train(data) >> compute
         """
-        system, ref = self._get_system_and_ref()
-
         timeout = self._resolve_timeout(pending)
         logger.debug("Submitting task: {fn}", fn=getattr(pending.fn, "__name__", repr(pending.fn)))
-        result: TaskResult = run_sync(
+        return run_sync(
             self._get_loop(),
-            system.ask(ref, self._submit(pending, task_id=task_id, target=target), timeout=timeout),
+            self._execute_coro(pending, task_id=task_id, target=target),
             timeout=timeout,
         )
-        return self._unwrap_result(result)
 
     def run_async[T](
         self, pending: PendingFunction[T], *,
@@ -561,19 +532,12 @@ class ComputePool:
         """
         self._assert_active()
 
-        timeout = self._resolve_timeout(pending)
         fn_name = getattr(pending.fn, "__name__", repr(pending.fn))
         logger.debug("Submitting async task: {fn}", fn=fn_name)
         loop = self._get_loop()
-
-        async def _run() -> T:
-            assert self._pool_ref is not None
-            result: TaskResult = await self._system.ask(  # type: ignore[union-attr]
-                self._pool_ref, self._submit(pending, task_id=task_id, target=target), timeout=timeout,
-            )
-            return self._unwrap_result(result)
-
-        return asyncio.run_coroutine_threadsafe(_run(), loop)
+        return asyncio.run_coroutine_threadsafe(
+            self._execute_coro(pending, task_id=task_id, target=target), loop,
+        )
 
     def broadcast[T](
         self, pending: PendingFunction[T], *, task_id: str | None = None,
@@ -613,17 +577,13 @@ class ComputePool:
         )
 
         tid = task_id or uuid4().hex[:8]
+        pool = self._get_pool()
 
         async def _broadcast() -> list[T]:
-            assert self._pool_ref is not None
-            result = await self._system.ask(  # type: ignore[union-attr]
-                self._pool_ref,
-                lambda reply_to: SubmitBroadcast(
-                    fn=fn, args=pending.args, kwargs=pending.kwargs,
-                    reply_to=reply_to, timeout=timeout, task_id=tid,
-                ),
-                timeout=timeout + 30,
-            )
+            async with asyncio.timeout(timeout + 30):
+                result = await pool.broadcast(
+                    fn, pending.args, pending.kwargs, timeout=timeout, task_id=tid,
+                )
             return [self._unwrap_broadcast_result(v) for v in result]
 
         return run_sync(self._get_loop(), _broadcast(), timeout=timeout + 30)
@@ -672,15 +632,10 @@ class ComputePool:
         )
 
         async def _run_parallel() -> tuple[Any, ...]:
-            assert self._pool_ref is not None
-            tasks = [
-                self._system.ask(  # type: ignore[union-attr]
-                    self._pool_ref, self._submit(p), timeout=self._resolve_timeout(p),
-                )
-                for p in group.items
-            ]
-            results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=group_timeout)
-            return tuple(self._unwrap_result(r) for r in results)
+            coros = [self._execute_coro(p) for p in group.items]
+            return tuple(await asyncio.wait_for(
+                asyncio.gather(*coros), timeout=group_timeout,
+            ))
 
         return run_sync(self._get_loop(), _run_parallel(), timeout=group_timeout)
 
@@ -693,24 +648,17 @@ class ComputePool:
             exception: BaseException
 
         async def _feed_queue() -> None:
-            assert self._pool_ref is not None
             tasks = [
-                asyncio.ensure_future(
-                    self._system.ask(  # type: ignore[union-attr]
-                        self._pool_ref, self._submit(p), timeout=self._resolve_timeout(p),
-                    )
-                )
+                asyncio.ensure_future(self._execute_coro(p))
                 for p in group.items
             ]
             try:
                 if group.ordered:
                     for task in tasks:
-                        result = await task
-                        q.put(self._unwrap_result(result))
+                        q.put(await task)
                 else:
                     for coro in asyncio.as_completed(tasks):
-                        result = await coro
-                        q.put(self._unwrap_result(result))
+                        q.put(await coro)
             except BaseException as exc:
                 for task in tasks:
                     if not task.done():
@@ -765,16 +713,11 @@ class ComputePool:
         self._assert_active()
 
         async def _map_async() -> list[R]:
-            assert self._pool_ref is not None
-            tasks = [
-                self._system.ask(  # type: ignore[union-attr]
-                    self._pool_ref,
-                    self._submit(PendingFunction(fn=fn, args=(item,), kwargs={})),
-                    timeout=self.default_compute_timeout,
-                )
+            coros = [
+                self._execute_coro(PendingFunction(fn=fn, args=(item,), kwargs={}))
                 for item in items
             ]
-            return [self._unwrap_result(r) for r in await asyncio.gather(*tasks)]
+            return list(await asyncio.gather(*coros))
 
         return run_sync(self._get_loop(), _map_async())
 
@@ -983,9 +926,7 @@ class ComputePool:
         TypeError
             When *spec* is not a recognized form.
         """
-        from skyward.actors.pool.messages import Resize
-
-        self._assert_active()
+        pool = self._get_pool()
         match spec:
             case (Nodes() as n,):
                 nodes = n
@@ -998,8 +939,7 @@ class ComputePool:
                     f"resize accepts resize(int), resize(int, int), or "
                     f"resize(Nodes); got {spec!r}",
                 )
-        assert self._pool_ref is not None
-        self._pool_ref.tell(Resize(nodes=nodes))
+        self._get_loop().call_soon_threadsafe(pool.resize, nodes)
 
     def current_nodes(self) -> int:
         """Return the number of ready nodes in the pool.
@@ -1022,16 +962,7 @@ class ComputePool:
         >>> compute.current_nodes()
         4
         """
-        system, ref = self._get_system_and_ref()
-        result: CurrentNodeCount = run_sync(
-            self._get_loop(),
-            system.ask(
-                ref,
-                lambda reply_to: GetCurrentNodes(reply_to=reply_to),
-                timeout=5.0,
-            ),
-        )
-        return result.ready
+        return self._get_pool().current_nodes().ready
 
     def snapshot(self) -> PoolSnapshot:
         """Return a point-in-time snapshot of the pool's internal state.
@@ -1050,15 +981,7 @@ class ComputePool:
         RuntimeError
             When the pool is not active.
         """
-        system, ref = self._get_system_and_ref()
-        return run_sync(
-            self._get_loop(),
-            system.ask(
-                ref,
-                lambda reply_to: GetPoolSnapshot(reply_to=reply_to),
-                timeout=5.0,
-            ),
-        )
+        return self._get_pool().snapshot()
 
     def _file_op(
         self,
@@ -1069,20 +992,14 @@ class ComputePool:
         node: NodeSelection,
         timeout: float,
     ) -> tuple[NodeFileResult, ...]:
-        system, ref = self._get_system_and_ref()
-        result: FileOpReplies = run_sync(
+        pool = self._get_pool()
+        return run_sync(
             self._get_loop(),
-            system.ask(
-                ref,
-                lambda reply_to: FileOpOnNodes(
-                    op=op, path=path, content=content,
-                    selection=node, timeout=timeout, reply_to=reply_to,
-                ),
-                timeout=timeout + 10.0,
+            pool.file_op(
+                op, path, content=content, selection=node, timeout=timeout,
             ),
             timeout=timeout + 10.0,
         )
-        return result.results
 
     def ls(
         self, path: str, node: NodeSelection = "head", timeout: float = 30.0,
@@ -1126,8 +1043,8 @@ class ComputePool:
         )
 
     def _spawn_via_session(self, session: Any) -> None:
-        """Select offers and ask the session actor to spawn a pool."""
-        pool_ref, spec, cluster_id, cluster, instances = session._spawn_pool(
+        """Select offers and ask the session to spawn a pool."""
+        pool, spec, cluster_id, cluster, instances = session._spawn_pool(
             self._build_specs(),
             self._pool_config(),
             self._pool_name or f"pool-{id(self)}",
@@ -1135,24 +1052,19 @@ class ComputePool:
         )
 
         self._spec = spec
-        self._pool_ref = pool_ref
+        self._pool = pool
         self._cluster_id = cluster_id
         self._cluster = cluster
         self.image = self._apply_plugin_transforms(self.image, cluster)
         self._instances = {info.node: info for info in instances}
 
-    async def _stop_pool_actor(self) -> None:
-        """Stop the pool actor without tearing down the actor system."""
-        if self._pool_ref is not None and self._system is not None:
-            from skyward.actors.pool.messages import StopPool
-
-            logger.info("Sending StopPool (timeout={t}s)...", t=self.shutdown_timeout)
-            await self._system.ask(
-                self._pool_ref,
-                lambda reply_to: StopPool(reply_to=reply_to),
-                timeout=self.shutdown_timeout,
-            )
-            logger.info("StopPool ask resolved (PoolStopped received)")
+    async def _stop_pool(self) -> None:
+        """Stop the pool without tearing down the session."""
+        if self._pool is not None:
+            logger.info("Stopping pool (timeout={t}s)...", t=self.shutdown_timeout)
+            async with asyncio.timeout(self.shutdown_timeout):
+                await self._pool.stop()
+            logger.info("Pool stop resolved")
 
     @property
     def concurrency(self) -> int:
@@ -1175,7 +1087,7 @@ class ComputePool:
     def _from_session(
         cls,
         session: Any,
-        pool_ref: ActorRef[PoolMsg],
+        pool: Pool,
         spec: PoolSpec,
         specs: tuple[Spec, ...],
         plugins: tuple[Plugin, ...],
@@ -1187,41 +1099,40 @@ class ComputePool:
         default_compute_timeout: float,
     ) -> ComputePool:
         """Create a ComputePool bound to an existing Session (internal)."""
-        pool = cls.__new__(cls)
-        pool._specs = specs
-        pool._scaling = None
-        pool.selection = "cheapest"
-        pool.image = image
-        pool.worker = worker
-        pool.logging = False
-        pool.default_compute_timeout = default_compute_timeout
-        pool.provision_timeout = DEFAULT_PROVISION_TIMEOUT
-        pool.ssh_timeout = DEFAULT_SSH_TIMEOUT
-        pool.bootstrap_timeout = DEFAULT_BOOTSTRAP_TIMEOUT
-        pool.ssh_retry_interval = 2
-        pool.provision_retry_delay = 5.0
-        pool.max_provision_attempts = 3
-        pool.volumes = ()
-        pool._plugins = plugins
-        pool.autoscale_cooldown = 30.0
-        pool.autoscale_idle_timeout = 60.0
-        pool.reconcile_tick_interval = 15.0
-        pool.shutdown_timeout = 120.0
-        pool._log_handler_ids = []
-        pool._loop = session._loop
-        pool._active = True
-        pool._context_token = None
-        pool._registry = None
-        pool._system = session._system
-        pool._pool_ref = pool_ref
-        pool._cluster_id = cluster_id
-        pool._cluster = cluster
-        pool._instances = {info.node: info for info in instances} if instances else {}
-        pool._spec = spec
-        pool._plugin_client_contexts = []
-        pool._session = session
-        pool._owns_session = False
-        return pool
+        cp = cls.__new__(cls)
+        cp._specs = specs
+        cp._scaling = None
+        cp.selection = "cheapest"
+        cp.image = image
+        cp.worker = worker
+        cp.logging = False
+        cp.default_compute_timeout = default_compute_timeout
+        cp.provision_timeout = DEFAULT_PROVISION_TIMEOUT
+        cp.ssh_timeout = DEFAULT_SSH_TIMEOUT
+        cp.bootstrap_timeout = DEFAULT_BOOTSTRAP_TIMEOUT
+        cp.ssh_retry_interval = 2
+        cp.provision_retry_delay = 5.0
+        cp.max_provision_attempts = 3
+        cp.volumes = ()
+        cp._plugins = plugins
+        cp.autoscale_cooldown = 30.0
+        cp.autoscale_idle_timeout = 60.0
+        cp.reconcile_tick_interval = 15.0
+        cp.shutdown_timeout = 120.0
+        cp._log_handler_ids = []
+        cp._loop = session._loop
+        cp._active = True
+        cp._context_token = None
+        cp._registry = None
+        cp._pool = pool
+        cp._cluster_id = cluster_id
+        cp._cluster = cluster
+        cp._instances = {info.node: info for info in instances} if instances else {}
+        cp._spec = spec
+        cp._plugin_client_contexts = []
+        cp._session = session
+        cp._owns_session = False
+        return cp
 
     @classmethod
     def Named(cls, name: str) -> ComputePool:

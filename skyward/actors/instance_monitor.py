@@ -2,17 +2,16 @@
 
 Consumes ``SshTransport.events()`` (JSONL events streamed from the node),
 emits domain events (metrics, logs) and forwards bootstrap/console
-messages to the pool. Bootstrap completion is signalled to ``reply_to``
-as a side effect. Reconnection is handled entirely by the transport;
+messages to ``on_stream``. Bootstrap completion is signalled once via
+``on_bootstrap_done``. Reconnection is handled entirely by the transport;
 the loop ends when the transport closes or permanently fails.
 """
 from __future__ import annotations
 
-from casty import ActorRef
+from collections.abc import Callable
 
 from skyward.actors.messages import (
     BootstrapCommand,
-    BootstrapDone,
     BootstrapFailed,
     BootstrapPhase,
     ConsoleOutput,
@@ -25,6 +24,8 @@ from skyward.api import events as domain
 from skyward.infra.ssh_transport import SshTransport
 from skyward.observability.logger import logger
 
+type StreamMsg = BootstrapPhase | BootstrapCommand | BootstrapFailed | ConsoleOutput
+
 
 def _no_emit(_event: domain.SessionEvent) -> None:
     pass
@@ -33,8 +34,8 @@ def _no_emit(_event: domain.SessionEvent) -> None:
 async def monitor_instance(
     transport: SshTransport,
     info: NodeInstance,
-    event_listener: ActorRef,
-    reply_to: ActorRef[BootstrapDone],
+    on_stream: Callable[[StreamMsg], None],
+    on_bootstrap_done: Callable[[bool, str | None], None],
     emit: domain.Emit | None = None,
     pool_name: str = "",
 ) -> None:
@@ -58,25 +59,25 @@ async def monitor_instance(
                     emit(domain.Log.Emitted(pool_name, info.node, stripped, overwrite=ow))
             case BootstrapPhase():
                 log.info("Phase {phase}: {ev}", phase=event.phase, ev=event.event)
-                event_listener.tell(event)
+                on_stream(event)
             case BootstrapCommand():
                 log.info("Command: {cmd}", cmd=event.command)
-                event_listener.tell(event)
+                on_stream(event)
             case ConsoleOutput():
                 log.info("{content}", content=event.content.rstrip())
-                event_listener.tell(event)
+                on_stream(event)
             case BootstrapFailed():
                 log.error("Bootstrap failed: {err}", err=event.error)
-                event_listener.tell(event)
+                on_stream(event)
 
         if not bootstrap_signaled:
             match event:
                 case BootstrapPhase(phase="bootstrap", event="completed"):
                     log.info("Bootstrap completion signal received")
-                    reply_to.tell(BootstrapDone(instance=info, success=True))
+                    on_bootstrap_done(True, None)
                     bootstrap_signaled = True
                 case BootstrapFailed(error=error):
-                    reply_to.tell(BootstrapDone(instance=info, success=False, error=error))
+                    on_bootstrap_done(False, error)
                     bootstrap_signaled = True
 
 

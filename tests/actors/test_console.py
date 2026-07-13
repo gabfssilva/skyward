@@ -214,55 +214,17 @@ class TestSummary:
 # --- Controller tests ---
 
 
-class TestConsoleActor:
-    @staticmethod
-    def _make_spec():
-        from skyward.core.spec import Image, Nodes, PoolSpec
+class TestRichConsoleRenderer:
+    def test_handles_local_output(self, monkeypatch) -> None:
+        from skyward.actors.console import LocalOutput
+        from skyward.actors.console.actor import RichConsole
 
-        return PoolSpec(nodes=Nodes(desired=2), accelerator=None, region="us-east-1", image=Image())
-
-    def test_actor_can_be_spawned(self) -> None:
-        import asyncio
-
-        from skyward.actors.console import LocalOutput, console_actor
-
-        async def run() -> None:
-            from casty import ActorSystem
-
-            async with ActorSystem("test") as system:
-                ref = system.spawn(console_actor(), "console")
-                ref.tell(LocalOutput(line="hello"))
-                await asyncio.sleep(0.1)
-
-        asyncio.run(run())
-
-    def test_actor_handles_start_pool(self) -> None:
-        import asyncio
-
-        from skyward.actors.console import console_actor
-
-        async def run() -> None:
-            from casty import ActorSystem, SpyEvent
-
-            from skyward.actors.pool.messages import StartPool
-
-            spec = self._make_spec()
-            async with ActorSystem("test") as system:
-                ref = system.spawn(console_actor(), "console")
-                ref.tell(SpyEvent(
-                    actor_path="/test/pool",
-                    event=StartPool(
-                        spec=spec,
-                        provider_config=None,  # type: ignore[arg-type]
-                        provider=None,
-                        offers=(),
-                        reply_to=None,  # type: ignore[arg-type]
-                    ),
-                    timestamp=0.0,
-                ))
-                await asyncio.sleep(0.1)
-
-        asyncio.run(run())
+        renderer = RichConsole()
+        renderer.start(lambda _msg: None)
+        try:
+            renderer.handle(LocalOutput(line="hello"))
+        finally:
+            renderer.stop()
 
 
 class TestFormatTask:

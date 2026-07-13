@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from skyward.actors.instance_monitor import monitor_instance
-from skyward.actors.messages import BootstrapDone, ConsoleOutput, NodeInstance
+from skyward.actors.messages import ConsoleOutput, NodeInstance
 from skyward.api import events as domain
 from skyward.infra.ssh import RawBootstrapPhase, RawConsoleOutput, RawLogEvent, RawStreamEvent
 from skyward.infra.ssh_transport import StreamEvent
@@ -39,31 +39,24 @@ class _FakeTransport:
             yield StreamEvent(lines_read=i, event=raw)
 
 
-class _Probe:
-    def __init__(self) -> None:
-        self.messages: list[object] = []
-
-    def tell(self, msg: object) -> None:
-        self.messages.append(msg)
-
-
 async def _run_monitor(
     raw_events: list[RawStreamEvent],
     emit: domain.Emit | None = None,
-) -> tuple[_Probe, _Probe]:
-    listener, reply_to = _Probe(), _Probe()
+) -> tuple[list[object], list[tuple[bool, str | None]]]:
+    stream: list[object] = []
+    done: list[tuple[bool, str | None]] = []
     await asyncio.wait_for(
         monitor_instance(
             _FakeTransport(raw_events),  # type: ignore[arg-type]
             _make_ni(),
-            event_listener=listener,  # type: ignore[arg-type]
-            reply_to=reply_to,  # type: ignore[arg-type]
+            on_stream=stream.append,
+            on_bootstrap_done=lambda ok, err: done.append((ok, err)),
             emit=emit,
             pool_name="pool",
         ),
         timeout=2.0,
     )
-    return listener, reply_to
+    return stream, done
 
 
 async def test_emits_log_events() -> None:
@@ -76,37 +69,32 @@ async def test_emits_log_events() -> None:
     assert log_events[0].pool_name == "pool"
 
 
-async def test_forwards_console_output_to_listener() -> None:
-    listener, _ = await _run_monitor([RawConsoleOutput(content="progress 50%")])
+async def test_forwards_console_output_to_stream() -> None:
+    stream, _ = await _run_monitor([RawConsoleOutput(content="progress 50%")])
 
-    console = [m for m in listener.messages if isinstance(m, ConsoleOutput)]
+    console = [m for m in stream if isinstance(m, ConsoleOutput)]
     assert len(console) == 1
     assert console[0].content == "progress 50%"
 
 
 async def test_signals_bootstrap_done_once() -> None:
-    _, reply_to = await _run_monitor([
+    _, done = await _run_monitor([
         RawBootstrapPhase(event="completed", phase="bootstrap"),
         RawBootstrapPhase(event="completed", phase="bootstrap"),
     ])
 
-    done = [m for m in reply_to.messages if isinstance(m, BootstrapDone)]
-    assert len(done) == 1
-    assert done[0].success is True
+    assert done == [(True, None)]
 
 
 async def test_signals_bootstrap_failure() -> None:
-    _, reply_to = await _run_monitor([
+    _, done = await _run_monitor([
         RawBootstrapPhase(event="failed", phase="uv", error="pip exploded"),
     ])
 
-    done = [m for m in reply_to.messages if isinstance(m, BootstrapDone)]
-    assert len(done) == 1
-    assert done[0].success is False
-    assert done[0].error == "pip exploded"
+    assert done == [(False, "pip exploded")]
 
 
 async def test_ends_when_transport_stream_ends() -> None:
-    listener, reply_to = await _run_monitor([])
-    assert listener.messages == []
-    assert reply_to.messages == []
+    stream, done = await _run_monitor([])
+    assert stream == []
+    assert done == []

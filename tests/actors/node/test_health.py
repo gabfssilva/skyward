@@ -1,10 +1,10 @@
-"""Unit tests for the node-actor health-check decision helper."""
+"""Unit tests for the node health-check decision helper."""
 
 from __future__ import annotations
 
 import pytest
 
-from skyward.actors.node.actor import _evaluate_health
+from skyward.actors.node.node import _evaluate_health
 
 pytestmark = [pytest.mark.unit, pytest.mark.xdist_group("unit")]
 

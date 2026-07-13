@@ -1,4 +1,4 @@
-from skyward.actors.node.actor import node_actor
-from skyward.actors.node.state import NodeId, PythonVersionMismatchError
+from skyward.actors.node.node import Node, NodeId, NodeListener
+from skyward.actors.node.state import PythonVersionMismatchError
 
-__all__ = ["node_actor", "NodeId", "PythonVersionMismatchError"]
+__all__ = ["Node", "NodeId", "NodeListener", "PythonVersionMismatchError"]

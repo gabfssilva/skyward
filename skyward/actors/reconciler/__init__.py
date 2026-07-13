@@ -1,3 +1,3 @@
-from skyward.actors.reconciler.actor import reconciler_actor
+from skyward.actors.reconciler.reconciler import Reconciler, ReconcilerPool
 
-__all__ = ["reconciler_actor"]
+__all__ = ["Reconciler", "ReconcilerPool"]

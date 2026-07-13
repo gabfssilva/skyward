@@ -305,7 +305,7 @@ async def delete_pool(request: Request) -> Response:
     state.set_stopping(name)
 
     # Signal the underlying pool actor to terminate, whether it's still
-    # provisioning (ref tracked in session._pending_pool_refs) or already
+    # provisioning (ref tracked in session._pending_pools) or already
     # ready (in session._pools). This actually tears down cloud instances —
     # in contrast to merely cancelling the asyncio task, which leaves the
     # provisioning thread running and leaks resources.

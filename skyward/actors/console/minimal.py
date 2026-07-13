@@ -1,4 +1,4 @@
-"""Minimal console actor — single live status line over a cluster header.
+"""Minimal console — single live status line over a cluster header.
 
 Renders a compact, opinionated view of the session:
 
@@ -19,12 +19,11 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from statistics import mean
 from typing import Any
 
-from casty import ActorContext, Behavior, Behaviors
 from rich.console import Console, Group
 from rich.live import Live
 from rich.spinner import Spinner
@@ -37,7 +36,7 @@ from skyward.api.views import NodeStatus, NodeView, PoolPhase, PoolView, Session
 
 from .messages import ConsoleInput, EventReceived, LocalOutput, LogReceived, ViewUpdated
 
-__all__ = ["minimal_console_actor"]
+__all__ = ["MinimalConsole"]
 
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -296,7 +295,7 @@ class _View:
         return Group(_header(pool), row, *_node_tails(pool))
 
 
-# ── Actor ────────────────────────────────────────────────────────
+# ── Renderer ─────────────────────────────────────────────────────
 
 
 def _print_event(live: Live, event: Any) -> None:
@@ -323,63 +322,60 @@ def _print_event(live: Live, event: Any) -> None:
             pass
 
 
-def minimal_console_actor() -> Behavior[ConsoleInput]:
-    """Minimal console tells this story: idle → live → stopped."""
+class MinimalConsole:
+    """Minimal console: cluster header + one live status line."""
 
-    console = Console(stderr=True)
-    renderable = _View()
-    live = Live(
-        renderable, console=console, refresh_per_second=10,
-        redirect_stdout=False, redirect_stderr=False,
-    )
-    started_at = time.monotonic()
+    tick_interval: float | None = None
 
-    async def post_stop(_ctx: ActorContext[ConsoleInput]) -> None:
-        if live.is_started:
-            live.stop()
+    def __init__(self) -> None:
+        self._console = Console(stderr=True)
+        self._renderable = _View()
+        self._live = Live(
+            self._renderable, console=self._console, refresh_per_second=10,
+            redirect_stdout=False, redirect_stderr=False,
+        )
+        self._started_at = time.monotonic()
 
-    async def setup(ctx: ActorContext[ConsoleInput]) -> Behavior[ConsoleInput]:
-        live.start()
-        return Behaviors.with_lifecycle(active(), post_stop=post_stop)
+    def start(self, post: Callable[[ConsoleInput], None]) -> None:
+        self._live.start()
 
-    def active() -> Behavior[ConsoleInput]:
-        async def receive(
-            ctx: ActorContext[ConsoleInput], msg: ConsoleInput,
-        ) -> Behavior[ConsoleInput]:
-            match msg:
-                case ViewUpdated(view=view):
-                    renderable.view = view
+    def stop(self) -> None:
+        if self._live.is_started:
+            self._live.stop()
 
-                case EventReceived(event=Pool.Stopped()):
-                    pool = _first_pool(renderable.view)
-                    if pool is not None:
-                        live.update(Text())
-                        live.stop()
-                        console.print(_summary(pool, started_at))
+    def tick(self) -> None:
+        pass
 
-                case EventReceived(event=ev):
-                    if live.is_started:
-                        _print_event(live, ev)
+    def handle(self, msg: ConsoleInput) -> None:
+        live = self._live
+        match msg:
+            case ViewUpdated(view=view):
+                self._renderable.view = view
 
-                case LogReceived(log=log):
-                    if live.is_started:
-                        pool = _first_pool(renderable.view)
-                        node = pool.nodes.get(log.node_id) if pool else None
-                        label = _node_label(node) if node else str(log.node_id)
-                        live.console.print(
-                            Text.assemble(
-                                (label, "blue"),
-                                ": ",
-                                log.message,
-                            ),
-                        )
+            case EventReceived(event=Pool.Stopped()):
+                pool = _first_pool(self._renderable.view)
+                if pool is not None:
+                    live.update(Text())
+                    live.stop()
+                    self._console.print(_summary(pool, self._started_at))
 
-                case LocalOutput(line=line):
-                    if live.is_started and (stripped := line.rstrip()):
-                        live.console.print(stripped)
+            case EventReceived(event=ev):
+                if live.is_started:
+                    _print_event(live, ev)
 
-            return Behaviors.same()
+            case LogReceived(log=log):
+                if live.is_started:
+                    pool = _first_pool(self._renderable.view)
+                    node = pool.nodes.get(log.node_id) if pool else None
+                    label = _node_label(node) if node else str(log.node_id)
+                    live.console.print(
+                        Text.assemble(
+                            (label, "blue"),
+                            ": ",
+                            log.message,
+                        ),
+                    )
 
-        return Behaviors.receive(receive)
-
-    return Behaviors.setup(setup)
+            case LocalOutput(line=line):
+                if live.is_started and (stripped := line.rstrip()):
+                    live.console.print(stripped)
