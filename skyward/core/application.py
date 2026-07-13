@@ -3,7 +3,7 @@
 ``Application`` mirrors :func:`Compute`'s constructor but inverts the
 execution model.  Textual must own the main thread (it installs OS signal
 handlers — ``signal.signal`` only works there), so the dashboard cannot run
-on the session's background loop the way the Rich console spy does.  Instead
+on the session's background loop the way the Rich console does.  Instead
 :meth:`Application.run` keeps the dashboard on the main thread and runs the
 workload on a worker thread, returning its result.
 

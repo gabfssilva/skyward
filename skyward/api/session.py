@@ -39,7 +39,7 @@ class Session:
     1. Initializes logging (if enabled).
     2. Creates a fresh ``asyncio`` event loop in a background daemon thread.
     3. Starts the Casty actor system and spawns the session actor.
-    4. Optionally attaches the Rich console spy for live monitoring.
+    4. Optionally attaches the Rich adaptive console for live monitoring.
     5. Registers itself in the ``_active_session`` context variable.
 
     On ``__exit__``:
@@ -57,8 +57,8 @@ class Session:
     Parameters
     ----------
     console
-        Enable the Rich adaptive console spy for live pool monitoring.
-        Adds a spy actor that observes all pool events and renders them
+        Enable the Rich adaptive console for live pool monitoring.
+        Adds a consumer that observes all pool events and renders them
         as a Rich Live display.  Default ``True``.
     logging
         Logging configuration.  ``True`` uses sensible defaults

@@ -1,24 +1,22 @@
 # Clustering
 
-Skyward uses [Casty](https://gabfssilva.github.io/casty/) as its distributed runtime. Casty is an actor-based framework for Python 3.12+ — a lightweight implementation of the actor model, inspired by Akka, built on top of asyncio. Every compute node in a Skyward pool runs a Casty `ClusteredActorSystem`, and together they form a peer-to-peer cluster that handles task execution, distributed state, and inter-node communication without any external coordination service.
+Skyward uses [Casty](https://gabfssilva.github.io/casty/) as its distributed runtime. Casty is a typed, clustered virtual-actor framework for Python 3.12+ — actors are plain classes whose annotated fields are replicated state and whose async methods are the interface, activated on demand across a leaderless cluster. Every compute node in a Skyward pool runs a Casty member, and together they form a peer-to-peer cluster that handles task execution, distributed state, and inter-node communication without any external coordination service.
 
-This page explains how the cluster is structured and why the actor model is a natural fit for ephemeral cloud orchestration.
+This page explains how the cluster is structured and how your client reaches it.
 
-## Why actors
+## Two planes
 
-The pool lifecycle involves a lot of concurrent, independent activity. Multiple cloud instances boot at different speeds. SSH connections are established in parallel. Bootstrap scripts run simultaneously on different machines. Worker processes start up and begin accepting tasks. Some nodes might fail and need replacement. All of this happens concurrently, and different nodes progress through their state machines at different rates.
+Skyward's runtime splits into two halves with different concurrency needs.
 
-The actor model handles this naturally. An actor is an isolated unit of state that communicates exclusively through messages. There are no shared locks, no thread pools coordinating through mutexes, no callbacks mutating global state. An actor receives a message, decides what to do, and optionally sends messages to other actors. When you need to track the lifecycle of 8 nodes — each at a different stage of booting, connecting, and bootstrapping — 8 independent actors with their own state machines are easier to reason about than 8 threads sharing a pool of mutable state.
+The **control plane** runs on your machine: provisioning cloud instances, opening SSH tunnels, running bootstrap scripts, watching for preemption, scaling. It is a single process doing concurrent I/O, so it is written as plain asyncio classes — each `Node` walks a linear `provision()` coroutine (poll the cloud API, connect SSH, bootstrap, start the worker), the `Pool` coordinates them through callbacks, and the task manager, reconciler, and autoscaler are classes with background tick loops. No actor framework is involved.
 
-Both Casty and Skyward are built on asyncio, so actors are cheap and message passing doesn't block threads. The system scales to hundreds of nodes without requiring proportional memory or CPU on your laptop.
+The **data plane** is the cluster of remote workers — a genuinely distributed problem — and that is where Casty runs. Each worker process is a Casty cluster member hosting the Skyward worker as a `@casty.service`: a stateless, concurrent RPC endpoint whose methods (`run`, `broadcast`, streaming) execute your serialized functions.
 
 ## How the cluster forms
 
-When you enter a `Compute` context manager, Skyward creates a local Casty actor system on your machine and spawns a **pool actor** — the root of the supervision hierarchy. The pool actor asks the provider to launch instances, and for each one, it spawns a **node actor** to manage that instance's lifecycle.
+When you enter a `Compute` context manager, Skyward's control plane asks the provider to launch instances and, for each one, runs a node lifecycle: polling the cloud API until the machine is running, opening an SSH tunnel, transferring the bootstrap script, installing dependencies, and starting the worker process. When a worker is ready, its node reports back to the pool. Once enough nodes are ready, the pool is open for business.
 
-Each node actor, in turn, spawns an **instance actor** that handles the low-level work: polling the cloud API until the machine is running, opening an SSH tunnel, transferring the bootstrap script, installing dependencies, and starting the worker process. When the worker is ready, the instance actor reports back to the node actor, which reports back to the pool actor. Once all nodes are ready, the pool is open for business.
-
-On the remote side, each worker runs its own `ClusteredActorSystem` on port 25520. The instance actor on your laptop establishes an SSH tunnel — a local port forward to the remote machine's port 25520 — and connects a `ClusterClient` to it. It discovers the worker actor via Casty's service discovery (`ServiceKey("skyward-worker")`) and from that point on, tasks are sent as actor messages over the tunneled TCP connection. There is no HTTP server, no REST API, no message broker — just Casty actor messaging over SSH.
+On the remote side, each worker starts a Casty member on port 25520; node 0 acts as the seed the others join through. Your client connects as a **lite member** — `casty.connect(seeds, address_map=...)` — which joins the membership and routes calls but hosts nothing. The `address_map` rewrites every remote address to the local end of an SSH tunnel, so all traffic between your laptop and the cluster flows through SSH port forwards. Task dispatch is pinned to a specific node with `client.service(WorkerService, at=member)`. There is no HTTP server, no REST API, no message broker — just Casty RPC over SSH.
 
 ```mermaid
 graph LR
@@ -33,39 +31,39 @@ graph LR
     end
 ```
 
-Node 0 plays a special role: it's the **head node**. Once its instance is ready, it broadcasts its address to all other nodes so they can form a cluster. This is how distributed training frameworks (PyTorch DDP, JAX, etc.) discover each other — `MASTER_ADDR` always points to node 0.
+Node 0 plays a special role for distributed training: once its instance is ready, its address is shared with all other nodes. This is how distributed training frameworks (PyTorch DDP, JAX, etc.) discover each other — `MASTER_ADDR` always points to node 0.
 
-## The actor hierarchy
+## The control plane
 
-The full hierarchy on your local machine consists of four layers, each with a well-defined responsibility.
+The full control plane on your local machine consists of a few plain asyncio classes, each with a well-defined responsibility.
 
-The **pool actor** is the state machine that orchestrates everything. It progresses through `idle → requesting → provisioning → ready → stopping`. It holds references to all node actors and the task manager, and it's the entry point for all task submissions.
+The **pool** coordinates everything. It provisions instances through the provider, owns one `Node` per instance, holds the Casty client(s), and is the entry point for all task submissions.
 
-The **task manager** dispatches tasks to nodes using round-robin scheduling. It handles backpressure through per-node concurrency slots (from the `worker` configuration), preventing the workers from being overwhelmed. When you call `train(10) >> pool`, the task manager picks the next node in the rotation and forwards the task.
+The **task manager** dispatches tasks to nodes using round-robin scheduling. It handles backpressure through per-node concurrency slots (from the `worker` configuration), preventing the workers from being overwhelmed. When you call `train(10) >> pool`, the task manager picks the next node with a free slot and forwards the task.
 
-**Node actors** — one per instance — track each node's lifecycle: `idle → waiting → active`. If a spot instance is preempted, the node detects the loss, notifies the pool, and requests a replacement from the provider. Tasks that were in flight on the lost node are re-queued.
+Each **node** manages a single remote machine through its full lifecycle — `provision()` is one linear coroutine: poll the cloud API, connect SSH, bootstrap, start the worker. If a spot instance is preempted, the node detects the loss, notifies the pool, and a replacement is provisioned. Tasks that were in flight on the lost node are re-queued.
 
-**Instance actors** are the workhorses. Each one manages a single remote machine through its full lifecycle: `polling → connecting → bootstrapping → ready → joined`. It handles SSH tunnel establishment, bootstrap monitoring, worker startup, and serves as the bridge for task execution. When you send a task with `>>`, the instance actor serializes the function and arguments (cloudpickle + zlib), sends them over the SSH tunnel to the worker actor, waits for the result, and returns it through the reply chain.
+The **instance monitor** tails a JSONL event stream over SSH from each machine — bootstrap phases, logs, metrics — and turns it into domain events that feed the console and the CLI.
 
-Communication between actors uses Casty's `tell` (fire-and-forget) and `ask` (request-reply with timeout) patterns. A `tell` is a one-way message — the sender doesn't wait for a response. An `ask` creates a temporary reply-to reference, sends it along with the message, and blocks until the recipient responds. The full path of a task — from `>> pool` on your laptop to the remote worker and back — is a chain of `ask` calls: pool actor → task manager → node actor → instance actor → remote worker → back through `reply_to` references.
+When you send a task with `>>`, the function and arguments are serialized (cloudpickle + lz4) and sent as a Casty RPC to the worker service on the chosen node; the result flows back as the awaited return value.
 
 ## Distributed state
 
-The cluster also powers Skyward's [distributed collections](distributed-collections.md). When you call `sky.dict("cache")` inside a `@sky.function` function, Casty creates a distributed map that is replicated across the cluster. Every node can read and write to it, and Casty handles replication and consistency automatically.
+The cluster also powers Skyward's [distributed collections](distributed-collections.md). When you call `sky.dict("cache")` inside a `@sky.function` function, Skyward creates a Casty distributed map replicated across `min(3, num_nodes)` physical nodes with quorum-acknowledged writes. Every node can read and write to it, and a node dying does not lose committed state — the collection reactivates on a surviving replica.
 
-This works because the worker processes on each node are part of the same `ClusteredActorSystem`. Distributed data structures are a natural extension of the actor model: each key-value pair (in the case of `sky.dict`) is managed by its own actor, and reads and writes are messages. The same message-passing infrastructure that carries task payloads between your laptop and the workers also carries collection operations between nodes.
+Collections are sugar over the same virtual-actor machinery: each collection is a set of shard actors, placed on the ring and replicated like any other actor, behind a typed facade. The same RPC infrastructure that carries task payloads between your laptop and the workers also carries collection operations between nodes.
 
 ## Why Casty
 
-Skyward needs a runtime that can form ad-hoc clusters from ephemeral cloud instances, execute functions remotely with request-reply semantics, provide distributed data structures, and handle node failures through heartbeats and failure detection. Casty provides all of this with a small footprint and Python-native async support.
+Skyward needs a runtime that can form ad-hoc clusters from ephemeral cloud instances, execute functions remotely with request-reply semantics, provide replicated distributed data structures, and handle node failures through gossip-based membership and failure detection. Casty provides all of this with a small footprint and Python-native async support.
 
-The alternative would be running a separate coordination service on every ephemeral cluster — Redis for state, a message broker for task routing, a custom protocol for function execution. That's more moving parts, more dependencies to install on each worker, and more failure modes to handle during the brief life of a training job. Casty collapses all of these into a single actor system that starts in milliseconds and communicates over plain TCP. For a cluster that might live for ten minutes to run a training job, that simplicity matters.
+The alternative would be running a separate coordination service on every ephemeral cluster — Redis for state, a message broker for task routing, a custom protocol for function execution. That's more moving parts, more dependencies to install on each worker, and more failure modes to handle during the brief life of a training job. Casty collapses all of these into a single runtime that starts in milliseconds and communicates over plain TCP. For a cluster that might live for ten minutes to run a training job, that simplicity matters.
 
 ## Standalone mode
 
 The cluster architecture described above assumes nodes can reach each other on private IPs. Providers that don't offer this — RunPod, VastAI, TensorDock, JarvisLabs, Novita, MassedCompute — default to standalone mode in their `default_options()`. On providers with private networking, you can opt out via `Options(cluster=False)`. Either way, Skyward skips cluster formation entirely.
 
-Each worker runs its own `ClusteredActorSystem` without seed nodes, so it never discovers peers and operates in isolation. The pool actor on your laptop creates a separate `ClusterClient` for each worker, each connected through its own SSH tunnel:
+Each worker starts its Casty member without seeds, so it never discovers peers — a one-member cluster per node. The pool creates a separate lite-member client for each worker, each connected through its own SSH tunnel:
 
 ```mermaid
 graph LR
@@ -82,6 +80,6 @@ This is a deliberate trade-off. For embarrassingly parallel workloads — hyperp
 
 ## Further reading
 
-- [Casty Documentation](https://gabfssilva.github.io/casty/) — Full reference for the actor framework
+- [Casty Documentation](https://gabfssilva.github.io/casty/) — Full reference for the framework
 - [Distributed Collections](distributed-collections.md) — Dict, set, counter, queue, barrier, lock
 - [Distributed Training](distributed-training.md) — Multi-node training with PyTorch, Keras, and JAX

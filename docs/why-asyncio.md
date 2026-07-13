@@ -2,7 +2,7 @@
 
 Skyward orchestrates cloud machines — it provisions instances, installs dependencies, opens SSH tunnels, starts workers, routes tasks, and tears everything down when the job is done. But what does this orchestration actually *do* on your laptop?
 
-The answer is networking. HTTP requests to cloud APIs. SSH connections to remote machines. TCP tunnels carrying actor messages. Polling loops waiting for instances to boot. The client never trains a model, never processes a dataset, never runs a computation. It coordinates. And the nature of that coordination — many concurrent I/O operations, zero CPU-bound work — is what makes asyncio the right foundation.
+The answer is networking. HTTP requests to cloud APIs. SSH connections to remote machines. TCP tunnels carrying Casty RPC. Polling loops waiting for instances to boot. The client never trains a model, never processes a dataset, never runs a computation. It coordinates. And the nature of that coordination — many concurrent I/O operations, zero CPU-bound work — is what makes asyncio the right foundation.
 
 ## Blocking vs non-blocking
 
@@ -53,11 +53,11 @@ Each node in the pool gets its own persistent SSH connection. With 8 nodes, that
 
 ### TCP tunnels
 
-Each SSH connection also establishes a **local port forward** — a TCP tunnel from a random local port to the remote machine's port 25520, where the Casty worker actor system listens. This tunnel stays open for the lifetime of the pool, carrying all task payloads and results as actor messages.
+Each SSH connection also establishes a **local port forward** — a TCP tunnel from a random local port to the remote machine's port 25520, where the Casty worker listens. This tunnel stays open for the lifetime of the pool, carrying all task payloads and results as Casty RPC.
 
-### Actor messaging
+### Casty RPC
 
-Task dispatch — the `>>`, `@`, `&` operators — translates to actor messages sent over these TCP tunnels. When you write `train(10) >> compute`, the function and arguments are serialized (cloudpickle + lz4), sent as a Casty message through the SSH tunnel to the remote worker, executed there, and the result flows back through the same path. The client's role is purely routing: serialize, send, wait for response, deserialize.
+Task dispatch — the `>>`, `@`, `&` operators — translates to Casty RPC calls sent over these TCP tunnels. When you write `train(10) >> compute`, the function and arguments are serialized (cloudpickle + lz4), sent through the SSH tunnel to the worker service on the remote node, executed there, and the result flows back as the awaited return value. The client's role is purely routing: serialize, send, wait for response, deserialize.
 
 ### What's not here
 
@@ -68,16 +68,14 @@ Computation. The client never executes your `@sky.function` functions — that h
 Consider a pool with 100 nodes. The client simultaneously:
 
 - Maintains **100 SSH connections** (each with keepalive heartbeats)
-- Runs **100 TCP tunnels** (port forwards carrying actor messages)
+- Runs **100 TCP tunnels** (port forwards carrying Casty RPC)
 - Polls **100 cloud API endpoints** during provisioning
-- Routes tasks to **100 workers** through the actor hierarchy
+- Routes tasks to **100 workers** through the task manager
 - Streams bootstrap output from **100 instances** in parallel
 
 With threads, each of these concurrent activities needs its own thread — at minimum 100 threads just for SSH, plus more for API polling and task routing. That's several hundred threads, each consuming ~8MB of stack space, each requiring OS context switches. With asyncio, all of it runs on a single event loop in a single thread. A hundred concurrent coroutines use a fraction of the memory of a hundred threads, and switching between them costs nanoseconds instead of microseconds — no kernel involvement, no context save/restore overhead.
 
-The [Casty](https://gabfssilva.github.io/casty/) actor framework maps naturally onto this: each actor is a coroutine, message passing is `await`-based, and the `pipe_to_self` pattern bridges async operations (like SSH commands or HTTP calls) into actor messages without blocking the event loop.
-
-This is also why the actor model fits the orchestration layer. Each node progresses through its own state machine — `idle → waiting → active` — at its own pace. Node 0 might finish bootstrapping while node 73 is still booting. With asyncio + actors, each node's lifecycle is an independent coroutine responding to messages, and the event loop interleaves them automatically. No thread coordination, no locks, no shared mutable state.
+Plain asyncio maps naturally onto this. Each node's lifecycle is one linear coroutine — poll the cloud API, connect SSH, bootstrap, start the worker — and periodic concerns (autoscaling, reconciliation, health checks) are background tasks. Node 0 might finish bootstrapping while node 73 is still booting; the event loop interleaves them automatically. No thread coordination, no locks contended across threads.
 
 ## The synchronous API
 
@@ -94,6 +92,6 @@ This gives you the best of both worlds: the efficiency of async orchestration un
 
 ## Further reading
 
-- [Architecture](architecture.md) — The actor hierarchy and how the cluster forms
+- [Architecture](architecture.md) — The two planes and how the cluster forms
 - [Core Concepts](concepts.md) — Pool lifecycle, operators, and the orchestration model
-- [Casty Documentation](https://gabfssilva.github.io/casty/) — The actor framework powering the runtime
+- [Casty Documentation](https://gabfssilva.github.io/casty/) — The framework powering the data plane

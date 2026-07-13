@@ -1,7 +1,7 @@
 """App stub — type-checking interface for the application context.
 
 The ``App`` context manager manages the Rich adaptive console and
-optional spy actor for observing pool events.  Usually not needed
+optional console for observing pool events.  Usually not needed
 directly — ``Session`` and ``Compute`` manage their own ``App``
 internally.
 """
@@ -12,9 +12,9 @@ from typing import Any
 
 
 class App:
-    """Application context manager for console lifecycle and spy wiring.
+    """Application context manager for console lifecycle and event wiring.
 
-    Provide a Rich adaptive console and optional spy actor for
+    Provide a Rich adaptive console and optional observer for
     observing pool events. Usually not needed directly — ``ComputePool``
     manages its own ``App`` internally.
 

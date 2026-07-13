@@ -57,7 +57,7 @@ sky server start
 
 # 2. Create a pool and follow events until ready
 sky compute create demo --provider runpod --accelerator A100 --watch
-# → renders the same live layout the in-process console actor uses;
+# → renders the same live layout the in-process console uses;
 #   exits 0 when the pool is ready
 
 # 3. Run a script against the ready pool
@@ -155,7 +155,7 @@ Without `--watch`, the command prints the pool entry and a hint pointing to `sky
 
 ### Following events (`view`)
 
-The most useful command for understanding what a pool is doing right now. Connects to `GET /compute/{name}/events` and renders the SSE stream live, using the **same Rich layout the in-process console actor uses** when you embed `Compute` in a Python script. Phase changes, per-node bootstrap progress, task queueing, errors — all of it.
+The most useful command for understanding what a pool is doing right now. Connects to `GET /compute/{name}/events` and renders the SSE stream live, using the **same Rich layout the in-process console uses** when you embed `Compute` in a Python script. Phase changes, per-node bootstrap progress, task queueing, errors — all of it.
 
 ```bash
 sky compute view demo
@@ -168,7 +168,7 @@ Four modes selectable via `--mode`:
 - **`json`** — NDJSON (snapshot frame plus each subsequent event on its own line). Designed to pipe into `jq` or feed into other tooling. The wire format mirrors Skyward's domain events: `{"event": "Pool.PhaseChanged", "data": {"type": "Pool.PhaseChanged", "fields": {...}}}`.
 - **`once`** — render the initial snapshot once and exit. Good for a quick "what's happening?" without committing the terminal.
 
-`--mode auto` (the default) picks `rich` when stderr is a TTY and falls back to `log` when it isn't, mirroring the in-process `console_actor` behavior. The legacy `--once` and `--json` flags still work as shortcuts for `--mode=once` and `--mode=json`.
+`--mode auto` (the default) picks `rich` when stderr is a TTY and falls back to `log` when it isn't, mirroring the in-process console behavior. The legacy `--once` and `--json` flags still work as shortcuts for `--mode=once` and `--mode=json`.
 
 ```bash
 sky compute view demo                       # auto: rich on a TTY, log when piped

@@ -56,11 +56,11 @@ This model fits ML workloads naturally. Training runs, fine-tuning jobs, hyperpa
 
 Behind the `with` block, the pool orchestrates a hierarchy of components — each with its own lifecycle — to bring a cluster from zero to ready.
 
-Internally, this orchestration is built on the **actor model** — specifically on [Casty](https://gabfssilva.github.io/casty/), a lightweight actor framework for Python. Each component in the hierarchy (pool, node, instance) is an actor: an isolated unit of state that communicates exclusively through messages. There are no shared locks, no thread pools coordinating through mutexes, no callbacks mutating global state. An actor receives a message, decides what to do, and optionally sends messages to other actors. This makes the concurrent lifecycle of multiple nodes and instances — each progressing through their own state machines at different speeds — straightforward to reason about. Both Casty and Skyward are built on top of asyncio, so actors are cheap and message passing doesn't block threads — the system scales to hundreds of nodes without requiring proportional memory or CPU on your laptop.
+Internally, this orchestration is plain **asyncio**. Each component in the hierarchy (pool, node) is an ordinary Python object whose lifecycle is a coroutine: a node walks a linear `provision()` — poll the cloud API, connect SSH, bootstrap, start the worker — while periodic concerns (autoscaling, reconciliation, health checks) run as background tasks. This makes the concurrent lifecycle of multiple nodes — each progressing at a different speed — straightforward to reason about: the event loop interleaves independent coroutines, and the system scales to hundreds of nodes without requiring proportional memory or CPU on your laptop. The remote workers, in contrast, form a real distributed system, powered by [Casty](https://gabfssilva.github.io/casty/) — see [Clustering](architecture.md).
 
 Despite being fully asynchronous internally, Skyward exposes a **synchronous API**. The asyncio event loop runs in a background daemon thread, and every public method bridges into it via `run_coroutine_threadsafe`. This means you write normal, blocking Python — `result = task() >> compute` — while the orchestration underneath remains non-blocking and concurrent.
 
-A **pool** actor manages the overall process: it asks the **provider** (AWS, RunPod, VastAI, etc.) to prepare infrastructure and launch instances. Each launched instance becomes a **node** actor, and each node supervises an **instance** actor that handles the low-level work — polling the cloud API until the machine is running, opening an SSH tunnel, bootstrapping the environment, and starting the worker process.
+A **pool** manages the overall process: it asks the **provider** (AWS, RunPod, VastAI, etc.) to prepare infrastructure and launch instances. Each launched instance becomes a **node**, which handles the low-level work — polling the cloud API until the machine is running, opening an SSH tunnel, bootstrapping the environment, and starting the worker process.
 
 The full sequence looks like this:
 
@@ -99,7 +99,7 @@ sequenceDiagram
     Pool-->>User: done
 ```
 
-The provider is only involved at the boundaries: preparing infrastructure, launching instances, polling status, and tearing down. Everything in between — SSH, bootstrap, worker startup, cluster formation — is handled by the instance actor, which means the same orchestration logic works identically across all providers.
+The provider is only involved at the boundaries: preparing infrastructure, launching instances, polling status, and tearing down. Everything in between — SSH, bootstrap, worker startup, cluster formation — is handled by the node lifecycle, which means the same orchestration logic works identically across all providers.
 
 Node 0 plays a special role: it's the **head node**. Once its instance is ready, it broadcasts its address to all other nodes so they can form a cluster. This is how distributed training frameworks (PyTorch DDP, JAX, etc.) discover each other — and Skyward's plugins (`sky.plugins.torch()`, `sky.plugins.jax()`) configure these frameworks using the head node's address automatically.
 
@@ -363,7 +363,7 @@ result = process(iter(huge_dataset)) >> compute
 
 Both directions can be combined: a function that takes an `Iterator` input and yields results creates a bidirectional stream — data flows in, transformed results flow out, and neither side buffers the full dataset in memory.
 
-Under the hood, streaming is built on Casty's `stream_producer` and `stream_consumer` actors, which provide backpressure-aware message passing over the SSH-tunneled TCP connection. If the consumer falls behind, the producer pauses automatically. The detection is fully implicit: Skyward inspects the function at dispatch time — if it's a generator, it wraps the output in a stream; if a parameter has an `Iterator[T]` annotation, it wraps the argument in an input stream. No configuration, no special classes.
+Under the hood, streaming is built on RPCs against the node's worker-control service over the SSH-tunneled TCP connection: generator output is pulled chunk by chunk, and `Iterator` arguments are pushed element by element. If the consumer falls behind, the producer pauses automatically. The detection is fully implicit: Skyward inspects the function at dispatch time — if it's a generator, it wraps the output in a stream; if a parameter has an `Iterator[T]` annotation, it wraps the argument in an input stream. No configuration, no special classes.
 
 For a practical walkthrough with code examples, see the [Streaming](guides/streaming.md) guide.
 
@@ -376,11 +376,11 @@ All providers implement the same protocol — `Provider[C, S]` — which defines
 - `offers()` — Query available machine types and pricing. Returns an async iterator of `Offer` objects — the provider's full unfiltered catalog of hardware and pricing. Filtering by accelerator, region, cost cap, and other spec constraints happens in the OfferRepository SQL layer, which enables cross-provider selection.
 - `prepare(spec, offer)` — Set up cluster-level infrastructure for the selected offer: register SSH keys, create VPCs and security groups (AWS), resolve GPU types, configure overlay networks. Returns an immutable `Cluster` context that flows through all subsequent calls.
 - `provision(cluster, count)` — Launch the requested number of instances. Returns them in a "provisioning" state — the machines exist, but may not be running yet.
-- `get_instance(cluster, id)` — Poll the status of a single instance. The instance actor calls this repeatedly until the machine is running and has an IP address.
+- `get_instance(cluster, id)` — Poll the status of a single instance. The node calls this repeatedly until the machine is running and has an IP address.
 - `terminate(cluster, ids)` — Destroy specific instances.
 - `teardown(cluster)` — Clean up everything `prepare` created: delete security groups, deregister keys, remove temporary infrastructure.
 
-This protocol is what makes the orchestration layer provider-agnostic. The pool actor, node actors, and instance actors don't know whether they're talking to AWS, RunPod, or a local Docker daemon — they only know the six methods above. Adding a new cloud provider means implementing this protocol; nothing else in the system needs to change.
+This protocol is what makes the orchestration layer provider-agnostic. The pool and node lifecycles don't know whether they're talking to AWS, RunPod, or a local Docker daemon — they only know the six methods above. Adding a new cloud provider means implementing this protocol; nothing else in the system needs to change.
 
 Provider configs (`sky.AWS()`, `sky.RunPod()`, etc.) are deliberately lightweight. They're plain dataclasses that hold configuration — region, credentials path, API keys — but don't import any cloud SDK at module level. The actual SDK (`boto3`, `aioboto3`, RunPod's GraphQL client, etc.) is loaded lazily when `create_provider()` is called at pool start. This means `import skyward` stays fast regardless of which providers are installed, and you only pay the import cost for the provider you're actually using.
 

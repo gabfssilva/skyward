@@ -2,8 +2,6 @@
 
 ::: skyward.Event
 
-::: skyward.Request
-
 ::: skyward.Fact
 
 ## Type aliases
@@ -17,14 +15,6 @@
 ::: skyward.NodeId
 
 ::: skyward.ProviderName
-
-## Requests
-
-::: skyward.ClusterRequested
-
-::: skyward.InstanceRequested
-
-::: skyward.ShutdownRequested
 
 ## Facts
 

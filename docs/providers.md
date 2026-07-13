@@ -1,6 +1,6 @@
 # Cloud providers
 
-Skyward supports thirteen providers. Twelve are cloud services — AWS, GCP, Hyperstack, JarvisLabs, Massed Compute, Novita, RunPod, Scaleway, TensorDock, Verda, VastAI, Vultr — and one is local containers for development and CI. All implement the same `Provider` protocol, so the orchestration layer (actor system, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
+Skyward supports thirteen providers. Twelve are cloud services — AWS, GCP, Hyperstack, JarvisLabs, Massed Compute, Novita, RunPod, Scaleway, TensorDock, Verda, VastAI, Vultr — and one is local containers for development and CI. All implement the same `Provider` protocol, so the orchestration layer (node lifecycle, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
 
 Provider configs are lightweight frozen dataclasses. They hold configuration — region, API keys, disk sizes — but don't import any cloud SDK at module level. The SDK is loaded lazily when the pool starts, so `import skyward` stays fast regardless of which providers are installed.
 

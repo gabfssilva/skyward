@@ -354,7 +354,7 @@ class Options:
     shutdown_timeout
         Maximum seconds to wait for a graceful shutdown.
     console
-        Enable the Rich adaptive console spy.
+        Enable the Rich adaptive console.
     logging
         Logging configuration. ``True`` uses sensible defaults,
         ``False`` disables logging, or pass a ``LogConfig`` instance.

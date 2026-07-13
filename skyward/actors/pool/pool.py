@@ -2,7 +2,7 @@
 
 Owns the provisioning flow (offers → prepare → provision → nodes), the
 task manager, the reconciler/autoscaler pair, per-node transports, TCP
-proxies, and the casty ``ClusterClient`` used to reach remote workers.
+proxies, and the casty ``Client`` used to reach remote workers.
 
 Nodes call back into the pool via the ``NodeListener`` methods
 (``node_connected``, ``node_ready``, ``node_activated``,
@@ -988,7 +988,7 @@ class Pool:
                 self._client = await self._create_client(
                     private_ip, 25520, local_port,
                 )
-                self._log.info("ClusterClient created")
+                self._log.info("Casty client connected")
             else:
                 self._tunnel_map[f"{private_ip}:25520"] = f"127.0.0.1:{local_port}"
             client = self._client

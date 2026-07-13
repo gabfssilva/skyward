@@ -42,5 +42,5 @@ Skyward turns ordinary functions into remote GPU jobs: define lazily with `@sky.
 
 - [Configuration](https://gabfssilva.github.io/skyward/reference/config/): `skyward.toml` named pools.
 - [Choosing a provider](https://gabfssilva.github.io/skyward/choosing-a-provider/): opinionated guide.
-- [Architecture](https://gabfssilva.github.io/skyward/architecture/): actor system internals.
+- [Architecture](https://gabfssilva.github.io/skyward/architecture/): clustering internals (Casty data plane).
 - [Repository](https://github.com/gabfssilva/skyward): source and issues.

@@ -2,9 +2,9 @@
 
 When compute functions run across multiple nodes, they sometimes need to share state. A training loop might track global progress. A batch processor might deduplicate work across workers. A distributed pipeline might need a synchronization point where all nodes wait before proceeding. A checkpoint routine might need mutual exclusion so two nodes don't write conflicting state simultaneously.
 
-Skyward provides distributed data structures for these cases. They look like their Python counterparts — `dict`, `set`, `counter`, `queue`, `barrier`, `lock` — but they're backed by Casty's distributed actor system and replicated across the [cluster](architecture.md). Any node can read and write to them, and the cluster handles synchronization automatically.
+Skyward provides distributed data structures for these cases. They look like their Python counterparts — `dict`, `set`, `counter`, `queue`, `barrier`, `lock` — but they're backed by Casty's replicated collections and spread across the [cluster](architecture.md), with quorum-acknowledged writes. Any node can read and write to them, and the cluster handles synchronization automatically.
 
-Distributed collections require cluster mode. Cluster mode is the default on providers with private networking (AWS, GCP, Hyperstack, Lambda, Scaleway, Verda, Vultr, Container) and disabled by default on providers without it (RunPod, VastAI, TensorDock, JarvisLabs, Novita, MassedCompute). When the pool runs in standalone mode, all collection constructors — `sky.dict()`, `sky.set()`, `sky.counter()`, `sky.queue()`, `sky.barrier()`, `sky.lock()` — raise `RuntimeError`. Collections are backed by Casty's distributed actor system, which needs inter-node communication to replicate state. For workloads that need standalone workers, see the [Standalone Workers](guides/standalone-workers.md) guide.
+Distributed collections require cluster mode. Cluster mode is the default on providers with private networking (AWS, GCP, Hyperstack, Lambda, Scaleway, Verda, Vultr, Container) and disabled by default on providers without it (RunPod, VastAI, TensorDock, JarvisLabs, Novita, MassedCompute). When the pool runs in standalone mode, all collection constructors — `sky.dict()`, `sky.set()`, `sky.counter()`, `sky.queue()`, `sky.barrier()`, `sky.lock()` — raise `RuntimeError`. Collections are backed by Casty's replicated collections, which need inter-node communication to replicate state. For workloads that need standalone workers, see the [Standalone Workers](guides/standalone-workers.md) guide.
 
 Collections are created lazily by name. Calling `sky.dict("cache")` on any node returns a proxy to the same shared dict — if the collection doesn't exist yet, the cluster creates it; if it already exists, you get a reference to the existing one. Inside `@sky.function` functions, use the module-level shortcuts (`sky.dict`, `sky.counter`, `sky.set`, etc.) which resolve the active pool automatically through a `ContextVar`. You can also access them via the pool directly: `pool.dict("cache")`, `pool.counter("steps")`, etc.
 
@@ -29,11 +29,11 @@ def process_with_cache(items: list[str]) -> dict:
 
 The dict supports standard Python syntax: `cache[key]`, `cache[key] = value`, `del cache[key]`, `key in cache`, `cache.get(key, default)`, `cache.update(...)`, and `cache.pop(key, default)`.
 
-Internally, each key is managed by a separate actor (entity-per-key), which means reads and writes to different keys don't contend with each other. This design makes the dict highly concurrent — hundreds of nodes can read and write to different keys simultaneously without coordination overhead. The trade-off is that enumeration methods — `keys()`, `values()`, `items()`, `len()` — are not available, because there's no single actor that knows about all keys. Think of it as a distributed cache with get/put/delete/contains semantics, not a full `dict` replacement.
+Internally, the dict is sharded by key hash: single-key operations route to one shard, so reads and writes to different keys don't contend with each other. This design makes the dict highly concurrent — hundreds of nodes can read and write to different keys simultaneously without coordination overhead. Each shard is replicated across up to three physical nodes with quorum-acknowledged writes, so a node dying doesn't lose committed entries. Enumeration methods — `keys()`, `values()`, `items()`, `len()` — are not exposed; think of it as a distributed cache with get/put/delete/contains semantics, not a full `dict` replacement.
 
 ## Counter
 
-The distributed counter is an atomic integer shared across all workers. Every node can increment and decrement it, and all operations are serialized through the counter's backing actor — no lost updates, no race conditions.
+The distributed counter is an atomic integer shared across all workers. Every node can increment and decrement it, and all operations are atomic — no lost updates, no race conditions.
 
 ```python
 @sky.function
@@ -62,7 +62,7 @@ def deduplicate(batch_id: int) -> str:
     return "processed"
 ```
 
-The set supports `value in s`, `len(s)`, `s.add(value)`, and `s.discard(value)`. Unlike the dict, the set does support `len()` because it's backed by a single replicated actor rather than entity-per-key.
+The set supports `value in s`, `len(s)`, `s.add(value)`, and `s.discard(value)`. Unlike the dict, the set does support `len()` — size is aggregated across its shards.
 
 ## Queue
 
@@ -146,7 +146,7 @@ cache = sky.dict("cache", consistency="strong")
 
 With **eventual consistency** (the default), reads are fast but may see slightly stale values. A write on node 0 might not be visible on node 1 for a brief window while replication propagates. This is sufficient for most use cases — caches, progress counters, deduplication sets — where reading a slightly outdated value doesn't affect correctness.
 
-With **strong consistency**, every read returns the latest written value. This is slower because it requires coordination with the actor managing the data, but it's necessary when correctness depends on seeing the most recent state — for example, when using a lock and a dict together to coordinate checkpoint writes, you want the dict reads inside the critical section to be strongly consistent.
+With **strong consistency**, every read returns the latest written value. This is slower because it requires coordination with the data's owner, but it's necessary when correctness depends on seeing the most recent state — for example, when using a lock and a dict together to coordinate checkpoint writes, you want the dict reads inside the critical section to be strongly consistent.
 
 ## Async interface
 
@@ -160,10 +160,10 @@ await queue.put_async(value)
 await lock.acquire_async()
 ```
 
-The sync interface (the default, used in most `@sky.function` functions) blocks the calling thread while waiting for the actor response. The async interface returns awaitables, which is useful if you're writing custom async logic inside a worker or integrating with an existing async codebase.
+The sync interface (the default, used in most `@sky.function` functions) blocks the calling thread while waiting for the response. The async interface returns awaitables, which is useful if you're writing custom async logic inside a worker or integrating with an existing async codebase.
 
 ## Next steps
 
 - [Distributed Training](distributed-training.md) — Multi-node training with shared state across workers
-- [Clustering](architecture.md) — How the Casty actor cluster powers distributed collections
+- [Clustering](architecture.md) — How the Casty cluster powers distributed collections
 - [API Reference](reference/distributed.md) — Full API documentation

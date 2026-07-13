@@ -34,7 +34,7 @@ Nothing executes until an operator dispatches a `PendingFunction`. This is the s
 You do not need this to use Skyward; it explains why the API behaves synchronously.
 
 - `Compute`/`Session` runs an **asyncio event loop in a background daemon thread**. The public API is synchronous and bridges to that loop with `asyncio.run_coroutine_threadsafe`.
-- Provisioning, SSH, bootstrap, and the worker bridge are an **actor system** (Casty). You never touch actors directly.
+- Provisioning, SSH, and bootstrap are plain asyncio; remote workers form a **Casty cluster** (virtual actors). You never touch either directly.
 - Your function is serialized with **cloudpickle + lz4**, shipped over SSH, and executed by a worker process on each node. The return value is serialized back.
 - That serialization boundary is the source of most constraints (see **Gotchas & constraints**).
 
@@ -553,7 +553,7 @@ Presets (all keyword-only, return `Storage`): `sky.storage.S3(region=...)`, `sky
 
 ## Distributed collections
 
-Cluster-wide shared state, accessed by name from inside a `@sky.function`. Backed by the actor system; returned objects are synchronous proxies. Call factories **inside** running tasks (off-pool they raise "No active pool").
+Cluster-wide shared state, accessed by name from inside a `@sky.function`. Backed by Casty's replicated collections; returned objects are synchronous proxies. Call factories **inside** running tasks (off-pool they raise "No active pool").
 
 | Factory | Signature | Proxy methods |
 |---|---|---|

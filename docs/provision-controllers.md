@@ -2,7 +2,7 @@
 
 A fixed-size pool works well when you know in advance how much compute you need. But many workloads don't have that property. A hyperparameter sweep might start with a burst of 200 trials and taper off as early stopping kills the losers. An inference service might see ten requests per second at noon and zero at midnight. A data pipeline might have phases — heavy preprocessing, then light aggregation — where the ideal cluster size changes mid-job.
 
-Skyward handles this with **elastic pools**: pools whose node count adjusts automatically based on workload pressure. Two actors make this work — the **autoscaler** and the **reconciler** — and they are designed around a clean separation: the autoscaler is a pure policy engine that decides *how many* nodes are needed, while the reconciler is the actuator that provisions and terminates cloud instances to match that decision. Neither knows about the other's internals. They communicate through a single message: `DesiredCountChanged`.
+Skyward handles this with **elastic pools**: pools whose node count adjusts automatically based on workload pressure. Two controllers make this work — the **autoscaler** and the **reconciler** — and they are designed around a clean separation: the autoscaler is a pure policy engine that decides *how many* nodes are needed, while the reconciler is the actuator that provisions and terminates cloud instances to match that decision. Neither knows about the other's internals. They communicate through a single call: `set_desired(count, reason)`.
 
 ## Node specification
 
@@ -133,21 +133,21 @@ The key metric is **effective count**: `len(current) + len(pending)`. Nodes that
 
 The default state. The reconciler monitors for three kinds of events:
 
-- **`DesiredCountChanged`** — The autoscaler decided the cluster should be a different size. If the desired count exceeds the effective count, transition to `scaling_up`. If it's less than the current count, transition to `draining`. Otherwise, nothing to do.
-- **`ReconcilerNodeLost`** — A node died (spot preemption, network failure, crash). Remove it from the active set and, if the cluster is now below the desired count, transition to `scaling_up`.
-- **`NodeJoined`** — A previously pending node finished booting and is now active. Move it from `pending` to `current`.
+- **`set_desired`** — The autoscaler decided the cluster should be a different size. If the desired count exceeds the effective count, transition to `scaling_up`. If it's less than the current count, transition to `draining`. Otherwise, nothing to do.
+- **`node_lost`** — A node died (spot preemption, network failure, crash). Remove it from the active set and, if the cluster is now below the desired count, transition to `scaling_up`.
+- **`node_joined`** — A previously pending node finished booting and is now active. Move it from `pending` to `current`.
 
 ### Scaling up
 
-The reconciler calls `provider.provision(cluster, count)` to launch new instances. When the call returns, it tells the pool actor to spawn node actors for the new instances (`SpawnNodes`), moves their IDs into the `pending` set, and checks whether the effective count now meets the desired count. If not — because the desired count changed mid-flight, or because the provider returned fewer instances than requested — it issues another provision call. Once the effective count meets or exceeds the desired count, it returns to `watching`.
+The reconciler asks the pool to scale up (`pool.scale_up(count)`), which provisions instances and spawns a `Node` for each; the reconciler moves their IDs into the `pending` set, and checks whether the effective count now meets the desired count. If not — because the desired count changed mid-flight, or because the provider returned fewer instances than requested — it issues another provision call. Once the effective count meets or exceeds the desired count, it returns to `watching`.
 
 If provisioning fails (cloud quota exceeded, API error, transient failure), the reconciler logs the error and returns to `watching`. It doesn't retry immediately — the reconcile tick (described below) will catch the drift and try again on the next cycle. This avoids hammering a failing API.
 
 ### Draining
 
-When the cluster needs to shrink, the reconciler selects victim nodes — highest ID first — and asks the pool actor to drain them. Node 0 (the head node) is explicitly excluded from victim selection, because distributed training frameworks depend on the head node's address for coordination.
+When the cluster needs to shrink, the reconciler selects victim nodes — highest ID first — and asks the pool to drain them. Node 0 (the head node) is explicitly excluded from victim selection, because distributed training frameworks depend on the head node's address for coordination.
 
-Draining is **cooperative**. The reconciler sends `DrainNode` to the pool actor, which removes the node from the task manager's rotation (so no new tasks are dispatched to it) and replies with `DrainComplete`. For each drained node, the reconciler issues `provider.terminate` to destroy the cloud instance. Termination is fire-and-forget — the reconciler doesn't wait for the cloud API to confirm the instance is gone.
+Draining is **cooperative**. The reconciler calls `pool.drain_nodes(...)`, which removes each node from the task manager's rotation (so no new tasks are dispatched to it) and reports back `drain_complete`. For each drained node, the pool issues `provider.terminate` to destroy the cloud instance. Termination is fire-and-forget — the reconciler doesn't wait for the cloud API to confirm the instance is gone.
 
 If the desired count increases while draining is in progress (new tasks arrived, the autoscaler changed its mind), the reconciler can abort the drain. It clears the draining set and, if the new desired count exceeds the effective count, transitions directly to `scaling_up`. This means the system responds to new demand even in the middle of scaling down.
 
@@ -157,40 +157,40 @@ Periodically (every `reconcile_tick_interval` seconds — 15 by default), the re
 
 ## Always-on reconciliation
 
-The reconciler is spawned for **every** pool — not just elastic ones. In a fixed-size pool (`nodes=4`), the reconciler starts with `desired = max = 4` and the autoscaler is never created. No `DesiredCountChanged` messages arrive, so the reconciler stays in the `watching` state permanently.
+The reconciler is spawned for **every** pool — not just elastic ones. In a fixed-size pool (`nodes=4`), the reconciler starts with `desired = max = 4` and the autoscaler is never created. No `set_desired` calls arrive, so the reconciler stays in the `watching` state permanently.
 
-But the reconcile tick still fires, and `ReconcilerNodeLost` messages still arrive. If a node dies in a fixed pool, the reconciler detects that the effective count (3) is below the desired count (4) and provisions a replacement. The pool self-heals without any elastic configuration — the reconciliation loop handles node replacement as a natural consequence of keeping `effective == desired`.
+But the reconcile tick still fires, and `node_lost` notifications still arrive. If a node dies in a fixed pool, the reconciler detects that the effective count (3) is below the desired count (4) and provisions a replacement. The pool self-heals without any elastic configuration — the reconciliation loop handles node replacement as a natural consequence of keeping `effective == desired`.
 
-Partial-readiness pools (those with `min` set) work the same way. The reconciler doesn't know about the readiness threshold — that's the pool actor's concern. The pool actor transitions to operational when `min` nodes are ready, and the reconciler continues provisioning the remaining nodes in the background. From the reconciler's perspective, it's just a normal fixed or elastic pool converging toward its target count.
+Partial-readiness pools (those with `min` set) work the same way. The reconciler doesn't know about the readiness threshold — that's the pool's concern. The pool transitions to operational when `min` nodes are ready, and the reconciler continues provisioning the remaining nodes in the background. From the reconciler's perspective, it's just a normal fixed or elastic pool converging toward its target count.
 
 ## How they interact
 
-The full interaction involves four actors: the **task manager** observes workload pressure, the **autoscaler** decides the right cluster size, the **reconciler** makes it happen, and the **pool actor** manages node lifecycles.
+The full interaction involves four components: the **task manager** observes workload pressure, the **autoscaler** decides the right cluster size, the **reconciler** makes it happen, and the **pool** manages node lifecycles.
 
 ```mermaid
 sequenceDiagram
     participant TM as Task Manager
     participant AS as Autoscaler
     participant RC as Reconciler
-    participant Pool as Pool Actor
+    participant Pool as Pool
     participant Cloud as Cloud Provider
 
     Note over TM: tasks accumulate in queue
 
     TM->>AS: PressureReport(queued=12, inflight=4, capacity=8)
     AS->>AS: compute_desired() → 6 nodes
-    AS->>RC: DesiredCountChanged(desired=6)
-    RC->>Cloud: provision(cluster, 2)
-    Cloud-->>RC: 2 new instances
-    RC->>Pool: SpawnNodes(instances, start_id=4)
-    Pool->>Pool: spawn node actors 4, 5
+    AS->>RC: set_desired(6)
+    RC->>Pool: scale_up(2)
+    Pool->>Cloud: provision(cluster, 2)
+    Cloud-->>Pool: 2 new instances
+    Pool->>Pool: spawn nodes 4, 5
 
     Note over Pool: nodes boot, bootstrap, join
 
-    Pool->>RC: NodeJoined(node_id=4)
-    Pool->>RC: NodeJoined(node_id=5)
-    Pool->>TM: NodeAvailable(node_id=4)
-    Pool->>TM: NodeAvailable(node_id=5)
+    Pool->>RC: node_joined(4)
+    Pool->>RC: node_joined(5)
+    Pool->>TM: node_available(4)
+    Pool->>TM: node_available(5)
 
     Note over TM: queue drains with more capacity
 
@@ -198,20 +198,17 @@ sequenceDiagram
 
     Note over AS: idle for 60s, tick fires
 
-    AS->>RC: DesiredCountChanged(desired=2)
-    RC->>Pool: DrainNode(node_id=5)
-    RC->>Pool: DrainNode(node_id=4)
-    RC->>Pool: DrainNode(node_id=3)
-    RC->>Pool: DrainNode(node_id=2)
-    Pool-->>RC: DrainComplete(5), DrainComplete(4), DrainComplete(3), DrainComplete(2)
-    RC->>Cloud: terminate instances
+    AS->>RC: set_desired(2)
+    RC->>Pool: drain_nodes({5, 4, 3, 2})
+    Pool-->>RC: drain_complete(5), drain_complete(4), drain_complete(3), drain_complete(2)
+    Pool->>Cloud: terminate instances
 ```
 
-The flow is fully event-driven. The task manager doesn't know about the autoscaler — it just emits pressure reports to whoever registers as an observer. The autoscaler doesn't know about the cloud provider — it just tells the reconciler what the desired count should be. The reconciler doesn't know about task scheduling — it just brings the infrastructure in line with the desired count. Each actor has a single, well-defined responsibility, and communication happens through typed messages.
+The flow is fully event-driven. The task manager doesn't know about the autoscaler — it just emits pressure reports to whoever registers as an observer. The autoscaler doesn't know about the cloud provider — it just tells the reconciler what the desired count should be. The reconciler doesn't know about task scheduling — it just brings the infrastructure in line with the desired count. Each component has a single, well-defined responsibility, and communication happens through narrow, typed interfaces (`Protocol` classes).
 
 ## Design decisions
 
-**Policy and mechanism are separate.** The autoscaler is a pure function wrapped in a thin actor. It has no cloud SDK dependency, no async I/O, no state beyond a few numbers. The reconciler does all the infrastructure work. This means you can reason about scaling policy by reading a single function (`_compute_desired`), and you can reason about infrastructure orchestration by reading the reconciler's state machine — without either concern polluting the other.
+**Policy and mechanism are separate.** The autoscaler is a pure function wrapped in a thin class. It has no cloud SDK dependency, no async I/O, no state beyond a few numbers. The reconciler does all the infrastructure work. This means you can reason about scaling policy by reading a single function (`_compute_desired`), and you can reason about infrastructure orchestration by reading the reconciler's state machine — without either concern polluting the other.
 
 **Pending nodes count toward effective.** When the reconciler calls `provision()`, the new node IDs are added to the `pending` set and counted in the effective total. This prevents the autoscaler from seeing a gap (desired 6, effective 4) and triggering another provision call while the first batch is still booting. Over-provisioning wastes money; counting pending nodes prevents it.
 
@@ -224,5 +221,5 @@ The flow is fully event-driven. The task manager doesn't know about the autoscal
 ## Further reading
 
 - **[Core Concepts](concepts.md)** — Lazy computation, operators, and the pool lifecycle
-- **[Architecture](architecture.md)** — The actor hierarchy and cluster formation
+- **[Architecture](architecture.md)** — The two planes and cluster formation
 - **[Providers](providers.md)** — Cloud provider configuration and protocols

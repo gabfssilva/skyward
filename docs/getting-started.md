@@ -116,7 +116,7 @@ Hello from ip-172-31-0-1!
 [ClusterDestroyed] Cluster terminated
 ```
 
-Each line is an event from the pool's lifecycle. The sequence reflects the stages described in [Core Concepts](concepts.md) — the pool actor asks the provider to launch an instance, the instance actor polls until it's running, opens the SSH tunnel, runs the bootstrap script phase by phase, starts the worker, and reports ready. After the task completes, everything is torn down.
+Each line is an event from the pool's lifecycle. The sequence reflects the stages described in [Core Concepts](concepts.md) — the pool asks the provider to launch an instance, the node polls until it's running, opens the SSH tunnel, runs the bootstrap script phase by phase, starts the worker, and reports ready. After the task completes, everything is torn down.
 
 ## Your first accelerator job
 
@@ -235,7 +235,7 @@ import logging
 logging.getLogger("skyward").setLevel(logging.DEBUG)
 ```
 
-This will show SSH connection details, bootstrap script output, serialization sizes, and actor message traces — useful for diagnosing connectivity or performance issues.
+This will show SSH connection details, bootstrap script output, serialization sizes, and RPC traces — useful for diagnosing connectivity or performance issues.
 
 ## Troubleshooting
 

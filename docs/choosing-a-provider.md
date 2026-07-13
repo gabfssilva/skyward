@@ -79,7 +79,7 @@ sky.Compute(
 )
 ```
 
-Skyward ranks all offers from both providers by price into a single list. Verda's H100 at $0.80/hr will rank higher than AWS's. If Verda has availability, you get the cheap price. If it doesn't, the provisioning fails for that offer, Skyward moves to the next one in the ranked list, and you land on AWS transparently. You don't need to handle the fallback yourself — the pool actor tries each offer in the chain until one succeeds.
+Skyward ranks all offers from both providers by price into a single list. Verda's H100 at $0.80/hr will rank higher than AWS's. If Verda has availability, you get the cheap price. If it doesn't, the provisioning fails for that offer, Skyward moves to the next one in the ranked list, and you land on AWS transparently. You don't need to handle the fallback yourself — the pool tries each offer in the chain until one succeeds.
 
 ### TensorDock
 
@@ -113,7 +113,7 @@ The key insight with spot is that **a small bid premium prevents most preemption
 
 Spot mechanics vary by provider. AWS uses EC2 Fleet with a capacity-optimized allocation strategy — it picks instance pools where interruption is least likely. RunPod and Vast.ai use bid-based pricing where the multiplier directly controls how much you're willing to pay above the minimum. The strategies are different, but the principle is the same: a modest premium buys significantly more stability.
 
-If a spot instance does get preempted, Skyward detects it automatically. The node actor notices the instance is gone, notifies the pool, and the reconciler provisions a replacement using the same offer. Your code doesn't need to handle this — but your workflow should be resilient to restarts.
+If a spot instance does get preempted, Skyward detects it automatically. The node notices the instance is gone, notifies the pool, and the reconciler provisions a replacement using the same offer. Your code doesn't need to handle this — but your workflow should be resilient to restarts.
 
 ### Checkpoints with volumes
 

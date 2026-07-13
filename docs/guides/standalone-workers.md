@@ -4,7 +4,7 @@ Some cloud providers launch instances as isolated pods or VMs without private ne
 
 ## The topology
 
-In cluster mode, all nodes form a Casty cluster and communicate directly with each other. Your client connects through a single `ClusterClient`:
+In cluster mode, all nodes form a Casty cluster and communicate directly with each other. Your client connects through a single Casty lite-member client (`casty.connect`):
 
 ```mermaid
 graph LR
@@ -30,7 +30,7 @@ graph LR
     end
 ```
 
-There is no head election, no seed broadcasting, no cluster join. Each worker runs its own `ClusteredActorSystem` without seed nodes, so it never discovers peers and operates in isolation. Task dispatch goes directly from the client to each worker over its own SSH tunnel. Round-robin scheduling, broadcast, and parallel execution all work unchanged — the task manager on the client side still routes tasks to workers the same way.
+There is no head election, no seed broadcasting, no cluster join. Each worker starts its Casty member without seeds — a one-member cluster — so it never discovers peers and operates in isolation. Task dispatch goes directly from the client to each worker over its own SSH tunnel. Round-robin scheduling, broadcast, and parallel execution all work unchanged — the task manager on the client side still routes tasks to workers the same way.
 
 ## The function
 
@@ -52,7 +52,7 @@ For providers that default to standalone (RunPod, VastAI, TensorDock, JarvisLabs
 
 For providers that default to cluster mode (AWS, GCP, etc.), pass `options=sky.Options(cluster=False)` to `Compute` to opt out. Conversely, on a standalone-default provider that exposes private networking (e.g. RunPod with global networking enabled), pass `options=sky.Options(cluster=True)` to force cluster mode.
 
-Behind the scenes, standalone mode changes two things. First, each worker starts its `ClusteredActorSystem` without seed nodes, so it never joins a cluster and operates in isolation. There is no head election and no seed broadcast — every node is an island. Second, the pool actor creates a separate `ClusterClient` per worker, each connected through its own SSH tunnel, rather than sharing one client across the cluster.
+Behind the scenes, standalone mode changes two things. First, each worker starts its Casty member without seeds, so it never joins a cluster and operates in isolation. There is no head election and no seed broadcast — every node is an island. Second, the pool creates a separate lite-member client per worker, each connected through its own SSH tunnel, rather than sharing one client across the cluster.
 
 Task dispatch is unaffected. `>>` sends to one node (round-robin), `@` broadcasts to all nodes, `&` runs tasks in parallel, `>` returns a future. `sky.gather` distributes work across all available workers. The operators are client-side constructs — they don't depend on inter-node communication.
 
@@ -60,7 +60,7 @@ Task dispatch is unaffected. `>>` sends to one node (round-robin), `@` broadcast
 
 Standalone mode disables all features that require inter-node communication:
 
-**Distributed collections.** Calling `sky.dict()`, `sky.counter()`, `sky.set()`, `sky.queue()`, `sky.barrier()`, or `sky.lock()` inside a `@sky.function` will raise `RuntimeError`. These collections are backed by Casty's distributed actor system, which requires the cluster mesh. Without it, there is no replication layer and no way to share state between workers.
+**Distributed collections.** Calling `sky.dict()`, `sky.counter()`, `sky.set()`, `sky.queue()`, `sky.barrier()`, or `sky.lock()` inside a `@sky.function` will raise `RuntimeError`. These collections are backed by Casty's replicated collections, which require the cluster mesh. Without it, there is no replication layer and no way to share state between workers.
 
 **Distributed training.** Frameworks like PyTorch DDP, JAX multi-host, and NCCL-based training need `MASTER_ADDR` and peer discovery, both of which come from cluster formation. The `sky.plugins.torch(backend="nccl")` plugin will fail to initialize in standalone mode because workers cannot reach each other for collective operations (all-reduce, all-gather, broadcast).
 
