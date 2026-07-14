@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import hashlib
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
-import msgspec
 from msgspec import Struct
 from piccolo.table import Table
 
 from skyward2.application.errors import IdempotencyConflictError, NotFoundError
 from skyward2.persistence.tables import IdempotencyRow
+from skyward2.protocol.codec import digest, json
 
 
 def now() -> datetime:
@@ -23,22 +22,18 @@ def ident(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
-def packed(value: object) -> str:
+async def packed(value: object) -> str:
     """A column's worth of JSON.
 
     Text, not a parsed object: piccolo's ``JSONB`` accepts either, and letting it
     parse on the way out only to hand msgspec a dict it has to walk again is a
     conversion nobody asked for.
     """
-    return msgspec.json.encode(value).decode()
+    return (await json(object).encode(value)).decode()
 
 
-def unpacked[T](raw: str, kind: type[T]) -> T:
-    return msgspec.json.decode(raw.encode(), type=kind)
-
-
-def digest(payload: bytes) -> str:
-    return hashlib.sha256(payload).hexdigest()
+async def unpacked[T](raw: str, kind: type[T]) -> T:
+    return await json(kind).decode(raw.encode())
 
 
 async def once(scope: str, key: str, body: Struct | None, produce: Callable[[], Awaitable[str]]) -> tuple[str, bool]:
@@ -63,7 +58,7 @@ async def once(scope: str, key: str, body: Struct | None, produce: Callable[[], 
         The resource id, and whether this call was the one that created it.
     """
     scoped = f"{scope}:{key}"
-    fingerprint = digest(msgspec.json.encode(body) if body is not None else b"")
+    fingerprint = await digest(await json(object).encode(body) if body is not None else b"")
 
     if seen := await IdempotencyRow.objects().where(IdempotencyRow.key == scoped).first():
         if seen.fingerprint != fingerprint:

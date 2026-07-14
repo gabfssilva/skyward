@@ -16,13 +16,13 @@ import asyncio
 import os
 import sys
 import traceback
+from collections.abc import Callable
 
 import casty
-import cloudpickle
-import lz4.frame
 import msgspec
 from msgspec import Struct
 
+from skyward2.protocol import codec
 from skyward2.runtime.journal import Journal, Phase, emit, task
 
 PORT = 25520
@@ -48,8 +48,10 @@ class Unknown(Struct, frozen=True, tag="unknown", tag_field="status"):
 
 type Outcome = Done | Failed
 type Lookup = Done | Failed | Pending | Unknown
+type Call = tuple[Callable[..., object], tuple[object, ...], dict[str, object]]
 
 encode = msgspec.msgpack.encode
+call: codec.Codec[Call] = codec.Pickle()
 outcomes: dict[str, Outcome | None] = {}
 
 
@@ -96,33 +98,29 @@ class Control:
         return encode(lookup)
 
 
-async def execute(id: str, payload: bytes) -> Outcome:
+async def execute(id: str, raw: bytes) -> Outcome:
     """Run one task, off the event loop, start to finish.
 
-    The thread takes the payload as bytes and gives it back as bytes: unpickling a
-    large argument, or an import triggered by it, costs as much as the function
-    itself and would hold the loop the whole process shares — including the
-    channel the daemon uses to ask whether this node is still alive.
+    Nothing here touches the loop: the codec threads both directions, and the
+    function itself gets a thread of its own. Unpickling a large argument, or an
+    import triggered by it, costs as much as the function does — and this loop is
+    the one the daemon uses to ask whether the node is still alive.
 
     A failure to unpickle is therefore a failed task, with a traceback, rather
     than an exception thrown inside a casty handler. It is also the most common
     failure there is: it is what a version of pandas that differs between the two
     ends looks like from here.
     """
-
-    def work() -> Outcome:
-        token = task.set(id)
-        try:
-            fn, args, kwargs = cloudpickle.loads(lz4.frame.decompress(payload))
-            value = fn(*args, **kwargs)
-            return Done(value=lz4.frame.compress(cloudpickle.dumps(value)))
-        except Exception as exc:
-            return Failed(error=str(exc), traceback=traceback.format_exc())
-        finally:
-            sys.stdout.flush()
-            task.reset(token)
-
-    return await asyncio.to_thread(work)
+    token = task.set(id)
+    try:
+        fn, args, kwargs = await call.decode(raw)
+        value = await asyncio.to_thread(fn, *args, **kwargs)
+        return Done(value=await codec.payload.encode(value))
+    except Exception as exc:
+        return Failed(error=str(exc), traceback=traceback.format_exc())
+    finally:
+        sys.stdout.flush()
+        task.reset(token)
 
 
 async def reachable(seed: str) -> None:

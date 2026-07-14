@@ -12,11 +12,10 @@ import uuid
 
 import asyncssh
 import casty
-import cloudpickle
-import lz4.frame
 import msgspec
 import pytest
 
+from skyward2.protocol import codec
 from skyward2.protocol.schemas import ComputeSpec, Image, NodeBounds, NodeState, ProviderRef, Spec
 from skyward2.providers.container import ContainerProvider
 from skyward2.runtime import worker
@@ -130,12 +129,12 @@ async def test_the_worker_answers_and_runs_what_it_is_sent(machine, key: asyncss
             print("doubling")
             return x * 2
 
-        payload = lz4.frame.compress(cloudpickle.dumps((double, (21,), {})))
+        payload = await codec.payload.encode((double, (21,), {}))
         reply = await system.service(worker.Worker).run("tsk_1", payload)
 
         outcome = msgspec.msgpack.decode(reply, type=worker.Outcome)
         assert isinstance(outcome, worker.Done), outcome
-        assert cloudpickle.loads(lz4.frame.decompress(outcome.value)) == 42
+        assert await codec.payload.decode(outcome.value) == 42
     finally:
         await system.close()
 

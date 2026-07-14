@@ -21,7 +21,7 @@ class BlobStore:
         return await BlobRow.exists().where(BlobRow.sha256 == sha256)
 
     async def put(self, sha256: str, blob: bytes) -> bool:
-        if (actual := digest(blob)) != sha256:
+        if (actual := await digest(blob)) != sha256:
             raise HashMismatchError(f"blob hashes to {actual}, not {sha256}", expected=sha256, actual=actual)
 
         if await self.exists(sha256):
@@ -38,7 +38,7 @@ class BlobStore:
 
     async def store(self, blob: bytes) -> str:
         """Put content whose hash the caller has not bothered to compute."""
-        sha256 = digest(blob)
+        sha256 = await digest(blob)
         await self.put(sha256, blob)
         return sha256
 

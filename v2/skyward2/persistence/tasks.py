@@ -79,7 +79,7 @@ class TaskStore:
                 args_sha256=args,
                 dispatch=body.dispatch,
                 state="queued",
-                retry=packed(retry),
+                retry=await packed(retry),
                 correlation_id=body.correlation_id,
                 submitted_at=now(),
                 deadline_at=now() + timedelta(seconds=body.timeout_seconds) if body.timeout_seconds else None,
@@ -169,7 +169,7 @@ class TaskStore:
         row.state = state
         row.node_id = node_id or row.node_id
         row.result_sha256 = result_sha256 or row.result_sha256
-        row.error = packed(error) if error else row.error
+        row.error = await packed(error) if error else row.error
         if state == "started" and row.started_at is None:
             row.started_at = now()
         if state not in PENDING:
@@ -241,7 +241,7 @@ class ExecutionStore:
         self._tasks = tasks
 
     async def list(self, task_id: str) -> Page[Execution]:
-        return Page(items=tuple(_to_execution(row) for row in await self._tasks.attempts(task_id)))
+        return Page(items=tuple([await _to_execution(row) for row in await self._tasks.attempts(task_id)]))
 
     async def get(self, task_id: str, ordinal: int) -> Execution:
         row = await ExecutionRow.objects().where(
@@ -249,7 +249,7 @@ class ExecutionStore:
         ).first()
         if row is None:
             raise NotFoundError(f"no such execution: {task_id}/{ordinal}")
-        return _to_execution(row)
+        return await _to_execution(row)
 
     async def create(self, task_id: str, body: ExecutionCreate, idempotency_key: str) -> Task:
         """Retry: another physical attempt at the same task, never another task.
@@ -332,8 +332,8 @@ async def _to_task(row: TaskRow) -> Task:
         args_sha256=row.args_sha256,
         dispatch=msgspec.convert(row.dispatch, Dispatch),
         state=msgspec.convert(row.state, TaskState),
-        retry=unpacked(row.retry, RetryPolicy),
-        executions=tuple(_to_execution(attempt) for attempt in attempts),
+        retry=await unpacked(row.retry, RetryPolicy),
+        executions=tuple([await _to_execution(attempt) for attempt in attempts]),
         submitted_at=row.submitted_at,
         correlation_id=row.correlation_id,
         deadline_at=row.deadline_at,
@@ -342,7 +342,7 @@ async def _to_task(row: TaskRow) -> Task:
     )
 
 
-def _to_execution(row: ExecutionRow) -> Execution:
+async def _to_execution(row: ExecutionRow) -> Execution:
     return Execution(
         id=row.id,
         rank=row.rank,
@@ -351,7 +351,7 @@ def _to_execution(row: ExecutionRow) -> Execution:
         node_id=row.node_id,
         retry_of=row.retry_of,
         result_sha256=row.result_sha256,
-        error=unpacked(row.error, Error) if row.error else None,
+        error=await unpacked(row.error, Error) if row.error else None,
         started_at=row.started_at,
         finished_at=row.finished_at,
     )

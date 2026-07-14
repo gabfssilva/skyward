@@ -16,12 +16,11 @@ import uuid
 
 import asyncssh
 import casty
-import cloudpickle
-import lz4.frame
 import msgspec
 import pytest
 
 from skyward2.application.provider import Machine
+from skyward2.protocol import codec
 from skyward2.protocol.schemas import ComputeSpec, Image, NodeBounds, NodeState, ProviderRef, Spec
 from skyward2.providers.container import ContainerProvider
 from skyward2.runtime import worker
@@ -141,12 +140,12 @@ async def test_the_nodes_find_each_other_and_the_client_finds_all_of_them(
 
         for node, machine in zip(nodes, machines, strict=True):
             member = next(m for m in members if m.addr == node.seed)
-            payload = lz4.frame.compress(cloudpickle.dumps((where, (), {})))
+            payload = await codec.payload.encode((where, (), {}))
             reply = await system.service(worker.Worker, at=member).run(f"tsk_{machine.id}", payload)
 
             outcome = msgspec.msgpack.decode(reply, type=worker.Outcome)
             assert isinstance(outcome, worker.Done), outcome
-            assert cloudpickle.loads(lz4.frame.decompress(outcome.value)) == machine.id, (
+            assert await codec.payload.decode(outcome.value) == machine.id, (
                 "a task pinned to a node runs on that node"
             )
     finally:

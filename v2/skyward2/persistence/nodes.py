@@ -24,10 +24,10 @@ class NodeStore:
             query = query.where(NodeRow.generation == generation)
 
         rows = await query.order_by(NodeRow.rank)
-        return Page(items=tuple(_to_node(row) for row in rows))
+        return Page(items=tuple([await _to_node(row) for row in rows]))
 
     async def get(self, compute: str, node_id: str) -> Node:
-        return _to_node(await self._row(compute, node_id))
+        return await _to_node(await self._row(compute, node_id))
 
     async def drain(self, compute: str, node_id: str, idempotency_key: str) -> Node:
         """Ask for a node to go away. Do not make it go away.
@@ -70,7 +70,7 @@ class NodeStore:
 
     async def of(self, compute: str) -> tuple[Node, ...]:
         rows = await NodeRow.objects().where(NodeRow.compute_id == compute).order_by(NodeRow.rank)
-        return tuple(_to_node(row) for row in rows)
+        return tuple([await _to_node(row) for row in rows])
 
     async def machines(self, compute: str) -> dict[str, str]:
         """Which node each machine is, for the join a reconcile does first."""
@@ -85,7 +85,7 @@ class NodeStore:
 
         changes: dict[Column | str, Any] = {
             NodeRow.state: state,
-            NodeRow.last_error: packed(error) if error else None,
+            NodeRow.last_error: await packed(error) if error else None,
             NodeRow.revision: NodeRow.revision + 1,
         }
         if state in TERMINAL and row.terminated_at is None:
@@ -102,7 +102,7 @@ class NodeStore:
         return row
 
 
-def _to_node(row: NodeRow) -> Node:
+async def _to_node(row: NodeRow) -> Node:
     return Node(
         id=row.id,
         compute_id=row.compute_id,
@@ -111,11 +111,11 @@ def _to_node(row: NodeRow) -> Node:
         revision=row.revision,
         desired=msgspec.convert(row.desired, NodeDesired),
         state=msgspec.convert(row.state, NodeState),
-        provider_binding={**unpacked(row.provider_binding, dict[str, Any]), "machine_id": row.machine_id},
+        provider_binding={**await unpacked(row.provider_binding, dict[str, Any]), "machine_id": row.machine_id},
         created_at=row.created_at,
         address=row.address,
         accelerator=row.accelerator,
         price_per_hour=row.price_per_hour,
-        last_error=unpacked(row.last_error, Error) if row.last_error else None,
+        last_error=await unpacked(row.last_error, Error) if row.last_error else None,
         terminated_at=row.terminated_at,
     )

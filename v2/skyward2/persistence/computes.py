@@ -35,7 +35,7 @@ class ComputeStore:
             await ComputeRow(
                 id=compute,
                 name=body.name,
-                spec=packed(body.spec),
+                spec=await packed(body.spec),
                 status_state="requested",
                 created_at=now(),
             ).save().run()
@@ -46,7 +46,7 @@ class ComputeStore:
         return await self.get(compute_id), created
 
     async def get(self, ref: str) -> Compute:
-        return _to_compute(await self._row(ref))
+        return await _to_compute(await self._row(ref))
 
     async def list(self, cursor: str | None, limit: int, state: ComputeState | None, owned: bool | None) -> Page[Compute]:
         query = ComputeRow.objects()
@@ -61,7 +61,7 @@ class ComputeStore:
             query = query.where(ComputeRow.lease_owner.is_null() | (ComputeRow.lease_expires_at <= now()))
 
         rows = await query.order_by(ComputeRow.created_at).limit(limit)
-        items = tuple(_to_compute(row) for row in rows)
+        items = tuple([await _to_compute(row) for row in rows])
         return Page(items=items, next_cursor=items[-1].id if len(items) == limit else None)
 
     async def patch(self, ref: str, body: ComputeSpecPatch, expected_revision: int) -> Compute:
@@ -73,9 +73,9 @@ class ComputeStore:
         else would mean throwing the machines away, and that has to be asked for.
         """
         row = await self.checked(ref, expected_revision)
-        spec = msgspec.structs.replace(unpacked(row.spec, ComputeSpec), nodes=body.nodes)
+        spec = msgspec.structs.replace(await unpacked(row.spec, ComputeSpec), nodes=body.nodes)
 
-        row.spec = packed(spec)
+        row.spec = await packed(spec)
         row.revision += 1
         row.generation += 1
         await row.save().run()
@@ -94,9 +94,9 @@ class ComputeStore:
 
         async def mark() -> str:
             row = await self.checked(ref, expected_revision)
-            spec = msgspec.structs.replace(unpacked(row.spec, ComputeSpec), desired="deleted")
+            spec = msgspec.structs.replace(await unpacked(row.spec, ComputeSpec), desired="deleted")
 
-            row.spec = packed(spec)
+            row.spec = await packed(spec)
             row.revision += 1
             row.status_state = "deleting"
             await row.save().run()
@@ -135,12 +135,12 @@ class ComputeStore:
         await row.save().run()
 
     async def binding(self, compute_id: str) -> Binding:
-        return unpacked((await self._row(compute_id)).binding, dict[str, Any])
+        return await unpacked((await self._row(compute_id)).binding, dict[str, Any])
 
     async def bind(self, compute_id: str, binding: Binding) -> None:
         """Record what the provider built, before anything is built on top of it."""
         row = await self._row(compute_id)
-        row.binding = packed(binding)
+        row.binding = await packed(binding)
         await row.save().run()
 
     async def observe(self, compute_id: str, status: ComputeStatus) -> None:
@@ -150,8 +150,8 @@ class ComputeStore:
             ComputeRow.status_observed_generation: status.observed_generation,
             ComputeRow.status_nodes_ready: status.nodes_ready,
             ComputeRow.status_nodes_total: status.nodes_total,
-            ComputeRow.status_drift: packed(status.drift),
-            ComputeRow.status_error: packed(status.last_error) if status.last_error else None,
+            ComputeRow.status_drift: await packed(status.drift),
+            ComputeRow.status_error: await packed(status.last_error) if status.last_error else None,
             ComputeRow.revision: ComputeRow.revision + 1,
         }).where(ComputeRow.id == compute_id).run()
 
@@ -180,8 +180,8 @@ class ComputeStore:
             id=f"{compute_id}:{number}",
             compute_id=compute_id,
             number=number,
-            spec=packed(spec),
-            hash=digest(msgspec.json.encode(spec)),
+            spec=await packed(spec),
+            hash=await digest(msgspec.json.encode(spec)),
             applied=False,
             created_at=now(),
         ).save().run()
@@ -193,7 +193,7 @@ class GenerationStore:
 
     async def list(self, compute: str) -> Page[Generation]:
         rows = await GenerationRow.objects().where(GenerationRow.compute_id == compute).order_by(GenerationRow.number)
-        return Page(items=tuple(_to_generation(row) for row in rows))
+        return Page(items=tuple([await _to_generation(row) for row in rows]))
 
     async def get(self, compute: str, number: int) -> Generation:
         row = await GenerationRow.objects().where(
@@ -201,7 +201,7 @@ class GenerationStore:
         ).first()
         if row is None:
             raise NotFoundError(f"no such generation: {compute}:{number}")
-        return _to_generation(row)
+        return await _to_generation(row)
 
     async def create(self, compute: str, body: GenerationCreate, expected_revision: int, idempotency_key: str) -> Generation:
         """Replace the infrastructure: same compute, new definition.
@@ -213,9 +213,9 @@ class GenerationStore:
         """
         async def branch() -> str:
             row = await self._computes.checked(compute, expected_revision)
-            spec = (await self.get(compute, body.source)).spec if body.source else unpacked(row.spec, ComputeSpec)
+            spec = (await self.get(compute, body.source)).spec if body.source else await unpacked(row.spec, ComputeSpec)
 
-            row.spec = packed(spec)
+            row.spec = await packed(spec)
             row.revision += 1
             row.generation += 1
             await row.save().run()
@@ -234,30 +234,30 @@ class GenerationStore:
         ).run()
 
 
-def _to_compute(row: ComputeRow) -> Compute:
+async def _to_compute(row: ComputeRow) -> Compute:
     return Compute(
         id=row.id,
         name=row.name,
         revision=row.revision,
         generation=row.generation,
-        spec=unpacked(row.spec, ComputeSpec),
+        spec=await unpacked(row.spec, ComputeSpec),
         status=ComputeStatus(
             state=msgspec.convert(row.status_state, ComputeState),
             observed_generation=row.status_observed_generation,
             nodes_ready=row.status_nodes_ready,
             nodes_total=row.status_nodes_total,
-            drift=unpacked(row.status_drift, tuple[str, ...]),
-            last_error=unpacked(row.status_error, Error) if row.status_error else None,
+            drift=await unpacked(row.status_drift, tuple[str, ...]),
+            last_error=await unpacked(row.status_error, Error) if row.status_error else None,
         ),
         lease=Lease(owner=row.lease_owner, expires_at=row.lease_expires_at),
         created_at=row.created_at,
     )
 
 
-def _to_generation(row: GenerationRow) -> Generation:
+async def _to_generation(row: GenerationRow) -> Generation:
     return Generation(
         number=row.number,
-        spec=unpacked(row.spec, ComputeSpec),
+        spec=await unpacked(row.spec, ComputeSpec),
         hash=row.hash,
         created_at=row.created_at,
         applied=row.applied,

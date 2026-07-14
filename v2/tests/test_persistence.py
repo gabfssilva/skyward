@@ -22,8 +22,8 @@ from skyward2.persistence.db import connect
 from skyward2.persistence.events import EventStore
 from skyward2.persistence.functions import BlobStore, FunctionStore
 from skyward2.persistence.nodes import NodeStore
-from skyward2.persistence.store import digest
 from skyward2.persistence.tasks import ExecutionStore, TaskStore
+from skyward2.protocol.codec import digest
 from skyward2.protocol.schemas import (
     ComputeCreate,
     ComputeSpec,
@@ -157,8 +157,8 @@ async def test_a_dead_node_is_stamped_once(store: Stores, compute: str):
 
 async def test_content_is_stored_once_and_read_many_times(store: Stores):
     blob = b"pickled"
-    function, created = await store.functions.register(digest(blob), blob, name="train")
-    _, again = await store.functions.register(digest(blob), blob, name="train")
+    function, created = await store.functions.register(await digest(blob), blob, name="train")
+    _, again = await store.functions.register(await digest(blob), blob, name="train")
 
     assert created and not again
     assert function.size_bytes == len(blob)
