@@ -166,6 +166,16 @@ async def test_content_is_stored_once_and_read_many_times(store: Stores):
     assert await store.blobs.get(function.sha256) == blob, "reading a result does not consume it"
 
 
+async def test_the_same_function_registered_at_once_by_many_callers_is_not_a_conflict(store: Stores):
+    blob = b"pickled"
+    sha = await digest(blob)
+
+    async with asyncio.TaskGroup() as group:
+        registrations = [group.create_task(store.functions.register(sha, blob, name="train")) for _ in range(8)]
+
+    assert {task.result()[0].sha256 for task in registrations} == {sha}
+
+
 async def test_a_broadcast_freezes_the_nodes_it_found(store: Stores, compute: str):
     await ready_node(store, compute, rank=0)
     await ready_node(store, compute, rank=1)

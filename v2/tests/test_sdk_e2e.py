@@ -12,11 +12,12 @@ from pathlib import Path
 import cloudpickle
 import pytest
 
-from skyward2.sdk import Compute, Container, Image, TaskFailedError, function
+import skyward2 as skyward
+from skyward2 import Compute, TaskFailedError
 
 pytestmark = pytest.mark.e2e
 
-IMAGE = Image(python="3.13", skyward="local")
+IMAGE = skyward.Image(python="3.13", skyward="local")
 
 cloudpickle.register_pickle_by_value(sys.modules[__name__])
 """Ship this module's functions by value.
@@ -28,17 +29,17 @@ about that, and this line is where it will be said.
 """
 
 
-@function
+@skyward.function
 def double(x: int) -> int:
     return x * 2
 
 
-@function
+@skyward.function
 def blow_up() -> int:
     raise ValueError("the function said no")
 
 
-@function
+@skyward.function
 def whoami() -> str:
     import os
 
@@ -47,8 +48,8 @@ def whoami() -> str:
 
 @pytest.fixture
 def pool(tmp_path: Path):
-    with Compute(
-        provider=Container(),
+    with skyward.Compute(
+        provider=skyward.Container(),
         nodes=2,
         cpus=1,
         memory_gb=1,
@@ -74,6 +75,14 @@ def test_a_future_does_not_block_and_a_group_overlaps(pool: Compute):
     assert future.result() == 10
 
     assert (double(1) & double(2) & double(3)) >> pool == [2, 4, 6]
+
+
+def test_gather_groups_calls_the_way_the_ampersand_does(pool: Compute):
+    assert skyward.gather(double(1), double(2)) >> pool == [2, 4]
+
+
+def test_map_keeps_the_order_it_was_asked_in(pool: Compute):
+    assert pool.map(double, range(6)) == [0, 2, 4, 6, 8, 10]
 
 
 def test_a_function_that_raises_arrives_as_an_exception_with_its_traceback(pool: Compute):

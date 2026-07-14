@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from concurrent.futures import Future
-from dataclasses import dataclass
-from typing import Protocol
+from dataclasses import dataclass, replace
+from typing import Protocol, overload
 
 
 class Pool(Protocol):
@@ -29,6 +29,10 @@ class Pending[T]:
     fn: Callable[..., T]
     args: tuple[object, ...]
     kwargs: dict[str, object]
+    timeout: float | None = None
+
+    def with_timeout(self, timeout: float) -> Pending[T]:
+        return replace(self, timeout=timeout)
 
     def __rshift__(self, pool: Pool) -> T:
         return pool.run(self)
@@ -62,10 +66,34 @@ class Group[T]:
         return pool.gather(self)
 
 
-def function[**P, T](fn: Callable[P, T]) -> Callable[P, Pending[T]]:
-    """Turn a function into one that describes a call instead of making it."""
+def gather[T](*pendings: Pending[T]) -> Group[T]:
+    """The same thing ``&`` builds, for when there are more than a few."""
+    return Group(pendings)
 
-    def pending(*args: P.args, **kwargs: P.kwargs) -> Pending[T]:
-        return Pending(fn, args, kwargs)
 
-    return pending
+@overload
+def function[**P, T](fn: Callable[P, T]) -> Callable[P, Pending[T]]: ...
+
+
+@overload
+def function[**P, T](*, timeout: float) -> Callable[[Callable[P, T]], Callable[P, Pending[T]]]: ...
+
+
+def function[**P, T](
+    fn: Callable[P, T] | None = None,
+    *,
+    timeout: float | None = None,
+) -> Callable[P, Pending[T]] | Callable[[Callable[P, T]], Callable[P, Pending[T]]]:
+    """Turn a function into one that describes a call instead of making it.
+
+    Bare (``@function``) or with a default timeout (``@function(timeout=600)``),
+    which any single call can override with ``.with_timeout``.
+    """
+
+    def decorate(target: Callable[P, T]) -> Callable[P, Pending[T]]:
+        def pending(*args: P.args, **kwargs: P.kwargs) -> Pending[T]:
+            return Pending(target, args, kwargs, timeout)
+
+        return pending
+
+    return decorate(fn) if fn else decorate

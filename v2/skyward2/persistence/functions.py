@@ -15,6 +15,10 @@ class BlobStore:
     that retries an upload is not uploading a second time, it is discovering the
     first one is already there. That is also why nothing here needs a revision or
     a lock — content that could change would not be content-addressed.
+
+    The insert says so to the database as well. Two callers uploading the same
+    bytes at the same time both find it missing and both write, and a conflict
+    there is the same non-event as the check that missed it.
     """
 
     async def exists(self, sha256: str) -> bool:
@@ -27,7 +31,7 @@ class BlobStore:
         if await self.exists(sha256):
             return False
 
-        await BlobRow(sha256=sha256, data=blob, created_at=now()).save().run()
+        await BlobRow.insert(BlobRow(sha256=sha256, data=blob, created_at=now())).on_conflict(action="DO NOTHING").run()
         return True
 
     async def get(self, sha256: str) -> bytes:
@@ -77,13 +81,15 @@ class FunctionStore:
         if not written and await self.exists(sha256):
             return await self.get(sha256), False
 
-        await FunctionRow(
-            sha256=sha256,
-            size_bytes=len(blob),
-            codec=CODEC,
-            name=name,
-            created_at=now(),
-        ).save().run()
+        await FunctionRow.insert(
+            FunctionRow(
+                sha256=sha256,
+                size_bytes=len(blob),
+                codec=CODEC,
+                name=name,
+                created_at=now(),
+            ),
+        ).on_conflict(action="DO NOTHING").run()
 
         return await self.get(sha256), True
 

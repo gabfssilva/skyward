@@ -12,15 +12,17 @@ import asyncio
 import os
 import threading
 import uuid
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine, Iterable
 from concurrent.futures import Future
 from pathlib import Path
 from typing import Self
 
 import msgspec
 
+from skyward2.accelerators import Accelerator
 from skyward2.persistence.db import DEFAULT_PATH
 from skyward2.protocol import codec
+from skyward2.protocol.accelerators import resolve
 from skyward2.protocol.schemas import (
     Compute as ComputeView,
 )
@@ -32,15 +34,19 @@ from skyward2.protocol.schemas import (
     NodeBounds,
     ProviderCreate,
     ProviderRef,
-    Spec,
+    Selection,
     Task,
     TaskCreate,
     Worker,
+)
+from skyward2.protocol.schemas import (
+    Spec as SpecRef,
 )
 from skyward2.sdk.client import Client
 from skyward2.sdk.errors import SkywardError
 from skyward2.sdk.function import Group, Pending
 from skyward2.sdk.provider import Provider
+from skyward2.sdk.spec import Nodes, NodeSpec, Spec
 
 DEFAULT_IMAGE = Image()
 INLINE = 256 * 1024
@@ -79,13 +85,14 @@ class Compute:
 
     def __init__(
         self,
-        provider: Provider,
-        nodes: int | tuple[int, int] = 1,
-        accelerator: str | None = None,
-        accelerator_count: int = 1,
+        *specs: Spec,
+        provider: Provider | None = None,
+        accelerator: str | Accelerator | None = None,
         cpus: int | None = None,
         memory_gb: int | None = None,
         region: str | None = None,
+        nodes: NodeSpec = 1,
+        selection: Selection = "cheapest",
         image: Image = DEFAULT_IMAGE,
         concurrency: int | None = None,
         name: str | None = None,
@@ -93,19 +100,18 @@ class Compute:
         database: Path = DEFAULT_PATH,
         delete_on_exit: bool = True,
     ) -> None:
-        self._provider = provider
+        if specs and provider is not None:
+            raise ValueError("a pool takes either specs or a provider, not both")
+        if provider is not None:
+            specs = (Spec(provider, accelerator, cpus, memory_gb, region),)
+        if not specs:
+            raise ValueError("a pool needs a provider, or at least one spec")
+
+        self._providers = {spec.provider.name: spec.provider for spec in specs}
         self._spec = ComputeSpec(
-            specs=(
-                Spec(
-                    provider=ProviderRef(kind=provider.kind, config=dict(provider.config)),
-                    accelerator=accelerator,
-                    accelerator_count=accelerator_count,
-                    cpus=cpus,
-                    memory_gb=memory_gb,
-                    region=region,
-                ),
-            ),
+            specs=tuple(_wire(spec) for spec in specs),
             nodes=_bounds(nodes),
+            selection=selection,
             image=image,
             worker=Worker(concurrency=concurrency),
         )
@@ -162,8 +168,17 @@ class Compute:
         futures = [self.start(pending) for pending in group.pendings]
         return [future.result() for future in futures]
 
+    def map[I, R](self, fn: Callable[[I], Pending[R]], items: Iterable[I]) -> list[R]:
+        """One task per item, spread over the nodes, answers in the order asked."""
+        futures = [self.start(fn(item)) for item in items]
+        return [future.result() for future in futures]
+
+    def current_nodes(self) -> int:
+        compute = self.loop.run(self.client.call("GET", f"/v1/computes/{self._id}", ComputeView))
+        return compute.status.nodes_ready
+
     async def _provision(self) -> None:
-        await self._ensure_provider()
+        await self._ensure_providers()
 
         compute = await self.client.call(
             "POST",
@@ -185,31 +200,32 @@ class Compute:
                     case _:
                         await asyncio.sleep(0.5)
 
-    async def _ensure_provider(self) -> None:
+    async def _ensure_providers(self) -> None:
         """The credentials live in the daemon, and this is how they get there.
 
         A provider is a row, not a value in the spec: the spec names a kind, and
         the row holds what it takes to log in. Registering it here is what makes
         ``Compute(provider=Container())`` enough on a store that has never seen one.
         """
-        try:
-            await self.client.call("GET", f"/v1/providers/{self._provider.name}", dict[str, object])
-        except SkywardError as error:
-            if error.code != "not_found":
-                raise
-            await self.client.call(
-                "POST",
-                "/v1/providers",
-                dict[str, object],
-                body=msgspec.json.encode(
-                    ProviderCreate(
-                        name=self._provider.name,
-                        kind=self._provider.kind,
-                        credentials=dict(self._provider.credentials),
-                        config=dict(self._provider.config),
+        for provider in self._providers.values():
+            try:
+                await self.client.call("GET", f"/v1/providers/{provider.name}", dict[str, object])
+            except SkywardError as error:
+                if error.code != "not_found":
+                    raise
+                await self.client.call(
+                    "POST",
+                    "/v1/providers",
+                    dict[str, object],
+                    body=msgspec.json.encode(
+                        ProviderCreate(
+                            name=provider.name,
+                            kind=provider.kind,
+                            credentials=dict(provider.credentials),
+                            config=dict(provider.config),
+                        ),
                     ),
-                ),
-            )
+                )
 
     async def _destroy(self) -> None:
         current = await self.client.call("GET", f"/v1/computes/{self._id}", ComputeView)
@@ -270,6 +286,7 @@ class Compute:
                     dispatch=dispatch,
                     args_inline=inline,
                     args_sha256=stored,
+                    timeout_seconds=int(pending.timeout) if pending.timeout else None,
                 ),
             ),
             headers={"Idempotency-Key": uuid.uuid4().hex},
@@ -297,9 +314,34 @@ class Compute:
         return blob
 
 
-def _bounds(nodes: int | tuple[int, int]) -> NodeBounds:
+def _wire(spec: Spec) -> SpecRef:
+    accelerator, count = _accelerator(spec.accelerator)
+    return SpecRef(
+        provider=ProviderRef(kind=spec.provider.kind, config=dict(spec.provider.config)),
+        accelerator=accelerator,
+        accelerator_count=count,
+        cpus=spec.cpus,
+        memory_gb=spec.memory_gb,
+        region=spec.region,
+    )
+
+
+def _accelerator(wanted: str | Accelerator | None) -> tuple[str | None, int]:
+    """A raw name goes through the same normalization every offer went through."""
+    match wanted:
+        case Accelerator(name, count):
+            return name, count
+        case str(name):
+            return resolve(name, None)[0], 1
+        case None:
+            return None, 1
+
+
+def _bounds(nodes: NodeSpec) -> NodeBounds:
     match nodes:
         case int(desired):
             return NodeBounds(desired=desired)
         case (minimum, maximum):
             return NodeBounds(desired=maximum, min=minimum, max=maximum)
+        case Nodes():
+            return nodes
