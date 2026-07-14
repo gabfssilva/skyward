@@ -1,4 +1,4 @@
-from piccolo.columns import JSONB, Float, Integer, Timestamptz, Varchar
+from piccolo.columns import JSONB, Boolean, Bytea, Float, Integer, Serial, Text, Timestamptz, Varchar
 from piccolo.table import Table
 
 
@@ -56,4 +56,195 @@ class OfferRow(Table, tablename="offers"):
     expires_at = Timestamptz(index=True)
 
 
-TABLES = (ProviderRow, OfferRow)
+class ComputeRow(Table, tablename="computes"):
+    """What was asked for, and what has been observed of it.
+
+    ``spec`` is intent and only the user writes it; the ``status_*`` columns are
+    observation and only the reconciler writes them. Keeping them in one row is
+    what makes a reconcile one read.
+
+    ``binding`` is the provider's per-compute state — the network it created, the
+    availability zone it pinned. It is not in the API's ``Compute``: it is
+    infrastructure bookkeeping, and it is here rather than in memory because the
+    compute outlives by days the process that started it.
+
+    ``revision`` is the optimistic-concurrency token behind ``If-Match``. Every
+    write bumps it; a write that expected an older one is refused.
+    """
+
+    id = Varchar(primary_key=True)
+    name = Varchar(unique=True, null=True, default=None, index=True)
+    revision = Integer(default=1)
+    generation = Integer(default=1)
+    spec = JSONB(default="{}")
+    binding = JSONB(default="{}")
+
+    status_state = Varchar(index=True)
+    status_observed_generation = Integer(default=0)
+    status_nodes_ready = Integer(default=0)
+    status_nodes_total = Integer(default=0)
+    status_drift = JSONB(default="[]")
+    status_error = JSONB(null=True, default=None)
+
+    lease_owner = Varchar(null=True, default=None)
+    lease_expires_at = Timestamptz(null=True, default=None)
+
+    created_at = Timestamptz()
+
+
+class GenerationRow(Table, tablename="generations"):
+    """One definition of a compute, frozen.
+
+    A new generation is how infrastructure gets replaced: same compute id, new
+    definition, the old one destroyed. The history is kept because a rollback is
+    a generation too — it names the one it goes back to.
+    """
+
+    id = Varchar(primary_key=True)
+    compute_id = Varchar(index=True)
+    number = Integer()
+    spec = JSONB(default="{}")
+    hash = Varchar()
+    applied = Boolean(default=False)
+    created_at = Timestamptz()
+
+
+class NodeRow(Table, tablename="nodes"):
+    """One machine, as the control plane knows it.
+
+    ``machine_id`` is the provider's name for it, and it is a column rather than a
+    key in ``provider_binding`` because it is what a reconcile joins on: the
+    provider is asked what machines exist, and the answer has to be matched
+    against what the store believes. A machine the provider reports and the store
+    has never heard of is one we created moments before crashing — adopting it is
+    only possible if that join is cheap.
+    """
+
+    id = Varchar(primary_key=True)
+    compute_id = Varchar(index=True)
+    machine_id = Varchar(index=True)
+    generation = Integer()
+    rank = Integer()
+    revision = Integer(default=1)
+    desired = Varchar(default="present")
+    state = Varchar(index=True)
+    provider_binding = JSONB(default="{}")
+    address = Varchar(null=True, default=None)
+    accelerator = Varchar(null=True, default=None)
+    price_per_hour = Float(null=True, default=None)
+    last_error = JSONB(null=True, default=None)
+    created_at = Timestamptz()
+    terminated_at = Timestamptz(null=True, default=None)
+
+
+class BlobRow(Table, tablename="blobs"):
+    """Content, addressed by its hash.
+
+    Functions, arguments and results all live here. The same argument sent to a
+    hundred nodes is stored once, and a result read twice is not consumed the
+    first time.
+    """
+
+    sha256 = Varchar(primary_key=True)
+    data = Bytea()
+    created_at = Timestamptz()
+
+
+class FunctionRow(Table, tablename="functions"):
+    """What a blob of code is, so a task can name it without carrying it."""
+
+    sha256 = Varchar(primary_key=True)
+    size_bytes = Integer()
+    codec = Varchar()
+    name = Varchar(null=True, default=None)
+    created_at = Timestamptz()
+
+
+class TaskRow(Table, tablename="tasks"):
+    """One call: function plus arguments, one terminal outcome.
+
+    ``state`` is derived from the executions and recomputed whenever one of them
+    changes — never written beside them. It is stored rather than computed on read
+    only so that listing by state is a query and not a scan.
+    """
+
+    id = Varchar(primary_key=True)
+    compute_id = Varchar(index=True)
+    generation = Integer()
+    function = Varchar(index=True)
+    args_sha256 = Varchar()
+    dispatch = Varchar()
+    state = Varchar(index=True)
+    retry = JSONB(default="{}")
+    correlation_id = Varchar(null=True, default=None, index=True)
+    submitted_at = Timestamptz()
+    deadline_at = Timestamptz(null=True, default=None)
+    result_sha256 = Varchar(null=True, default=None)
+    finished_at = Timestamptz(null=True, default=None)
+
+
+class ExecutionRow(Table, tablename="executions"):
+    """One physical attempt at a task.
+
+    A retry is another of these, never another task — which is what lets the
+    caller's handle survive it. ``ordinal`` counts the attempts; ``rank`` says
+    which node of a broadcast this one is.
+    """
+
+    id = Varchar(primary_key=True)
+    task_id = Varchar(index=True)
+    rank = Integer(default=0)
+    ordinal = Integer()
+    state = Varchar(index=True)
+    node_id = Varchar(null=True, default=None)
+    retry_of = Varchar(null=True, default=None)
+    result_sha256 = Varchar(null=True, default=None)
+    error = JSONB(null=True, default=None)
+    started_at = Timestamptz(null=True, default=None)
+    finished_at = Timestamptz(null=True, default=None)
+
+
+class EventRow(Table, tablename="events"):
+    """The log the SSE stream replays from.
+
+    ``sequence`` is the cursor a client resumes on, and it is the primary key
+    because it must be monotonic and gapless in the order things were committed.
+    Nothing here is garbage-collected: a cursor that was valid stays valid.
+    """
+
+    sequence = Serial(primary_key=True)
+    type = Varchar(index=True)
+    compute_id = Varchar(null=True, default=None, index=True)
+    task_id = Varchar(null=True, default=None, index=True)
+    payload = Text()
+    created_at = Timestamptz()
+
+
+class IdempotencyRow(Table, tablename="idempotency"):
+    """What a key has already been used to do.
+
+    The fingerprint is what makes a replay distinguishable from a collision: the
+    same key with the same request is the caller retrying and gets the original
+    resource back; the same key with a different request is a bug, and gets a
+    409 rather than a second resource.
+    """
+
+    key = Varchar(primary_key=True)
+    fingerprint = Varchar()
+    resource_id = Varchar()
+    created_at = Timestamptz()
+
+
+TABLES = (
+    ProviderRow,
+    OfferRow,
+    ComputeRow,
+    GenerationRow,
+    NodeRow,
+    BlobRow,
+    FunctionRow,
+    TaskRow,
+    ExecutionRow,
+    EventRow,
+    IdempotencyRow,
+)
