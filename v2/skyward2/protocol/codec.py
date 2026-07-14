@@ -66,10 +66,24 @@ class Pickle[T]:
     """
 
     async def encode(self, value: T) -> bytes:
-        return await asyncio.to_thread(lambda: lz4.frame.compress(cloudpickle.dumps(value)))
+        return await asyncio.to_thread(dumps, value)
 
     async def decode(self, raw: bytes) -> T:
-        return await asyncio.to_thread(lambda: cloudpickle.loads(lz4.frame.decompress(raw)))
+        return await asyncio.to_thread(lambda: loads(raw))
+
+
+def dumps(value: object) -> bytes:
+    """The same bytes, for a caller that is already off the loop.
+
+    Code running inside a task is on a worker thread by construction, and paying
+    for another one to reach the same two lines would be paying for the rule
+    rather than obeying it.
+    """
+    return lz4.frame.compress(cloudpickle.dumps(value))
+
+
+def loads[T](raw: bytes) -> T:
+    return cloudpickle.loads(lz4.frame.decompress(raw))
 
 
 @cache

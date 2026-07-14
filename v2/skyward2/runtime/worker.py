@@ -24,7 +24,7 @@ import casty
 import msgspec
 from msgspec import Struct
 
-from skyward2 import plugins
+from skyward2 import distributed, plugins
 from skyward2.plugins import Plugin
 from skyward2.protocol import codec
 from skyward2.protocol.schemas import PluginRef
@@ -203,11 +203,13 @@ async def main() -> None:
     )
     stack = ExitStack()
     try:
+        distributed.bind(system, asyncio.get_running_loop())
         await asyncio.to_thread(setup, stack)
 
         emit(Phase(event="completed", phase="worker"))
         await asyncio.Event().wait()
     finally:
+        distributed.unbind()
         await asyncio.to_thread(stack.close)
         await system.close()
 

@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from skyward2 import accelerators, plugins
+    from skyward2.distributed import barrier, counter, dict, lock, queue, set
     from skyward2.runtime.api import Info, instance_info, is_head, shard, silent, stderr, stdout
     from skyward2.sdk import (
         AWS,
@@ -61,6 +62,9 @@ nothing else. Routing them through the SDK would put httpx on a machine whose on
 job is to run somebody's training loop.
 """
 
+SHARED = ("barrier", "counter", "dict", "lock", "queue", "set")
+"""The compute's own state, out of ``skyward2.distributed``. Same reason."""
+
 __all__ = [
     "AWS",
     "GCP",
@@ -89,11 +93,17 @@ __all__ = [
     "Verda",
     "Vultr",
     "accelerators",
+    "barrier",
+    "counter",
+    "dict",
     "function",
     "gather",
     "instance_info",
-    "plugins",
     "is_head",
+    "lock",
+    "plugins",
+    "queue",
+    "set",
     "shard",
     "silent",
     "stderr",
@@ -107,6 +117,8 @@ def __getattr__(name: str) -> object:
             value = importlib.import_module(f"skyward2.{name}")
         case _ if name in RUNTIME:
             value = getattr(importlib.import_module("skyward2.runtime.api"), name)
+        case _ if name in SHARED:
+            value = getattr(importlib.import_module("skyward2.distributed"), name)
         case _ if name in __all__:
             value = getattr(importlib.import_module("skyward2.sdk"), name)
         case _:
