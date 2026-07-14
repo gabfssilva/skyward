@@ -1,58 +1,58 @@
-"""Cloud providers for Skyward.
+from skyward.application.errors import UnsupportedProviderError
+from skyward.application.provider import Catalog
+from skyward.protocol.schemas import ProviderKind
+from skyward.providers.aws import AWSProvider
+from skyward.providers.container import ContainerProvider
+from skyward.providers.fake import FakeProvider
+from skyward.providers.gcp import GCPProvider
+from skyward.providers.hyperstack import HyperstackProvider
+from skyward.providers.jarvislabs import JarvisLabsProvider
+from skyward.providers.lambda_cloud import LambdaProvider
+from skyward.providers.massed_compute import MassedComputeProvider
+from skyward.providers.novita import NovitaProvider
+from skyward.providers.runpod import RunPodProvider
+from skyward.providers.scaleway import ScalewayProvider
+from skyward.providers.tensordock import TensorDockProvider
+from skyward.providers.vastai import VastAIProvider
+from skyward.providers.verda import VerdaProvider
+from skyward.providers.vultr import VultrProvider
 
-Each provider implements the Provider[C, S] protocol:
-- prepare → provisions cluster-level infrastructure
-- provision → launches instances
-- get_instance → polls instance status
-- terminate → destroys instances
-- teardown → cleans up cluster resources
+ADAPTERS: tuple[type[Catalog], ...] = (
+    AWSProvider,
+    ContainerProvider,
+    FakeProvider,
+    GCPProvider,
+    HyperstackProvider,
+    JarvisLabsProvider,
+    LambdaProvider,
+    MassedComputeProvider,
+    NovitaProvider,
+    RunPodProvider,
+    ScalewayProvider,
+    TensorDockProvider,
+    VastAIProvider,
+    VerdaProvider,
+    VultrProvider,
+)
 
-Available providers:
-- AWS: Amazon Web Services (EC2 Fleet, spot instances)
-- GCP: Google Cloud Platform (Compute Engine, instance templates, bulk_insert)
-- Hyperstack: GPU cloud (bare-metal, environment-scoped resources)
-- JarvisLabs: Jarvis Labs GPU cloud (India/Europe, per-minute billing, SSH key auto-registration)
-- Novita: GPU cloud (container-based, spot/on-demand, SSH proxy)
-- RunPod: GPU cloud (pods, serverless endpoints)
-- TensorDock: GPU marketplace (bare-metal VMs, per-second billing)
-- VastAI: GPU marketplace (Docker containers, spot/bid pricing)
-- Verda: GPU cloud (dedicated instances, spot pricing)
+REGISTRY: dict[str, type[Catalog]] = {adapter.kind: adapter for adapter in ADAPTERS}
 
-NOTE: Only config classes are imported at module level to avoid pulling in
-SDK dependencies (aioboto3, google-cloud-compute, etc.).
-"""
 
-# Only import config classes - these have NO SDK dependencies
-# This allows `import skyward as sky` without requiring provider SDKs
-from .aws.config import AWS
-from .container.config import Container
-from .gcp.config import GCP
-from .hyperstack.config import Hyperstack
-from .jarvislabs.config import JarvisLabs
-from .lambda_cloud.config import LambdaCloud
-from .massed_compute.config import MassedCompute
-from .novita.config import Novita
-from .runpod.config import RunPod
-from .scaleway.config import Scaleway
-from .tensordock.config import TensorDock
-from .vastai.config import VastAI
-from .verda.config import Verda
-from .vultr.config import Vultr
+def adapter_for(kind: str) -> type[Catalog]:
+    if kind not in REGISTRY:
+        raise UnsupportedProviderError(f"unknown provider kind: {kind}", known=sorted(REGISTRY))
+    return REGISTRY[kind]
 
-__all__ = [
-    # Config classes only - handlers must be imported explicitly
-    "AWS",
-    "Container",
-    "GCP",
-    "Hyperstack",
-    "JarvisLabs",
-    "LambdaCloud",
-    "MassedCompute",
-    "Novita",
-    "RunPod",
-    "Scaleway",
-    "TensorDock",
-    "VastAI",
-    "Verda",
-    "Vultr",
-]
+
+def kinds() -> tuple[ProviderKind, ...]:
+    return tuple(
+        ProviderKind(
+            kind=adapter.kind,
+            credential_fields=adapter.credential_fields,
+            offers_ttl_seconds=int(adapter.offers_ttl.total_seconds()),
+        )
+        for adapter in REGISTRY.values()
+    )
+
+
+__all__ = ["ADAPTERS", "REGISTRY", "adapter_for", "kinds"]

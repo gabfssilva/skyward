@@ -19,71 +19,29 @@ classifiers = [
     "Typing :: Typed",
 ]
 
+# What a bare node needs: it runs the worker and nothing else.
 dependencies = [
-    "cloudpickle>=3.1.2",
-    "lz4>=4.4.0",
-    "pydantic>=2.12.5",
     "casty>=0.22.1",
-    "rich>=14.3.2",
-    "asyncssh>=2.22.0",
-    "httpx>=0.28",
-    "loky>=3.5",
-    "textual>=8.2.7",
+    "cloudpickle>=3.1",
+    "lz4>=4.3",
+    "msgspec>=0.19",
 ]
 
 [project.optional-dependencies]
-# Provider SDKs - only needed on client side
-aws = [
-    "aioboto3>=13.0.0",
-    "boto3-stubs[s3,ec2,ecr,sts,iam]>=1.35.0",
+# What the SDK needs to reach a control plane — any control plane, including one
+# running in the same process.
+client = [
+    "httpx>=0.28",
 ]
-gcp = [
-    "google-cloud-compute>=1.20.0",
-    "google-auth>=2.0.0",
-    "google-cloud-tpu>=1.25.0",
-]
-jarvis = ["jarvislabs"]
-providers = ["skyward[aws,gcp,jarvis]"]
-# ML frameworks
-pytorch = [
-    "torch==2.8.0",
-    "torchvision==0.23.0",
-]
-huggingface = [
-    "transformers>=4.57.3",
-    "accelerate>=1.12.0",
-    "datasets>=4.4.1",
-]
-pandas = [
-    "pandas==2.3.3"
-]
-cli = ["cyclopts>=4.7"]
+# What the daemon needs and the node does not. A machine rented by the hour
+# should not be waiting on a web framework it will never serve with.
 server = [
-    "starlette>=0.40",
-    "uvicorn>=0.30",
+    "httpx>=0.28",
+    "litestar>=2.13",
+    "piccolo[sqlite]>=1.0",
+    "asyncssh>=2.22.0",
+    "aioboto3>=13.0.0",
 ]
-notebook = ["jupyter_client>=8"]
-all = ["skyward[providers,pytorch,huggingface,cli,server]"]
-dev = [
-    "pytest>=8.0",
-    "pytest-cov>=4.0",
-    "mypy>=1.13",
-    "ruff>=0.8",
-    "torch>=2.8.0",
-    "jax>=0.8.1",
-    "keras>=3.12.0",
-    "jupyter_client>=8",
-    "boto3-stubs[ec2,ecr,iam,s3,ssm,sts]>=1.42.3",
-]
-openai = [
-    "openai>=2.43.0",
-]
-
-[project.scripts]
-sky = "skyward.cli:app"
-
-[project.entry-points."jupyter_client.kernel_provisioners"]
-skyward = "skyward.notebook.provisioner:SkywardKernelProvisioner"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
@@ -113,18 +71,17 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["skyward", "skyward2"]
+known-first-party = ["skyward"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN"]
 "guides/**" = ["ANN"]
-"v2/tests/**" = ["ANN"]
-"v2/skyward2/server/controllers/**" = ["B008"]
+"skyward/server/controllers/**" = ["B008"]
 
 [tool.pyright]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
-include = ["skyward", "vscode"]
+include = ["skyward"]
 reportMissingImports = "warning"
 
 [tool.pytest.ini_options]
@@ -155,40 +112,23 @@ markers = [
 ]
 
 [dependency-groups]
-docs = [
-    "mkdocs-material>=9.5",
-    "mkdocstrings[python]>=0.27",
-]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.25",
     "pytest-cov>=7.0.0",
     "pytest-sugar>=1.1.1",
     "pytest-xdist>=3.8.0",
+    "pytest-timeout>=2.4.0",
     "pyright>=1.1",
     "ruff>=0.9",
+    "litestar>=2.13",
+    "piccolo[sqlite]>=1.0",
+    "asyncssh>=2.22.0",
+    "aioboto3>=13.0.0",
+    "httpx>=0.28",
     "jax>=0.8.2",
-    "jupyter_client>=8",
     "keras>=3.13.0",
     "scikit-learn>=1.8.0",
-    "pytest-timeout>=2.4.0",
-    "mkdocs>=1.6.1",
-    "mkdocs-material>=9.7.1",
-    "pymdown-extensions>=10.20.1",
-    "mkdocstrings>=1.0.3",
-    "mkdocstrings-python>=2.0.2",
-    "aioboto3>=13.0.0",
-    "cyclopts>=4.7",
-    "openai>=2.43.0",
-    "textual-dev>=1.8.0",
-]
-v2 = [
-    "litestar>=2.13",
-    "msgspec>=0.19",
-    "piccolo[sqlite]>=1.0",
-    "aioboto3>=13.0.0",
-    "asyncssh>=2.22.0",
-    "casty>=0.22.1",
 ]
 
 [tool.uv]

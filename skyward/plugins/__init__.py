@@ -1,82 +1,66 @@
-"""Skyward plugins for third-party integrations.
+"""The plugins, and the two ends that put them to work.
 
-All imports are lazy to avoid requiring optional dependencies at import time.
-
-Usage:
-    import skyward as sky
-
-    with sky.ComputePool(
-        plugins=[sky.plugins.torch(backend="nccl")],
-    ) as compute:
-        ...
+Registered by name. The name is what travels — the spec carries ``PluginRef`` and
+never an object — so a node rebuilds the plugin from its parameters rather than
+being sent one, and a kind nobody has heard of is refused at the door instead of
+crashing a worker an hour later.
 """
 
-from typing import TYPE_CHECKING, Any
+from __future__ import annotations
 
-from skyward.api.plugin import AccelerateConfig as AccelerateConfig
-from skyward.api.plugin import DeepSpeedConfig as DeepSpeedConfig
-from skyward.api.plugin import FsdpConfig as FsdpConfig
-from skyward.api.plugin import LaunchCommand as LaunchCommand
-from skyward.api.plugin import LaunchContext as LaunchContext
-from skyward.api.plugin import Plugin as Plugin
-from skyward.api.plugin import around_app as around_app
-from skyward.api.plugin import around_client as around_client
-from skyward.api.plugin import around_process as around_process
+from collections.abc import Callable, Sequence
+from functools import partial, reduce
 
-if TYPE_CHECKING:
-    from .accelerate import accelerate
-    from .cuml import cuml
-    from .huggingface import huggingface
-    from .jax import jax
-    from .joblib import joblib
-    from .keras import keras
-    from .mig import mig
-    from .mps import mps
-    from .sklearn import sklearn
-    from .torch import torch
+from msgspec import ValidationError, convert
 
-__all__ = [
-    "Plugin",
-    "LaunchCommand",
-    "LaunchContext",
-    "accelerate",
-    "torch",
-    "jax",
-    "keras",
-    "cuml",
-    "huggingface",
-    "joblib",
-    "mig",
-    "mps",
-    "sklearn",
-    "around_client",
-    "around_app",
-    "around_process",
-]
+from skyward.application.errors import UnsupportedPluginError
+from skyward.plugins.huggingface import HuggingFace
+from skyward.plugins.plugin import Plugin
+from skyward.plugins.torch import Torch
+from skyward.protocol.schemas import Image, PluginRef
+from skyward.runtime.api import Info
 
-_LAZY_IMPORTS: dict[str, tuple[str, str]] = {
-    "accelerate": ("skyward.plugins.accelerate", "accelerate"),
-    "torch": ("skyward.plugins.torch", "torch"),
-    "jax": ("skyward.plugins.jax", "jax"),
-    "keras": ("skyward.plugins.keras", "keras"),
-    "cuml": ("skyward.plugins.cuml", "cuml"),
-    "huggingface": ("skyward.plugins.huggingface", "huggingface"),
-    "joblib": ("skyward.plugins.joblib", "joblib"),
-    "mig": ("skyward.plugins.mig", "mig"),
-    "mps": ("skyward.plugins.mps", "mps"),
-    "sklearn": ("skyward.plugins.sklearn", "sklearn"),
+__all__ = ["PLUGINS", "HuggingFace", "Plugin", "Torch", "chain", "image", "resolve"]
+
+PLUGINS: dict[str, type[Plugin]] = {
+    Torch.kind: Torch,
+    HuggingFace.kind: HuggingFace,
 }
 
 
-if not TYPE_CHECKING:
-    def __getattr__(name: str) -> Any:
-        if name in _LAZY_IMPORTS:
-            import importlib
-            import sys
+def resolve(refs: Sequence[PluginRef]) -> tuple[Plugin, ...]:
+    """The plugins a spec asked for, or a refusal naming the one that does not exist.
 
-            module_path, attr = _LAZY_IMPORTS[name]
-            module = importlib.import_module(module_path)
-            value = getattr(module, attr)
-            setattr(sys.modules[__name__], name, value)
-            return value
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    The parameters are validated here, against the plugin's own fields. A misspelt
+    backend is an error the user gets back from the call that created the compute,
+    rather than a traceback out of a worker on a machine they are already paying for.
+    """
+
+    def one(ref: PluginRef) -> Plugin:
+        plugin = PLUGINS.get(ref.kind)
+        if plugin is None:
+            raise UnsupportedPluginError(f"no plugin named {ref.kind}", kind=ref.kind)
+
+        try:
+            return convert(ref.params, type=plugin)
+        except ValidationError as invalid:
+            raise UnsupportedPluginError(f"{ref.kind}: {invalid}", kind=ref.kind) from invalid
+
+    return tuple(one(ref) for ref in refs)
+
+
+def image(base: Image, plugins: Sequence[Plugin]) -> Image:
+    """The image the plugins want, each handed what the ones before it asked for."""
+    return reduce(lambda current, plugin: plugin.image(current), plugins, base)
+
+
+def chain[T](
+    plugins: Sequence[Plugin],
+    call: Callable[[], T],
+    info: Info,
+) -> Callable[[], T]:
+    """The call, wrapped by every plugin, the first one outermost."""
+    wrapped: Callable[[], T] = call
+    for plugin in reversed(plugins):
+        wrapped = partial(plugin.run, wrapped, info)
+    return wrapped

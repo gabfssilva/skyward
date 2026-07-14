@@ -1,4 +1,4 @@
-"""Skyward — distributed compute orchestration for ML/AI.
+"""Skyward — write a function, run it on someone else's machines.
 
     import skyward as sky
 
@@ -6,209 +6,131 @@
     def train(data):
         return model.fit(data)
 
-    with sky.Compute(provider=sky.AWS(), accelerator="A100") as compute:
-        result = train(data) >> compute
+    with sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.A100(), nodes=4) as pool:
+        model = train(data) >> pool
+
+Nothing is imported until it is asked for. The package is also what a *node*
+imports to run the user's code, and a node has no web framework, no HTTP client
+and no business acquiring one: reaching ``sky.Compute`` pulls the client in,
+reaching nothing pulls nothing.
 """
-from typing import Any
 
-try:
-    from skyward._version import __version__ as __version__
-except ModuleNotFoundError:
-    __version__: str = "0.0.0+unknown"
+from __future__ import annotations
 
-from skyward import accelerators as accelerators
-from skyward import containers as containers
-from skyward import plugins as plugins
-from skyward import storage as storage
-from skyward import time as time
-from skyward.containers import DockerImage as DockerImage
-from skyward.observability import LogConfig
-from skyward.observability import metrics as metrics
-from skyward.storage import Storage as Storage
+import importlib
+from typing import TYPE_CHECKING
 
-from .api.facts import (
-    ClusterDestroyed,
-    ClusterId,
-    ClusterProvisioned,
-    ClusterReady,
-    Error,
-    Event,
-    Fact,
-    InstanceBootstrapped,
-    InstanceDestroyed,
-    InstanceId,
-    InstancePreempted,
-    InstanceProvisioned,
-    InstanceReplaced,
-    Log,
-    Metric,
-    NodeId,
-    NodeInstance,
-    ProviderName,
-    RequestId,
-    TaskCompleted,
-    TaskStarted,
-)
-from .api.pool import Pool as Pool
-from .app import App
-from .core import (
-    DEFAULT_IMAGE,
-    AllocationStrategy,
-    Application,
-    CallbackWriter,
-    Compute,
-    HealthChecker,
-    Image,
-    InstanceInfo,
-    NoOffersError,
-    Options,
-    PendingFunction,
-    PendingFunctionGroup,
-    PipIndex,
-    PoolSpec,
-    ProvisioningError,
-    Session,
-    app,
-    function,
-    gather,
-    instance_info,
-    is_head,
-    main,
-    redirect_output,
-    shard,
-    silent,
-    sky,
-    stderr,
-    stdout,
-)
-from .core import InstanceType as InstanceType
-from .core import Nodes as Nodes
-from .core import Offer as Offer
-from .core import Port as Port
-from .core import SelectionStrategy as SelectionStrategy
-from .core import Spec as Spec
-from .core import SpecKwargs as SpecKwargs
-from .core import Volume as Volume
-from .core import Worker as Worker
-from .core import WorkerExecutor as WorkerExecutor
-from .distributed import (
-    barrier,
-    counter,
-    dict,
-    lock,
-    queue,
-    set,
-)
-from .offers.repository import OfferRepository
-from .providers import AWS, GCP, Container, Hyperstack, JarvisLabs, LambdaCloud, MassedCompute, Novita, RunPod, Scaleway, TensorDock, VastAI, Verda, Vultr
-from .server.client import Client as Client
+if TYPE_CHECKING:
+    from skyward import accelerators, plugins
+    from skyward.distributed import barrier, counter, dict, lock, queue, set
+    from skyward.runtime.api import Info, instance_info, is_head, shard, silent, stderr, stdout
+    from skyward.sdk import (
+        AWS,
+        GCP,
+        Accelerator,
+        Compute,
+        Container,
+        Group,
+        Hyperstack,
+        Image,
+        JarvisLabs,
+        Lambda,
+        MassedCompute,
+        Nodes,
+        Novita,
+        Pending,
+        Provider,
+        RunPod,
+        Scaleway,
+        SkywardError,
+        Spec,
+        Streaming,
+        TaskFailedError,
+        TaskIndeterminateError,
+        TensorDock,
+        VastAI,
+        Verda,
+        Vultr,
+        function,
+        gather,
+        stream,
+    )
 
+RUNTIME = ("Info", "instance_info", "is_head", "shard", "silent", "stderr", "stdout")
+"""What a function asks while it is running, and the only names a node ever reaches for.
 
-async def offers(providers: list[Any]) -> OfferRepository:
-    """Load the GPU offer catalog into a queryable repository.
+They resolve out of ``skyward.runtime.api``, which imports the standard library and
+nothing else. Routing them through the SDK would put httpx on a machine whose only
+job is to run somebody's training loop.
+"""
 
-    Usage::
-
-        import skyward as sky
-
-        repo = await sky.offers()
-        offer = repo.accelerator("A100").spot().cheapest()
-    """
-    return await OfferRepository.create(providers)
+SHARED = ("barrier", "counter", "dict", "lock", "queue", "set")
+"""The compute's own state, out of ``skyward.distributed``. Same reason."""
 
 __all__ = [
-    "__version__",
-    "App",
-    "Application",
-    "Client",
-    "Compute",
-    "Session",
-    "sky",
-    "app",
-    "function",
-    "gather",
-    "main",
-    "PendingFunction",
-    "PendingFunctionGroup",
-    "NoOffersError",
-    "ProvisioningError",
-    "InstanceInfo",
-    "instance_info",
-    "shard",
-    "stdout",
-    "stderr",
-    "silent",
-    "is_head",
-    "CallbackWriter",
-    "redirect_output",
     "AWS",
-    "Container",
     "GCP",
+    "Accelerator",
+    "Compute",
+    "Container",
+    "Group",
     "Hyperstack",
+    "Image",
+    "Info",
     "JarvisLabs",
-    "LambdaCloud",
+    "Lambda",
     "MassedCompute",
+    "Nodes",
     "Novita",
+    "Pending",
+    "Provider",
     "RunPod",
     "Scaleway",
+    "SkywardError",
+    "Spec",
+    "Streaming",
+    "TaskFailedError",
+    "TaskIndeterminateError",
     "TensorDock",
     "VastAI",
     "Verda",
     "Vultr",
-    "HealthChecker",
-    "Image",
-    "Nodes",
-    "Options",
-    "PipIndex",
-    "DEFAULT_IMAGE",
-    "Pool",
-    "PoolSpec",
-    "Port",
-    "AllocationStrategy",
-    "InstanceType",
-    "Offer",
-    "SelectionStrategy",
-    "Spec",
-    "SpecKwargs",
-    "Volume",
-    "Storage",
-    "storage",
-    "Worker",
-    "WorkerExecutor",
-    "dict",
-    "set",
-    "counter",
-    "queue",
-    "barrier",
-    "lock",
-    "RequestId",
-    "ClusterId",
-    "InstanceId",
-    "NodeId",
-    "ProviderName",
-    "NodeInstance",
-    "ClusterProvisioned",
-    "InstanceProvisioned",
-    "InstanceBootstrapped",
-    "InstancePreempted",
-    "InstanceReplaced",
-    "InstanceDestroyed",
-    "ClusterReady",
-    "ClusterDestroyed",
-    "TaskStarted",
-    "TaskCompleted",
-    "Metric",
-    "Log",
-    "Error",
-    "Fact",
-    "Event",
-    "metrics",
-    "LogConfig",
     "accelerators",
-    "offers",
-    "OfferRepository",
+    "barrier",
+    "counter",
+    "dict",
+    "function",
+    "gather",
+    "instance_info",
+    "is_head",
+    "lock",
     "plugins",
-    "containers",
-    "DockerImage",
-    "time",
+    "queue",
+    "set",
+    "shard",
+    "silent",
+    "stderr",
+    "stdout",
+    "stream",
 ]
+
+
+def __getattr__(name: str) -> object:
+    match name:
+        case "accelerators" | "plugins":
+            value = importlib.import_module(f"skyward.{name}")
+        case _ if name in RUNTIME:
+            value = getattr(importlib.import_module("skyward.runtime.api"), name)
+        case _ if name in SHARED:
+            value = getattr(importlib.import_module("skyward.distributed"), name)
+        case _ if name in __all__:
+            value = getattr(importlib.import_module("skyward.sdk"), name)
+        case _:
+            raise AttributeError(f"module 'skyward' has no attribute '{name}'")
+
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(__all__)

@@ -1,0 +1,4508 @@
+{
+  "components": {
+    "schemas": {
+      "Compute": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "generation": {
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "lease": {
+            "$ref": "#/components/schemas/Lease"
+          },
+          "name": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/ComputeSpec"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ComputeStatus"
+          }
+        },
+        "required": [
+          "created_at",
+          "generation",
+          "id",
+          "lease",
+          "name",
+          "revision",
+          "spec",
+          "status"
+        ],
+        "title": "Compute",
+        "type": "object"
+      },
+      "ComputeCreate": {
+        "properties": {
+          "name": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "spec": {
+            "$ref": "#/components/schemas/ComputeSpec"
+          }
+        },
+        "required": [
+          "spec"
+        ],
+        "title": "ComputeCreate",
+        "type": "object"
+      },
+      "ComputeSpec": {
+        "properties": {
+          "allocation": {
+            "default": "spot_if_available",
+            "enum": [
+              "spot",
+              "on_demand",
+              "spot_if_available",
+              "cheapest"
+            ],
+            "type": "string"
+          },
+          "delete_on_exit": {
+            "default": false,
+            "type": "boolean"
+          },
+          "desired": {
+            "default": "running",
+            "enum": [
+              "running",
+              "deleted"
+            ],
+            "type": "string"
+          },
+          "image": {
+            "$ref": "#/components/schemas/Image"
+          },
+          "nodes": {
+            "$ref": "#/components/schemas/NodeBounds"
+          },
+          "plugins": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PluginRef"
+            },
+            "type": "array"
+          },
+          "retry": {
+            "$ref": "#/components/schemas/RetryPolicy"
+          },
+          "selection": {
+            "default": "cheapest",
+            "enum": [
+              "cheapest",
+              "first"
+            ],
+            "type": "string"
+          },
+          "specs": {
+            "items": {
+              "$ref": "#/components/schemas/Spec"
+            },
+            "type": "array"
+          },
+          "worker": {
+            "$ref": "#/components/schemas/Worker"
+          }
+        },
+        "required": [
+          "nodes",
+          "specs"
+        ],
+        "title": "ComputeSpec",
+        "type": "object"
+      },
+      "ComputeSpecPatch": {
+        "properties": {
+          "nodes": {
+            "$ref": "#/components/schemas/NodeBounds"
+          }
+        },
+        "required": [
+          "nodes"
+        ],
+        "title": "ComputeSpecPatch",
+        "type": "object"
+      },
+      "ComputeStatus": {
+        "properties": {
+          "drift": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "last_error": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Error"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "nodes_ready": {
+            "type": "integer"
+          },
+          "nodes_total": {
+            "type": "integer"
+          },
+          "observed_generation": {
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "requested",
+              "provisioning",
+              "recovering",
+              "ready",
+              "degraded",
+              "deleting",
+              "deleted",
+              "failed"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "nodes_ready",
+          "nodes_total",
+          "observed_generation",
+          "state"
+        ],
+        "title": "ComputeStatus",
+        "type": "object"
+      },
+      "Error": {
+        "properties": {
+          "code": {
+            "enum": [
+              "not_found",
+              "revision_conflict",
+              "idempotency_conflict",
+              "lease_held",
+              "compute_not_accepting",
+              "unsupported_provider",
+              "unsupported_plugin",
+              "secret_in_definition",
+              "hash_mismatch",
+              "task_failed",
+              "task_indeterminate",
+              "duplication_not_acknowledged",
+              "capability_mismatch"
+            ],
+            "type": "string"
+          },
+          "details": {
+            "oneOf": [
+              {
+                "additionalProperties": {},
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "request_id": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "retryable"
+        ],
+        "title": "Error",
+        "type": "object"
+      },
+      "Execution": {
+        "properties": {
+          "error": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Error"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finished_at": {
+            "oneOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "node_id": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ordinal": {
+            "type": "integer"
+          },
+          "rank": {
+            "type": "integer"
+          },
+          "result_sha256": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retry_of": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "started_at": {
+            "oneOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "enum": [
+              "created",
+              "assigned",
+              "dispatching",
+              "accepted",
+              "started",
+              "cancel_requested",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "timed_out",
+              "indeterminate"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "ordinal",
+          "rank",
+          "state"
+        ],
+        "title": "Execution",
+        "type": "object"
+      },
+      "ExecutionCreate": {
+        "properties": {
+          "acknowledge_duplication": {
+            "default": false,
+            "type": "boolean"
+          },
+          "ranks": {
+            "oneOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [],
+        "title": "ExecutionCreate",
+        "type": "object"
+      },
+      "Function": {
+        "properties": {
+          "codec": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "name": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "codec",
+          "created_at",
+          "sha256",
+          "size_bytes"
+        ],
+        "title": "Function",
+        "type": "object"
+      },
+      "Generation": {
+        "properties": {
+          "applied": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "hash": {
+            "type": "string"
+          },
+          "number": {
+            "type": "integer"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/ComputeSpec"
+          }
+        },
+        "required": [
+          "applied",
+          "created_at",
+          "hash",
+          "number",
+          "spec"
+        ],
+        "title": "Generation",
+        "type": "object"
+      },
+      "GenerationCreate": {
+        "properties": {
+          "force": {
+            "default": false,
+            "type": "boolean"
+          },
+          "source": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [],
+        "title": "GenerationCreate",
+        "type": "object"
+      },
+      "Image": {
+        "properties": {
+          "base": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "packages": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "python": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [],
+        "title": "Image",
+        "type": "object"
+      },
+      "Lease": {
+        "properties": {
+          "expires_at": {
+            "oneOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "owner": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [],
+        "title": "Lease",
+        "type": "object"
+      },
+      "LeaseClaim": {
+        "properties": {
+          "owner": {
+            "type": "string"
+          },
+          "ttl_seconds": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "owner",
+          "ttl_seconds"
+        ],
+        "title": "LeaseClaim",
+        "type": "object"
+      },
+      "Node": {
+        "properties": {
+          "accelerator": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "address": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "compute_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "desired": {
+            "enum": [
+              "present",
+              "deleted"
+            ],
+            "type": "string"
+          },
+          "generation": {
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_error": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Error"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "price_per_hour": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_binding": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "rank": {
+            "type": "integer"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "requested",
+              "provisioning",
+              "connecting",
+              "bootstrapping",
+              "ready",
+              "draining",
+              "lost",
+              "deleting",
+              "deleted",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "terminated_at": {
+            "oneOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "compute_id",
+          "created_at",
+          "desired",
+          "generation",
+          "id",
+          "provider_binding",
+          "rank",
+          "revision",
+          "state"
+        ],
+        "title": "Node",
+        "type": "object"
+      },
+      "NodeBounds": {
+        "properties": {
+          "desired": {
+            "type": "integer"
+          },
+          "max": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "min": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "desired"
+        ],
+        "title": "NodeBounds",
+        "type": "object"
+      },
+      "Offer": {
+        "properties": {
+          "accelerator": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "accelerator_count": {
+            "type": "integer"
+          },
+          "available": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cpus": {
+            "type": "integer"
+          },
+          "disk_gb": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "fetched_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "instance_type": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "memory_gb": {
+            "type": "number"
+          },
+          "on_demand_price": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "price": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_id": {
+            "type": "string"
+          },
+          "provider_name": {
+            "type": "string"
+          },
+          "region": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "specific": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "spot_price": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "accelerator_count",
+          "cpus",
+          "expires_at",
+          "fetched_at",
+          "id",
+          "instance_type",
+          "kind",
+          "memory_gb",
+          "provider_id",
+          "provider_name"
+        ],
+        "title": "Offer",
+        "type": "object"
+      },
+      "Page_skyward.protocol.schemas.Compute_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Compute"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "Page[Compute]",
+        "type": "object"
+      },
+      "Page_skyward.protocol.schemas.Execution_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Execution"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "Page[Execution]",
+        "type": "object"
+      },
+      "Page_skyward.protocol.schemas.Function_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Function"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "Page[Function]",
+        "type": "object"
+      },
+      "Page_skyward.protocol.schemas.Generation_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Generation"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "Page[Generation]",
+        "type": "object"
+      },
+      "Page_skyward.protocol.schemas.Node_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Node"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "Page[Node]",
+        "type": "object"
+      },
+      "Page_skyward.protocol.schemas.Offer_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Offer"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "Page[Offer]",
+        "type": "object"
+      },
+      "Page_skyward.protocol.schemas.Provider_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Provider"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "Page[Provider]",
+        "type": "object"
+      },
+      "Page_skyward.protocol.schemas.Task_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Task"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "Page[Task]",
+        "type": "object"
+      },
+      "PluginRef": {
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "params": {
+            "additionalProperties": {},
+            "type": "object"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "PluginRef",
+        "type": "object"
+      },
+      "Provider": {
+        "properties": {
+          "config": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "last_error": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Error"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "offers_count": {
+            "default": 0,
+            "type": "integer"
+          },
+          "offers_fetched_at": {
+            "oneOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "offers_ttl_seconds": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "config",
+          "created_at",
+          "id",
+          "kind",
+          "name",
+          "offers_ttl_seconds"
+        ],
+        "title": "Provider",
+        "type": "object"
+      },
+      "ProviderCreate": {
+        "properties": {
+          "config": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "credentials": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "name"
+        ],
+        "title": "ProviderCreate",
+        "type": "object"
+      },
+      "ProviderKind": {
+        "properties": {
+          "credential_fields": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "offers_ttl_seconds": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "credential_fields",
+          "kind",
+          "offers_ttl_seconds"
+        ],
+        "title": "ProviderKind",
+        "type": "object"
+      },
+      "ProviderRef": {
+        "properties": {
+          "config": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "ProviderRef",
+        "type": "object"
+      },
+      "RetryPolicy": {
+        "default": {
+          "ambiguous_retries": 0,
+          "safe_retries": 3
+        },
+        "properties": {
+          "ambiguous_retries": {
+            "default": 0,
+            "type": "integer"
+          },
+          "safe_retries": {
+            "default": 3,
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "title": "RetryPolicy",
+        "type": "object"
+      },
+      "Spec": {
+        "properties": {
+          "accelerator": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "accelerator_count": {
+            "default": 1,
+            "type": "integer"
+          },
+          "cpus": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "memory_gb": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider": {
+            "$ref": "#/components/schemas/ProviderRef"
+          },
+          "region": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "provider"
+        ],
+        "title": "Spec",
+        "type": "object"
+      },
+      "Task": {
+        "properties": {
+          "args_sha256": {
+            "type": "string"
+          },
+          "compute_id": {
+            "type": "string"
+          },
+          "correlation_id": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "deadline_at": {
+            "oneOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dispatch": {
+            "enum": [
+              "one",
+              "all"
+            ],
+            "type": "string"
+          },
+          "executions": {
+            "items": {
+              "$ref": "#/components/schemas/Execution"
+            },
+            "type": "array"
+          },
+          "finished_at": {
+            "oneOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "function": {
+            "type": "string"
+          },
+          "generation": {
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "result_sha256": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retry": {
+            "$ref": "#/components/schemas/RetryPolicy"
+          },
+          "state": {
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "timed_out",
+              "indeterminate"
+            ],
+            "type": "string"
+          },
+          "submitted_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "args_sha256",
+          "compute_id",
+          "dispatch",
+          "executions",
+          "function",
+          "generation",
+          "id",
+          "retry",
+          "state",
+          "submitted_at"
+        ],
+        "title": "Task",
+        "type": "object"
+      },
+      "TaskCreate": {
+        "properties": {
+          "args_inline": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "args_sha256": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "compute": {
+            "type": "string"
+          },
+          "correlation_id": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dispatch": {
+            "enum": [
+              "one",
+              "all"
+            ],
+            "type": "string"
+          },
+          "function": {
+            "type": "string"
+          },
+          "rank": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retry": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RetryPolicy"
+              }
+            ]
+          },
+          "timeout_seconds": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "compute",
+          "dispatch",
+          "function"
+        ],
+        "title": "TaskCreate",
+        "type": "object"
+      },
+      "Worker": {
+        "default": {
+          "concurrency": null,
+          "executor": null
+        },
+        "properties": {
+          "concurrency": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "executor": {
+            "oneOf": [
+              {
+                "enum": [
+                  "thread",
+                  "process"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [],
+        "title": "Worker",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Two families of resource.\n\n**Declarative** (`compute`, `node`) carry `spec` (intent) and `status` (observation). `PATCH` only touches `spec`; `status` is written by the reconciler. There is no `operation` resource \u2014 `generation` vs `status.observed_generation` is the progress.\n\n**Imperative** (`task`) are append-only facts with one terminal outcome. `executions` are the physical attempts; retrying creates an execution, never a task, so a `Future` keeps a stable handle.",
+    "title": "Skyward Control Plane",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/blobs/{sha256}": {
+      "get": {
+        "deprecated": false,
+        "operationId": "V1BlobsSha256Download",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "sha256",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/vnd.skyward.blob": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Download a blob",
+        "tags": [
+          "blobs"
+        ]
+      },
+      "head": {
+        "deprecated": false,
+        "operationId": "V1BlobsSha256Exists",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "sha256",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Check existence",
+        "tags": [
+          "blobs"
+        ]
+      },
+      "put": {
+        "deprecated": false,
+        "description": "Small args go inline in `POST /tasks`. Above the threshold the SDK uploads here first and the task references the hash. Large results take the same path on the way back.",
+        "operationId": "V1BlobsSha256Upload",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "sha256",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "null"
+                }
+              }
+            },
+            "description": "Document created, URL follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Upload a content-addressed blob",
+        "tags": [
+          "blobs"
+        ]
+      }
+    },
+    "/v1/computes": {
+      "get": {
+        "deprecated": false,
+        "operationId": "V1ComputesList",
+        "parameters": [
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "type": "integer"
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "enum": [
+                    "requested",
+                    "provisioning",
+                    "recovering",
+                    "ready",
+                    "degraded",
+                    "deleting",
+                    "deleted",
+                    "failed"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "`false` lists orphans \u2014 computes with no live owner.",
+            "in": "query",
+            "name": "owned",
+            "required": false,
+            "schema": {
+              "description": "`false` lists orphans \u2014 computes with no live owner.",
+              "oneOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_skyward.protocol.schemas.Compute_"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "List computes",
+        "tags": [
+          "computes"
+        ]
+      },
+      "post": {
+        "deprecated": false,
+        "description": "Idempotent by `Idempotency-Key`: the same key with the same payload returns the original resource with `200`; with a different payload, `409 idempotency_conflict`.\n\nDoes not wait for readiness \u2014 returns `status.state: requested` and the client observes the resource or the event stream. There is no `operation` resource: `generation` vs `status.observed_generation` is the progress.",
+        "operationId": "V1ComputesCreate",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComputeCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Compute"
+                }
+              }
+            },
+            "description": "Document created, URL follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Create a compute",
+        "tags": [
+          "computes"
+        ]
+      }
+    },
+    "/v1/computes/{compute_id}": {
+      "delete": {
+        "deprecated": false,
+        "description": "Writes `spec.desired: deleted`. Not synchronous, and not a detach: reconciliation continues until the provider **confirms the resources are gone**, and only then does `status.state` become `deleted`.\n\nNo process shutdown ever issues this command.",
+        "operationId": "V1ComputesComputeIdDestroy",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "compute_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "deprecated": false,
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "deprecated": false,
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Compute"
+                }
+              }
+            },
+            "description": "Request accepted, processing continues off-line",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Mark a compute for destruction",
+        "tags": [
+          "computes"
+        ]
+      },
+      "get": {
+        "deprecated": false,
+        "description": "Accepts an id or a name. The response always carries both.",
+        "operationId": "V1ComputesComputeIdRead",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "compute_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Compute"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Read a compute",
+        "tags": [
+          "computes"
+        ]
+      },
+      "patch": {
+        "deprecated": false,
+        "description": "Only `spec.nodes` is mutable in place: it bumps `generation` and the reconciler resizes with drain.\n\nChanging immutable fields (provider, image, worker, plugins, volumes, ports) is **drift**: it is recorded in `status.drift`, the applied definition is kept, and no infrastructure is replaced. Replacing requires `POST /computes/{id}/generations`.",
+        "operationId": "V1ComputesComputeIdUpdate",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "compute_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "deprecated": false,
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComputeSpecPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Compute"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Change a compute's spec",
+        "tags": [
+          "computes"
+        ]
+      }
+    },
+    "/v1/computes/{compute_id}/generations": {
+      "get": {
+        "deprecated": false,
+        "operationId": "V1ComputesComputeIdGenerationsListGenerations",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "compute_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_skyward.protocol.schemas.Generation_"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "List definition history",
+        "tags": [
+          "computes"
+        ]
+      },
+      "post": {
+        "deprecated": false,
+        "description": "Replacing infrastructure *is* creating a new generation: quiesce, drain, destroy the old one, provision the new one \u2014 same `compute_id`.\n\nWithout `source`, applies the drift pending in `status.drift`. With `source`, rolls back to that generation.\n\n`force: true` marks unresolved tasks as `indeterminate` before replacing; `force: false` refuses while executions are still active.",
+        "operationId": "V1ComputesComputeIdGenerationsCreateGeneration",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "compute_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "deprecated": false,
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "deprecated": false,
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerationCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Generation"
+                }
+              }
+            },
+            "description": "Request accepted, processing continues off-line",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Create a generation (apply drift, or roll back)",
+        "tags": [
+          "computes"
+        ]
+      }
+    },
+    "/v1/computes/{compute_id}/generations/{number}": {
+      "get": {
+        "deprecated": false,
+        "operationId": "V1ComputesComputeIdGenerationsNumberGetGeneration",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "compute_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "number",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Generation"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Read a generation",
+        "tags": [
+          "computes"
+        ]
+      }
+    },
+    "/v1/computes/{compute_id}/lease": {
+      "delete": {
+        "deprecated": false,
+        "description": "Orderly detach: drops the claim without touching `spec.desired`. Destroys nothing.",
+        "operationId": "V1ComputesComputeIdLeaseReleaseLease",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "compute_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Request fulfilled, nothing follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Release ownership",
+        "tags": [
+          "computes"
+        ]
+      },
+      "put": {
+        "deprecated": false,
+        "description": "A compute has at most one live owner per generation; zero is legitimate and temporary (daemon restarting, script killed).\n\nClaiming requires the current lease to be expired or absent \u2014 it is a CAS. Renewing requires being the current owner. Losing renewals destroys nothing by itself: if `spec.delete_on_exit` is `true`, reconciliation tears the compute down; if `false`, it simply sits ownerless until something adopts it.",
+        "operationId": "V1ComputesComputeIdLeaseClaimLease",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "compute_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeaseClaim"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Lease"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Claim or renew ownership",
+        "tags": [
+          "computes"
+        ]
+      }
+    },
+    "/v1/computes/{compute_id}/nodes": {
+      "get": {
+        "deprecated": false,
+        "description": "Includes tombstones by default. A node that died stays listed, with its `provider_binding` intact, until the provider confirms termination \u2014 that is what stops an instance from going missing with nobody knowing.",
+        "operationId": "V1ComputesComputeIdNodesList",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "compute_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "include_terminal",
+            "required": false,
+            "schema": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "generation",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_skyward.protocol.schemas.Node_"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "List a compute's nodes",
+        "tags": [
+          "nodes"
+        ]
+      }
+    },
+    "/v1/computes/{compute_id}/nodes/{node_id}": {
+      "delete": {
+        "deprecated": false,
+        "description": "Nodes are not directly creatable \u2014 they come from reconciling `spec.nodes`. But a node can be condemned: `desired: deleted` blocks new assignments, waits for the executions it is known to hold, then destroys the instance.\n\nIf the compute still wants that capacity, the reconciler creates **another** node for the same `rank`, with a new `id`. The old node's tombstone remains.",
+        "operationId": "V1ComputesComputeIdNodesNodeIdDrain",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "compute_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "node_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "deprecated": false,
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Node"
+                }
+              }
+            },
+            "description": "Request accepted, processing continues off-line",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Drain and replace a node",
+        "tags": [
+          "nodes"
+        ]
+      },
+      "get": {
+        "deprecated": false,
+        "operationId": "V1ComputesComputeIdNodesNodeIdRead",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "compute_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "node_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Node"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Read a node",
+        "tags": [
+          "nodes"
+        ]
+      }
+    },
+    "/v1/events": {
+      "get": {
+        "deprecated": false,
+        "description": "Each event's `id:` is the **global sequence**, monotonic. `Last-Event-ID` replays from the event log; the snapshot and the cursor are captured in the same logical order, so there is no gap between reading state and subscribing.\n\nThere is no automatic event GC, so any valid cursor stays resumable.\n\nA slow consumer never blocks a commit: the adapter closes the connection when its local queue overflows and the client reconnects from its last id.\n\nTask stdout/stderr and node bootstrap output are events here. There is no `logs` resource with a second source of truth.",
+        "operationId": "V1EventsStream",
+        "parameters": [
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "compute",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "task",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "types",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "deprecated": false,
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Event stream (SSE)",
+        "tags": [
+          "events"
+        ]
+      }
+    },
+    "/v1/functions": {
+      "get": {
+        "deprecated": false,
+        "operationId": "V1FunctionsList",
+        "parameters": [
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_skyward.protocol.schemas.Function_"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "List registered functions",
+        "tags": [
+          "functions"
+        ]
+      }
+    },
+    "/v1/functions/{sha256}": {
+      "get": {
+        "deprecated": false,
+        "operationId": "V1FunctionsSha256Read",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "sha256",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Function"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Read a function's metadata",
+        "tags": [
+          "functions"
+        ]
+      },
+      "head": {
+        "deprecated": false,
+        "description": "The SDK calls this before uploading the blob. A function is uploaded **once**, no matter how many tasks call it \u2014 content-addressing is what makes `function` a cheap resource instead of a pickle repeated on every dispatch.",
+        "operationId": "V1FunctionsSha256Exists",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "sha256",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Check whether a function is already registered",
+        "tags": [
+          "functions"
+        ]
+      },
+      "put": {
+        "deprecated": false,
+        "description": "The body is the binary envelope (cloudpickle + compression). The server recomputes the hash over the serialized bytes before compression and rejects with `hash_mismatch` if it disagrees with the path.\n\nAccepting cloudpickle is accepting arbitrary code execution. In local single-user mode that is explicit: the caller is the user themselves.",
+        "operationId": "V1FunctionsSha256Register",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "sha256",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "deprecated": false,
+            "in": "header",
+            "name": "X-Skyward-Function-Name",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Function"
+                }
+              }
+            },
+            "description": "Document created, URL follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Register a function",
+        "tags": [
+          "functions"
+        ]
+      }
+    },
+    "/v1/health/dependencies": {
+      "get": {
+        "deprecated": false,
+        "description": "Providers, store and workers. An unavailable provider degrades a compute; it never fails liveness.",
+        "operationId": "V1HealthDependenciesDependencyHealth",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          }
+        },
+        "summary": "Dependency health",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/v1/health/live": {
+      "get": {
+        "deprecated": false,
+        "description": "The process answers. Says nothing about the store or about providers.",
+        "operationId": "V1HealthLiveLive",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          }
+        },
+        "summary": "Liveness",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/v1/health/ready": {
+      "get": {
+        "deprecated": false,
+        "description": "Schema, command writer and initial recovery are usable. Readiness opens once every persisted record has been classified \u2014 it does not wait for new provisioning to finish.",
+        "operationId": "V1HealthReadyReady",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          }
+        },
+        "summary": "Readiness",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/v1/offers": {
+      "get": {
+        "deprecated": false,
+        "description": "Served from the cache. Any provider whose offers have expired is refreshed first \u2014 the TTL belongs to the provider, because a marketplace bundle is gone in minutes while a fixed instance type is not.\n\nA refresh that fails does not empty the catalog: the stale rows are still served and the failure shows up as `last_error` on the provider. A provider being down degrades the answer; it does not erase it.",
+        "operationId": "V1OffersList",
+        "parameters": [
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "provider",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "accelerator",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "min_count",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "max_price",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Force a refetch even if the cache is still within its TTL.",
+            "in": "query",
+            "name": "refresh",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Force a refetch even if the cache is still within its TTL.",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_skyward.protocol.schemas.Offer_"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Query instance offers",
+        "tags": [
+          "offers"
+        ]
+      }
+    },
+    "/v1/provider-kinds": {
+      "get": {
+        "deprecated": false,
+        "description": "Capability negotiation happens here, before anything is created: each kind declares the credentials it needs and how long its offers stay fresh. A kind absent from this list cannot be registered.",
+        "operationId": "V1ProviderKindsList",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProviderKind"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          }
+        },
+        "summary": "List the provider kinds this build supports",
+        "tags": [
+          "providers"
+        ]
+      }
+    },
+    "/v1/providers": {
+      "get": {
+        "deprecated": false,
+        "operationId": "V1ProvidersList",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_skyward.protocol.schemas.Provider_"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          }
+        },
+        "summary": "List registered providers",
+        "tags": [
+          "providers"
+        ]
+      },
+      "post": {
+        "deprecated": false,
+        "description": "A provider is a named account, not a kind: two AWS accounts, two Vast keys and two regions can coexist, and a compute refers to the provider it wants by id or name.\n\nCredentials are validated against the kind's `credential_fields` before the row is written, and are never returned by any read path.",
+        "operationId": "V1ProvidersCreate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Provider"
+                }
+              }
+            },
+            "description": "Document created, URL follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Register a provider account",
+        "tags": [
+          "providers"
+        ]
+      }
+    },
+    "/v1/providers/{provider_id}": {
+      "delete": {
+        "deprecated": false,
+        "description": "Drops the account and its cached offers. Computes already running on it are not touched.",
+        "operationId": "V1ProvidersProviderIdDestroy",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "provider_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Request fulfilled, nothing follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Remove a provider",
+        "tags": [
+          "providers"
+        ]
+      },
+      "get": {
+        "deprecated": false,
+        "description": "Accepts an id or a name. Credentials are never included.",
+        "operationId": "V1ProvidersProviderIdRead",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "provider_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Provider"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Read a provider",
+        "tags": [
+          "providers"
+        ]
+      }
+    },
+    "/v1/tasks": {
+      "get": {
+        "deprecated": false,
+        "operationId": "V1TasksList",
+        "parameters": [
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "type": "integer"
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "compute",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "enum": [
+                    "queued",
+                    "running",
+                    "succeeded",
+                    "failed",
+                    "cancelled",
+                    "timed_out",
+                    "indeterminate"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Groups the tasks of an `&`/`gather`/`map`. A field, not a resource.",
+            "in": "query",
+            "name": "correlation_id",
+            "required": false,
+            "schema": {
+              "description": "Groups the tasks of an `&`/`gather`/`map`. A field, not a resource.",
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_skyward.protocol.schemas.Task_"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "List tasks",
+        "tags": [
+          "tasks"
+        ]
+      },
+      "post": {
+        "deprecated": false,
+        "description": "A task is **one call**: `function` + `args` \u2192 `result`. It is what the SDK's `Future[T]` points at, and its `id` survives retries and SDK restarts.\n\n`dispatch: one` (the `>>` operator) creates a single execution. `dispatch: all` (the `@` operator) freezes the set of `ready` nodes at admission and creates one execution per rank \u2014 a later scale-up does not add executions.\n\nThe task and its first execution are persisted **before** any dispatch to a worker. The worker dedupes on `(task_id, execution_id, args_hash)`.",
+        "operationId": "V1TasksSubmit",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            },
+            "description": "Document created, URL follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Submit a task",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/v1/tasks/{task_id}": {
+      "delete": {
+        "deprecated": false,
+        "description": "Before `started`, cancellation is guaranteed (CAS + worker ack). After `started` it is best-effort: the execution enters `cancel_requested` and only becomes `cancelled` once the worker confirms it stopped. Without that confirmation the outcome is `indeterminate` \u2014 Python code that may still be running is never declared cancelled.",
+        "operationId": "V1TasksTaskIdCancel",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "deprecated": false,
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            },
+            "description": "Request accepted, processing continues off-line",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Cancel a task",
+        "tags": [
+          "tasks"
+        ]
+      },
+      "get": {
+        "deprecated": false,
+        "description": "`state` is **derived** from the executions \u2014 never written alongside them.",
+        "operationId": "V1TasksTaskIdRead",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Read a task",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/v1/tasks/{task_id}/executions": {
+      "get": {
+        "deprecated": false,
+        "operationId": "V1TasksTaskIdExecutionsListExecutions",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_skyward.protocol.schemas.Execution_"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "List the physical attempts",
+        "tags": [
+          "tasks"
+        ]
+      },
+      "post": {
+        "deprecated": false,
+        "description": "Retrying **is** creating another physical attempt of the same task \u2014 the `task_id` stays the user's handle. The new execution points `retry_of` at the previous one.\n\nRetrying an `indeterminate` outcome requires `acknowledge_duplication: true`: the system does not know whether the previous execution had side effects, and will not pretend it does.",
+        "operationId": "V1TasksTaskIdExecutionsCreateExecution",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "deprecated": false,
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecutionCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            },
+            "description": "Request accepted, processing continues off-line",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Create an execution (retry)",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/v1/tasks/{task_id}/executions/{ordinal}": {
+      "get": {
+        "deprecated": false,
+        "operationId": "V1TasksTaskIdExecutionsOrdinalGetExecution",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "ordinal",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Execution"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Read one attempt",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
+    "/v1/tasks/{task_id}/result": {
+      "get": {
+        "deprecated": false,
+        "description": "The result survives controller and SDK restarts, and reading does not consume it \u2014 only an explicit purge removes it.\n\n`204` means there is no terminal outcome yet. A non-successful terminal outcome answers `409` with the error code (`task_failed`, `task_indeterminate`, ...).",
+        "operationId": "V1TasksTaskIdResultResult",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "wait",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/vnd.skyward.blob": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Download the result",
+        "tags": [
+          "tasks"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ]
+}
