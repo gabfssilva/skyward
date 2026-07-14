@@ -115,6 +115,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN"]
 "guides/**" = ["ANN"]
+"v2/skyward2/server/controllers/**" = ["B008"]
 
 [tool.pyright]
 pythonVersion = "3.12"
@@ -176,6 +177,10 @@ dev = [
     "cyclopts>=4.7",
     "openai>=2.43.0",
     "textual-dev>=1.8.0",
+]
+v2 = [
+    "litestar>=2.13",
+    "msgspec>=0.19",
 ]
 
 [tool.uv]
