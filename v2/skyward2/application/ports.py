@@ -19,6 +19,7 @@ from skyward2.protocol.schemas import (
     Offer,
     Page,
     Provider,
+    ProviderCreate,
     Task,
     TaskCreate,
     TaskState,
@@ -128,10 +129,34 @@ class Events(Protocol):
 
 
 @runtime_checkable
-class Catalog(Protocol):
-    async def providers(self) -> tuple[Provider, ...]: ...
+class Providers(Protocol):
+    async def create(self, body: ProviderCreate) -> Provider: ...
 
-    async def offers(self, provider: str | None, accelerator: str | None, min_count: int | None) -> tuple[Offer, ...]: ...
+    async def get(self, ref: str) -> Provider: ...
+
+    async def list(self) -> Page[Provider]: ...
+
+    async def delete(self, ref: str) -> None: ...
+
+
+@runtime_checkable
+class Offers(Protocol):
+    async def list(
+        self,
+        provider: str | None,
+        kind: str | None,
+        accelerator: str | None,
+        min_count: int | None,
+        max_price: float | None,
+        refresh: bool,
+    ) -> Page[Offer]:
+        """Serve from cache, refreshing whatever the provider's TTL says is stale.
+
+        A refresh that fails leaves the stale rows in place and records the error
+        on the provider: a provider that is down should degrade the answer, not
+        erase the catalog.
+        """
+        ...
 
 
 @runtime_checkable

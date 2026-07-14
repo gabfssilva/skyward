@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from litestar.testing import TestClient
+
 from skyward2.server.app import create_app
 
 HASH = "a" * 64

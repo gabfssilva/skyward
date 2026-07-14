@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from litestar import Litestar
 from litestar.di import Provide
@@ -11,12 +11,13 @@ from litestar.openapi.plugins import ScalarRenderPlugin
 from skyward2.application import mock, ports
 from skyward2.application.errors import SkywardError
 from skyward2.server.controllers.blobs import BlobController
-from skyward2.server.controllers.catalog import CatalogController
 from skyward2.server.controllers.computes import ComputeController
 from skyward2.server.controllers.events import EventController
 from skyward2.server.controllers.functions import FunctionController
 from skyward2.server.controllers.health import HealthController
 from skyward2.server.controllers.nodes import NodeController
+from skyward2.server.controllers.offers import OfferController
+from skyward2.server.controllers.providers import ProviderController, ProviderKindController
 from skyward2.server.controllers.tasks import TaskController
 from skyward2.server.emitter import ReconcilingEventEmitter
 from skyward2.server.exceptions import skyward_error_handler
@@ -35,7 +36,8 @@ class Services:
     tasks: ports.Tasks
     executions: ports.Executions
     events: ports.Events
-    catalog: ports.Catalog
+    providers: ports.Providers
+    offers: ports.Offers
     health: ports.Health
     reconciler: ports.Reconciler
 
@@ -50,10 +52,16 @@ def mock_services() -> Services:
         tasks=mock.MockTasks(),
         executions=mock.MockExecutions(),
         events=mock.MockEvents(),
-        catalog=mock.MockCatalog(),
+        providers=mock.MockProviders(),
+        offers=mock.MockOffers(),
         health=mock.MockHealth(),
         reconciler=mock.MockReconciler(),
     )
+
+
+def with_real(**overrides: object) -> Services:
+    """Mock everything that is not built yet, keep the real thing for what is."""
+    return replace(mock_services(), **overrides)
 
 
 def create_app(services: Services | None = None) -> Litestar:
@@ -92,7 +100,9 @@ def create_app(services: Services | None = None) -> Litestar:
             BlobController,
             TaskController,
             EventController,
-            CatalogController,
+            ProviderController,
+            ProviderKindController,
+            OfferController,
             HealthController,
         ],
         dependencies={
@@ -104,7 +114,8 @@ def create_app(services: Services | None = None) -> Litestar:
             "tasks": Provide(lambda: svc.tasks, sync_to_thread=False),
             "executions": Provide(lambda: svc.executions, sync_to_thread=False),
             "events": Provide(lambda: svc.events, sync_to_thread=False),
-            "catalog": Provide(lambda: svc.catalog, sync_to_thread=False),
+            "providers": Provide(lambda: svc.providers, sync_to_thread=False),
+            "offers": Provide(lambda: svc.offers, sync_to_thread=False),
             "health": Provide(lambda: svc.health, sync_to_thread=False),
         },
         listeners=build_listeners(svc.reconciler),

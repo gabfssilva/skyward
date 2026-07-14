@@ -24,6 +24,7 @@ from skyward2.protocol.schemas import (
     Offer,
     Page,
     Provider,
+    ProviderCreate,
     ProviderRef,
     RetryPolicy,
     Spec,
@@ -117,6 +118,37 @@ TASK = Task(
 )
 
 GENERATION = Generation(number=3, spec=SPEC, hash="d" * 64, created_at=NOW, applied=True)
+
+PROVIDER = Provider(
+    id="prv_0a1b2c3d4e5f",
+    name="vast-main",
+    kind="vastai",
+    config={"min_reliability": 0.95},
+    offers_ttl_seconds=120,
+    created_at=NOW,
+    offers_fetched_at=NOW,
+    offers_count=412,
+)
+
+OFFER = Offer(
+    id="12345678",
+    provider_id=PROVIDER.id,
+    provider_name=PROVIDER.name,
+    kind=PROVIDER.kind,
+    instance_type="RTX 4090",
+    accelerator="4090",
+    accelerator_count=2,
+    cpus=16,
+    memory_gb=64.0,
+    disk_gb=500.0,
+    region="US-CA",
+    spot_price=0.31,
+    on_demand_price=0.62,
+    available=2,
+    fetched_at=NOW,
+    expires_at=NOW,
+    specific={"machine_id": 9001, "reliability": 0.987},
+)
 
 
 class MockComputes:
@@ -232,38 +264,31 @@ class MockEvents:
         yield 3, "task.succeeded", b'{"task":"tsk_9d21f0"}'
 
 
-class MockCatalog:
-    async def providers(self) -> tuple[Provider, ...]:
-        return (
-            Provider(
-                kind="aws",
-                credentials_resolvable=True,
-                daemon_supported=True,
-                capabilities=("spot", "warm_images", "mounts", "ports", "tags", "lookup", "lease"),
-            ),
-            Provider(
-                kind="vastai",
-                credentials_resolvable=True,
-                daemon_supported=False,
-                capabilities=("spot", "ports"),
-            ),
-        )
+class MockProviders:
+    async def create(self, body: ProviderCreate) -> Provider:
+        return PROVIDER
 
-    async def offers(self, provider: str | None, accelerator: str | None, min_count: int | None) -> tuple[Offer, ...]:
-        return (
-            Offer(
-                provider="aws",
-                instance_type="p4d.24xlarge",
-                accelerator="a100",
-                accelerator_count=8,
-                cpus=96,
-                memory_gb=1152.0,
-                region="us-east-1",
-                price_per_hour=32.77,
-                spot=True,
-                available=3,
-            ),
-        )
+    async def get(self, ref: str) -> Provider:
+        return PROVIDER
+
+    async def list(self) -> Page[Provider]:
+        return Page(items=(PROVIDER,))
+
+    async def delete(self, ref: str) -> None:
+        return None
+
+
+class MockOffers:
+    async def list(
+        self,
+        provider: str | None,
+        kind: str | None,
+        accelerator: str | None,
+        min_count: int | None,
+        max_price: float | None,
+        refresh: bool,
+    ) -> Page[Offer]:
+        return Page(items=(OFFER,))
 
 
 class MockReconciler:

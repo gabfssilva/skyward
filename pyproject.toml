@@ -112,9 +112,13 @@ ignore = [
     "N802",    # Allow PascalCase for constructor-style functions
 ]
 
+[tool.ruff.lint.isort]
+known-first-party = ["skyward", "skyward2"]
+
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN"]
 "guides/**" = ["ANN"]
+"v2/tests/**" = ["ANN"]
 "v2/skyward2/server/controllers/**" = ["B008"]
 
 [tool.pyright]
@@ -181,6 +185,7 @@ dev = [
 v2 = [
     "litestar>=2.13",
     "msgspec>=0.19",
+    "piccolo[sqlite]>=1.0",
 ]
 
 [tool.uv]

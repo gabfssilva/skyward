@@ -267,21 +267,46 @@ class Page[T](Struct, frozen=True):
     next_cursor: str | None = None
 
 
-class Provider(Struct, frozen=True):
+class ProviderKind(Struct, frozen=True):
     kind: str
-    credentials_resolvable: bool
-    daemon_supported: bool
-    capabilities: tuple[str, ...]
+    credential_fields: tuple[str, ...]
+    offers_ttl_seconds: int
+
+
+class ProviderCreate(Struct, frozen=True):
+    name: str
+    kind: str
+    credentials: dict[str, str] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
+
+
+class Provider(Struct, frozen=True):
+    id: str
+    name: str
+    kind: str
+    config: dict[str, Any]
+    offers_ttl_seconds: int
+    created_at: datetime
+    offers_fetched_at: datetime | None = None
+    offers_count: int = 0
+    last_error: Error | None = None
 
 
 class Offer(Struct, frozen=True):
-    provider: str
+    id: str
+    provider_id: str
+    provider_name: str
+    kind: str
     instance_type: str
     accelerator_count: int
     cpus: int
     memory_gb: float
-    region: str
-    price_per_hour: float
-    spot: bool
+    fetched_at: datetime
+    expires_at: datetime
     accelerator: str | None = None
+    region: str | None = None
+    disk_gb: float | None = None
+    spot_price: float | None = None
+    on_demand_price: float | None = None
     available: int | None = None
+    specific: dict[str, Any] = field(default_factory=dict)
