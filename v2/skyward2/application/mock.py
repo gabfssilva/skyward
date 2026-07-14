@@ -299,19 +299,27 @@ class MockReconciler:
     async def compute(self, compute_id: str) -> None:
         self.reconciled.append(f"compute:{compute_id}")
 
-    async def task(self, task_id: str) -> None:
-        self.reconciled.append(f"task:{task_id}")
-
-    async def stream(self, task_id: str) -> AsyncIterator[bytes]:
-        self.reconciled.append(f"stream:{task_id}")
-        return
-        yield b""
-
     async def observed(self, compute_id: str, node_id: str, state: str, error: str) -> None:
         self.reconciled.append(f"node:{node_id}:{state}")
 
     async def unsettled(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
         return (), ()
+
+
+class MockDispatcher:
+    def __init__(self) -> None:
+        self.dispatched: list[str] = []
+
+    async def task(self, task_id: str) -> None:
+        self.dispatched.append(f"task:{task_id}")
+
+    async def resume(self, compute_id: str) -> None:
+        self.dispatched.append(f"resume:{compute_id}")
+
+    async def stream(self, task_id: str) -> AsyncIterator[bytes]:
+        self.dispatched.append(f"stream:{task_id}")
+        return
+        yield b""
 
 
 class MockHealth:

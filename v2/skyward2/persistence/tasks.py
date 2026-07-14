@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import timedelta
 from typing import Any
 
@@ -234,6 +234,52 @@ class TaskStore:
         """Tasks that have not reached a verdict — what the sweep re-offers."""
         rows = await TaskRow.select(TaskRow.id).where(TaskRow.state.is_in(["queued", "running"]))
         return tuple(row["id"] for row in rows)
+
+    async def load(self, compute: str) -> int:
+        """How many attempts this compute still owes an answer for.
+
+        Queued and running together, because they are the same demand seen a moment
+        apart: sizing the pool to what is running would size it to what the pool can
+        already do, and a queue would never be a reason to grow.
+        """
+        return len(await self._pending(compute))
+
+    async def busy(self, compute: str) -> tuple[Counter[str], frozenset[int]]:
+        """How much each node is holding, and which ranks are spoken for.
+
+        Two different claims. The count is what the dispatcher reads before placing
+        anything — a node with every slot taken gets nothing more, which is the only
+        reason a queue exists at all, and a queue is the only thing the reconciler
+        can read as pressure. Placing eagerly onto a busy node would drain the queue
+        into a mailbox nobody can see, and the pool would never grow.
+
+        The ranks are the broadcast's: it froze them when it was admitted, and rank 3
+        is owed an execution even if nothing has been placed on it yet. Kill the node
+        that is rank 3 and the broadcast waits for a machine that is never coming back.
+        """
+        pending = await self._pending(compute)
+        return (
+            Counter(row["node_id"] for row in pending if row["node_id"]),
+            frozenset(row["rank"] for row in pending),
+        )
+
+    async def waiting(self, compute: str) -> tuple[str, ...]:
+        """Tasks of this compute that have not reached a verdict."""
+        rows = await TaskRow.select(TaskRow.id).where(
+            (TaskRow.compute_id == compute) & TaskRow.state.is_in(["queued", "running"]),
+        )
+        return tuple(row["id"] for row in rows)
+
+    async def _pending(self, compute: str) -> list[dict[str, Any]]:
+        tasks = await TaskRow.select(TaskRow.id).where(
+            (TaskRow.compute_id == compute) & TaskRow.state.is_in(["queued", "running"]),
+        )
+        if not (ids := [row["id"] for row in tasks]):
+            return []
+
+        return await ExecutionRow.select(ExecutionRow.node_id, ExecutionRow.rank).where(
+            ExecutionRow.task_id.is_in(ids) & ExecutionRow.state.is_in(list(PENDING)),
+        )
 
     async def _row(self, task_id: str) -> TaskRow:
         row = await TaskRow.objects().where(TaskRow.id == task_id).first()

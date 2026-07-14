@@ -205,6 +205,8 @@ class Node(Struct, frozen=True):
     state: NodeState
     provider_binding: dict[str, Any]
     created_at: datetime
+    machine: str | None = None
+    """The provider's name for the machine, once it has one. A ``requested`` node has none."""
     address: str | None = None
     accelerator: str | None = None
     price_per_hour: float | None = None

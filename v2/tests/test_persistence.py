@@ -70,7 +70,8 @@ async def compute(store: Stores) -> str:
 
 
 async def ready_node(store: Stores, compute: str, rank: int) -> str:
-    node = await store.nodes.adopt(compute, generation=1, rank=rank, machine=Machine(id=f"i-{rank}", state="running"))
+    node = await store.nodes.request(compute, generation=1)
+    await store.nodes.launched(node.id, Machine(id=f"i-{rank}", state="running", host=f"10.0.0.{rank}"))
     await store.nodes.observe(node.id, "ready")
     return node.id
 
@@ -127,18 +128,52 @@ async def test_two_daemons_cannot_own_one_compute(store: Stores, compute: str):
     assert taken.owner == "ctl_2", "a released compute is free, and zero owners is a legitimate state"
 
 
-async def test_a_machine_found_but_never_recorded_is_adopted(store: Stores, compute: str):
-    """The crash the whole contract is shaped around: launched, then dead before the commit."""
-    await store.nodes.adopt(compute, generation=1, rank=0, machine=Machine(id="i-orphan", state="running"))
+async def test_the_row_exists_before_the_machine_does(store: Stores, compute: str):
+    """What makes the loop idempotent, and the crash the whole contract is shaped around.
 
-    known = await store.nodes.machines(compute)
-    assert "i-orphan" in known, "the provider's name for the machine is what a reconcile joins on"
+    A node being bought right now is a row that already counts, so the pass that runs
+    while it boots does not buy a second one. And a create that succeeded on a process
+    that died before recording the id leaves this row exactly as it is — no machine,
+    visible, countable — rather than a machine nobody will ever find.
+    """
+    node = await store.nodes.request(compute, generation=1)
 
-    node = await store.nodes.get(compute, known["i-orphan"])
-    assert node.provider_binding["machine_id"] == "i-orphan"
+    assert node.state == "requested"
+    assert node.machine is None, "we asked for it; nobody has bought it yet"
+
+    await store.nodes.launched(node.id, Machine(id="i-orphan", state="running", host="10.0.0.1"))
+    bought = await store.nodes.get(compute, node.id)
+
+    assert bought.state == "provisioning"
+    assert bought.machine == "i-orphan", "the provider's name for it, on the row that asked for it"
 
 
-async def test_a_dead_node_is_stamped_once(store: Stores, compute: str):
+async def test_ranks_are_dense_and_a_lost_one_is_given_back(store: Stores, compute: str):
+    """Workers are handed the peer list and their own index into it.
+
+    Which is only meaningful if the indices are dense. A compute that lost node 1 and
+    replaced it must get rank 1 back — a list with a hole in it, indexed, points at
+    somebody else's machine.
+    """
+    first = await ready_node(store, compute, rank=0)
+    second = await ready_node(store, compute, rank=1)
+    third = await ready_node(store, compute, rank=2)
+
+    assert [(await store.nodes.get(compute, node)).rank for node in (first, second, third)] == [0, 1, 2]
+
+    await store.nodes.observe(second, "deleted")
+    replacement = await store.nodes.request(compute, generation=1)
+
+    assert replacement.rank == 1, "the hole is filled, not skipped"
+
+
+async def test_a_lost_node_is_not_finished_with(store: Stores, compute: str):
+    """Lost is not terminal: somebody still owes the provider a terminate.
+
+    A machine that vanished from under us may be gone, or may be a network partition
+    with an instance still billing on the other side of it. The row stays alive until
+    a terminate has been sent for it, and only then is it stamped.
+    """
     node = await ready_node(store, compute, rank=0)
 
     await store.nodes.observe(node, "lost", Error(code="not_found", message="vanished", retryable=True))
@@ -146,10 +181,15 @@ async def test_a_dead_node_is_stamped_once(store: Stores, compute: str):
 
     assert lost.state == "lost"
     assert lost.last_error and lost.last_error.message == "vanished"
-    assert lost.terminated_at
+    assert lost.terminated_at is None, "nothing has been given back yet"
 
     await store.nodes.observe(node, "deleted")
-    assert (await store.nodes.get(compute, node)).terminated_at == lost.terminated_at, "the moment it died does not move"
+    gone = await store.nodes.get(compute, node)
+    assert gone.terminated_at
+
+    await store.nodes.observe(node, "deleted")
+    stamp = (await store.nodes.get(compute, node)).terminated_at
+    assert stamp == gone.terminated_at, "terminating twice is allowed; moving the moment it ended is not"
 
     live = await store.nodes.list(compute, include_terminal=False, generation=None)
     assert not live.items

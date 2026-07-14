@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from skyward2.application.reconciler import _buys, _cheapest
+from skyward2.application.market import _buys, _cheapest
 from skyward2.protocol.schemas import Allocation, Market, Offer
 
 NOW = datetime.now(UTC)

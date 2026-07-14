@@ -119,17 +119,22 @@ class GenerationRow(Table, tablename="generations"):
 class NodeRow(Table, tablename="nodes"):
     """One machine, as the control plane knows it.
 
-    ``machine_id`` is the provider's name for it, and it is a column rather than a
-    key in ``provider_binding`` because it is what a reconcile joins on: the
-    provider is asked what machines exist, and the answer has to be matched
-    against what the store believes. A machine the provider reports and the store
-    has never heard of is one we created moments before crashing — adopting it is
-    only possible if that join is cheap.
+    The row exists before the machine does. It is written in ``requested`` with no
+    ``machine_id`` at all, and that is what makes the loop idempotent: a node being
+    provisioned right now is a row that already counts, so the next pass does not
+    buy a second one. The provider is asked to create a machine *for this row*, and
+    the id it answers with is written back here.
+
+    Which leaves exactly one gap, and it is the one every payment gateway has: a
+    crash between the provider creating the machine and us recording its id. The
+    row is still ``requested``, the machine is real, and nothing points at it. That
+    machine is found by listing the binding and matched against the rows that claim
+    no machine — which is what ``machine_id`` being indexed and nullable is for.
     """
 
     id = Varchar(primary_key=True)
     compute_id = Varchar(index=True)
-    machine_id = Varchar(index=True)
+    machine_id = Varchar(index=True, null=True, default=None)
     generation = Integer()
     rank = Integer()
     revision = Integer(default=1)

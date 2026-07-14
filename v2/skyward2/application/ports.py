@@ -163,25 +163,17 @@ class Offers(Protocol):
 
 @runtime_checkable
 class Reconciler(Protocol):
-    """Closes the gap between intent and observation.
+    """Decides how many machines a compute should have, and writes that down.
 
-    Called with a key, never with a payload: that is what lets the emitter
-    coalesce N wakeups for the same compute into one run. The reconciler reads
-    the current state itself, so a lost event costs latency, not correctness —
-    the periodic sweep finds the same work.
+    Called with a key, never with a payload: that is what lets the emitter coalesce
+    N wakeups for the same compute into one pass. It reads the current state itself,
+    so a lost event costs latency, not correctness — the tick finds the same work.
+
+    It writes rows and nothing else. Buying the machines, logging into them and
+    placing work on them are three other things, and they react to what it wrote.
     """
 
     async def compute(self, compute_id: str) -> None: ...
-
-    async def task(self, task_id: str) -> None: ...
-
-    def stream(self, task_id: str) -> AsyncIterator[bytes]:
-        """Dispatch a streaming task and forward its frames to whoever is reading.
-
-        The one dispatch the reconciler does not do on its own: a stream has a far
-        end, and only the caller consuming it can hold that.
-        """
-        ...
 
     async def observed(self, compute_id: str, node_id: str, state: NodeState, error: str) -> None:
         """What a node's own lifecycle reported about it.
@@ -194,6 +186,25 @@ class Reconciler(Protocol):
 
     async def unsettled(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Computes and tasks whose intent has not been realized yet."""
+        ...
+
+
+@runtime_checkable
+class Dispatcher(Protocol):
+    """Puts one written-down attempt on one machine, and brings its answer back."""
+
+    async def task(self, task_id: str) -> None: ...
+
+    async def resume(self, compute_id: str) -> None:
+        """Offer the queue a slot that just came free, or a machine that just arrived."""
+        ...
+
+    def stream(self, task_id: str) -> AsyncIterator[bytes]:
+        """Dispatch a streaming task and forward its frames to whoever is reading.
+
+        The one dispatch nothing does on its own: a stream has a far end, and only
+        the caller consuming it can hold that.
+        """
         ...
 
 

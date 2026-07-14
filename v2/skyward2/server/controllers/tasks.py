@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
-from litestar import Controller, Response, delete, get, post
+from litestar import Controller, MediaType, Response, delete, get, post
 from litestar.params import Parameter
 from litestar.response import Stream
 
@@ -114,8 +114,17 @@ class TaskController(Controller):
         ),
     )
     async def result(self, task_id: str, tasks: ports.Tasks, wait: int = 0) -> Response[bytes | None]:
-        blob = await tasks.result(task_id, wait)
-        return Response(blob, status_code=200 if blob is not None else 204, media_type=BLOB)
+        """A body, or nothing at all.
+
+        The empty answer carries no media type, because there is no media: a 204 with
+        a content type is a promise of a body that is not there, and Litestar is right
+        to refuse to render it. The caller asks again — a task outlives any one poll,
+        and running out of patience is not an outcome.
+        """
+        if (blob := await tasks.result(task_id, wait)) is None:
+            return Response(b"", status_code=204, media_type=MediaType.TEXT)
+
+        return Response(blob, status_code=200, media_type=BLOB)
 
     @get(
         "/{task_id:str}/stream",
@@ -123,7 +132,7 @@ class TaskController(Controller):
         summary="Read a streaming task",
         description=(
             "For a task submitted with `dispatch: stream` — a generator on the far side. **This request is the "
-            "dispatch**: the reconciler does not start a streaming task, because the only process that can hold the "
+            "dispatch**: nothing starts a streaming task on its own, because the only process that can hold the "
             "far end of a stream is the one consuming it.\n\n"
             "Length-prefixed msgpack frames: 4 bytes big-endian, then the frame. A frame is an item or a failure, and "
             "a failure is the last one — by the time a generator raises, the caller already has the items before it, "
@@ -131,8 +140,8 @@ class TaskController(Controller):
             "Not resumable. A dropped stream is a dead stream; submit another task."
         ),
     )
-    async def stream(self, task_id: str, reconciler: ports.Reconciler) -> Stream:
-        return Stream(framed(reconciler.stream(task_id)), media_type=FRAMES)
+    async def stream(self, task_id: str, dispatcher: ports.Dispatcher) -> Stream:
+        return Stream(framed(dispatcher.stream(task_id)), media_type=FRAMES)
 
     @get("/{task_id:str}/executions", summary="List the physical attempts")
     async def list_executions(self, task_id: str, executions: ports.Executions) -> Page[Execution]:

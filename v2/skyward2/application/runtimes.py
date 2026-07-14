@@ -32,6 +32,15 @@ type Listener = Callable[[str, str, NodeState, str | None], None]
 type Output = Callable[[str, str, str, str | None], None]
 """(compute, node, content, task)"""
 
+CALL_TIMEOUT = 86_400.0
+"""A day. Long enough not to be a limit, short enough to eventually give up.
+
+A call to a worker carries the user's function, and the user's function is what the
+machine was rented for. The thing that ends a task early is its own deadline, which
+the user set and the store knows about; this is only the point past which a reply is
+never coming.
+"""
+
 
 def keypair() -> tuple[str, str]:
     """A key for one compute, and only for it.
@@ -83,6 +92,13 @@ class Runtime:
         every address they hand out is rewritten to the local port that tunnels to
         it. The dict is live — a node that becomes ready after the client
         connected is reachable through the same map.
+
+        The call timeout is the user's function, not a protocol round trip. Casty
+        defaults it to ten seconds, which is right for asking an actor a question and
+        wrong for the thing this cluster exists to do: a call here *is* the training
+        run, and it is allowed to take as long as one takes. Whether it has taken too
+        long is the task's own deadline to answer, and a node that has actually died
+        is reported by the membership protocol, which has its own much shorter clock.
         """
         async with self._connecting:
             if self._system is None:
@@ -93,6 +109,7 @@ class Runtime:
                 self._refresh()
                 self._system = await casty.connect(
                     seeds,
+                    config=casty.Config(call_timeout=CALL_TIMEOUT),
                     address_map=lambda addr: self._tunnels.get(addr, addr),
                     cluster_name=self.compute,
                 )

@@ -29,9 +29,16 @@ class Plugin(Struct, frozen=True):
     ----------
     kind : str
         Its name on the wire, and how it is found again on the node.
+    collective : bool
+        Whether the plugin makes the nodes depend on each other. A collective
+        freezes the world when the last rank joins it, so a compute running one
+        cannot be resized: taking a rank away does not shrink the job, it hangs it
+        at the next all-reduce on a peer that is never going to answer. The
+        reconciler reads this and refuses to scale such a compute at all.
     """
 
     kind: ClassVar[str]
+    collective: ClassVar[bool] = False
 
     def image(self, image: Image) -> Image:
         """What the machine needs installed before the plugin can run at all.

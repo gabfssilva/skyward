@@ -1,59 +1,58 @@
-"""Closing the gap between what was asked for and what is there.
+"""How many machines there should be, and nothing else.
 
-Called with a key and never with a payload. That is what lets the emitter collapse
-a burst of wakeups for one compute into a single run, and it is why a lost event
-costs latency rather than correctness: the reconciler reads the world itself, and
-the sweep will hand it the same key again.
+It counts what it wanted and counts what it has, and writes down the difference.
+It does not buy machines, log into them, or place work on them — it writes rows,
+and the rows are what somebody else reacts to. That is the entire job, and it is
+why it fits on a page.
 
-Everything here is therefore written to be run at any moment, from any state,
-twice. The provider is asked what machines exist rather than told; a machine
-nobody wrote down is adopted; a node in flight is skipped rather than started
-again.
+Two properties fall out of it being written this way, and both are the reason it
+exists. It can be run at any moment, from any state, twice: it reads the world
+rather than remembering it, so a pass that died halfway is just a pass that will be
+run again. And a machine already on its way up counts as a machine — the row exists
+before the provider is called — so the pass that runs while a node is booting does
+not buy a second one.
+
+The tick is also the safety net under the events. An event is a wakeup, not a unit
+of work: if one is lost — a crash between the write and the emit, a listener that
+died, a restart — the intent is still in the store, and the next pass re-offers it
+to whoever was supposed to act on it. That is what buys the right to skip an outbox.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable
-from typing import NamedTuple
+from collections.abc import Callable
+from math import ceil
+from time import monotonic
 
 import msgspec
 
 from skyward2 import plugins
-from skyward2.application.errors import CapabilityMismatchError, ComputeNotAcceptingError, NotFoundError
-from skyward2.application.provider import Binding, Machine, Provider
-from skyward2.application.runtimes import Runtime, Runtimes, keypair
-from skyward2.persistence.computes import ComputeStore, GenerationStore, Infrastructure
+from skyward2.application.errors import NotFoundError
+from skyward2.application.machines import Machines
+from skyward2.persistence.computes import ComputeStore, GenerationStore
 from skyward2.persistence.events import EventStore
-from skyward2.persistence.functions import BlobStore
-from skyward2.persistence.nodes import NodeStore
-from skyward2.persistence.offers import OfferCache
-from skyward2.persistence.providers import ProviderStore
+from skyward2.persistence.nodes import LIVE, NodeStore
 from skyward2.persistence.tasks import TaskStore
 from skyward2.protocol import codec
-from skyward2.protocol.frames import Chunk, Done, End, Failed, Outcome, Step
-from skyward2.protocol.schemas import (
-    Allocation,
-    Compute,
-    ComputeSpec,
-    ComputeStatus,
-    Error,
-    Execution,
-    Market,
-    Node,
-    NodeState,
-    Offer,
-    Task,
-)
-from skyward2.runtime import worker
-from skyward2.runtime.source import resolve
+from skyward2.protocol.schemas import Compute, ComputeSpec, ComputeStatus, Error, Node, NodeState
 
 logger = logging.getLogger(__name__)
 
 type Wake = Callable[..., None]
 
-DEAD = ("lost", "failed", "deleted")
+IDLE_SECONDS = 30.0
+"""How long a node must have had nothing to do before it is taken away.
+
+Booting a machine costs minutes and most providers bill the hour they started. A pool
+that shrank the instant a burst ended would kill the machines it had just paid to
+boot, and buy them again on the next burst.
+
+Seconds, and not passes: a pass runs whenever anything happens, so a compute in the
+middle of a busy moment would run through a pass-counted delay in milliseconds and
+call it patience.
+"""
 
 
 class Wakeup:
@@ -82,119 +81,37 @@ class Reconciler:
         generations: GenerationStore,
         nodes: NodeStore,
         tasks: TaskStore,
-        blobs: BlobStore,
-        providers: ProviderStore,
-        offers: OfferCache,
+        machines: Machines,
         events: EventStore,
-        runtimes: Runtimes,
         wake: Wakeup,
     ) -> None:
         self._computes = computes
         self._generations = generations
         self._nodes = nodes
         self._tasks = tasks
-        self._blobs = blobs
-        self._providers = providers
-        self._offers = offers
+        self._machines = machines
         self._events = events
-        self._runtimes = runtimes
         self._wake = wake
         self._locks: dict[str, asyncio.Lock] = {}
+        self._idle: dict[str, float] = {}
+        """When each node last had nothing to do. Absent means it is doing something."""
 
     async def compute(self, compute_id: str) -> None:
         async with self._lock(compute_id):
             try:
-                await self._reconcile(await self._computes.get(compute_id))
+                await self._pass(await self._computes.get(compute_id))
             except NotFoundError:
-                await self._runtimes.close(compute_id)
+                pass
             except Exception as exc:
                 logger.exception("reconcile failed for %s", compute_id)
                 await self._degrade(compute_id, exc)
 
-    async def task(self, task_id: str) -> None:
-        task = await self._tasks.get(task_id)
-        if task.state not in ("queued", "running") or task.dispatch == "stream":
-            return
-
-        runtime = self._runtimes.of(task.compute_id)
-        if runtime is None or not runtime.ready:
-            return
-
-        for execution in task.executions:
-            if execution.state == "created" and execution.id not in runtime.dispatched:
-                await self._dispatch(task, execution, runtime)
-
-    async def stream(self, task_id: str) -> AsyncIterator[bytes]:
-        """A streaming task, dispatched by the caller who is reading it.
-
-        The reconciler will not start one. A stream has a far end, and the only
-        process that can hold it is the one consuming it — dispatching it from a
-        background pass would produce items with nowhere to go, and the sweep would
-        do it again after every restart.
-
-        So the request is the dispatch: it places the execution, opens the generator
-        on the worker and pulls it, one item per item the reader takes. Nothing is
-        produced ahead of the reader, and a reader that goes away closes the
-        generator on the machine rather than leaving it running for nobody.
-
-        The closing is shielded because it is the cancellation that usually triggers
-        it: a caller who abandoned the stream cancels this coroutine, and an
-        unshielded ``await`` in the unwinding would be cancelled on the spot — which
-        is precisely how a generator gets left running on a machine somebody is still
-        paying for.
-        """
-        task = await self._tasks.get(task_id)
-        runtime = self._runtimes.of(task.compute_id)
-        if runtime is None or not runtime.ready:
-            raise ComputeNotAcceptingError(f"compute {task.compute_id} has no ready node to stream from")
-
-        execution = task.executions[0]
-        node_id = runtime.ready[execution.ordinal % len(runtime.ready)]
-
-        code = await self._blobs.get(task.function)
-        args = await self._blobs.get(task.args_sha256)
-
-        member = await runtime.member(node_id)
-        system = await runtime.system()
-        node = system.service(worker.Worker, at=member)
-
-        await self._tasks.observe(execution.id, "started", node_id=node_id)
-        await self._record("task.started", task.compute_id, task=task.id)
-
-        failure: Error | None = None
-        try:
-            await node.open(execution.id, code, args)
-            while True:
-                frame = await node.step(execution.id)
-                match msgspec.msgpack.decode(frame, type=Step):
-                    case End():
-                        break
-                    case Failed(error=error, traceback=trace):
-                        failure = Error(code="task_failed", message=error, retryable=False, details={"traceback": trace})
-                        yield frame
-                        break
-                    case Chunk():
-                        yield frame
-        except Exception as exc:
-            await self._lost(task, execution, exc)
-            return
-        finally:
-            await asyncio.shield(node.close(execution.id))
-
-        if failure:
-            await self._tasks.observe(execution.id, "failed", error=failure)
-            await self._record("task.failed", task.compute_id, task=task.id)
-        else:
-            await self._tasks.observe(execution.id, "succeeded")
-            await self._record("task.succeeded", task.compute_id, task=task.id)
-
     async def observed(self, compute_id: str, node_id: str, state: NodeState, error: str) -> None:
         """What the node's own lifecycle reported, and what follows from it.
 
-        The only thing the reconciler is told rather than reads. No query can
-        answer whether the SSH connection this process is holding got as far as a
-        running worker — only the process holding it knows, and this is how it
-        says so.
+        The only thing the reconciler is told rather than reads. No query can answer
+        whether the SSH connection this process is holding got as far as a running
+        worker — only the process holding it knows, and this is how it says so.
         """
         await self._nodes.observe(
             node_id,
@@ -204,237 +121,149 @@ class Reconciler:
         await self._record(f"node.{state}", compute_id, node=node_id, error=error)
         await self.compute(compute_id)
 
+        if state == "ready":
+            self._wake("compute.dispatch", compute_id=compute_id)
+
     async def unsettled(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
         return await self._computes.live(), await self._tasks.unsettled()
 
-    async def _reconcile(self, compute: Compute) -> None:
-        """One pass: observe, adopt, close the deficit, close the surplus, report.
-
-        The order matters. Observation comes first because the provider is the only
-        authority on what exists; adoption comes before the deficit because a
-        machine we forgot is a machine we must not buy twice.
-        """
+    async def _pass(self, compute: Compute) -> None:
         if compute.status.state == "deleted":
             return
 
-        infrastructure = await self._computes.infrastructure(compute.id)
-        if not infrastructure.provider_id:
-            if compute.spec.desired == "deleted":
-                await self._settle(compute, deleted=True)
-                return
-            infrastructure = await self._provision(compute)
+        await self._machines.resolve(compute, await self._nodes.of(compute.id))
 
-        adapter = await self._adapter(infrastructure.provider_id)
-        observed = await adapter.machines(infrastructure.binding)
-        known = {node.provider_binding["machine_id"]: node for node in await self._nodes.of(compute.id)}
+        nodes = await self._nodes.of(compute.id)
+        desired = await self._desired(compute)
+        alive = [node for node in nodes if node.state in LIVE]
 
-        for machine_id, machine in observed.items():
-            if machine_id not in known:
-                node = await self._nodes.adopt(compute.id, compute.generation, len(known), machine)
-                known[machine_id] = node
-                await self._record("node.adopted", compute.id, node=node.id)
+        for _ in range(desired - len(alive)):
+            node = await self._nodes.request(compute.id, compute.generation)
+            await self._announce("requested", compute.id, node.id)
 
-        for machine_id, node in known.items():
-            if machine_id not in observed and node.state not in DEAD:
-                await self._nodes.observe(node.id, "lost", Error(code="not_found", message="the provider no longer has it", retryable=True))
-                await self._record("node.lost", compute.id, node=node.id)
+        for node in await self._surplus(compute, alive, len(alive) - desired):
+            await self._nodes.observe(node.id, "draining")
+            await self._announce("draining", compute.id, node.id)
 
-        alive = {machine_id: node for machine_id, node in known.items() if machine_id in observed}
-        wanted = 0 if compute.spec.desired == "deleted" else compute.spec.nodes.desired
+        await self._push(compute)
+        await self._status(compute)
 
-        if (deficit := wanted - len(alive)) > 0:
-            await self._grow(compute, infrastructure, adapter, deficit)
-            return
+    async def _push(self, compute: Compute) -> None:
+        """Re-offer every row that is waiting on somebody, and retire the ones that are done.
 
-        if (surplus := len(alive) - wanted) > 0:
-            await self._shrink(compute, infrastructure, adapter, alive, surplus)
-            return
+        A row in ``requested`` is a machine nobody has bought yet; in ``connecting``,
+        one nobody has logged into. Either is a reactor that never ran, or one that
+        died halfway, and neither can be told apart from one that is simply still
+        working — so the event is sent again, and the reactors are written to ignore
+        it if they are.
 
-        await self._connect(compute, infrastructure, alive, dict(observed))
-        await self._settle(compute, deleted=not observed and compute.spec.desired == "deleted", adapter=adapter, binding=infrastructure.binding)
+        A node that is up gets offered too, and that is not a mistake. ``ready`` is a
+        fact about the machine, not about this process — the row survives the daemon
+        and the SSH connection does not. A daemon that has just come up, or one that
+        has attached to a compute somebody else started, finds machines that are
+        working perfectly and that nothing here is holding a connection to. Somebody
+        has to go and pick them up, and the connector is written to notice when they
+        are already in hand.
 
-    async def _provision(self, compute: Compute) -> Infrastructure:
-        """Buy the compute an address in the world, and write it down before using it.
-
-        The binding is committed before a single machine is launched. The reverse
-        order — launch, then record where they are — is how a crash turns into a
-        fleet that bills forever and that nothing can find.
+        A draining node leaves as soon as the work it was holding is finished. This is
+        the only place the two halves meet: the reconciler decided it should go, the
+        queue decides when.
         """
-        offer, market = await self._pick(compute.spec)
-        adapter = await self._adapter(offer.provider_id)
+        holding, _ = await self._tasks.busy(compute.id)
+        doomed = compute.spec.desired == "deleted"
 
-        private, public = keypair()
-        binding = await adapter.initialize(compute.id, compute.spec, offer, market, public)
+        for node in await self._nodes.of(compute.id):
+            match node.state:
+                case "requested":
+                    await self._announce("requested", compute.id, node.id, record=False)
+                case "connecting" | "bootstrapping" | "ready":
+                    self._wake("node.connect", compute_id=compute.id, node_id=node.id)
+                case "draining" if doomed or not holding[node.id]:
+                    await self._nodes.observe(node.id, "deleting")
+                    await self._announce("deleting", compute.id, node.id)
+                case "lost" | "failed":
+                    await self._nodes.observe(node.id, "deleting")
+                    await self._announce("deleting", compute.id, node.id)
+                case "deleting":
+                    await self._announce("deleting", compute.id, node.id, record=False)
+                case _:
+                    pass
 
-        infrastructure = Infrastructure(
-            provider_id=offer.provider_id,
-            offer_id=offer.id,
-            binding=binding,
-            private_key=private,
-        )
-        await self._computes.bind(compute.id, infrastructure)
-        await self._record("compute.provisioning", compute.id)
+    async def _desired(self, compute: Compute) -> int:
+        """How many machines the compute should have right now.
 
-        return infrastructure
-
-    async def _pick(self, spec: ComputeSpec) -> tuple[Offer, Market]:
-        """The hardware, out of everything on offer that would do — and at which price.
-
-        Each ``Spec`` is an alternative, not a requirement — the point of listing
-        several is that the second one is what you get when the first is sold out.
-
-        The market comes out of the same decision as the offer, because it is not
-        separable from it: an offer sold only on the spot market is not a cheaper
-        way to buy the same machine, it is a different machine to be billed for.
+        The load is what has been asked for and not yet answered — queued and
+        running together, because they are the same demand seen a moment apart.
+        Sizing to what is running would size the pool to what the pool can already
+        do, and a queue would never be a reason to grow.
         """
-        candidates: list[Buy] = []
+        if compute.spec.desired == "deleted":
+            return 0
 
-        for wanted in spec.specs:
-            page = await self._offers.list(
-                provider=None,
-                kind=wanted.provider.kind,
-                accelerator=wanted.accelerator,
-                min_count=wanted.accelerator_count if wanted.accelerator else None,
-                min_vram=None,
-                max_price=None,
-                refresh=False,
-            )
-            fitting = [
-                offer for offer in page.items
-                if (wanted.cpus is None or offer.cpus >= wanted.cpus)
-                and (wanted.memory_gb is None or offer.memory_gb >= wanted.memory_gb)
-                and (wanted.region is None or offer.region == wanted.region)
-            ]
-            buys = [buy for offer in fitting for buy in _buys(offer, spec.allocation)]
-            if buys and spec.selection == "first":
-                return _cheapest(buys, spec.allocation)
-            candidates.extend(buys)
+        lower, upper = bounds(compute.spec)
+        slots = compute.spec.worker.concurrency or 1
+        load = await self._tasks.load(compute.id)
 
-        if not candidates:
-            raise CapabilityMismatchError(f"nothing on offer satisfies the spec on the {spec.allocation} market")
+        return max(lower, min(upper, ceil(load / slots)))
 
-        return _cheapest(candidates, spec.allocation)
+    async def _surplus(self, compute: Compute, alive: list[Node], surplus: int) -> list[Node]:
+        """Which machines to give back, if any.
 
-    async def _grow(self, compute: Compute, infrastructure: Infrastructure, adapter: Provider, deficit: int) -> None:
-        minimum = compute.spec.nodes.min or compute.spec.nodes.desired
-        binding, machines = await adapter.launch(infrastructure.binding, deficit, min(minimum, deficit))
+        Idle for long enough, newest first. Newest because the oldest are the ones
+        most likely to be holding something a query cannot see — a broadcast froze its
+        ranks when it was admitted, and the low ranks are the ones it froze.
 
-        if binding != infrastructure.binding:
-            await self._computes.bind(compute.id, msgspec.structs.replace(infrastructure, binding=binding))
-
-        existing = len(await self._nodes.of(compute.id))
-        for offset, machine in enumerate(machines):
-            node = await self._nodes.adopt(compute.id, compute.generation, existing + offset, machine)
-            await self._record("node.launched", compute.id, node=node.id)
-
-        self._wake("compute.changed", compute_id=compute.id)
-
-    async def _shrink(
-        self,
-        compute: Compute,
-        infrastructure: Infrastructure,
-        adapter: Provider,
-        alive: dict[str, Node],
-        surplus: int,
-    ) -> None:
-        """Take the newest machines away first.
-
-        Newest, because the oldest are the ones most likely to be holding something:
-        a broadcast froze its ranks when it was admitted, and the low ranks are the
-        ones it froze.
+        A compute being deleted skips the waiting. The patience exists to stop a pool
+        from thrashing around a burst; a pool nobody wants any more is not going to
+        need these machines in thirty seconds, and making the user watch us hesitate
+        before we stop billing them is the wrong kind of caution.
         """
-        doomed = sorted(alive.items(), key=lambda pair: pair[1].rank, reverse=True)[:surplus]
+        if surplus <= 0:
+            return []
 
-        await adapter.terminate(infrastructure.binding, tuple(machine_id for machine_id, _ in doomed))
+        if compute.spec.desired == "deleted":
+            return sorted(alive, key=lambda node: node.rank, reverse=True)[:surplus]
 
-        runtime = self._runtimes.of(compute.id)
-        for _, node in doomed:
-            await self._nodes.observe(node.id, "deleted")
-            await self._record("node.deleted", compute.id, node=node.id)
-            if runtime and (held := runtime.nodes.pop(node.id, None)):
-                await held.close()
+        idle = await self._idlers(compute.id)
+        leavable = [node for node in alive if node.id in idle]
 
-        self._wake("compute.changed", compute_id=compute.id)
+        return sorted(leavable, key=lambda node: node.rank, reverse=True)[:surplus]
 
-    async def _connect(
-        self,
-        compute: Compute,
-        infrastructure: Infrastructure,
-        alive: dict[str, Node],
-        observed: dict[str, Machine],
-    ) -> None:
-        """Start a node's lifecycle for every machine that has one to start.
+    async def _idlers(self, compute_id: str) -> set[str]:
+        """Nodes with nothing on them, and nothing owed to them, for long enough."""
+        holding, owed = await self._tasks.busy(compute_id)
+        now = monotonic()
 
-        The seed is the lowest-ranked machine's private address, and it comes from
-        the machine rather than from a node that is already up. Nothing is up when
-        this runs — every node of a new compute is started in the same pass — so a
-        seed conditioned on readiness would be no seed at all, and each worker would
-        form a cluster of one and never find the others.
-
-        It is a bootstrap contact and not a head: casty needs an address to knock
-        on, and after the knock every member is equal.
-
-        The rank a node is told is its position among the machines that exist, not
-        the rank the store gave it. They agree, and the reason they have to is
-        ``peers``: a node that is handed the list of every node and its own index
-        into it must find itself at that index, and a store rank left behind by a
-        machine that died would point at somebody else.
-
-        Idempotent by the only means available: a node already being held is a node
-        already being bootstrapped, and reconciling twice must not bootstrap twice.
-        """
-        if not alive or not infrastructure.private_key:
-            return
-
-        source = await resolve(compute.spec.image.skyward)
-        runtime = self._runtimes.open(compute.id, source, infrastructure.private_key)
-        concurrency = compute.spec.worker.concurrency or 1
-        image = plugins.image(compute.spec.image, plugins.resolve(compute.spec.plugins))
-
-        ordered = sorted(alive.items(), key=lambda pair: pair[1].rank)
-        first, _ = ordered[0]
-        seed = _seed(observed[first])
-        peers = tuple(_peer(observed[machine_id]) for machine_id, _ in ordered)
-
-        for rank, (machine_id, node) in enumerate(ordered):
-            machine = observed[machine_id]
-            if node.id in runtime.nodes or machine.state != "running" or not machine.host:
+        idle: set[str] = set()
+        for node in await self._nodes.of(compute_id):
+            if node.id in holding or node.rank in owed:
+                self._idle.pop(node.id, None)
                 continue
 
-            await self._runtimes.start(
-                runtime,
-                node.id,
-                machine,
-                image,
-                rank=rank,
-                peers=peers,
-                seeds=() if machine_id == first else (seed,),
-                concurrency=concurrency,
-                plugins=compute.spec.plugins,
-            )
+            since = self._idle.setdefault(node.id, now)
+            if now - since >= IDLE_SECONDS:
+                idle.add(node.id)
 
-    async def _settle(
-        self,
-        compute: Compute,
-        deleted: bool,
-        adapter: Provider | None = None,
-        binding: Binding | None = None,
-    ) -> None:
-        if deleted:
-            if adapter is not None and binding is not None:
-                await adapter.release(binding)
-            await self._runtimes.close(compute.id)
-            await self._computes.observe(compute.id, ComputeStatus(state="deleted", observed_generation=compute.generation, nodes_ready=0, nodes_total=0))
+        return idle
+
+    async def _status(self, compute: Compute) -> None:
+        nodes = await self._nodes.of(compute.id)
+        live = [node for node in nodes if node.state in LIVE]
+        ready = [node for node in live if node.state == "ready"]
+        gone = all(node.state == "deleted" for node in nodes)
+
+        if compute.spec.desired == "deleted" and gone:
+            await self._machines.release(compute.id)
+            await self._computes.observe(
+                compute.id,
+                ComputeStatus(state="deleted", observed_generation=compute.generation, nodes_ready=0, nodes_total=0),
+            )
             await self._record("compute.deleted", compute.id)
             return
 
-        nodes = await self._nodes.of(compute.id)
-        live = [node for node in nodes if node.state not in DEAD]
-        ready = [node for node in live if node.state == "ready"]
-        minimum = compute.spec.nodes.min or compute.spec.nodes.desired
-
+        lower, _ = bounds(compute.spec)
         was = compute.status.state
-        state = "ready" if len(ready) >= minimum and ready else "provisioning"
+        state = "ready" if ready and len(ready) >= lower else "provisioning"
         if compute.spec.desired == "deleted":
             state = "deleting"
 
@@ -451,90 +280,12 @@ class Reconciler:
         if state == "ready" and was != "ready":
             await self._generations.apply(compute.id, compute.generation)
             await self._record("compute.ready", compute.id)
-            self._wake("compute.changed", compute_id=compute.id)
-            for task_id in await self._tasks.unsettled():
-                self._wake("task.changed", task_id=task_id)
+            self._wake("compute.dispatch", compute_id=compute.id)
 
-    async def _dispatch(self, task: Task, execution: Execution, runtime: Runtime) -> None:
-        """Hand one execution to one worker, and stop holding the reconcile open.
-
-        The call is left running as its own task because it lasts as long as the
-        user's function does — hours, possibly — and a reconcile that waited for it
-        would be a control plane that stops controlling while somebody trains a
-        model.
-        """
-        node = await self._placement(task, execution, runtime)
-        if node is None:
-            return
-
-        runtime.dispatched.add(execution.id)
-        await self._tasks.observe(execution.id, "dispatching", node_id=node)
-        asyncio.get_running_loop().create_task(self._run(task, execution, runtime, node))
-
-    async def _placement(self, task: Task, execution: Execution, runtime: Runtime) -> str | None:
-        ready = runtime.ready
-        if not ready:
-            return None
-
-        if task.dispatch == "one":
-            return ready[execution.ordinal % len(ready)]
-
-        nodes = {node.rank: node.id for node in await self._nodes.of(task.compute_id)}
-        placed = nodes.get(execution.rank)
-        return placed if placed in ready else None
-
-    async def _run(self, task: Task, execution: Execution, runtime: Runtime, node_id: str) -> None:
-        try:
-            code = await self._blobs.get(task.function)
-            args = await self._blobs.get(task.args_sha256)
-
-            member = await runtime.member(node_id)
-            system = await runtime.system()
-
-            await self._tasks.observe(execution.id, "started", node_id=node_id)
-            await self._record("task.started", task.compute_id, task=task.id)
-
-            reply = await system.service(worker.Worker, at=member).run(execution.id, code, args)
-            outcome = msgspec.msgpack.decode(reply, type=Outcome)
-
-            match outcome:
-                case Done(value=value):
-                    await self._tasks.observe(execution.id, "succeeded", result_sha256=await self._blobs.store(value))
-                    await self._record("task.succeeded", task.compute_id, task=task.id)
-                case Failed(error=error, traceback=trace):
-                    await self._tasks.observe(
-                        execution.id,
-                        "failed",
-                        error=Error(code="task_failed", message=error, retryable=False, details={"traceback": trace}),
-                    )
-                    await self._record("task.failed", task.compute_id, task=task.id)
-        except Exception as exc:
-            await self._lost(task, execution, exc)
-        finally:
-            runtime.dispatched.discard(execution.id)
-            self._wake("task.changed", task_id=task.id)
-
-    async def _lost(self, task: Task, execution: Execution, exc: Exception) -> None:
-        """The call died, and we do not know whether the function did.
-
-        This is the only honest verdict available. The worker may have run the
-        user's code to completion and lost the reply on the way back, so calling it
-        `failed` — which is retryable without asking — would be the system deciding
-        on the user's behalf that a duplicate side effect is acceptable.
-        """
-        logger.warning("execution %s lost", execution.id, exc_info=exc)
-        await self._tasks.observe(
-            execution.id,
-            "indeterminate",
-            error=Error(code="task_indeterminate", message=f"{type(exc).__name__}: {exc}", retryable=False),
-        )
-        await self._record("task.indeterminate", task.compute_id, task=task.id)
-
-    async def _adapter(self, provider_id: str | None) -> Provider:
-        adapter = await self._providers.adapter(provider_id or "")
-        if not isinstance(adapter, Provider):
-            raise CapabilityMismatchError(f"{adapter.kind} can quote hardware but cannot provision it")
-        return adapter
+    async def _announce(self, state: str, compute_id: str, node_id: str, record: bool = True) -> None:
+        self._wake(f"node.{state}", compute_id=compute_id, node_id=node_id)
+        if record:
+            await self._record(f"node.{state}", compute_id, node=node_id)
 
     async def _degrade(self, compute_id: str, exc: Exception) -> None:
         compute = await self._computes.get(compute_id)
@@ -557,53 +308,30 @@ class Reconciler:
         )
 
     def _lock(self, compute_id: str) -> asyncio.Lock:
-        """One reconcile per compute at a time.
+        """One pass per compute at a time.
 
-        The emitter already collapses duplicate wakeups, but the sweep and an event
+        The emitter already collapses duplicate wakeups, but the tick and an event
         can arrive from different directions at the same moment, and two passes
-        interleaved would each see the deficit the other is already filling.
+        interleaved would each write the deficit the other is already writing.
         """
         return self._locks.setdefault(compute_id, asyncio.Lock())
 
 
-class Buy(NamedTuple):
-    """One way to have one offer: the machine, the market, and what that costs."""
+def bounds(spec: ComputeSpec) -> tuple[int, int]:
+    """The range the pool may size itself within.
 
-    offer: Offer
-    market: Market
-    price: float
+    A compute with no bounds is not elastic: ``nodes=4`` means four, and the
+    clamp collapses onto it.
 
-
-def _buys(offer: Offer, allocation: Allocation) -> list[Buy]:
-    """What the allocation allows this offer to be bought as, if anything.
-
-    An offer with no spot price is not a spot offer, and asking for spot excludes
-    it rather than silently buying it on demand — the price the pool was chosen
-    on has to be the price it is billed at.
+    A compute running a collective is not elastic either, whatever it asked for.
+    ``init_process_group`` freezes the world when the last rank joins, and taking a
+    rank away afterwards does not shrink the job — it hangs it, at the next
+    all-reduce, on a peer that is never going to answer.
     """
-    spot = Buy(offer, "spot", offer.spot_price) if offer.spot_price is not None else None
-    on_demand = Buy(offer, "on_demand", offer.on_demand_price) if offer.on_demand_price is not None else None
+    if any(plugin.collective for plugin in plugins.resolve(spec.plugins)):
+        return spec.nodes.desired, spec.nodes.desired
 
-    match allocation:
-        case "spot":
-            return [buy for buy in (spot,) if buy]
-        case "on_demand":
-            return [buy for buy in (on_demand,) if buy]
-        case "spot_if_available" | "cheapest":
-            return [buy for buy in (spot, on_demand) if buy]
+    lower = spec.nodes.min or spec.nodes.desired
+    upper = spec.nodes.max or spec.nodes.desired
 
-
-def _cheapest(buys: list[Buy], allocation: Allocation) -> tuple[Offer, Market]:
-    """``spot_if_available`` prefers the spot market; every other allocation prefers the price."""
-    preferred = [buy for buy in buys if buy.market == "spot"] if allocation == "spot_if_available" else []
-    buy = min(preferred or buys, key=lambda buy: buy.price)
-    return buy.offer, buy.market
-
-
-def _peer(machine: Machine) -> str:
-    """Where the other machines reach this one."""
-    return machine.private_host or machine.host or ""
-
-
-def _seed(machine: Machine) -> str:
-    return f"{_peer(machine)}:{worker.PORT}"
+    return min(lower, upper), max(lower, upper)

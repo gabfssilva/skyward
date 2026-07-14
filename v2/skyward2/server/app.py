@@ -11,8 +11,11 @@ from litestar.openapi import OpenAPIConfig
 from litestar.openapi.plugins import ScalarRenderPlugin
 
 from skyward2.application import mock, ports
+from skyward2.application.connector import Connector
+from skyward2.application.dispatcher import Dispatcher
 from skyward2.application.errors import SkywardError
 from skyward2.application.health import Health
+from skyward2.application.machines import Machines
 from skyward2.application.reconciler import Reconciler, Wakeup
 from skyward2.application.runtimes import Runtimes
 from skyward2.persistence.computes import ComputeStore, GenerationStore
@@ -37,7 +40,7 @@ from skyward2.server.emitter import ReconcilingEventEmitter
 from skyward2.server.exceptions import skyward_error_handler
 from skyward2.server.listeners import build_listeners
 
-SWEEP_SECONDS = 10
+TICK_SECONDS = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,7 +57,10 @@ class Services:
     offers: ports.Offers
     health: ports.Health
     reconciler: ports.Reconciler
+    dispatcher: ports.Dispatcher
     wake: Wakeup
+    machines: Machines | None = None
+    connector: Connector | None = None
     runtimes: Runtimes | None = None
 
 
@@ -72,6 +78,7 @@ def mock_services() -> Services:
         offers=mock.MockOffers(),
         health=mock.MockHealth(),
         reconciler=mock.MockReconciler(),
+        dispatcher=mock.MockDispatcher(),
         wake=Wakeup(),
     )
 
@@ -117,9 +124,13 @@ def services() -> Services:
         output=lambda compute, node, content, task: spoken(console(compute, node, content, task)),
     )
 
+    offers = OfferCache(providers)
+    generations = GenerationStore(computes)
+    machines = Machines(computes=computes, nodes=nodes, providers=providers, offers=offers)
+
     return Services(
         computes=computes,
-        generations=GenerationStore(computes),
+        generations=generations,
         nodes=nodes,
         functions=FunctionStore(blobs),
         blobs=blobs,
@@ -127,21 +138,29 @@ def services() -> Services:
         executions=ExecutionStore(tasks),
         events=events,
         providers=providers,
-        offers=OfferCache(providers),
+        offers=offers,
         health=Health(providers),
         reconciler=Reconciler(
             computes=computes,
-            generations=GenerationStore(computes),
+            generations=generations,
             nodes=nodes,
             tasks=tasks,
+            machines=machines,
+            events=events,
+            wake=wake,
+        ),
+        dispatcher=Dispatcher(
+            computes=computes,
+            tasks=tasks,
+            nodes=nodes,
             blobs=blobs,
-            providers=providers,
-            offers=OfferCache(providers),
             events=events,
             runtimes=runtimes,
             wake=wake,
         ),
         wake=wake,
+        machines=machines,
+        connector=Connector(computes=computes, nodes=nodes, runtimes=runtimes),
         runtimes=runtimes,
     )
 
@@ -149,16 +168,16 @@ def services() -> Services:
 def create_app(svc: Services | None = None, database: Path | None = None) -> Litestar:
     svc = svc or mock_services()
 
-    async def sweep() -> None:
-        """The safety net that makes events optional for correctness.
+    async def tick() -> None:
+        """The clock, and the safety net that makes events optional for correctness.
 
-        An event is a wakeup: if one is lost — crash between commit and emit, a
-        listener that died, a restart — the intent is still in the store and the
-        sweep finds it. This is what buys us the right to skip an outbox, an
-        effects table and delivery leases.
+        An event is a wakeup: if one is lost — a crash between the commit and the
+        emit, a listener that died, a restart — the intent is still in the store and
+        this finds it. That is what buys the right to skip an outbox, an effects
+        table and delivery leases.
         """
         while True:
-            await asyncio.sleep(SWEEP_SECONDS)
+            await asyncio.sleep(TICK_SECONDS)
             computes, tasks = await svc.reconciler.unsettled()
             for compute_id in computes:
                 app.emit("compute.changed", compute_id=compute_id)
@@ -168,10 +187,10 @@ def create_app(svc: Services | None = None, database: Path | None = None) -> Lit
     async def on_startup(app: Litestar) -> None:
         if database is not None:
             await connect(database)
-        app.state.sweep = asyncio.create_task(sweep())
+        app.state.tick = asyncio.create_task(tick())
 
     async def on_shutdown(app: Litestar) -> None:
-        task: asyncio.Task[None] | None = getattr(app.state, "sweep", None)
+        task: asyncio.Task[None] | None = getattr(app.state, "tick", None)
         if task:
             task.cancel()
         if svc.runtimes:
@@ -204,9 +223,10 @@ def create_app(svc: Services | None = None, database: Path | None = None) -> Lit
             "offers": Provide(lambda: svc.offers, sync_to_thread=False),
             "health": Provide(lambda: svc.health, sync_to_thread=False),
             "reconciler": Provide(lambda: svc.reconciler, sync_to_thread=False),
+            "dispatcher": Provide(lambda: svc.dispatcher, sync_to_thread=False),
             "wake": Provide(lambda: svc.wake, sync_to_thread=False),
         },
-        listeners=build_listeners(svc.reconciler),
+        listeners=build_listeners(svc.reconciler, svc.dispatcher, svc.machines, svc.connector),
         event_emitter_backend=ReconcilingEventEmitter,
         exception_handlers={SkywardError: skyward_error_handler},
         on_startup=[on_startup],

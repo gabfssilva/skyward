@@ -37,6 +37,7 @@ class Torch(Plugin, frozen=True):
     """
 
     kind: ClassVar[str] = "torch"
+    collective: ClassVar[bool] = True
 
     backend: Literal["nccl", "gloo"] = "nccl"
     version: str | None = None
