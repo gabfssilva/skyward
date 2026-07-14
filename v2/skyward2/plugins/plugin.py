@@ -1,0 +1,65 @@
+"""What a plugin is, and the three places it gets to speak.
+
+A plugin is a value, not a callback. It travels in the spec, is written to the
+database with it, and is rebuilt from it on the node — so it cannot be a closure,
+a lambda or an object holding a live handle. It is a struct of parameters, and its
+behaviour is what the class does with them.
+
+Which is what lets the same object be constructed by the user, validated by the
+daemon and executed by the worker: three processes, on two machines, agreeing about
+a plugin because they agree about its name and its fields.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from typing import ClassVar
+
+from msgspec import Struct, to_builtins
+
+from skyward2.protocol.schemas import Image, PluginRef
+from skyward2.runtime.api import Info
+
+
+class Plugin(Struct, frozen=True):
+    """A plugin, with every hook optional and none of them doing anything by default.
+
+    Attributes
+    ----------
+    kind : str
+        Its name on the wire, and how it is found again on the node.
+    """
+
+    kind: ClassVar[str]
+
+    def image(self, image: Image) -> Image:
+        """What the machine needs installed before the plugin can run at all.
+
+        The daemon calls this once, when the compute is provisioned. It is a
+        transform rather than a list of packages because plugins compose: each is
+        handed what the ones before it asked for.
+        """
+        return image
+
+    @contextmanager
+    def setup(self, info: Info) -> Iterator[None]:
+        """The worker's lifetime, on the node.
+
+        Entered once, before the worker takes a task, and left when it stops. This
+        is where a process group is formed and where an environment variable that
+        a library reads at import time is set — both being things that must exist
+        before the first task, not around each one.
+        """
+        yield
+
+    def run[T](self, call: Callable[[], T], info: Info) -> T:
+        """One task, on the node.
+
+        Plugins wrap in the order they were listed: the first is outermost, and
+        therefore the one that sees the others' work.
+        """
+        return call()
+
+    def ref(self) -> PluginRef:
+        return PluginRef(kind=self.kind, params=to_builtins(self))

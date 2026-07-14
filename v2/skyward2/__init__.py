@@ -21,7 +21,7 @@ import importlib
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from skyward2 import accelerators
+    from skyward2 import accelerators, plugins
     from skyward2.runtime.api import Info, instance_info, is_head, shard, silent, stderr, stdout
     from skyward2.sdk import (
         AWS,
@@ -92,6 +92,7 @@ __all__ = [
     "function",
     "gather",
     "instance_info",
+    "plugins",
     "is_head",
     "shard",
     "silent",
@@ -102,8 +103,8 @@ __all__ = [
 
 def __getattr__(name: str) -> object:
     match name:
-        case "accelerators":
-            value = importlib.import_module("skyward2.accelerators")
+        case "accelerators" | "plugins":
+            value = importlib.import_module(f"skyward2.{name}")
         case _ if name in RUNTIME:
             value = getattr(importlib.import_module("skyward2.runtime.api"), name)
         case _ if name in __all__:

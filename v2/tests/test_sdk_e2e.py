@@ -57,6 +57,14 @@ def my_share(data: list[int]) -> list[int]:
     return list(skyward.shard(data))
 
 
+@skyward.function
+def hub() -> tuple[str, bool]:
+    import importlib.util
+    import os
+
+    return os.environ["HF_TOKEN"], importlib.util.find_spec("huggingface_hub") is not None
+
+
 @pytest.fixture
 def pool(tmp_path: Path):
     with skyward.Compute(
@@ -105,6 +113,25 @@ def test_a_broadcast_shard_splits_the_data_and_loses_none_of_it(pool: Compute):
 
     assert sorted(item for part in shards for item in part) == list(range(7))
     assert sorted(len(part) for part in shards) == [3, 4]
+
+
+def test_a_plugin_puts_its_package_on_the_machine_and_its_env_in_the_worker(tmp_path: Path):
+    """The whole round trip: a value the user built, rebuilt on the node.
+
+    Nothing was shipped but the plugin's name and its fields — the image the
+    machine bootstrapped and the environment the worker runs under are both what
+    the node made of them once it had them back.
+    """
+    with skyward.Compute(
+        provider=skyward.Container(),
+        nodes=1,
+        cpus=1,
+        memory_gb=1,
+        image=IMAGE,
+        plugins=[skyward.plugins.HuggingFace(token="hf_not_a_real_token")],
+        database=tmp_path / "skyward.sqlite",
+    ) as pool:
+        assert hub() >> pool == ("hf_not_a_real_token", True)
 
 
 def test_a_function_that_raises_arrives_as_an_exception_with_its_traceback(pool: Compute):

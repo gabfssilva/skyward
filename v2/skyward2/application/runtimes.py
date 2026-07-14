@@ -20,7 +20,7 @@ import asyncssh
 import casty
 
 from skyward2.application.provider import Machine
-from skyward2.protocol.schemas import Image, NodeState
+from skyward2.protocol.schemas import Image, NodeState, PluginRef
 from skyward2.runtime.node import Node
 from skyward2.runtime.source import Source
 
@@ -151,6 +151,7 @@ class Runtimes:
         peers: tuple[str, ...],
         seeds: tuple[str, ...],
         concurrency: int,
+        plugins: tuple[PluginRef, ...],
     ) -> None:
         """Bring a machine up, and wire what it learns back to the store.
 
@@ -168,6 +169,7 @@ class Runtimes:
             peers=peers,
             seeds=seeds,
             concurrency=concurrency,
+            plugins=plugins,
             listener=lambda state, error: self._listener(runtime.compute, node_id, state, error),
             output=lambda content, task: self._output(runtime.compute, node_id, content, task),
         )

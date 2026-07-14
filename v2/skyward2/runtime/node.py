@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shlex
 from collections.abc import Callable
 
+import msgspec
+
 from skyward2.application.provider import Machine
-from skyward2.protocol.schemas import Image, NodeState
+from skyward2.protocol.schemas import Image, NodeState, PluginRef
 from skyward2.runtime import bootstrap, worker
 from skyward2.runtime.events import events
 from skyward2.runtime.journal import SKYWARD_DIR, Console, NodeEvent, Phase
@@ -53,6 +56,7 @@ class Node:
         peers: tuple[str, ...] = (),
         seeds: tuple[str, ...] = (),
         concurrency: int = 1,
+        plugins: tuple[PluginRef, ...] = (),
     ) -> None:
         if machine.host is None:
             raise ValueError(f"machine {machine.id} has no address to connect to")
@@ -67,6 +71,7 @@ class Node:
         self._peers = peers
         self._seeds = seeds
         self._concurrency = concurrency
+        self._plugins = plugins
         self._ssh = SshChannel(
             machine.host,
             port=machine.port,
@@ -135,7 +140,7 @@ class Node:
         here a node cannot know about itself, and is not asked to.
         """
         environment = " ".join(
-            f"{name}={value}"
+            f"{name}={shlex.quote(value)}"
             for name, value in (
                 ("SKYWARD_NODE", self._machine.id),
                 ("SKYWARD_COMPUTE", self._compute),
@@ -144,6 +149,7 @@ class Node:
                 ("SKYWARD_PEERS", ",".join(self._peers)),
                 ("SKYWARD_SEEDS", ",".join(self._seeds)),
                 ("SKYWARD_SLOTS", str(self._concurrency)),
+                ("SKYWARD_PLUGINS", msgspec.json.encode(self._plugins).decode()),
             )
         )
         await self._ssh.run(

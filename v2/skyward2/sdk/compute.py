@@ -12,7 +12,7 @@ import asyncio
 import os
 import threading
 import uuid
-from collections.abc import Callable, Coroutine, Iterable
+from collections.abc import Callable, Coroutine, Iterable, Sequence
 from concurrent.futures import Future
 from pathlib import Path
 from typing import Self
@@ -21,6 +21,7 @@ import msgspec
 
 from skyward2.accelerators import Accelerator
 from skyward2.persistence.db import DEFAULT_PATH
+from skyward2.plugins import Plugin
 from skyward2.protocol import codec
 from skyward2.protocol.accelerators import resolve
 from skyward2.protocol.schemas import (
@@ -96,6 +97,7 @@ class Compute:
         allocation: Allocation = "spot_if_available",
         selection: Selection = "cheapest",
         image: Image = DEFAULT_IMAGE,
+        plugins: Sequence[Plugin] = (),
         concurrency: int | None = None,
         name: str | None = None,
         url: str | None = None,
@@ -117,6 +119,7 @@ class Compute:
             selection=selection,
             image=image,
             worker=Worker(concurrency=concurrency),
+            plugins=tuple(plugin.ref() for plugin in plugins),
         )
         self._name = name
         self._url = url or os.environ.get("SKYWARD_URL")

@@ -20,6 +20,7 @@ from typing import NamedTuple
 
 import msgspec
 
+from skyward2 import plugins
 from skyward2.application.errors import CapabilityMismatchError, NotFoundError
 from skyward2.application.provider import Binding, Machine, Provider
 from skyward2.application.runtimes import Runtime, Runtimes, keypair
@@ -323,6 +324,7 @@ class Reconciler:
         source = await resolve(compute.spec.image.skyward)
         runtime = self._runtimes.open(compute.id, source, infrastructure.private_key)
         concurrency = compute.spec.worker.concurrency or 1
+        image = plugins.image(compute.spec.image, plugins.resolve(compute.spec.plugins))
 
         ordered = sorted(alive.items(), key=lambda pair: pair[1].rank)
         first, _ = ordered[0]
@@ -338,11 +340,12 @@ class Reconciler:
                 runtime,
                 node.id,
                 machine,
-                compute.spec.image,
+                image,
                 rank=rank,
                 peers=peers,
                 seeds=() if machine_id == first else (seed,),
                 concurrency=concurrency,
+                plugins=compute.spec.plugins,
             )
 
     async def _settle(

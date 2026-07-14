@@ -17,12 +17,18 @@ import os
 import sys
 import traceback
 from collections.abc import Callable
+from contextlib import ExitStack
+from functools import partial
 
 import casty
 import msgspec
 from msgspec import Struct
 
+from skyward2 import plugins
+from skyward2.plugins import Plugin
 from skyward2.protocol import codec
+from skyward2.protocol.schemas import PluginRef
+from skyward2.runtime.api import instance_info
 from skyward2.runtime.journal import Journal, Phase, emit, task
 
 PORT = 25520
@@ -54,6 +60,8 @@ encode = msgspec.msgpack.encode
 function: codec.Codec[Callable[..., object]] = codec.Pickle()
 arguments: codec.Codec[Arguments] = codec.Pickle()
 outcomes: dict[str, Outcome | None] = {}
+installed: tuple[Plugin, ...] = ()
+"""The compute's plugins, rebuilt on this machine from what the spec said they were."""
 
 
 @casty.service(name="skyward.Worker", concurrency=int(os.environ.get("SKYWARD_SLOTS", "1")))
@@ -110,7 +118,10 @@ async def execute(id: str, code: bytes, args: bytes) -> Outcome:
 
     Nothing here touches the loop, either. The codec threads both directions and
     the function gets a thread of its own — this loop is the one `Control.ping`
-    answers on, and a node holding it is a node that reads as dead.
+    answers on, and a node holding it is a node that reads as dead. The plugins wrap
+    the call inside that thread with it: a plugin that grabs a lock or sets a thread
+    local is talking about the thread the user's code runs on, and would be talking
+    about the event loop's if it were wrapped anywhere else.
 
     A failure to unpickle is therefore a failed task, with a traceback, rather
     than an exception thrown inside a casty handler. It is also the most common
@@ -135,7 +146,8 @@ async def execute(id: str, code: bytes, args: bytes) -> Outcome:
     try:
         fn = await function.decode(code)
         positional, keyword = await arguments.decode(args)
-        value = await asyncio.to_thread(call, fn, positional, keyword)
+        wrapped = plugins.chain(installed, partial(call, fn, positional, keyword), instance_info())
+        value = await asyncio.to_thread(wrapped)
         return Done(value=await codec.payload.encode(value))
     except Exception as exc:
         return Failed(error=str(exc), traceback=traceback.format_exc())
@@ -162,9 +174,26 @@ async def reachable(seed: str) -> None:
 
 
 async def main() -> None:
+    """Join the cluster, let the plugins have the process, and wait for work.
+
+    The plugins are set up after the cluster and before readiness is announced,
+    which is the only window that works for the collective ones: ``init_process_group``
+    blocks until every rank arrives, so a node that announced itself ready first
+    would be handed a task it cannot start.
+
+    And it blocks — that is what a collective does — so it is entered off the loop.
+    A worker that sat in the loop waiting for the other ranks would stop answering
+    casty's heartbeats while doing it, and be evicted from the cluster it was in the
+    middle of joining.
+    """
+    global installed
+
     seeds = [seed for seed in os.environ.get("SKYWARD_SEEDS", "").split(",") if seed]
     for seed in seeds:
         await reachable(seed)
+
+    refs = msgspec.json.decode(os.environ.get("SKYWARD_PLUGINS", "[]"), type=tuple[PluginRef, ...])
+    installed = plugins.resolve(refs)
 
     system = await casty.start(
         f"0.0.0.0:{PORT}",
@@ -172,11 +201,21 @@ async def main() -> None:
         seeds=seeds,
         cluster_name=os.environ["SKYWARD_COMPUTE"],
     )
+    stack = ExitStack()
     try:
+        await asyncio.to_thread(setup, stack)
+
         emit(Phase(event="completed", phase="worker"))
         await asyncio.Event().wait()
     finally:
+        await asyncio.to_thread(stack.close)
         await system.close()
+
+
+def setup(stack: ExitStack) -> None:
+    info = instance_info()
+    for plugin in installed:
+        stack.enter_context(plugin.setup(info))
 
 
 def cli() -> None:
