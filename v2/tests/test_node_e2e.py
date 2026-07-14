@@ -49,7 +49,7 @@ async def machine(key: asyncssh.SSHKey):
     provider = ContainerProvider.create("prv_container", "local", {}, {})
     offer = [offer async for offer in provider.offers() if offer.cpus == 2 and offer.memory_gb == 2.0][0]
     binding = await provider.initialize(
-        f"cmp_{uuid.uuid4().hex[:8]}", SPEC, offer, key.export_public_key().decode(),
+        f"cmp_{uuid.uuid4().hex[:8]}", SPEC, offer, "on_demand", key.export_public_key().decode(),
     )
 
     await provider.launch(binding, count=1, min_count=1)

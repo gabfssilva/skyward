@@ -4,7 +4,7 @@ from typing import Any, ClassVar, Literal, Protocol, Self, runtime_checkable
 
 from msgspec import Struct
 
-from skyward2.protocol.schemas import ComputeSpec, Offer
+from skyward2.protocol.schemas import ComputeSpec, Market, Offer
 
 type Binding = Mapping[str, Any]
 """Whatever the adapter needs to remember about one compute's infrastructure.
@@ -145,7 +145,7 @@ class Provider(Catalog, Protocol):
     an adapter takes nothing down with it.
     """
 
-    async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, public_key: str) -> Binding:
+    async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, market: Market, public_key: str) -> Binding:
         """Create what the compute's machines will share, before any of them exists.
 
         A network, a security group, an imported keypair, a resolved image. Called
@@ -162,6 +162,12 @@ class Provider(Catalog, Protocol):
             What the user asked for.
         offer : Offer
             The hardware the control plane picked to satisfy it.
+        market : Market
+            Which price the offer was picked at, and therefore how the machines
+            must be bought. ``spec.allocation`` is a preference and is already
+            spent by the time this is called; this is the decision it produced,
+            and buying against it is buying a machine nobody priced. An adapter
+            whose provider has one market only is handed that one.
         public_key : str
             Generated per compute by the control plane. The adapter installs it
             however its provider expects: registered through an API, baked into a

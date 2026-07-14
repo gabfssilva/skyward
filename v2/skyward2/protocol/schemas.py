@@ -58,6 +58,12 @@ type Dispatch = Literal["one", "all"]
 type Desired = Literal["running", "deleted"]
 type NodeDesired = Literal["present", "deleted"]
 type Allocation = Literal["spot", "on_demand", "spot_if_available", "cheapest"]
+type Market = Literal["spot", "on_demand"]
+"""Which price an offer was taken at — what ``Allocation`` resolves to once an offer is in hand.
+
+An allocation is a preference and may not be satisfiable; a market is a decision,
+and it is what the machines are actually billed under.
+"""
 type Selection = Literal["cheapest", "first"]
 type Executor = Literal["thread", "process"]
 type SkywardSource = Literal["auto", "local", "github", "pypi"]

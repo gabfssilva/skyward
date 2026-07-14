@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
 from skyward2.application.provider import Binding, Machine
-from skyward2.protocol.schemas import ComputeSpec, Offer
+from skyward2.protocol.schemas import ComputeSpec, Market, Offer
 
 COMPUTE_LABEL = "skyward.compute"
 BASE_IMAGE = "ghcr.io/gabfssilva/skyward:py{python}"
@@ -65,7 +65,7 @@ class ContainerProvider:
                     expires_at=now + self.offers_ttl,
                 )
 
-    async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, public_key: str) -> Binding:
+    async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, market: Market, public_key: str) -> Binding:
         image = BASE_IMAGE.format(python=spec.image.python or DEFAULT_PYTHON)
         network = f"skyward-{compute_id}"
 

@@ -55,7 +55,7 @@ async def compute(key: asyncssh.SSHKey):
     compute = f"cmp_{uuid.uuid4().hex[:8]}"
     provider = ContainerProvider.create("prv_container", "local", {}, {})
     offer = [offer async for offer in provider.offers() if offer.cpus == 1 and offer.memory_gb == 1.0][0]
-    binding = await provider.initialize(compute, SPEC, offer, key.export_public_key().decode())
+    binding = await provider.initialize(compute, SPEC, offer, "on_demand", key.export_public_key().decode())
 
     await provider.launch(binding, count=NODES, min_count=NODES)
     async with asyncio.timeout(60):

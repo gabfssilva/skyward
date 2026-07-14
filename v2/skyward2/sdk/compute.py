@@ -24,9 +24,7 @@ from skyward2.persistence.db import DEFAULT_PATH
 from skyward2.protocol import codec
 from skyward2.protocol.accelerators import resolve
 from skyward2.protocol.schemas import (
-    Compute as ComputeView,
-)
-from skyward2.protocol.schemas import (
+    Allocation,
     ComputeCreate,
     ComputeSpec,
     Dispatch,
@@ -38,6 +36,9 @@ from skyward2.protocol.schemas import (
     Task,
     TaskCreate,
     Worker,
+)
+from skyward2.protocol.schemas import (
+    Compute as ComputeView,
 )
 from skyward2.protocol.schemas import (
     Spec as SpecRef,
@@ -92,6 +93,7 @@ class Compute:
         memory_gb: int | None = None,
         region: str | None = None,
         nodes: NodeSpec = 1,
+        allocation: Allocation = "spot_if_available",
         selection: Selection = "cheapest",
         image: Image = DEFAULT_IMAGE,
         concurrency: int | None = None,
@@ -111,6 +113,7 @@ class Compute:
         self._spec = ComputeSpec(
             specs=tuple(_wire(spec) for spec in specs),
             nodes=_bounds(nodes),
+            allocation=allocation,
             selection=selection,
             image=image,
             worker=Worker(concurrency=concurrency),

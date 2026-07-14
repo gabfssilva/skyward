@@ -31,7 +31,7 @@ def provider() -> ContainerProvider:
 @pytest.fixture
 async def binding(provider: ContainerProvider):
     offer = [offer async for offer in provider.offers() if offer.cpus == 1 and offer.memory_gb == 1.0][0]
-    binding = await provider.initialize(f"cmp_{uuid.uuid4().hex[:8]}", SPEC, offer, PUBLIC_KEY)
+    binding = await provider.initialize(f"cmp_{uuid.uuid4().hex[:8]}", SPEC, offer, "on_demand", PUBLIC_KEY)
     yield binding
     await provider.terminate(binding, tuple(await provider.machines(binding)))
     await provider.release(binding)
@@ -107,6 +107,6 @@ async def test_initialize_tolerates_finding_its_own_work_already_done(provider: 
     """
     offer = [offer async for offer in provider.offers() if offer.cpus == 1 and offer.memory_gb == 1.0][0]
 
-    again = await provider.initialize(binding["compute_id"], SPEC, offer, PUBLIC_KEY)
+    again = await provider.initialize(binding["compute_id"], SPEC, offer, "on_demand", PUBLIC_KEY)
 
     assert again == binding

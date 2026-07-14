@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
+from typing import NamedTuple
 
 import msgspec
 
@@ -31,11 +32,13 @@ from skyward2.persistence.providers import ProviderStore
 from skyward2.persistence.tasks import TaskStore
 from skyward2.protocol import codec
 from skyward2.protocol.schemas import (
+    Allocation,
     Compute,
     ComputeSpec,
     ComputeStatus,
     Error,
     Execution,
+    Market,
     Node,
     NodeState,
     Offer,
@@ -191,11 +194,11 @@ class Reconciler:
         order — launch, then record where they are — is how a crash turns into a
         fleet that bills forever and that nothing can find.
         """
-        offer = await self._pick(compute.spec)
+        offer, market = await self._pick(compute.spec)
         adapter = await self._adapter(offer.provider_id)
 
         private, public = keypair()
-        binding = await adapter.initialize(compute.id, compute.spec, offer, public)
+        binding = await adapter.initialize(compute.id, compute.spec, offer, market, public)
 
         infrastructure = Infrastructure(
             provider_id=offer.provider_id,
@@ -208,13 +211,17 @@ class Reconciler:
 
         return infrastructure
 
-    async def _pick(self, spec: ComputeSpec) -> Offer:
-        """The hardware, out of everything on offer that would do.
+    async def _pick(self, spec: ComputeSpec) -> tuple[Offer, Market]:
+        """The hardware, out of everything on offer that would do — and at which price.
 
         Each ``Spec`` is an alternative, not a requirement — the point of listing
         several is that the second one is what you get when the first is sold out.
+
+        The market comes out of the same decision as the offer, because it is not
+        separable from it: an offer sold only on the spot market is not a cheaper
+        way to buy the same machine, it is a different machine to be billed for.
         """
-        candidates: list[Offer] = []
+        candidates: list[Buy] = []
 
         for wanted in spec.specs:
             page = await self._offers.list(
@@ -232,14 +239,15 @@ class Reconciler:
                 and (wanted.memory_gb is None or offer.memory_gb >= wanted.memory_gb)
                 and (wanted.region is None or offer.region == wanted.region)
             ]
-            if fitting and spec.selection == "first":
-                return min(fitting, key=lambda offer: offer.price or 0.0)
-            candidates.extend(fitting)
+            buys = [buy for offer in fitting for buy in _buys(offer, spec.allocation)]
+            if buys and spec.selection == "first":
+                return _cheapest(buys, spec.allocation)
+            candidates.extend(buys)
 
         if not candidates:
-            raise CapabilityMismatchError("nothing on offer satisfies the spec")
+            raise CapabilityMismatchError(f"nothing on offer satisfies the spec on the {spec.allocation} market")
 
-        return min(candidates, key=lambda offer: offer.price or 0.0)
+        return _cheapest(candidates, spec.allocation)
 
     async def _grow(self, compute: Compute, infrastructure: Infrastructure, adapter: Provider, deficit: int) -> None:
         minimum = compute.spec.nodes.min or compute.spec.nodes.desired
@@ -479,6 +487,40 @@ class Reconciler:
         interleaved would each see the deficit the other is already filling.
         """
         return self._locks.setdefault(compute_id, asyncio.Lock())
+
+
+class Buy(NamedTuple):
+    """One way to have one offer: the machine, the market, and what that costs."""
+
+    offer: Offer
+    market: Market
+    price: float
+
+
+def _buys(offer: Offer, allocation: Allocation) -> list[Buy]:
+    """What the allocation allows this offer to be bought as, if anything.
+
+    An offer with no spot price is not a spot offer, and asking for spot excludes
+    it rather than silently buying it on demand — the price the pool was chosen
+    on has to be the price it is billed at.
+    """
+    spot = Buy(offer, "spot", offer.spot_price) if offer.spot_price is not None else None
+    on_demand = Buy(offer, "on_demand", offer.on_demand_price) if offer.on_demand_price is not None else None
+
+    match allocation:
+        case "spot":
+            return [buy for buy in (spot,) if buy]
+        case "on_demand":
+            return [buy for buy in (on_demand,) if buy]
+        case "spot_if_available" | "cheapest":
+            return [buy for buy in (spot, on_demand) if buy]
+
+
+def _cheapest(buys: list[Buy], allocation: Allocation) -> tuple[Offer, Market]:
+    """``spot_if_available`` prefers the spot market; every other allocation prefers the price."""
+    preferred = [buy for buy in buys if buy.market == "spot"] if allocation == "spot_if_available" else []
+    buy = min(preferred or buys, key=lambda buy: buy.price)
+    return buy.offer, buy.market
 
 
 def _seed(machine: Machine) -> str:
