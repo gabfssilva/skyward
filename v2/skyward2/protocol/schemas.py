@@ -54,7 +54,14 @@ type ExecutionState = Literal[
     "indeterminate",
 ]
 
-type Dispatch = Literal["one", "all"]
+type Dispatch = Literal["one", "all", "stream"]
+"""One node, every node, or one node that answers in pieces.
+
+A stream is a task like any other — it is admitted, written down and given an
+execution — and it is dispatched by the request that reads it rather than by the
+reconciler. Nobody can hold the far end of a stream but the caller who is consuming
+it, so nobody else can start one on their behalf.
+"""
 type Desired = Literal["running", "deleted"]
 type NodeDesired = Literal["present", "deleted"]
 type Allocation = Literal["spot", "on_demand", "spot_if_available", "cheapest"]

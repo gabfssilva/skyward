@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 from litestar import Controller, Response, delete, get, post
 from litestar.params import Parameter
+from litestar.response import Stream
 
 from skyward2.application import ports
 from skyward2.application.reconciler import Wakeup
@@ -15,6 +18,18 @@ from skyward2.protocol.schemas import (
 )
 
 BLOB = "application/vnd.skyward.blob"
+FRAMES = "application/vnd.skyward.frames"
+
+
+async def framed(frames: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    """Each frame, with its length in front of it.
+
+    A stream of msgpack values needs a boundary, and the transport does not supply
+    one: HTTP chunks are how the network felt like splitting the bytes, not how the
+    generator yielded them.
+    """
+    async for frame in frames:
+        yield len(frame).to_bytes(4, "big") + frame
 
 
 class TaskController(Controller):
@@ -101,6 +116,23 @@ class TaskController(Controller):
     async def result(self, task_id: str, tasks: ports.Tasks, wait: int = 0) -> Response[bytes | None]:
         blob = await tasks.result(task_id, wait)
         return Response(blob, status_code=200 if blob is not None else 204, media_type=BLOB)
+
+    @get(
+        "/{task_id:str}/stream",
+        media_type=FRAMES,
+        summary="Read a streaming task",
+        description=(
+            "For a task submitted with `dispatch: stream` — a generator on the far side. **This request is the "
+            "dispatch**: the reconciler does not start a streaming task, because the only process that can hold the "
+            "far end of a stream is the one consuming it.\n\n"
+            "Length-prefixed msgpack frames: 4 bytes big-endian, then the frame. A frame is an item or a failure, and "
+            "a failure is the last one — by the time a generator raises, the caller already has the items before it, "
+            "and there is no status code left to fail with.\n\n"
+            "Not resumable. A dropped stream is a dead stream; submit another task."
+        ),
+    )
+    async def stream(self, task_id: str, reconciler: ports.Reconciler) -> Stream:
+        return Stream(framed(reconciler.stream(task_id)), media_type=FRAMES)
 
     @get("/{task_id:str}/executions", summary="List the physical attempts")
     async def list_executions(self, task_id: str, executions: ports.Executions) -> Page[Execution]:

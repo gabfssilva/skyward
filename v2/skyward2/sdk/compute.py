@@ -12,7 +12,7 @@ import asyncio
 import os
 import threading
 import uuid
-from collections.abc import Callable, Coroutine, Iterable, Sequence
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Iterator, Sequence
 from concurrent.futures import Future
 from pathlib import Path
 from typing import Self
@@ -24,11 +24,13 @@ from skyward2.persistence.db import DEFAULT_PATH
 from skyward2.plugins import Plugin
 from skyward2.protocol import codec
 from skyward2.protocol.accelerators import resolve
+from skyward2.protocol.frames import Chunk, Failed, Frame
 from skyward2.protocol.schemas import (
     Allocation,
     ComputeCreate,
     ComputeSpec,
     Dispatch,
+    Error,
     Image,
     NodeBounds,
     ProviderCreate,
@@ -45,8 +47,8 @@ from skyward2.protocol.schemas import (
     Spec as SpecRef,
 )
 from skyward2.sdk.client import Client
-from skyward2.sdk.errors import SkywardError
-from skyward2.sdk.function import Group, Pending
+from skyward2.sdk.errors import SkywardError, TaskFailedError
+from skyward2.sdk.function import Group, Pending, Streaming
 from skyward2.sdk.provider import Provider
 from skyward2.sdk.spec import Nodes, NodeSpec, Spec
 
@@ -174,6 +176,33 @@ class Compute:
         futures = [self.start(pending) for pending in group.pendings]
         return [future.result() for future in futures]
 
+    def stream[T](self, pending: Streaming[T]) -> Iterator[T]:
+        """The items, as the machine produces them.
+
+        The task is submitted here and dispatched by the request that reads it — the
+        loop below pulls one frame at a time, and the pull reaches all the way to the
+        generator on the node. A consumer that stops consuming stops it.
+
+        The failure comes back as the last frame rather than as a status, because by
+        the time a generator raises, the caller already has the items it yielded
+        before it, and there is no other way to say so.
+        """
+        task = self.loop.run(self._submit(pending, dispatch="stream"))
+        frames = self.client.frames(f"/v1/tasks/{task.id}/stream")
+
+        try:
+            while (frame := self.loop.run(_next(frames))) is not None:
+                match msgspec.msgpack.decode(frame, type=Frame):
+                    case Chunk(value=value):
+                        yield codec.loads(value)
+                    case Failed(error=error, traceback=trace):
+                        raise TaskFailedError(
+                            Error(code="task_failed", message=error, retryable=False, details={"traceback": trace}),
+                        )
+        finally:
+            if self._loop is not None:
+                self.loop.run(frames.aclose())
+
     def map[I, R](self, fn: Callable[[I], Pending[R]], items: Iterable[I]) -> list[R]:
         """One task per item, spread over the nodes, answers in the order asked."""
         futures = [self.start(fn(item)) for item in items]
@@ -269,7 +298,7 @@ class Compute:
         ]
         return [await codec.Pickle[T]().decode(blob) for blob in blobs if blob is not None]
 
-    async def _submit[T](self, pending: Pending[T], dispatch: Dispatch) -> Task:
+    async def _submit[T](self, pending: Pending[T] | Streaming[T], dispatch: Dispatch) -> Task:
         code = await codec.payload.encode(pending.fn)
         function = await codec.digest(code)
         await self.client.upload(
@@ -318,6 +347,11 @@ class Compute:
         while (blob := await self.client.blob(f"/v1/tasks/{task_id}/result", wait=POLL)) is None:
             continue
         return blob
+
+
+async def _next(frames: AsyncIterator[bytes]) -> bytes | None:
+    """One frame, or nothing left. The pull the consumer's ``for`` loop turns into."""
+    return await anext(frames, None)
 
 
 def _wire(spec: Spec) -> SpecRef:

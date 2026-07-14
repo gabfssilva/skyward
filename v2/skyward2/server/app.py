@@ -203,6 +203,7 @@ def create_app(svc: Services | None = None, database: Path | None = None) -> Lit
             "providers": Provide(lambda: svc.providers, sync_to_thread=False),
             "offers": Provide(lambda: svc.offers, sync_to_thread=False),
             "health": Provide(lambda: svc.health, sync_to_thread=False),
+            "reconciler": Provide(lambda: svc.reconciler, sync_to_thread=False),
             "wake": Provide(lambda: svc.wake, sync_to_thread=False),
         },
         listeners=build_listeners(svc.reconciler),

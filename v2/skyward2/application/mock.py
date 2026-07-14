@@ -302,6 +302,11 @@ class MockReconciler:
     async def task(self, task_id: str) -> None:
         self.reconciled.append(f"task:{task_id}")
 
+    async def stream(self, task_id: str) -> AsyncIterator[bytes]:
+        self.reconciled.append(f"stream:{task_id}")
+        return
+        yield b""
+
     async def observed(self, compute_id: str, node_id: str, state: str, error: str) -> None:
         self.reconciled.append(f"node:{node_id}:{state}")
 

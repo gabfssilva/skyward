@@ -15,7 +15,7 @@ import casty
 import msgspec
 import pytest
 
-from skyward2.protocol import codec
+from skyward2.protocol import codec, frames
 from skyward2.protocol.schemas import ComputeSpec, Image, NodeBounds, NodeState, ProviderRef, Spec
 from skyward2.providers.container import ContainerProvider
 from skyward2.runtime import worker
@@ -133,8 +133,8 @@ async def test_the_worker_answers_and_runs_what_it_is_sent(machine, key: asyncss
         args = await codec.payload.encode(((21,), {}))
         reply = await system.service(worker.Worker).run("tsk_1", code, args)
 
-        outcome = msgspec.msgpack.decode(reply, type=worker.Outcome)
-        assert isinstance(outcome, worker.Done), outcome
+        outcome = msgspec.msgpack.decode(reply, type=frames.Outcome)
+        assert isinstance(outcome, frames.Done), outcome
         assert await codec.payload.decode(outcome.value) == 42
     finally:
         await system.close()

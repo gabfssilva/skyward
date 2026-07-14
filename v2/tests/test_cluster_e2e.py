@@ -20,7 +20,7 @@ import msgspec
 import pytest
 
 from skyward2.application.provider import Machine
-from skyward2.protocol import codec
+from skyward2.protocol import codec, frames
 from skyward2.protocol.schemas import ComputeSpec, Image, NodeBounds, NodeState, ProviderRef, Spec
 from skyward2.providers.container import ContainerProvider
 from skyward2.runtime import worker
@@ -144,8 +144,8 @@ async def test_the_nodes_find_each_other_and_the_client_finds_all_of_them(
             args = await codec.payload.encode(((), {}))
             reply = await system.service(worker.Worker, at=member).run(f"tsk_{machine.id}", code, args)
 
-            outcome = msgspec.msgpack.decode(reply, type=worker.Outcome)
-            assert isinstance(outcome, worker.Done), outcome
+            outcome = msgspec.msgpack.decode(reply, type=frames.Outcome)
+            assert isinstance(outcome, frames.Done), outcome
             assert await codec.payload.decode(outcome.value) == machine.id, (
                 "a task pinned to a node runs on that node"
             )

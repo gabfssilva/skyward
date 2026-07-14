@@ -44,6 +44,7 @@ if TYPE_CHECKING:
         Scaleway,
         SkywardError,
         Spec,
+        Streaming,
         TaskFailedError,
         TaskIndeterminateError,
         TensorDock,
@@ -52,6 +53,7 @@ if TYPE_CHECKING:
         Vultr,
         function,
         gather,
+        stream,
     )
 
 RUNTIME = ("Info", "instance_info", "is_head", "shard", "silent", "stderr", "stdout")
@@ -86,6 +88,7 @@ __all__ = [
     "Scaleway",
     "SkywardError",
     "Spec",
+    "Streaming",
     "TaskFailedError",
     "TaskIndeterminateError",
     "TensorDock",
@@ -108,6 +111,7 @@ __all__ = [
     "silent",
     "stderr",
     "stdout",
+    "stream",
 ]
 
 

@@ -1,7 +1,7 @@
 from skyward2.protocol.schemas import Image
 from skyward2.sdk.compute import Compute
 from skyward2.sdk.errors import SkywardError, TaskFailedError, TaskIndeterminateError
-from skyward2.sdk.function import Group, Pending, function, gather
+from skyward2.sdk.function import Group, Pending, Streaming, function, gather, stream
 from skyward2.sdk.provider import (
     AWS,
     GCP,
@@ -41,6 +41,7 @@ __all__ = [
     "Scaleway",
     "SkywardError",
     "Spec",
+    "Streaming",
     "TaskFailedError",
     "TaskIndeterminateError",
     "TensorDock",
@@ -49,4 +50,5 @@ __all__ = [
     "Vultr",
     "function",
     "gather",
+    "stream",
 ]

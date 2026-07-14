@@ -175,6 +175,14 @@ class Reconciler(Protocol):
 
     async def task(self, task_id: str) -> None: ...
 
+    def stream(self, task_id: str) -> AsyncIterator[bytes]:
+        """Dispatch a streaming task and forward its frames to whoever is reading.
+
+        The one dispatch the reconciler does not do on its own: a stream has a far
+        end, and only the caller consuming it can hold that.
+        """
+        ...
+
     async def observed(self, compute_id: str, node_id: str, state: NodeState, error: str) -> None:
         """What a node's own lifecycle reported about it.
 

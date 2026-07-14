@@ -15,13 +15,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from typing import NamedTuple
 
 import msgspec
 
 from skyward2 import plugins
-from skyward2.application.errors import CapabilityMismatchError, NotFoundError
+from skyward2.application.errors import CapabilityMismatchError, ComputeNotAcceptingError, NotFoundError
 from skyward2.application.provider import Binding, Machine, Provider
 from skyward2.application.runtimes import Runtime, Runtimes, keypair
 from skyward2.persistence.computes import ComputeStore, GenerationStore, Infrastructure
@@ -32,6 +32,7 @@ from skyward2.persistence.offers import OfferCache
 from skyward2.persistence.providers import ProviderStore
 from skyward2.persistence.tasks import TaskStore
 from skyward2.protocol import codec
+from skyward2.protocol.frames import Chunk, Done, End, Failed, Outcome, Step
 from skyward2.protocol.schemas import (
     Allocation,
     Compute,
@@ -112,7 +113,7 @@ class Reconciler:
 
     async def task(self, task_id: str) -> None:
         task = await self._tasks.get(task_id)
-        if task.state not in ("queued", "running"):
+        if task.state not in ("queued", "running") or task.dispatch == "stream":
             return
 
         runtime = self._runtimes.of(task.compute_id)
@@ -122,6 +123,70 @@ class Reconciler:
         for execution in task.executions:
             if execution.state == "created" and execution.id not in runtime.dispatched:
                 await self._dispatch(task, execution, runtime)
+
+    async def stream(self, task_id: str) -> AsyncIterator[bytes]:
+        """A streaming task, dispatched by the caller who is reading it.
+
+        The reconciler will not start one. A stream has a far end, and the only
+        process that can hold it is the one consuming it — dispatching it from a
+        background pass would produce items with nowhere to go, and the sweep would
+        do it again after every restart.
+
+        So the request is the dispatch: it places the execution, opens the generator
+        on the worker and pulls it, one item per item the reader takes. Nothing is
+        produced ahead of the reader, and a reader that goes away closes the
+        generator on the machine rather than leaving it running for nobody.
+
+        The closing is shielded because it is the cancellation that usually triggers
+        it: a caller who abandoned the stream cancels this coroutine, and an
+        unshielded ``await`` in the unwinding would be cancelled on the spot — which
+        is precisely how a generator gets left running on a machine somebody is still
+        paying for.
+        """
+        task = await self._tasks.get(task_id)
+        runtime = self._runtimes.of(task.compute_id)
+        if runtime is None or not runtime.ready:
+            raise ComputeNotAcceptingError(f"compute {task.compute_id} has no ready node to stream from")
+
+        execution = task.executions[0]
+        node_id = runtime.ready[execution.ordinal % len(runtime.ready)]
+
+        code = await self._blobs.get(task.function)
+        args = await self._blobs.get(task.args_sha256)
+
+        member = await runtime.member(node_id)
+        system = await runtime.system()
+        node = system.service(worker.Worker, at=member)
+
+        await self._tasks.observe(execution.id, "started", node_id=node_id)
+        await self._record("task.started", task.compute_id, task=task.id)
+
+        failure: Error | None = None
+        try:
+            await node.open(execution.id, code, args)
+            while True:
+                frame = await node.step(execution.id)
+                match msgspec.msgpack.decode(frame, type=Step):
+                    case End():
+                        break
+                    case Failed(error=error, traceback=trace):
+                        failure = Error(code="task_failed", message=error, retryable=False, details={"traceback": trace})
+                        yield frame
+                        break
+                    case Chunk():
+                        yield frame
+        except Exception as exc:
+            await self._lost(task, execution, exc)
+            return
+        finally:
+            await asyncio.shield(node.close(execution.id))
+
+        if failure:
+            await self._tasks.observe(execution.id, "failed", error=failure)
+            await self._record("task.failed", task.compute_id, task=task.id)
+        else:
+            await self._tasks.observe(execution.id, "succeeded")
+            await self._record("task.succeeded", task.compute_id, task=task.id)
 
     async def observed(self, compute_id: str, node_id: str, state: NodeState, error: str) -> None:
         """What the node's own lifecycle reported, and what follows from it.
@@ -430,13 +495,13 @@ class Reconciler:
             await self._record("task.started", task.compute_id, task=task.id)
 
             reply = await system.service(worker.Worker, at=member).run(execution.id, code, args)
-            outcome = msgspec.msgpack.decode(reply, type=worker.Outcome)
+            outcome = msgspec.msgpack.decode(reply, type=Outcome)
 
             match outcome:
-                case worker.Done(value=value):
+                case Done(value=value):
                     await self._tasks.observe(execution.id, "succeeded", result_sha256=await self._blobs.store(value))
                     await self._record("task.succeeded", task.compute_id, task=task.id)
-                case worker.Failed(error=error, traceback=trace):
+                case Failed(error=error, traceback=trace):
                     await self._tasks.observe(
                         execution.id,
                         "failed",

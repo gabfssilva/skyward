@@ -209,7 +209,7 @@ class TaskStore:
         and silently growing the fan-out would make ``@`` mean something different
         on every call.
         """
-        if body.dispatch == "one":
+        if body.dispatch in ("one", "stream"):
             return (body.rank or 0,)
 
         nodes = await self._nodes.list(compute, include_terminal=False, generation=None)

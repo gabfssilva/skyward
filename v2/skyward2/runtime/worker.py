@@ -16,17 +16,17 @@ import asyncio
 import os
 import sys
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from functools import partial
 
 import casty
 import msgspec
-from msgspec import Struct
 
 from skyward2 import distributed, plugins
 from skyward2.plugins import Plugin
 from skyward2.protocol import codec
+from skyward2.protocol.frames import Chunk, Done, End, Failed, Lookup, Outcome, Pending, Step, Unknown
 from skyward2.protocol.schemas import PluginRef
 from skyward2.runtime.api import instance_info
 from skyward2.runtime.journal import Journal, Phase, emit, task
@@ -35,31 +35,19 @@ PORT = 25520
 SEED_TIMEOUT = 180.0
 
 
-class Done(Struct, frozen=True, tag="done", tag_field="status"):
-    value: bytes
-
-
-class Failed(Struct, frozen=True, tag="failed", tag_field="status"):
-    error: str
-    traceback: str
-
-
-class Pending(Struct, frozen=True, tag="pending", tag_field="status"):
-    """The worker has the task and has not finished it."""
-
-
-class Unknown(Struct, frozen=True, tag="unknown", tag_field="status"):
-    """The worker has never heard of the task."""
-
-
-type Outcome = Done | Failed
-type Lookup = Done | Failed | Pending | Unknown
 type Arguments = tuple[tuple[object, ...], dict[str, object]]
+
+DONE = object()
+"""``StopIteration`` does not survive a thread hop; this does."""
 
 encode = msgspec.msgpack.encode
 function: codec.Codec[Callable[..., object]] = codec.Pickle()
+generator: codec.Codec[Callable[..., Iterator[object]]] = codec.Pickle()
 arguments: codec.Codec[Arguments] = codec.Pickle()
 outcomes: dict[str, Outcome | None] = {}
+generators: dict[str, Iterator[object]] = {}
+"""Streams in flight, by execution. Alive only as long as somebody is pulling on them."""
+
 installed: tuple[Plugin, ...] = ()
 """The compute's plugins, rebuilt on this machine from what the spec said they were."""
 
@@ -79,6 +67,40 @@ class Worker:
         outcome = await execute(id, code, args)
         outcomes[id] = outcome
         return encode(outcome)
+
+    async def open(self, id: str, code: bytes, args: bytes) -> None:
+        """Build the generator. Nothing of the user's code has run yet.
+
+        Calling a generator function runs none of its body, which is what makes the
+        opening separable from the pulling — and the pulling is what the caller
+        paces.
+        """
+        fn = await generator.decode(code)
+        positional, keyword = await arguments.decode(args)
+        generators[id] = plugins.chain(installed, partial(fn, *positional, **keyword), instance_info())()
+
+    async def step(self, id: str) -> bytes:
+        """One item, because somebody asked for one.
+
+        The stream is a pull and not a push: the daemon calls this once per item it
+        has somewhere to put, and the request reading it is what asks. So a consumer
+        that stops consuming stops the generator, and the node is never asked to hold
+        what nobody has asked for yet.
+
+        The code and the arguments are not sent again. They were sent once, to
+        ``open`` — a generator that yields a million items would otherwise ship the
+        user's function a million times.
+        """
+        return encode(await advance(id))
+
+    async def close(self, id: str) -> None:
+        """Let go of a generator whose caller went away.
+
+        There is nothing to keep. A stream cannot be resumed — the items already sent
+        are gone from here — so a caller that has stopped reading is a caller that
+        will not be back for this one.
+        """
+        generators.pop(id, None)
 
 
 @casty.service(name="skyward.Control")
@@ -150,6 +172,37 @@ async def execute(id: str, code: bytes, args: bytes) -> Outcome:
         value = await asyncio.to_thread(wrapped)
         return Done(value=await codec.payload.encode(value))
     except Exception as exc:
+        return Failed(error=str(exc), traceback=traceback.format_exc())
+    finally:
+        task.reset(token)
+
+
+async def advance(id: str) -> Step:
+    """Pull one item, off the event loop, and say what came of it.
+
+    The generator's body runs here and nowhere else, so every item costs a thread.
+    That is the right price: a step that blocks is the normal case — a stream is
+    usually a file being read or a model emitting tokens — and a step that blocked
+    the loop would stop the node answering for as long as it took.
+    """
+    def pull(iterator: Iterator[object]) -> object:
+        try:
+            return next(iterator)
+        except StopIteration:
+            return DONE
+        finally:
+            sys.stdout.flush()
+            sys.stderr.flush()
+
+    token = task.set(id)
+    try:
+        item = await asyncio.to_thread(pull, generators[id])
+        if item is DONE:
+            generators.pop(id, None)
+            return End()
+        return Chunk(value=await codec.payload.encode(item))
+    except Exception as exc:
+        generators.pop(id, None)
         return Failed(error=str(exc), traceback=traceback.format_exc())
     finally:
         task.reset(token)
