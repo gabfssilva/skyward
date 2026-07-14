@@ -11,7 +11,7 @@ from skyward2.persistence.providers import ProviderStore
 from skyward2.persistence.tables import OfferRow, ProviderRow
 from skyward2.protocol.schemas import ProviderCreate
 from skyward2.providers import REGISTRY
-from skyward2.providers.fake import FakeProvider
+from skyward2.providers.fake import CATALOG, FakeProvider
 from skyward2.server.app import create_app, with_real
 
 
@@ -70,7 +70,7 @@ async def test_offers_are_fetched_on_miss_and_served_from_cache_after(store, cac
     second = await cache.list(None, None, None, None, None, refresh=False)
 
     assert calls == 1, "second call must be served from cache"
-    assert len(first.items) == len(second.items) == 5
+    assert len(first.items) == len(second.items) == len(CATALOG)
 
 
 async def test_expired_offers_are_refetched(store, cache):
@@ -96,7 +96,7 @@ async def test_a_refresh_that_fails_serves_stale_offers_and_records_the_error(st
 
     offers = await cache.list(None, None, None, None, None, refresh=True)
 
-    assert len(offers.items) == 5, "a dead provider must degrade the answer, not erase the catalog"
+    assert len(offers.items) == len(CATALOG), "a dead provider must degrade the answer, not erase the catalog"
     assert (await store.get(provider.id)).last_error is not None
 
 
@@ -137,11 +137,22 @@ async def test_filters_run_against_the_cache(store, cache):
     assert all(offer.accelerator_count >= 8 for offer in big.items)
 
     cheap = await cache.list(None, None, None, None, 1.0, refresh=False)
-    assert all(offer.on_demand_price <= 1.0 for offer in cheap.items)
+    assert all(offer.price <= 1.0 for offer in cheap.items)
 
     ordered = await cache.list(None, None, None, None, None, refresh=False)
-    prices = [offer.on_demand_price for offer in ordered.items]
+    prices = [offer.price for offer in ordered.items]
     assert prices == sorted(prices)
+
+
+async def test_a_spot_only_offer_is_still_comparable_on_price(store, cache):
+    await store.create(ProviderCreate(name="local", kind="fake"))
+
+    offers = await cache.list(None, None, "h100", None, 7.0, refresh=False)
+    spot_only = [offer for offer in offers.items if offer.on_demand_price is None]
+
+    assert spot_only, "an offer with no on-demand price must survive a budget filter on its spot price"
+    assert all(offer.price == offer.spot_price for offer in spot_only)
+    assert offers.items[0].price == min(offer.price for offer in offers.items)
 
 
 async def test_deleting_a_provider_drops_its_offers(store, cache):
@@ -176,7 +187,7 @@ async def test_the_whole_path_over_http(tmp_path):
         assert items[0]["region"] == "lab-1"
 
         provider = await client.get("/v1/providers/local")
-        assert provider.json()["offers_count"] == 5
+        assert provider.json()["offers_count"] == len(CATALOG)
         assert provider.json()["offers_fetched_at"] is not None
 
         assert (await client.delete("/v1/providers/local")).status_code == 204

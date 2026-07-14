@@ -44,9 +44,9 @@ class OfferCache:
         if min_count:
             query = query.where(OfferRow.accelerator_count >= min_count)
         if max_price:
-            query = query.where(OfferRow.on_demand_price <= max_price)
+            query = query.where(OfferRow.price <= max_price)
 
-        rows = await query.order_by(OfferRow.on_demand_price)
+        rows = await query.order_by(OfferRow.price)
         return Page(items=tuple(_to_offer(row) for row in rows))
 
     async def _targets(self, provider: str | None, kind: str | None) -> list[ProviderRow]:
@@ -102,6 +102,7 @@ def _to_row(offer: Offer) -> OfferRow:
         region=offer.region,
         spot_price=offer.spot_price,
         on_demand_price=offer.on_demand_price,
+        price=offer.price,
         available=offer.available,
         specific=offer.specific,
         fetched_at=offer.fetched_at,

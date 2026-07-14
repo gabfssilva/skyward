@@ -720,34 +720,98 @@
           "cpus": {
             "type": "integer"
           },
+          "disk_gb": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "fetched_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
           "instance_type": {
+            "type": "string"
+          },
+          "kind": {
             "type": "string"
           },
           "memory_gb": {
             "type": "number"
           },
-          "price_per_hour": {
-            "type": "number"
+          "on_demand_price": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
-          "provider": {
+          "price": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_id": {
+            "type": "string"
+          },
+          "provider_name": {
             "type": "string"
           },
           "region": {
-            "type": "string"
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
-          "spot": {
-            "type": "boolean"
+          "specific": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "spot_price": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
           "accelerator_count",
           "cpus",
+          "expires_at",
+          "fetched_at",
+          "id",
           "instance_type",
+          "kind",
           "memory_gb",
-          "price_per_hour",
-          "provider",
-          "region",
-          "spot"
+          "provider_id",
+          "provider_name"
         ],
         "title": "Offer",
         "type": "object"
@@ -877,6 +941,56 @@
         "title": "Page[Node]",
         "type": "object"
       },
+      "Page_skyward2.protocol.schemas.Offer_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Offer"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "Page[Offer]",
+        "type": "object"
+      },
+      "Page_skyward2.protocol.schemas.Provider_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Provider"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "Page[Provider]",
+        "type": "object"
+      },
       "Page_skyward2.protocol.schemas.Task_": {
         "properties": {
           "items": {
@@ -920,29 +1034,110 @@
       },
       "Provider": {
         "properties": {
-          "capabilities": {
+          "config": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "last_error": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Error"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "offers_count": {
+            "default": 0,
+            "type": "integer"
+          },
+          "offers_fetched_at": {
+            "oneOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "offers_ttl_seconds": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "config",
+          "created_at",
+          "id",
+          "kind",
+          "name",
+          "offers_ttl_seconds"
+        ],
+        "title": "Provider",
+        "type": "object"
+      },
+      "ProviderCreate": {
+        "properties": {
+          "config": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "credentials": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "name"
+        ],
+        "title": "ProviderCreate",
+        "type": "object"
+      },
+      "ProviderKind": {
+        "properties": {
+          "credential_fields": {
             "items": {
               "type": "string"
             },
             "type": "array"
           },
-          "credentials_resolvable": {
-            "type": "boolean"
-          },
-          "daemon_supported": {
-            "type": "boolean"
-          },
           "kind": {
             "type": "string"
+          },
+          "offers_ttl_seconds": {
+            "type": "integer"
           }
         },
         "required": [
-          "capabilities",
-          "credentials_resolvable",
-          "daemon_supported",
-          "kind"
+          "credential_fields",
+          "kind",
+          "offers_ttl_seconds"
         ],
-        "title": "Provider",
+        "title": "ProviderKind",
         "type": "object"
       },
       "ProviderRef": {
@@ -3155,7 +3350,8 @@
     "/v1/offers": {
       "get": {
         "deprecated": false,
-        "operationId": "V1OffersOffers",
+        "description": "Served from the cache. Any provider whose offers have expired is refreshed first \u2014 the TTL belongs to the provider, because a marketplace bundle is gone in minutes while a fixed instance type is not.\n\nA refresh that fails does not empty the catalog: the stale rows are still served and the failure shows up as `last_error` on the provider. A provider being down degrades the answer; it does not erase it.",
+        "operationId": "V1OffersList",
         "parameters": [
           {
             "allowEmptyValue": false,
@@ -3163,6 +3359,24 @@
             "deprecated": false,
             "in": "query",
             "name": "provider",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "kind",
             "required": false,
             "schema": {
               "oneOf": [
@@ -3210,6 +3424,38 @@
                 }
               ]
             }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "in": "query",
+            "name": "max_price",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "Force a refetch even if the cache is still within its TTL.",
+            "in": "query",
+            "name": "refresh",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Force a refetch even if the cache is still within its TTL.",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -3217,10 +3463,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/Offer"
-                  },
-                  "type": "array"
+                  "$ref": "#/components/schemas/Page_skyward2.protocol.schemas.Offer_"
                 }
               }
             },
@@ -3268,22 +3511,22 @@
         },
         "summary": "Query instance offers",
         "tags": [
-          "catalog"
+          "offers"
         ]
       }
     },
-    "/v1/providers": {
+    "/v1/provider-kinds": {
       "get": {
         "deprecated": false,
-        "description": "Read-only. This is what capability negotiation runs against before any external effect: a provider without tags, tag lookup and a renewable lease cannot recover a create whose commit was lost, so it does not support daemon mode and is refused at creation \u2014 not halfway through provisioning.",
-        "operationId": "V1ProvidersProviders",
+        "description": "Capability negotiation happens here, before anything is created: each kind declares the credentials it needs and how long its offers stay fresh. A kind absent from this list cannot be registered.",
+        "operationId": "V1ProviderKindsList",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/Provider"
+                    "$ref": "#/components/schemas/ProviderKind"
                   },
                   "type": "array"
                 }
@@ -3293,9 +3536,239 @@
             "headers": {}
           }
         },
-        "summary": "List providers and their capabilities",
+        "summary": "List the provider kinds this build supports",
         "tags": [
-          "catalog"
+          "providers"
+        ]
+      }
+    },
+    "/v1/providers": {
+      "get": {
+        "deprecated": false,
+        "operationId": "V1ProvidersList",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_skyward2.protocol.schemas.Provider_"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          }
+        },
+        "summary": "List registered providers",
+        "tags": [
+          "providers"
+        ]
+      },
+      "post": {
+        "deprecated": false,
+        "description": "A provider is a named account, not a kind: two AWS accounts, two Vast keys and two regions can coexist, and a compute refers to the provider it wants by id or name.\n\nCredentials are validated against the kind's `credential_fields` before the row is written, and are never returned by any read path.",
+        "operationId": "V1ProvidersCreate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Provider"
+                }
+              }
+            },
+            "description": "Document created, URL follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Register a provider account",
+        "tags": [
+          "providers"
+        ]
+      }
+    },
+    "/v1/providers/{provider_id}": {
+      "delete": {
+        "deprecated": false,
+        "description": "Drops the account and its cached offers. Computes already running on it are not touched.",
+        "operationId": "V1ProvidersProviderIdDestroy",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "provider_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Request fulfilled, nothing follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Remove a provider",
+        "tags": [
+          "providers"
+        ]
+      },
+      "get": {
+        "deprecated": false,
+        "description": "Accepts an id or a name. Credentials are never included.",
+        "operationId": "V1ProvidersProviderIdRead",
+        "parameters": [
+          {
+            "deprecated": false,
+            "in": "path",
+            "name": "provider_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Provider"
+                }
+              }
+            },
+            "description": "Request fulfilled, document follows",
+            "headers": {}
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Validation Exception",
+                  "examples": [
+                    {
+                      "detail": "Bad Request",
+                      "extra": {},
+                      "status_code": 400
+                    }
+                  ],
+                  "properties": {
+                    "detail": {
+                      "type": "string"
+                    },
+                    "extra": {
+                      "additionalProperties": {},
+                      "type": [
+                        "null",
+                        "object",
+                        "array"
+                      ]
+                    },
+                    "status_code": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "detail",
+                    "status_code"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bad request syntax or unsupported method"
+          }
+        },
+        "summary": "Read a provider",
+        "tags": [
+          "providers"
         ]
       }
     },

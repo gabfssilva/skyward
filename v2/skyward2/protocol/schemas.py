@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from msgspec import UNSET, Struct, UnsetType, field
+from msgspec.structs import force_setattr
 
 type ComputeState = Literal[
     "requested",
@@ -309,4 +310,16 @@ class Offer(Struct, frozen=True):
     spot_price: float | None = None
     on_demand_price: float | None = None
     available: int | None = None
+    price: float | None = None
     specific: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Derive the price this offer is compared on: the cheapest it can be had for.
+
+        Ordering and budget filters run on this, not on ``on_demand_price``:
+        several providers publish spot-only flavors, and comparing those on a
+        price they do not have would hide them from every question about cost.
+        Derived here rather than in each adapter, so no adapter can forget it.
+        """
+        prices = [price for price in (self.spot_price, self.on_demand_price) if price is not None]
+        force_setattr(self, "price", min(prices) if prices else None)

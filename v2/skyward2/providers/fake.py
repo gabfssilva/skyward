@@ -9,6 +9,7 @@ CATALOG = (
     ("a100", 8, 96, 680.0, 8.80, 17.60),
     ("h100", 1, 20, 120.0, 2.40, 4.80),
     ("h100", 8, 160, 960.0, 19.20, 38.40),
+    ("h100", 4, 80, 480.0, 6.00, None),
     (None, 0, 4, 16.0, 0.05, 0.12),
 )
 
@@ -17,7 +18,9 @@ class FakeProvider:
     """A provider that costs nothing to query and never flakes.
 
     Exists so the cache, the TTL and the whole offers path can be tested without
-    a network or an API key.
+    a network or an API key. Its catalog carries a spot-only flavor on purpose:
+    Hyperstack, Verda and Massed Compute all publish some, and an offer with no
+    on-demand price is the case that breaks naive price handling.
     """
 
     kind: ClassVar[str] = "fake"
