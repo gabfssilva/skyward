@@ -22,6 +22,8 @@ from typing import Literal
 import msgspec
 from msgspec import Struct
 
+from skyward2.runtime.api import Stream, policy, rank
+
 SKYWARD_DIR = "/opt/skyward"
 EVENTS = f"{SKYWARD_DIR}/events.jsonl"
 LOCK = f"{SKYWARD_DIR}/events.lock"
@@ -81,21 +83,29 @@ class Journal(io.TextIOBase):
     Output is buffered until a newline, because a line is the unit the log is made
     of: ``print(a, b)`` reaches here as four writes, and emitting each as its own
     event would scatter one line of the user's output across four.
+
+    What the task's output policy silences is dropped here, where it was written,
+    rather than shipped over SSH and thrown away at the other end.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, stream: Stream) -> None:
+        self._stream: Stream = stream
         self._partial = ""
 
     def write(self, s: str, /) -> int:
         *lines, self._partial = (self._partial + s).split("\n")
         for line in lines:
-            emit(Console(content=line, task=task.get()))
+            self._emit(line)
         return len(s)
 
     def flush(self) -> None:
         if self._partial:
-            emit(Console(content=self._partial, task=task.get()))
+            self._emit(self._partial)
             self._partial = ""
+
+    def _emit(self, content: str) -> None:
+        if policy.get().allows(self._stream, rank()):
+            emit(Console(content=content, task=task.get()))
 
     def isatty(self) -> bool:
         return False

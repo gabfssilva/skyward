@@ -46,6 +46,17 @@ def whoami() -> str:
     return os.environ["SKYWARD_NODE"]
 
 
+@skyward.function
+def placement() -> tuple[int, int, bool]:
+    info = skyward.instance_info()
+    return info.rank, info.nodes, info.is_head
+
+
+@skyward.function
+def my_share(data: list[int]) -> list[int]:
+    return list(skyward.shard(data))
+
+
 @pytest.fixture
 def pool(tmp_path: Path):
     with skyward.Compute(
@@ -83,6 +94,17 @@ def test_gather_groups_calls_the_way_the_ampersand_does(pool: Compute):
 
 def test_map_keeps_the_order_it_was_asked_in(pool: Compute):
     assert pool.map(double, range(6)) == [0, 2, 4, 6, 8, 10]
+
+
+def test_every_node_knows_its_rank_and_only_one_of_them_is_the_head(pool: Compute):
+    assert sorted(placement() @ pool) == [(0, 2, True), (1, 2, False)]
+
+
+def test_a_broadcast_shard_splits_the_data_and_loses_none_of_it(pool: Compute):
+    shards = my_share(list(range(7))) @ pool
+
+    assert sorted(item for part in shards for item in part) == list(range(7))
+    assert sorted(len(part) for part in shards) == [3, 4]
 
 
 def test_a_function_that_raises_arrives_as_an_exception_with_its_traceback(pool: Compute):

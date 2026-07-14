@@ -49,6 +49,8 @@ class Node:
         source: Source,
         listener: Listener,
         output: Output,
+        rank: int = 0,
+        peers: tuple[str, ...] = (),
         seeds: tuple[str, ...] = (),
         concurrency: int = 1,
     ) -> None:
@@ -61,6 +63,8 @@ class Node:
         self._source = source
         self._listener = listener
         self._output = output
+        self._rank = rank
+        self._peers = peers
         self._seeds = seeds
         self._concurrency = concurrency
         self._ssh = SshChannel(
@@ -126,9 +130,9 @@ class Node:
     async def _launch(self) -> None:
         """Start the worker, and open the way to it.
 
-        The seeds arrive from above. Which node the others join is a fact about
-        the compute — it is the one thing here a node cannot know about itself,
-        and the one thing it is not asked to.
+        The seeds arrive from above, and so do the rank and the peers. What a node
+        is among the others is a fact about the compute — the one class of thing
+        here a node cannot know about itself, and is not asked to.
         """
         environment = " ".join(
             f"{name}={value}"
@@ -136,6 +140,8 @@ class Node:
                 ("SKYWARD_NODE", self._machine.id),
                 ("SKYWARD_COMPUTE", self._compute),
                 ("SKYWARD_PEER", self.peer),
+                ("SKYWARD_RANK", str(self._rank)),
+                ("SKYWARD_PEERS", ",".join(self._peers)),
                 ("SKYWARD_SEEDS", ",".join(self._seeds)),
                 ("SKYWARD_SLOTS", str(self._concurrency)),
             )

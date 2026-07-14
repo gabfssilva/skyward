@@ -147,6 +147,8 @@ class Runtimes:
         node_id: str,
         machine: Machine,
         image: Image,
+        rank: int,
+        peers: tuple[str, ...],
         seeds: tuple[str, ...],
         concurrency: int,
     ) -> None:
@@ -162,6 +164,8 @@ class Runtimes:
             private_key=runtime.private_key,
             image=image,
             source=runtime.source,
+            rank=rank,
+            peers=peers,
             seeds=seeds,
             concurrency=concurrency,
             listener=lambda state, error: self._listener(runtime.compute, node_id, state, error),

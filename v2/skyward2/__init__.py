@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from skyward2 import accelerators
+    from skyward2.runtime.api import Info, instance_info, is_head, shard, silent, stderr, stdout
     from skyward2.sdk import (
         AWS,
         GCP,
@@ -52,6 +53,14 @@ if TYPE_CHECKING:
         gather,
     )
 
+RUNTIME = ("Info", "instance_info", "is_head", "shard", "silent", "stderr", "stdout")
+"""What a function asks while it is running, and the only names a node ever reaches for.
+
+They resolve out of ``skyward2.runtime.api``, which imports the standard library and
+nothing else. Routing them through the SDK would put httpx on a machine whose only
+job is to run somebody's training loop.
+"""
+
 __all__ = [
     "AWS",
     "GCP",
@@ -61,6 +70,7 @@ __all__ = [
     "Group",
     "Hyperstack",
     "Image",
+    "Info",
     "JarvisLabs",
     "Lambda",
     "MassedCompute",
@@ -81,6 +91,12 @@ __all__ = [
     "accelerators",
     "function",
     "gather",
+    "instance_info",
+    "is_head",
+    "shard",
+    "silent",
+    "stderr",
+    "stdout",
 ]
 
 
@@ -88,6 +104,8 @@ def __getattr__(name: str) -> object:
     match name:
         case "accelerators":
             value = importlib.import_module("skyward2.accelerators")
+        case _ if name in RUNTIME:
+            value = getattr(importlib.import_module("skyward2.runtime.api"), name)
         case _ if name in __all__:
             value = getattr(importlib.import_module("skyward2.sdk"), name)
         case _:

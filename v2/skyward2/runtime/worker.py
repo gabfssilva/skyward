@@ -117,16 +117,29 @@ async def execute(id: str, code: bytes, args: bytes) -> Outcome:
     failure there is: it is what a version of pandas that differs between the two
     ends looks like from here.
     """
+    def call(fn: Callable[..., object], positional: tuple[object, ...], keyword: dict[str, object]) -> object:
+        """Flush in the thread that wrote, and while the task's output policy still holds.
+
+        Both are context: the journal reads the policy the user's decorator set, and
+        that lives in the thread's copy of the context, not in the loop's. A trailing
+        line flushed anywhere else is a line flushed under the wrong policy, by a task
+        that is no longer the current one.
+        """
+        try:
+            return fn(*positional, **keyword)
+        finally:
+            sys.stdout.flush()
+            sys.stderr.flush()
+
     token = task.set(id)
     try:
         fn = await function.decode(code)
         positional, keyword = await arguments.decode(args)
-        value = await asyncio.to_thread(fn, *positional, **keyword)
+        value = await asyncio.to_thread(call, fn, positional, keyword)
         return Done(value=await codec.payload.encode(value))
     except Exception as exc:
         return Failed(error=str(exc), traceback=traceback.format_exc())
     finally:
-        sys.stdout.flush()
         task.reset(token)
 
 
@@ -174,9 +187,8 @@ def cli() -> None:
     about a worker that died importing torch. What the node waits for is the node
     itself saying it got this far.
     """
-    journal = Journal()
-    sys.stdout = journal
-    sys.stderr = journal
+    sys.stdout = Journal("stdout")
+    sys.stderr = Journal("stderr")
 
     try:
         asyncio.run(main())

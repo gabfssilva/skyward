@@ -308,6 +308,12 @@ class Reconciler:
         It is a bootstrap contact and not a head: casty needs an address to knock
         on, and after the knock every member is equal.
 
+        The rank a node is told is its position among the machines that exist, not
+        the rank the store gave it. They agree, and the reason they have to is
+        ``peers``: a node that is handed the list of every node and its own index
+        into it must find itself at that index, and a store rank left behind by a
+        machine that died would point at somebody else.
+
         Idempotent by the only means available: a node already being held is a node
         already being bootstrapped, and reconciling twice must not bootstrap twice.
         """
@@ -321,8 +327,9 @@ class Reconciler:
         ordered = sorted(alive.items(), key=lambda pair: pair[1].rank)
         first, _ = ordered[0]
         seed = _seed(observed[first])
+        peers = tuple(_peer(observed[machine_id]) for machine_id, _ in ordered)
 
-        for machine_id, node in ordered:
+        for rank, (machine_id, node) in enumerate(ordered):
             machine = observed[machine_id]
             if node.id in runtime.nodes or machine.state != "running" or not machine.host:
                 continue
@@ -332,6 +339,8 @@ class Reconciler:
                 node.id,
                 machine,
                 compute.spec.image,
+                rank=rank,
+                peers=peers,
                 seeds=() if machine_id == first else (seed,),
                 concurrency=concurrency,
             )
@@ -523,5 +532,10 @@ def _cheapest(buys: list[Buy], allocation: Allocation) -> tuple[Offer, Market]:
     return buy.offer, buy.market
 
 
+def _peer(machine: Machine) -> str:
+    """Where the other machines reach this one."""
+    return machine.private_host or machine.host or ""
+
+
 def _seed(machine: Machine) -> str:
-    return f"{machine.private_host or machine.host}:{worker.PORT}"
+    return f"{_peer(machine)}:{worker.PORT}"
