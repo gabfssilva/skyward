@@ -4,6 +4,7 @@ from litestar import Controller, Response, delete, get, patch, post, put
 from litestar.params import Parameter
 
 from skyward2.application import ports
+from skyward2.application.reconciler import Wakeup
 from skyward2.protocol.schemas import (
     Compute,
     ComputeCreate,
@@ -48,9 +49,11 @@ class ComputeController(Controller):
         self,
         data: ComputeCreate,
         computes: ports.Computes,
+        wake: Wakeup,
         idempotency_key: str = Parameter(header="Idempotency-Key"),
     ) -> Response[Compute]:
         compute, created = await computes.create(data, idempotency_key)
+        wake("compute.changed", compute_id=compute.id)
         return Response(compute, status_code=201 if created else 200, headers=etag(compute.revision))
 
     @get("/{compute_id:str}", summary="Read a compute", description="Accepts an id or a name. The response always carries both.")
@@ -73,9 +76,11 @@ class ComputeController(Controller):
         compute_id: str,
         data: ComputeSpecPatch,
         computes: ports.Computes,
+        wake: Wakeup,
         if_match: str = Parameter(header="If-Match"),
     ) -> Response[Compute]:
         compute = await computes.patch(compute_id, data, revision_of(if_match))
+        wake("compute.changed", compute_id=compute.id)
         return Response(compute, headers=etag(compute.revision))
 
     @delete(
@@ -92,10 +97,12 @@ class ComputeController(Controller):
         self,
         compute_id: str,
         computes: ports.Computes,
+        wake: Wakeup,
         if_match: str = Parameter(header="If-Match"),
         idempotency_key: str = Parameter(header="Idempotency-Key"),
     ) -> Response[Compute]:
         compute = await computes.delete(compute_id, revision_of(if_match), idempotency_key)
+        wake("compute.changed", compute_id=compute.id)
         return Response(compute, status_code=202, headers=etag(compute.revision))
 
     @get("/{compute_id:str}/generations", summary="List definition history")
@@ -124,10 +131,13 @@ class ComputeController(Controller):
         compute_id: str,
         data: GenerationCreate,
         generations: ports.Generations,
+        wake: Wakeup,
         if_match: str = Parameter(header="If-Match"),
         idempotency_key: str = Parameter(header="Idempotency-Key"),
     ) -> Generation:
-        return await generations.create(compute_id, data, revision_of(if_match), idempotency_key)
+        generation = await generations.create(compute_id, data, revision_of(if_match), idempotency_key)
+        wake("compute.changed", compute_id=compute_id)
+        return generation
 
     @put(
         "/{compute_id:str}/lease",

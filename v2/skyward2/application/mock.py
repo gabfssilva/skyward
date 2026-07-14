@@ -302,6 +302,9 @@ class MockReconciler:
     async def task(self, task_id: str) -> None:
         self.reconciled.append(f"task:{task_id}")
 
+    async def observed(self, compute_id: str, node_id: str, state: str, error: str) -> None:
+        self.reconciled.append(f"node:{node_id}:{state}")
+
     async def unsettled(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
         return (), ()
 

@@ -48,10 +48,11 @@ class Unknown(Struct, frozen=True, tag="unknown", tag_field="status"):
 
 type Outcome = Done | Failed
 type Lookup = Done | Failed | Pending | Unknown
-type Call = tuple[Callable[..., object], tuple[object, ...], dict[str, object]]
+type Arguments = tuple[tuple[object, ...], dict[str, object]]
 
 encode = msgspec.msgpack.encode
-call: codec.Codec[Call] = codec.Pickle()
+function: codec.Codec[Callable[..., object]] = codec.Pickle()
+arguments: codec.Codec[Arguments] = codec.Pickle()
 outcomes: dict[str, Outcome | None] = {}
 
 
@@ -65,9 +66,9 @@ class Worker:
     needs another node.
     """
 
-    async def run(self, id: str, payload: bytes) -> bytes:
+    async def run(self, id: str, code: bytes, args: bytes) -> bytes:
         outcomes[id] = None
-        outcome = await execute(id, payload)
+        outcome = await execute(id, code, args)
         outcomes[id] = outcome
         return encode(outcome)
 
@@ -98,13 +99,18 @@ class Control:
         return encode(lookup)
 
 
-async def execute(id: str, raw: bytes) -> Outcome:
+async def execute(id: str, code: bytes, args: bytes) -> Outcome:
     """Run one task, off the event loop, start to finish.
 
-    Nothing here touches the loop: the codec threads both directions, and the
-    function itself gets a thread of its own. Unpickling a large argument, or an
-    import triggered by it, costs as much as the function does — and this loop is
-    the one the daemon uses to ask whether the node is still alive.
+    The code and the arguments arrive as two blobs and are unpickled here, on the
+    machine that has the user's libraries. The daemon never opens either: it has
+    no torch, no pandas and no copy of the module the function came from, and a
+    control plane that had to import the user's world in order to dispatch to it
+    would be a control plane that dies of somebody else's dependency.
+
+    Nothing here touches the loop, either. The codec threads both directions and
+    the function gets a thread of its own — this loop is the one `Control.ping`
+    answers on, and a node holding it is a node that reads as dead.
 
     A failure to unpickle is therefore a failed task, with a traceback, rather
     than an exception thrown inside a casty handler. It is also the most common
@@ -113,8 +119,9 @@ async def execute(id: str, raw: bytes) -> Outcome:
     """
     token = task.set(id)
     try:
-        fn, args, kwargs = await call.decode(raw)
-        value = await asyncio.to_thread(fn, *args, **kwargs)
+        fn = await function.decode(code)
+        positional, keyword = await arguments.decode(args)
+        value = await asyncio.to_thread(fn, *positional, **keyword)
         return Done(value=await codec.payload.encode(value))
     except Exception as exc:
         return Failed(error=str(exc), traceback=traceback.format_exc())

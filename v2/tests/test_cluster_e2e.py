@@ -140,8 +140,9 @@ async def test_the_nodes_find_each_other_and_the_client_finds_all_of_them(
 
         for node, machine in zip(nodes, machines, strict=True):
             member = next(m for m in members if m.addr == node.seed)
-            payload = await codec.payload.encode((where, (), {}))
-            reply = await system.service(worker.Worker, at=member).run(f"tsk_{machine.id}", payload)
+            code = await codec.payload.encode(where)
+            args = await codec.payload.encode(((), {}))
+            reply = await system.service(worker.Worker, at=member).run(f"tsk_{machine.id}", code, args)
 
             outcome = msgspec.msgpack.decode(reply, type=worker.Outcome)
             assert isinstance(outcome, worker.Done), outcome

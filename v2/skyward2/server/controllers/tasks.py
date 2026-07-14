@@ -4,6 +4,7 @@ from litestar import Controller, Response, delete, get, post
 from litestar.params import Parameter
 
 from skyward2.application import ports
+from skyward2.application.reconciler import Wakeup
 from skyward2.protocol.schemas import (
     Execution,
     ExecutionCreate,
@@ -49,9 +50,11 @@ class TaskController(Controller):
         self,
         data: TaskCreate,
         tasks: ports.Tasks,
+        wake: Wakeup,
         idempotency_key: str = Parameter(header="Idempotency-Key"),
     ) -> Response[Task]:
         task, created = await tasks.submit(data, idempotency_key)
+        wake("task.changed", task_id=task.id)
         return Response(task, status_code=201 if created else 200)
 
     @get(
@@ -77,9 +80,11 @@ class TaskController(Controller):
         self,
         task_id: str,
         tasks: ports.Tasks,
+        wake: Wakeup,
         idempotency_key: str = Parameter(header="Idempotency-Key"),
     ) -> Response[Task]:
         task = await tasks.cancel(task_id, idempotency_key)
+        wake("task.changed", task_id=task.id)
         return Response(task, status_code=202)
 
     @get(
@@ -121,7 +126,9 @@ class TaskController(Controller):
         task_id: str,
         data: ExecutionCreate,
         executions: ports.Executions,
+        wake: Wakeup,
         idempotency_key: str = Parameter(header="Idempotency-Key"),
     ) -> Response[Task]:
         task = await executions.create(task_id, data, idempotency_key)
+        wake("task.changed", task_id=task.id)
         return Response(task, status_code=202)

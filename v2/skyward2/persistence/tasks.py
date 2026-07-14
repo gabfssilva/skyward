@@ -229,6 +229,11 @@ class TaskStore:
     async def attempts(self, task_id: str) -> list[ExecutionRow]:
         return await ExecutionRow.objects().where(ExecutionRow.task_id == task_id).order_by(ExecutionRow.ordinal)
 
+    async def unsettled(self) -> tuple[str, ...]:
+        """Tasks that have not reached a verdict — what the sweep re-offers."""
+        rows = await TaskRow.select(TaskRow.id).where(TaskRow.state.is_in(["queued", "running"]))
+        return tuple(row["id"] for row in rows)
+
     async def _row(self, task_id: str) -> TaskRow:
         row = await TaskRow.objects().where(TaskRow.id == task_id).first()
         if row is None:

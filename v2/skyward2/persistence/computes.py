@@ -4,6 +4,7 @@ from datetime import timedelta
 from typing import Any
 
 import msgspec
+from msgspec import Struct, field
 
 from skyward2.application.errors import LeaseHeldError, NotFoundError, RevisionConflictError
 from skyward2.application.provider import Binding
@@ -26,6 +27,21 @@ from skyward2.protocol.schemas import (
 
 LIVE: tuple[ComputeState, ...] = ("requested", "provisioning", "recovering", "ready", "degraded", "deleting")
 """The states in which a compute still has something owed to it."""
+
+
+class Infrastructure(Struct, frozen=True):
+    """Everything about a compute that is real, costs money, and is not in the spec.
+
+    None of it is in the API's ``Compute``, and all of it has to survive the
+    daemon: the provider account the machines were bought from, the offer they
+    were bought as, whatever the adapter needs to find them again, and the key
+    without which they are unreachable metal that keeps billing.
+    """
+
+    provider_id: str | None = None
+    offer_id: str | None = None
+    binding: Binding = field(default_factory=dict)
+    private_key: str | None = None
 
 
 class ComputeStore:
@@ -134,14 +150,30 @@ class ComputeStore:
         row.revision += 1
         await row.save().run()
 
-    async def binding(self, compute_id: str) -> Binding:
-        return await unpacked((await self._row(compute_id)).binding, dict[str, Any])
-
-    async def bind(self, compute_id: str, binding: Binding) -> None:
-        """Record what the provider built, before anything is built on top of it."""
+    async def infrastructure(self, compute_id: str) -> Infrastructure:
         row = await self._row(compute_id)
-        row.binding = await packed(binding)
-        await row.save().run()
+        return Infrastructure(
+            provider_id=row.provider_id,
+            offer_id=row.offer_id,
+            binding=await unpacked(row.binding, dict[str, Any]),
+            private_key=row.private_key,
+        )
+
+    async def bind(self, compute_id: str, infrastructure: Infrastructure) -> None:
+        """Record what the provider built, before anything is built on top of it.
+
+        Written before the machines are launched, and not after: a binding that is
+        only in memory when the daemon dies is a network, a keypair and a security
+        group that nobody will ever find again — and a key that is lost is a fleet
+        that keeps billing and can never be logged into.
+        """
+        await ComputeRow.update({
+            ComputeRow.provider_id: infrastructure.provider_id,
+            ComputeRow.offer_id: infrastructure.offer_id,
+            ComputeRow.binding: await packed(infrastructure.binding),
+            ComputeRow.private_key: infrastructure.private_key,
+            ComputeRow.revision: ComputeRow.revision + 1,
+        }).where(ComputeRow.id == compute_id).run()
 
     async def observe(self, compute_id: str, status: ComputeStatus) -> None:
         """Write what was seen. Only the reconciler calls this."""

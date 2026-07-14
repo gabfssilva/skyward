@@ -16,6 +16,7 @@ from skyward2.protocol.schemas import (
     Lease,
     LeaseClaim,
     Node,
+    NodeState,
     Offer,
     Page,
     Provider,
@@ -173,6 +174,15 @@ class Reconciler(Protocol):
     async def compute(self, compute_id: str) -> None: ...
 
     async def task(self, task_id: str) -> None: ...
+
+    async def observed(self, compute_id: str, node_id: str, state: NodeState, error: str) -> None:
+        """What a node's own lifecycle reported about it.
+
+        The one thing the reconciler is told rather than reads, because it is the
+        one thing no query can answer: whether the SSH connection this process is
+        holding got as far as a running worker.
+        """
+        ...
 
     async def unsettled(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Computes and tasks whose intent has not been realized yet."""

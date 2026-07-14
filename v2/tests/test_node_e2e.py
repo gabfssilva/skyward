@@ -129,8 +129,9 @@ async def test_the_worker_answers_and_runs_what_it_is_sent(machine, key: asyncss
             print("doubling")
             return x * 2
 
-        payload = await codec.payload.encode((double, (21,), {}))
-        reply = await system.service(worker.Worker).run("tsk_1", payload)
+        code = await codec.payload.encode(double)
+        args = await codec.payload.encode(((21,), {}))
+        reply = await system.service(worker.Worker).run("tsk_1", code, args)
 
         outcome = msgspec.msgpack.decode(reply, type=worker.Outcome)
         assert isinstance(outcome, worker.Done), outcome

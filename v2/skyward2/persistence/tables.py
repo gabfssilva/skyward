@@ -66,7 +66,10 @@ class ComputeRow(Table, tablename="computes"):
     ``binding`` is the provider's per-compute state — the network it created, the
     availability zone it pinned. It is not in the API's ``Compute``: it is
     infrastructure bookkeeping, and it is here rather than in memory because the
-    compute outlives by days the process that started it.
+    compute outlives by days the process that started it. The same goes for
+    ``private_key``: the daemon that reconnects to these machines after a restart
+    is not the daemon that provisioned them, and a key held in memory would strand
+    every machine it paid for.
 
     ``revision`` is the optimistic-concurrency token behind ``If-Match``. Every
     write bumps it; a write that expected an older one is refused.
@@ -77,7 +80,11 @@ class ComputeRow(Table, tablename="computes"):
     revision = Integer(default=1)
     generation = Integer(default=1)
     spec = JSONB(default="{}")
+
+    provider_id = Varchar(null=True, default=None)
+    offer_id = Varchar(null=True, default=None)
     binding = JSONB(default="{}")
+    private_key = Text(null=True, default=None)
 
     status_state = Varchar(index=True)
     status_observed_generation = Integer(default=0)
