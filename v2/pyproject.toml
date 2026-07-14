@@ -11,10 +11,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# What the SDK needs to reach a control plane — any control plane, including one
+# running in the same process.
+client = [
+    "httpx>=0.28",
+]
 # What the daemon needs and the node does not. The node installs the bare
 # package: it runs the worker, and a machine rented by the hour should not be
 # waiting on a web framework it will never serve with.
 server = [
+    "httpx>=0.28",
     "litestar>=2.13",
     "piccolo[sqlite]>=1.0",
     "asyncssh>=2.22.0",

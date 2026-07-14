@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from datetime import timedelta
+from typing import Any
 
 import msgspec
 from msgspec import UNSET
@@ -147,9 +148,9 @@ class TaskStore:
             case "succeeded" if task.result_sha256:
                 return await self._blobs.get(task.result_sha256)
             case "failed" | "cancelled" | "timed_out":
-                raise TaskFailedError(_reason(task), task=task_id, state=task.state)
+                raise TaskFailedError(_reason(task), task=task_id, state=task.state, **_cause(task))
             case "indeterminate":
-                raise TaskIndeterminateError(_reason(task), task=task_id)
+                raise TaskIndeterminateError(_reason(task), task=task_id, **_cause(task))
             case _:
                 return None
 
@@ -325,6 +326,17 @@ def _verdict(attempts: list[ExecutionRow]) -> TaskState:
 def _reason(task: Task) -> str:
     errors = [execution.error.message for execution in task.executions if execution.error]
     return errors[0] if errors else f"task {task.id} is {task.state}"
+
+
+def _cause(task: Task) -> dict[str, Any]:
+    """What the execution said, carried up with the exception.
+
+    The remote traceback is the only part of a failure worth having, and it is
+    written on the execution. An error that arrives without it tells the caller
+    that something broke and nothing about where.
+    """
+    errors = [execution.error for execution in task.executions if execution.error]
+    return dict(errors[0].details) if errors and errors[0].details else {}
 
 
 async def _to_task(row: TaskRow) -> Task:

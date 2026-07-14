@@ -1475,9 +1475,13 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+client = [
+    { name = "httpx" },
+]
 server = [
     { name = "aioboto3" },
     { name = "asyncssh" },
+    { name = "httpx" },
     { name = "litestar" },
     { name = "piccolo", extra = ["sqlite"] },
 ]
@@ -1488,12 +1492,14 @@ requires-dist = [
     { name = "asyncssh", marker = "extra == 'server'", specifier = ">=2.22.0" },
     { name = "casty", specifier = ">=0.22.1" },
     { name = "cloudpickle", specifier = ">=3.1" },
+    { name = "httpx", marker = "extra == 'client'", specifier = ">=0.28" },
+    { name = "httpx", marker = "extra == 'server'", specifier = ">=0.28" },
     { name = "litestar", marker = "extra == 'server'", specifier = ">=2.13" },
     { name = "lz4", specifier = ">=4.3" },
     { name = "msgspec", specifier = ">=0.19" },
     { name = "piccolo", extras = ["sqlite"], marker = "extra == 'server'", specifier = ">=1.0" },
 ]
-provides-extras = ["server"]
+provides-extras = ["client", "server"]
 
 [[package]]
 name = "sniffio"
