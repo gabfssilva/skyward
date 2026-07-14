@@ -1,4 +1,3 @@
-import re
 from collections.abc import AsyncIterator, Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
@@ -13,8 +12,6 @@ SERVER_META_PATH = "/misc/server_meta"
 
 EUROPE_REGION = "europe-01"
 EUROPE_GPU_COUNTS = (1, 8)
-
-_MEMORY_SUFFIX = re.compile(r"[-_]?\d+GB$", re.IGNORECASE)
 
 
 class JarvisLabsProvider:
@@ -77,8 +74,9 @@ class JarvisLabsProvider:
                     provider_name=self._name,
                     kind=self.kind,
                     instance_type=f"{gpu_type}x{count}",
-                    accelerator=_accelerator(gpu_type),
+                    accelerator=gpu_type,
                     accelerator_count=count,
+                    vram=float(vram) if vram else None,
                     cpus=cpus_per_gpu * count,
                     memory_gb=ram_per_gpu * count,
                     region=region,
@@ -112,7 +110,3 @@ def _gpu_counts(entry: Mapping[str, Any], region: str) -> Iterable[int]:
         return EUROPE_GPU_COUNTS
     max_gpus = int(entry.get("num_gpus") or 1)
     return range(1, max_gpus + 1)
-
-
-def _accelerator(gpu_type: str) -> str:
-    return _MEMORY_SUFFIX.sub("", gpu_type).lower().replace("_", "-")

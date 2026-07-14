@@ -12,24 +12,7 @@ BASE_URL = "https://vm.massedcompute.com/api/v1"
 INVENTORY_PATH = "/gpu-inventory"
 
 PRODUCT_PATTERN = re.compile(r"^gpu_(\d+)x_(.+)$", re.IGNORECASE)
-VARIANT_SUFFIXES = ("_spot", "_nvlink", "_low_ram", "_high_ram")
-
-ACCELERATORS: dict[str, str] = {
-    "a30": "a30",
-    "a5000": "rtx-a5000",
-    "a6000": "rtx-a6000",
-    "6000_ada": "rtx-6000-ada",
-    "pro_6000_blackwell": "rtx-pro-6000",
-    "a100": "a100",
-    "a100_sxm4": "a100",
-    "dgx_a100": "a100",
-    "h100": "h100",
-    "h100_sxm5": "h100",
-    "h100_nvl": "h100-nvl",
-    "h200_nvl": "h200-nvl",
-    "l40": "l40",
-    "l40s": "l40s",
-}
+VARIANT_SUFFIXES = ("_spot", "_low_ram", "_high_ram")
 
 
 class MassedComputeProvider:
@@ -78,7 +61,7 @@ class MassedComputeProvider:
             specs = instance_type["specs"]
             price = float(instance_type["price_cents_per_hour"]) / 100.0
             spot = _is_spot(product)
-            accelerator, count = _accelerator(product)
+            accelerator, count = _gpu(product)
             capacity = int(item.get("capacity_available") or 0)
             regions = [region["name"] for region in item.get("regions_with_capacity_available", [])]
 
@@ -114,7 +97,14 @@ def _is_spot(product: str) -> bool:
     return product.lower().endswith("_spot")
 
 
-def _accelerator(product: str) -> tuple[str | None, int]:
+def _gpu(product: str) -> tuple[str | None, int]:
+    """Pull the GPU token and its count out of a product id (``gpu_8x_a6000_spot``).
+
+    A Massed Compute product id is not a GPU name — the count, the rental
+    variant and the model are packed into one string, and unpacking that is
+    provider knowledge. Naming the GPU is not: the token comes out raw
+    (``h100_nvl``, ``a6000``) and the shared vocabulary canonicalizes it.
+    """
     match = PRODUCT_PATTERN.match(product)
     if not match:
         return None, 0
@@ -130,4 +120,4 @@ def _accelerator(product: str) -> tuple[str | None, int]:
                 model = model[: -len(suffix)]
                 changed = True
 
-    return ACCELERATORS.get(model, model.replace("_", "-")), count
+    return model or None, count

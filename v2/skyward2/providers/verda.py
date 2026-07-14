@@ -1,4 +1,3 @@
-import re
 from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
@@ -12,8 +11,6 @@ BASE_URL = "https://api.verda.com/v1"
 TOKEN_PATH = "/oauth2/token"
 INSTANCE_TYPES_PATH = "/instance-types"
 AVAILABILITY_PATH = "/instance-availability"
-
-GPU_ALIASES = {"tesla-v100": "v100"}
 
 
 class VerdaProvider:
@@ -82,6 +79,7 @@ class VerdaProvider:
             gpu = entry.get("gpu") or {}
             gpu_count = int(gpu.get("number_of_gpus") or 0)
             total_vram = float((entry.get("gpu_memory") or {}).get("size_in_gigabytes") or 0)
+            vram_per_card = total_vram / gpu_count if gpu_count else None
             on_demand_price = _price(entry.get("price_per_hour"))
             spot_price = _price(entry.get("spot_price"))
 
@@ -99,8 +97,9 @@ class VerdaProvider:
                     provider_name=self._name,
                     kind=self.kind,
                     instance_type=name,
-                    accelerator=_accelerator(gpu.get("description")),
+                    accelerator=gpu.get("description"),
                     accelerator_count=gpu_count,
+                    vram=vram_per_card,
                     cpus=int((entry.get("cpu") or {}).get("number_of_cores") or 0),
                     memory_gb=float((entry.get("memory") or {}).get("size_in_gigabytes") or 0),
                     region=region,
@@ -112,7 +111,7 @@ class VerdaProvider:
                     expires_at=expires_at,
                     specific={
                         "gpu_description": gpu.get("description"),
-                        "gpu_memory_gb_per_card": total_vram / gpu_count if gpu_count else None,
+                        "gpu_memory_gb_per_card": vram_per_card,
                         "storage": (entry.get("storage") or {}).get("description"),
                         "supported_os": entry.get("supported_os", []),
                         "location_code": region,
@@ -143,13 +142,3 @@ def _price(raw: object) -> float | None:
         return float(str(raw))
     except ValueError:
         return None
-
-
-def _accelerator(description: str | None) -> str | None:
-    if not description:
-        return None
-    match = re.match(r"^\d+x\s+(.+?)(?:\s+\d+GB)?$", description)
-    if not match:
-        return None
-    model = re.sub(r"\s+SXM\d+", "", match.group(1)).lower().replace(" ", "-")
-    return GPU_ALIASES.get(model, model)

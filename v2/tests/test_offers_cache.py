@@ -66,8 +66,8 @@ async def test_offers_are_fetched_on_miss_and_served_from_cache_after(store, cac
 
     monkeypatch.setattr(FakeProvider, "offers", counting)
 
-    first = await cache.list(None, None, None, None, None, refresh=False)
-    second = await cache.list(None, None, None, None, None, refresh=False)
+    first = await cache.list(None, None, None, None, None, None, refresh=False)
+    second = await cache.list(None, None, None, None, None, None, refresh=False)
 
     assert calls == 1, "second call must be served from cache"
     assert len(first.items) == len(second.items) == len(CATALOG)
@@ -75,26 +75,26 @@ async def test_offers_are_fetched_on_miss_and_served_from_cache_after(store, cac
 
 async def test_expired_offers_are_refetched(store, cache):
     provider = await store.create(ProviderCreate(name="local", kind="fake"))
-    await cache.list(None, None, None, None, None, refresh=False)
+    await cache.list(None, None, None, None, None, None, refresh=False)
 
     await OfferRow.update({OfferRow.expires_at: datetime.now(UTC) - timedelta(seconds=1)}).where(
         OfferRow.provider_id == provider.id,
     ).run()
 
-    offers = await cache.list(None, None, None, None, None, refresh=False)
+    offers = await cache.list(None, None, None, None, None, None, refresh=False)
     assert all(offer.expires_at > datetime.now(UTC) for offer in offers.items)
 
 
 async def test_a_refresh_that_fails_serves_stale_offers_and_records_the_error(store, cache, monkeypatch):
     provider = await store.create(ProviderCreate(name="local", kind="fake"))
-    await cache.list(None, None, None, None, None, refresh=False)
+    await cache.list(None, None, None, None, None, None, refresh=False)
 
     def exploding(self):
         raise RuntimeError("provider is down")
 
     monkeypatch.setattr(FakeProvider, "offers", exploding)
 
-    offers = await cache.list(None, None, None, None, None, refresh=True)
+    offers = await cache.list(None, None, None, None, None, None, refresh=True)
 
     assert len(offers.items) == len(CATALOG), "a dead provider must degrade the answer, not erase the catalog"
     assert (await store.get(provider.id)).last_error is not None
@@ -102,11 +102,11 @@ async def test_a_refresh_that_fails_serves_stale_offers_and_records_the_error(st
 
 async def test_a_refresh_drops_offers_that_vanished_from_the_catalog(store, cache, monkeypatch):
     await store.create(ProviderCreate(name="local", kind="fake"))
-    await cache.list(None, None, None, None, None, refresh=False)
+    await cache.list(None, None, None, None, None, None, refresh=False)
 
     monkeypatch.setattr("skyward2.providers.fake.CATALOG", (("a100", 1, 12, 85.0, 1.10, 2.20),))
 
-    offers = await cache.list(None, None, None, None, None, refresh=True)
+    offers = await cache.list(None, None, None, None, None, None, refresh=True)
     assert len(offers.items) == 1, "an offer that left the provider's catalog must leave the cache"
 
 
@@ -123,23 +123,23 @@ async def test_concurrent_reads_refresh_once(store, cache, monkeypatch):
 
     monkeypatch.setattr(FakeProvider, "offers", counting)
 
-    await asyncio.gather(*(cache.list(None, None, None, None, None, refresh=False) for _ in range(8)))
+    await asyncio.gather(*(cache.list(None, None, None, None, None, None, refresh=False) for _ in range(8)))
     assert calls == 1, "eight concurrent readers must not hammer the provider eight times"
 
 
 async def test_filters_run_against_the_cache(store, cache):
     await store.create(ProviderCreate(name="local", kind="fake"))
 
-    a100s = await cache.list(None, None, "a100", None, None, refresh=False)
+    a100s = await cache.list(None, None, "a100", None, None, None, refresh=False)
     assert {offer.accelerator for offer in a100s.items} == {"a100"}
 
-    big = await cache.list(None, None, None, 8, None, refresh=False)
+    big = await cache.list(None, None, None, 8, None, None, refresh=False)
     assert all(offer.accelerator_count >= 8 for offer in big.items)
 
-    cheap = await cache.list(None, None, None, None, 1.0, refresh=False)
+    cheap = await cache.list(None, None, None, None, None, 1.0, refresh=False)
     assert all(offer.price <= 1.0 for offer in cheap.items)
 
-    ordered = await cache.list(None, None, None, None, None, refresh=False)
+    ordered = await cache.list(None, None, None, None, None, None, refresh=False)
     prices = [offer.price for offer in ordered.items]
     assert prices == sorted(prices)
 
@@ -147,7 +147,7 @@ async def test_filters_run_against_the_cache(store, cache):
 async def test_a_spot_only_offer_is_still_comparable_on_price(store, cache):
     await store.create(ProviderCreate(name="local", kind="fake"))
 
-    offers = await cache.list(None, None, "h100", None, 7.0, refresh=False)
+    offers = await cache.list(None, None, "h100", None, None, 7.0, refresh=False)
     spot_only = [offer for offer in offers.items if offer.on_demand_price is None]
 
     assert spot_only, "an offer with no on-demand price must survive a budget filter on its spot price"
@@ -155,9 +155,19 @@ async def test_a_spot_only_offer_is_still_comparable_on_price(store, cache):
     assert offers.items[0].price == min(offer.price for offer in offers.items)
 
 
+async def test_a_catalog_too_big_for_one_insert_still_lands(store, cache, monkeypatch):
+    """Vultr publishes ~3000 offers. SQLite caps a statement at 32766 bound variables."""
+    big = tuple(("h100", count, 8, 64.0, 1.0, 2.0) for count in range(1, 2001))
+    monkeypatch.setattr("skyward2.providers.fake.CATALOG", big)
+    await store.create(ProviderCreate(name="local", kind="fake"))
+
+    offers = await cache.list(None, None, None, None, None, None, refresh=False)
+    assert len(offers.items) == 2000
+
+
 async def test_deleting_a_provider_drops_its_offers(store, cache):
     provider = await store.create(ProviderCreate(name="local", kind="fake"))
-    await cache.list(None, None, None, None, None, refresh=False)
+    await cache.list(None, None, None, None, None, None, refresh=False)
 
     await store.delete("local")
 

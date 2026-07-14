@@ -4,14 +4,20 @@ import asyncio
 import logging
 from collections import defaultdict
 from datetime import UTC, datetime
+from itertools import batched
 
 from piccolo.engine.sqlite import TransactionType
 
 from skyward2.persistence.providers import ProviderStore
 from skyward2.persistence.tables import OfferRow, ProviderRow
+from skyward2.protocol.accelerators import resolve
 from skyward2.protocol.schemas import Offer, Page
 
 logger = logging.getLogger(__name__)
+
+BATCH_SIZE = 500
+"""Rows per INSERT. SQLite caps a statement at 32766 bound variables, and an
+offer binds ~20 of them: Vultr's 3000-row catalog overflows a single insert."""
 
 
 class OfferCache:
@@ -32,6 +38,7 @@ class OfferCache:
         kind: str | None,
         accelerator: str | None,
         min_count: int | None,
+        min_vram: float | None,
         max_price: float | None,
         refresh: bool,
     ) -> Page[Offer]:
@@ -40,9 +47,11 @@ class OfferCache:
 
         query = OfferRow.objects().output(load_json=True).where(OfferRow.provider_id.is_in([row.id for row in targets]))
         if accelerator:
-            query = query.where(OfferRow.accelerator == accelerator)
+            query = query.where(OfferRow.accelerator == resolve(accelerator)[0])
         if min_count:
             query = query.where(OfferRow.accelerator_count >= min_count)
+        if min_vram:
+            query = query.where(OfferRow.vram >= min_vram)
         if max_price:
             query = query.where(OfferRow.price <= max_price)
 
@@ -79,8 +88,8 @@ class OfferCache:
 
         async with OfferRow._meta.db.transaction(transaction_type=TransactionType.immediate):
             await OfferRow.delete().where(OfferRow.provider_id == row.id).run()
-            if offers:
-                await OfferRow.insert(*(_to_row(offer) for offer in offers)).run()
+            for batch in batched(offers, BATCH_SIZE):
+                await OfferRow.insert(*(_to_row(offer) for offer in batch)).run()
             await ProviderRow.update(
                 {ProviderRow.offers_fetched_at: datetime.now(UTC), ProviderRow.last_error: None},
             ).where(ProviderRow.id == row.id).run()
@@ -96,6 +105,7 @@ def _to_row(offer: Offer) -> OfferRow:
         instance_type=offer.instance_type,
         accelerator=offer.accelerator,
         accelerator_count=offer.accelerator_count,
+        vram=offer.vram,
         cpus=offer.cpus,
         memory_gb=offer.memory_gb,
         disk_gb=offer.disk_gb,
@@ -119,6 +129,7 @@ def _to_offer(row: OfferRow) -> Offer:
         instance_type=row.instance_type,
         accelerator=row.accelerator,
         accelerator_count=row.accelerator_count,
+        vram=row.vram,
         cpus=row.cpus,
         memory_gb=row.memory_gb,
         disk_gb=row.disk_gb,

@@ -1,4 +1,3 @@
-import re
 from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
@@ -10,8 +9,6 @@ from skyward2.protocol.schemas import Offer
 
 BASE_URL = "https://cloud.lambda.ai/api/v1"
 INSTANCE_TYPES_PATH = "/instance-types"
-
-_GPU_DESCRIPTION = re.compile(r"(?:Tesla\s+|NVIDIA\s+)?([\w.-]+)\s*\((\d+)\s*GB", re.IGNORECASE)
 
 
 class LambdaProvider:
@@ -56,7 +53,7 @@ class LambdaProvider:
         for type_name, entry in catalog.items():
             info = entry["instance_type"]
             specs = info["specs"]
-            accelerator, vram_gb = _accelerator(info.get("gpu_description"))
+            gpu_description = info.get("gpu_description")
             regions = [region["name"] for region in entry.get("regions_with_capacity_available", [])]
 
             for region in regions or [None]:
@@ -66,7 +63,7 @@ class LambdaProvider:
                     provider_name=self._name,
                     kind=self.kind,
                     instance_type=type_name,
-                    accelerator=accelerator,
+                    accelerator=gpu_description if gpu_description != "N/A" else None,
                     accelerator_count=int(specs.get("gpus") or 0),
                     cpus=int(specs.get("vcpus") or 0),
                     memory_gb=float(specs.get("memory_gib") or 0),
@@ -80,16 +77,7 @@ class LambdaProvider:
                     specific={
                         "instance_type_name": type_name,
                         "description": info.get("description"),
-                        "gpu_description": info.get("gpu_description"),
-                        "vram_gb": vram_gb,
+                        "gpu_description": gpu_description,
                         "regions_with_capacity": regions,
                     },
                 )
-
-
-def _accelerator(gpu_description: str | None) -> tuple[str | None, int | None]:
-    if not gpu_description or gpu_description == "N/A":
-        return None, None
-    if match := _GPU_DESCRIPTION.match(gpu_description):
-        return match.group(1).lower(), int(match.group(2))
-    return gpu_description.lower().replace(" ", "-"), None

@@ -64,14 +64,17 @@ class VastAIProvider:
         for bundle in bundles:
             gpus = int(bundle.get("num_gpus") or 0)
             on_demand = bundle.get("dph_total")
+            gpu_name = bundle.get("gpu_name")
+            gpu_ram = bundle.get("gpu_ram")
             yield Offer(
                 id=str(bundle["id"]),
                 provider_id=self._id,
                 provider_name=self._name,
                 kind=self.kind,
-                instance_type=str(bundle.get("gpu_name") or "cpu"),
-                accelerator=_accelerator(bundle.get("gpu_name")),
+                instance_type=str(gpu_name or "cpu"),
+                accelerator=gpu_name,
                 accelerator_count=gpus,
+                vram=float(gpu_ram) / 1024 if gpu_ram else None,
                 cpus=int(bundle.get("cpu_cores_effective") or 0),
                 memory_gb=float(bundle.get("cpu_ram") or 0) / 1024,
                 region=bundle.get("geolocation"),
@@ -82,15 +85,10 @@ class VastAIProvider:
                 fetched_at=now,
                 expires_at=expires_at,
                 specific={
+                    "gpu_name": gpu_name,
                     "machine_id": bundle.get("machine_id"),
                     "cuda_max_good": bundle.get("cuda_max_good"),
                     "reliability": bundle.get("reliability2"),
                     "direct_port_count": bundle.get("direct_port_count"),
                 },
             )
-
-
-def _accelerator(gpu_name: str | None) -> str | None:
-    if not gpu_name:
-        return None
-    return gpu_name.lower().replace("rtx ", "").replace(" ", "-")

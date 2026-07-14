@@ -113,8 +113,9 @@ class RunPodProvider:
                         provider_name=self._name,
                         kind=self.kind,
                         instance_type=f"{gpu_id}:{cloud}",
-                        accelerator=_accelerator(display),
+                        accelerator=display,
                         accelerator_count=count,
+                        vram=float(vram_gb) or None,
                         cpus=vcpus * count,
                         memory_gb=memory_gb * count,
                         spot_price=round(bid * count, 4) if bid is not None else None,
@@ -130,7 +131,3 @@ class RunPodProvider:
                             "stock_status": price.get("stockStatus"),
                         },
                     )
-
-
-def _accelerator(display_name: str) -> str:
-    return display_name.lower().removeprefix("nvidia ").replace(" ", "-")

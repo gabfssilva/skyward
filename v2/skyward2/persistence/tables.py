@@ -42,6 +42,7 @@ class OfferRow(Table, tablename="offers"):
     instance_type = Varchar()
     accelerator = Varchar(null=True, default=None, index=True)
     accelerator_count = Integer(default=0, index=True)
+    vram = Float(null=True, default=None, index=True)
     cpus = Integer(default=0)
     memory_gb = Float(default=0.0)
     disk_gb = Float(null=True, default=None)

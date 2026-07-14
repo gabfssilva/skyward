@@ -4,6 +4,8 @@ from typing import Any, Literal
 from msgspec import UNSET, Struct, UnsetType, field
 from msgspec.structs import force_setattr
 
+from skyward2.protocol.accelerators import resolve
+
 type ComputeState = Literal[
     "requested",
     "provisioning",
@@ -310,16 +312,28 @@ class Offer(Struct, frozen=True):
     spot_price: float | None = None
     on_demand_price: float | None = None
     available: int | None = None
+    vram: float | None = None
     price: float | None = None
     specific: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        """Derive the price this offer is compared on: the cheapest it can be had for.
+        """Derive the two fields an offer is compared on: its accelerator and its price.
 
-        Ordering and budget filters run on this, not on ``on_demand_price``:
-        several providers publish spot-only flavors, and comparing those on a
-        price they do not have would hide them from every question about cost.
-        Derived here rather than in each adapter, so no adapter can forget it.
+        ``accelerator`` may be handed in exactly as the provider spells it
+        ("NVIDIA H100 80GB SXM5", "H100-80G-PCIe"); it is normalized here into
+        the shared vocabulary, and ``vram`` falls out of the same parse. Doing
+        it in the struct rather than in each adapter is the point: eleven
+        adapters normalizing on their own is how `h100` and `h100-sxm` ended up
+        being different accelerators.
+
+        ``price`` is the cheapest the offer can be had for. Ordering and budget
+        filters run on it, not on ``on_demand_price`` — several providers
+        publish spot-only flavors, and comparing those on a price they do not
+        have would hide them from every question about cost.
         """
+        accelerator, vram = resolve(self.accelerator, self.vram)
+        force_setattr(self, "accelerator", accelerator)
+        force_setattr(self, "vram", vram)
+
         prices = [price for price in (self.spot_price, self.on_demand_price) if price is not None]
         force_setattr(self, "price", min(prices) if prices else None)

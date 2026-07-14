@@ -27,8 +27,6 @@ DEFAULT_ZONES = (
 GIB = 1024**3
 GB = 1_000_000_000
 
-FORM_FACTORS = ("-sxm", "-pcie", "-nvl", " sxm", " pcie")
-
 
 class ScalewayProvider:
     """Scaleway — a fixed fleet, but the offer carries a per-zone availability flag.
@@ -86,6 +84,7 @@ class ScalewayProvider:
                 gpu_info = spec.get("gpu_info") or {}
                 gpu_name = gpu_info.get("gpu_name")
                 gpu_count = int(spec.get("gpu") or 0)
+                gpu_memory_gb = float(gpu_info.get("gpu_memory") or 0) / GIB or None
                 state = (availability.get(commercial_type) or {}).get("availability")
                 hourly = spec.get("hourly_price")
 
@@ -95,8 +94,9 @@ class ScalewayProvider:
                     provider_name=self._name,
                     kind=self.kind,
                     instance_type=commercial_type,
-                    accelerator=_accelerator(gpu_name) if gpu_count else None,
+                    accelerator=gpu_name if gpu_count else None,
                     accelerator_count=gpu_count,
+                    vram=gpu_memory_gb if gpu_count else None,
                     cpus=int(spec.get("ncpus") or 0),
                     memory_gb=float(spec.get("ram") or 0) / GIB,
                     region=zone,
@@ -112,7 +112,7 @@ class ScalewayProvider:
                         "arch": spec.get("arch"),
                         "availability": state,
                         "gpu_name": gpu_name,
-                        "gpu_memory_gb": float(gpu_info.get("gpu_memory") or 0) / GIB or None,
+                        "gpu_memory_gb": gpu_memory_gb,
                         "monthly_price": spec.get("monthly_price"),
                         "end_of_service": spec.get("end_of_service"),
                         "boot_types": (spec.get("capabilities") or {}).get("boot_types"),
@@ -120,15 +120,6 @@ class ScalewayProvider:
                         "scratch_storage_max_size": spec.get("scratch_storage_max_size"),
                     },
                 )
-
-
-def _accelerator(gpu_name: str | None) -> str | None:
-    if not gpu_name:
-        return None
-    name = gpu_name.lower().replace("nvidia ", "").strip()
-    for suffix in FORM_FACTORS:
-        name = name.replace(suffix, "")
-    return name.strip("- ") or None
 
 
 def _disk_gb(spec: dict[str, Any]) -> float | None:

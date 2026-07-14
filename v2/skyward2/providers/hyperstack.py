@@ -1,4 +1,3 @@
-import re
 from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
@@ -14,9 +13,6 @@ PRICEBOOK_PATH = "/pricebook"
 
 CPU_VCPU_RATE = "vCPU (cpu-only-flavors)"
 CPU_RAM_RATE = "RAM (cpu-only-flavors)"
-
-_DROPPED_TOKENS = frozenset({"pcie", "nvlink", "sxm", "sxm4", "sxm5", "ib", "se", "k8s", "sm", "n2"})
-_MEMORY_TOKEN = re.compile(r"^\d+gb?$")
 
 
 class HyperstackProvider:
@@ -78,7 +74,7 @@ class HyperstackProvider:
                     provider_name=self._name,
                     kind=self.kind,
                     instance_type=str(flavor["name"]),
-                    accelerator=_accelerator(gpu),
+                    accelerator=gpu or None,
                     accelerator_count=gpu_count,
                     cpus=cpus,
                     memory_gb=memory_gb,
@@ -134,14 +130,3 @@ def _hourly_price(
     ram_rate = prices.get(CPU_RAM_RATE.upper(), 0.0)
     total = vcpu_rate * cpus + ram_rate * memory_gb
     return round(total, 6) if total > 0 else None
-
-
-def _accelerator(gpu: str) -> str | None:
-    if not gpu:
-        return None
-    tokens = [
-        token
-        for token in gpu.lower().removesuffix("-spot").split("-")
-        if token and token not in _DROPPED_TOKENS and not _MEMORY_TOKEN.match(token)
-    ]
-    return "-".join(tokens) or None

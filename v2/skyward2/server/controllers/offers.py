@@ -25,7 +25,8 @@ class OfferController(Controller):
         kind: str | None = None,
         accelerator: str | None = None,
         min_count: int | None = None,
+        min_vram: float | None = None,
         max_price: float | None = None,
         refresh: bool = Parameter(default=False, description="Force a refetch even if the cache is still within its TTL."),
     ) -> Page[Offer]:
-        return await offers.list(provider, kind, accelerator, min_count, max_price, refresh)
+        return await offers.list(provider, kind, accelerator, min_count, min_vram, max_price, refresh)

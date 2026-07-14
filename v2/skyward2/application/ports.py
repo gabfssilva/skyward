@@ -147,6 +147,7 @@ class Offers(Protocol):
         kind: str | None,
         accelerator: str | None,
         min_count: int | None,
+        min_vram: float | None,
         max_price: float | None,
         refresh: bool,
     ) -> Page[Offer]:

@@ -1,4 +1,3 @@
-import re
 from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
@@ -12,9 +11,6 @@ BASE_URL = "https://api.novita.ai/gpu-instance/openapi/v1"
 PRODUCTS_PATH = "/products"
 
 PRICE_DIVISOR = 100_000
-MEMORY_SUFFIX = re.compile(r"\s+\d+GB\b")
-QUALIFIER = re.compile(r"\s*\(.*\)\s*$")
-VENDOR_PREFIX = re.compile(r"^((?i:nvidia|geforce)\s+)+")
 
 
 class NovitaProvider:
@@ -80,7 +76,7 @@ class NovitaProvider:
             provider_name=self._name,
             kind=self.kind,
             instance_type=raw_name,
-            accelerator=_accelerator(raw_name),
+            accelerator=raw_name,
             accelerator_count=1,
             cpus=int(product.get("cpuPerGpu") or 0),
             memory_gb=float(product.get("memoryPerGpu") or 0),
@@ -125,12 +121,3 @@ def _available(product: dict[str, Any]) -> int | None:
             return 0
         case _:
             return None
-
-
-def _accelerator(raw: str) -> str | None:
-    name = QUALIFIER.sub("", raw)
-    name = MEMORY_SUFFIX.sub("", name).strip()
-    name = VENDOR_PREFIX.sub("", name)
-    if not name:
-        return None
-    return name.lower().replace(" ", "-")

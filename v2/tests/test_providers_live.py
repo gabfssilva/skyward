@@ -9,6 +9,7 @@ import os
 
 import pytest
 
+from skyward2.protocol.accelerators import CATALOG
 from skyward2.providers import REGISTRY
 
 CREDENTIALS = {
@@ -55,7 +56,12 @@ async def test_the_live_catalog_is_priced_and_plausible(kind):
     accelerated = [offer for offer in offers if offer.accelerator_count > 0]
     assert accelerated, f"{kind} returned no accelerated offers"
     assert all(offer.accelerator for offer in accelerated), "an accelerated offer must name its accelerator"
-    assert all(offer.accelerator == offer.accelerator.lower() for offer in accelerated)
+
+    unknown = {offer.accelerator for offer in accelerated} - set(CATALOG)
+    assert not unknown, f"{kind} speaks accelerators the catalog has never heard of: {sorted(unknown)}"
+
+    assert all(offer.vram for offer in accelerated), "an accelerated offer must say how much VRAM a card has"
+    assert all(1 <= offer.vram <= 400 for offer in accelerated), "vram is per card, in GB"
 
     prices = [price for offer in accelerated for price in (offer.spot_price, offer.on_demand_price) if price is not None]
     assert prices, f"{kind} priced nothing"
