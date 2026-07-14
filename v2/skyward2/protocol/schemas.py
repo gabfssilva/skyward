@@ -60,6 +60,7 @@ type NodeDesired = Literal["present", "deleted"]
 type Allocation = Literal["spot", "on_demand", "spot_if_available", "cheapest"]
 type Selection = Literal["cheapest", "first"]
 type Executor = Literal["thread", "process"]
+type SkywardSource = Literal["auto", "local", "github", "pypi"]
 
 type ErrorCode = Literal[
     "not_found",
@@ -101,6 +102,7 @@ class Image(Struct, frozen=True):
     python: str | None = None
     packages: tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
+    skyward: SkywardSource = "auto"
 
 
 class Worker(Struct, frozen=True):

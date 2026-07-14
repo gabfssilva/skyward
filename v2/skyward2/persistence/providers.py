@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime
 
 from skyward2.application.errors import CapabilityMismatchError, IdempotencyConflictError, NotFoundError
-from skyward2.application.provider import ProviderAdapter
+from skyward2.application.provider import Catalog
 from skyward2.persistence.tables import OfferRow, ProviderRow
 from skyward2.protocol.schemas import Error, Page, Provider, ProviderCreate
 from skyward2.providers import adapter_for
@@ -47,7 +47,7 @@ class ProviderStore:
         await OfferRow.delete().where(OfferRow.provider_id == provider.id).run()
         await ProviderRow.delete().where(ProviderRow.id == provider.id).run()
 
-    async def adapter(self, ref: str) -> ProviderAdapter:
+    async def adapter(self, ref: str) -> Catalog:
         """Build the live adapter for a stored provider.
 
         Credentials are read here and nowhere else. The adapter receives them;

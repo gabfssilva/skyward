@@ -1,7 +1,8 @@
 from skyward2.application.errors import UnsupportedProviderError
-from skyward2.application.provider import ProviderAdapter
+from skyward2.application.provider import Catalog
 from skyward2.protocol.schemas import ProviderKind
 from skyward2.providers.aws import AWSProvider
+from skyward2.providers.container import ContainerProvider
 from skyward2.providers.fake import FakeProvider
 from skyward2.providers.gcp import GCPProvider
 from skyward2.providers.hyperstack import HyperstackProvider
@@ -16,8 +17,9 @@ from skyward2.providers.vastai import VastAIProvider
 from skyward2.providers.verda import VerdaProvider
 from skyward2.providers.vultr import VultrProvider
 
-ADAPTERS: tuple[type[ProviderAdapter], ...] = (
+ADAPTERS: tuple[type[Catalog], ...] = (
     AWSProvider,
+    ContainerProvider,
     FakeProvider,
     GCPProvider,
     HyperstackProvider,
@@ -33,10 +35,10 @@ ADAPTERS: tuple[type[ProviderAdapter], ...] = (
     VultrProvider,
 )
 
-REGISTRY: dict[str, type[ProviderAdapter]] = {adapter.kind: adapter for adapter in ADAPTERS}
+REGISTRY: dict[str, type[Catalog]] = {adapter.kind: adapter for adapter in ADAPTERS}
 
 
-def adapter_for(kind: str) -> type[ProviderAdapter]:
+def adapter_for(kind: str) -> type[Catalog]:
     if kind not in REGISTRY:
         raise UnsupportedProviderError(f"unknown provider kind: {kind}", known=sorted(REGISTRY))
     return REGISTRY[kind]

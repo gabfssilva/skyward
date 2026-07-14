@@ -1,0 +1,29 @@
+[project]
+name = "skyward2"
+version = "0.0.0"
+description = "Distributed compute orchestration"
+requires-python = ">=3.12"
+dependencies = [
+    "casty>=0.22.1",
+    "cloudpickle>=3.1",
+    "lz4>=4.3",
+    "msgspec>=0.19",
+]
+
+[project.optional-dependencies]
+# What the daemon needs and the node does not. The node installs the bare
+# package: it runs the worker, and a machine rented by the hour should not be
+# waiting on a web framework it will never serve with.
+server = [
+    "litestar>=2.13",
+    "piccolo[sqlite]>=1.0",
+    "asyncssh>=2.22.0",
+    "aioboto3>=13.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["skyward2"]

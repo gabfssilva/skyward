@@ -187,6 +187,8 @@ v2 = [
     "msgspec>=0.19",
     "piccolo[sqlite]>=1.0",
     "aioboto3>=13.0.0",
+    "asyncssh>=2.22.0",
+    "casty>=0.22.1",
 ]
 
 [tool.uv]

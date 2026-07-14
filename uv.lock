@@ -3797,6 +3797,9 @@ docs = [
     { name = "mkdocstrings", extra = ["python"] },
 ]
 v2 = [
+    { name = "aioboto3" },
+    { name = "asyncssh" },
+    { name = "casty" },
     { name = "litestar" },
     { name = "msgspec" },
     { name = "piccolo", extra = ["sqlite"] },
@@ -3891,6 +3894,9 @@ docs = [
     { name = "mkdocstrings", extras = ["python"], specifier = ">=0.27" },
 ]
 v2 = [
+    { name = "aioboto3", specifier = ">=13.0.0" },
+    { name = "asyncssh", specifier = ">=2.22.0" },
+    { name = "casty", specifier = ">=0.22.1" },
     { name = "litestar", specifier = ">=2.13" },
     { name = "msgspec", specifier = ">=0.19" },
     { name = "piccolo", extras = ["sqlite"], specifier = ">=1.0" },

@@ -70,7 +70,8 @@ def _aws_profile() -> dict[str, str]:
 
 
 def test_every_kind_declares_where_its_credential_comes_from():
-    assert set(CREDENTIALS) | {"fake"} == set(REGISTRY)
+    """Every provider except the two that have nothing to authenticate against."""
+    assert set(CREDENTIALS) | {"fake", "container"} == set(REGISTRY)
 
 
 @pytest.mark.sanity
