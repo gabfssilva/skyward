@@ -1,15 +1,26 @@
+import asyncio
 import re
-from collections.abc import AsyncIterator, Mapping
+import uuid
+from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
 import httpx
 
 from skyward2.application.errors import CapabilityMismatchError
-from skyward2.protocol.schemas import Offer
+from skyward2.application.provider import Binding, Machine, MachineState
+from skyward2.protocol.schemas import ComputeSpec, Market, Offer
 
 BASE_URL = "https://vm.massedcompute.com/api/v1"
 INVENTORY_PATH = "/gpu-inventory"
+INSTANCES_PATH = "/instance"
+LAUNCH_PATH = "/instance/launch"
+TERMINATE_PATH = "/instance/terminate"
+KEYS_PATH = "/ssh-keys"
+
+DEFAULT_IMAGE_ID = 184
+DEFAULT_USER = "Ubuntu"
+ANY_REGION = "any"
 
 PRODUCT_PATTERN = re.compile(r"^gpu_(\d+)x_(.+)$", re.IGNORECASE)
 VARIANT_SUFFIXES = ("_spot", "_low_ram", "_high_ram")
@@ -91,6 +102,180 @@ class MassedComputeProvider:
                         "price_cents_per_hour": instance_type["price_cents_per_hour"],
                     },
                 )
+
+    async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, market: Market, public_key: str) -> Binding:
+        """Register the compute's key and pin the product it will buy.
+
+        The market is not a launch parameter here: spot is a separate product
+        (``gpu_8x_h100_spot``), so it was already decided when the offer was
+        picked, and buying the product the offer names is buying the price it
+        quoted.
+
+        The key is named after the compute, not after the key's own fingerprint:
+        two computes then never share one, and :meth:`release` can delete it
+        without asking whether anybody else is still holding it.
+        """
+        async with self._client() as client:
+            key_name = _key_name(compute_id)
+            key_id = await self._key(client, key_name, public_key)
+
+        return {
+            "compute_id": compute_id,
+            "product": offer.instance_type,
+            "image_id": int(self._config.get("image_id", DEFAULT_IMAGE_ID)),
+            "ssh_key_id": key_id,
+            "ssh_key_name": key_name,
+            "prefix": _prefix(compute_id),
+        }
+
+    async def launch(self, binding: Binding, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+        """Ask for one machine per request, and read a refusal as one we did not get.
+
+        A failure cannot be allowed to cancel its siblings: a launch cancelled
+        mid-flight is a machine that may well exist and whose uuid nobody ever
+        read, which is why the exceptions are collected instead of raised. What
+        makes a partial fleet fatal is ``min_count``, and nothing else.
+        """
+        async with self._client() as client:
+            attempts = [self._launch(client, binding) for _ in range(count)]
+            results = await asyncio.gather(*attempts, return_exceptions=True)
+
+        machines = tuple(result for result in results if isinstance(result, Machine))
+        if len(machines) < min_count:
+            failures = "; ".join(str(result) for result in results if isinstance(result, BaseException))
+            raise CapabilityMismatchError(
+                f"massed_compute launched {len(machines)} of the {min_count} machines required: {failures}",
+                provider=self._name,
+            )
+
+        return binding, machines
+
+    async def machines(self, binding: Binding) -> Mapping[str, Machine]:
+        """Massed Compute has no tags, so the instance name carries the compute id.
+
+        It is the only carrier there is, and it is what makes a machine created by
+        a process that died before it could commit the uuid findable at all.
+        """
+        async with self._client() as client:
+            response = await client.get(INSTANCES_PATH)
+            response.raise_for_status()
+            instances: list[dict[str, Any]] = response.json().get("runningInstances", [])
+
+        mine = (data for data in instances if str(data.get("name") or "").startswith(binding["prefix"]))
+        found = (machine for data in mine if (machine := _machine(data)))
+        return {machine.id: machine for machine in found}
+
+    async def terminate(self, binding: Binding, machine_ids: tuple[str, ...]) -> None:
+        if not machine_ids:
+            return
+
+        async with self._client() as client:
+            response = await client.post(TERMINATE_PATH, json={"instanceUuids": list(machine_ids)})
+            if response.status_code != 404:
+                response.raise_for_status()
+
+    async def release(self, binding: Binding) -> None:
+        async with self._client() as client:
+            response = await client.delete(f"{KEYS_PATH}/{binding['ssh_key_id']}")
+            if response.status_code != 404:
+                response.raise_for_status()
+
+    def _client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            base_url=BASE_URL,
+            timeout=30,
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Accept": "application/json",
+            },
+        )
+
+    async def _key(self, client: httpx.AsyncClient, name: str, public_key: str) -> str:
+        """Find the compute's key, or make it — and take losing the race as finding it.
+
+        Two processes reconciling the same compute both create, one of them is
+        told the name is taken, and that answer is the id it was after.
+        """
+        if key_id := await self._find_key(client, name):
+            return key_id
+
+        created = await client.post(KEYS_PATH, json={"name": name, "publicKey": public_key})
+        if not created.is_error:
+            return str(created.json()["sshKey"]["id"])
+
+        if key_id := await self._find_key(client, name):
+            return key_id
+
+        raise CapabilityMismatchError(
+            f"massed_compute refused the compute's ssh key: {created.status_code} {created.text}",
+            provider=self._name,
+        )
+
+    async def _find_key(self, client: httpx.AsyncClient, name: str) -> str | None:
+        listed = await client.get(KEYS_PATH)
+        listed.raise_for_status()
+        keys: list[dict[str, Any]] = listed.json().get("sshKeys", [])
+        return next((str(key["id"]) for key in keys if key.get("name") == name), None)
+
+    async def _launch(self, client: httpx.AsyncClient, binding: Binding) -> Machine:
+        response = await client.post(
+            LAUNCH_PATH,
+            json={
+                "productName": binding["product"],
+                "regionName": ANY_REGION,
+                "imageId": binding["image_id"],
+                "instanceName": f"{binding['prefix']}{uuid.uuid4().hex[:8]}",
+                "sshKeys": [binding["ssh_key_name"]],
+            },
+        )
+        if response.is_error:
+            raise CapabilityMismatchError(
+                f"massed_compute refused the launch: {response.status_code} {response.text}",
+                provider=self._name,
+            )
+
+        match response.json().get("response"):
+            case str() as instance_id if instance_id:
+                return Machine(id=instance_id, state="pending")
+            case other:
+                raise CapabilityMismatchError(
+                    f"massed_compute launched an instance without a uuid: {other}",
+                    provider=self._name,
+                )
+
+
+def _prefix(compute_id: str) -> str:
+    return f"skyward-{compute_id}-"
+
+
+def _key_name(compute_id: str) -> str:
+    """Massed Compute SSH key names are alphanumeric — hyphens are rejected."""
+    return f"skyward{re.sub(r'[^a-zA-Z0-9]', '', compute_id)}"
+
+
+def _machine(data: Mapping[str, Any]) -> Machine | None:
+    """Massed Compute reports an address before the box has finished booting.
+
+    ``os_booted`` is the flag that says the image came up, and it is the one the
+    machine is called running on; the ip alone is not, and neither is a status
+    that only says the rental exists.
+    """
+    host = data.get("ip") or None
+
+    match data.get("status"):
+        case "terminated" | "error" | "Stopped":
+            return None
+        case "Running" if data.get("os_booted") == 1 and host:
+            state: MachineState = "running"
+        case _:
+            state = "pending"
+
+    return Machine(
+        id=str(data["uuid"]),
+        state=state,
+        host=host,
+        user=str(data.get("username") or DEFAULT_USER),
+    )
 
 
 def _is_spot(product: str) -> bool:

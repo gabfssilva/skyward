@@ -1,14 +1,30 @@
-from collections.abc import AsyncIterator, Mapping
+import asyncio
+from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
 import httpx
 
 from skyward2.application.errors import CapabilityMismatchError
-from skyward2.protocol.schemas import Offer
+from skyward2.application.provider import Binding, Machine
+from skyward2.protocol.schemas import ComputeSpec, Market, Offer
 
 BASE_URL = "https://console.vast.ai"
 SEARCH_PATH = "/api/v0/bundles/"
+LABEL_PREFIX = "skyward-"
+DEFAULT_IMAGE = "nvcr.io/nvidia/cuda:12.9.1-runtime-ubuntu24.04"
+DEFAULT_DISK_GB = 100.0
+DEFAULT_BID_MULTIPLIER = 1.2
+
+ONSTART = """#!/bin/bash
+set -e
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+echo "{public_key}" >> /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+chown -R root:root /root/.ssh
+tail -f /dev/null &
+"""
 
 
 class VastAIProvider:
@@ -92,3 +108,199 @@ class VastAIProvider:
                     "direct_port_count": bundle.get("direct_port_count"),
                 },
             )
+
+    async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, market: Market, public_key: str) -> Binding:
+        """Register the compute's key on the account and pin what every ask will be rented against.
+
+        Nothing else is created: Vast.ai has no network and no security group to
+        make, and the offer that was priced is an ask that any other tenant may
+        take before we get to it — so the offer id is not pinned, only the shape
+        of hardware it stood for.
+        """
+        async with self._client() as client:
+            key_id = await self._register_key(client, public_key)
+
+        return {
+            "compute_id": compute_id,
+            "label": f"{LABEL_PREFIX}{compute_id}",
+            "ssh_key_id": key_id,
+            "public_key": public_key,
+            "image": spec.image.base or DEFAULT_IMAGE,
+            "disk_gb": float(self._config.get("disk_gb", DEFAULT_DISK_GB)),
+            "market": market,
+            "gpu_name": offer.specific.get("gpu_name") or offer.instance_type,
+            "gpu_count": offer.accelerator_count,
+            "region": offer.region,
+            "direct": bool(self._config.get("direct_port", False)),
+        }
+
+    async def launch(self, binding: Binding, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+        """Rent one ask per machine, walking down the list when an ask is taken from under us.
+
+        A bundle is a listing, not a reservation: between the search and the PUT
+        another tenant can have it, and the only answer to that is the next ask
+        with the same hardware.
+        """
+        async with self._client() as client:
+            asks = await self._asks(client, binding)
+
+            machines: list[Machine] = []
+            for ask in asks:
+                if len(machines) == count:
+                    break
+                if (machine := await self._rent(client, binding, ask)) is not None:
+                    machines.append(machine)
+
+            if len(machines) < min_count:
+                await self._destroy(client, tuple(machine.id for machine in machines))
+                raise CapabilityMismatchError(
+                    f"vastai could rent {len(machines)} of {min_count} required {binding['gpu_name']} machines",
+                    provider=self._name,
+                )
+
+        return binding, tuple(machines)
+
+    async def machines(self, binding: Binding) -> Mapping[str, Machine]:
+        async with self._client() as client:
+            response = await client.get("/api/v0/instances/", params={"owner": "me"})
+            response.raise_for_status()
+            instances = response.json().get("instances") or []
+
+        found = (
+            _machine(instance)
+            for instance in instances
+            if instance.get("label") == binding["label"]
+        )
+        return {machine.id: machine for machine in found if machine is not None}
+
+    async def terminate(self, binding: Binding, machine_ids: tuple[str, ...]) -> None:
+        async with self._client() as client:
+            await self._destroy(client, machine_ids)
+
+    async def release(self, binding: Binding) -> None:
+        """Drop the key the compute was given. It is the only account-wide thing it owned."""
+        if (key_id := binding.get("ssh_key_id")) is None:
+            return
+
+        async with self._client() as client:
+            await client.delete(f"/api/v0/ssh/{key_id}/")
+
+    def _client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            base_url=BASE_URL,
+            timeout=30,
+            headers={"Authorization": f"Bearer {self._api_key}", "Accept": "application/json"},
+        )
+
+    async def _register_key(self, client: httpx.AsyncClient, public_key: str) -> int | None:
+        """Register the key, and read "duplicate" as "registered": initialize runs again after a crash."""
+        created = await client.post("/api/v0/ssh/", json={"ssh_key": public_key})
+
+        if created.status_code < 400:
+            match created.json():
+                case {"ssh_key_id": int() | str() as key_id} | {"id": int() | str() as key_id}:
+                    return int(key_id)
+                case _:
+                    pass
+
+        listed = await client.get("/api/v0/ssh/")
+        listed.raise_for_status()
+
+        blob = _blob(public_key)
+        return next(
+            (int(key["id"]) for key in listed.json() if _blob(key["public_key"]) == blob),
+            None,
+        )
+
+    async def _asks(self, client: httpx.AsyncClient, binding: Binding) -> list[dict[str, Any]]:
+        """Sorting and region are done here rather than in the query: the geolocation a bundle reports
+        ("US, TX") is not the code the search filter takes, and only one of the two prices is the one
+        this market will be billed at.
+        """
+        spot = binding["market"] == "spot"
+        query: dict[str, Any] = {
+            "rentable": {"eq": True},
+            "rented": {"eq": False},
+            "gpu_name": {"eq": binding["gpu_name"]},
+            "num_gpus": {"gte": binding["gpu_count"]},
+            "reliability": {"gt": float(self._config.get("min_reliability", 0.95))},
+            "disk_space": {"gte": binding["disk_gb"]},
+            "allocated_storage": 5.0,
+            "type": "bid" if spot else "on-demand",
+            "order": [["score", "desc"]],
+            "limit": 64,
+        }
+        if self._config.get("verified_only", True):
+            query["verified"] = {"eq": True}
+        if binding["direct"]:
+            query["direct_port_count"] = {"gte": 1}
+
+        response = await client.post(SEARCH_PATH, json=query)
+        response.raise_for_status()
+
+        region = binding["region"]
+        price = "min_bid" if spot else "dph_total"
+        asks = [
+            ask for ask in response.json().get("offers", [])
+            if region is None or ask.get("geolocation") == region
+        ]
+        return sorted(asks, key=lambda ask: ask.get(price) or float("inf"))
+
+    async def _rent(self, client: httpx.AsyncClient, binding: Binding, ask: dict[str, Any]) -> Machine | None:
+        body: dict[str, Any] = {
+            "client_id": "me",
+            "image": binding["image"],
+            "disk": binding["disk_gb"],
+            "runtype": "ssh_direc" if binding["direct"] else "ssh_proxy",
+            "label": binding["label"],
+            "onstart": ONSTART.format(public_key=binding["public_key"]),
+        }
+
+        if binding["market"] == "spot":
+            if (min_bid := ask.get("min_bid")) is None:
+                return None
+            body["price"] = float(min_bid) * float(self._config.get("bid_multiplier", DEFAULT_BID_MULTIPLIER))
+
+        response = await client.put(f"/api/v0/asks/{ask['id']}/", json=body)
+        if response.status_code >= 400:
+            return None
+
+        created = response.json()
+        match created.get("new_contract") or created.get("id"):
+            case int() | str() as contract:
+                return Machine(id=str(contract), state="pending")
+            case _:
+                return None
+
+    async def _destroy(self, client: httpx.AsyncClient, machine_ids: tuple[str, ...]) -> None:
+        async with asyncio.TaskGroup() as group:
+            for machine_id in machine_ids:
+                group.create_task(
+                    client.request("DELETE", f"/api/v0/instances/{machine_id}/", json={}),
+                )
+
+
+def _blob(public_key: str) -> str:
+    """Compare keys on the material only: Vast.ai keeps the comment, and the comment is not the key."""
+    parts = public_key.strip().split()
+    return parts[1] if len(parts) >= 2 else public_key.strip()
+
+
+def _machine(instance: dict[str, Any]) -> Machine | None:
+    machine_id = str(instance["id"])
+    ports = instance.get("ports") or {}
+    mapped = (ports.get("22/tcp") or [{}])[0].get("HostPort")
+
+    match (instance.get("public_ipaddr"), mapped):
+        case (str() as address, int() | str() as mapped_port) if address:
+            host, port = address, int(mapped_port)
+        case _:
+            host, port = instance.get("ssh_host") or "", int(instance.get("ssh_port") or 22)
+
+    match instance.get("actual_status"):
+        case "exited" | "error" | "destroyed":
+            return None
+        case "running" if host:
+            return Machine(id=machine_id, state="running", host=host, port=port)
+        case _:
+            return Machine(id=machine_id, state="pending")

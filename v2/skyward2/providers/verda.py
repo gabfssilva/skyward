@@ -1,16 +1,26 @@
-from collections.abc import AsyncIterator, Mapping
+import asyncio
+import uuid
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
 import httpx
 
 from skyward2.application.errors import CapabilityMismatchError
-from skyward2.protocol.schemas import Offer
+from skyward2.application.provider import Binding, Machine
+from skyward2.protocol.schemas import ComputeSpec, Market, Offer
 
 BASE_URL = "https://api.verda.com/v1"
 TOKEN_PATH = "/oauth2/token"
 INSTANCE_TYPES_PATH = "/instance-types"
 AVAILABILITY_PATH = "/instance-availability"
+SSH_KEYS_PATH = "/ssh-keys"
+INSTANCES_PATH = "/instances"
+
+DEFAULT_CUDA = "13.0"
+CUDA_IMAGE = "ubuntu-24.04-cuda-{cuda}-open"
+CPU_IMAGE = "ubuntu-24.04"
 
 
 class VerdaProvider:
@@ -118,6 +128,203 @@ class VerdaProvider:
                         "spot_available": region in spot_regions.get(name, frozenset()),
                     },
                 )
+
+    async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, market: Market, public_key: str) -> Binding:
+        """Verda has no tags, so the compute is written into every hostname it creates.
+
+        A hostname is the only field of an instance the account-wide listing gives
+        back and that we get to choose, which makes it the only way to find a machine
+        that was created by a process that died before it could write the id down.
+        """
+        name = f"skyward-{compute_id}"
+        image = self._config.get("image") or (
+            CUDA_IMAGE.format(cuda=self._config.get("cuda", DEFAULT_CUDA))
+            if offer.accelerator_count
+            else CPU_IMAGE
+        )
+
+        async with self._session() as (client, headers):
+            key_id = await self._ssh_key(client, headers, name, public_key)
+            region = await self._region(client, headers, offer, market)
+
+        return {
+            "compute_id": compute_id,
+            "prefix": _prefix(compute_id),
+            "ssh_key_id": key_id,
+            "instance_type": offer.instance_type,
+            "image": image,
+            "region": region,
+            "is_spot": market == "spot",
+        }
+
+    async def launch(self, binding: Binding, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+        async with self._session() as (client, headers), asyncio.TaskGroup() as group:
+            created = [group.create_task(self._create(client, headers, binding)) for _ in range(count)]
+
+        machines: list[Machine] = []
+        refused: list[str] = []
+        for task in created:
+            match task.result():
+                case Machine() as machine:
+                    machines.append(machine)
+                case str() as reason:
+                    refused.append(reason)
+
+        if len(machines) < min_count:
+            raise CapabilityMismatchError(
+                f"verda created {len(machines)} of the {min_count} machines the compute cannot start "
+                f"without: {'; '.join(refused)}",
+                provider=self._name,
+            )
+        return binding, tuple(machines)
+
+    async def machines(self, binding: Binding) -> Mapping[str, Machine]:
+        async with self._session() as (client, headers):
+            response = await client.get(INSTANCES_PATH, headers=headers)
+            response.raise_for_status()
+            listed = response.json() or []
+
+        found = (
+            _machine(entry)
+            for entry in listed
+            if str(entry.get("hostname") or "").startswith(binding["prefix"])
+        )
+        return {machine.id: machine for machine in found if machine is not None}
+
+    async def terminate(self, binding: Binding, machine_ids: tuple[str, ...]) -> None:
+        async with self._session() as (client, headers), asyncio.TaskGroup() as group:
+            for machine_id in machine_ids:
+                group.create_task(self._delete(client, headers, machine_id))
+
+    async def release(self, binding: Binding) -> None:
+        async with self._session() as (client, headers):
+            deleted = await client.delete(f"{SSH_KEYS_PATH}/{binding['ssh_key_id']}", headers=headers)
+            if deleted.is_client_error:
+                return
+            deleted.raise_for_status()
+
+    @asynccontextmanager
+    async def _session(self) -> AsyncIterator[tuple[httpx.AsyncClient, dict[str, str]]]:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=30) as client:
+            yield client, {"Authorization": f"Bearer {await self._token(client)}"}
+
+    async def _ssh_key(
+        self, client: httpx.AsyncClient, headers: dict[str, str], name: str, public_key: str
+    ) -> str:
+        """The key is named after the compute, so a second initialize finds the first one's.
+
+        The lookup is repeated after a refused create because the two daemons that can
+        both be initializing this compute are not serialized against each other, and a
+        name Verda already holds is the answer, not a failure.
+        """
+        if existing := await self._find_key(client, headers, name):
+            return existing
+
+        created = await client.post(
+            SSH_KEYS_PATH, headers=headers, json={"name": name, "key": public_key}
+        )
+        if created.is_error:
+            if existing := await self._find_key(client, headers, name):
+                return existing
+            created.raise_for_status()
+        return _identifier(created)
+
+    async def _find_key(
+        self, client: httpx.AsyncClient, headers: dict[str, str], name: str
+    ) -> str | None:
+        listed = await client.get(SSH_KEYS_PATH, headers=headers)
+        listed.raise_for_status()
+        found = next((key for key in listed.json() or [] if key.get("name") == name), None)
+        return str(found["id"]) if found else None
+
+    async def _region(
+        self, client: httpx.AsyncClient, headers: dict[str, str], offer: Offer, market: Market
+    ) -> str:
+        available = await _availability(client, headers, is_spot=market == "spot")
+        regions = available.get(offer.instance_type, frozenset())
+        preferred = offer.region or self._config.get("region")
+
+        if preferred in regions:
+            return str(preferred)
+        if fallback := next(iter(sorted(regions)), None):
+            return fallback
+        raise CapabilityMismatchError(
+            f"no verda region has {offer.instance_type} available on the {market} market",
+            provider=self._name,
+        )
+
+    async def _create(
+        self, client: httpx.AsyncClient, headers: dict[str, str], binding: Binding
+    ) -> Machine | str:
+        """A refusal comes back as its own reason rather than as an exception.
+
+        One POST buys one instance, so a fleet that comes back short is a fleet of
+        failed POSTs, and ``min_count`` only means something if the ones that
+        succeeded survive the ones that did not.
+        """
+        response = await client.post(
+            INSTANCES_PATH,
+            headers=headers,
+            json={
+                "instance_type": binding["instance_type"],
+                "image": binding["image"],
+                "ssh_key_ids": [binding["ssh_key_id"]],
+                "location_code": binding["region"],
+                "is_spot": binding["is_spot"],
+                "hostname": f"{binding['prefix']}{uuid.uuid4().hex[:8]}",
+                "description": f"skyward compute {binding['compute_id']}",
+            },
+        )
+        if response.is_error:
+            return f"{response.status_code} {response.text.strip()}"
+        return Machine(id=_identifier(response), state="pending")
+
+    async def _delete(self, client: httpx.AsyncClient, headers: dict[str, str], machine_id: str) -> None:
+        """Volumes outlive the instance that carried them unless they are named in the delete.
+
+        ``delete_permanently`` is only honoured together with ``volume_ids``, which is
+        why the instance has to be read back before it can be taken down for good.
+
+        A refused read is an instance already gone; a broken one is not, and swallowing
+        it would leave a machine billing behind a node the control plane has written off.
+        """
+        instance = await client.get(f"{INSTANCES_PATH}/{machine_id}", headers=headers)
+        if instance.is_client_error:
+            return
+        instance.raise_for_status()
+
+        volume_ids = (instance.json() or {}).get("volume_ids") or []
+        body: dict[str, Any] = {"id": machine_id, "action": "delete"}
+        if volume_ids:
+            body |= {"volume_ids": volume_ids, "delete_permanently": True}
+
+        deleted = await client.put(INSTANCES_PATH, headers=headers, json=body)
+        if deleted.is_client_error:
+            return
+        deleted.raise_for_status()
+
+
+def _prefix(compute_id: str) -> str:
+    return f"skyward-{compute_id.replace('_', '-')}-"
+
+
+def _identifier(response: httpx.Response) -> str:
+    """Verda answers a creation with the bare id, quoted, and not always as JSON."""
+    body = response.text.strip()
+    if not body.startswith(("{", "[")):
+        return body.strip('"')
+    return str(response.json()["id"])
+
+
+def _machine(entry: Mapping[str, Any]) -> Machine | None:
+    host = entry.get("ip") or None
+    match entry.get("status"):
+        case "error" | "discontinued" | "deleted":
+            return None
+        case "running":
+            return Machine(id=str(entry["id"]), state="running", host=host)
+        case _:
+            return Machine(id=str(entry["id"]), state="pending", host=host)
 
 
 async def _availability(

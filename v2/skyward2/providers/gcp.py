@@ -25,8 +25,11 @@ the bare N1, which would be a lie of about an order of magnitude.
 import asyncio
 import base64
 import json
+import re
 import time
-from collections.abc import AsyncIterator, Iterable, Mapping
+import uuid
+from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
@@ -35,11 +38,22 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from skyward2.application.errors import CapabilityMismatchError
-from skyward2.protocol.schemas import Offer
+from skyward2.application.provider import Binding, Machine, MachineState
+from skyward2.protocol.schemas import ComputeSpec, Market, Offer
 
 COMPUTE_URL = "https://compute.googleapis.com/compute/v1"
 VANTAGE_URL = "https://instances.vantage.sh/gcp/instances.json"
-SCOPE = "https://www.googleapis.com/auth/compute.readonly"
+SCOPE = "https://www.googleapis.com/auth/compute"
+
+COMPUTE_LABEL = "skyward-compute"
+NODE_TAG = "skyward-node"
+
+GPU_IMAGE = "projects/deeplearning-platform-release/global/images/family/common-cu128-ubuntu-2204-nvidia-570"
+CPU_IMAGE = "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64"
+
+DEFAULT_DISK_GB = 200
+DEFAULT_DISK_TYPE = "pd-balanced"
+DEFAULT_NETWORK = "default"
 
 DEFAULT_ZONES = (
     "us-central1-a",
@@ -312,6 +326,251 @@ class GCPProvider:
                 "price_source": None,
             },
         )
+
+    @asynccontextmanager
+    async def _api(self) -> AsyncIterator[httpx.AsyncClient]:
+        async with httpx.AsyncClient(base_url=COMPUTE_URL, timeout=60, headers={"Accept": "application/json"}) as client:
+            token = await self._token(client)
+            client.headers["Authorization"] = f"Bearer {token}"
+            yield client
+
+    async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, market: Market, public_key: str) -> Binding:
+        specific = offer.specific or {}
+        zone = str(specific.get("zone") or "")
+        project = str(specific.get("project") or self._project)
+        if not zone:
+            raise CapabilityMismatchError(f"gcp offer {offer.id} carries no zone", provider=self._name)
+
+        label = _label(compute_id)
+        tag = _name(label)
+        network = str(self._config.get("network") or DEFAULT_NETWORK)
+        subnet = self._config.get("subnet")
+        service_account = self._config.get("service_account")
+        count = int(specific.get("accelerator_count") or 0)
+        accelerator = specific.get("accelerator_type") if specific.get("uses_guest_accelerators") else None
+
+        binding: dict[str, Any] = {
+            "compute_id": compute_id,
+            "label": label,
+            "tag": tag,
+            "project": project,
+            "zone": zone,
+            "region": _region(zone),
+            "network": network,
+            "subnet": str(subnet) if subnet else None,
+            "firewall": tag,
+            "machine_type": str(specific.get("machine_type") or offer.instance_type),
+            "image": GPU_IMAGE if count else CPU_IMAGE,
+            "accelerator_type": str(accelerator) if accelerator else None,
+            "accelerator_count": count,
+            "disk_gb": int(self._config.get("disk_gb") or DEFAULT_DISK_GB),
+            "disk_type": str(self._config.get("disk_type") or DEFAULT_DISK_TYPE),
+            "service_account": str(service_account) if service_account else None,
+            "spot": market == "spot",
+            "public_key": public_key,
+        }
+
+        async with self._api() as client:
+            response = await client.post(
+                f"/projects/{project}/global/firewalls",
+                json={
+                    "name": tag,
+                    "network": f"global/networks/{network}",
+                    "direction": "INGRESS",
+                    "sourceRanges": ["0.0.0.0/0"],
+                    "targetTags": [NODE_TAG],
+                    "allowed": [{"IPProtocol": "tcp", "ports": ["22"]}],
+                },
+            )
+            _accept(response, 409)
+
+        return binding
+
+    async def launch(self, binding: Binding, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+        async with self._api() as client, asyncio.TaskGroup() as group:
+            launched = [group.create_task(self._insert(client, binding)) for _ in range(count)]
+
+        results = [task.result() for task in launched]
+        machines = tuple(machine for machine, _ in results if machine)
+        if len(machines) < min_count:
+            refused = "; ".join(reason for _, reason in results if reason)
+            raise CapabilityMismatchError(
+                f"gcp launched {len(machines)} of {min_count} machines in {binding['zone']}: {refused}",
+                provider=self._name,
+            )
+        return binding, machines
+
+    async def machines(self, binding: Binding) -> Mapping[str, Machine]:
+        async with self._api() as client:
+            response = await client.get(
+                f"/projects/{binding['project']}/zones/{binding['zone']}/instances",
+                params={"filter": f"labels.{COMPUTE_LABEL}={binding['label']}", "maxResults": "500"},
+            )
+            response.raise_for_status()
+            items: list[dict[str, Any]] = response.json().get("items") or []
+
+        found = (_machine(item) for item in items)
+        return {machine.id: machine for machine in found if machine is not None}
+
+    async def terminate(self, binding: Binding, machine_ids: tuple[str, ...]) -> None:
+        async with self._api() as client, asyncio.TaskGroup() as group:
+            for machine_id in machine_ids:
+                group.create_task(self._delete(client, binding, machine_id))
+
+    async def release(self, binding: Binding) -> None:
+        async with self._api() as client:
+            response = await client.delete(f"/projects/{binding['project']}/global/firewalls/{binding['firewall']}")
+            _accept(response, 404)
+
+    async def _insert(self, client: httpx.AsyncClient, binding: Binding) -> tuple[Machine | None, str | None]:
+        """Create one instance, under a name chosen here rather than by GCP.
+
+        The name is the identity: it is what `instances.delete` takes, and it is
+        known before the call is made, so a request whose reply is lost still
+        leaves a machine that :meth:`machines` finds by its label.
+
+        A refusal comes back as its text rather than as an exception: one machine
+        out of stock must not cancel the siblings that were granted, and the
+        caller's ``min_count`` is the only thing entitled to call that fatal.
+        """
+        name = f"skyward-{uuid.uuid4().hex[:16]}"
+        response = await client.post(
+            f"/projects/{binding['project']}/zones/{binding['zone']}/instances",
+            json=_instance_body(name, binding),
+        )
+        if response.status_code >= 400 and response.status_code != 409:
+            return None, f"{response.status_code} {response.text[:400]}"
+
+        return Machine(id=name, state="pending"), None
+
+    async def _delete(self, client: httpx.AsyncClient, binding: Binding, machine_id: str) -> None:
+        response = await client.delete(
+            f"/projects/{binding['project']}/zones/{binding['zone']}/instances/{machine_id}"
+        )
+        _accept(response, 404)
+
+
+def _instance_body(name: str, binding: Binding) -> dict[str, Any]:
+    """The instance GCP is asked for, as one JSON document.
+
+    v1 went through an instance template plus `bulkInsert`; a template is a
+    second thing to create, to name, to find again and to delete, and it buys
+    nothing here — the caller asks for one machine at a time.
+    """
+    network_interface: dict[str, Any] = {
+        "network": f"global/networks/{binding['network']}",
+        "accessConfigs": [{"name": "External NAT", "type": "ONE_TO_ONE_NAT"}],
+    }
+    if subnet := binding["subnet"]:
+        network_interface["subnetwork"] = f"regions/{binding['region']}/subnetworks/{subnet}"
+
+    scheduling: dict[str, Any] = (
+        {"provisioningModel": "SPOT", "instanceTerminationAction": "DELETE", "onHostMaintenance": "TERMINATE"}
+        if binding["spot"]
+        else {"onHostMaintenance": "TERMINATE", "automaticRestart": True}
+    )
+
+    body: dict[str, Any] = {
+        "name": name,
+        "machineType": f"zones/{binding['zone']}/machineTypes/{binding['machine_type']}",
+        "labels": {COMPUTE_LABEL: binding["label"]},
+        "tags": {"items": [NODE_TAG]},
+        "disks": [
+            {
+                "boot": True,
+                "autoDelete": True,
+                "initializeParams": {
+                    "sourceImage": binding["image"],
+                    "diskSizeGb": binding["disk_gb"],
+                    "diskType": f"zones/{binding['zone']}/diskTypes/{binding['disk_type']}",
+                },
+            }
+        ],
+        "networkInterfaces": [network_interface],
+        "scheduling": scheduling,
+        "metadata": {
+            "items": [
+                {"key": "ssh-keys", "value": f"root:{binding['public_key']}"},
+                {"key": "block-project-ssh-keys", "value": "true"},
+                {"key": "startup-script", "value": _startup(str(binding["public_key"]))},
+            ]
+        },
+    }
+
+    if binding["accelerator_type"] and binding["accelerator_count"]:
+        body["guestAccelerators"] = [
+            {
+                "acceleratorType": f"zones/{binding['zone']}/acceleratorTypes/{binding['accelerator_type']}",
+                "acceleratorCount": binding["accelerator_count"],
+            }
+        ]
+
+    if service_account := binding["service_account"]:
+        body["serviceAccounts"] = [
+            {"email": service_account, "scopes": ["https://www.googleapis.com/auth/cloud-platform"]}
+        ]
+
+    return body
+
+
+def _machine(item: Mapping[str, Any]) -> Machine | None:
+    interface: Mapping[str, Any] = next(iter(item.get("networkInterfaces") or ()), {})
+    access: Mapping[str, Any] = next(iter(interface.get("accessConfigs") or ()), {})
+    host = access.get("natIP")
+    private_host = interface.get("networkIP")
+
+    match item.get("status"):
+        case "TERMINATED" | "STOPPING" | "SUSPENDED":
+            return None
+        case "RUNNING" if host:
+            state: MachineState = "running"
+        case _:
+            state = "pending"
+
+    return Machine(id=str(item["name"]), state=state, host=host, private_host=private_host)
+
+
+def _accept(response: httpx.Response, *tolerated: int) -> None:
+    """Read "already exists" and "already gone" as the successes they are."""
+    if response.status_code in tolerated:
+        return
+    response.raise_for_status()
+
+
+def _label(compute_id: str) -> str:
+    """A compute id as GCP will take it, in a form that is legal as both a label value and a name.
+
+    Label values would allow underscores; firewall rules and network tags would
+    not, and the same string has to serve as all three.
+    """
+    return re.sub(r"[^a-z0-9-]", "-", compute_id.lower())[:55].strip("-")
+
+
+def _name(label: str) -> str:
+    """A firewall rule and a network tag are one RFC1035 name: a letter first, no trailing dash."""
+    return f"skyward-{label}"[:63].rstrip("-")
+
+
+def _startup(public_key: str) -> str:
+    """Make root reachable over SSH, which on a Google image it is not by default.
+
+    The bootstrap the control plane ships writes to /opt and installs into
+    /root, and no machine here has a sudo channel. The guest agent would happily
+    write an ``ssh-keys`` metadata entry into ``/root/.ssh/authorized_keys``, but
+    Google's images ship an sshd that refuses root, so the key alone buys
+    nothing. This runs before the first connection attempt, and the node is
+    retrying until it succeeds.
+    """
+    return f"""#!/bin/bash
+set -e
+mkdir -p /root/.ssh /etc/ssh/sshd_config.d
+chmod 700 /root/.ssh
+printf '%s\\n' '{public_key.strip()}' > /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+printf 'PermitRootLogin prohibit-password\\n' > /etc/ssh/sshd_config.d/60-skyward.conf
+sed -i 's/^[#[:space:]]*PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+systemctl restart ssh 2>/dev/null || systemctl restart sshd
+"""
 
 
 async def _fetch_prices(client: httpx.AsyncClient) -> dict[str, dict[str, Any]]:
