@@ -1,7 +1,9 @@
 from skyward2.application.errors import UnsupportedProviderError
 from skyward2.application.provider import ProviderAdapter
 from skyward2.protocol.schemas import ProviderKind
+from skyward2.providers.aws import AWSProvider
 from skyward2.providers.fake import FakeProvider
+from skyward2.providers.gcp import GCPProvider
 from skyward2.providers.hyperstack import HyperstackProvider
 from skyward2.providers.jarvislabs import JarvisLabsProvider
 from skyward2.providers.lambda_cloud import LambdaProvider
@@ -15,7 +17,9 @@ from skyward2.providers.verda import VerdaProvider
 from skyward2.providers.vultr import VultrProvider
 
 ADAPTERS: tuple[type[ProviderAdapter], ...] = (
+    AWSProvider,
     FakeProvider,
+    GCPProvider,
     HyperstackProvider,
     JarvisLabsProvider,
     LambdaProvider,

@@ -8,6 +8,7 @@ import pytest
 
 from skyward2.protocol.accelerators import CATALOG, resolve
 from skyward2.protocol.schemas import Offer
+from skyward2.providers.gcp import LEGACY_VRAM
 
 REAL_NAMES = [
     ("NVIDIA H100 80GB PCIe", "h100", 80),
@@ -41,6 +42,20 @@ REAL_NAMES = [
     ("RTX 6000 (24 GB)", "quadro-rtx-6000", 24),
     ("1x RTX PRO 6000 CC 96GB", "rtx-pro-6000", 96),
     ("AMD_MI325X", "mi325x", 256),
+    ("A10G", "a10g", 24),
+    ("T4g", "t4g", 16),
+    ("L40S", "l40s", 48),
+    ("nvidia-h100-80gb", "h100", 80),
+    ("nvidia-h100-mega-80gb", "h100", 80),
+    ("nvidia-tesla-t4", "t4", 16),
+    ("nvidia-tesla-p100", "p100", 16),
+    ("nvidia-l4", "l4", 24),
+    ("nvidia-gb200", "gb200", 384),
+]
+
+GCP_LEGACY_NAMES = [
+    ("nvidia-tesla-a100", "a100", 40, 80),
+    ("nvidia-tesla-v100", "v100", 16, 32),
 ]
 
 
@@ -52,6 +67,19 @@ def test_a_provider_name_resolves_to_the_shared_vocabulary(raw, name, vram):
 
 def test_a_reported_vram_beats_the_one_in_the_name():
     assert resolve("H100 80GB", vram=94) == ("h100", 94)
+
+
+@pytest.mark.parametrize(("raw", "name", "actual_vram", "catalog_vram"), GCP_LEGACY_NAMES)
+def test_gcp_names_a_smaller_card_than_the_catalog_default(raw, name, actual_vram, catalog_vram):
+    """GCP's `nvidia-tesla-a100` is the 40GB part, and its V100 is the 16GB one.
+
+    The catalog holds one VRAM per model, so only the provider can say this. The
+    adapter passes it explicitly (LEGACY_VRAM); without it both would read as
+    bigger cards than they are.
+    """
+    assert resolve(raw) == (name, catalog_vram), "the catalog default is the bigger card"
+    assert LEGACY_VRAM[raw] == actual_vram
+    assert resolve(raw, vram=LEGACY_VRAM[raw]) == (name, actual_vram)
 
 
 def test_a_cpu_only_offer_has_no_accelerator():

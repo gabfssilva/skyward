@@ -183,6 +183,7 @@ ALIASES = {
     "rtxpro6000cc": "rtx-pro-6000",
     "rtxpro6000se": "rtx-pro-6000s",
     "dgxa100": "a100",
+    "h100mega": "h100",
     "rtx6000": "quadro-rtx-6000",
     "qrtx6000": "quadro-rtx-6000",
     "qrtx8000": "quadro-rtx-8000",
@@ -194,7 +195,7 @@ ALIASES = {
 
 _QUALIFIER = re.compile(r"\s*\([^)]*\)\s*$")
 _COUNT_PREFIX = re.compile(r"^\d+\s*x\s+", re.IGNORECASE)
-_VENDOR = re.compile(r"^(?:nvidia|amd|intel|geforce|tesla|instinct|radeon)\b\s*", re.IGNORECASE)
+_VENDOR = re.compile(r"^[-_\s]*(?:nvidia|amd|intel|geforce|tesla|instinct|radeon)\b[-_\s]*", re.IGNORECASE)
 _VRAM = re.compile(r"(\d+(?:\.\d+)?)\s*(?:gb|g)\b", re.IGNORECASE)
 _FORM_FACTOR = re.compile(r"[-_\s]*(?:pcie|sxm\d?|oam|nvlink|nvl|max-?q|ws|wk|hbm\d?e?|spot)\b", re.IGNORECASE)
 
@@ -206,6 +207,10 @@ def resolve(raw: str | None, vram: float | None = None) -> tuple[str | None, flo
     has never heard of comes back as its own squashed name, so a new GPU shows
     up in the listing instead of disappearing from it; the live sanity test is
     what tells us to add it to the catalog.
+
+    The catalog is consulted before the VRAM is parsed out, because some GPUs
+    have the memory glued into the model name: stripping "10G" out of "A10G"
+    leaves "A".
     """
     if not raw or not raw.strip():
         return None, vram
@@ -213,6 +218,9 @@ def resolve(raw: str | None, vram: float | None = None) -> tuple[str | None, flo
     name = _COUNT_PREFIX.sub("", raw.strip().replace("_", " ").replace("/", " "))
     while (stripped := _VENDOR.sub("", name)) != name:
         name = stripped
+
+    if accelerator := _lookup(name):
+        return accelerator.name, vram or accelerator.vram
 
     if vram is None and (found := _VRAM.search(name)):
         vram = float(found.group(1))

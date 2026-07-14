@@ -5,7 +5,9 @@ environment is allowed to name a credential: the adapters themselves receive
 theirs through `create()` and never go looking.
 """
 
+import configparser
 import os
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +15,8 @@ from skyward2.protocol.accelerators import CATALOG
 from skyward2.providers import REGISTRY
 
 CREDENTIALS = {
+    "aws": {"access_key_id": "AWS_ACCESS_KEY_ID", "secret_access_key": "AWS_SECRET_ACCESS_KEY"},
+    "gcp": {"service_account_json": "GCP_SERVICE_ACCOUNT_JSON"},
     "hyperstack": {"api_key": "HYPERSTACK_API_KEY"},
     "jarvislabs": {"api_key": "JL_API_KEY"},
     "lambda": {"api_key": "LAMBDA_API_KEY"},
@@ -28,13 +32,41 @@ CREDENTIALS = {
 
 PRICED_KINDS = sorted(set(CREDENTIALS) - {"tensordock"})
 
+CONFIG = {"aws": {"regions": ["us-east-1"]}}
+
+AWS_PROFILE = Path.home() / ".aws" / "credentials"
+
 
 def credentials_for(kind: str) -> dict[str, str]:
     env = CREDENTIALS[kind]
+    if kind == "aws" and not os.environ.get("AWS_ACCESS_KEY_ID"):
+        return _aws_profile()
+
     missing = [var for var in env.values() if not os.environ.get(var)]
     if missing:
         pytest.skip(f"{kind}: no credential in {', '.join(missing)}")
     return {field: os.environ[var] for field, var in env.items()}
+
+
+def _aws_profile() -> dict[str, str]:
+    """Read the developer's AWS profile — in the test, never in the adapter.
+
+    The adapter is forbidden from touching a credentials file: that is what lets
+    two AWS accounts coexist in one process. So the test does the reading and
+    hands the keys in through `create()`, exactly as the controller will.
+    """
+    if not AWS_PROFILE.exists():
+        pytest.skip("aws: no AWS_ACCESS_KEY_ID and no ~/.aws/credentials")
+
+    profile = configparser.ConfigParser()
+    profile.read(AWS_PROFILE)
+    if "default" not in profile:
+        pytest.skip("aws: no default profile")
+
+    return {
+        "access_key_id": profile["default"]["aws_access_key_id"],
+        "secret_access_key": profile["default"]["aws_secret_access_key"],
+    }
 
 
 def test_every_kind_declares_where_its_credential_comes_from():
@@ -44,7 +76,7 @@ def test_every_kind_declares_where_its_credential_comes_from():
 @pytest.mark.sanity
 @pytest.mark.parametrize("kind", PRICED_KINDS)
 async def test_the_live_catalog_is_priced_and_plausible(kind):
-    adapter = REGISTRY[kind].create("prv_live", "live", credentials_for(kind), {})
+    adapter = REGISTRY[kind].create("prv_live", "live", credentials_for(kind), CONFIG.get(kind, {}))
 
     offers = [offer async for offer in adapter.offers()]
     assert offers, f"{kind} returned an empty catalog"
@@ -75,5 +107,5 @@ async def test_tensordock_answers_even_though_its_marketplace_is_empty(kind="ten
     Kept as its own case so an empty catalog reads as the documented state of the
     world rather than as a broken adapter.
     """
-    adapter = REGISTRY[kind].create("prv_live", "live", credentials_for(kind), {})
+    adapter = REGISTRY[kind].create("prv_live", "live", credentials_for(kind), CONFIG.get(kind, {}))
     assert [offer async for offer in adapter.offers()] == []

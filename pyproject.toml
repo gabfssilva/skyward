@@ -186,6 +186,7 @@ v2 = [
     "litestar>=2.13",
     "msgspec>=0.19",
     "piccolo[sqlite]>=1.0",
+    "aioboto3>=13.0.0",
 ]
 
 [tool.uv]
