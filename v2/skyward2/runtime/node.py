@@ -109,9 +109,14 @@ class Node:
         try:
             self._listener("connecting", None)
             await self._ssh.connect()
+            self._monitor = asyncio.create_task(self._watch())
+
+            if await self._serving():
+                self.tunnel = await self._ssh.forward(worker.PORT)
+                self._listener("ready", None)
+                return
 
             self._listener("bootstrapping", None)
-            self._monitor = asyncio.create_task(self._watch())
             await self._bootstrap()
             await self._launch()
 
@@ -121,6 +126,21 @@ class Node:
         except Exception as exc:
             logger.warning("node %s failed: %s", self._machine.id, exc)
             self._listener("failed", str(exc))
+
+    async def _serving(self) -> bool:
+        """Whether this machine is already a worker.
+
+        The machine outlives the process that made it one, so arriving at a machine
+        that is already working is the normal case, not the exception: another
+        process attached to the compute, or this daemon came back up. Bootstrapping
+        it again would reinstall a venv that is fine and then start a second worker
+        onto a port the first one holds.
+
+        Adopting it is also what makes the tasks in flight survive: the worker never
+        stopped, so neither did they.
+        """
+        result = await self._ssh.run("pgrep -f skyward2.runtime.worker")
+        return result.exit_code == 0
 
     async def _bootstrap(self) -> None:
         await self._ssh.run(f"mkdir -p {SKYWARD_DIR}")

@@ -115,6 +115,25 @@ class Client:
                     yield bytes(buffer[4 : 4 + size])
                     del buffer[: 4 + size]
 
+    async def events(self, compute: str) -> AsyncGenerator[tuple[str, bytes]]:
+        """One compute's event log, replayed and then followed.
+
+        The replay is what makes subscribing late harmless: the log is in the store,
+        and the stream starts at the beginning of it. Nothing said before anybody was
+        listening is lost — which is the only reason the pool can print a bootstrap
+        it did not subscribe to in time.
+        """
+        async with self._http.stream("GET", "/v1/events", params={"compute": compute}) as response:
+            event = ""
+            async for line in response.aiter_lines():
+                match line.split(": ", 1):
+                    case ["event", name]:
+                        event = name
+                    case ["data", payload]:
+                        yield event, payload.encode()
+                    case _:
+                        continue
+
     async def _send(
         self,
         method: str,

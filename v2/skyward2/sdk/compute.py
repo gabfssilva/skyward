@@ -47,6 +47,7 @@ from skyward2.protocol.schemas import (
     Spec as SpecRef,
 )
 from skyward2.sdk.client import Client
+from skyward2.sdk.console import Console
 from skyward2.sdk.errors import SkywardError, TaskFailedError
 from skyward2.sdk.function import Group, Pending, Streaming
 from skyward2.sdk.provider import Provider
@@ -105,14 +106,19 @@ class Compute:
         url: str | None = None,
         database: Path = DEFAULT_PATH,
         delete_on_exit: bool = True,
+        console: bool = True,
+        attach: str | None = None,
     ) -> None:
         if specs and provider is not None:
             raise ValueError("a pool takes either specs or a provider, not both")
+        if attach and (specs or provider is not None):
+            raise ValueError("attaching takes the compute that already exists; a spec would describe a different one")
         if provider is not None:
             specs = (Spec(provider, accelerator, cpus, memory_gb, region),)
-        if not specs:
+        if not specs and not attach:
             raise ValueError("a pool needs a provider, or at least one spec")
 
+        self._attach = attach
         self._providers = {spec.provider.name: spec.provider for spec in specs}
         self._spec = ComputeSpec(
             specs=tuple(_wire(spec) for spec in specs),
@@ -127,10 +133,39 @@ class Compute:
         self._url = url or os.environ.get("SKYWARD_URL")
         self._database = database
         self._delete_on_exit = delete_on_exit
+        self._console = console
 
         self._loop: Loop | None = None
         self._client: Client | None = None
+        self._watching: Future[None] | None = None
         self._id = ""
+
+    @classmethod
+    def attached(
+        cls,
+        ref: str,
+        url: str | None = None,
+        database: Path = DEFAULT_PATH,
+        console: bool = True,
+        delete_on_exit: bool = False,
+    ) -> Compute:
+        """The compute that is already there, by name or by id.
+
+            with sky.Compute(provider=sky.AWS(), nodes=8, name="training", delete_on_exit=False) as pool:
+                ...
+
+            with sky.Compute.attached("training") as pool:   # tomorrow, another process
+                more(data) >> pool
+
+        The machines outlive the process that asked for them, which is the whole
+        reason the control plane is a daemon and not a library. This is how a second
+        process says so — it takes no spec, because the compute it is joining already
+        has one, and a spec here could only disagree with it.
+
+        It does not delete on exit by default. A pool somebody else is using is not a
+        pool to take down on the way out.
+        """
+        return cls(url=url, database=database, console=console, delete_on_exit=delete_on_exit, attach=ref)
 
     @property
     def id(self) -> str:
@@ -147,9 +182,11 @@ class Compute:
     def __exit__(self, *_: object) -> None:
         if self._delete_on_exit:
             self.loop.run(self._destroy())
+        if self._watching:
+            self._watching.cancel()
         self.loop.run(self.client.close())
         self.loop.close()
-        self._loop, self._client = None, None
+        self._loop, self._client, self._watching = None, None, None
 
     @property
     def loop(self) -> Loop:
@@ -213,16 +250,22 @@ class Compute:
         return compute.status.nodes_ready
 
     async def _provision(self) -> None:
-        await self._ensure_providers()
+        if self._attach:
+            found = await self.client.call("GET", f"/v1/computes/{self._attach}", ComputeView)
+            self._id = found.id
+        else:
+            await self._ensure_providers()
+            compute = await self.client.call(
+                "POST",
+                "/v1/computes",
+                ComputeView,
+                body=msgspec.json.encode(ComputeCreate(spec=self._spec, name=self._name)),
+                headers={"Idempotency-Key": uuid.uuid4().hex},
+            )
+            self._id = compute.id
 
-        compute = await self.client.call(
-            "POST",
-            "/v1/computes",
-            ComputeView,
-            body=msgspec.json.encode(ComputeCreate(spec=self._spec, name=self._name)),
-            headers={"Idempotency-Key": uuid.uuid4().hex},
-        )
-        self._id = compute.id
+        if self._console:
+            self._watching = self.loop.start(Console(self.client, self._id).follow())
 
         async with asyncio.timeout(READY_TIMEOUT):
             while True:

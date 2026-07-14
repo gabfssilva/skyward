@@ -7,6 +7,7 @@ would write against a daemon on another machine.
 """
 
 import sys
+import time
 from pathlib import Path
 
 import cloudpickle
@@ -55,6 +56,12 @@ def placement() -> tuple[int, int, bool]:
 @skyward.function
 def my_share(data: list[int]) -> list[int]:
     return list(skyward.shard(data))
+
+
+@skyward.function
+def noisy() -> int:
+    print("hello from the node")
+    return 1
 
 
 @skyward.function
@@ -132,6 +139,19 @@ def test_a_plugin_puts_its_package_on_the_machine_and_its_env_in_the_worker(tmp_
         database=tmp_path / "skyward.sqlite",
     ) as pool:
         assert hub() >> pool == ("hf_not_a_real_token", True)
+
+
+def test_what_a_node_prints_reaches_the_terminal(pool: Compute, capsys: pytest.CaptureFixture[str]):
+    assert noisy() >> pool == 1
+
+    seen = ""
+    for _ in range(50):
+        seen += capsys.readouterr().err
+        if "hello from the node" in seen:
+            break
+        time.sleep(0.1)
+
+    assert "hello from the node" in seen, "the print made it back through the event log"
 
 
 def test_a_function_that_raises_arrives_as_an_exception_with_its_traceback(pool: Compute):
