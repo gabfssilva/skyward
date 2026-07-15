@@ -7,9 +7,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, NamedTuple, Self
 
 import aioboto3
+from aiobotocore.client import AioBaseClient
 from botocore.exceptions import ClientError
 
-from skyward.application.errors import CapabilityMismatchError
+from skyward.application.errors import CapabilityMismatchError, ReleasePendingError
 from skyward.application.provider import Binding, Machine
 from skyward.protocol.schemas import ComputeSpec, Market, Offer
 
@@ -215,13 +216,14 @@ class AWSProvider:
 
         name = f"skyward-{compute_id}"
         session = self._session()
-        vpc = await self._vpc(session, region)
+        async with session.client("ec2", region_name=region) as ec2:
+            vpc = await self._vpc(ec2)
 
-        async with asyncio.TaskGroup() as group:
-            key = group.create_task(self._key_pair(session, region, name, public_key))
-            security_group = group.create_task(self._security_group(session, region, name, vpc))
-            subnets = group.create_task(self._subnets(session, region, vpc, offer.instance_type))
-            image = group.create_task(self._image(session, region, offer))
+            async with asyncio.TaskGroup() as group:
+                key = group.create_task(self._key_pair(ec2, name, public_key))
+                security_group = group.create_task(self._security_group(ec2, name, vpc))
+                subnets = group.create_task(self._subnets(ec2, vpc, offer.instance_type))
+                image = group.create_task(self._image(session, region, offer))
 
         return {
             "compute_id": compute_id,
@@ -275,7 +277,7 @@ class AWSProvider:
                         provider=self._name,
                     )
 
-                described = await self._describe(session, binding["region"], ids)
+                described = await self._describe(ec2, ids)
                 landed = next(
                     (raw["Placement"]["AvailabilityZone"] for raw in described if raw.get("Placement")),
                     pinned,
@@ -286,7 +288,7 @@ class AWSProvider:
                 with suppress(ClientError):
                     await ec2.delete_launch_template(LaunchTemplateId=template_id)
 
-    async def _describe(self, session: aioboto3.Session, region: str, ids: list[str]) -> list[dict[str, Any]]:
+    async def _describe(self, ec2: AioBaseClient, ids: list[str]) -> list[dict[str, Any]]:
         """Read the fleet's instances back, past the window where a fresh id is not yet describable.
 
         A ``create_fleet`` that has just returned an id is ahead of the eventual
@@ -294,16 +296,15 @@ class AWSProvider:
         for a second or two. The zone the fleet landed in is only knowable from the
         instance, so the read is retried rather than guessed.
         """
-        async with session.client("ec2", region_name=region) as ec2:
-            for attempt in range(5):
-                try:
-                    response = await ec2.describe_instances(InstanceIds=ids)
-                except ClientError as error:
-                    if _code(error) != "InvalidInstanceID.NotFound" or attempt == 4:
-                        raise
-                    await asyncio.sleep(2.0)
-                    continue
-                return [raw for reservation in response["Reservations"] for raw in reservation["Instances"]]
+        for attempt in range(5):
+            try:
+                response = await ec2.describe_instances(InstanceIds=ids)
+            except ClientError as error:
+                if _code(error) != "InvalidInstanceID.NotFound" or attempt == 4:
+                    raise
+                await asyncio.sleep(2.0)
+                continue
+            return [raw for reservation in response["Reservations"] for raw in reservation["Instances"]]
         return []
 
     async def machines(self, binding: Binding) -> Mapping[str, Machine]:
@@ -349,25 +350,32 @@ class AWSProvider:
 
         A security group whose instances were terminated seconds ago still holds
         their network interfaces for a moment, and AWS answers ``DependencyViolation``
-        until it does not. That error is left to propagate: the caller comes back.
+        until it does not. That is reported as retryable so the compute stays
+        ``deleting`` and the next pass finishes the job — not ``degraded``.
         """
         async with self._session().client("ec2", region_name=binding["region"]) as ec2:
             await _ignoring(ec2.delete_key_pair(KeyName=binding["key_name"]), "InvalidKeyPair.NotFound")
-            await _ignoring(
-                ec2.delete_security_group(GroupId=binding["security_group_id"]),
-                "InvalidGroup.NotFound",
-            )
+            try:
+                await _ignoring(
+                    ec2.delete_security_group(GroupId=binding["security_group_id"]),
+                    "InvalidGroup.NotFound",
+                )
+            except ClientError as error:
+                if _code(error) != "DependencyViolation":
+                    raise
+                raise ReleasePendingError(
+                    f"security group {binding['security_group_id']} still has attached interfaces",
+                    provider=self._name,
+                ) from error
 
-    async def _vpc(self, session: aioboto3.Session, region: str) -> str:
-        async with session.client("ec2", region_name=region) as ec2:
-            response = await ec2.describe_vpcs(Filters=[{"Name": "is-default", "Values": ["true"]}])
-
+    async def _vpc(self, ec2: AioBaseClient) -> str:
+        response = await ec2.describe_vpcs(Filters=[{"Name": "is-default", "Values": ["true"]}])
         vpcs = response["Vpcs"]
         if not vpcs:
             raise CapabilityMismatchError("the account has no default vpc to launch into", provider=self._name)
         return str(vpcs[0]["VpcId"])
 
-    async def _key_pair(self, session: aioboto3.Session, region: str, name: str, public_key: str) -> str:
+    async def _key_pair(self, ec2: AioBaseClient, name: str, public_key: str) -> str:
         """Import over a duplicate rather than accept it.
 
         A second ``initialize`` is a first one whose binding was lost, and with it
@@ -381,71 +389,69 @@ class AWSProvider:
             "PublicKeyMaterial": public_key.encode(),
         }
 
-        async with session.client("ec2", region_name=region) as ec2:
-            try:
-                await ec2.import_key_pair(**request)
-            except ClientError as error:
-                if _code(error) != "InvalidKeyPair.Duplicate":
-                    raise
-                await ec2.delete_key_pair(KeyName=name)
-                await ec2.import_key_pair(**request)
+        try:
+            await ec2.import_key_pair(**request)
+        except ClientError as error:
+            if _code(error) != "InvalidKeyPair.Duplicate":
+                raise
+            await ec2.delete_key_pair(KeyName=name)
+            await ec2.import_key_pair(**request)
         return name
 
-    async def _security_group(self, session: aioboto3.Session, region: str, name: str, vpc: str) -> str:
+    async def _security_group(self, ec2: AioBaseClient, name: str, vpc: str) -> str:
         """Create the group, and authorize it whether or not this call is the one that created it.
 
         A crash between the create and the authorize leaves a group that exists and
         opens nothing; the retry has to finish the job it finds half done rather
         than take the group's existence as proof that it is usable.
         """
-        async with session.client("ec2", region_name=region) as ec2:
-            try:
-                created = await ec2.create_security_group(
-                    GroupName=name,
-                    Description="Skyward EC2 worker security group",
-                    VpcId=vpc,
-                    TagSpecifications=[{"ResourceType": "security-group", "Tags": _tags(name)}],
-                )
-                group_id = str(created["GroupId"])
-            except ClientError as error:
-                if _code(error) != "InvalidGroup.Duplicate":
-                    raise
-                existing = await ec2.describe_security_groups(
-                    Filters=[
-                        {"Name": "group-name", "Values": [name]},
-                        {"Name": "vpc-id", "Values": [vpc]},
-                    ],
-                )
-                group_id = str(existing["SecurityGroups"][0]["GroupId"])
-
-            await _ignoring(
-                ec2.authorize_security_group_ingress(
-                    GroupId=group_id,
-                    IpPermissions=[
-                        {
-                            "IpProtocol": "-1",
-                            "UserIdGroupPairs": [{"GroupId": group_id, "Description": "peers"}],
-                        },
-                        {
-                            "IpProtocol": "tcp",
-                            "FromPort": 22,
-                            "ToPort": 22,
-                            "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "ssh"}],
-                        },
-                    ],
-                ),
-                "InvalidPermission.Duplicate",
+        try:
+            created = await ec2.create_security_group(
+                GroupName=name,
+                Description="Skyward EC2 worker security group",
+                VpcId=vpc,
+                TagSpecifications=[{"ResourceType": "security-group", "Tags": _tags(name)}],
             )
-            return group_id
+            group_id = str(created["GroupId"])
+        except ClientError as error:
+            if _code(error) != "InvalidGroup.Duplicate":
+                raise
+            existing = await ec2.describe_security_groups(
+                Filters=[
+                    {"Name": "group-name", "Values": [name]},
+                    {"Name": "vpc-id", "Values": [vpc]},
+                ],
+            )
+            group_id = str(existing["SecurityGroups"][0]["GroupId"])
 
-    async def _subnets(self, session: aioboto3.Session, region: str, vpc: str, instance_type: str) -> dict[str, str]:
+        await _ignoring(
+            ec2.authorize_security_group_ingress(
+                GroupId=group_id,
+                IpPermissions=[
+                    {
+                        "IpProtocol": "-1",
+                        "UserIdGroupPairs": [{"GroupId": group_id, "Description": "peers"}],
+                    },
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": 22,
+                        "ToPort": 22,
+                        "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "ssh"}],
+                    },
+                ],
+            ),
+            "InvalidPermission.Duplicate",
+        )
+        return group_id
+
+    async def _subnets(self, ec2: AioBaseClient, vpc: str, instance_type: str) -> dict[str, str]:
         """One subnet per availability zone that actually offers the instance type.
 
         An instance type is not sold in every zone of its region, and a subnet in a
         zone that does not sell it is a launch that fails outright. Resolving the
         pairing once is what lets :meth:`launch` treat the zones as a list to walk.
         """
-        async with session.client("ec2", region_name=region) as ec2, asyncio.TaskGroup() as group:
+        async with asyncio.TaskGroup() as group:
             offerings = group.create_task(
                 ec2.describe_instance_type_offerings(
                     LocationType="availability-zone",
