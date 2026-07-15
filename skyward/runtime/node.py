@@ -96,6 +96,11 @@ class Node:
         await self._ssh.close()
 
     @property
+    def _sudo(self) -> str:
+        """A machine reached as a non-root user needs a lift to write under ``/opt``."""
+        return "" if self._machine.user == "root" else "sudo "
+
+    @property
     def peer(self) -> str:
         """Where the other machines reach this one."""
         return self._machine.private_host or self._machine.host or ""
@@ -143,12 +148,12 @@ class Node:
         return result.exit_code == 0
 
     async def _bootstrap(self) -> None:
-        await self._ssh.run(f"mkdir -p {SKYWARD_DIR}")
+        await self._ssh.run(f"{self._sudo}mkdir -p {SKYWARD_DIR} && {self._sudo}chown {self._machine.user} {SKYWARD_DIR}")
         if self._source.wheel:
             await self._ssh.put(self._source.argument, self._source.wheel)
 
         await self._ssh.put(bootstrap.SCRIPT, bootstrap.script(self._image, self._source.argument).encode())
-        await self._ssh.run(f"chmod +x {bootstrap.SCRIPT} && nohup {bootstrap.SCRIPT} > /dev/null 2>&1 &")
+        await self._ssh.run(f"chmod +x {bootstrap.SCRIPT} && nohup {self._sudo}{bootstrap.SCRIPT} > /dev/null 2>&1 &")
 
         await self._reach("bootstrap", BOOTSTRAP_TIMEOUT)
 
@@ -173,7 +178,7 @@ class Node:
             )
         )
         await self._ssh.run(
-            f"nohup env {environment} {bootstrap.PYTHON} -m skyward.runtime.worker "
+            f"nohup {self._sudo}env {environment} {bootstrap.PYTHON} -m skyward.runtime.worker "
             f">> {SKYWARD_DIR}/worker.log 2>&1 &",
         )
 

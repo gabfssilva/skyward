@@ -12,6 +12,7 @@ Passing a credential explicitly always wins over the environment.
 from __future__ import annotations
 
 import os
+from configparser import ConfigParser
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -38,13 +39,14 @@ def AWS(  # noqa: N802
     regions: tuple[str, ...] | None = None,
     name: str = "",
 ) -> Provider:
+    shared = _aws_shared()
     return _provider(
         "aws",
         name,
         _some(
-            access_key_id=access_key_id or os.environ.get("AWS_ACCESS_KEY_ID"),
-            secret_access_key=secret_access_key or os.environ.get("AWS_SECRET_ACCESS_KEY"),
-            session_token=session_token or os.environ.get("AWS_SESSION_TOKEN"),
+            access_key_id=access_key_id or os.environ.get("AWS_ACCESS_KEY_ID") or shared.get("aws_access_key_id"),
+            secret_access_key=secret_access_key or os.environ.get("AWS_SECRET_ACCESS_KEY") or shared.get("aws_secret_access_key"),
+            session_token=session_token or os.environ.get("AWS_SESSION_TOKEN") or shared.get("aws_session_token"),
         ),
         _some(regions=regions),
     )
@@ -164,3 +166,18 @@ def _some[T](**fields: T | None) -> dict[str, T]:
 
 def _file(path: str | None) -> str | None:
     return Path(path).read_text() if path and Path(path).is_file() else None
+
+
+def _aws_shared() -> dict[str, str]:
+    """The static keys in ``~/.aws/credentials`` for ``AWS_PROFILE`` (default ``default``).
+
+    Only static keys resolve here. SSO, assume-role, and process credentials need
+    botocore's full chain, which the SDK deliberately does not depend on.
+    """
+    path = Path(os.environ.get("AWS_SHARED_CREDENTIALS_FILE") or Path.home() / ".aws" / "credentials")
+    if not path.is_file():
+        return {}
+    parser = ConfigParser()
+    parser.read(path)
+    profile = os.environ.get("AWS_PROFILE", "default")
+    return dict(parser[profile]) if parser.has_section(profile) else {}
