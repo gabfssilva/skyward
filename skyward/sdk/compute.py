@@ -14,6 +14,7 @@ import threading
 import uuid
 from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Iterator, Sequence
 from concurrent.futures import Future
+from contextlib import aclosing
 from pathlib import Path
 from typing import Self
 
@@ -180,13 +181,25 @@ class Compute:
         return self
 
     def __exit__(self, *_: object) -> None:
-        if self._delete_on_exit:
-            self.loop.run(self._destroy())
-        if self._watching:
-            self._watching.cancel()
-        self.loop.run(self.client.close())
-        self.loop.close()
-        self._loop, self._client, self._watching = None, None, None
+        """Tear down, and stay torn down even when a ``Ctrl-C`` lands mid-teardown.
+
+        The interrupt arrives on this thread, blocked on a result from the loop's;
+        left to propagate it would skip closing the loop, and the daemon thread would
+        go on running the destroy nobody is waiting for. The event loop is what has to
+        be stopped last and unconditionally, because it is the thread that keeps the
+        process alive.
+        """
+        try:
+            if self._delete_on_exit:
+                self.loop.run(self._destroy())
+        finally:
+            if self._watching:
+                self._watching.cancel()
+            try:
+                self.loop.run(self.client.close())
+            finally:
+                self.loop.close()
+                self._loop, self._client, self._watching = None, None, None
 
     @property
     def loop(self) -> Loop:
@@ -268,15 +281,10 @@ class Compute:
             self._watching = self.loop.start(Console(self.client, self._id).follow())
 
         async with asyncio.timeout(READY_TIMEOUT):
-            while True:
-                current = await self.client.call("GET", f"/v1/computes/{self._id}", ComputeView)
-                match current.status.state:
-                    case "ready":
-                        return
-                    case "failed" | "degraded":
-                        raise RuntimeError(f"compute {self._id} is {current.status.state}: {current.status.last_error}")
-                    case _:
-                        await asyncio.sleep(0.5)
+            current = await self._reach("ready", "failed", "degraded")
+
+        if current.status.state != "ready":
+            raise RuntimeError(f"compute {self._id} is {current.status.state}: {current.status.last_error}")
 
     async def _ensure_providers(self) -> None:
         """The credentials live in the daemon, and this is how they get there.
@@ -315,9 +323,24 @@ class Compute:
         )
 
         async with asyncio.timeout(DELETE_TIMEOUT):
-            while current.status.state != "deleted":
-                await asyncio.sleep(0.5)
+            await self._reach("deleted")
+
+    async def _reach(self, *states: str) -> ComputeView:
+        """Follow the compute's events; answer with its view once it reaches one of ``states``.
+
+        The stream replays the log from the start before it follows, so a state reached
+        before this subscription still arrives. Only a compute-level event prompts a read
+        — those are the transitions worth waking for — which is what turns a poll every
+        half second into one read per change.
+        """
+        async with aclosing(self.client.events(self._id)) as events:
+            async for event, _ in events:
+                if not event.startswith("compute."):
+                    continue
                 current = await self.client.call("GET", f"/v1/computes/{self._id}", ComputeView)
+                if current.status.state in states:
+                    return current
+        raise RuntimeError(f"the event stream for {self._id} ended before it reached {', '.join(states)}")
 
     async def _one[T](self, pending: Pending[T]) -> T:
         task = await self._submit(pending, dispatch="one")
