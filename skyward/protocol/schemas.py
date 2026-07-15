@@ -89,6 +89,7 @@ type ErrorCode = Literal[
     "task_indeterminate",
     "duplication_not_acknowledged",
     "capability_mismatch",
+    "release_pending",
 ]
 
 

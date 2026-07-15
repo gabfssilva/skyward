@@ -29,7 +29,7 @@ from time import monotonic
 import msgspec
 
 from skyward import plugins
-from skyward.application.errors import NotFoundError
+from skyward.application.errors import NotFoundError, SkywardError
 from skyward.application.machines import Machines
 from skyward.persistence.computes import ComputeStore, GenerationStore
 from skyward.persistence.events import EventStore
@@ -253,7 +253,16 @@ class Reconciler:
         gone = all(node.state == "deleted" for node in nodes)
 
         if compute.spec.desired == "deleted" and gone:
-            await self._machines.release(compute.id)
+            try:
+                await self._machines.release(compute.id)
+            except SkywardError as error:
+                if not error.retryable:
+                    raise
+                await self._computes.observe(
+                    compute.id,
+                    ComputeStatus(state="deleting", observed_generation=compute.generation, nodes_ready=0, nodes_total=0),
+                )
+                return
             await self._computes.observe(
                 compute.id,
                 ComputeStatus(state="deleted", observed_generation=compute.generation, nodes_ready=0, nodes_total=0),

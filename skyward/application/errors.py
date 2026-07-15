@@ -81,3 +81,17 @@ class DuplicationNotAcknowledgedError(SkywardError):
 class CapabilityMismatchError(SkywardError):
     code = "capability_mismatch"
     status = 422
+
+
+class ReleasePendingError(SkywardError):
+    """The provider cannot give a resource back yet, but will be able to soon.
+
+    A security group whose instances were terminated seconds ago still holds their
+    network interfaces for a moment; the teardown is not done, it is not stuck, and
+    the next pass is what finishes it — so the compute stays ``deleting``, not
+    ``degraded``.
+    """
+
+    code = "release_pending"
+    status = 409
+    retryable = True
