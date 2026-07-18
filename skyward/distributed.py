@@ -22,7 +22,8 @@ string, a number, a tuple of them.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Coroutine, Hashable
+import itertools
+from collections.abc import Callable, Hashable, Mapping, MutableMapping
 from dataclasses import dataclass
 from types import TracebackType
 
@@ -68,13 +69,128 @@ def cluster() -> Cluster:
     return _cluster
 
 
-def run[T](coro: Coroutine[object, object, T]) -> T:
-    """Await, from the thread the user's function is running on.
+type Params = Mapping[str, object]
+type Backend = Callable[[str, str, str, tuple[object, ...], Params], object]
+"""One call, addressed by (collection kind, name, method), its args and its build params.
 
-    The collections are asynchronous and the caller is not. The loop that owns the
-    cluster is the worker's, in this process, and this is the only door into it.
+The seam the subprocess executors bend: in the worker's own process the call reaches
+casty directly; from a task running in a subprocess it rides a pipe back here first.
+The collection classes below are the same on both sides — only what ``invoke`` resolves
+to changes.
+"""
+
+_leases: MutableMapping[str, casty.Lease] = {}
+"""Locks held on behalf of a subprocess, by token. The lease is not serialisable, so it
+stays here and the far side holds only the token that names it."""
+_tokens = itertools.count()
+
+
+async def _apply(
+    current: Cluster,
+    kind: str,
+    name: str,
+    method: str,
+    args: tuple[object, ...],
+    params: Params,
+) -> object:
+    match kind:
+        case "map":
+            return await getattr(current.system.map(name, replicas=current.replicas), method)(*args)
+        case "set":
+            return await getattr(current.system.set(name, replicas=current.replicas), method)(*args)
+        case "counter":
+            return await getattr(current.system.counter(name, replicas=current.replicas), method)(*args)
+        case "queue":
+            return await getattr(current.system.queue(name, replicas=current.replicas), method)(*args)
+        case "barrier":
+            parties = params["parties"]
+            (timeout,) = args
+            assert isinstance(parties, int)
+            assert timeout is None or isinstance(timeout, int | float)
+            return await current.system.barrier(name, parties=parties, replicas=current.replicas).wait(timeout)
+        case "lock":
+            return await _acquire_or_release(current, name, method, args, params)
+        case _:
+            raise ValueError(f"unknown collection {kind!r}")
+
+
+async def _acquire_or_release(
+    current: Cluster,
+    name: str,
+    method: str,
+    args: tuple[object, ...],
+    params: Params,
+) -> object:
+    match method:
+        case "acquire":
+            ttl, timeout = params["ttl"], params["timeout"]
+            assert isinstance(ttl, int | float)
+            assert timeout is None or isinstance(timeout, int | float)
+            lock = current.system.lock(name, ttl=ttl, timeout=timeout, replicas=current.replicas)
+            token = str(next(_tokens))
+            _leases[token] = await lock.acquire()
+            return token
+        case "release":
+            (token,) = args
+            assert isinstance(token, str)
+            lease = _leases.pop(token, None)
+            if lease is not None:
+                await lease.release()
+            return None
+        case _:
+            raise ValueError(f"unknown lock method {method!r}")
+
+
+def _local(kind: str, name: str, method: str, args: tuple[object, ...], params: Params) -> object:
+    current = cluster()
+    return asyncio.run_coroutine_threadsafe(_apply(current, kind, name, method, args, params), current.loop).result()
+
+
+_backend: Backend = _local
+
+
+def install(backend: Backend) -> None:
+    """Route the collections somewhere other than this process's cluster.
+
+    Called by the IPC bridge inside a subprocess executor, where ``cluster()`` is empty
+    and every call has to reach back to the worker that spawned it.
     """
-    return asyncio.run_coroutine_threadsafe(coro, cluster().loop).result()
+    global _backend
+    _backend = backend
+
+
+def invoke(kind: str, name: str, method: str, args: tuple[object, ...] = (), params: Params | None = None) -> object:
+    return _backend(kind, name, method, args, params or {})
+
+
+def _blob(value: object) -> bytes | None:
+    if value is None or isinstance(value, bytes):
+        return value
+    raise TypeError(f"the collection bridge returned {type(value).__name__}, not bytes")
+
+
+def _flag(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise TypeError(f"the collection bridge returned {type(value).__name__}, not a bool")
+
+
+def _count(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"the collection bridge returned {type(value).__name__}, not an int")
+    return value
+
+
+def _blobs(value: object) -> list[bytes]:
+    if isinstance(value, list):
+        return value
+    raise TypeError(f"the collection bridge returned {type(value).__name__}, not a list")
+
+
+def _pairs[K](value: object) -> list[tuple[K, bytes]]:
+    if isinstance(value, list):
+        return value
+    raise TypeError(f"the collection bridge returned {type(value).__name__}, not a list")
 
 
 class Dict[K: Hashable, V]:
@@ -83,109 +199,89 @@ class Dict[K: Hashable, V]:
     def __init__(self, name: str) -> None:
         self._name = name
 
-    @property
-    def _map(self) -> casty.Map[K, bytes]:
-        current = cluster()
-        return current.system.map(self._name, replicas=current.replicas)
-
     def __setitem__(self, key: K, value: V) -> None:
-        run(self._map.put(key, dumps(value)))
+        invoke("map", self._name, "put", (key, dumps(value)))
 
     def __getitem__(self, key: K) -> V:
-        raw = run(self._map.get(key))
+        raw = _blob(invoke("map", self._name, "get", (key,)))
         if raw is None:
             raise KeyError(key)
         return loads(raw)
 
     def __contains__(self, key: K) -> bool:
-        return run(self._map.contains(key))
+        return _flag(invoke("map", self._name, "contains", (key,)))
 
     def __len__(self) -> int:
-        return run(self._map.size())
+        return _count(invoke("map", self._name, "size"))
 
     def get(self, key: K, default: V | None = None) -> V | None:
-        raw = run(self._map.get(key))
+        raw = _blob(invoke("map", self._name, "get", (key,)))
         return default if raw is None else loads(raw)
 
     def pop(self, key: K) -> bool:
-        return run(self._map.remove(key))
+        return _flag(invoke("map", self._name, "remove", (key,)))
 
     def items(self) -> list[tuple[K, V]]:
-        return [(key, loads(raw)) for key, raw in run(self._map.items())]
+        return [(key, loads(raw)) for key, raw in _pairs(invoke("map", self._name, "items"))]
 
     def clear(self) -> None:
-        run(self._map.clear())
+        invoke("map", self._name, "clear")
 
 
 class Set[T]:
     def __init__(self, name: str) -> None:
         self._name = name
 
-    @property
-    def _set(self) -> casty.Set[bytes]:
-        current = cluster()
-        return current.system.set(self._name, replicas=current.replicas)
-
     def add(self, item: T) -> bool:
-        return run(self._set.add(dumps(item)))
+        return _flag(invoke("set", self._name, "add", (dumps(item),)))
 
     def remove(self, item: T) -> bool:
-        return run(self._set.remove(dumps(item)))
+        return _flag(invoke("set", self._name, "remove", (dumps(item),)))
 
     def __contains__(self, item: T) -> bool:
-        return run(self._set.contains(dumps(item)))
+        return _flag(invoke("set", self._name, "contains", (dumps(item),)))
 
     def __len__(self) -> int:
-        return run(self._set.size())
+        return _count(invoke("set", self._name, "size"))
 
     def items(self) -> list[T]:
-        return [loads(raw) for raw in run(self._set.items())]
+        return [loads(raw) for raw in _blobs(invoke("set", self._name, "items"))]
 
     def clear(self) -> None:
-        run(self._set.clear())
+        invoke("set", self._name, "clear")
 
 
 class Counter:
     def __init__(self, name: str) -> None:
         self._name = name
 
-    @property
-    def _counter(self) -> casty.Counter:
-        current = cluster()
-        return current.system.counter(self._name, replicas=current.replicas)
-
     def add(self, delta: int = 1) -> None:
-        run(self._counter.add(delta))
+        invoke("counter", self._name, "add", (delta,))
 
     def get(self) -> int:
-        return run(self._counter.get())
+        return _count(invoke("counter", self._name, "get"))
 
     def reset(self) -> None:
-        run(self._counter.reset())
+        invoke("counter", self._name, "reset")
 
 
 class Queue[T]:
     def __init__(self, name: str) -> None:
         self._name = name
 
-    @property
-    def _queue(self) -> casty.Queue[bytes]:
-        current = cluster()
-        return current.system.queue(self._name, replicas=current.replicas)
-
     def offer(self, item: T) -> None:
-        run(self._queue.offer(dumps(item)))
+        invoke("queue", self._name, "offer", (dumps(item),))
 
     def poll(self) -> T | None:
         """The next item, or nothing. It does not block: an empty queue is an answer."""
-        raw = run(self._queue.poll())
+        raw = _blob(invoke("queue", self._name, "poll"))
         return None if raw is None else loads(raw)
 
     def __len__(self) -> int:
-        return run(self._queue.size())
+        return _count(invoke("queue", self._name, "size"))
 
     def clear(self) -> None:
-        run(self._queue.clear())
+        invoke("queue", self._name, "clear")
 
 
 class Barrier:
@@ -196,9 +292,7 @@ class Barrier:
         self._parties = parties
 
     def wait(self, timeout: float | None = None) -> None:
-        current = cluster()
-        barrier = current.system.barrier(self._name, parties=self._parties, replicas=current.replicas)
-        run(barrier.wait(timeout))
+        invoke("barrier", self._name, "wait", (timeout,), {"parties": self._parties})
 
 
 class Lock:
@@ -215,12 +309,12 @@ class Lock:
         self._name = name
         self._ttl = ttl
         self._timeout = timeout
-        self._lease: casty.Lease | None = None
+        self._token: str | None = None
 
     def __enter__(self) -> Lock:
-        current = cluster()
-        lock = current.system.lock(self._name, ttl=self._ttl, timeout=self._timeout, replicas=current.replicas)
-        self._lease = run(lock.acquire())
+        held = invoke("lock", self._name, "acquire", (), {"ttl": self._ttl, "timeout": self._timeout})
+        assert isinstance(held, str)
+        self._token = held
         return self
 
     def __exit__(
@@ -229,9 +323,9 @@ class Lock:
         error: BaseException | None,
         trace: TracebackType | None,
     ) -> None:
-        if self._lease:
-            run(self._lease.release())
-            self._lease = None
+        if self._token is not None:
+            invoke("lock", self._name, "release", (self._token,))
+            self._token = None
 
 
 def dict[K: Hashable, V](name: str) -> Dict[K, V]:  # noqa: A001

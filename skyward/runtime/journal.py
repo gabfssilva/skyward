@@ -45,7 +45,20 @@ class Console(Struct, frozen=True, tag="console", tag_field="type"):
     task: str | None = None
 
 
-type NodeEvent = Phase | Console
+class Metric(Struct, frozen=True, tag="metric", tag_field="type"):
+    """One reading of one gauge, sampled on the machine and named for what it is.
+
+    A gauge, not a log line: ``cpu`` at ``72.4`` replaces the last ``cpu``, it does
+    not add to a history. The bootstrap's collectors write these on their own
+    interval, independent of the worker, so a machine keeps saying how it is even
+    while it is still coming up, or long after it has gone quiet.
+    """
+
+    name: str
+    value: float
+
+
+type NodeEvent = Phase | Console | Metric
 
 _decode = msgspec.json.Decoder(NodeEvent)
 

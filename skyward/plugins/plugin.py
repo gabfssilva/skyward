@@ -1,4 +1,4 @@
-"""What a plugin is, and the three places it gets to speak.
+"""What a plugin is, and the places it gets to speak.
 
 A plugin is a value, not a callback. It travels in the spec, is written to the
 database with it, and is rebuilt from it on the node — so it cannot be a closure,
@@ -14,12 +14,15 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from msgspec import Struct, to_builtins
 
 from skyward.protocol.schemas import Image, PluginRef
 from skyward.runtime.api import Info
+
+if TYPE_CHECKING:
+    from skyward.sdk.compute import Compute
 
 
 class Plugin(Struct, frozen=True):
@@ -67,6 +70,18 @@ class Plugin(Struct, frozen=True):
         therefore the one that sees the others' work.
         """
         return call()
+
+    @contextmanager
+    def client(self, compute: Compute) -> Iterator[None]:
+        """The plugin's say on the client, for as long as the pool is up.
+
+        Unlike the others, this hook does not travel: it runs on the instance the
+        user constructed, in the process that opened the ``with`` block, and never
+        on a node. It is entered once the compute is ready and left before it is
+        torn down — the place a plugin reaches back into the live pool, as joblib
+        does to point its parallel backend at it.
+        """
+        yield
 
     def ref(self) -> PluginRef:
         return PluginRef(kind=self.kind, params=to_builtins(self))

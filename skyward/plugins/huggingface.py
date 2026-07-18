@@ -34,7 +34,7 @@ class HuggingFace(Plugin, frozen=True):
     token: str | None = None
 
     def image(self, image: Image) -> Image:
-        return replace(image, packages=(*image.packages, "huggingface_hub"))
+        return replace(image, pip=(*image.pip, "huggingface_hub"))
 
     @contextmanager
     def setup(self, info: Info) -> Iterator[None]:

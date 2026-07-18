@@ -13,12 +13,15 @@ the worker's, which do not.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import os
 import sys
 import traceback
 from collections.abc import Callable, Iterator
+from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import ExitStack
 from functools import partial
+from typing import Literal
 
 import casty
 import msgspec
@@ -27,12 +30,32 @@ from skyward import distributed, plugins
 from skyward.plugins import Plugin
 from skyward.protocol import codec
 from skyward.protocol.frames import Chunk, Done, End, Failed, Lookup, Outcome, Pending, Step, Unknown
+from skyward.protocol.schemas import Executor as ExecutorKind
 from skyward.protocol.schemas import PluginRef
+from skyward.runtime import ipc
 from skyward.runtime.api import instance_info
 from skyward.runtime.journal import Journal, Phase, emit, task
 
 PORT = 25520
 SEED_TIMEOUT = 180.0
+CONCURRENCY = int(os.environ.get("SKYWARD_SLOTS", "1"))
+"""How many tasks the executor runs at once — the width of the pool."""
+BUFFER = int(os.environ.get("SKYWARD_BUFFER", "0"))
+"""How many more casty admits, to keep the pool fed. See :class:`Worker`."""
+REUSE = os.environ.get("SKYWARD_REUSE", "1") == "1"
+
+
+def _mode() -> ExecutorKind:
+    match os.environ.get("SKYWARD_EXECUTOR", "thread"):
+        case "process":
+            return "process"
+        case "loky":
+            return "loky"
+        case _:
+            return "thread"
+
+
+MODE = _mode()
 
 
 type Arguments = tuple[tuple[object, ...], dict[str, object]]
@@ -51,15 +74,24 @@ generators: dict[str, Iterator[object]] = {}
 installed: tuple[Plugin, ...] = ()
 """The compute's plugins, rebuilt on this machine from what the spec said they were."""
 
+task_pool: Executor
+"""Where a task runs: the thread pool, or a subprocess pool. Set by :func:`main`."""
+thread_pool: Executor
+"""Where a generator always runs, whatever the task pool is: pulling an item blocks,
+and a subprocess cannot hold the far end of a stream the caller is pacing. It is the
+task pool itself under ``thread``, a pool of its own otherwise."""
 
-@casty.service(name="skyward.Worker", concurrency=int(os.environ.get("SKYWARD_SLOTS", "1")))
+
+@casty.service(name="skyward.Worker", concurrency=CONCURRENCY + BUFFER)
 class Worker:
     """The tasks.
 
-    ``concurrency`` is the number of slots, and the wait above it is not a
-    detail: a call that finds every slot busy sits in the mailbox, and that is
-    the backpressure the daemon is reading when it decides whether the compute
-    needs another node.
+    The service admits ``concurrency + buffer`` calls; the executor runs
+    ``concurrency`` of them. The gap is the buffer: those calls arrive and their
+    payloads are unpickled, then wait at the executor's door, so a slot that frees
+    finds the next task in hand. A call that finds even the buffer full sits in the
+    mailbox, and that is the backpressure the daemon reads when it decides whether
+    the compute needs another node.
     """
 
     async def run(self, id: str, code: bytes, args: bytes) -> bytes:
@@ -164,13 +196,23 @@ async def execute(id: str, code: bytes, args: bytes) -> Outcome:
             sys.stdout.flush()
             sys.stderr.flush()
 
+    loop = asyncio.get_running_loop()
     token = task.set(id)
     try:
-        fn = await function.decode(code)
-        positional, keyword = await arguments.decode(args)
-        wrapped = plugins.chain(installed, partial(call, fn, positional, keyword), instance_info())
-        value = await asyncio.to_thread(wrapped)
-        return Done(value=await codec.payload.encode(value))
+        if MODE == "thread":
+            fn = await function.decode(code)
+            positional, keyword = await arguments.decode(args)
+            wrapped = plugins.chain(installed, partial(call, fn, positional, keyword), instance_info())
+            value = await loop.run_in_executor(thread_pool, contextvars.copy_context().run, wrapped)
+            return Done(value=await codec.payload.encode(value))
+
+        ok, payload = await loop.run_in_executor(task_pool, _run_in_process, code, args)
+        if ok:
+            assert isinstance(payload, bytes)
+            return Done(value=payload)
+        assert isinstance(payload, tuple)
+        error, trace = payload
+        return Failed(error=error, traceback=trace)
     except Exception as exc:
         return Failed(error=str(exc), traceback=traceback.format_exc())
     finally:
@@ -194,9 +236,10 @@ async def advance(id: str) -> Step:
             sys.stdout.flush()
             sys.stderr.flush()
 
+    loop = asyncio.get_running_loop()
     token = task.set(id)
     try:
-        item = await asyncio.to_thread(pull, generators[id])
+        item = await loop.run_in_executor(thread_pool, contextvars.copy_context().run, pull, generators[id])
         if item is DONE:
             generators.pop(id, None)
             return End()
@@ -206,6 +249,48 @@ async def advance(id: str) -> Step:
         return Failed(error=str(exc), traceback=traceback.format_exc())
     finally:
         task.reset(token)
+
+
+child_plugins: tuple[Plugin, ...] | None = None
+"""The plugins, once a subprocess has rebuilt them. See :func:`_installed`."""
+
+
+def _installed() -> tuple[Plugin, ...]:
+    """The plugins for this subprocess, rebuilt once from what the spec carried.
+
+    A subprocess is a fresh interpreter, so the worker's ``installed`` is empty here.
+    The refs ride in the environment the pool inherited, and resolve to the same values
+    the worker holds — the plugins decorate the call the same, wherever it runs.
+    """
+    global child_plugins
+    if child_plugins is None:
+        refs = msgspec.json.decode(os.environ.get("SKYWARD_PLUGINS", "[]"), type=tuple[PluginRef, ...])
+        child_plugins = plugins.resolve(refs)
+    return child_plugins
+
+
+def _run_in_process(code: bytes, args: bytes) -> tuple[Literal[True], bytes] | tuple[Literal[False], tuple[str, str]]:
+    """Run one task in a subprocess, and bring back an answer that survives the trip.
+
+    The code and the arguments are unpickled here, where the user's libraries are,
+    and the collections the task reaches for go home over the IPC bridge the pool's
+    initializer left behind. The exception does not survive the trip: a user's error
+    class may not exist here in a form the worker can unpickle, so a failure comes back
+    as its message and traceback, already text, and the worker turns those into Failed.
+    """
+    try:
+        fn: Callable[..., object] = codec.loads(code)
+        decoded: Arguments = codec.loads(args)
+        positional, keyword = decoded
+        wrapped = plugins.chain(_installed(), partial(fn, *positional, **keyword), instance_info())
+        try:
+            value = wrapped()
+        finally:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        return True, codec.dumps(value)
+    except Exception as exc:
+        return False, (str(exc), traceback.format_exc())
 
 
 async def reachable(seed: str) -> None:
@@ -239,7 +324,7 @@ async def main() -> None:
     casty's heartbeats while doing it, and be evicted from the cluster it was in the
     middle of joining.
     """
-    global installed
+    global installed, task_pool, thread_pool
 
     seeds = [seed for seed in os.environ.get("SKYWARD_SEEDS", "").split(",") if seed]
     for seed in seeds:
@@ -257,6 +342,8 @@ async def main() -> None:
     stack = ExitStack()
     try:
         distributed.bind(system, asyncio.get_running_loop())
+        task_pool = stack.enter_context(ipc.executor(MODE, REUSE, CONCURRENCY))
+        thread_pool = task_pool if MODE == "thread" else stack.enter_context(ThreadPoolExecutor(max_workers=CONCURRENCY))
         await asyncio.to_thread(setup, stack)
 
         emit(Phase(event="completed", phase="worker"))

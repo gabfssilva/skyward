@@ -4,7 +4,7 @@ import skyward as sky
 
 
 @sky.function
-def gpu_info() -> sky.InstanceInfo:
+def gpu_info() -> sky.Info:
     """Return information about this instance."""
     return sky.instance_info()
 
@@ -41,9 +41,9 @@ def matrix_benchmark(size: int) -> dict:
 
 if __name__ == "__main__":
     with sky.Compute(
-        provider=sky.VastAI(),
-        accelerator=sky.accelerators.L40S(),
-        image=sky.Image(pip=["torch"]),
+        provider=sky.RunPod(container_image='nvidia/cuda:12.9.1-runtime-ubuntu22.04'),
+        accelerator=sky.accelerators.RTX_PRO_4500(),
+        image=sky.Image(pip=("torch",)),
     ) as compute:
         info = gpu_info() >> compute
         print(f"Instance: {info}")

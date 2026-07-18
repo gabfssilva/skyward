@@ -8,6 +8,8 @@ it is worth running.
 """
 
 import asyncio
+import io
+import tarfile
 import uuid
 
 import asyncssh
@@ -24,7 +26,7 @@ from skyward.runtime.source import Source, resolve
 
 pytestmark = pytest.mark.e2e
 
-IMAGE = Image(python="3.13", packages=("msgspec",), env={"SKYWARD_TEST": "1"})
+IMAGE = Image(python="3.13", pip=("msgspec",), env={"SKYWARD_TEST": "1"})
 
 SPEC = ComputeSpec(
     specs=(Spec(provider=ProviderRef(kind="container"), cpus=2, memory_gb=2),),
@@ -52,7 +54,7 @@ async def machine(key: asyncssh.SSHKey):
         f"cmp_{uuid.uuid4().hex[:8]}", SPEC, offer, "on_demand", key.export_public_key().decode(),
     )
 
-    await provider.launch(binding, count=1, min_count=1)
+    await provider.launch(binding, "on_demand", count=1, min_count=1)
     async with asyncio.timeout(30):
         while not (machines := await provider.machines(binding)):
             await asyncio.sleep(0.5)
@@ -81,6 +83,8 @@ async def test_a_machine_becomes_a_worker(machine, key: asyncssh.SSHKey, source:
         source=source,
         listener=lambda state, _: states.append(state),
         output=lambda content, _: console.append(content),
+        sample=lambda *_: None,
+        phase=lambda *_: None,
     )
     await node.start()
     await settled(states)
@@ -112,6 +116,8 @@ async def test_the_worker_answers_and_runs_what_it_is_sent(machine, key: asyncss
         source=source,
         listener=lambda state, _: states.append(state),
         output=lambda content, task: console.append(f"{task}: {content}"),
+        sample=lambda *_: None,
+        phase=lambda *_: None,
     )
     await node.start()
     await settled(states)
@@ -146,6 +152,46 @@ async def test_the_worker_answers_and_runs_what_it_is_sent(machine, key: asyncss
     await node.close()
 
 
+async def test_local_code_is_unpacked_where_the_worker_imports_it(machine, key: asyncssh.SSHKey, source: Source):
+    """The includes path, end to end: bytes handed to the node import on the worker.
+
+    The client builds this tarball from its own disk and ships it as a blob; here it
+    arrives as bytes directly, which is all the node ever sees. What it has to get
+    right is the landing spot — the venv's ``site-packages`` — so a shipped module
+    imports the same as the image's own packages do.
+    """
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        payload = b"MARK = 'synced-ok'\n"
+        info = tarfile.TarInfo("_synced_probe.py")
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+
+    states: list[NodeState] = []
+    console: list[str] = []
+
+    node = Node(
+        machine,
+        compute=f"cmp_{uuid.uuid4().hex[:8]}",
+        private_key=key.export_private_key().decode(),
+        image=IMAGE,
+        source=source,
+        listener=lambda state, _: states.append(state),
+        output=lambda content, _: console.append(content),
+        sample=lambda *_: None,
+        phase=lambda *_: None,
+        user_code=buffer.getvalue(),
+    )
+    await node.start()
+    await settled(states)
+    assert states[-1] == "ready", "\n".join(console)
+
+    probe = await node._ssh.run("/opt/skyward/.venv/bin/python -c 'import _synced_probe; print(_synced_probe.MARK)'")
+    assert probe.stdout.strip() == "synced-ok", "code the client shipped should import on the worker"
+
+    await node.close()
+
+
 async def test_a_bootstrap_that_cannot_work_fails_the_node_instead_of_hanging(
     machine, key: asyncssh.SSHKey, source: Source,
 ):
@@ -162,10 +208,12 @@ async def test_a_bootstrap_that_cannot_work_fails_the_node_instead_of_hanging(
         machine,
         compute=f"cmp_{uuid.uuid4().hex[:8]}",
         private_key=key.export_private_key().decode(),
-        image=Image(python="3.13", packages=("skyward-does-not-exist-9e3f",)),
+        image=Image(python="3.13", pip=("skyward-does-not-exist-9e3f",)),
         source=source,
         listener=lambda state, error: (states.append(state), errors.append(error)),
         output=lambda _, __: None,
+        sample=lambda *_: None,
+        phase=lambda *_: None,
     )
     await node.start()
     await settled(states)

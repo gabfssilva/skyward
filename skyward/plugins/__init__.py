@@ -15,16 +15,18 @@ from msgspec import ValidationError, convert
 
 from skyward.application.errors import UnsupportedPluginError
 from skyward.plugins.huggingface import HuggingFace
+from skyward.plugins.joblib import Joblib
 from skyward.plugins.plugin import Plugin
 from skyward.plugins.torch import Torch
 from skyward.protocol.schemas import Image, PluginRef
 from skyward.runtime.api import Info
 
-__all__ = ["PLUGINS", "HuggingFace", "Plugin", "Torch", "chain", "image", "resolve"]
+__all__ = ["PLUGINS", "HuggingFace", "Joblib", "Plugin", "Torch", "chain", "image", "resolve"]
 
 PLUGINS: dict[str, type[Plugin]] = {
     Torch.kind: Torch,
     HuggingFace.kind: HuggingFace,
+    Joblib.kind: Joblib,
 }
 
 

@@ -8,20 +8,21 @@ from collections.abc import Callable
 import msgspec
 
 from skyward.application.provider import Machine
-from skyward.protocol.schemas import Image, NodeState, PluginRef
+from skyward.protocol.schemas import Executor, Image, NodeState, PluginRef
 from skyward.runtime import bootstrap, worker
 from skyward.runtime.events import events
-from skyward.runtime.journal import SKYWARD_DIR, Console, NodeEvent, Phase
+from skyward.runtime.journal import SKYWARD_DIR, Console, Metric, NodeEvent, Phase
 from skyward.runtime.source import Source
 from skyward.runtime.ssh import SshChannel
 
 logger = logging.getLogger(__name__)
 
-BOOTSTRAP_TIMEOUT = 900.0
 WORKER_TIMEOUT = 180.0
 
 type Listener = Callable[[NodeState, str | None], None]
 type Output = Callable[[str, str | None], None]
+type Sample = Callable[[str, float], None]
+type Phased = Callable[[str, str, str | None], None]
 
 
 class BootstrapFailedError(RuntimeError):
@@ -52,11 +53,17 @@ class Node:
         source: Source,
         listener: Listener,
         output: Output,
+        sample: Sample,
+        phase: Phased,
         rank: int = 0,
         peers: tuple[str, ...] = (),
         seeds: tuple[str, ...] = (),
         concurrency: int = 1,
+        buffer: int = 0,
+        executor: Executor = "thread",
+        reuse: bool = True,
         plugins: tuple[PluginRef, ...] = (),
+        user_code: bytes | None = None,
     ) -> None:
         if machine.host is None:
             raise ValueError(f"machine {machine.id} has no address to connect to")
@@ -67,11 +74,17 @@ class Node:
         self._source = source
         self._listener = listener
         self._output = output
+        self._sample = sample
+        self._phase = phase
         self._rank = rank
         self._peers = peers
         self._seeds = seeds
         self._concurrency = concurrency
+        self._buffer = buffer
+        self._executor = executor
+        self._reuse = reuse
         self._plugins = plugins
+        self._user_code = user_code
         self._ssh = SshChannel(
             machine.host,
             port=machine.port,
@@ -123,6 +136,7 @@ class Node:
 
             self._listener("bootstrapping", None)
             await self._bootstrap()
+            await self._sync_user_code()
             await self._launch()
 
             self._listener("ready", None)
@@ -155,7 +169,29 @@ class Node:
         await self._ssh.put(bootstrap.SCRIPT, bootstrap.script(self._image, self._source.argument).encode())
         await self._ssh.run(f"chmod +x {bootstrap.SCRIPT} && nohup {self._sudo}{bootstrap.SCRIPT} > /dev/null 2>&1 &")
 
-        await self._reach("bootstrap", BOOTSTRAP_TIMEOUT)
+        await self._reach("bootstrap", float(self._image.bootstrap_timeout))
+
+    async def _sync_user_code(self) -> None:
+        """Unpack the client's local code into the environment the worker imports from.
+
+        The tarball was built where the files are — the client — and carried here as
+        bytes. It lands in the venv's ``site-packages``, so a package the user shipped
+        alongside their function imports on the worker the same as it does at home.
+        """
+        if not self._user_code:
+            return
+
+        remote = "/tmp/_user_code.tar.gz"
+        await self._ssh.put(remote, self._user_code)
+
+        query = await self._ssh.run(f"{bootstrap.PYTHON} -c \"import sysconfig; print(sysconfig.get_path('purelib'))\"")
+        target = query.stdout.strip()
+        if not target:
+            raise BootstrapFailedError(f"could not locate site-packages: {query.stderr}")
+
+        result = await self._ssh.run(f"{self._sudo}tar xzf {remote} -C {target} && rm -f {remote}", timeout=60.0)
+        if result.exit_code != 0:
+            raise BootstrapFailedError(f"user code: {result.stderr or result.stdout}")
 
     async def _launch(self) -> None:
         """Start the worker, and open the way to it.
@@ -174,6 +210,9 @@ class Node:
                 ("SKYWARD_PEERS", ",".join(self._peers)),
                 ("SKYWARD_SEEDS", ",".join(self._seeds)),
                 ("SKYWARD_SLOTS", str(self._concurrency)),
+                ("SKYWARD_BUFFER", str(self._buffer)),
+                ("SKYWARD_EXECUTOR", self._executor),
+                ("SKYWARD_REUSE", "1" if self._reuse else "0"),
                 ("SKYWARD_PLUGINS", msgspec.json.encode(self._plugins).decode()),
             )
         )
@@ -217,12 +256,17 @@ class Node:
         match event:
             case Console(content=content, task=task):
                 self._output(content, task)
-            case Phase(event="completed", phase=phase):
-                self._settle(phase, None)
-            case Phase(event="failed", phase=phase, error=error):
-                self._abort(f"{phase}: {error or 'failed'}")
-            case Phase():
-                pass
+            case Metric(name=name, value=value):
+                self._sample(name, value)
+            case Phase() as reached:
+                self._phase(reached.event, reached.phase, reached.error)
+                match reached:
+                    case Phase(event="completed", phase=phase):
+                        self._settle(phase, None)
+                    case Phase(event="failed", phase=phase, error=error):
+                        self._abort(f"{phase}: {error or 'failed'}")
+                    case Phase():
+                        pass
 
     def _settle(self, phase: str, error: str | None) -> None:
         waiter = self._waiter(phase)

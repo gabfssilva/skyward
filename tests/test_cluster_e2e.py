@@ -57,7 +57,7 @@ async def compute(key: asyncssh.SSHKey):
     offer = [offer async for offer in provider.offers() if offer.cpus == 1 and offer.memory_gb == 1.0][0]
     binding = await provider.initialize(compute, SPEC, offer, "on_demand", key.export_public_key().decode())
 
-    await provider.launch(binding, count=NODES, min_count=NODES)
+    await provider.launch(binding, "on_demand", count=NODES, min_count=NODES)
     async with asyncio.timeout(60):
         while len(machines := await provider.machines(binding)) < NODES:
             await asyncio.sleep(0.5)
@@ -90,6 +90,8 @@ async def cluster(
             seeds=() if rank == 0 else (seed,),
             listener=lambda state, _, node=machine.id: states[node].append(state),
             output=lambda _, __: None,
+            sample=lambda *_: None,
+            phase=lambda *_: None,
         )
         for rank, machine in enumerate(machines)
     )

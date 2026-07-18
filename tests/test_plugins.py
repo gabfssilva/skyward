@@ -25,7 +25,7 @@ class Loud(Plugin, frozen=True):
     mark: str = "!"
 
     def image(self, image: Image) -> Image:
-        return replace(image, packages=(*image.packages, self.mark))
+        return replace(image, packages=(*image.pip, self.mark))
 
     @contextmanager
     def setup(self, info: Info):
@@ -38,7 +38,7 @@ class Loud(Plugin, frozen=True):
 def test_a_plugin_travels_as_its_name_and_its_fields():
     ref = Torch(backend="gloo").ref()
 
-    assert ref == PluginRef(kind="torch", params={"backend": "gloo", "version": None})
+    assert ref == PluginRef(kind="torch", params={"backend": "gloo", "cuda": "cu128", "version": None})
     assert resolve((ref,)) == (Torch(backend="gloo"),), "and comes back the same plugin"
 
 
@@ -53,9 +53,9 @@ def test_parameters_are_validated_where_the_user_can_still_be_told():
 
 
 def test_the_image_is_handed_to_each_plugin_in_turn():
-    built = image(Image(packages=("numpy",)), (Torch(version="2.4.0"), HuggingFace()))
+    built = image(Image(pip=("numpy",)), (Torch(version="2.4.0"), HuggingFace()))
 
-    assert built.packages == ("numpy", "torch==2.4.0", "huggingface_hub")
+    assert built.pip == ("numpy", "torch==2.4.0", "huggingface_hub")
 
 
 def test_plugins_wrap_a_call_with_the_first_one_outermost():

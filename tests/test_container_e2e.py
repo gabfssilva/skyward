@@ -53,7 +53,7 @@ async def test_the_catalog_is_free_cpu_only_hardware(provider: ContainerProvider
 
 
 async def test_a_launched_machine_becomes_reachable(provider: ContainerProvider, binding):
-    _, launched = await provider.launch(binding, count=2, min_count=2)
+    _, launched = await provider.launch(binding, "on_demand", count=2, min_count=2)
     assert len(launched) == 2
 
     machines = await running(provider, binding, 2)
@@ -71,7 +71,7 @@ async def test_machines_are_found_by_tag_not_by_memory(provider: ContainerProvid
     the label is what makes the container findable. That is what keeps a crash
     between the launch and the commit from leaking a paid instance.
     """
-    await provider.launch(binding, count=1, min_count=1)
+    await provider.launch(binding, "on_demand", count=1, min_count=1)
     machines = await running(provider, binding, 1)
 
     forgetful = ContainerProvider.create("prv_container", "local", {}, {})
@@ -80,7 +80,7 @@ async def test_machines_are_found_by_tag_not_by_memory(provider: ContainerProvid
 
 
 async def test_terminating_one_machine_leaves_the_rest(provider: ContainerProvider, binding):
-    _, launched = await provider.launch(binding, count=2, min_count=2)
+    _, launched = await provider.launch(binding, "on_demand", count=2, min_count=2)
     await running(provider, binding, 2)
 
     await provider.terminate(binding, (launched[0].id,))
@@ -90,7 +90,7 @@ async def test_terminating_one_machine_leaves_the_rest(provider: ContainerProvid
 
 
 async def test_terminating_a_machine_that_is_already_gone_is_not_an_error(provider: ContainerProvider, binding):
-    _, launched = await provider.launch(binding, count=1, min_count=1)
+    _, launched = await provider.launch(binding, "on_demand", count=1, min_count=1)
     await running(provider, binding, 1)
 
     await provider.terminate(binding, (launched[0].id,))

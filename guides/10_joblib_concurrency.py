@@ -9,6 +9,7 @@ import skyward as sky
 
 def slow_task(x):
     """A slow task that takes 5 seconds."""
+    print(f"running slow task for x {x}")
     sleep(5)
     return x * 2
 
@@ -17,8 +18,8 @@ if __name__ == "__main__":
     with sky.Compute(
         provider=sky.AWS(),
         nodes=10,
-        worker=sky.Worker(concurrency=10),
-        plugins=[sky.plugins.joblib()],
+        executor=sky.Executor(concurrency=10, buffer=3),
+        plugins=[sky.plugins.Joblib()],
     ) as compute:
         t0 = perf_counter()
 

@@ -62,7 +62,7 @@ if __name__ == "__main__":
         provider=sky.Verda(),
         nodes=1,
         accelerator=sky.accelerators.A100(),
-        worker=sky.Worker(concurrency=PARTITIONS, executor="process"),
+        options=sky.Options(worker=sky.Worker(concurrency=PARTITIONS, executor="process")),
         image=sky.Image(pip=["torch"]),
         plugins=[sky.plugins.mig(profile=PROFILE)],
     ) as compute:

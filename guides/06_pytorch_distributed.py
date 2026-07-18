@@ -59,7 +59,7 @@ def train(epochs: int, batch_size: int, lr: float) -> dict:
 
         stats = torch.tensor([epoch_loss, correct, total], dtype=torch.float64, device=device)
         dist.all_reduce(stats, op=dist.ReduceOp.SUM)
-        avg_loss = stats[0].item() / (len(loader) * info.total_nodes)
+        avg_loss = stats[0].item() / (len(loader) * info.nodes)
         accuracy = 100.0 * stats[1].item() / stats[2].item()
 
         if info.is_head:
@@ -78,7 +78,7 @@ if __name__ == "__main__":
         provider=sky.AWS(),
         nodes=2,
         accelerator=sky.accelerators.T4(),
-        plugins=[sky.plugins.torch()],
+        plugins=[sky.plugins.Torch()],
     ) as compute:
         results = train(epochs=5, batch_size=64, lr=0.001) @ compute
 

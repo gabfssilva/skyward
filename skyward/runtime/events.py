@@ -23,7 +23,7 @@ async def events(ssh: Ssh, first: int = 1) -> AsyncIterator[tuple[int, NodeEvent
     """
     line = first - 1
     with contextlib.suppress(SshUnavailableError, ConnectionError):
-        async for raw in ssh.stream(f"tail -n +{first} -F {EVENTS} 2>/dev/null"):
+        async for raw in ssh.stream(f"stdbuf -oL tail -s 0.1 -n +{first} -F {EVENTS} 2>/dev/null"):
             line += 1
             if event := parse(raw):
                 yield line, event
