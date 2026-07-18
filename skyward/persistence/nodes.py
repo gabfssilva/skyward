@@ -9,7 +9,7 @@ from skyward.application.errors import NotFoundError
 from skyward.application.provider import Machine
 from skyward.persistence.store import ident, now, once, packed, unpacked
 from skyward.persistence.tables import NodeRow
-from skyward.protocol.schemas import Error, Node, NodeDesired, NodeState, Page
+from skyward.protocol.schemas import BillingUnit, Error, Market, Node, NodeDesired, NodeState, Offer, Page
 
 LIVE: tuple[NodeState, ...] = ("requested", "provisioning", "connecting", "bootstrapping", "ready")
 """What counts as capacity: a machine we have, or one we are already buying.
@@ -86,28 +86,42 @@ class NodeStore:
         await row.save().run()
         return await self.get(compute, row.id)
 
-    async def launched(self, node_id: str, machine: Machine) -> None:
-        """The provider answered with an id. Now the row can point at something."""
-        await self._machine(node_id, machine, "provisioning")
+    async def launched(self, node_id: str, machine: Machine, offer: Offer | None = None, market: Market | None = None) -> None:
+        """The provider answered with an id. Now the row can point at something.
+
+        This is also when the meter starts: the machine exists and bills from here,
+        so the price it was bought at — the offer's price on the market that sold —
+        is stamped on the row, where it stays true even after the offer cache has
+        moved on.
+        """
+        price = (offer.spot_price if market == "spot" else offer.on_demand_price) if offer else None
+        await self._machine(node_id, machine, "provisioning", extra={
+            NodeRow.launched_at: now(),
+            NodeRow.market: market,
+            NodeRow.price_per_hour: price,
+            NodeRow.billing_unit: offer.billing_unit if offer else None,
+            NodeRow.accelerator: offer.accelerator if offer else None,
+        })
 
     async def reachable(self, node_id: str, machine: Machine) -> None:
         """The machine has an address. Somebody can now try to log into it."""
         await self._machine(node_id, machine, "connecting")
 
-    async def _machine(self, node_id: str, machine: Machine, state: NodeState) -> None:
+    async def _machine(self, node_id: str, machine: Machine, state: NodeState, extra: dict[Column, Any] | None = None) -> None:
         """The machine is kept whole, not filleted into columns.
 
         What it takes to log into a machine is the provider's business and differs
         between them — a port here, a root password there. The control plane has no
         use for the parts and every use for the whole, so it stores the whole.
         """
-        await NodeRow.update({
+        changes: dict[Column | str, Any] = {
             NodeRow.machine_id: machine.id,
             NodeRow.state: state,
             NodeRow.address: machine.private_host or machine.host,
             NodeRow.provider_binding: await packed(machine),
             NodeRow.revision: NodeRow.revision + 1,
-        }).where(NodeRow.id == node_id).run()
+        }
+        await NodeRow.update(changes | (extra or {})).where(NodeRow.id == node_id).run()
 
     async def of(self, compute: str) -> tuple[Node, ...]:
         rows = await NodeRow.objects().where(NodeRow.compute_id == compute).order_by(NodeRow.rank)
@@ -153,6 +167,9 @@ async def _to_node(row: NodeRow) -> Node:
         address=row.address,
         accelerator=row.accelerator,
         price_per_hour=row.price_per_hour,
+        market=msgspec.convert(row.market, Market) if row.market else None,
+        billing_unit=msgspec.convert(row.billing_unit, BillingUnit) if row.billing_unit else None,
+        launched_at=row.launched_at,
         last_error=await unpacked(row.last_error, Error) if row.last_error else None,
         terminated_at=row.terminated_at,
     )

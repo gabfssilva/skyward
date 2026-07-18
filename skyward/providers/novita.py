@@ -86,6 +86,7 @@ class NovitaProvider:
             provider_id=self._id,
             provider_name=self._name,
             kind=self.kind,
+            billing_unit="hour",
             instance_type=raw_name,
             accelerator=raw_name,
             accelerator_count=1,
@@ -128,16 +129,15 @@ class NovitaProvider:
             "image": spec.image.base or DEFAULT_IMAGE,
             "gpu_num": offer.accelerator_count or 1,
             "rootfs_gb": max(rootfs_gb, min_rootfs_gb),
-            "billing_mode": "spot" if market == "spot" else "onDemand",
             "min_cuda_version": self._config.get("min_cuda_version"),
         }
 
-    async def launch(self, binding: Binding, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
         async with (
             httpx.AsyncClient(base_url=BASE_URL, timeout=60, headers=self._headers()) as client,
             asyncio.TaskGroup() as group,
         ):
-            attempts = [group.create_task(self._create(client, binding)) for _ in range(count)]
+            attempts = [group.create_task(self._create(client, binding, market)) for _ in range(count)]
 
         results = [task.result() for task in attempts]
         machines = tuple(result for result in results if isinstance(result, Machine))
@@ -189,7 +189,7 @@ class NovitaProvider:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
 
-    async def _create(self, client: httpx.AsyncClient, binding: Binding) -> Machine | Exception:
+    async def _create(self, client: httpx.AsyncClient, binding: Binding, market: Market) -> Machine | Exception:
         """Create one instance, and hand a failure back rather than raise it.
 
         A launch of ``count`` instances is allowed to come back with fewer, and a
@@ -203,7 +203,7 @@ class NovitaProvider:
             "imageUrl": binding["image"],
             "gpuNum": binding["gpu_num"],
             "rootfsSize": binding["rootfs_gb"],
-            "billingMode": binding["billing_mode"],
+            "billingMode": "spot" if market == "spot" else "onDemand",
         }
         if cluster_id := binding["cluster_id"]:
             body["clusterId"] = cluster_id

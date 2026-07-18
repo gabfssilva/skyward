@@ -82,6 +82,7 @@ class MassedComputeProvider:
                     provider_id=self._id,
                     provider_name=self._name,
                     kind=self.kind,
+                    billing_unit="minute",
                     instance_type=product,
                     accelerator=accelerator,
                     accelerator_count=count,
@@ -128,7 +129,7 @@ class MassedComputeProvider:
             "prefix": _prefix(compute_id),
         }
 
-    async def launch(self, binding: Binding, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
         """Ask for one machine per request, and read a refusal as one we did not get.
 
         A failure cannot be allowed to cancel its siblings: a launch cancelled

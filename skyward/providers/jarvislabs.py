@@ -99,6 +99,7 @@ class JarvisLabsProvider:
                     provider_id=self._id,
                     provider_name=self._name,
                     kind=self.kind,
+                    billing_unit="minute",
                     instance_type=f"{gpu_type}x{count}",
                     accelerator=gpu_type,
                     accelerator_count=count,
@@ -144,7 +145,7 @@ class JarvisLabsProvider:
             "ssh_key_name": key_name,
         }
 
-    async def launch(self, binding: Binding, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
         async with asyncio.TaskGroup() as group:
             created = [group.create_task(self._create(binding)) for _ in range(count)]
 

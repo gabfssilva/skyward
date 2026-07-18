@@ -163,11 +163,12 @@ class Provider(Catalog, Protocol):
         offer : Offer
             The hardware the control plane picked to satisfy it.
         market : Market
-            Which price the offer was picked at, and therefore how the machines
-            must be bought. ``spec.allocation`` is a preference and is already
-            spent by the time this is called; this is the decision it produced,
-            and buying against it is buying a machine nobody priced. An adapter
-            whose provider has one market only is handed that one.
+            The preferred market — the first one :meth:`launch` will be asked for.
+            It is a hint for shared setup that legitimately varies by market (a
+            region that only lists spot capacity), not a billing decision: the
+            market a machine is bought on is chosen per launch, so the binding this
+            returns must stay usable for either market. An adapter whose provider
+            has one market only is handed that one.
         public_key : str
             Generated per compute by the control plane. The adapter installs it
             however its provider expects: registered through an API, baked into a
@@ -180,13 +181,20 @@ class Provider(Catalog, Protocol):
         """
         ...
 
-    async def launch(self, binding: Binding, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
         """Ask for ``count`` machines, accepting as few as ``min_count``.
 
         Parameters
         ----------
         binding : Binding
             As returned by :meth:`initialize`, or by the previous launch.
+        market : Market
+            Which market to buy these machines on, decided per launch rather than
+            per compute: ``spot_if_available`` tries spot first and, on a node whose
+            spot launch is refused, calls again for on-demand. The binding is shared
+            and market-neutral; the market that a launch is billed at is this, not
+            anything baked into the binding. A provider with one market only is
+            handed that one and ignores it.
         count : int
             How many machines are wanted.
         min_count : int

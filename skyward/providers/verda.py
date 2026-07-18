@@ -106,6 +106,7 @@ class VerdaProvider:
                     provider_id=self._id,
                     provider_name=self._name,
                     kind=self.kind,
+                    billing_unit="hour",
                     instance_type=name,
                     accelerator=gpu.get("description"),
                     accelerator_count=gpu_count,
@@ -154,12 +155,11 @@ class VerdaProvider:
             "instance_type": offer.instance_type,
             "image": image,
             "region": region,
-            "is_spot": market == "spot",
         }
 
-    async def launch(self, binding: Binding, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
         async with self._session() as (client, headers), asyncio.TaskGroup() as group:
-            created = [group.create_task(self._create(client, headers, binding)) for _ in range(count)]
+            created = [group.create_task(self._create(client, headers, binding, market)) for _ in range(count)]
 
         machines: list[Machine] = []
         refused: list[str] = []
@@ -254,7 +254,7 @@ class VerdaProvider:
         )
 
     async def _create(
-        self, client: httpx.AsyncClient, headers: dict[str, str], binding: Binding
+        self, client: httpx.AsyncClient, headers: dict[str, str], binding: Binding, market: Market
     ) -> Machine | str:
         """A refusal comes back as its own reason rather than as an exception.
 
@@ -270,7 +270,7 @@ class VerdaProvider:
                 "image": binding["image"],
                 "ssh_key_ids": [binding["ssh_key_id"]],
                 "location_code": binding["region"],
-                "is_spot": binding["is_spot"],
+                "is_spot": market == "spot",
                 "hostname": f"{binding['prefix']}{uuid.uuid4().hex[:8]}",
                 "description": f"skyward compute {binding['compute_id']}",
             },

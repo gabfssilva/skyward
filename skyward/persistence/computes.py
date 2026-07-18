@@ -22,6 +22,8 @@ from skyward.protocol.schemas import (
     GenerationCreate,
     Lease,
     LeaseClaim,
+    Market,
+    Offer,
     Page,
 )
 
@@ -40,8 +42,16 @@ class Infrastructure(Struct, frozen=True):
 
     provider_id: str | None = None
     offer_id: str | None = None
+    offer: Offer | None = None
+    """The offer as it read when the compute was bound to it.
+
+    A snapshot, not a reference: the offer cache is replaced wholesale on refresh,
+    so by the time a machine is launched the row it was picked from may be gone —
+    but the price it was picked at is what the machines are billed against.
+    """
     binding: Binding = field(default_factory=dict)
     private_key: str | None = None
+    markets: tuple[Market, ...] = ()
 
 
 class ComputeStore:
@@ -155,8 +165,10 @@ class ComputeStore:
         return Infrastructure(
             provider_id=row.provider_id,
             offer_id=row.offer_id,
+            offer=await unpacked(row.offer, Offer) if row.offer else None,
             binding=await unpacked(row.binding, dict[str, Any]),
             private_key=row.private_key,
+            markets=await unpacked(row.markets, tuple[Market, ...]),
         )
 
     async def bind(self, compute_id: str, infrastructure: Infrastructure) -> None:
@@ -170,8 +182,10 @@ class ComputeStore:
         await ComputeRow.update({
             ComputeRow.provider_id: infrastructure.provider_id,
             ComputeRow.offer_id: infrastructure.offer_id,
+            ComputeRow.offer: await packed(infrastructure.offer) if infrastructure.offer else None,
             ComputeRow.binding: await packed(infrastructure.binding),
             ComputeRow.private_key: infrastructure.private_key,
+            ComputeRow.markets: await packed(infrastructure.markets),
             ComputeRow.revision: ComputeRow.revision + 1,
         }).where(ComputeRow.id == compute_id).run()
 

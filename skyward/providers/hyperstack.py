@@ -85,6 +85,7 @@ class HyperstackProvider:
                     provider_id=self._id,
                     provider_name=self._name,
                     kind=self.kind,
+                    billing_unit="hour",
                     instance_type=str(flavor["name"]),
                     accelerator=gpu or None,
                     accelerator_count=gpu_count,
@@ -136,7 +137,7 @@ class HyperstackProvider:
             "image": str(self._config.get("image") or await self._image(region)),
         }
 
-    async def launch(self, binding: Binding, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
         """The region is already pinned by the environment, so provisioning teaches the binding nothing.
 
         A batch that fails after another has succeeded leaks nothing: the VMs it did

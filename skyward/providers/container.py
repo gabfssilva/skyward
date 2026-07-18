@@ -56,6 +56,7 @@ class ContainerProvider:
                     provider_id=self._id,
                     provider_name=self._name,
                     kind=self.kind,
+                    billing_unit="second",
                     instance_type=f"container.{cpus}c{memory_gb:g}g",
                     accelerator_count=0,
                     cpus=cpus,
@@ -81,7 +82,7 @@ class ContainerProvider:
             "memory_gb": offer.memory_gb,
         }
 
-    async def launch(self, binding: Binding, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
         async with asyncio.TaskGroup() as group:
             started = [group.create_task(self._start(binding)) for _ in range(count)]
 

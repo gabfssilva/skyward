@@ -50,6 +50,7 @@ class OfferRow(Table, tablename="offers"):
     spot_price = Float(null=True, default=None)
     on_demand_price = Float(null=True, default=None)
     price = Float(null=True, default=None, index=True)
+    billing_unit = Varchar(default="hour")
     available = Integer(null=True, default=None)
     specific = JSONB(default={})
     fetched_at = Timestamptz()
@@ -83,8 +84,10 @@ class ComputeRow(Table, tablename="computes"):
 
     provider_id = Varchar(null=True, default=None)
     offer_id = Varchar(null=True, default=None)
+    offer = JSONB(null=True, default=None)
     binding = JSONB(default="{}")
     private_key = Text(null=True, default=None)
+    markets = JSONB(default="[]")
 
     status_state = Varchar(index=True)
     status_observed_generation = Integer(default=0)
@@ -144,8 +147,11 @@ class NodeRow(Table, tablename="nodes"):
     address = Varchar(null=True, default=None)
     accelerator = Varchar(null=True, default=None)
     price_per_hour = Float(null=True, default=None)
+    market = Varchar(null=True, default=None)
+    billing_unit = Varchar(null=True, default=None)
     last_error = JSONB(null=True, default=None)
     created_at = Timestamptz()
+    launched_at = Timestamptz(null=True, default=None)
     terminated_at = Timestamptz(null=True, default=None)
 
 

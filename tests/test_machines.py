@@ -1,0 +1,282 @@
+"""Buying a machine and looking for machines nobody wrote down must not collide.
+
+``create`` launches one machine per node and records its id; ``resolve`` sweeps
+the provider for machines no row claims and adopts them. Both write the same
+column, and the emitter runs them as separate tasks — so a ``resolve`` that runs
+while a ``create`` is between its launch and its record used to see that machine
+as an orphan and hand it to a different node, binding one machine to two ranks
+and leaking another. That is what turned a four-node broadcast into three
+answers and a duplicate.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+
+from skyward.application.machines import Machines
+from skyward.application.provider import Binding, Machine
+from skyward.persistence.computes import ComputeStore, Infrastructure
+from skyward.persistence.db import connect
+from skyward.persistence.nodes import NodeStore
+from skyward.protocol.schemas import ComputeCreate, ComputeSpec, Market, NodeBounds, Offer, Page, ProviderRef, Spec
+
+SPEC = ComputeSpec(
+    specs=(Spec(provider=ProviderRef(kind="fake"), cpus=1, memory_gb=1),),
+    nodes=NodeBounds(desired=4),
+)
+
+
+class FakeProvider:
+    """A provider whose ``machines`` reflects what ``launch`` bought.
+
+    ``launch`` makes the machine observable before it lets the caller record it,
+    which is the whole window the race lives in: a gate held open there is a
+    ``create`` that has spent the money and not yet written the id.
+    """
+
+    kind = "fake"
+
+    def __init__(self) -> None:
+        self._machines: dict[str, Machine] = {}
+        self._counter = 0
+        self.launched = asyncio.Event()
+        self.proceed = asyncio.Event()
+
+    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, list[Machine]]:
+        machine = Machine(id=f"i-{self._counter}", state="running", host=f"10.0.0.{self._counter}")
+        self._counter += 1
+        self._machines[machine.id] = machine
+        self.launched.set()
+        await self.proceed.wait()
+        return binding, [machine]
+
+    async def machines(self, binding: Binding) -> dict[str, Machine]:
+        return dict(self._machines)
+
+
+class ScriptedMachines(Machines):
+    def __init__(self, computes: ComputeStore, nodes: NodeStore, provider: FakeProvider) -> None:
+        super().__init__(computes, nodes, providers=None, offers=None)  # type: ignore[arg-type]
+        self._provider = provider
+
+    async def adapter(self, provider_id: str | None) -> FakeProvider:  # type: ignore[override]
+        return self._provider
+
+
+@pytest.fixture
+async def wired(tmp_path: Path) -> tuple[ComputeStore, NodeStore, str, FakeProvider]:
+    await connect(tmp_path / "skyward.sqlite")
+    computes = ComputeStore()
+    nodes = NodeStore()
+
+    created, _ = await computes.create(ComputeCreate(spec=SPEC, name=None), idempotency_key="k")
+    await computes.bind(
+        created.id,
+        Infrastructure(provider_id="prv_fake", binding={"net": "n"}, markets=("on_demand",)),
+    )
+
+    return computes, nodes, created.id, FakeProvider()
+
+
+async def test_resolve_does_not_readopt_a_machine_a_launch_is_still_recording(
+    wired: tuple[ComputeStore, NodeStore, str, FakeProvider],
+) -> None:
+    computes, nodes, compute_id, provider = wired
+    machines = ScriptedMachines(computes, nodes, provider)
+
+    rows = [await nodes.request(compute_id, generation=1) for _ in range(4)]
+    snapshot = await nodes.of(compute_id)
+
+    provider.proceed.clear()
+    creating = asyncio.create_task(machines.create(compute_id, rows[1].id))
+    await provider.launched.wait()
+
+    resolving = asyncio.create_task(machines.resolve(await computes.get(compute_id), snapshot))
+    await asyncio.sleep(0.05)
+    provider.proceed.set()
+
+    await asyncio.gather(creating, resolving)
+
+    bound = [node.machine for node in await nodes.of(compute_id) if node.machine]
+    assert len(bound) == len(set(bound)), f"a machine got bound to two nodes: {bound}"
+
+
+async def test_resolve_still_adopts_a_machine_a_dead_process_left_behind(
+    wired: tuple[ComputeStore, NodeStore, str, FakeProvider],
+) -> None:
+    computes, nodes, compute_id, provider = wired
+    machines = ScriptedMachines(computes, nodes, provider)
+
+    row = await nodes.request(compute_id, generation=1)
+    provider._machines["i-9"] = Machine(id="i-9", state="running", host="10.0.0.9")
+
+    await machines.resolve(await computes.get(compute_id), await nodes.of(compute_id))
+
+    adopted = await nodes.get(compute_id, row.id)
+    assert adopted.machine == "i-9", "a machine no row claims must still be picked up"
+
+
+class FallbackProvider:
+    """A provider whose spot launch is always refused and whose on-demand always takes."""
+
+    kind = "fake"
+
+    def __init__(self) -> None:
+        self.attempts: list[Market] = []
+        self._machines: dict[str, Machine] = {}
+
+    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, list[Machine]]:
+        self.attempts.append(market)
+        if market == "spot":
+            raise RuntimeError("no spot capacity")
+        machine = Machine(id="i-od", state="running", host="10.0.0.1")
+        self._machines[machine.id] = machine
+        return binding, [machine]
+
+    async def machines(self, binding: Binding) -> dict[str, Machine]:
+        return dict(self._machines)
+
+
+async def test_spot_if_available_falls_back_to_on_demand_when_spot_is_refused(tmp_path: Path) -> None:
+    await connect(tmp_path / "skyward.sqlite")
+    computes = ComputeStore()
+    nodes = NodeStore()
+
+    created, _ = await computes.create(ComputeCreate(spec=SPEC, name=None), idempotency_key="k")
+    await computes.bind(
+        created.id,
+        Infrastructure(provider_id="prv_fake", binding={"net": "n"}, markets=("spot", "on_demand")),
+    )
+
+    provider = FallbackProvider()
+    machines = ScriptedMachines(computes, nodes, provider)  # type: ignore[arg-type]
+
+    row = await nodes.request(created.id, generation=1)
+    await machines.create(created.id, row.id)
+
+    assert provider.attempts == ["spot", "on_demand"], "spot must be tried first, then on-demand"
+    node = await nodes.get(created.id, row.id)
+    assert node.machine == "i-od", "the node must be placed on the on-demand machine"
+
+
+def _offer(region: str, price: float) -> Offer:
+    now = datetime.now(UTC)
+    return Offer(
+        id=f"aws-{region}-x",
+        provider_id="prv_fake",
+        provider_name="fake",
+        kind="fake",
+        instance_type="x",
+        accelerator_count=0,
+        cpus=1,
+        memory_gb=1,
+        fetched_at=now,
+        expires_at=now,
+        region=region,
+        spot_price=price,
+        on_demand_price=price * 2,
+    )
+
+
+class RegionProvider:
+    """A provider that sells only in one region and refuses every other's markets.
+
+    ``initialize`` mints a region-scoped binding and records the region it set up in;
+    ``launch`` refuses unless the binding is the one region with quota; ``release``
+    records the region handed back. Together they let a test watch a placement walk
+    from the cheapest region to the one that will sell, cleaning up as it goes.
+    """
+
+    kind = "fake"
+
+    def __init__(self, sells_in: str) -> None:
+        self.sells_in = sells_in
+        self.initialized: list[str] = []
+        self.released: list[str] = []
+        self._machines: dict[str, Machine] = {}
+
+    async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, market: Market, public_key: str) -> Binding:
+        assert offer.region is not None
+        self.initialized.append(offer.region)
+        return {"region": offer.region}
+
+    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, list[Machine]]:
+        if binding["region"] != self.sells_in:
+            raise RuntimeError(f"no quota in {binding['region']}")
+        machine = Machine(id=f"i-{binding['region']}", state="running", host="10.0.0.1")
+        self._machines[machine.id] = machine
+        return binding, [machine]
+
+    async def release(self, binding: Binding) -> None:
+        self.released.append(binding["region"])
+
+    async def machines(self, binding: Binding) -> dict[str, Machine]:
+        return dict(self._machines)
+
+
+class FakeOffers:
+    def __init__(self, offers: tuple[Offer, ...]) -> None:
+        self._offers = offers
+
+    async def list(self, **_: object) -> Page[Offer]:
+        return Page(items=self._offers)
+
+
+class RegionMachines(Machines):
+    def __init__(self, computes: ComputeStore, nodes: NodeStore, provider: RegionProvider, offers: FakeOffers) -> None:
+        super().__init__(computes, nodes, providers=None, offers=offers)  # type: ignore[arg-type]
+        self._provider = provider
+
+    async def adapter(self, provider_id: str | None) -> RegionProvider:  # type: ignore[override]
+        return self._provider
+
+
+async def test_placement_relocates_to_a_region_that_will_sell_and_releases_the_one_that_refused(
+    tmp_path: Path,
+) -> None:
+    await connect(tmp_path / "skyward.sqlite")
+    computes = ComputeStore()
+    nodes = NodeStore()
+
+    created, _ = await computes.create(ComputeCreate(spec=SPEC, name=None), idempotency_key="k")
+
+    cheap, quota = _offer("cheap", 0.10), _offer("quota", 0.20)
+    provider = RegionProvider(sells_in="quota")
+    machines = RegionMachines(computes, nodes, provider, FakeOffers((cheap, quota)))
+
+    row = await nodes.request(created.id, generation=1)
+    await machines.create(created.id, row.id)
+
+    node = await nodes.get(created.id, row.id)
+    assert node.machine == "i-quota", "the node must land in the region that had capacity"
+
+    assert provider.initialized == ["cheap", "quota"], "the cheapest is bound first, then the one that sells"
+    assert provider.released == ["cheap"], "the region that refused must be released, not left to leak"
+
+    infrastructure = await computes.infrastructure(created.id)
+    assert infrastructure.offer_id == quota.id, "the compute must be re-bound to the region that sold"
+    assert infrastructure.binding["region"] == "quota"
+
+
+async def test_a_second_node_inherits_the_region_the_first_settled_on(tmp_path: Path) -> None:
+    await connect(tmp_path / "skyward.sqlite")
+    computes = ComputeStore()
+    nodes = NodeStore()
+
+    created, _ = await computes.create(ComputeCreate(spec=SPEC, name=None), idempotency_key="k")
+
+    cheap, quota = _offer("cheap", 0.10), _offer("quota", 0.20)
+    provider = RegionProvider(sells_in="quota")
+    machines = RegionMachines(computes, nodes, provider, FakeOffers((cheap, quota)))
+
+    first, second = [await nodes.request(created.id, generation=1) for _ in range(2)]
+    await machines.create(created.id, first.id)
+    await machines.create(created.id, second.id)
+
+    assert provider.initialized == ["cheap", "quota"], "the region hunt happens once; the second node inherits it"
+    assert provider.released == ["cheap"], "the abandoned region is released once, not per node"
+    assert (await nodes.get(created.id, second.id)).machine == "i-quota"

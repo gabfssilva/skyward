@@ -32,6 +32,29 @@ async def pick(spec: ComputeSpec, offers: OfferCache) -> tuple[Offer, Market]:
     separable from it: an offer sold only on the spot market is not a cheaper way
     to buy the same machine, it is a different machine to be billed for.
     """
+    candidates = await _candidates(spec, offers)
+    if not candidates:
+        raise CapabilityMismatchError(f"nothing on offer satisfies the spec on the {spec.allocation} market")
+
+    return _cheapest(candidates, spec.allocation)
+
+
+async def rank(spec: ComputeSpec, offers: OfferCache) -> tuple[Offer, ...]:
+    """Every offer that fits, cheapest first — the order to try regions when one refuses.
+
+    The same catalogue :func:`pick` reads, deduplicated to one entry per offer and
+    ordered by price, so a placement that has exhausted the markets of its bound
+    region can walk to the next cheapest one that might still sell. The offer
+    already bound is in here too; the caller skips it rather than buy it twice.
+    """
+    ordered: dict[str, Offer] = {}
+    for buy in sorted(await _candidates(spec, offers), key=lambda buy: buy.price):
+        ordered.setdefault(buy.offer.id, buy.offer)
+    return tuple(ordered.values())
+
+
+async def _candidates(spec: ComputeSpec, offers: OfferCache) -> list[Buy]:
+    """Every way to buy every offer that fits the spec, across all its alternatives."""
     candidates: list[Buy] = []
 
     for wanted in spec.specs:
@@ -52,13 +75,25 @@ async def pick(spec: ComputeSpec, offers: OfferCache) -> tuple[Offer, Market]:
         ]
         buys = [buy for offer in fitting for buy in _buys(offer, spec.allocation)]
         if buys and spec.selection == "first":
-            return _cheapest(buys, spec.allocation)
+            return buys
         candidates.extend(buys)
 
-    if not candidates:
-        raise CapabilityMismatchError(f"nothing on offer satisfies the spec on the {spec.allocation} market")
+    return candidates
 
-    return _cheapest(candidates, spec.allocation)
+
+def order(offer: Offer, allocation: Allocation) -> tuple[Market, ...]:
+    """The markets to try for this offer, in the order to try them.
+
+    A liquid decision, not a frozen one: ``spot_if_available`` leads with spot and
+    keeps on-demand as the fallback for the node whose spot launch is refused,
+    ``cheapest`` leads with whichever is cheaper. The single-market allocations
+    yield their one market. Empty only if the offer carries no price the allocation
+    can buy — the same emptiness :func:`pick` raises on.
+    """
+    buys = _buys(offer, allocation)
+    if allocation == "cheapest":
+        buys = sorted(buys, key=lambda buy: buy.price)
+    return tuple(buy.market for buy in buys)
 
 
 def _buys(offer: Offer, allocation: Allocation) -> list[Buy]:

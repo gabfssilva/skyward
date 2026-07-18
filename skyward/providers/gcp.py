@@ -114,6 +114,8 @@ class GCPProvider:
         self._name = name
         self._service_account = service_account
         self._config = config
+        self._access_token: str | None = None
+        self._token_expiry = 0.0
 
     @classmethod
     def create(cls, provider_id: str, name: str, credentials: Mapping[str, str], config: Mapping[str, Any]) -> Self:
@@ -150,7 +152,14 @@ class GCPProvider:
         a heavy dependency for one signature, and it also insists on falling
         back to the environment (ADC, the metadata server) when a field is
         missing — exactly what an adapter must never do.
+
+        The token is cached until shortly before it expires: minting one costs
+        an RSA signature and a round trip, and every API call funnels through
+        here. The signature itself runs off the loop for the same reason.
         """
+        if self._access_token and time.time() < self._token_expiry - 300:
+            return self._access_token
+
         token_uri = str(self._service_account.get("token_uri") or "https://oauth2.googleapis.com/token")
         issued_at = int(time.time())
         claims = {
@@ -165,10 +174,14 @@ class GCPProvider:
             header["kid"] = key_id
 
         signing_input = b".".join((_b64(header), _b64(claims)))
-        key = serialization.load_pem_private_key(self._service_account["private_key"].encode(), password=None)
-        if not isinstance(key, rsa.RSAPrivateKey):
-            raise CapabilityMismatchError("gcp service account key is not an RSA key", provider=self._name)
-        signature = key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
+
+        def sign() -> bytes:
+            key = serialization.load_pem_private_key(self._service_account["private_key"].encode(), password=None)
+            if not isinstance(key, rsa.RSAPrivateKey):
+                raise CapabilityMismatchError("gcp service account key is not an RSA key", provider=self._name)
+            return key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
+
+        signature = await asyncio.to_thread(sign)
         assertion = b".".join((signing_input, _b64url(signature))).decode()
 
         response = await client.post(
@@ -176,7 +189,10 @@ class GCPProvider:
             data={"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": assertion},
         )
         response.raise_for_status()
-        return str(response.json()["access_token"])
+        payload = response.json()
+        self._access_token = str(payload["access_token"])
+        self._token_expiry = issued_at + int(payload.get("expires_in", 3600))
+        return self._access_token
 
     async def _list(self, client: httpx.AsyncClient, path: str, token: str) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
@@ -251,6 +267,7 @@ class GCPProvider:
             provider_id=self._id,
             provider_name=self._name,
             kind=self.kind,
+            billing_unit="second",
             instance_type=machine_type,
             accelerator=accelerator if count else None,
             accelerator_count=count,
@@ -300,6 +317,7 @@ class GCPProvider:
             provider_id=self._id,
             provider_name=self._name,
             kind=self.kind,
+            billing_unit="second",
             instance_type=machine_type,
             accelerator=accelerator,
             accelerator_count=count,
@@ -366,7 +384,6 @@ class GCPProvider:
             "disk_gb": int(self._config.get("disk_gb") or DEFAULT_DISK_GB),
             "disk_type": str(self._config.get("disk_type") or DEFAULT_DISK_TYPE),
             "service_account": str(service_account) if service_account else None,
-            "spot": market == "spot",
             "public_key": public_key,
         }
 
@@ -386,9 +403,9 @@ class GCPProvider:
 
         return binding
 
-    async def launch(self, binding: Binding, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
         async with self._api() as client, asyncio.TaskGroup() as group:
-            launched = [group.create_task(self._insert(client, binding)) for _ in range(count)]
+            launched = [group.create_task(self._insert(client, binding, market)) for _ in range(count)]
 
         results = [task.result() for task in launched]
         machines = tuple(machine for machine, _ in results if machine)
@@ -422,7 +439,7 @@ class GCPProvider:
             response = await client.delete(f"/projects/{binding['project']}/global/firewalls/{binding['firewall']}")
             _accept(response, 404)
 
-    async def _insert(self, client: httpx.AsyncClient, binding: Binding) -> tuple[Machine | None, str | None]:
+    async def _insert(self, client: httpx.AsyncClient, binding: Binding, market: Market) -> tuple[Machine | None, str | None]:
         """Create one instance, under a name chosen here rather than by GCP.
 
         The name is the identity: it is what `instances.delete` takes, and it is
@@ -436,7 +453,7 @@ class GCPProvider:
         name = f"skyward-{uuid.uuid4().hex[:16]}"
         response = await client.post(
             f"/projects/{binding['project']}/zones/{binding['zone']}/instances",
-            json=_instance_body(name, binding),
+            json=_instance_body(name, binding, market),
         )
         if response.status_code >= 400 and response.status_code != 409:
             return None, f"{response.status_code} {response.text[:400]}"
@@ -450,7 +467,7 @@ class GCPProvider:
         _accept(response, 404)
 
 
-def _instance_body(name: str, binding: Binding) -> dict[str, Any]:
+def _instance_body(name: str, binding: Binding, market: Market) -> dict[str, Any]:
     """The instance GCP is asked for, as one JSON document.
 
     v1 went through an instance template plus `bulkInsert`; a template is a
@@ -466,7 +483,7 @@ def _instance_body(name: str, binding: Binding) -> dict[str, Any]:
 
     scheduling: dict[str, Any] = (
         {"provisioningModel": "SPOT", "instanceTerminationAction": "DELETE", "onHostMaintenance": "TERMINATE"}
-        if binding["spot"]
+        if market == "spot"
         else {"onHostMaintenance": "TERMINATE", "automaticRestart": True}
     )
 

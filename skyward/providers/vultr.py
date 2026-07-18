@@ -116,6 +116,7 @@ class VultrProvider:
                 provider_id=self._id,
                 provider_name=self._name,
                 kind=self.kind,
+                billing_unit="hour",
                 instance_type=plan_id,
                 accelerator=gpu_type,
                 accelerator_count=whole,
@@ -159,13 +160,12 @@ class VultrProvider:
             "region": region,
             "os_id": int(self._config.get("os_id", DEFAULT_OS_ID)),
             "bare_metal": bare_metal,
-            "preemptible": market == "spot",
         }
 
-    async def launch(self, binding: Binding, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
         async with self._client() as client:
             created = await asyncio.gather(
-                *(self._create(client, binding) for _ in range(count)), return_exceptions=True,
+                *(self._create(client, binding, market) for _ in range(count)), return_exceptions=True,
             )
 
         machines = tuple(item for item in created if isinstance(item, Machine))
@@ -233,7 +233,7 @@ class VultrProvider:
         response.raise_for_status()
         return str(response.json()["ssh_key"]["id"])
 
-    async def _create(self, client: httpx.AsyncClient, binding: Binding) -> Machine:
+    async def _create(self, client: httpx.AsyncClient, binding: Binding, market: Market) -> Machine:
         path, _, created = _endpoint(binding)
         name = f"{binding['label']}-{uuid.uuid4().hex[:8]}"
         body: dict[str, Any] = {
@@ -243,7 +243,7 @@ class VultrProvider:
             "label": name,
             "hostname": name,
             "sshkey_id": [binding["ssh_key_id"]],
-            **({"preemptible": True} if binding["preemptible"] else {}),
+            **({"preemptible": True} if market == "spot" else {}),
         }
 
         response = await client.post(path, json=body)

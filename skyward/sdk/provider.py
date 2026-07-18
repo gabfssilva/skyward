@@ -36,7 +36,7 @@ def AWS(  # noqa: N802
     access_key_id: str | None = None,
     secret_access_key: str | None = None,
     session_token: str | None = None,
-    regions: tuple[str, ...] | None = None,
+    regions: tuple[str, ...] | None = ('us-east-1',),
     name: str = "",
 ) -> Provider:
     shared = _aws_shared()
@@ -93,8 +93,51 @@ def Novita(api_key: str | None = None, cluster_id: str | None = None, name: str 
     )
 
 
-def RunPod(api_key: str | None = None, name: str = "") -> Provider:  # noqa: N802
-    return _key("runpod", "RUNPOD_API_KEY", api_key, name)
+def RunPod(  # noqa: N802
+    api_key: str | None = None,
+    cloud_type: str = "secure",
+    base_image: str = "nvidia",
+    container_image: str | None = None,
+    ubuntu: str = "newest",
+    container_disk_gb: int = 50,
+    volume_gb: int = 20,
+    volume_mount_path: str = "/workspace",
+    data_center_ids: tuple[str, ...] | str = "global",
+    country_codes: tuple[str, ...] | str | None = None,
+    exclude_country_codes: tuple[str, ...] | str = (),
+    ports: tuple[str, ...] = ("22/tcp",),
+    bid_multiplier: float = 1.0,
+    registry_auth: str | None = "docker hub",
+    min_inet_down: float | None = None,
+    min_inet_up: float | None = None,
+    global_networking: bool | None = None,
+    request_timeout: int = 30,
+    name: str = "",
+) -> Provider:
+    return _provider(
+        "runpod",
+        name,
+        _some(api_key=api_key or os.environ.get("RUNPOD_API_KEY")),
+        _some(
+            cloud_type=cloud_type,
+            base_image=base_image,
+            container_image=container_image,
+            ubuntu=ubuntu,
+            container_disk_gb=container_disk_gb,
+            volume_gb=volume_gb,
+            volume_mount_path=volume_mount_path,
+            data_center_ids=_as_tuple(data_center_ids, keep=("global",)),
+            country_codes=_as_tuple(country_codes),
+            exclude_country_codes=_as_tuple(exclude_country_codes),
+            ports=ports,
+            bid_multiplier=bid_multiplier,
+            registry_auth=registry_auth,
+            min_inet_down=min_inet_down,
+            min_inet_up=min_inet_up,
+            global_networking=global_networking,
+            request_timeout=request_timeout,
+        ),
+    )
 
 
 def Scaleway(secret_key: str | None = None, zones: tuple[str, ...] | None = None, name: str = "") -> Provider:  # noqa: N802
@@ -162,6 +205,22 @@ def _provider(kind: str, name: str, credentials: dict[str, str], config: dict[st
 def _some[T](**fields: T | None) -> dict[str, T]:
     """Only what was actually given; the adapter's own defaults answer for the rest."""
     return {name: value for name, value in fields.items() if value is not None}
+
+
+def _as_tuple(value: tuple[str, ...] | str | None, *, keep: tuple[str, ...] = ()) -> tuple[str, ...] | str | None:
+    """A lone string becomes a one-tuple, except the sentinels that must stay scalar.
+
+    The provider factories accept ``"EU-RO-1"`` as shorthand for ``("EU-RO-1",)``
+    so a single value reads naturally, while a sentinel like ``"global"`` is a mode,
+    not a member, and is passed through untouched.
+    """
+    match value:
+        case str() if value in keep:
+            return value
+        case str():
+            return (value,)
+        case _:
+            return value
 
 
 def _file(path: str | None) -> str | None:

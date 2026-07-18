@@ -91,6 +91,7 @@ class TensorDockProvider:
                     provider_id=self._id,
                     provider_name=self._name,
                     kind=self.kind,
+                    billing_unit="second",
                     instance_type=str(gpu.get("displayName") or model),
                     accelerator=_accelerator(model),
                     accelerator_count=count,
@@ -145,7 +146,7 @@ class TensorDockProvider:
             "public_key": public_key,
         }
 
-    async def launch(self, binding: Binding, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
         """Create ``count`` VMs, keeping whatever ``min_count`` of them came up.
 
         Gathered rather than grouped: a TaskGroup cancels its siblings on the first

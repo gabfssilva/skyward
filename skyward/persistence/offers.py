@@ -6,12 +6,13 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from itertools import batched
 
+import msgspec
 from piccolo.engine.sqlite import TransactionType
 
 from skyward.persistence.providers import ProviderStore
 from skyward.persistence.tables import OfferRow, ProviderRow
 from skyward.protocol.accelerators import resolve
-from skyward.protocol.schemas import Offer, Page
+from skyward.protocol.schemas import BillingUnit, Offer, Page
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +114,7 @@ def _to_row(offer: Offer) -> OfferRow:
         spot_price=offer.spot_price,
         on_demand_price=offer.on_demand_price,
         price=offer.price,
+        billing_unit=offer.billing_unit,
         available=offer.available,
         specific=offer.specific,
         fetched_at=offer.fetched_at,
@@ -136,6 +138,7 @@ def _to_offer(row: OfferRow) -> Offer:
         region=row.region,
         spot_price=row.spot_price,
         on_demand_price=row.on_demand_price,
+        billing_unit=msgspec.convert(row.billing_unit, BillingUnit),
         available=row.available,
         specific=row.specific,
         fetched_at=row.fetched_at,

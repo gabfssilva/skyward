@@ -344,3 +344,54 @@ async def test_a_resumed_subscriber_gets_only_what_it_missed(store: Stores):
 
     await asyncio.wait_for(subscribe(), timeout=5)
     assert seen == ["b"]
+
+
+async def test_a_held_write_transaction_makes_writers_wait_not_fail(store: Stores, compute: str):
+    """The offers refresh holds a write lock while it rewrites a catalog.
+
+    sqlite's stock 5-second patience turned a submit under that lock into
+    ``database is locked`` — a 500 in the middle of a joblib run. Every
+    connection now waits it out instead.
+    """
+    from piccolo.engine.sqlite import TransactionType
+
+    from skyward.persistence.tables import OfferRow
+
+    async def hold() -> None:
+        async with OfferRow._meta.db.transaction(transaction_type=TransactionType.immediate):
+            await OfferRow.delete().where(OfferRow.provider_id == "none").run()
+            await asyncio.sleep(6)
+
+    async def submit() -> None:
+        await asyncio.sleep(0.2)
+        body = TaskCreate(compute=compute, function=await digest(b"f"), args_inline=b"args", dispatch="one")
+        await store.tasks.submit(body, idempotency_key="locked-1")
+
+    await asyncio.gather(hold(), submit())
+
+
+async def test_queries_ride_a_small_pool_instead_of_a_connection_each(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A connection per query is a thread and three descriptors per query —
+    which is how a joblib run ran macOS out of descriptors and SQLite answered
+    ``unable to open database file``. However many queries fly, the store opens
+    at most a pool's worth.
+    """
+    import aiosqlite
+
+    from skyward.persistence.db import POOL_SIZE
+
+    opened = 0
+    real = aiosqlite.connect
+
+    def counting(**kwargs: object) -> object:
+        nonlocal opened
+        opened += 1
+        return real(**kwargs)  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr(aiosqlite, "connect", counting)
+    await connect(tmp_path / "skyward.sqlite")
+
+    store = Stores()
+    await asyncio.gather(*(store.blobs.exists(f"sha-{i}") for i in range(80)))
+
+    assert opened <= POOL_SIZE

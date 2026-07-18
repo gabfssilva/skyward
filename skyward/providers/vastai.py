@@ -87,6 +87,7 @@ class VastAIProvider:
                 provider_id=self._id,
                 provider_name=self._name,
                 kind=self.kind,
+                billing_unit="hour",
                 instance_type=str(gpu_name or "cpu"),
                 accelerator=gpu_name,
                 accelerator_count=gpus,
@@ -127,14 +128,13 @@ class VastAIProvider:
             "public_key": public_key,
             "image": spec.image.base or DEFAULT_IMAGE,
             "disk_gb": float(self._config.get("disk_gb", DEFAULT_DISK_GB)),
-            "market": market,
             "gpu_name": offer.specific.get("gpu_name") or offer.instance_type,
             "gpu_count": offer.accelerator_count,
             "region": offer.region,
             "direct": bool(self._config.get("direct_port", False)),
         }
 
-    async def launch(self, binding: Binding, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
         """Rent one ask per machine, walking down the list when an ask is taken from under us.
 
         A bundle is a listing, not a reservation: between the search and the PUT
@@ -142,13 +142,13 @@ class VastAIProvider:
         with the same hardware.
         """
         async with self._client() as client:
-            asks = await self._asks(client, binding)
+            asks = await self._asks(client, binding, market)
 
             machines: list[Machine] = []
             for ask in asks:
                 if len(machines) == count:
                     break
-                if (machine := await self._rent(client, binding, ask)) is not None:
+                if (machine := await self._rent(client, binding, ask, market)) is not None:
                     machines.append(machine)
 
             if len(machines) < min_count:
@@ -212,12 +212,12 @@ class VastAIProvider:
             None,
         )
 
-    async def _asks(self, client: httpx.AsyncClient, binding: Binding) -> list[dict[str, Any]]:
+    async def _asks(self, client: httpx.AsyncClient, binding: Binding, market: Market) -> list[dict[str, Any]]:
         """Sorting and region are done here rather than in the query: the geolocation a bundle reports
         ("US, TX") is not the code the search filter takes, and only one of the two prices is the one
         this market will be billed at.
         """
-        spot = binding["market"] == "spot"
+        spot = market == "spot"
         query: dict[str, Any] = {
             "rentable": {"eq": True},
             "rented": {"eq": False},
@@ -246,7 +246,7 @@ class VastAIProvider:
         ]
         return sorted(asks, key=lambda ask: ask.get(price) or float("inf"))
 
-    async def _rent(self, client: httpx.AsyncClient, binding: Binding, ask: dict[str, Any]) -> Machine | None:
+    async def _rent(self, client: httpx.AsyncClient, binding: Binding, ask: dict[str, Any], market: Market) -> Machine | None:
         body: dict[str, Any] = {
             "client_id": "me",
             "image": binding["image"],
@@ -256,7 +256,7 @@ class VastAIProvider:
             "onstart": ONSTART.format(public_key=binding["public_key"]),
         }
 
-        if binding["market"] == "spot":
+        if market == "spot":
             if (min_bid := ask.get("min_bid")) is None:
                 return None
             body["price"] = float(min_bid) * float(self._config.get("bid_multiplier", DEFAULT_BID_MULTIPLIER))

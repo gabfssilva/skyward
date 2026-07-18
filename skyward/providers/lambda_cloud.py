@@ -63,6 +63,7 @@ class LambdaProvider:
                     provider_id=self._id,
                     provider_name=self._name,
                     kind=self.kind,
+                    billing_unit="minute",
                     instance_type=type_name,
                     accelerator=gpu_description if gpu_description != "N/A" else None,
                     accelerator_count=int(specs.get("gpus") or 0),
@@ -104,7 +105,7 @@ class LambdaProvider:
             "ssh_key_name": name,
         }
 
-    async def launch(self, binding: Binding, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
         launched = await self._request(
             "POST",
             "/instance-operations/launch",

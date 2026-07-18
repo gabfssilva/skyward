@@ -45,6 +45,7 @@ class FakeProvider:
                 provider_id=self._id,
                 provider_name=self._name,
                 kind=self.kind,
+                billing_unit="second",
                 instance_type=f"fake.{label}",
                 accelerator=accelerator,
                 accelerator_count=count,

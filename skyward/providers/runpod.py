@@ -1,4 +1,6 @@
 import asyncio
+import random
+import re
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
@@ -8,6 +10,7 @@ import httpx
 
 from skyward.application.errors import CapabilityMismatchError
 from skyward.application.provider import Binding, Machine
+from skyward.protocol.accelerators import CATALOG, resolve
 from skyward.protocol.schemas import ComputeSpec, Market, Offer
 
 GRAPHQL_URL = "https://api.runpod.io/graphql"
@@ -53,10 +56,59 @@ mutation DeploySpot($input: PodRentInterruptableInput!) {
 
 DEFAULT_IMAGE = "nvidia/cuda:12.8.0-cudnn-runtime-ubuntu24.04"
 DEFAULT_DISK_GB = 50
-PORTS = "22/tcp"
+DEFAULT_PORTS: tuple[str, ...] = ("22/tcp",)
+
+BASE_IMAGE_FALLBACKS: dict[str, str] = {
+    "nvidia": "nvidia/cuda:12.8.0-cudnn-runtime-ubuntu24.04",
+    "runpod-base": "runpod/base:1.0.3-cuda1290-ubuntu2204",
+    "runpod-pytorch": "runpod/pytorch:2.8.0-py3.13-cuda12.8.1-devel-ubuntu24.04",
+}
+
+BASE_IMAGE_REPOS: dict[str, str] = {
+    "nvidia": "nvidia/cuda",
+    "runpod-base": "runpod/base",
+    "runpod-pytorch": "runpod/pytorch",
+}
+
+DOCKER_HUB_URL = "https://hub.docker.com"
+CUDA_OPEN_UPPER: tuple[int, int] = (99, 9)
+
+_CUDA_DOTTED = re.compile(r"cuda(\d+)\.(\d+)")
+_CUDA_COMPACT = re.compile(r"cu(?:da)?(\d{2})(\d)\d")
+_TAG_VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
+_UBUNTU = re.compile(r"ubuntu(\d{2})\.?(\d{2})")
+_NVIDIA_VARIANT = re.compile(r"cudnn\d*-runtime")
+
+KNOWN_COUNTRIES: tuple[str, ...] = (
+    "US", "CA", "DE", "FR", "NL", "SE", "CZ", "RO", "IS", "NO", "DK", "GB", "JP", "IN", "SG", "AU",
+)
+
+REGISTRY_AUTHS_QUERY = "query { myself { containerRegistryCreds { id name } } }"
+
+DEADSWITCH = (
+    'if [ "${INSTANCE_TIMEOUT:-0}" -gt 0 ] 2>/dev/null; then '
+    "( idle=0; while :; do "
+    'if grep -qsE ":0016[[:space:]]+[0-9A-Fa-f]+:[0-9A-Fa-f]+[[:space:]]+01[[:space:]]" '
+    "/proc/net/tcp /proc/net/tcp6; then idle=0; "
+    'else idle=$((idle+15)); [ "$idle" -ge "$INSTANCE_TIMEOUT" ] && '
+    '{ runpodctl remove pod "$RUNPOD_POD_ID" 2>/dev/null || kill 1; }; fi; '
+    "sleep 15; done ) & fi; "
+)
+"""A self-terminating watchdog, armed only when ``INSTANCE_TIMEOUT`` is set above zero.
+
+RunPod bills a pod for as long as it exists, and a pod whose deploy response was lost —
+created, but never written down — is one nothing in the control plane will ever
+terminate. This is the net under that: the daemon holds an SSH connection to the pod
+for the pool's whole life, so an established connection on port 22 (``:0016``, state
+``01`` in ``/proc/net/tcp``) is the liveness signal. Once it has been gone for
+``INSTANCE_TIMEOUT`` seconds the pod removes itself with ``runpodctl`` — deleting the
+pod outright so not even its disk keeps billing — and falls back to killing PID 1 where
+``runpodctl`` is absent. It never fires while the pool is attached, so a run may take as
+long as it takes."""
 
 ENTRYPOINT = (
-    "{ [ -x /usr/sbin/sshd ] || ("
+    DEADSWITCH
+    + "{ [ -x /usr/sbin/sshd ] || ("
     "apt-get -o DPkg::Lock::Timeout=-1 update && "
     "DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=-1 "
     "install -y --no-install-recommends openssh-server"
@@ -98,6 +150,79 @@ class RunPodProvider:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}"}
 
+    @property
+    def _timeout(self) -> int:
+        return int(self._config.get("request_timeout", 30))
+
+    def _image(self, spec: ComputeSpec) -> str:
+        """The image to run, in precedence order.
+
+        A ``sky.Image(base=...)`` at the pool is the user's most explicit word and
+        wins; then the provider's own ``container_image`` override; then the family
+        picked by ``base_image``; then the built-in default.
+        """
+        base_image = str(self._config.get("base_image", "nvidia"))
+        return (
+            spec.image.base
+            or self._config.get("container_image")
+            or BASE_IMAGE_FALLBACKS.get(base_image, DEFAULT_IMAGE)
+        )
+
+    async def _image_candidates(self, spec: ComputeSpec, offer: Offer) -> tuple[str, ...]:
+        """The images to try, newest supported CUDA first.
+
+        An explicit choice — a ``sky.Image(base=...)`` or the provider's
+        ``container_image`` — is one image and the deploy tries only it. Left to the
+        ``base_image`` family, the newest Docker Hub tag is picked for each CUDA the
+        accelerator supports, so a host that refuses the top one is retried against the
+        next rather than failing the launch. The static fallback answers when Docker Hub
+        is unreachable or the accelerator has no known CUDA range.
+        """
+        if spec.image.base or self._config.get("container_image"):
+            return (self._image(spec),)
+
+        base_image = str(self._config.get("base_image", "nvidia"))
+        repo = BASE_IMAGE_REPOS.get(base_image)
+        cuda_min, cuda_max = _cuda_range(offer.accelerator)
+        if repo is None or cuda_min is None:
+            return (self._image(spec),)
+
+        tags = await _fetch_docker_tags(repo, self._timeout)
+        variant = _NVIDIA_VARIANT if base_image == "nvidia" else re.compile(r".")
+        candidates = _select_image_candidates(
+            tags,
+            _cuda_pair(cuda_min),
+            _cuda_pair(cuda_max) if cuda_max else CUDA_OPEN_UPPER,
+            str(self._config.get("ubuntu", "newest")),
+            repo,
+            variant,
+        )
+        return candidates or (self._image(spec),)
+
+    def _countries(self) -> tuple[str, ...]:
+        """Allowed country codes after exclusions; empty means no constraint."""
+        excluded = frozenset(self._config.get("exclude_country_codes") or ())
+        match self._config.get("country_codes"):
+            case None if not excluded:
+                return ()
+            case None:
+                return tuple(c for c in KNOWN_COUNTRIES if c not in excluded)
+            case allowed:
+                return tuple(c for c in allowed if c not in excluded)
+
+    def _data_center(self) -> str | None:
+        centers = self._config.get("data_center_ids", "global")
+        return None if centers == "global" or not centers else str(centers[0])
+
+    async def _registry_auth_id(self, client: httpx.AsyncClient) -> str | None:
+        """Resolve the named registry credential to its id, ``None`` if unset or absent."""
+        name = self._config.get("registry_auth")
+        if not name:
+            return None
+        data = await self._graphql(client, REGISTRY_AUTHS_QUERY, {})
+        creds = (data.get("myself") or {}).get("containerRegistryCreds") or []
+        return next((c["id"] for c in creds if str(c.get("name", "")).lower() == str(name).lower()), None)
+
     async def _graphql(
         self, client: httpx.AsyncClient, query: str, variables: Mapping[str, Any],
     ) -> dict[str, Any]:
@@ -117,13 +242,16 @@ class RunPodProvider:
         return data.get("gpuTypes") or []
 
     async def offers(self) -> AsyncIterator[Offer]:
-        async with httpx.AsyncClient(timeout=30) as client:
-            catalogs = await asyncio.gather(*(self._gpu_types(client, secure) for _, secure in CLOUDS))
+        wanted = str(self._config.get("cloud_type", "secure")).upper()
+        clouds = tuple(entry for entry in CLOUDS if entry[0] == wanted) or CLOUDS
+
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            catalogs = await asyncio.gather(*(self._gpu_types(client, secure) for _, secure in clouds))
 
         now = datetime.now(UTC)
         expires_at = now + self.offers_ttl
 
-        for (cloud, secure), gpu_types in zip(CLOUDS, catalogs, strict=True):
+        for (cloud, secure), gpu_types in zip(clouds, catalogs, strict=True):
             for gpu in gpu_types:
                 if not gpu.get("secureCloud" if secure else "communityCloud"):
                     continue
@@ -155,6 +283,7 @@ class RunPodProvider:
                         provider_id=self._id,
                         provider_name=self._name,
                         kind=self.kind,
+                        billing_unit="hour",
                         instance_type=f"{gpu_id}:{cloud}",
                         accelerator=display,
                         accelerator_count=count,
@@ -190,27 +319,42 @@ class RunPodProvider:
                 f"{offer.id} was picked on the spot market and carries no bid price", provider=self._name,
             )
 
-        data_center_id = self._config.get("data_center_id") or next(
+        data_center_id = self._data_center() or next(
             (s.region for s in spec.specs if s.provider.kind == self.kind and s.region), None,
         )
+        countries = self._countries()
+        multiplier = float(self._config.get("bid_multiplier", 1.0))
+
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            registry_auth_id = await self._registry_auth_id(client)
+        candidates = await self._image_candidates(spec, offer)
 
         return {
             "compute_id": compute_id,
             "prefix": f"skyward-{compute_id}-",
-            "image": spec.image.base or DEFAULT_IMAGE,
+            "image": candidates[0],
+            "image_candidates": list(candidates),
             "public_key": public_key,
+            "ttl": spec.ttl,
             "gpu_type_id": offer.specific["gpu_type_id"],
             "gpu_count": gpu_count,
             "cloud_type": offer.specific["cloud_type"],
             "data_center_id": str(data_center_id) if data_center_id else None,
+            "countries": list(countries),
+            "country_code": countries[0] if countries else None,
             "container_disk_gb": int(self._config.get("container_disk_gb", DEFAULT_DISK_GB)),
-            "market": market,
-            "bid_per_gpu": round(offer.spot_price / gpu_count, 4) if market == "spot" and offer.spot_price else None,
+            "volume_gb": int(self._config.get("volume_gb", 0)),
+            "volume_mount_path": str(self._config.get("volume_mount_path", "/workspace")),
+            "ports": ",".join(self._config.get("ports") or DEFAULT_PORTS),
+            "registry_auth_id": registry_auth_id,
+            "min_download_mbps": int(m) if (m := self._config.get("min_inet_down")) is not None else None,
+            "min_upload_mbps": int(m) if (m := self._config.get("min_inet_up")) is not None else None,
+            "bid_per_gpu": round(offer.spot_price * multiplier / gpu_count, 4) if offer.spot_price else None,
         }
 
-    async def launch(self, binding: Binding, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
         async with httpx.AsyncClient(timeout=120) as client, asyncio.TaskGroup() as group:
-            attempts = [group.create_task(self._deploy(client, binding)) for _ in range(count)]
+            attempts = [group.create_task(self._deploy(client, binding, market)) for _ in range(count)]
 
         results = [task.result() for task in attempts]
         machines = tuple(result for result in results if isinstance(result, Machine))
@@ -249,53 +393,197 @@ class RunPodProvider:
                 group.create_task(self._destroy(client, machine_id))
 
     async def release(self, binding: Binding) -> None:
-        return None
+        """Terminate every pod still carrying the compute's name prefix.
 
-    async def _deploy(self, client: httpx.AsyncClient, binding: Binding) -> Machine | Exception:
-        """Deploy one pod, and hand a failure back rather than raise it.
+        A compute's own nodes are terminated as they are dropped; this is the sweep
+        under that. A pod created in a launch whose response was lost has a name but no
+        row, so nothing else will ever find it — and RunPod bills a pod for as long as
+        it exists. The name is the compute id, so the pod is found here and stopped when
+        the compute is released. Idempotent: a second release finds nothing left.
+        """
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.get(f"{REST_URL}/pods", headers=self._headers)
+            response.raise_for_status()
+            orphans = tuple(
+                str(pod["id"])
+                for pod in (response.json() or [])
+                if str(pod.get("name") or "").startswith(binding["prefix"])
+            )
+            if orphans:
+                async with asyncio.TaskGroup() as group:
+                    for pod_id in orphans:
+                        group.create_task(self._destroy(client, pod_id))
+
+    async def _deploy(self, client: httpx.AsyncClient, binding: Binding, market: Market) -> Machine | Exception:
+        """Deploy one pod, trying each image candidate, and hand a failure back rather than raise it.
 
         A launch of ``count`` pods is allowed to come back with fewer, so one host
-        refusing the bid must not cancel its siblings — which is what raising
-        inside the task group would do.
+        refusing the bid must not cancel its siblings — which is what raising inside the
+        task group would do. The candidates are ordered newest-CUDA first; a host that
+        has no driver for the top image is retried against the next before the pod is
+        counted as lost.
         """
-        deploy: dict[str, Any] = {
-            "name": f"{binding['prefix']}{uuid.uuid4().hex[:8]}",
-            "imageName": binding["image"],
-            "gpuTypeId": binding["gpu_type_id"],
-            "gpuCount": binding["gpu_count"],
-            "cloudType": binding["cloud_type"],
-            "containerDiskInGb": binding["container_disk_gb"],
-            "volumeInGb": 0,
-            "ports": PORTS,
-            "supportPublicIp": True,
-            "dockerArgs": f"bash -c '{ENTRYPOINT}'",
-            "env": [{"key": "PUBLIC_KEY", "value": binding["public_key"]}],
-        }
-        if data_center_id := binding["data_center_id"]:
-            deploy["dataCenterId"] = data_center_id
+        candidates = binding.get("image_candidates") or [binding["image"]]
+        error: Exception = RuntimeError("runpod produced no image candidate to deploy")
 
-        match binding["market"]:
-            case "spot":
-                mutation, key = DEPLOY_SPOT, "podRentInterruptable"
-                deploy["bidPerGpu"] = binding["bid_per_gpu"]
-            case _:
-                mutation, key = DEPLOY_ON_DEMAND, "podFindAndDeployOnDemand"
+        for image in candidates:
+            deploy, mutation, key = _deploy_input(binding, market, image)
+            try:
+                data = await self._graphql(client, mutation, {"input": deploy})
+            except (httpx.HTTPError, RuntimeError) as exc:
+                error = exc
+                continue
 
-        try:
-            data = await self._graphql(client, mutation, {"input": deploy})
-        except (httpx.HTTPError, RuntimeError) as error:
-            return error
+            match data.get(key):
+                case {"id": str(pod_id)}:
+                    return Machine(id=pod_id, state="pending")
+                case _:
+                    error = RuntimeError(f"runpod {key} returned no pod: {data}")
 
-        match data.get(key):
-            case {"id": str(pod_id)}:
-                return Machine(id=pod_id, state="pending")
-            case _:
-                return RuntimeError(f"runpod {key} returned no pod: {data}")
+        return error
 
     async def _destroy(self, client: httpx.AsyncClient, machine_id: str) -> None:
         response = await client.delete(f"{REST_URL}/pods/{machine_id}", headers=self._headers)
         if response.status_code != 404:
             response.raise_for_status()
+
+
+def _deploy_input(binding: Binding, market: Market, image: str | None = None) -> tuple[dict[str, Any], str, str]:
+    """The deploy request, the mutation to send it with, and the field to read back.
+
+    Reads the knob keys with defaults rather than by subscript: a binding is
+    persisted and a compute outlives the code that bound it, so one written before
+    a knob existed must still launch under the version that added it.
+
+    A country is drawn at random from the allowed set on every call, so a fleet of
+    pods spreads across regions instead of stacking onto whichever host tops one list —
+    which is how a spot launch of many finds capacity that a single region has run out
+    of. A binding from before the set existed falls back to its lone ``country_code``.
+    """
+    countries = binding.get("countries")
+    country = random.choice(countries) if countries else binding.get("country_code")
+
+    deploy: dict[str, Any] = {
+        "name": f"{binding['prefix']}{uuid.uuid4().hex[:8]}",
+        "imageName": image or binding["image"],
+        "gpuTypeId": binding["gpu_type_id"],
+        "gpuCount": binding["gpu_count"],
+        "cloudType": binding["cloud_type"],
+        "containerDiskInGb": binding["container_disk_gb"],
+        "volumeInGb": binding.get("volume_gb", 0),
+        "volumeMountPath": binding.get("volume_mount_path", "/workspace"),
+        "ports": binding.get("ports", ",".join(DEFAULT_PORTS)),
+        "supportPublicIp": True,
+        "dockerArgs": f"bash -c '{ENTRYPOINT}'",
+        "env": [
+            {"key": "PUBLIC_KEY", "value": binding["public_key"]},
+            {"key": "INSTANCE_TIMEOUT", "value": str(binding.get("ttl", 0))},
+        ],
+    }
+    for field, value in (
+        ("dataCenterId", binding.get("data_center_id")),
+        ("countryCode", country),
+        ("containerRegistryAuthId", binding.get("registry_auth_id")),
+        ("minDownload", binding.get("min_download_mbps")),
+        ("minUpload", binding.get("min_upload_mbps")),
+    ):
+        if value is not None:
+            deploy[field] = value
+
+    match market:
+        case "spot":
+            deploy["bidPerGpu"] = binding["bid_per_gpu"]
+            return deploy, DEPLOY_SPOT, "podRentInterruptable"
+        case _:
+            return deploy, DEPLOY_ON_DEMAND, "podFindAndDeployOnDemand"
+
+
+def _cuda_pair(version: str) -> tuple[int, int]:
+    major, minor, *_ = version.split(".")
+    return int(major), int(minor)
+
+
+def _cuda_range(accelerator: str | None) -> tuple[str | None, str | None]:
+    """The CUDA the accelerator supports, from the catalog, ``(None, None)`` if unknown."""
+    name, _ = resolve(accelerator)
+    entry = CATALOG.get(name) if name else None
+    if entry and entry.cuda_min:
+        return entry.cuda_min, entry.cuda_max or None
+    return None, None
+
+
+async def _fetch_docker_tags(repo: str, timeout: int) -> list[str]:
+    """Every tag on a Docker Hub repository, newest first, empty if it cannot be read."""
+    namespace, name = repo.split("/")
+    tags: list[str] = []
+    path: str | None = f"/v2/repositories/{namespace}/{name}/tags/"
+    params: dict[str, str] | None = {"page_size": "100", "ordering": "-last_updated"}
+
+    try:
+        async with httpx.AsyncClient(base_url=DOCKER_HUB_URL, timeout=timeout) as client:
+            for _ in range(50):
+                response = await client.get(path or "", params=params)
+                if response.status_code >= 400:
+                    break
+                payload = response.json()
+                tags.extend(tag["name"] for tag in payload.get("results", []))
+                if not (nxt := payload.get("next")):
+                    break
+                path, params = str(nxt).removeprefix(DOCKER_HUB_URL), None
+    except httpx.HTTPError:
+        return tags
+
+    return tags
+
+
+def _select_image_candidates(
+    tags: list[str],
+    cuda_min: tuple[int, int],
+    cuda_max: tuple[int, int],
+    ubuntu: str,
+    repo: str,
+    variant: re.Pattern[str],
+) -> tuple[str, ...]:
+    """The best tag for each CUDA minor within range, newest CUDA first.
+
+    For each distinct CUDA ``major.minor`` in range, the highest patch (and newest
+    Ubuntu) wins; the results are ordered highest-CUDA first so a deploy walks them
+    top-down until a host accepts one.
+    """
+    best: dict[tuple[int, int], tuple[tuple[int, int, int], tuple[int, int], str]] = {}
+    for tag in tags:
+        if "ubuntu" not in tag or tag.endswith("-test") or "-dev-" in tag:
+            continue
+        if not _ubuntu_matches(tag, ubuntu) or not variant.search(tag):
+            continue
+        matched = (
+            (_TAG_VERSION.match(tag) if repo == "nvidia/cuda" else None)
+            or _CUDA_DOTTED.search(tag)
+            or _CUDA_COMPACT.search(tag)
+        )
+        if not matched:
+            continue
+        cuda = (int(matched.group(1)), int(matched.group(2)))
+        if not cuda_min <= cuda <= cuda_max:
+            continue
+        rank = (_extract_tag_version(tag), _extract_ubuntu(tag))
+        if (prev := best.get(cuda)) is None or rank > (prev[0], prev[1]):
+            best[cuda] = (*rank, tag)
+
+    return tuple(f"{repo}:{entry[2]}" for _, entry in sorted(best.items(), reverse=True))
+
+
+def _ubuntu_matches(tag: str, ubuntu: str) -> bool:
+    return ubuntu == "newest" or f"ubuntu{ubuntu.replace('.', '')}" in tag or f"ubuntu{ubuntu}" in tag
+
+
+def _extract_ubuntu(tag: str) -> tuple[int, int]:
+    return (int(m.group(1)), int(m.group(2))) if (m := _UBUNTU.search(tag)) else (0, 0)
+
+
+def _extract_tag_version(tag: str) -> tuple[int, int, int]:
+    m = _TAG_VERSION.match(tag)
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else (0, 0, 0)
 
 
 def _machine(pod: Mapping[str, Any]) -> Machine | None:

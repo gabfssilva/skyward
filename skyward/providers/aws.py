@@ -10,7 +10,7 @@ import aioboto3
 from aiobotocore.client import AioBaseClient
 from botocore.exceptions import ClientError
 
-from skyward.application.errors import CapabilityMismatchError, ReleasePendingError
+from skyward.application.errors import CapabilityMismatchError
 from skyward.application.provider import Binding, Machine
 from skyward.protocol.schemas import ComputeSpec, Market, Offer
 
@@ -112,6 +112,7 @@ class AWSProvider:
                     provider_id=self._id,
                     provider_name=self._name,
                     kind=self.kind,
+                    billing_unit="second",
                     instance_type=instance_type,
                     accelerator=gpu.name,
                     accelerator_count=gpu.count,
@@ -221,7 +222,7 @@ class AWSProvider:
 
             async with asyncio.TaskGroup() as group:
                 key = group.create_task(self._key_pair(ec2, name, public_key))
-                security_group = group.create_task(self._security_group(ec2, name, vpc))
+                security_group = group.create_task(self._security_group(ec2, "skyward-sg", vpc))
                 subnets = group.create_task(self._subnets(ec2, vpc, offer.instance_type))
                 image = group.create_task(self._image(session, region, offer))
 
@@ -229,7 +230,6 @@ class AWSProvider:
             "compute_id": compute_id,
             "region": region,
             "instance_type": offer.instance_type,
-            "market": market,
             "image": image.result(),
             "key_name": key.result(),
             "security_group_id": security_group.result(),
@@ -238,7 +238,7 @@ class AWSProvider:
             "disk_gb": int(self._config.get("disk_gb") or DEFAULT_DISK_GB),
         }
 
-    async def launch(self, binding: Binding, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
         """Ask an EC2 Fleet for the machines, and pin the compute to the zone it chose.
 
         Fleet places the whole request into a single availability zone, choosing it
@@ -265,7 +265,7 @@ class AWSProvider:
             template_id = str(template["LaunchTemplate"]["LaunchTemplateId"])
 
             try:
-                fleet = await ec2.create_fleet(**_fleet(binding, template_id, candidate, count, min_count))
+                fleet = await ec2.create_fleet(**_fleet(binding, market, template_id, candidate, count, min_count))
                 ids = [iid for spec in fleet.get("Instances", []) for iid in spec.get("InstanceIds", [])]
                 if len(ids) < min_count:
                     errors = "; ".join(
@@ -346,27 +346,16 @@ class AWSProvider:
                     await ec2.terminate_instances(InstanceIds=sorted(alive))
 
     async def release(self, binding: Binding) -> None:
-        """Take back the key pair and the security group.
+        """Take back the key pair. The security group stays.
 
-        A security group whose instances were terminated seconds ago still holds
-        their network interfaces for a moment, and AWS answers ``DependencyViolation``
-        until it does not. That is reported as retryable so the compute stays
-        ``deleting`` and the next pass finishes the job — not ``degraded``.
+        The group is shared across computes and never deleted, because deleting one
+        means outwaiting AWS: the ENIs of terminated instances hold it for minutes
+        — measured between three and seven — and until the last lets go the call
+        answers ``DependencyViolation``. A group costs nothing to keep, so teardown
+        does not buy that wait.
         """
         async with self._session().client("ec2", region_name=binding["region"]) as ec2:
             await _ignoring(ec2.delete_key_pair(KeyName=binding["key_name"]), "InvalidKeyPair.NotFound")
-            try:
-                await _ignoring(
-                    ec2.delete_security_group(GroupId=binding["security_group_id"]),
-                    "InvalidGroup.NotFound",
-                )
-            except ClientError as error:
-                if _code(error) != "DependencyViolation":
-                    raise
-                raise ReleasePendingError(
-                    f"security group {binding['security_group_id']} still has attached interfaces",
-                    provider=self._name,
-                ) from error
 
     async def _vpc(self, ec2: AioBaseClient) -> str:
         response = await ec2.describe_vpcs(Filters=[{"Name": "is-default", "Values": ["true"]}])
@@ -539,7 +528,7 @@ def _template(binding: Binding) -> dict[str, Any]:
     }
 
 
-def _fleet(binding: Binding, template_id: str, subnets: Mapping[str, str], count: int, min_count: int) -> dict[str, Any]:
+def _fleet(binding: Binding, market: Market, template_id: str, subnets: Mapping[str, str], count: int, min_count: int) -> dict[str, Any]:
     """An instant fleet: the machines come back with the call, not through a callback.
 
     ``SingleAvailabilityZone`` is what makes the whole request land together, so that
@@ -547,7 +536,7 @@ def _fleet(binding: Binding, template_id: str, subnets: Mapping[str, str], count
     ``MinTargetCapacity`` is the partial-readiness floor — a fleet that can bring up
     ``min_count`` is worth taking, one that cannot is a failure.
     """
-    spot = binding["market"] == "spot"
+    spot = market == "spot"
     overrides = [
         {"SubnetId": subnet, "InstanceType": binding["instance_type"], "ImageId": binding["image"]}
         for subnet in subnets.values()

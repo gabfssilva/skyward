@@ -119,6 +119,7 @@ class ScalewayProvider:
                     provider_id=self._id,
                     provider_name=self._name,
                     kind=self.kind,
+                    billing_unit="hour",
                     instance_type=commercial_type,
                     accelerator=gpu_name if gpu_count else None,
                     accelerator_count=gpu_count,
@@ -164,7 +165,7 @@ class ScalewayProvider:
             "ssh_key_id": ssh_key_id,
         }
 
-    async def launch(self, binding: Binding, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
         async with self._client() as client, asyncio.TaskGroup() as group:
             created = [group.create_task(self._create(client, binding)) for _ in range(count)]
 
