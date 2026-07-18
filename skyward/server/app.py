@@ -5,10 +5,12 @@ from collections.abc import Coroutine
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+import msgspec
 from litestar import Litestar
 from litestar.di import Provide
 from litestar.openapi import OpenAPIConfig
 from litestar.openapi.plugins import ScalarRenderPlugin
+from litestar.types import Empty
 
 from skyward.application import mock, ports
 from skyward.application.connector import Connector
@@ -16,6 +18,7 @@ from skyward.application.dispatcher import Dispatcher
 from skyward.application.errors import SkywardError
 from skyward.application.health import Health
 from skyward.application.machines import Machines
+from skyward.application.metering import Meter
 from skyward.application.reconciler import Reconciler, Wakeup
 from skyward.application.runtimes import Runtimes
 from skyward.persistence.computes import ComputeStore, GenerationStore
@@ -25,6 +28,7 @@ from skyward.persistence.functions import BlobStore, FunctionStore
 from skyward.persistence.nodes import NodeStore
 from skyward.persistence.offers import OfferCache
 from skyward.persistence.providers import ProviderStore
+from skyward.persistence.store import now
 from skyward.persistence.tasks import ExecutionStore, TaskStore
 from skyward.protocol import codec
 from skyward.server.controllers.blobs import BlobController
@@ -37,10 +41,11 @@ from skyward.server.controllers.offers import OfferController
 from skyward.server.controllers.providers import ProviderController, ProviderKindController
 from skyward.server.controllers.tasks import TaskController
 from skyward.server.emitter import ReconcilingEventEmitter
-from skyward.server.exceptions import skyward_error_handler
+from skyward.server.exceptions import skyward_error_handler, unhandled_error_handler
 from skyward.server.listeners import build_listeners
 
 TICK_SECONDS = 5
+METER_SECONDS = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +67,7 @@ class Services:
     machines: Machines | None = None
     connector: Connector | None = None
     runtimes: Runtimes | None = None
+    meter: Meter | None = None
 
 
 def mock_services() -> Services:
@@ -105,8 +111,20 @@ def services() -> Services:
     tasks = TaskStore(computes, nodes, blobs)
 
     async def console(compute: str, node: str, content: str, task: str | None) -> None:
-        payload = await codec.json(dict[str, str]).encode({"compute": compute, "node": node, "content": content})
+        line = {"compute": compute, "node": node, "content": content, **({"task": task} if task else {})}
+        payload = await codec.json(dict[str, str]).encode(line)
         await events.record("node.console", payload, compute=compute, task=task)
+
+    async def phased(compute: str, node: str, event: str, phase: str, error: str | None) -> None:
+        """A bootstrap phase turning over is recorded, so a late subscriber replays the checklist."""
+        mark = {"compute": compute, "node": node, "event": event, "phase": phase, "at": now().isoformat(), **({"error": error} if error else {})}
+        payload = await codec.json(dict[str, str]).encode(mark)
+        await events.record("node.phase", payload, compute=compute)
+
+    async def sampled(compute: str, node: str, name: str, value: float) -> None:
+        """A gauge reading goes out to whoever is watching, and is not written down."""
+        payload = msgspec.json.encode({"compute": compute, "node": node, "name": name, "value": value})
+        await events.publish("node.metrics", payload, compute=compute)
 
     def spoken(recording: Coroutine[None, None, None]) -> None:
         """A node's output goes straight to the log, not through the wakeup bus.
@@ -122,6 +140,8 @@ def services() -> Services:
             "node.observed", compute_id=compute, node_id=node, state=state, error=error or "",
         ),
         output=lambda compute, node, content, task: spoken(console(compute, node, content, task)),
+        sample=lambda compute, node, name, value: spoken(sampled(compute, node, name, value)),
+        phase=lambda compute, node, event, phase, error: spoken(phased(compute, node, event, phase, error)),
     )
 
     offers = OfferCache(providers)
@@ -160,12 +180,21 @@ def services() -> Services:
         ),
         wake=wake,
         machines=machines,
-        connector=Connector(computes=computes, nodes=nodes, runtimes=runtimes),
+        connector=Connector(computes=computes, nodes=nodes, runtimes=runtimes, blobs=blobs),
         runtimes=runtimes,
+        meter=Meter(computes=computes, nodes=nodes, events=events),
     )
 
 
-def create_app(svc: Services | None = None, database: Path | None = None) -> Litestar:
+def create_app(svc: Services | None = None, database: Path | None = None, logging: bool = False) -> Litestar:
+    """The daemon as an ASGI app.
+
+    ``logging`` is off by default because this module is imported into the user's
+    process — the embedded client builds an app right here — and Litestar's default
+    config turns the *root* logger up to INFO for everyone the moment an app is
+    constructed. A guest does not get to do that. A standalone daemon, which owns its
+    process, is welcome to ask for it on.
+    """
     svc = svc or mock_services()
 
     async def tick() -> None:
@@ -184,15 +213,24 @@ def create_app(svc: Services | None = None, database: Path | None = None) -> Lit
             for task_id in tasks:
                 app.emit("task.changed", task_id=task_id)
 
+    async def metered(meter: Meter) -> None:
+        """The cost gauge: every few seconds, what each live compute has accrued."""
+        while True:
+            await asyncio.sleep(METER_SECONDS)
+            await meter.sample()
+
     async def on_startup(app: Litestar) -> None:
         if database is not None:
             await connect(database)
         app.state.tick = asyncio.create_task(tick())
+        if svc.meter:
+            app.state.meter = asyncio.create_task(metered(svc.meter))
 
     async def on_shutdown(app: Litestar) -> None:
-        task: asyncio.Task[None] | None = getattr(app.state, "tick", None)
-        if task:
-            task.cancel()
+        for name in ("tick", "meter"):
+            task: asyncio.Task[None] | None = getattr(app.state, name, None)
+            if task:
+                task.cancel()
         if svc.runtimes:
             await svc.runtimes.shutdown()
 
@@ -228,9 +266,10 @@ def create_app(svc: Services | None = None, database: Path | None = None) -> Lit
         },
         listeners=build_listeners(svc.reconciler, svc.dispatcher, svc.machines, svc.connector),
         event_emitter_backend=ReconcilingEventEmitter,
-        exception_handlers={SkywardError: skyward_error_handler},
+        exception_handlers={SkywardError: skyward_error_handler, Exception: unhandled_error_handler},
         on_startup=[on_startup],
         on_shutdown=[on_shutdown],
+        logging_config=Empty if logging else None,
         openapi_config=OpenAPIConfig(
             title="Skyward Control Plane",
             version="0.1.0",

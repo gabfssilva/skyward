@@ -23,6 +23,7 @@ classifiers = [
 dependencies = [
     "casty>=0.22.1",
     "cloudpickle>=3.1",
+    "loky>=3.5",
     "lz4>=4.3",
     "msgspec>=0.19",
 ]
@@ -32,6 +33,11 @@ dependencies = [
 # running in the same process.
 client = [
     "httpx>=0.28",
+]
+# The live terminal dashboard. Without it the pool still prints its log, one
+# line at a time — the extra buys the pinned panel, not the ability to watch.
+tui = [
+    "rich>=13.7",
 ]
 # What the daemon needs and the node does not. A machine rented by the hour
 # should not be waiting on a web framework it will never serve with.
@@ -126,6 +132,7 @@ dev = [
     "asyncssh>=2.22.0",
     "aioboto3>=13.0.0",
     "httpx>=0.28",
+    "rich>=13.7",
     "jax>=0.8.2",
     "keras>=3.13.0",
     "scikit-learn>=1.8.0",

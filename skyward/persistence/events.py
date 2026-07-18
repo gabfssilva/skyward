@@ -14,7 +14,7 @@ BACKLOG = 1024
 
 
 class Live(Struct, frozen=True):
-    sequence: int
+    sequence: int | None
     type: str
     payload: bytes
     compute: str | None
@@ -60,6 +60,18 @@ class EventStore:
 
         return row.sequence
 
+    async def publish(self, event_type: str, payload: bytes, compute: str | None = None) -> None:
+        """Say it once, to whoever is listening, and keep no record.
+
+        A metric sampled every couple of seconds has no replay value, and the event
+        table has no GC to save it from one. It rides the same live feed as
+        :meth:`record`, without the row — a late subscriber simply misses the samples
+        it was not there for, which is exactly right for a gauge.
+        """
+        live = Live(sequence=None, type=event_type, payload=payload, compute=compute, task=None)
+        for feed in tuple(self._feeds):
+            self._offer(feed, live)
+
     async def stream(
         self,
         last_event_id: str | None,
@@ -77,7 +89,11 @@ class EventStore:
                 yield record
 
             while (live := await feed.get()) is not None:
-                if live.sequence > seen and live.wanted(compute, task, types):
+                if not live.wanted(compute, task, types):
+                    continue
+                if live.sequence is None:
+                    yield seen, live.type, live.payload
+                elif live.sequence > seen:
                     yield live.sequence, live.type, live.payload
         finally:
             self._feeds.discard(feed)

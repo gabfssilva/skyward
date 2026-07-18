@@ -1,4 +1,4 @@
-from skyward.protocol.schemas import Image
+from skyward.protocol.schemas import Image, MetricSpec, PipIndex
 from skyward.sdk.compute import Compute
 from skyward.sdk.errors import SkywardError, TaskFailedError, TaskIndeterminateError
 from skyward.sdk.function import Group, Pending, Streaming, function, gather, stream
@@ -19,7 +19,7 @@ from skyward.sdk.provider import (
     Verda,
     Vultr,
 )
-from skyward.sdk.spec import Accelerator, Nodes, Spec
+from skyward.sdk.spec import Accelerator, Executor, Nodes, Spec
 
 __all__ = [
     "AWS",
@@ -27,15 +27,18 @@ __all__ = [
     "Accelerator",
     "Compute",
     "Container",
+    "Executor",
     "Group",
     "Hyperstack",
     "Image",
     "JarvisLabs",
     "Lambda",
     "MassedCompute",
+    "MetricSpec",
     "Nodes",
     "Novita",
     "Pending",
+    "PipIndex",
     "Provider",
     "RunPod",
     "Scaleway",

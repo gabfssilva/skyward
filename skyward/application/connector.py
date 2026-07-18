@@ -18,6 +18,7 @@ from skyward import plugins
 from skyward.application.provider import Machine
 from skyward.application.runtimes import Runtimes
 from skyward.persistence.computes import ComputeStore
+from skyward.persistence.functions import BlobStore
 from skyward.persistence.nodes import LIVE, NodeStore
 from skyward.protocol.schemas import Node, NodeState
 from skyward.runtime import worker
@@ -28,10 +29,11 @@ HELD: tuple[NodeState, ...] = ("connecting", "bootstrapping", "ready")
 
 
 class Connector:
-    def __init__(self, computes: ComputeStore, nodes: NodeStore, runtimes: Runtimes) -> None:
+    def __init__(self, computes: ComputeStore, nodes: NodeStore, runtimes: Runtimes, blobs: BlobStore) -> None:
         self._computes = computes
         self._nodes = nodes
         self._runtimes = runtimes
+        self._blobs = blobs
 
     async def connect(self, compute_id: str, node_id: str) -> None:
         """Take hold of one machine, once.
@@ -66,6 +68,9 @@ class Connector:
         if node_id in runtime.nodes:
             return
 
+        includes = compute.spec.image.includes_sha256
+        user_code = await self._blobs.get(includes) if includes else None
+
         await self._runtimes.start(
             runtime,
             node_id,
@@ -75,8 +80,21 @@ class Connector:
             peers=_peers(nodes),
             seeds=_seeds(nodes, node),
             concurrency=compute.spec.worker.concurrency or 1,
+            buffer=compute.spec.worker.buffer,
+            executor=compute.spec.worker.executor,
+            reuse=compute.spec.worker.reuse,
             plugins=compute.spec.plugins,
+            user_code=user_code,
         )
+
+    async def disconnect(self, compute_id: str, node_id: str) -> None:
+        """Let go of one machine before it is terminated.
+
+        The mirror of :meth:`connect`. A machine on its way out is dropped from this
+        end first, so the SSH channel is closed by us and not surprised by the remote
+        going away — see :meth:`skyward.application.runtimes.Runtime.detach`.
+        """
+        await self._runtimes.detach(compute_id, node_id)
 
 
 def _photographable(nodes: tuple[Node, ...]) -> bool:
@@ -101,21 +119,31 @@ def _peers(nodes: tuple[Node, ...]) -> tuple[str, ...]:
     taken when the compute started. A node added later is not in the list the earlier
     ones were given, so anything that divides work by the size of the world — a
     broadcast, a shard, a collective — is talking about the compute it started with.
+
+    Only live nodes count. A node that failed or was preempted keeps its row, and its
+    address, until somebody sends the terminate it is still owed — but it is not part
+    of the world, and a peer list that included it would hand the workers a rank that
+    answers to nobody and a world one larger than the one that exists.
     """
-    return tuple(node.address or "" for node in sorted(nodes, key=lambda node: node.rank) if node.address)
+    return tuple(node.address or "" for node in sorted(nodes, key=lambda node: node.rank) if node.address and node.state in LIVE)
 
 
 def _seeds(nodes: tuple[Node, ...], node: Node) -> tuple[str, ...]:
     """Whom this worker knocks on to find the cluster.
 
-    The lowest-ranked node with an address, and the lowest-ranked node itself has
+    The lowest-ranked live node with an address, and the lowest-ranked node itself has
     none: somebody has to be the door, and a cluster where everybody waits to be let
     in is a cluster of one, N times over.
+
+    Live for the same reason as the peer list: a dead node keeps its address until it
+    is terminated, and pointing every worker at a machine that is not answering — the
+    lowest-ranked one, so *everybody* is pointed at it, including the node that should
+    have been the door itself — is a cluster that never forms.
 
     It is a bootstrap contact and not a head. After the knock every member is equal,
     and the door may leave.
     """
-    ordered = [candidate for candidate in sorted(nodes, key=lambda node: node.rank) if candidate.address]
+    ordered = [candidate for candidate in sorted(nodes, key=lambda node: node.rank) if candidate.address and candidate.state in LIVE]
     if not ordered or ordered[0].id == node.id:
         return ()
 

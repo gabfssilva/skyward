@@ -39,7 +39,7 @@ NOW = datetime(2026, 7, 13, 12, 0, 0, tzinfo=UTC)
 SPEC = ComputeSpec(
     specs=(Spec(provider=ProviderRef(kind="aws"), accelerator="a100", accelerator_count=1, region="us-east-1"),),
     nodes=NodeBounds(desired=4, min=2, max=8),
-    image=Image(python="3.13", packages=("torch",)),
+    image=Image(python="3.13", pip=("torch",)),
     worker=Worker(concurrency=8, executor="process"),
     delete_on_exit=True,
 )

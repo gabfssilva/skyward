@@ -14,7 +14,7 @@ import threading
 import uuid
 from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Iterator, Sequence
 from concurrent.futures import Future
-from contextlib import aclosing
+from contextlib import ExitStack, aclosing
 from pathlib import Path
 from typing import Self
 
@@ -33,6 +33,8 @@ from skyward.protocol.schemas import (
     Dispatch,
     Error,
     Image,
+    Lease,
+    LeaseClaim,
     NodeBounds,
     ProviderCreate,
     ProviderRef,
@@ -47,18 +49,28 @@ from skyward.protocol.schemas import (
 from skyward.protocol.schemas import (
     Spec as SpecRef,
 )
+from skyward.sdk import usercode
 from skyward.sdk.client import Client
-from skyward.sdk.console import Console
+from skyward.sdk.console import watcher
 from skyward.sdk.errors import SkywardError, TaskFailedError
 from skyward.sdk.function import Group, Pending, Streaming
 from skyward.sdk.provider import Provider
-from skyward.sdk.spec import Nodes, NodeSpec, Spec
+from skyward.sdk.spec import Executor, Nodes, NodeSpec, Spec
 
 DEFAULT_IMAGE = Image()
+DEFAULT_EXECUTOR = Executor()
 INLINE = 256 * 1024
 POLL = 30
 READY_TIMEOUT = 900
 DELETE_TIMEOUT = 300
+LEASE_SECONDS = 60
+"""How long the compute stays owned after the last renewal.
+
+The claim is the client's heartbeat: while this process is alive the lease never
+lapses, and once it dies the reconciler is free to call the compute abandoned. Short
+enough that a killed script is noticed in a minute; long enough that no renewal ever
+races its own expiry.
+"""
 
 
 class Loop:
@@ -102,7 +114,8 @@ class Compute:
         selection: Selection = "cheapest",
         image: Image = DEFAULT_IMAGE,
         plugins: Sequence[Plugin] = (),
-        concurrency: int | None = None,
+        executor: Executor = DEFAULT_EXECUTOR,
+        ttl: int = 600,
         name: str | None = None,
         url: str | None = None,
         database: Path = DEFAULT_PATH,
@@ -127,10 +140,19 @@ class Compute:
             allocation=allocation,
             selection=selection,
             image=image,
-            worker=Worker(concurrency=concurrency),
+            worker=Worker(
+                concurrency=executor.concurrency,
+                executor=executor.type,
+                reuse=executor.reuse,
+                buffer=executor.buffer,
+            ),
             plugins=tuple(plugin.ref() for plugin in plugins),
+            delete_on_exit=delete_on_exit,
+            ttl=ttl,
         )
         self._name = name
+        self._plugins = tuple(plugins)
+        self._client_stack = ExitStack()
         self._url = url or os.environ.get("SKYWARD_URL")
         self._database = database
         self._delete_on_exit = delete_on_exit
@@ -139,6 +161,8 @@ class Compute:
         self._loop: Loop | None = None
         self._client: Client | None = None
         self._watching: Future[None] | None = None
+        self._leasing: Future[None] | None = None
+        self._owner = f"sdk_{uuid.uuid4().hex[:12]}"
         self._id = ""
 
     @classmethod
@@ -178,6 +202,8 @@ class Compute:
             Client.remote(self._url) if self._url else Client.embedded(self._database),
         )
         self.loop.run(self._provision())
+        for plugin in self._plugins:
+            self._client_stack.enter_context(plugin.client(self))
         return self
 
     def __exit__(self, *_: object) -> None:
@@ -190,16 +216,23 @@ class Compute:
         process alive.
         """
         try:
+            self._client_stack.close()
             if self._delete_on_exit:
                 self.loop.run(self._destroy())
         finally:
+            if self._leasing:
+                self._leasing.cancel()
             if self._watching:
                 self._watching.cancel()
             try:
-                self.loop.run(self.client.close())
+                if self._id:
+                    self.loop.run(self.client.delete(f"/v1/computes/{self._id}/lease"))
             finally:
-                self.loop.close()
-                self._loop, self._client, self._watching = None, None, None
+                try:
+                    self.loop.run(self.client.close())
+                finally:
+                    self.loop.close()
+                    self._loop, self._client, self._watching, self._leasing = None, None, None, None
 
     @property
     def loop(self) -> Loop:
@@ -268,6 +301,7 @@ class Compute:
             self._id = found.id
         else:
             await self._ensure_providers()
+            await self._upload_includes()
             compute = await self.client.call(
                 "POST",
                 "/v1/computes",
@@ -277,8 +311,14 @@ class Compute:
             )
             self._id = compute.id
 
+        await self._claim()
+        self._leasing = self.loop.start(self._renew())
+
         if self._console:
-            self._watching = self.loop.start(Console(self.client, self._id).follow())
+            # Building the watcher imports the dashboard, which probes the terminal
+            # for its background colour (OSC 11) and can wait ~250ms for the reply.
+            follower = await asyncio.to_thread(watcher, self.client, self._id)
+            self._watching = self.loop.start(follower.follow())
 
         async with asyncio.timeout(READY_TIMEOUT):
             current = await self._reach("ready", "failed", "degraded")
@@ -312,6 +352,45 @@ class Compute:
                         ),
                     ),
                 )
+
+    async def _upload_includes(self) -> None:
+        """Pack the local code the image asks for, and store it where the node can reach it.
+
+        The paths are the client's — the daemon may be somewhere else entirely — so the
+        tarball is built here, uploaded as a blob, and the spec carries only its hash.
+        The node reads the bytes back from the blob store when it comes up.
+        """
+        image = self._spec.image
+        if not image.includes:
+            return
+
+        blob = await asyncio.to_thread(usercode.tarball, image.includes, image.excludes)
+        sha = await codec.digest(blob)
+        await self.client.upload(f"/v1/blobs/{sha}", blob)
+        self._spec = msgspec.structs.replace(
+            self._spec,
+            image=msgspec.structs.replace(image, includes_sha256=sha),
+        )
+
+    async def _claim(self) -> None:
+        """Own the compute, and say so out loud.
+
+        The lease is the only thing standing between a killed script and machines
+        that bill forever: while this process renews it, the compute is somebody's;
+        the moment renewals stop, the reconciler is allowed to conclude nobody is
+        coming back and — with ``delete_on_exit`` — tear it down.
+        """
+        await self.client.call(
+            "PUT",
+            f"/v1/computes/{self._id}/lease",
+            Lease,
+            body=msgspec.json.encode(LeaseClaim(owner=self._owner, ttl_seconds=LEASE_SECONDS)),
+        )
+
+    async def _renew(self) -> None:
+        while True:
+            await asyncio.sleep(LEASE_SECONDS / 3)
+            await self._claim()
 
     async def _destroy(self) -> None:
         current = await self.client.call("GET", f"/v1/computes/{self._id}", ComputeView)

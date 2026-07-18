@@ -20,7 +20,7 @@ import asyncssh
 import casty
 
 from skyward.application.provider import Machine
-from skyward.protocol.schemas import Image, NodeState, PluginRef
+from skyward.protocol.schemas import Executor, Image, NodeState, PluginRef
 from skyward.runtime.node import Node
 from skyward.runtime.source import Source
 
@@ -31,6 +31,12 @@ type Listener = Callable[[str, str, NodeState, str | None], None]
 
 type Output = Callable[[str, str, str, str | None], None]
 """(compute, node, content, task)"""
+
+type Sample = Callable[[str, str, str, float], None]
+"""(compute, node, name, value)"""
+
+type Phased = Callable[[str, str, str, str, str | None], None]
+"""(compute, node, event, phase, error)"""
 
 CALL_TIMEOUT = 86_400.0
 """A day. Long enough not to be a limit, short enough to eventually give up.
@@ -51,6 +57,16 @@ def keypair() -> tuple[str, str]:
     """
     key = asyncssh.generate_private_key("ssh-ed25519")
     return key.export_private_key().decode(), key.export_public_key().decode()
+
+
+def public_key(private: str) -> str:
+    """The public half of a compute's private key, to re-import it into another region.
+
+    A region-fallback launch binds the same compute into a second region, which has
+    to carry the same key: the private half is what the store kept, so the public half
+    is recovered from it rather than minting a new pair the running machines reject.
+    """
+    return asyncssh.import_private_key(private).export_public_key().decode()
 
 
 class Runtime:
@@ -79,6 +95,24 @@ class Runtime:
 
     def forget(self, node_id: str) -> None:
         self.nodes.pop(node_id, None)
+
+    async def detach(self, node_id: str) -> None:
+        """Let go of one machine on purpose, before it is terminated.
+
+        A machine torn down under us drops its SSH link, and a channel that learns
+        of the drop before it is told the teardown was deliberate warns and burns its
+        reconnect budget chasing a machine that is not coming back. Closing the node
+        here makes the drop expected: the channel is already down when the link goes.
+
+        The node stays in the map, closed. It is what tells :meth:`Connector.connect`
+        this machine is already in hand — dropping it would let a ``node.connect`` in
+        flight from when the node was alive re-adopt a machine that is on its way out.
+        Its tunnel is cleared so the live cluster stops routing to it at once.
+        """
+        if node := self.nodes.get(node_id):
+            await node.close()
+            node.tunnel = None
+            self._refresh()
 
     @property
     def ready(self) -> tuple[str, ...]:
@@ -147,9 +181,11 @@ class Runtime:
 class Runtimes:
     """Every live compute this daemon is holding."""
 
-    def __init__(self, listener: Listener, output: Output) -> None:
+    def __init__(self, listener: Listener, output: Output, sample: Sample, phase: Phased) -> None:
         self._listener = listener
         self._output = output
+        self._sample = sample
+        self._phase = phase
         self._runtimes: dict[str, Runtime] = {}
 
     def of(self, compute: str) -> Runtime | None:
@@ -169,6 +205,10 @@ class Runtimes:
         seeds: tuple[str, ...],
         concurrency: int,
         plugins: tuple[PluginRef, ...],
+        buffer: int = 0,
+        executor: Executor = "thread",
+        reuse: bool = True,
+        user_code: bytes | None = None,
     ) -> None:
         """Bring a machine up, and wire what it learns back to the store.
 
@@ -186,12 +226,23 @@ class Runtimes:
             peers=peers,
             seeds=seeds,
             concurrency=concurrency,
+            buffer=buffer,
+            executor=executor,
+            reuse=reuse,
             plugins=plugins,
+            user_code=user_code,
             listener=lambda state, error: self._listener(runtime.compute, node_id, state, error),
             output=lambda content, task: self._output(runtime.compute, node_id, content, task),
+            sample=lambda name, value: self._sample(runtime.compute, node_id, name, value),
+            phase=lambda event, name, error: self._phase(runtime.compute, node_id, event, name, error),
         )
         runtime.track(node_id, node)
         await node.start()
+
+    async def detach(self, compute: str, node_id: str) -> None:
+        """Close this daemon's live connection to one node before it is terminated."""
+        if runtime := self._runtimes.get(compute):
+            await runtime.detach(node_id)
 
     async def close(self, compute: str) -> None:
         if runtime := self._runtimes.pop(compute, None):

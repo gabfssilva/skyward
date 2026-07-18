@@ -71,8 +71,15 @@ type Market = Literal["spot", "on_demand"]
 An allocation is a preference and may not be satisfiable; a market is a decision,
 and it is what the machines are actually billed under.
 """
+type BillingUnit = Literal["second", "minute", "hour"]
+"""The granularity a provider bills at — prices are always per hour, this is the rounding.
+
+A machine kept for 61 seconds costs 2 minutes on a per-minute provider and a full
+hour on a per-hour one. Stamped by each adapter on its offers, because it is a fact
+about the provider's billing, not a preference.
+"""
 type Selection = Literal["cheapest", "first"]
-type Executor = Literal["thread", "process"]
+type Executor = Literal["thread", "process", "loky"]
 type SkywardSource = Literal["auto", "local", "github", "pypi"]
 
 type ErrorCode = Literal[
@@ -111,17 +118,64 @@ class PluginRef(Struct, frozen=True):
     params: dict[str, Any] = field(default_factory=dict)
 
 
+class PipIndex(Struct, frozen=True):
+    """A package index the resolver should reach for, and what it may serve.
+
+    ``packages`` is the scope: only those names resolve from ``url`` (uv's
+    ``explicit = true``), so a private index cannot silently answer for a public
+    package. An empty scope makes it an ordinary extra index.
+    """
+
+    url: str
+    packages: tuple[str, ...] = ()
+
+
+class MetricSpec(Struct, frozen=True):
+    """One reading a node takes about itself: a shell command, sampled on a period.
+
+    The command must print a bare number; anything else is dropped rather than
+    reported. ``interval`` is in seconds.
+    """
+
+    name: str
+    command: str
+    interval: float
+
+
 class Image(Struct, frozen=True):
     base: str | None = None
     python: str | None = None
-    packages: tuple[str, ...] = ()
+    pip: tuple[str, ...] = ()
+    apt: tuple[str, ...] = ()
+    pip_indexes: tuple[PipIndex, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
+    shell_vars: dict[str, str] = field(default_factory=dict)
+    includes: tuple[str, ...] = ()
+    excludes: tuple[str, ...] = ()
+    includes_sha256: str | None = None
+    """The user-code tarball, once the client has built it and put it in the blob
+    store. ``includes``/``excludes`` are the client's inputs; this is what the node
+    reads."""
+    metrics: tuple[MetricSpec, ...] | None = None
+    """``None`` leaves the built-in collectors in place; a list replaces them."""
+    bootstrap_timeout: int = 900
     skyward: SkywardSource = "auto"
 
 
 class Worker(Struct, frozen=True):
     concurrency: int | None = None
-    executor: Executor | None = None
+    executor: Executor = "thread"
+    reuse: bool = True
+    buffer: int = 0
+    """How many tasks the worker accepts beyond ``concurrency``.
+
+    ``concurrency`` is the executor's width — how many tasks run at once. ``buffer``
+    is the slack casty admits on top of it: the extra tasks arrive, are unpickled and
+    wait at the executor's door, so a slot that frees has the next task in hand rather
+    than a round trip away. It is also the depth the daemon reads as backpressure —
+    the mailbox only fills once the buffer is full, which is the point at which
+    another node would actually help.
+    """
 
 
 class Spec(Struct, frozen=True):
@@ -155,6 +209,13 @@ class ComputeSpec(Struct, frozen=True):
     retry: RetryPolicy = RetryPolicy()
     delete_on_exit: bool = False
     desired: Desired = "running"
+    ttl: int = 600
+    """Seconds a machine may go with no control-plane connection before it self-terminates.
+
+    A safety net against a leaked machine that bills forever: the daemon holds an SSH
+    connection to every node for the pool's whole life, so a node that has had none for
+    ``ttl`` seconds is one no daemon is coming back for. ``0`` disables it. Only providers
+    that boot the machine from a container entrypoint (RunPod) honor it today."""
 
 
 class ComputeSpecPatch(Struct, frozen=True):
@@ -211,6 +272,9 @@ class Node(Struct, frozen=True):
     address: str | None = None
     accelerator: str | None = None
     price_per_hour: float | None = None
+    market: Market | None = None
+    billing_unit: BillingUnit | None = None
+    launched_at: datetime | None = None
     last_error: Error | None = None
     terminated_at: datetime | None = None
 
@@ -329,6 +393,7 @@ class Offer(Struct, frozen=True):
     disk_gb: float | None = None
     spot_price: float | None = None
     on_demand_price: float | None = None
+    billing_unit: BillingUnit = "hour"
     available: int | None = None
     vram: float | None = None
     price: float | None = None
