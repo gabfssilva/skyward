@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from functools import cache
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, overload, runtime_checkable
 
 import cloudpickle
 import lz4.frame
@@ -48,6 +48,32 @@ class Json[T]:
 
     async def encode(self, value: T) -> bytes:
         return self._encoder.encode(value)
+
+    async def decode(self, raw: bytes) -> T:
+        if len(raw) < THRESHOLD:
+            return self._decoder.decode(raw)
+        return await asyncio.to_thread(self._decoder.decode, raw)
+
+
+class Msgpack[T]:
+    """The wire format for what a worker hands back.
+
+    An outcome or a stream frame wraps the user's payload, so its size is the
+    user's size — the same threshold decides whether decoding it is worth a
+    thread.
+
+    The overloads are msgspec's own: a union alias is not a ``type[T]``, so a
+    decoder for one is typed by the caller's annotation rather than inferred.
+    """
+
+    @overload
+    def __init__(self, kind: type[T]) -> None: ...
+
+    @overload
+    def __init__(self: Msgpack[Any], kind: Any) -> None: ...
+
+    def __init__(self, kind: Any) -> None:
+        self._decoder = msgspec.msgpack.Decoder(kind)
 
     async def decode(self, raw: bytes) -> T:
         if len(raw) < THRESHOLD:

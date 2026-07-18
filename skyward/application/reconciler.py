@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
+from datetime import timedelta
 from math import ceil
 from time import monotonic
 
@@ -34,6 +35,7 @@ from skyward.application.machines import Machines
 from skyward.persistence.computes import ComputeStore, GenerationStore
 from skyward.persistence.events import EventStore
 from skyward.persistence.nodes import LIVE, NodeStore
+from skyward.persistence.store import now
 from skyward.persistence.tasks import TaskStore
 from skyward.protocol import codec
 from skyward.protocol.schemas import Compute, ComputeSpec, ComputeStatus, Error, Node, NodeState
@@ -52,6 +54,16 @@ boot, and buy them again on the next burst.
 Seconds, and not passes: a pass runs whenever anything happens, so a compute in the
 middle of a busy moment would run through a pass-counted delay in milliseconds and
 call it patience.
+"""
+
+ABANDON_SECONDS = 60.0
+"""How old a compute must be before having no owner means nobody is coming.
+
+A compute is claimed moments after it is created, but by a different request than
+the one that created it, and the tick can land in between. Younger than this and
+ownerless is a newborn; older, it is a script that was killed — and reconciling it
+forward would buy machines for a process that no longer exists, once per tick,
+forever. That is precisely the bug this exists to stop.
 """
 
 
@@ -130,6 +142,13 @@ class Reconciler:
     async def _pass(self, compute: Compute) -> None:
         if compute.status.state == "deleted":
             return
+
+        if abandoned(compute):
+            if not compute.spec.delete_on_exit:
+                return
+            await self._computes.delete(compute.id, compute.revision, f"abandoned:{compute.id}")
+            await self._record("compute.abandoned", compute.id)
+            compute = await self._computes.get(compute.id)
 
         await self._machines.resolve(compute, await self._nodes.of(compute.id))
 
@@ -324,6 +343,25 @@ class Reconciler:
         interleaved would each write the deficit the other is already writing.
         """
         return self._locks.setdefault(compute_id, asyncio.Lock())
+
+
+def abandoned(compute: Compute) -> bool:
+    """Whether nobody owns this compute and nobody is coming back for it.
+
+    The lease is the only sign of life a client gives: it is claimed at birth and
+    renewed for as long as the process holding the SSH connections is alive. A
+    compute past the newborn grace with no live lease belongs to a process that is
+    gone — a ``Ctrl-C``, a crash, a laptop closed.
+
+    What follows is spelled out on the lease endpoint: ``delete_on_exit`` tears it
+    down, anything else sits ownerless until something attaches. A compute already
+    being deleted is never abandoned — teardown must finish no matter who asked.
+    """
+    if compute.spec.desired == "deleted":
+        return False
+    if compute.lease.owner is not None and compute.lease.expires_at is not None and compute.lease.expires_at > now():
+        return False
+    return now() - compute.created_at > timedelta(seconds=ABANDON_SECONDS)
 
 
 def bounds(spec: ComputeSpec) -> tuple[int, int]:

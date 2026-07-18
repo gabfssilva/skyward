@@ -13,8 +13,6 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable
 
-import msgspec
-
 from skyward.application.errors import ComputeNotAcceptingError
 from skyward.application.runtimes import Runtime, Runtimes
 from skyward.persistence.computes import ComputeStore
@@ -30,6 +28,12 @@ from skyward.runtime import worker
 logger = logging.getLogger(__name__)
 
 type Wake = Callable[..., None]
+
+_STEPS: codec.Msgpack[Step] = codec.Msgpack(Step)
+_OUTCOMES: codec.Msgpack[Outcome] = codec.Msgpack(Outcome)
+_LOOKUPS: codec.Msgpack[Lookup] = codec.Msgpack(Lookup)
+"""What a worker answers with wraps the user's payload, so it is decoded through
+the codec — off the loop past the threshold — rather than inline."""
 
 IN_FLIGHT: tuple[ExecutionState, ...] = ("dispatching", "accepted", "started")
 """Sent, and not yet answered for.
@@ -62,11 +66,52 @@ class Dispatcher:
         self._locks: dict[str, asyncio.Lock] = {}
 
     async def resume(self, compute_id: str) -> None:
-        """Offer the queue a machine that just became free, or one that just arrived."""
-        for task_id in await self._tasks.waiting(compute_id):
-            await self.task(task_id)
+        """Offer the queue whatever is free right now, and stop when nothing is.
+
+        The slots are counted once and spent locally: a pass that re-derived them
+        from the store per task would cost the whole queue a read for every task
+        that completes, and with two thousand tasks behind a hundred slots the
+        control plane spends its day re-discovering that the other nineteen
+        hundred still have nowhere to go. A task the break skips is not stranded —
+        the next completion is the next pass, and the tick re-offers whatever a
+        lost wakeup left behind.
+        """
+        runtime = self._runtimes.of(compute_id)
+        if runtime is None:
+            return
+
+        async with self._lock(compute_id):
+            spare = await self._spare(compute_id, runtime)
+            for task_id in await self._tasks.waiting(compute_id):
+                if not any(spare.values()):
+                    return
+                task = await self._tasks.get(task_id)
+                for execution in task.executions:
+                    if execution.id in runtime.dispatched or execution.state != "created" or task.dispatch == "stream":
+                        continue
+                    free = tuple(node for node in spare if spare[node])
+                    if not free:
+                        break
+                    node_id = await self._placement(task, execution, free)
+                    if node_id is None:
+                        continue
+                    spare[node_id] -= 1
+                    await self._launch(task, execution, runtime, node_id)
 
     async def task(self, task_id: str) -> None:
+        """One task's wake. Anything placeable is left for :meth:`resume`.
+
+        This used to place work itself, under the compute lock — and the tick
+        wakes every unsettled task, so a deep queue became hundreds of these
+        serializing on that lock to each discover there was no slot, while the
+        one resume that *had* slots to spend waited at the back of the line and
+        a hundred free workers sat idle. Turning the placeable case into a
+        ``compute.dispatch`` wakeup collapses all of them into the one pass the
+        emitter was built to coalesce.
+
+        Reattaching stays here: it is per-execution by nature, and it takes no
+        slot — asking a worker for an outcome it already holds needs no lock.
+        """
         task = await self._tasks.get(task_id)
         if task.state not in ("queued", "running"):
             return
@@ -75,20 +120,21 @@ class Dispatcher:
         if runtime is None:
             return
 
-        async with self._lock(task.compute_id):
-            free = await self._free(task.compute_id, runtime)
+        placeable = False
+        for execution in task.executions:
+            if execution.id in runtime.dispatched:
+                continue
 
-            for execution in task.executions:
-                if execution.id in runtime.dispatched:
-                    continue
+            match execution.state:
+                case "created" if task.dispatch != "stream":
+                    placeable = True
+                case state if state in IN_FLIGHT:
+                    await self._reattach(task, execution, runtime)
+                case _:
+                    pass
 
-                match execution.state:
-                    case "created" if free and task.dispatch != "stream":
-                        await self._dispatch(task, execution, runtime, free)
-                    case state if state in IN_FLIGHT:
-                        await self._reattach(task, execution, runtime)
-                    case _:
-                        pass
+        if placeable:
+            self._wake("compute.dispatch", compute_id=task.compute_id)
 
     async def stream(self, task_id: str) -> AsyncIterator[bytes]:
         """A streaming task, dispatched by the caller who is reading it.
@@ -131,7 +177,7 @@ class Dispatcher:
             await node.open(execution.id, code, args)
             while True:
                 frame = await node.step(execution.id)
-                match msgspec.msgpack.decode(frame, type=Step):
+                match await _STEPS.decode(frame):
                     case End():
                         break
                     case Failed(error=error, traceback=trace):
@@ -168,27 +214,29 @@ class Dispatcher:
         reconciler reads to decide the pool is too small. A pool that hides its queue
         never grows.
         """
+        spare = await self._spare(compute_id, runtime)
+        return tuple(node for node in spare if spare[node])
+
+    async def _spare(self, compute_id: str, runtime: Runtime) -> dict[str, int]:
+        """Slots going spare per ready node, in rank order — one read, spent locally."""
         compute = await self._computes.get(compute_id)
         slots = compute.spec.worker.concurrency or 1
         holding, _ = await self._tasks.busy(compute_id)
 
         ready = {node.rank: node.id for node in await self._nodes.of(compute_id) if node.state == "ready"}
-        return tuple(
-            ready[rank] for rank in sorted(ready)
+        return {
+            ready[rank]: slots - holding[ready[rank]]
+            for rank in sorted(ready)
             if ready[rank] in runtime.ready and holding[ready[rank]] < slots
-        )
+        }
 
-    async def _dispatch(self, task: Task, execution: Execution, runtime: Runtime, free: tuple[str, ...]) -> None:
+    async def _launch(self, task: Task, execution: Execution, runtime: Runtime, node_id: str) -> None:
         """Hand one execution to one worker, and stop holding the caller open.
 
         The call is left running as its own task because it lasts as long as the
         user's function does — hours, possibly — and a pass that waited for it would
         be a control plane that stops controlling while somebody trains a model.
         """
-        node_id = await self._placement(task, execution, free)
-        if node_id is None:
-            return
-
         runtime.dispatched.add(execution.id)
         await self._tasks.observe(execution.id, "dispatching", node_id=node_id)
         asyncio.get_running_loop().create_task(self._run(task, execution, runtime, node_id))
@@ -218,7 +266,7 @@ class Dispatcher:
             await self._tasks.observe(execution.id, "started", node_id=node_id)
             await self._record("task.started", task.compute_id, task=task.id)
 
-            await self._settle(task, execution, msgspec.msgpack.decode(await node.run(execution.id, code, args), type=Outcome))
+            await self._settle(task, execution, await _OUTCOMES.decode(await node.run(execution.id, code, args)))
         except Exception as exc:
             await self._lost(task, execution, exc)
         finally:
@@ -250,7 +298,7 @@ class Dispatcher:
         system = await runtime.system()
         control = system.service(worker.Control, at=member)
 
-        match msgspec.msgpack.decode(await control.result(execution.id), type=Lookup):
+        match await _LOOKUPS.decode(await control.result(execution.id)):
             case Pending():
                 logger.info("execution %s is still running on %s", execution.id, execution.node_id)
             case Unknown():

@@ -55,9 +55,11 @@ class SshChannel:
     reconnection is exhausted does the channel go permanently unavailable, and
     only then does the node above learn that it lost a machine.
 
-    Bad credentials are not retried: they are the one failure that more attempts
-    cannot fix, and burning a five-minute connect deadline on them is how a typo
-    turns into a mystery.
+    A refused key is retried like a refused connection. It reads like the one
+    failure more attempts cannot fix, but on a machine seconds old it is the
+    likelier thing: sshd answers before cloud-init has written the key it will
+    eventually accept, and a fast dial lands in that window every time. Genuinely
+    bad credentials still fail — at the deadline, wearing the refusal as the reason.
     """
 
     def __init__(
@@ -79,6 +81,7 @@ class SshChannel:
         self._connect_timeout = connect_timeout
         self._reconnect_attempts = reconnect_attempts
 
+        self._client_keys: list[asyncssh.SSHKey] | None = None
         self._conn: asyncssh.SSHClientConnection | None = None
         self._up = asyncio.Event()
         self._closed = False
@@ -96,9 +99,6 @@ class SshChannel:
                     try:
                         self._attach(await self._dial())
                         return
-                    except asyncssh.PermissionDenied as exc:
-                        self._fail(str(exc))
-                        raise SshUnavailableError(f"{self._host}: {exc}") from exc
                     except (OSError, asyncssh.Error) as exc:
                         last = str(exc)
                         await asyncio.sleep(RETRY_DELAY)

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import msgspec
+
 from skyward.protocol.schemas import Error
 
 
@@ -33,6 +35,19 @@ class TaskIndeterminateError(SkywardError):
     """
 
 
+class UnexpectedResponseError(Exception):
+    """A refusal the control plane did not write.
+
+    A route that was never reached, a handler that crashed, a proxy in between —
+    each answers with a body of its own, and none of them is an ``Error``.
+    """
+
+    def __init__(self, status: int, body: bytes) -> None:
+        super().__init__(f"the control plane answered {status}: {body.decode(errors='replace')}")
+        self.status = status
+        self.body = body
+
+
 def raised(error: Error) -> SkywardError:
     match error.code:
         case "task_failed":
@@ -41,3 +56,16 @@ def raised(error: Error) -> SkywardError:
             return TaskIndeterminateError(error)
         case _:
             return SkywardError(error)
+
+
+def refused(status: int, body: bytes) -> Exception:
+    """The answer to a failed request, as the exception it deserves.
+
+    Decoding a body that is not an ``Error`` as one raises a validation error about
+    the shape of the answer, and that is what the caller is left holding instead of
+    the answer — which is the only account of what went wrong there is.
+    """
+    try:
+        return raised(msgspec.json.decode(body, type=Error))
+    except msgspec.DecodeError:
+        return UnexpectedResponseError(status, body)

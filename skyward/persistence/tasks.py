@@ -264,21 +264,29 @@ class TaskStore:
         )
 
     async def waiting(self, compute: str) -> tuple[str, ...]:
-        """Tasks of this compute that have not reached a verdict."""
+        """Tasks of this compute with an attempt still to be placed, oldest first.
+
+        Two filters, both load-bearing. Only tasks holding a ``created`` execution
+        appear — a running task whose attempts are all on machines has nothing to
+        offer a free slot, and walking a hundred of them to reach the first task
+        that does is what the dispatcher used to spend its passes on. And the
+        order is the fairness: the dispatcher stops offering once the slots are
+        spent, so whoever is first in this tuple is whoever runs next.
+        """
+        placeable = ExecutionRow.select(ExecutionRow.task_id).where(ExecutionRow.state == "created")
         rows = await TaskRow.select(TaskRow.id).where(
-            (TaskRow.compute_id == compute) & TaskRow.state.is_in(["queued", "running"]),
-        )
+            (TaskRow.compute_id == compute)
+            & TaskRow.state.is_in(["queued", "running"])
+            & TaskRow.id.is_in(placeable),
+        ).order_by(TaskRow.submitted_at)
         return tuple(row["id"] for row in rows)
 
     async def _pending(self, compute: str) -> list[dict[str, Any]]:
-        tasks = await TaskRow.select(TaskRow.id).where(
+        live = TaskRow.select(TaskRow.id).where(
             (TaskRow.compute_id == compute) & TaskRow.state.is_in(["queued", "running"]),
         )
-        if not (ids := [row["id"] for row in tasks]):
-            return []
-
         return await ExecutionRow.select(ExecutionRow.node_id, ExecutionRow.rank).where(
-            ExecutionRow.task_id.is_in(ids) & ExecutionRow.state.is_in(list(PENDING)),
+            ExecutionRow.task_id.is_in(live) & ExecutionRow.state.is_in(list(PENDING)),
         )
 
     async def _row(self, task_id: str) -> TaskRow:

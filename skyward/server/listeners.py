@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import logging
+
 from litestar.events import EventListener, listener
 
 from skyward.application import ports
 from skyward.application.connector import Connector
+from skyward.application.errors import CapabilityMismatchError
 from skyward.application.machines import Machines
 from skyward.protocol.schemas import NodeState
+
+logger = logging.getLogger(__name__)
 
 
 def build_listeners(
@@ -36,8 +41,12 @@ def build_listeners(
 
     @listener("node.requested")
     async def on_node_requested(compute_id: str, node_id: str) -> None:
-        if machines:
+        if not machines:
+            return
+        try:
             await machines.create(compute_id, node_id)
+        except CapabilityMismatchError as mismatch:
+            logger.warning("node %s not placed: %s", node_id, mismatch)
 
     @listener("node.connect")
     async def on_node_connect(compute_id: str, node_id: str) -> None:
@@ -47,8 +56,21 @@ def build_listeners(
 
     @listener("node.deleting")
     async def on_node_deleting(compute_id: str, node_id: str) -> None:
+        """Drop our connection, terminate the machine, then let the compute notice.
+
+        The disconnect closes this daemon's SSH channel before the machine is torn
+        down, so the drop is expected rather than a surprise the channel warns about
+        and chases with pointless reconnects.
+
+        The terminate writes the node ``deleted`` straight to the store, off the
+        bus — so without a reconcile here the transition to release would wait for
+        the next tick. The reconcile is the event; the tick is only the fallback.
+        """
         if machines:
+            if connector:
+                await connector.disconnect(compute_id, node_id)
             await machines.terminate(compute_id, node_id)
+            await reconciler.compute(compute_id)
 
     @listener("node.draining")
     async def on_node_draining(compute_id: str, node_id: str) -> None:

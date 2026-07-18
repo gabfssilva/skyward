@@ -19,8 +19,7 @@ from typing import TYPE_CHECKING, Any, Self, cast
 import httpx
 import msgspec
 
-from skyward.protocol.schemas import Error
-from skyward.sdk.errors import raised
+from skyward.sdk.errors import refused
 
 if TYPE_CHECKING:
     from litestar import Litestar
@@ -54,7 +53,7 @@ class Client:
         from skyward.server.app import create_app, services
 
         await connect(database)
-        app = create_app(services())
+        app = create_app(services(), logging=False)
 
         stack = AsyncExitStack()
         await stack.enter_async_context(app.lifespan())
@@ -94,6 +93,10 @@ class Client:
     async def upload(self, path: str, body: bytes, headers: dict[str, str] | None = None) -> None:
         await self._send("PUT", path, body, BLOB, headers, {})
 
+    async def delete(self, path: str) -> None:
+        """For the endpoints that answer 204 — nothing to decode, so not ``call``."""
+        await self._send("DELETE", path, None, JSON, None, {})
+
     async def frames(self, path: str) -> AsyncGenerator[bytes]:
         """The frames of a stream, as they arrive.
 
@@ -105,7 +108,7 @@ class Client:
         async with self._http.stream("GET", path) as response:
             if response.status_code >= 400:
                 await response.aread()
-                raise raised(msgspec.json.decode(response.content, type=Error))
+                raise refused(response.status_code, response.content)
 
             buffer = bytearray()
             async for chunk in response.aiter_bytes():
@@ -151,7 +154,7 @@ class Client:
             headers={"Content-Type": content_type, **(headers or {})},
         )
         if response.status_code >= 400:
-            raise raised(msgspec.json.decode(response.content, type=Error))
+            raise refused(response.status_code, response.content)
         return response
 
 

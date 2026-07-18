@@ -96,24 +96,24 @@ async def test_a_file_lands_on_the_machine(channel: SshChannel, tmp_path: Path):
     assert (tmp_path / "bootstrap.sh").read_bytes() == b"#!/bin/sh\necho hi\n"
 
 
-async def test_the_wrong_key_fails_at_once_instead_of_burning_the_deadline(sshd: int):
-    """More attempts cannot fix a bad credential.
+async def test_a_refused_key_is_retried_until_the_deadline(sshd: int):
+    """A refused key on a fresh machine is sshd racing cloud-init, not a typo.
 
-    The deadline is generous because a machine takes minutes to accept SSH.
-    Spending it on a typo is how a five-second failure becomes a five-minute
-    mystery, so authentication is the one error that is not retried.
+    The daemon dials the moment a machine has an address, and sshd answers
+    before cloud-init has written the key it will eventually accept — so the
+    refusal is retried like a refused connection. A genuinely wrong key still
+    fails at the deadline, wearing the refusal as the reason.
     """
     stranger = SshChannel(
         "127.0.0.1",
         port=sshd,
         user="tester",
         private_key=asyncssh.generate_private_key("ssh-ed25519").export_private_key().decode(),
-        connect_timeout=60.0,
+        connect_timeout=3.0,
     )
 
-    with pytest.raises(SshUnavailableError):
-        async with asyncio.timeout(5.0):
-            await stranger.connect()
+    with pytest.raises(SshUnavailableError, match="[Pp]ermission denied"):
+        await stranger.connect()
 
 
 async def test_an_unreachable_machine_is_retried_until_the_deadline():
