@@ -4,6 +4,10 @@ Every case here was copied from a live API response. This is the test that keeps
 `h100` and `h100-sxm` from becoming two different accelerators again.
 """
 
+import importlib.util
+import re
+from pathlib import Path
+
 import pytest
 
 from skyward.protocol.accelerators import CATALOG, resolve
@@ -113,3 +117,19 @@ def test_the_offer_normalizes_whatever_the_adapter_hands_it():
 
     assert (offer.accelerator, offer.vram) == ("h100", 80)
     assert offer.price == 16.0
+
+
+def test_the_generated_stub_covers_every_catalog_name():
+    """The .pyi must carry one typed factory per catalog entry, or it drifts."""
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "gen_accelerators_pyi", root / "scripts" / "gen_accelerators_pyi.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    stub = module.render()
+    stubbed = set(re.findall(r"^def ([A-Z0-9_]+)\(count: int = 1\)", stub, re.MULTILINE))
+    expected = {name.upper().replace("-", "_") for name in CATALOG}
+
+    assert stubbed == expected

@@ -1,163 +1,108 @@
 # What are plugins?
 
-Skyward's plugin system is the way you bring third-party frameworks into the compute pool. When you pass `plugins=[sky.plugins.torch()]` to a `Compute` pool, you are telling Skyward: install PyTorch on the remote workers, configure the distributed runtime before my function runs, and clean up when the worker stops. The plugin handles the environment setup, the lifecycle hooks, and the per-task wrapping — things you would otherwise do manually with `Image(pip=[...])`, environment variables, and boilerplate inside your `@sky.function` functions.
+Skyward's plugin system is how you bring a third-party framework into a compute. When you pass `plugins=[sky.plugins.Torch()]` to `Compute`, you are telling Skyward: install PyTorch on the nodes, form the process group before my function runs, and do it once. The plugin handles the image, the bootstrap phases, and the per-task setup — things you would otherwise do by hand with `Image(pip=[...])`, environment variables, and boilerplate inside every `@sky.function`.
 
-The key insight is that plugins operate at the pool level, not at the function level. A single plugin declaration on the pool affects every task dispatched to it. This is different from the decorator pattern you might be used to, where each function explicitly opts in to framework setup. With plugins, the pool is the unit of configuration: once you declare that a pool uses PyTorch with NCCL, every function dispatched to that pool gets PyTorch's distributed environment configured automatically.
+Plugins operate at the compute level, not the function level. One declaration affects every task dispatched to that compute.
 
-## The Plugin dataclass
+## A plugin is a value
 
-A `Plugin` is a frozen dataclass with six optional hooks. Each hook corresponds to a different phase in the pool and worker lifecycle. You do not need to implement all six — most plugins use two or three.
-
-```python
-@dataclass(frozen=True, slots=True)
-class Plugin:
-    name: str
-    transform: ImageTransform | None = None
-    bootstrap: BootstrapFactory | None = None
-    decorate: TaskDecorator | None = None
-    around_app: AppLifecycle | None = None
-    around_process: ProcessLifecycle | None = None
-    around_client: ClientLifecycle | None = None
-```
-
-The hooks are:
-
-**`transform`** modifies the `Image` before bootstrap. It receives the current `Image` and the `Cluster` metadata, and returns a new `Image` with additional pip packages, pip indexes, environment variables, or apt packages. This is how plugins install their dependencies on the remote worker. For example, the `torch` plugin appends `"torch"` to `pip` and adds PyTorch's CUDA wheel index. The `keras` plugin appends `"keras"` and sets `KERAS_BACKEND` in the environment. Since `Image` is a frozen dataclass, the transform returns a new copy via `replace()` — it never mutates the original.
-
-**`bootstrap`** injects shell operations after the standard bootstrap phases (apt, pip, etc.). It receives the `Cluster` and returns a tuple of shell ops. The `huggingface` plugin uses this to run `huggingface-cli login` after pip packages are installed, so the worker is authenticated before any task runs. The `mps` plugin uses it to start the NVIDIA MPS daemon.
-
-**`decorate`** wraps each `@sky.function` function at execution time on the remote worker. It is a classic Python decorator: it takes a function and returns a function. This is for per-task logic that must run every time a function executes — things like logging, metrics collection, or framework-specific wrappers that depend on each call's arguments.
-
-**`around_app`** is a context manager that runs once in the main worker process. It receives an `InstanceInfo` and returns a context manager. The context is entered at worker startup and stays active for the lifetime of the worker. This is designed for one-time, process-wide initialization — things that must happen exactly once and persist.
-
-The state module (`skyward.plugins.state`) tracks which `around_app` hooks have been entered. It stores the context managers in a module-level dictionary and checks before entering — if the key already exists, it is a no-op. This makes the hook idempotent: even if multiple tasks execute on the same worker, each `around_app` is entered exactly once.
-
-**`around_process`** is a context manager that runs once per executor subprocess. It receives an `InstanceInfo` and returns a context manager. This hook is lazy — it enters on the first task execution in each subprocess, after environment variables are propagated. Only relevant when `executor="process"`. The `torch` plugin uses this for `dist.init_process_group()`, the `jax` plugin for `jax.distributed.initialize()`, the `keras` plugin for `DataParallel` distribution setup, and the `cuml` plugin for `cuml.accel.install()`. All are irreversible, process-global operations that should not be repeated per task.
-
-The process state module (`skyward.plugins.process_state`) tracks which `around_process` hooks have been entered, with the same idempotency guarantees as `around_app`.
-
-**`around_client`** is a context manager that runs on the client side, not the worker. It receives the `Compute` pool and the `Cluster`, and wraps the pool's entire active lifetime. The `joblib` and `sklearn` plugins use this to register the `SkywardBackend` as joblib's parallel backend, so that any `Parallel(n_jobs=-1)` call inside the `with` block dispatches work to the cluster instead of local processes.
-
-## Builder API
-
-You can construct plugins using the builder pattern instead of passing all hooks to the constructor:
+A `Plugin` is a frozen [msgspec](https://jcristharif.com/msgspec/) `Struct`, not an object holding callbacks. It travels in the compute spec, is written to the daemon's database with it, and is rebuilt from its parameters on the node. That is why it cannot be a closure or a lambda: three processes on two machines have to agree about it, and what they agree about is its `kind` and its fields.
 
 ```python
-plugin = (
-    Plugin.create("my-plugin")
-    .with_image_transform(lambda img, cluster: replace(img, pip=(*img.pip, "my-lib")))
-    .with_decorator(my_decorator)
-    .with_around_app(my_lifecycle)
-)
+class Torch(Plugin, frozen=True):
+    kind: ClassVar[str] = "torch"
+    collective: ClassVar[bool] = True
+
+    backend: Literal["nccl", "gloo"] = "nccl"
+    cuda: str = "cu128"
+    version: str | None = None
 ```
 
-Each `.with_*` method returns a new `Plugin` instance (immutable — uses `replace()`). This is how the built-in plugins are implemented internally: the factory function (e.g., `sky.plugins.torch()`) defines the hooks as closures and chains them together with the builder.
+Two class-level attributes describe the plugin rather than configure it:
 
-## How hooks execute
+- **`kind`** — its name on the wire, and how the node finds the class again. Unknown kinds are refused when the compute is created, not an hour later on a worker.
+- **`collective`** — whether the plugin makes nodes depend on each other. A collective freezes the world when the last rank joins it, so the reconciler refuses to resize a compute running one: taking a rank away does not shrink the job, it hangs it at the next all-reduce. `Torch`, `Jax` and `Accelerate` are collectives.
 
-The hooks run at different points in the pool lifecycle, and the order matters.
+Parameters are validated against the class's own fields when the compute is created, so a misspelt backend comes back from the call that made the pool.
 
-When the pool starts (`Compute.__enter__`):
+## The five hooks
 
-1. **`transform`** hooks run first, in plugin order. Each transform receives the image returned by the previous one. The final image is used to generate the bootstrap script.
-2. **`bootstrap`** hooks run after the standard bootstrap phases complete on each worker. The ops are appended in plugin order.
-3. **`around_client`** hooks are entered on the client, in plugin order.
+Every hook is optional and does nothing by default. Two run on the daemon, two on the node, one on the client.
 
-When a task executes on a worker:
+| Hook | Signature | Where | When |
+|---|---|---|---|
+| `image` | `(Image) -> Image` | daemon | Once, when the compute is provisioned |
+| `bootstrap` | `(Image, concurrency: int) -> tuple[str, ...]` | daemon | Script generation; phases appended after the image's own |
+| `setup` | `(Info) -> ContextManager[None]` | node | Entered once before the worker takes a task, left when it stops |
+| `run` | `(call, Info) -> T` | node | Around every task |
+| `client` | `(Compute) -> ContextManager[None]` | client | Entered when the compute is ready, left before teardown |
 
-4. **`around_app`** hooks are entered at worker startup (idempotent — skipped if already active).
-5. **`around_process`** hooks are lazily entered on first task execution in each executor subprocess (idempotent — skipped if already active). Only relevant when `executor="process"`.
-6. **`decorate`** hooks wrap the function. If multiple plugins have decorators, they are chained: the first plugin's decorator is outermost, the last is innermost. The chaining uses `functools.reduce` over `reversed(decorators)`, so the first plugin listed in `plugins=[...]` runs first and the last runs last.
+**`image`** is a transform rather than a package list because plugins compose: each is handed what the ones before it asked for. It returns a new `Image` via `replace()` — pip packages, pip indexes, apt packages.
 
-When the pool stops (`Compute.__exit__`):
+**`bootstrap`** runs on the daemon at script-generation time, so it may only *return* the shell phases the script will run; it never executes anything itself. `concurrency` is the worker's width — the one datum a phase needs that the image does not carry. `Mig` uses it to know how many ways to cut the GPU.
 
-7. **`around_client`** contexts are exited in reverse order.
-8. **`around_process`** contexts are exited in reverse order when executor subprocesses shut down.
-9. **`around_app`** contexts are exited in reverse order when the worker process shuts down.
+**`setup`** is the worker's own lifetime, in the worker process. This is where an environment variable a library reads at import time gets set (`Keras` and `KERAS_BACKEND`), or where a daemon every later child must inherit gets started (`Mps`).
 
-## Plugin composition
+**`run`** wraps one task, in the process that actually runs it. That distinction matters under a subprocess executor: the process that must hold the process group, or the patched scikit-learn, or the pinned CUDA device, is the child — not the worker that spawned it. Every built-in that does irreversible process-global work (`Torch`, `Jax`, `Accelerate`, `Cuml`, `Mig`) therefore does it here, once, guarded by a module-global flag under a lock. The first task pays for it; every task after calls straight through.
 
-Plugins compose naturally because each hook is independent. You can stack multiple plugins and their effects combine:
+**`client`** is the only hook that does not travel. It runs in the process that opened the `with` block, and it is how a plugin reaches back into the live pool — `Joblib` and `Sklearn` use it to point joblib's parallel backend at the compute.
+
+## Order
+
+Plugins wrap in the order they are listed: the first is outermost, and therefore the one whose `run` executes first.
 
 ```python
-with sky.Compute(
-    provider=sky.AWS(),
-    accelerator=sky.accelerators.A100(),
-    nodes=4,
-    plugins=[
-        sky.plugins.torch(backend="nccl"),
-        sky.plugins.huggingface(token="hf_xxx"),
-    ],
-) as compute:
-    train() >> compute
+plugins=[sky.plugins.Jax(), sky.plugins.Keras(backend="jax")]
 ```
 
-The `torch` plugin adds PyTorch to pip and initializes DDP via `around_process`. The `huggingface` plugin adds transformers, datasets, and tokenizers to pip, sets `HF_TOKEN`, and runs `huggingface-cli login`. Their image transforms compose (PyTorch packages + HuggingFace packages), and their `around_process` hooks are entered independently in plugin order.
-
-Order can matter. When using Keras with JAX, the JAX plugin should come first because its `around_process` initializes the distributed runtime that Keras depends on:
-
-```python
-plugins=[sky.plugins.jax(), sky.plugins.keras(backend="jax")]
-```
-
-The JAX plugin's `around_process` calls `jax.distributed.initialize()`, and Keras's `around_process` calls `keras.distribution.set_distribution(DataParallel(...))`. The distribution setup needs JAX's device mesh to already be visible, so JAX must initialize first. Since `around_process` hooks are entered in plugin order, listing JAX first ensures the correct sequence.
+`Jax.run` joins the distributed runtime before anything downstream of it sees a device list.
 
 ## Built-in plugins
 
-Skyward ships with nine plugins:
-
-| Plugin | Primary Hooks | Purpose |
-|--------|--------------|---------|
-| [`accelerate`](accelerate.md) | `transform`, `around_process` | Distributed training with FSDP, DeepSpeed, and mixed precision via Hugging Face Accelerate |
-| [`torch`](torch.md) | `transform`, `around_process` | PyTorch installation and DDP initialization |
-| [`jax`](jax.md) | `transform`, `around_process` | JAX installation and distributed initialization |
-| [`keras`](keras.md) | `transform`, `around_process` | Keras backend configuration and DataParallel |
-| [`huggingface`](huggingface.md) | `transform`, `bootstrap` | Transformers, datasets, tokenizers, and auth |
-| [`joblib`](joblib.md) | `transform`, `around_client` | Distributed joblib parallel backend |
-| [`sklearn`](sklearn.md) | `transform`, `around_client` | Scikit-learn with distributed joblib |
-| [`cuml`](cuml.md) | `transform`, `around_process` | GPU-accelerated scikit-learn via RAPIDS cuML |
-| [`mps`](mps.md) | `transform`, `bootstrap` | NVIDIA Multi-Process Service for GPU sharing |
+| Plugin | Hooks | Purpose |
+|--------|-------|---------|
+| [`Torch`](torch.md) | `image`, `run` | PyTorch and its process group |
+| [`Accelerate`](accelerate.md) | `image`, `run` | FSDP, DeepSpeed and mixed precision via Hugging Face Accelerate |
+| [`Jax`](jax.md) | `image`, `run` | JAX and its distributed runtime |
+| [`Keras`](keras.md) | `image`, `setup` | Keras 3 backend selection, plus DataParallel on JAX |
+| `HuggingFace` | `image`, `setup` | `huggingface_hub` and `HF_TOKEN` |
+| [`Joblib`](joblib.md) | `image`, `client` | joblib's parallel backend, fanned over the compute |
+| [`Sklearn`](sklearn.md) | `image`, `client` | scikit-learn on the nodes, its joblib backend on the compute |
+| [`Cuml`](cuml.md) | `image`, `run` | GPU scikit-learn via RAPIDS cuML |
+| [`Mps`](mps.md) | `setup` | CUDA MPS, so one GPU serves several tasks at once |
+| [`Mig`](mig.md) | `bootstrap`, `run` | NVIDIA MIG, one GPU slice per subprocess |
 
 ## Custom plugins
 
-Building a custom plugin follows the same pattern as the built-in ones. Define your hooks as functions, then chain them with the builder:
+There is no builder API and no ad-hoc registration from a lambda — a plugin has to survive being serialized into the spec and rebuilt from its `kind`. A custom plugin is a subclass registered in `skyward.plugins.PLUGINS`:
 
 ```python
-from dataclasses import replace
-from skyward.plugins import Plugin
+from typing import ClassVar
 
-def my_framework() -> Plugin:
-    def transform(image, cluster):
-        return replace(image, pip=(*image.pip, "my-framework"))
+from msgspec.structs import replace
 
-    def decorate(fn):
-        @wraps(fn)
-        def wrapper(*args, **kwargs):
-            setup_my_framework()
-            return fn(*args, **kwargs)
-        return wrapper
+from skyward.plugins import PLUGINS, Plugin
+from skyward.protocol.schemas import Image
 
-    return (
-        Plugin.create("my-framework")
-        .with_image_transform(transform)
-        .with_decorator(decorate)
-    )
+
+class MyFramework(Plugin, frozen=True):
+    kind: ClassVar[str] = "my-framework"
+
+    version: str | None = None
+
+    def image(self, image: Image) -> Image:
+        package = f"my-framework=={self.version}" if self.version else "my-framework"
+        return replace(image, pip=(*image.pip, package))
+
+
+PLUGINS[MyFramework.kind] = MyFramework
 ```
 
-Use it like any built-in plugin:
-
-```python
-with sky.Compute(
-    provider=sky.AWS(),
-    plugins=[my_framework()],
-) as compute:
-    my_task() >> compute
-```
+The class has to be importable on the node too, since that is where it is rebuilt from its parameters.
 
 ## Next steps
 
-- [PyTorch](torch.md) — DDP initialization and CUDA wheel management
-- [JAX](jax.md) — Distributed initialization with `around_process`
-- [Keras](keras.md) — Backend-agnostic training with DataParallel
-- [Distributed Training](../distributed-training.md) — How plugins fit into multi-node training
-- [Getting Started](../getting-started.md) — First steps with Skyward
+- [PyTorch](torch.md) — the process group and CUDA wheel selection
+- [JAX](jax.md) — the distributed runtime
+- [Keras](keras.md) — backend-agnostic training
+- [Distributed Training](../distributed-training.md) — how plugins fit into multi-node training

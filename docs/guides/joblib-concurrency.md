@@ -20,7 +20,7 @@ Wrap your `Parallel` call inside a `Compute` pool with the `joblib` plugin:
 --8<-- "guides/10_joblib_concurrency.py:17:27"
 ```
 
-When you enter the pool block, Skyward provisions the instances and the `joblib` plugin registers a custom joblib backend. Every `Parallel(n_jobs=-1)` call inside the block distributes tasks across the cluster. The `worker` parameter accepts a `Worker` dataclass that controls per-node execution — `Worker(concurrency=10)` means each node runs 10 tasks simultaneously. With 10 nodes and `concurrency=10`, you get 100 effective workers.
+When you enter the pool block, Skyward provisions the instances and the `joblib` plugin registers a custom joblib backend. Every `Parallel(n_jobs=-1)` call inside the block distributes tasks across the cluster. The `executor` parameter accepts an `Executor` that controls per-node execution — `Executor(concurrency=10)` means each node runs 10 tasks simultaneously. With 10 nodes and `concurrency=10`, you get 100 effective workers.
 
 When you exit the block, the instances are terminated and the default joblib backend is restored.
 
@@ -63,7 +63,7 @@ uv run python guides/10_joblib_concurrency.py
 
 **What you learned:**
 
-- **`plugins=[sky.plugins.joblib()]`** replaces joblib's backend with a distributed one — `n_jobs=-1` uses all cloud workers.
+- **`plugins=[sky.plugins.Joblib()]`** replaces joblib's backend with a distributed one — `n_jobs=-1` uses all cloud workers.
 - **Plain functions** — joblib handles serialization; the plugin wraps batches internally.
 - **Effective workers = nodes x worker concurrency** — both parameters multiply throughput.
 - **Near-linear scaling** — 97.5% efficiency with minimal protocol overhead (SSH + Casty actors, raw TCP).

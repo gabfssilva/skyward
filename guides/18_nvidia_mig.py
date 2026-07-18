@@ -62,9 +62,9 @@ if __name__ == "__main__":
         provider=sky.Verda(),
         nodes=1,
         accelerator=sky.accelerators.A100(),
-        options=sky.Options(worker=sky.Worker(concurrency=PARTITIONS, executor="process")),
+        executor=sky.Executor(type="process", concurrency=PARTITIONS, reuse=True),
         image=sky.Image(pip=["torch"]),
-        plugins=[sky.plugins.mig(profile=PROFILE)],
+        plugins=[sky.plugins.Mig(profile=PROFILE)],
     ) as compute:
         tasks = [train_on_partition(epochs=10, lr=1e-3) for _ in range(PARTITIONS)]
         results = list(sky.gather(*tasks, stream=True) >> compute)

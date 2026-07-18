@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from skyward.protocol.schemas import (
     Compute,
@@ -25,6 +25,9 @@ from skyward.protocol.schemas import (
     TaskCreate,
     TaskState,
 )
+
+type Route = Literal["round_robin"]
+"""How a forwarded connection picks among the ready nodes."""
 
 
 @runtime_checkable
@@ -102,6 +105,10 @@ class Tasks(Protocol):
 
     async def result(self, task_id: str, wait_seconds: int) -> bytes | None:
         """None means no terminal outcome yet. Raises on non-success terminal outcomes."""
+        ...
+
+    async def expire(self) -> tuple[str, ...]:
+        """Time out the tasks past their deadline. Returns the ones it timed out."""
         ...
 
 
@@ -205,6 +212,26 @@ class Dispatcher(Protocol):
         The one dispatch nothing does on its own: a stream has a far end, and only
         the caller consuming it can hold that.
         """
+        ...
+
+
+@runtime_checkable
+class Forwarder(Protocol):
+    """Bridges one local TCP connection to a node port, as two half-duplex streams.
+
+    A forwarded connection is two requests — the caller's bytes going up, the
+    node's coming back down — because nothing in HTTP/1.1 carries both on one. The
+    id the caller mints ties them together: :meth:`up` opens the channel to a ready
+    node and :meth:`down` rides the same one back. Both take that id and nothing
+    about a node, because which node answered is the forwarder's to decide.
+    """
+
+    async def up(self, compute_id: str, cid: str, remote_port: int, route: Route, chunks: AsyncIterator[bytes]) -> None:
+        """Open a channel to a ready node and pump the caller's bytes into it."""
+        ...
+
+    def down(self, cid: str) -> AsyncIterator[bytes]:
+        """The node's bytes back to the caller, for the ``up`` that opened this id."""
         ...
 
 

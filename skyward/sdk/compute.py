@@ -13,8 +13,9 @@ import os
 import threading
 import uuid
 from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Iterator, Sequence
-from concurrent.futures import Future
-from contextlib import ExitStack, aclosing
+from concurrent.futures import Future, as_completed
+from contextlib import ExitStack, aclosing, suppress
+from contextvars import Token
 from pathlib import Path
 from typing import Self
 
@@ -47,18 +48,23 @@ from skyward.protocol.schemas import (
     Compute as ComputeView,
 )
 from skyward.protocol.schemas import (
+    Options as OptionsRef,
+)
+from skyward.protocol.schemas import (
     Spec as SpecRef,
 )
-from skyward.sdk import usercode
+from skyward.sdk import context, usercode
 from skyward.sdk.client import Client
 from skyward.sdk.console import watcher
 from skyward.sdk.errors import SkywardError, TaskFailedError
+from skyward.sdk.forward import TcpProxy
 from skyward.sdk.function import Group, Pending, Streaming
 from skyward.sdk.provider import Provider
-from skyward.sdk.spec import Executor, Nodes, NodeSpec, Spec
+from skyward.sdk.spec import Executor, Nodes, NodeSpec, Options, Port, Spec
 
 DEFAULT_IMAGE = Image()
 DEFAULT_EXECUTOR = Executor()
+DEFAULT_OPTIONS = Options()
 INLINE = 256 * 1024
 POLL = 30
 READY_TIMEOUT = 900
@@ -115,6 +121,8 @@ class Compute:
         image: Image = DEFAULT_IMAGE,
         plugins: Sequence[Plugin] = (),
         executor: Executor = DEFAULT_EXECUTOR,
+        options: Options = DEFAULT_OPTIONS,
+        ports: Sequence[Port] = (),
         ttl: int = 600,
         name: str | None = None,
         url: str | None = None,
@@ -146,17 +154,33 @@ class Compute:
                 reuse=executor.reuse,
                 buffer=executor.buffer,
             ),
+            options=OptionsRef(
+                ssh_connect_timeout=options.ssh_timeout,
+                ssh_reconnect_attempts=options.max_provision_attempts,
+                ssh_retry_delay=options.provision_retry_delay,
+                worker_timeout=options.worker_timeout,
+                autoscale_idle_timeout=options.autoscale_idle_timeout,
+                autoscale_cooldown=options.autoscale_cooldown,
+                default_compute_timeout=options.default_compute_timeout,
+                health_command=options.health_command,
+                health_interval=options.health_interval,
+                health_failures=options.health_failures,
+            ),
             plugins=tuple(plugin.ref() for plugin in plugins),
             delete_on_exit=delete_on_exit,
             ttl=ttl,
         )
         self._name = name
         self._plugins = tuple(plugins)
+        self._ports = tuple(ports)
+        self._proxies: list[TcpProxy] = []
         self._client_stack = ExitStack()
         self._url = url or os.environ.get("SKYWARD_URL")
         self._database = database
         self._delete_on_exit = delete_on_exit
         self._console = console
+        self._ready_timeout = options.ready_timeout
+        self._shutdown_timeout = options.shutdown_timeout
 
         self._loop: Loop | None = None
         self._client: Client | None = None
@@ -164,6 +188,7 @@ class Compute:
         self._leasing: Future[None] | None = None
         self._owner = f"sdk_{uuid.uuid4().hex[:12]}"
         self._id = ""
+        self._active_token: Token[context.Pool | None] | None = None
 
     @classmethod
     def attached(
@@ -204,6 +229,11 @@ class Compute:
         self.loop.run(self._provision())
         for plugin in self._plugins:
             self._client_stack.enter_context(plugin.client(self))
+        for port in self._ports:
+            proxy = TcpProxy(self.client, self._id, port)
+            self.loop.run(proxy.start())
+            self._proxies.append(proxy)
+        self._active_token = context.enter(self)
         return self
 
     def __exit__(self, *_: object) -> None:
@@ -215,6 +245,13 @@ class Compute:
         be stopped last and unconditionally, because it is the thread that keeps the
         process alive.
         """
+        if self._active_token is not None:
+            context.reset(self._active_token)
+            self._active_token = None
+        for proxy in self._proxies:
+            with suppress(Exception):
+                self.loop.run(proxy.stop())
+        self._proxies = []
         try:
             self._client_stack.close()
             if self._delete_on_exit:
@@ -258,6 +295,19 @@ class Compute:
     def gather[T](self, group: Group[T]) -> list[T]:
         futures = [self.start(pending) for pending in group.pendings]
         return [future.result() for future in futures]
+
+    def gather_stream[T](self, group: Group[T]) -> Iterator[T]:
+        """Each answer as it lands, rather than all of them at the end.
+
+        Every task is submitted up front, so they overlap; the yielding is what
+        differs. ``ordered`` walks the futures as submitted and blocks on the next
+        one due — a slow first call holds back the rest; the unordered path hands
+        over whichever finishes first and never waits on a straggler out of turn.
+        """
+        futures = [self.start(pending) for pending in group.pendings]
+        source = futures if group.ordered else as_completed(futures)
+        for future in source:
+            yield future.result()
 
     def stream[T](self, pending: Streaming[T]) -> Iterator[T]:
         """The items, as the machine produces them.
@@ -320,7 +370,7 @@ class Compute:
             follower = await asyncio.to_thread(watcher, self.client, self._id)
             self._watching = self.loop.start(follower.follow())
 
-        async with asyncio.timeout(READY_TIMEOUT):
+        async with asyncio.timeout(self._ready_timeout):
             current = await self._reach("ready", "failed", "degraded")
 
         if current.status.state != "ready":
@@ -401,7 +451,7 @@ class Compute:
             headers={"If-Match": f'"{current.revision}"', "Idempotency-Key": uuid.uuid4().hex},
         )
 
-        async with asyncio.timeout(DELETE_TIMEOUT):
+        async with asyncio.timeout(self._shutdown_timeout):
             await self._reach("deleted")
 
     async def _reach(self, *states: str) -> ComputeView:
@@ -508,6 +558,8 @@ def _wire(spec: Spec) -> SpecRef:
         cpus=spec.cpus,
         memory_gb=spec.memory_gb,
         region=spec.region,
+        disk_gb=spec.disk_gb,
+        max_hourly_cost=spec.max_hourly_cost,
     )
 
 

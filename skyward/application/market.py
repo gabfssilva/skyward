@@ -72,8 +72,14 @@ async def _candidates(spec: ComputeSpec, offers: OfferCache) -> list[Buy]:
             if (wanted.cpus is None or offer.cpus >= wanted.cpus)
             and (wanted.memory_gb is None or offer.memory_gb >= wanted.memory_gb)
             and (wanted.region is None or offer.region == wanted.region)
+            and (wanted.disk_gb is None or (offer.disk_gb is not None and offer.disk_gb >= wanted.disk_gb))
         ]
-        buys = [buy for offer in fitting for buy in _buys(offer, spec.allocation)]
+        buys = [
+            buy
+            for offer in fitting
+            for buy in _buys(offer, spec.allocation)
+            if wanted.max_hourly_cost is None or buy.price <= wanted.max_hourly_cost
+        ]
         if buys and spec.selection == "first":
             return buys
         candidates.extend(buys)

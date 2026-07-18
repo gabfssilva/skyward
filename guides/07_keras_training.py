@@ -50,7 +50,7 @@ if __name__ == "__main__":
         provider=sky.AWS(),
         accelerator=sky.accelerators.T4(),
         nodes=2,
-        plugins=[sky.plugins.jax(), sky.plugins.keras(backend="jax")],
+        plugins=[sky.plugins.Jax(), sky.plugins.Keras(backend="jax")],
     ) as compute:
         results = train_mnist() @ compute
 

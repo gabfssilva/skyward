@@ -12,7 +12,11 @@ import inspect
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from dataclasses import dataclass, replace
+from types import ModuleType
 from typing import Protocol, overload
+
+from skyward.sdk import context
+from skyward.sdk.context import _Sky
 
 
 class Pool(Protocol):
@@ -24,7 +28,23 @@ class Pool(Protocol):
 
     def gather[T](self, group: Group[T]) -> list[T]: ...
 
+    def gather_stream[T](self, group: Group[T]) -> Iterator[T]: ...
+
     def stream[T](self, pending: Streaming[T]) -> Iterator[T]: ...
+
+
+type Target = Pool | _Sky | ModuleType
+"""Where a call goes: a named pool, the ``sky`` stand-in, or the ``skyward``
+module itself (what ``import skyward as sky`` binds ``sky`` to)."""
+
+
+def _pool(target: Target) -> Pool:
+    """The pool to dispatch to, resolving the implicit target from context."""
+    match target:
+        case _Sky() | ModuleType():
+            return context.current()
+        case _:
+            return target
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,14 +57,14 @@ class Pending[T]:
     def with_timeout(self, timeout: float) -> Pending[T]:
         return replace(self, timeout=timeout)
 
-    def __rshift__(self, pool: Pool) -> T:
-        return pool.run(self)
+    def __rshift__(self, target: Target) -> T:
+        return _pool(target).run(self)
 
-    def __matmul__(self, pool: Pool) -> list[T]:
-        return pool.broadcast(self)
+    def __matmul__(self, target: Target) -> list[T]:
+        return _pool(target).broadcast(self)
 
-    def __gt__(self, pool: Pool) -> Future[T]:
-        return pool.start(self)
+    def __gt__(self, target: Target) -> Future[T]:
+        return _pool(target).start(self)
 
     def __and__(self, other: Pending[T]) -> Group[T]:
         return Group((self, other))
@@ -58,15 +78,23 @@ class Group[T]:
     a ``Group[int]``. Mixing return types is allowed and lands on ``object`` —
     the group is honest about what it can promise rather than pretending to know
     which slot holds which type.
+
+    ``stream`` changes what ``>>`` gives back: a list once every call is in, or an
+    iterator that hands over each result the moment it is ready. ``ordered`` picks
+    between the two ways to be early — submission order, blocking only on the next
+    one due, or completion order, whichever finishes first.
     """
 
     pendings: tuple[Pending[T], ...]
+    stream: bool = False
+    ordered: bool = True
 
     def __and__(self, other: Pending[T]) -> Group[T]:
-        return Group((*self.pendings, other))
+        return Group((*self.pendings, other), self.stream, self.ordered)
 
-    def __rshift__(self, pool: Pool) -> list[T]:
-        return pool.gather(self)
+    def __rshift__(self, target: Target) -> list[T] | Iterator[T]:
+        pool = _pool(target)
+        return pool.gather_stream(self) if self.stream else pool.gather(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,13 +116,18 @@ class Streaming[T]:
     def with_timeout(self, timeout: float) -> Streaming[T]:
         return replace(self, timeout=timeout)
 
-    def __rshift__(self, pool: Pool) -> Iterator[T]:
-        return pool.stream(self)
+    def __rshift__(self, target: Target) -> Iterator[T]:
+        return _pool(target).stream(self)
 
 
-def gather[T](*pendings: Pending[T]) -> Group[T]:
-    """The same thing ``&`` builds, for when there are more than a few."""
-    return Group(pendings)
+def gather[T](*pendings: Pending[T], stream: bool = False, ordered: bool = True) -> Group[T]:
+    """The same thing ``&`` builds, for when there are more than a few.
+
+    ``stream`` turns ``>>`` from a list into an iterator that yields each result as
+    it lands; ``ordered`` keeps that iterator in submission order, waiting on the
+    next one due, rather than in completion order. Both are inert until dispatched.
+    """
+    return Group(pendings, stream, ordered)
 
 
 @overload

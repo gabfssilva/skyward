@@ -2,7 +2,7 @@ import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, NamedTuple, Self
 
@@ -92,6 +92,11 @@ class AWSProvider:
             aws_secret_access_key=self._secret_access_key,
             aws_session_token=self._session_token,
         )
+
+    @asynccontextmanager
+    async def _ec2(self, region: str):  # noqa: ANN202 — aioboto3's client type is unexpressible; let it infer
+        async with self._session().client("ec2", region_name=region) as client:
+            yield client
 
     async def offers(self) -> AsyncIterator[Offer]:
         regions = self._regions
@@ -324,6 +329,38 @@ class AWSProvider:
                         found[machine.id] = machine
         return found
 
+    async def interruptions(self, binding: Binding, machine_ids: tuple[str, ...]) -> Mapping[str, str]:
+        """Which of these spot machines AWS has flagged for reclamation, mapped to the reason.
+
+        Proactive and best-effort. A spot instance carries a two-minute warning
+        before it is taken, and that warning lands on its spot request as a
+        ``marked-for-*`` status code while the instance is still running. Reading
+        it here turns the reclamation into a deficit before SSH drops, rather than
+        after the machine has already vanished from :meth:`machines`.
+
+        An on-demand machine has no spot request and is never flagged. An API that
+        will not answer is read as no warning at all: a poll that failed is not a
+        signal, so the batch is reported clean rather than mistaken for reclaimed.
+        """
+        if not machine_ids:
+            return {}
+
+        try:
+            async with self._ec2(binding["region"]) as ec2:
+                response = await ec2.describe_spot_instance_requests(
+                    Filters=[{"Name": "instance-id", "Values": list(machine_ids)}],
+                )
+        except ClientError:
+            return {}
+
+        flagged: dict[str, str] = {}
+        for request in response.get("SpotInstanceRequests", []):
+            instance_id = request.get("InstanceId")
+            code = str((request.get("Status") or {}).get("Code") or "")
+            if instance_id and _reclaimed(code):
+                flagged[str(instance_id)] = "spot-interruption"
+        return flagged
+
     async def terminate(self, binding: Binding, machine_ids: tuple[str, ...]) -> None:
         """Terminate the batch; if one of them is already gone, terminate the rest.
 
@@ -354,7 +391,7 @@ class AWSProvider:
         answers ``DependencyViolation``. A group costs nothing to keep, so teardown
         does not buy that wait.
         """
-        async with self._session().client("ec2", region_name=binding["region"]) as ec2:
+        async with self._ec2(binding["region"]) as ec2:
             await _ignoring(ec2.delete_key_pair(KeyName=binding["key_name"]), "InvalidKeyPair.NotFound")
 
     async def _vpc(self, ec2: AioBaseClient) -> str:
@@ -601,6 +638,16 @@ async def _ignoring(call: Awaitable[object], *codes: str) -> None:
 
 def _code(error: ClientError) -> str:
     return str(error.response.get("Error", {}).get("Code", ""))
+
+
+def _reclaimed(code: str) -> bool:
+    """Whether a spot request status code is a reclamation warning rather than a healthy state.
+
+    A fulfilled request reads ``fulfilled``; a request whose instance AWS is taking
+    back reads ``marked-for-termination`` or ``marked-for-stop-*`` during the notice
+    window, and ``instance-terminated-*`` / ``instance-stopped-*`` once it acts.
+    """
+    return code.startswith("marked-for-") or "terminated" in code or "stopped" in code
 
 
 class _Gpu(NamedTuple):

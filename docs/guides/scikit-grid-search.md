@@ -28,7 +28,7 @@ The `sklearn` plugin replaces joblib's default backend so that `Parallel(n_jobs=
 --8<-- "guides/09_scikit_grid_search.py:45:59"
 ```
 
-Inside the pool block, every joblib `Parallel` call is intercepted and routed to the Skyward cluster. Each fit is serialized with cloudpickle, sent to a worker, executed, and the result returned. The `worker` parameter accepts a `Worker` dataclass that controls per-node execution — `Worker(concurrency=4)` means each node runs 4 fits simultaneously. With 3 nodes and `concurrency=4`, you get 12 parallel fits.
+Inside the pool block, every joblib `Parallel` call is intercepted and routed to the Skyward cluster. Each fit is serialized with cloudpickle, sent to a worker, executed, and the result returned. The `executor` parameter accepts an `Executor` that controls per-node execution — `Executor(concurrency=4)` means each node runs 4 fits simultaneously. With 3 nodes and `concurrency=4`, you get 12 parallel fits.
 
 The `sklearn` plugin registers the custom joblib backend on enter and restores the default on exit. The scikit-learn API is completely unchanged — `GridSearchCV`, `Pipeline`, `cross_val_score` all work as documented.
 
@@ -56,7 +56,7 @@ uv run python guides/09_scikit_grid_search.py
 
 **What you learned:**
 
-- **`plugins=[sky.plugins.sklearn()]`** replaces joblib's backend with a distributed one — `n_jobs=-1` uses all cloud workers.
+- **`plugins=[sky.plugins.Sklearn()]`** replaces joblib's backend with a distributed one — `n_jobs=-1` uses all cloud workers.
 - **Standard scikit-learn API** — `GridSearchCV`, `Pipeline`, `cross_val_score` work unchanged.
-- **`worker=Worker(concurrency=N)`** controls parallelism per node — total parallel fits = nodes x concurrency.
+- **`executor=sky.Executor(concurrency=N)`** controls parallelism per node — total parallel fits = nodes x concurrency.
 - **Pipeline + param_grid** — search over different estimators and their hyperparameters in one run.

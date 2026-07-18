@@ -52,6 +52,17 @@ class Plugin(Struct, frozen=True):
         """
         return image
 
+    def bootstrap(self, image: Image, concurrency: int) -> tuple[str, ...]:
+        """Extra shell phases, appended after the image's own bootstrap.
+
+        Runs on the daemon at script-generation time, like :meth:`image` — not on
+        the node — so it may only return the phases the script will run, never do
+        anything itself. ``concurrency`` is the worker's width, the one datum a
+        phase needs that the image does not carry: a plugin that partitions the
+        machine has to know how many ways.
+        """
+        return ()
+
     @contextmanager
     def setup(self, info: Info) -> Iterator[None]:
         """The worker's lifetime, on the node.

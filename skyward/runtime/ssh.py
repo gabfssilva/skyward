@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 RETRY_DELAY = 2.0
 CONNECT_TIMEOUT = 10.0
 
+type Channel = tuple[asyncssh.SSHReader[bytes], asyncssh.SSHWriter[bytes]]
+"""One direct-tcpip connection to a node's port: bytes in, bytes out."""
+
 
 class Result(Struct, frozen=True):
     exit_code: int
@@ -72,6 +75,7 @@ class SshChannel:
         *,
         connect_timeout: float = 300.0,
         reconnect_attempts: int = 30,
+        retry_delay: float = RETRY_DELAY,
     ) -> None:
         self._host = host
         self._port = port
@@ -80,6 +84,7 @@ class SshChannel:
         self._password = password
         self._connect_timeout = connect_timeout
         self._reconnect_attempts = reconnect_attempts
+        self._retry_delay = retry_delay
 
         self._client_keys: list[asyncssh.SSHKey] | None = None
         self._conn: asyncssh.SSHClientConnection | None = None
@@ -101,7 +106,7 @@ class SshChannel:
                         return
                     except (OSError, asyncssh.Error) as exc:
                         last = str(exc)
-                        await asyncio.sleep(RETRY_DELAY)
+                        await asyncio.sleep(self._retry_delay)
 
         self._fail(last)
         raise SshUnavailableError(f"{self._host}: unreachable after {self._connect_timeout}s: {last}")
@@ -165,6 +170,19 @@ class SshChannel:
         self._forwards[remote_host, remote_port] = local_port
         return local_port
 
+    async def open_connection(self, remote_host: str, remote_port: int) -> Channel:
+        """Open one direct-tcpip channel to a port on the machine.
+
+        Distinct from :meth:`forward`, which stands a local listener up for the
+        life of the channel and re-establishes it across a reconnect: this is a
+        single connection, opened on demand and torn down with the reader and
+        writer it returns. One accepted socket, one channel — which is what a
+        proxied TCP connection is made of, and why it is not tracked to survive a
+        drop the way a forward is.
+        """
+        conn = await self._ready()
+        return await conn.open_connection(remote_host, remote_port)
+
     async def close(self) -> None:
         if self._closed:
             return
@@ -223,7 +241,7 @@ class SshChannel:
         logger.warning("ssh: %s dropped, reconnecting", self._host)
 
         for _ in range(self._reconnect_attempts):
-            await asyncio.sleep(RETRY_DELAY)
+            await asyncio.sleep(self._retry_delay)
             if self._closed:
                 return
             try:

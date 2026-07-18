@@ -2,7 +2,7 @@
 
 Distributed training across multiple machines requires solving two problems simultaneously. First, the environment: every node needs to know the cluster topology — who the master is, how many peers exist, what rank each process holds. Second, the data: each node should train on a different subset, but the model parameters need to stay synchronized across all of them.
 
-Skyward handles the first problem automatically. When you provision a multi-node pool and broadcast a function with `@`, every worker receives the same function and arguments, but each one sees a different `instance_info()` — its own position in the cluster. Plugins like `sky.plugins.torch()` and `sky.plugins.jax()` read this topology and configure the framework's distributed environment before your function runs. The second problem — data partitioning — is handled either by `sky.shard()` or by the framework's own distributed sampler.
+Skyward handles the first problem automatically. When you provision a multi-node pool and broadcast a function with `@`, every worker receives the same function and arguments, but each one sees a different `instance_info()` — its own position in the cluster. Plugins like `sky.plugins.Torch()` and `sky.plugins.Jax()` read this topology and configure the framework's distributed environment before your function runs. The second problem — data partitioning — is handled either by `sky.shard()` or by the framework's own distributed sampler.
 
 Both of these capabilities — topology-aware environment configuration and inter-node communication — require cluster mode. Cluster mode is the default on providers with private networking (AWS, GCP, Hyperstack, Lambda, Scaleway, Verda, Vultr, Container); providers without it (RunPod, VastAI, TensorDock, JarvisLabs, Novita, MassedCompute) default to standalone, where distributed training frameworks cannot initialize their communication backends. Use a cluster-capable provider — or override with `Options(cluster=True)` on a standalone-default provider that supports private networking (e.g. RunPod with global networking enabled). Standalone mode is designed for embarrassingly parallel workloads, not distributed training. See [Standalone Workers](guides/standalone-workers.md) for that pattern.
 
@@ -26,7 +26,7 @@ with sky.Compute(
     provider=sky.AWS(),
     nodes=4,
     accelerator=sky.accelerators.A100(),
-    plugins=[sky.plugins.torch()],
+    plugins=[sky.plugins.Torch()],
 ) as compute:
     results = train() @ compute  # runs on all 4 nodes
 ```
@@ -39,7 +39,7 @@ Each supported framework has its own plugin. They all follow the same pattern: t
 
 ### PyTorch
 
-`sky.plugins.torch()` adds `torch` to the worker's pip dependencies and configures `MASTER_ADDR`, `MASTER_PORT`, `WORLD_SIZE`, `RANK`, `LOCAL_RANK`, and calls `torch.distributed.init_process_group()`. The backend defaults to `nccl` for GPU nodes and `gloo` for CPU. Once initialized, you wrap your model with `DistributedDataParallel` and PyTorch handles gradient synchronization automatically — each node computes gradients on its own data, and DDP averages them across all nodes before each optimizer step.
+`sky.plugins.Torch()` adds `torch` to the worker's pip dependencies and configures `MASTER_ADDR`, `MASTER_PORT`, `WORLD_SIZE`, `RANK`, `LOCAL_RANK`, and calls `torch.distributed.init_process_group()`. The backend defaults to `nccl` for GPU nodes and `gloo` for CPU. Once initialized, you wrap your model with `DistributedDataParallel` and PyTorch handles gradient synchronization automatically — each node computes gradients on its own data, and DDP averages them across all nodes before each optimizer step.
 
 The plugin also configures `LOCAL_WORLD_SIZE` and `NODE_RANK` for multi-GPU-per-node setups, though the most common Skyward pattern is one process per node.
 
@@ -47,10 +47,10 @@ See the [PyTorch Distributed guide](guides/pytorch-distributed.md) for a complet
 
 ### Keras 3
 
-`sky.plugins.keras(backend="jax")` sets the `KERAS_BACKEND` environment variable on the worker before Keras is imported — this is critical because Keras reads the backend at import time. When using the JAX backend, combine with `sky.plugins.jax()`:
+`sky.plugins.Keras(backend="jax")` sets the `KERAS_BACKEND` environment variable on the worker before Keras is imported — this is critical because Keras reads the backend at import time. When using the JAX backend, combine with `sky.plugins.Jax()`:
 
 ```python
-plugins=[sky.plugins.jax(), sky.plugins.keras(backend="jax")]
+plugins=[sky.plugins.Jax(), sky.plugins.Keras(backend="jax")]
 ```
 
 Keras 3 is backend-agnostic, but Skyward's automatic distribution (`DataParallel` with device discovery) is currently JAX-only. For the `torch` and `tensorflow` backends, the plugin delegates to those frameworks' native distributed init. For data-parallel training where each node trains independently on its shard (the most common pattern), the `keras` plugin alone is sufficient regardless of backend.
@@ -59,13 +59,13 @@ See the [Keras Training guide](guides/keras-training.md) for a complete MNIST ex
 
 ### JAX
 
-`sky.plugins.jax()` adds `jax[cuda12]` to pip and configures `JAX_COORDINATOR_ADDRESS`, `JAX_NUM_PROCESSES`, `JAX_PROCESS_ID`, and `JAX_LOCAL_DEVICE_COUNT`, then calls `jax.distributed.initialize()`. After initialization, JAX sees all devices across all nodes as a single device mesh, and operations like `pmap` and `pjit` distribute computation automatically.
+`sky.plugins.Jax()` adds `jax[cuda12]` to pip and configures `JAX_COORDINATOR_ADDRESS`, `JAX_NUM_PROCESSES`, `JAX_PROCESS_ID`, and `JAX_LOCAL_DEVICE_COUNT`, then calls `jax.distributed.initialize()`. After initialization, JAX sees all devices across all nodes as a single device mesh, and operations like `pmap` and `pjit` distribute computation automatically.
 
 ### HuggingFace Transformers
 
-`sky.plugins.huggingface(token="...")` adds `transformers`, `datasets`, and `tokenizers` to pip, sets `HF_TOKEN`, and runs `huggingface-cli login` during bootstrap. For multi-node training, combine with `sky.plugins.torch()`. The HuggingFace `Trainer` auto-detects the distributed setup and handles gradient synchronization, mixed-precision training, and distributed evaluation internally.
+`sky.plugins.HuggingFace(token="...")` adds `transformers`, `datasets`, and `tokenizers` to pip, sets `HF_TOKEN`, and runs `huggingface-cli login` during bootstrap. For multi-node training, combine with `sky.plugins.Torch()`. The HuggingFace `Trainer` auto-detects the distributed setup and handles gradient synchronization, mixed-precision training, and distributed evaluation internally.
 
-For single-node fine-tuning, the `Trainer` manages device placement on its own — the `huggingface` plugin handles authentication and dependencies. For multi-node, combine with `sky.plugins.torch()`.
+For single-node fine-tuning, the `Trainer` manages device placement on its own — the `huggingface` plugin handles authentication and dependencies. For multi-node, combine with `sky.plugins.Torch()`.
 
 See the [HuggingFace Fine-tuning guide](guides/huggingface-finetuning.md) for a complete example.
 

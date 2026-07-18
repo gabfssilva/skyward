@@ -21,15 +21,16 @@ import importlib
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from skyward import accelerators, plugins
-    from skyward.distributed import barrier, counter, dict, lock, queue, set
-    from skyward.runtime.api import Info, instance_info, is_head, shard, silent, stderr, stdout
+    from skyward import accelerators, metrics, plugins, storage, time
+    from skyward.distributed import Consistency, DistributedRegistry, barrier, counter, dict, lock, queue, registry, set
+    from skyward.runtime.api import CallbackWriter, Info, instance_info, is_head, redirect_output, shard, silent, stderr, stdout
     from skyward.sdk import (
         AWS,
         GCP,
         Accelerator,
         Compute,
         Container,
+        DockerImage,
         Executor,
         Group,
         Hyperstack,
@@ -40,8 +41,10 @@ if TYPE_CHECKING:
         MetricSpec,
         Nodes,
         Novita,
+        Options,
         Pending,
         PipIndex,
+        Port,
         Provider,
         RunPod,
         Scaleway,
@@ -56,10 +59,12 @@ if TYPE_CHECKING:
         Vultr,
         function,
         gather,
+        sky,
         stream,
     )
+    from skyward.storage import Storage
 
-RUNTIME = ("Info", "instance_info", "is_head", "shard", "silent", "stderr", "stdout")
+RUNTIME = ("CallbackWriter", "Info", "instance_info", "is_head", "redirect_output", "shard", "silent", "stderr", "stdout")
 """What a function asks while it is running, and the only names a node ever reaches for.
 
 They resolve out of ``skyward.runtime.api``, which imports the standard library and
@@ -67,15 +72,19 @@ nothing else. Routing them through the SDK would put httpx on a machine whose on
 job is to run somebody's training loop.
 """
 
-SHARED = ("barrier", "counter", "dict", "lock", "queue", "set")
+SHARED = ("Consistency", "DistributedRegistry", "barrier", "counter", "dict", "lock", "queue", "registry", "set")
 """The compute's own state, out of ``skyward.distributed``. Same reason."""
 
 __all__ = [
     "AWS",
     "GCP",
     "Accelerator",
+    "CallbackWriter",
     "Compute",
+    "Consistency",
     "Container",
+    "DistributedRegistry",
+    "DockerImage",
     "Executor",
     "Group",
     "Hyperstack",
@@ -87,13 +96,16 @@ __all__ = [
     "MetricSpec",
     "Nodes",
     "Novita",
+    "Options",
     "Pending",
     "PipIndex",
+    "Port",
     "Provider",
     "RunPod",
     "Scaleway",
     "SkywardError",
     "Spec",
+    "Storage",
     "Streaming",
     "TaskFailedError",
     "TaskIndeterminateError",
@@ -110,21 +122,29 @@ __all__ = [
     "instance_info",
     "is_head",
     "lock",
+    "metrics",
     "plugins",
     "queue",
+    "redirect_output",
+    "registry",
     "set",
     "shard",
     "silent",
+    "sky",
     "stderr",
     "stdout",
+    "storage",
     "stream",
+    "time",
 ]
 
 
 def __getattr__(name: str) -> object:
     match name:
-        case "accelerators" | "plugins":
+        case "accelerators" | "metrics" | "plugins" | "storage" | "time":
             value = importlib.import_module(f"skyward.{name}")
+        case "Storage":
+            value = importlib.import_module("skyward.storage").Storage
         case _ if name in RUNTIME:
             value = getattr(importlib.import_module("skyward.runtime.api"), name)
         case _ if name in SHARED:

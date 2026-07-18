@@ -1,10 +1,10 @@
 # Keras training
 
-Keras 3 is backend-agnostic — the same model code runs on JAX, TensorFlow, or PyTorch. Skyward's `keras` plugin configures the backend on the remote worker before your function runs, and `shard()` handles data partitioning for multi-node training. This guide walks through training an MLP on MNIST across multiple cloud GPUs using Keras with JAX as the backend.
+Keras 3 is backend-agnostic — the same model code runs on JAX, TensorFlow, or PyTorch. Skyward's `Keras` plugin sets the backend in the worker process before your function runs, and `shard()` handles data partitioning for multi-node training. This guide walks through training an MLP on MNIST across multiple cloud GPUs using Keras with JAX as the backend.
 
 ## The `keras` plugin
 
-Add `sky.plugins.keras(backend="jax")` to your pool's plugins. When using the JAX backend, also include `sky.plugins.jax()` for distributed initialization:
+Add `sky.plugins.Keras(backend="jax")` to your compute's plugins. On the JAX backend, list `sky.plugins.Jax()` first — it is the one that joins the distributed runtime:
 
 ```python
 --8<-- "guides/07_keras_training.py:49:54"
@@ -64,7 +64,7 @@ uv run python guides/07_keras_training.py
 
 **What you learned:**
 
-- **`plugins=[sky.plugins.jax(), sky.plugins.keras(backend="jax")]`** sets the Keras backend and configures JAX distributed on the remote worker.
+- **`plugins=[sky.plugins.Jax(), sky.plugins.Keras(backend="jax")]`** sets the Keras backend and configures JAX distributed on the remote worker.
 - **`shard()`** splits training data across nodes — each node trains on its own subset.
 - **Standard Keras API** — `Sequential`, `model.compile()`, `model.fit()` work unchanged.
 - **Backend-agnostic** — switch between JAX, TensorFlow, and PyTorch with one parameter.

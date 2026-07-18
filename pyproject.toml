@@ -47,7 +47,32 @@ server = [
     "piccolo[sqlite]>=1.0",
     "asyncssh>=2.22.0",
     "aioboto3>=13.0.0",
+    "uvicorn>=0.30",
 ]
+# The `sky` command. A node installs skyward to run a function and has no
+# business acquiring an argument parser to do it.
+cli = [
+    "cyclopts>=3.0",
+]
+# A local Jupyter whose kernel runs on a compute (`skyward.notebook`). Client
+# side only: jupyter-client and traitlets are what the provisioner imports, and
+# ipykernel is what the machine launches — the image needs it, this does not.
+notebook = [
+    "jupyter-client>=8.0",
+    "traitlets>=5.0",
+    "ipykernel>=6.0",
+]
+# The user-facing object storage module (`skyward.storage`). Its S3 client is
+# imported lazily, so the dependency is only needed when a Storage is opened.
+storage = [
+    "aioboto3>=13.0.0",
+]
+
+[project.scripts]
+sky = "skyward.cli:app"
+
+[project.entry-points."jupyter_client.kernel_provisioners"]
+skyward = "skyward.notebook.provisioner:SkywardKernelProvisioner"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]

@@ -48,8 +48,8 @@ if __name__ == "__main__":
         accelerator=sky.accelerators.L4(),
         nodes=1,
         plugins=[
-            sky.plugins.cuml(),
-            sky.plugins.sklearn()
+            sky.plugins.Cuml(),
+            sky.plugins.Sklearn(),
         ],
     ) as compute:
         # warm-up

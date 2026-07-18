@@ -83,6 +83,7 @@ class Connector:
             buffer=compute.spec.worker.buffer,
             executor=compute.spec.worker.executor,
             reuse=compute.spec.worker.reuse,
+            options=compute.spec.options,
             plugins=compute.spec.plugins,
             user_code=user_code,
         )

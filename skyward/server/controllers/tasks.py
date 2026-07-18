@@ -70,6 +70,7 @@ class TaskController(Controller):
     ) -> Response[Task]:
         task, created = await tasks.submit(data, idempotency_key)
         wake("task.changed", task_id=task.id)
+        wake("compute.changed", compute_id=data.compute)
         return Response(task, status_code=201 if created else 200)
 
     @get(

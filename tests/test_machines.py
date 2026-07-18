@@ -12,7 +12,7 @@ answers and a duplicate.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -161,6 +161,75 @@ async def test_spot_if_available_falls_back_to_on_demand_when_spot_is_refused(tm
     assert provider.attempts == ["spot", "on_demand"], "spot must be tried first, then on-demand"
     node = await nodes.get(created.id, row.id)
     assert node.machine == "i-od", "the node must be placed on the on-demand machine"
+
+
+class PreemptibleProvider:
+    """A provider that warns, ahead of the vanish, which machines it is reclaiming.
+
+    Carries the whole :class:`Preemptible` surface so ``isinstance`` gates it in:
+    the catalog attributes and an ``interruptions`` that flags the machines a test
+    scripts as being taken back, while ``machines`` still reports them present — the
+    proactive window the checker exists to catch.
+    """
+
+    kind = "fake"
+    credential_fields: tuple[str, ...] = ()
+    offers_ttl = timedelta(minutes=1)
+
+    def __init__(self, machines: dict[str, Machine], flagged: dict[str, str]) -> None:
+        self._machines = machines
+        self._flagged = flagged
+
+    @classmethod
+    def create(cls, provider_id: str, name: str, credentials: object, config: object) -> "PreemptibleProvider":
+        raise NotImplementedError
+
+    async def offers(self) -> object:
+        raise NotImplementedError
+
+    async def machines(self, binding: Binding) -> dict[str, Machine]:
+        return dict(self._machines)
+
+    async def interruptions(self, binding: Binding, machine_ids: tuple[str, ...]) -> dict[str, str]:
+        return {mid: why for mid, why in self._flagged.items() if mid in machine_ids}
+
+
+class PreemptibleMachines(Machines):
+    def __init__(self, computes: ComputeStore, nodes: NodeStore, provider: PreemptibleProvider) -> None:
+        super().__init__(computes, nodes, providers=None, offers=None)  # type: ignore[arg-type]
+        self._provider = provider
+
+    async def adapter(self, provider_id: str | None) -> PreemptibleProvider:  # type: ignore[override]
+        return self._provider
+
+
+async def test_resolve_marks_a_warned_node_lost_while_the_machine_is_still_present(tmp_path: Path) -> None:
+    from skyward.application.provider import Preemptible
+
+    await connect(tmp_path / "skyward.sqlite")
+    computes = ComputeStore()
+    nodes = NodeStore()
+
+    created, _ = await computes.create(ComputeCreate(spec=SPEC, name=None), idempotency_key="k")
+    await computes.bind(
+        created.id,
+        Infrastructure(provider_id="prv_fake", binding={"net": "n"}, markets=("spot",)),
+    )
+
+    machine = Machine(id="i-spot", state="running", host="10.0.0.5")
+    provider = PreemptibleProvider({"i-spot": machine}, flagged={"i-spot": "spot-interruption"})
+    assert isinstance(provider, Preemptible), "the fake must satisfy the protocol resolve gates on"
+
+    machines = PreemptibleMachines(computes, nodes, provider)
+
+    row = await nodes.request(created.id, generation=1)
+    await nodes.reachable(row.id, machine)
+
+    await machines.resolve(await computes.get(created.id), await nodes.of(created.id))
+
+    lost = await nodes.get(created.id, row.id)
+    assert lost.state == "lost", "a machine the provider warns it is reclaiming must become a deficit"
+    assert lost.last_error is not None and lost.last_error.message == "spot-interruption"
 
 
 def _offer(region: str, price: float) -> Offer:

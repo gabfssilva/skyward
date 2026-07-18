@@ -62,7 +62,7 @@ Standalone mode disables all features that require inter-node communication:
 
 **Distributed collections.** Calling `sky.dict()`, `sky.counter()`, `sky.set()`, `sky.queue()`, `sky.barrier()`, or `sky.lock()` inside a `@sky.function` will raise `RuntimeError`. These collections are backed by Casty's replicated collections, which require the cluster mesh. Without it, there is no replication layer and no way to share state between workers.
 
-**Distributed training.** Frameworks like PyTorch DDP, JAX multi-host, and NCCL-based training need `MASTER_ADDR` and peer discovery, both of which come from cluster formation. The `sky.plugins.torch(backend="nccl")` plugin will fail to initialize in standalone mode because workers cannot reach each other for collective operations (all-reduce, all-gather, broadcast).
+**Distributed training.** Frameworks like PyTorch DDP, JAX multi-host, and NCCL-based training need `MASTER_ADDR` and peer discovery, both of which come from cluster formation. The `sky.plugins.Torch(backend="nccl")` plugin will fail to initialize in standalone mode because workers cannot reach each other for collective operations (all-reduce, all-gather, broadcast).
 
 **Inter-node coordination patterns.** Code that uses `is_head` to run setup on a single node still works — node 0 still returns `True` for `sky.instance_info().is_head`. But patterns that depend on the head node communicating results to other workers (via distributed collections, shared files, or NCCL) will fail because workers cannot reach each other.
 

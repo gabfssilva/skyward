@@ -6,7 +6,7 @@ Skyward's `torch` plugin does all of this automatically. It reads the cluster to
 
 ## The `torch` plugin
 
-Add `sky.plugins.torch()` to your pool's plugins:
+Add `sky.plugins.Torch()` to your pool's plugins:
 
 ```python
 --8<-- "guides/06_pytorch_distributed.py:77:82"
@@ -64,7 +64,7 @@ uv run python guides/06_pytorch_distributed.py
 
 **What you learned:**
 
-- **`plugins=[sky.plugins.torch()]`** configures `MASTER_ADDR`, `WORLD_SIZE`, `RANK`, and calls `init_process_group()` automatically.
+- **`plugins=[sky.plugins.Torch()]`** configures `MASTER_ADDR`, `WORLD_SIZE`, `RANK`, and calls `init_process_group()` automatically.
 - **DDP** synchronizes gradients across nodes — each node trains on different data, but model parameters stay in sync.
 - **`DistributedSampler`** partitions data per node — call `set_epoch()` each epoch for proper shuffling.
 - **`all_reduce`** aggregates metrics across all nodes — essential for consistent logging.

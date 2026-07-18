@@ -1,0 +1,143 @@
+"""The operational knobs, from the user's word to the value the runtime reads.
+
+Nothing here provisions. The point of the defaults is that a pool built without
+options is the pool that existed before options did, so most of what follows is an
+equality against the constant the runtime used to hard-code.
+"""
+
+from __future__ import annotations
+
+import inspect
+
+import msgspec
+import pytest
+
+import skyward
+from skyward.application.provider import Machine
+from skyward.application.reconciler import IDLE_SECONDS
+from skyward.protocol.schemas import ComputeSpec, Image
+from skyward.protocol.schemas import Options as OptionsRef
+from skyward.runtime.node import WORKER_TIMEOUT, Node
+from skyward.runtime.source import Source
+from skyward.runtime.ssh import RETRY_DELAY, SshChannel
+from skyward.sdk.compute import DELETE_TIMEOUT, READY_TIMEOUT
+from skyward.sdk.spec import Options
+
+pytestmark = pytest.mark.unit
+
+
+def built(options: Options) -> skyward.Compute:
+    return skyward.Compute(provider=skyward.Container(), options=options)
+
+
+def spec_of(pool: skyward.Compute) -> ComputeSpec:
+    return pool._spec  # noqa: SLF001
+
+
+def test_the_defaults_are_the_values_the_runtime_hard_coded():
+    """Each default is the constant it replaced, so adding the knob moves nothing."""
+    dialing = inspect.signature(SshChannel.__init__).parameters
+    options = Options()
+
+    assert options.ssh_timeout == dialing["connect_timeout"].default
+    assert options.max_provision_attempts == dialing["reconnect_attempts"].default
+    assert options.provision_retry_delay == RETRY_DELAY
+    assert options.worker_timeout == WORKER_TIMEOUT
+    assert options.autoscale_idle_timeout == IDLE_SECONDS
+    assert options.ready_timeout == READY_TIMEOUT
+    assert options.shutdown_timeout == DELETE_TIMEOUT
+
+
+def test_the_knobs_nothing_reads_yet_are_unset():
+    """``0`` is how both say "no limit", which is what the daemon does today."""
+    assert (Options().autoscale_cooldown, Options().default_compute_timeout) == (0.0, 0.0)
+
+
+def test_a_pool_that_asks_for_nothing_sends_the_wire_defaults():
+    assert spec_of(skyward.Compute(provider=skyward.Container())).options == OptionsRef()
+
+
+def test_the_friendly_names_land_on_the_wire_fields():
+    spec = spec_of(built(Options(ssh_timeout=5.0, provision_retry_delay=0.5, max_provision_attempts=2)))
+
+    assert spec.options.ssh_connect_timeout == 5.0
+    assert spec.options.ssh_retry_delay == 0.5
+    assert spec.options.ssh_reconnect_attempts == 2
+
+
+def test_the_daemon_knobs_ride_the_spec():
+    spec = spec_of(
+        built(
+            Options(
+                worker_timeout=9.0,
+                autoscale_idle_timeout=8.0,
+                autoscale_cooldown=7.0,
+                default_compute_timeout=6.0,
+            ),
+        ),
+    )
+
+    assert spec.options == OptionsRef(
+        worker_timeout=9.0,
+        autoscale_idle_timeout=8.0,
+        autoscale_cooldown=7.0,
+        default_compute_timeout=6.0,
+    )
+
+
+def test_the_session_timeouts_stay_in_the_client():
+    """They say how long this process waits for its own pool; the daemon has no use for them."""
+    pool = built(Options(ready_timeout=1.0, shutdown_timeout=2.0))
+
+    assert (pool._ready_timeout, pool._shutdown_timeout) == (1.0, 2.0)  # noqa: SLF001
+    assert spec_of(pool).options == OptionsRef()
+
+
+def test_a_spec_with_default_options_round_trips_unchanged():
+    spec = spec_of(skyward.Compute(provider=skyward.Container()))
+
+    assert msgspec.json.decode(msgspec.json.encode(spec), type=ComputeSpec) == spec
+
+
+def test_a_spec_carrying_options_round_trips_unchanged():
+    spec = spec_of(built(Options(ssh_timeout=5.0, worker_timeout=9.0)))
+
+    assert msgspec.json.decode(msgspec.json.encode(spec), type=ComputeSpec) == spec
+
+
+def test_the_node_hands_its_channel_what_the_options_asked_for():
+    """The knobs are only worth carrying if they reach the thing that dials."""
+    node = Node(
+        Machine(id="mch", state="running", host="127.0.0.1", user="root"),
+        compute="cmp",
+        private_key="",
+        image=Image(),
+        source=Source(argument="skyward"),
+        listener=lambda *_: None,
+        output=lambda *_: None,
+        sample=lambda *_: None,
+        phase=lambda *_: None,
+        options=OptionsRef(ssh_connect_timeout=7.0, ssh_reconnect_attempts=4, ssh_retry_delay=0.25, worker_timeout=3.0),
+    )
+
+    assert node._ssh._connect_timeout == 7.0  # noqa: SLF001
+    assert node._ssh._reconnect_attempts == 4  # noqa: SLF001
+    assert node._ssh._retry_delay == 0.25  # noqa: SLF001
+    assert node._worker_timeout == 3.0  # noqa: SLF001
+
+
+def test_a_node_given_no_options_dials_the_way_it_always_did():
+    node = Node(
+        Machine(id="mch", state="running", host="127.0.0.1", user="root"),
+        compute="cmp",
+        private_key="",
+        image=Image(),
+        source=Source(argument="skyward"),
+        listener=lambda *_: None,
+        output=lambda *_: None,
+        sample=lambda *_: None,
+        phase=lambda *_: None,
+    )
+
+    assert node._ssh._retry_delay == RETRY_DELAY  # noqa: SLF001
+    assert node._worker_timeout == WORKER_TIMEOUT  # noqa: SLF001

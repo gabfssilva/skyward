@@ -20,7 +20,7 @@ from skyward.application.health import Health
 from skyward.application.machines import Machines
 from skyward.application.metering import Meter
 from skyward.application.reconciler import Reconciler, Wakeup
-from skyward.application.runtimes import Runtimes
+from skyward.application.runtimes import Forward, Runtimes
 from skyward.persistence.computes import ComputeStore, GenerationStore
 from skyward.persistence.db import DEFAULT_PATH, connect
 from skyward.persistence.events import EventStore
@@ -34,6 +34,7 @@ from skyward.protocol import codec
 from skyward.server.controllers.blobs import BlobController
 from skyward.server.controllers.computes import ComputeController
 from skyward.server.controllers.events import EventController
+from skyward.server.controllers.forward import ForwardController
 from skyward.server.controllers.functions import FunctionController
 from skyward.server.controllers.health import HealthController
 from skyward.server.controllers.nodes import NodeController
@@ -68,6 +69,7 @@ class Services:
     connector: Connector | None = None
     runtimes: Runtimes | None = None
     meter: Meter | None = None
+    forwarder: ports.Forwarder | None = None
 
 
 def mock_services() -> Services:
@@ -183,6 +185,7 @@ def services() -> Services:
         connector=Connector(computes=computes, nodes=nodes, runtimes=runtimes, blobs=blobs),
         runtimes=runtimes,
         meter=Meter(computes=computes, nodes=nodes, events=events),
+        forwarder=Forward(runtimes),
     )
 
 
@@ -204,9 +207,13 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
         emit, a listener that died, a restart — the intent is still in the store and
         this finds it. That is what buys the right to skip an outbox, an effects
         table and delivery leases.
+
+        A deadline is the other thing no event can carry. Nobody writes it down when it
+        passes, so the clock is the only thing in a position to notice.
         """
         while True:
             await asyncio.sleep(TICK_SECONDS)
+            await svc.tasks.expire()
             computes, tasks = await svc.reconciler.unsettled()
             for compute_id in computes:
                 app.emit("compute.changed", compute_id=compute_id)
@@ -234,6 +241,8 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
         if svc.runtimes:
             await svc.runtimes.shutdown()
 
+    forwarding = [ForwardController] if svc.forwarder else []
+
     app = Litestar(
         path="/v1",
         route_handlers=[
@@ -247,6 +256,7 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
             ProviderKindController,
             OfferController,
             HealthController,
+            *forwarding,
         ],
         dependencies={
             "computes": Provide(lambda: svc.computes, sync_to_thread=False),
@@ -263,6 +273,7 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
             "reconciler": Provide(lambda: svc.reconciler, sync_to_thread=False),
             "dispatcher": Provide(lambda: svc.dispatcher, sync_to_thread=False),
             "wake": Provide(lambda: svc.wake, sync_to_thread=False),
+            **({"forwarder": Provide(lambda: svc.forwarder, sync_to_thread=False)} if svc.forwarder else {}),
         },
         listeners=build_listeners(svc.reconciler, svc.dispatcher, svc.machines, svc.connector),
         event_emitter_backend=ReconcilingEventEmitter,

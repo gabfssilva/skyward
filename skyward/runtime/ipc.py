@@ -19,7 +19,7 @@ import threading
 import traceback
 from collections.abc import Iterator, Mapping
 from concurrent.futures import Executor, ProcessPoolExecutor, ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from multiprocessing.connection import Connection, wait
 from multiprocessing.context import BaseContext
@@ -27,8 +27,10 @@ from multiprocessing.queues import Queue
 
 from skyward import distributed
 from skyward.protocol.schemas import Executor as Kind
+from skyward.runtime import slot
 
 type Registrations = Queue[Connection]
+type Slots = Queue[int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,12 +44,23 @@ class Call:
     params: Mapping[str, object]
 
 
-def _install(registrations: Registrations) -> None:
+def _install(registrations: Registrations, slots: Slots | None = None) -> None:
     """Wire this subprocess to the worker. The pool's initializer, run once per child.
 
     The pipe is made here, in the child, and its far end shipped back up through the
     registration queue — the one primitive the pool already shares with every worker.
+
+    ``slots`` carries this child's index among the pool's workers, one per child, and
+    is only handed over by the reused pools: there each child is one of a fixed
+    ``workers`` set and takes a distinct index that outlives its every task. Under
+    ``reuse=False`` the children are transient and unbounded — a fixed range would
+    drain — so ``slots`` is ``None`` and the index stays at its default zero. The
+    read is non-blocking for the same reason: a child must never wait on the queue.
     """
+    if slots is not None:
+        with suppress(queue.Empty):
+            slot.set(slots.get_nowait())
+
     parent, child = multiprocessing.get_context("spawn").Pipe()
     registrations.put(parent)
     lock = threading.Lock()
@@ -134,9 +147,12 @@ def executor(kind: Kind, reuse: bool, workers: int) -> Iterator[Executor]:
 
     spawn = multiprocessing.get_context("spawn")
     registrations: Registrations = spawn.Queue()
+    slots: Slots = spawn.Queue()
+    for index in range(workers):
+        slots.put(index)
     bridge = Bridge(registrations)
     bridge.start()
-    pool = _pool(kind, reuse, workers, spawn, registrations)
+    pool = _pool(kind, reuse, workers, spawn, registrations, slots)
     try:
         yield pool
     finally:
@@ -144,7 +160,7 @@ def executor(kind: Kind, reuse: bool, workers: int) -> Iterator[Executor]:
         bridge.close()
 
 
-def _pool(kind: Kind, reuse: bool, workers: int, spawn: BaseContext, registrations: Registrations) -> Executor:
+def _pool(kind: Kind, reuse: bool, workers: int, spawn: BaseContext, registrations: Registrations, slots: Slots) -> Executor:
     match kind:
         case "loky":
             from loky import get_reusable_executor
@@ -152,7 +168,7 @@ def _pool(kind: Kind, reuse: bool, workers: int, spawn: BaseContext, registratio
             return get_reusable_executor(
                 max_workers=workers,
                 initializer=_install,
-                initargs=(registrations,),
+                initargs=(registrations, slots),
                 reuse="auto",
             )
         case _ if reuse:
@@ -160,7 +176,7 @@ def _pool(kind: Kind, reuse: bool, workers: int, spawn: BaseContext, registratio
                 max_workers=workers,
                 mp_context=spawn,
                 initializer=_install,
-                initargs=(registrations,),
+                initargs=(registrations, slots),
             )
         case _:
             return ProcessPoolExecutor(

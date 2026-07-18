@@ -1,5 +1,7 @@
 import re
+import shlex
 
+from skyward.plugins.plugin import Plugin
 from skyward.protocol.schemas import Image, MetricSpec
 from skyward.runtime.journal import SKYWARD_DIR
 
@@ -126,6 +128,16 @@ def metrics(specs: tuple[MetricSpec, ...] | None = None) -> str:
     )
 
 
+def phase(name: str, *commands: str) -> str:
+    """One bootstrap phase, quoted so its commands survive the ``bash -c`` the runner wraps them in.
+
+    The commands are joined with ``&&`` — a phase fails on the first that does — and
+    the whole run is a single shell word, which is what a plugin returns rather than
+    reaching for the emit helpers itself.
+    """
+    return f"phase {name} {shlex.quote(' && '.join(commands))}"
+
+
 def _package_name(spec: str) -> str:
     """The bare name a requirement scopes to, dropping any version or extras."""
     return re.split(r"[<>=!~ \[]", spec, maxsplit=1)[0]
@@ -190,7 +202,7 @@ def _pyproject(image: Image) -> str:
     return "\n".join(lines)
 
 
-def script(image: Image, skyward: str) -> str:
+def script(image: Image, skyward: str, plugins: tuple[Plugin, ...] = (), concurrency: int = 1) -> str:
     """The bootstrap, as a shell script the machine runs on its own.
 
     It is written to run **detached**, and to say what happened by appending to
@@ -211,6 +223,12 @@ def script(image: Image, skyward: str) -> str:
         bearing here, which is the reason a locally-built wheel needs no second
         script and no second pass: a failure to install skyward arrives as a
         failed phase in ``events.jsonl``, like every other failure.
+    plugins : tuple[Plugin, ...]
+        The compute's plugins, each asked for the phases it wants appended after
+        the image's own bootstrap and before the footer.
+    concurrency : int
+        The worker's width, handed to each plugin's ``bootstrap`` — the datum a
+        phase that partitions the machine needs and the image does not carry.
 
     Returns
     -------
@@ -236,6 +254,8 @@ def script(image: Image, skyward: str) -> str:
         pyproject = ""
         install = f"uv pip install --python {PYTHON}"
 
+    postamble = "\n".join(op for plugin in plugins for op in plugin.bootstrap(image, concurrency))
+
     return "\n".join(
         (
             HEADER,
@@ -248,6 +268,7 @@ def script(image: Image, skyward: str) -> str:
             pyproject,
             f"phase skyward '{preload}{install} {skyward}'",
             f"phase deps '{preload}{install} {packages}'" if packages else "",
+            *((postamble,) if postamble else ()),
             FOOTER,
         ),
     )

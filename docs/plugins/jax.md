@@ -1,43 +1,42 @@
 # JAX
 
-JAX treats multiple machines as one big device mesh. After a single call to `jax.distributed.initialize()`, every node sees every accelerator across the cluster — `jax.devices()` returns the full set, and `jit` with sharding constraints distributes computation over it. The catch is that every process must call `initialize()` with the coordinator address, cluster size, and its own index, exactly once, before any distributed operation. `sky.plugins.jax()` takes care of this: it installs JAX with the correct CUDA wheels on the remote workers and calls `jax.distributed.initialize()` at startup with the topology from `instance_info()`.
+JAX treats multiple machines as one big device mesh. After a single call to `jax.distributed.initialize()`, every process sees every accelerator across the compute — `jax.devices()` returns the full set, and `jit` with sharding constraints distributes computation over it. The catch is that every process must call `initialize()` with the coordinator address, the number of processes, and its own index, exactly once, before any distributed operation.
+
+`sky.plugins.Jax()` does that: it installs JAX with the CUDA wheels on the nodes and joins the cluster on each process's first task.
 
 ## Parameters
 
-The plugin accepts a single parameter:
-
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `cuda` | `str` | `"cu124"` | CUDA version suffix for the JAX wheel |
+| `cuda` | `str` | `"cu124"` | The CUDA build to install JAX from, as a `jax[...]` extra |
 
-The `cuda` value becomes the extra specifier in the pip requirement — `jax[cu124]` — and controls which CUDA-specific wheels are pulled from Google's JAX release index. If your cluster runs CUDA 12.4, the default works. For other CUDA versions, pass the matching suffix (e.g., `"cu121"` for CUDA 12.1).
+The value becomes the extra in the pip requirement — `jax[cu124]` — and selects the CUDA-specific wheels pulled from Google's JAX release index. It is pinned rather than left to the default because the wheel has to match the driver the GPU images ship.
+
+`Jax` is a **collective** plugin: a compute running one cannot be resized, because removing a rank does not shrink the job, it hangs it.
 
 ## How it works
 
-### Image transform
+### `image`
 
-The `transform` hook modifies the worker's `Image` before bootstrap. It does two things:
+The `image` hook appends `jax[{cuda}]` to the image's pip list and adds Google's JAX CUDA release index (`https://storage.googleapis.com/jax-releases/jax_cuda_releases.html`), scoped to the `jax` and `jaxlib` packages. You do not need JAX installed locally.
 
-1. Appends `jax[{cuda}]` to the pip dependency list, where `{cuda}` is the configured CUDA suffix.
-2. Adds Google's JAX CUDA release index (`https://storage.googleapis.com/jax-releases/jax_cuda_releases.html`) as a pip index, scoped to the `jax` and `jaxlib` packages.
+### `run`
 
-This means JAX and its CUDA bindings are installed from Google's official release channel during worker bootstrap. You do not need JAX installed locally — the plugin adds it to the remote environment.
-
-### Worker lifecycle (`around_process`)
-
-The `around_process` hook is a context manager that runs once per executor subprocess, before any task executes. It calls:
+On the first task in each process, the plugin calls:
 
 ```python
 jax.distributed.initialize(
-    coordinator_address=f"{info.head_addr}:{info.head_port}",
-    num_processes=info.total_nodes,
-    process_id=info.node,
+    coordinator_address=f"{info.head}:1234",
+    num_processes=info.nodes,
+    process_id=info.rank,
 )
 ```
 
-The values come from `instance_info()` — Skyward's runtime API that exposes the cluster topology to each worker. `head_addr` is the private IP of node 0 (the coordinator), `head_port` is the coordination port, `total_nodes` is the cluster size, and `node` is this process's index (0 through N-1).
+`info.head` is rank zero's address. A Skyward compute has no head; rank zero is a convention that satisfies a library which insists on being told where the rendezvous is.
 
-After this call returns, JAX's global state is initialized. Every call to `jax.devices()` returns the full set of accelerators across all nodes, and JAX's compiler can partition computation across the entire mesh.
+This happens on the first task rather than at worker startup because `initialize()` is a collective, and the process that blocks in it must be the one that will run the collective code afterwards. Under `executor="process"` that is the child, not the worker. A module-global flag under a lock keeps it to once per process; every subsequent task calls straight through.
+
+After the call, `jax.devices()` returns the accelerators of the whole compute and the compiler can partition across them.
 
 ## Usage
 
@@ -48,15 +47,11 @@ import skyward as sky
 @sky.function
 def train():
     import jax
-    import jax.numpy as jnp
 
-    # jax.distributed is already initialized
-    # all devices across all nodes are visible
     devices = jax.devices()
     print(f"Total devices: {len(devices)}")
 
-    # distributed computation works out of the box
-    mesh = jax.sharding.Mesh(jax.devices(), axis_names=("devices",))
+    mesh = jax.sharding.Mesh(devices, axis_names=("devices",))
     ...
 
 
@@ -64,16 +59,16 @@ with sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.A100(),
     nodes=4,
-    plugins=[sky.plugins.jax()],
+    plugins=[sky.plugins.Jax()],
 ) as compute:
     results = train() @ compute
 ```
 
-The `@` operator broadcasts the function to all nodes. Each node executes `train()`, and by the time the function body runs, `jax.distributed.initialize()` has already been called by the plugin. The function sees the full device mesh and can use JAX's sharding primitives to partition computation.
+The `@` operator broadcasts to every node. By the time the function body runs, the process has joined the cluster.
 
 ## Combining with Keras
 
-JAX is the recommended backend for multi-node Keras training. When using Keras with JAX, stack both plugins:
+JAX is the recommended backend for multi-node Keras training. Stack both plugins, JAX first:
 
 ```python
 with sky.Compute(
@@ -81,19 +76,17 @@ with sky.Compute(
     accelerator=sky.accelerators.A100(),
     nodes=2,
     plugins=[
-        sky.plugins.jax(),
-        sky.plugins.keras(backend="jax"),
+        sky.plugins.Jax(),
+        sky.plugins.Keras(backend="jax"),
     ],
 ) as compute:
     results = train() @ compute
 ```
 
-Order matters here. The JAX plugin's `around_process` initializes the distributed runtime, and the Keras plugin sets `KERAS_BACKEND=jax` so Keras uses JAX as its computation backend. Together, they give you multi-node Keras training where JAX handles the distributed device mesh and Keras provides the high-level model API.
-
-The [Keras Training guide](../guides/keras-training.md) walks through a complete MNIST example using this combination.
+`Jax` forms the cluster; `Keras` sets `KERAS_BACKEND` and, on more than one node, configures Keras's `DataParallel` distribution. See the [Keras plugin](keras.md).
 
 ## Next steps
 
-- [Keras Training](../guides/keras-training.md) — JAX + Keras on multiple GPUs
-- [What are Plugins?](index.md) — How the plugin system works
-- [PyTorch Distributed](../guides/pytorch-distributed.md) — The PyTorch equivalent for comparison
+- [Keras](keras.md) — JAX + Keras across nodes
+- [What are plugins?](index.md) — the hook model
+- [PyTorch](torch.md) — the equivalent for torch

@@ -237,6 +237,9 @@ class MockTasks:
     async def result(self, task_id: str, wait_seconds: int) -> bytes | None:
         return b"\x00mock-result"
 
+    async def expire(self) -> tuple[str, ...]:
+        return ()
+
 
 class MockExecutions:
     async def list(self, task_id: str) -> Page[Execution]:

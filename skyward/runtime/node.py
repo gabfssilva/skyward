@@ -7,8 +7,9 @@ from collections.abc import Callable
 
 import msgspec
 
+from skyward import plugins
 from skyward.application.provider import Machine
-from skyward.protocol.schemas import Executor, Image, NodeState, PluginRef
+from skyward.protocol.schemas import Executor, Image, NodeState, Options, PluginRef
 from skyward.runtime import bootstrap, worker
 from skyward.runtime.events import events
 from skyward.runtime.journal import SKYWARD_DIR, Console, Metric, NodeEvent, Phase
@@ -18,6 +19,7 @@ from skyward.runtime.ssh import SshChannel
 logger = logging.getLogger(__name__)
 
 WORKER_TIMEOUT = 180.0
+DEFAULT_OPTIONS = Options()
 
 type Listener = Callable[[NodeState, str | None], None]
 type Output = Callable[[str, str | None], None]
@@ -62,6 +64,7 @@ class Node:
         buffer: int = 0,
         executor: Executor = "thread",
         reuse: bool = True,
+        options: Options = DEFAULT_OPTIONS,
         plugins: tuple[PluginRef, ...] = (),
         user_code: bytes | None = None,
     ) -> None:
@@ -85,15 +88,23 @@ class Node:
         self._reuse = reuse
         self._plugins = plugins
         self._user_code = user_code
+        self._worker_timeout = options.worker_timeout
+        self._health_command = options.health_command
+        self._health_interval = options.health_interval
+        self._health_failures = options.health_failures
         self._ssh = SshChannel(
             machine.host,
             port=machine.port,
             user=machine.user,
             private_key=private_key,
             password=machine.password,
+            connect_timeout=options.ssh_connect_timeout,
+            reconnect_attempts=options.ssh_reconnect_attempts,
+            retry_delay=options.ssh_retry_delay,
         )
         self._lifecycle: asyncio.Task[None] | None = None
         self._monitor: asyncio.Task[None] | None = None
+        self._probe: asyncio.Task[None] | None = None
         self._reached: dict[str, asyncio.Future[str | None]] = {}
         self._failure: str | None = None
         self.tunnel: int | None = None
@@ -103,7 +114,7 @@ class Node:
         self._lifecycle = asyncio.create_task(self._run())
 
     async def close(self) -> None:
-        for task in (self._lifecycle, self._monitor):
+        for task in (self._lifecycle, self._monitor, self._probe):
             if task:
                 task.cancel()
         await self._ssh.close()
@@ -131,7 +142,7 @@ class Node:
 
             if await self._serving():
                 self.tunnel = await self._ssh.forward(worker.PORT)
-                self._listener("ready", None)
+                self._ready()
                 return
 
             self._listener("bootstrapping", None)
@@ -139,12 +150,24 @@ class Node:
             await self._sync_user_code()
             await self._launch()
 
-            self._listener("ready", None)
+            self._ready()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.warning("node %s failed: %s", self._machine.id, exc)
             self._listener("failed", str(exc))
+
+    def _ready(self) -> None:
+        """Say the machine is usable, and start asking whether it stays that way.
+
+        The probe starts here rather than beside the event tail: a machine halfway
+        through installing its dependencies would fail a check written against the
+        worker, and how long a bootstrap may take is already its own timeout's
+        question.
+        """
+        self._listener("ready", None)
+        if command := self._health_command:
+            self._probe = asyncio.create_task(self._health(command))
 
     async def _serving(self) -> bool:
         """Whether this machine is already a worker.
@@ -166,7 +189,11 @@ class Node:
         if self._source.wheel:
             await self._ssh.put(self._source.argument, self._source.wheel)
 
-        await self._ssh.put(bootstrap.SCRIPT, bootstrap.script(self._image, self._source.argument).encode())
+        resolved = plugins.resolve(self._plugins)
+        await self._ssh.put(
+            bootstrap.SCRIPT,
+            bootstrap.script(self._image, self._source.argument, resolved, self._concurrency).encode(),
+        )
         await self._ssh.run(f"chmod +x {bootstrap.SCRIPT} && nohup {self._sudo}{bootstrap.SCRIPT} > /dev/null 2>&1 &")
 
         await self._reach("bootstrap", float(self._image.bootstrap_timeout))
@@ -221,7 +248,7 @@ class Node:
             f">> {SKYWARD_DIR}/worker.log 2>&1 &",
         )
 
-        await self._reach("worker", WORKER_TIMEOUT)
+        await self._reach("worker", self._worker_timeout)
         self.tunnel = await self._ssh.forward(worker.PORT)
 
     async def _reach(self, phase: str, timeout: float) -> None:
@@ -251,6 +278,32 @@ class Node:
                 line = seen + 1
                 self._observe(event)
             await asyncio.sleep(1.0)
+
+    async def _health(self, command: str) -> None:
+        """Ask the machine whether it is still usable, and give up on it when it is not.
+
+        Consecutive failures rather than a total: a probe that failed once has as
+        likely met a machine that was busy as one that is broken, and a node taken away
+        on that is a node bought again for nothing. Giving up says ``lost``, which is
+        the same thing said about a machine the provider no longer has — the node stops
+        counting as capacity, and the reconciler closes the deficit with a replacement.
+
+        Once it has said it, there is nothing left to watch: the node is on its way out
+        and a second opinion about a machine already being deleted helps nobody.
+        """
+        failures = 0
+        while True:
+            await asyncio.sleep(self._health_interval)
+            result = await self._ssh.run(command)
+
+            if result.exit_code == 0:
+                failures = 0
+                continue
+
+            failures += 1
+            if failures >= self._health_failures:
+                self._listener("lost", f"health check failed {failures} times: {result.stderr.strip() or command}")
+                return
 
     def _observe(self, event: NodeEvent) -> None:
         match event:

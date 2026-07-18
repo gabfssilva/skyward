@@ -45,8 +45,8 @@ if __name__ == "__main__":
     with sky.Compute(
         provider=sky.AWS(),
         nodes=3,
-        worker=sky.Worker(concurrency=4),
-        plugins=[sky.plugins.sklearn()],
+        executor=sky.Executor(concurrency=4),
+        plugins=[sky.plugins.Sklearn()],
     ):
         grid_search = GridSearchCV(
             estimator=pipe,

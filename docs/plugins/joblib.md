@@ -2,25 +2,17 @@
 
 joblib's `Parallel` is how Python parallelizes embarrassingly parallel work. scikit-learn uses it for `GridSearchCV`, `cross_val_score`, and any estimator with `n_jobs`. NLTK uses it. Countless data processing pipelines use `Parallel(n_jobs=-1)(delayed(fn)(x) for x in data)` as the standard idiom for local parallelism. The limitation is that "all available workers" means "all cores on this machine." On a laptop, that is 8 or 16. On an expensive workstation, maybe 64. For large hyperparameter searches or batch processing jobs, this is the bottleneck.
 
-Skyward's `joblib` plugin replaces joblib's execution backend with a distributed one. When the plugin is active, `n_jobs=-1` means "all workers in the cluster" — not local cores. The joblib API is completely unchanged. `Parallel`, `delayed`, `n_jobs` all work as documented. The difference is that each task is serialized with cloudpickle, sent to a remote worker over SSH, executed there, and the result returned. No code changes beyond the pool configuration.
+`sky.plugins.Joblib()` replaces joblib's execution backend with a distributed one. When the plugin is active, `n_jobs=-1` means "every slot in the compute" — not local cores. The joblib API is unchanged: `Parallel`, `delayed` and `n_jobs` work as documented. The difference is that each batch is dispatched to a node, executed there, and the result returned.
 
 ## What it does
 
-**Image transform** — Appends `joblib` (optionally at a pinned version) to the worker's pip dependencies. This ensures the remote workers have joblib installed for deserialization.
+**`image`** — Appends `joblib` (optionally at a pinned version) to the image's pip list, so the nodes can unpickle the batch.
 
-**Client lifecycle (`around_client`)** — This is where the real work happens. When the pool is entered, the plugin does three things:
+**`client`** — The hook that does the work, and the only one that does not travel: it runs in the process that opened the `with` block. It registers a `ParallelBackendBase` subclass under the name `skyward`, then enters `parallel_backend("skyward")` for the lifetime of the compute. On exit the previous backend is restored.
 
-1. **Registers `SkywardBackend`** as a custom joblib parallel backend. This is a subclass of `ParallelBackendBase` that replaces joblib's default thread/process backends with one that dispatches tasks to the Skyward cluster.
+Each batch joblib would have handed to a worker process is submitted to the compute as a task instead, and joblib's callback is attached to the resulting future. Nested `Parallel` calls fall back to joblib's sequential backend, so a batch does not try to fan out again from the node.
 
-2. **Strips non-stdlib warning filters** from `warnings.filters`. This is a subtle but important fix: sklearn's `Parallel` pickles the current `warnings.filters` list into every task payload via cloudpickle. If your local environment has warning filters from third-party packages (pytest, cloud SDKs, monitoring libraries), those filters reference module classes that may not exist on the worker. Deserialization would fail with `ModuleNotFoundError`. The plugin removes any filter whose category class comes from outside the standard library, keeping only safe builtins like `DeprecationWarning` and `FutureWarning`. Third-party packages installed on the worker will re-inject their own filters at import time.
-
-3. **Enters the `parallel_backend("skyward")` context manager**, which tells joblib to route all `Parallel` calls to the Skyward backend for the duration of the pool block. When the pool exits, the default backend is restored.
-
-## How SkywardBackend works
-
-`SkywardBackend` is a joblib backend that serializes each task with cloudpickle, wraps it in a `@sky.function` function, and dispatches it to the cluster. Each joblib task becomes a Skyward compute task, sent to a remote worker over SSH. The serialization overhead is minimal — cloudpickle is fast, and payloads are compressed with lz4 on the wire.
-
-**Effective parallelism** is `nodes * concurrency`. If you have 4 nodes with `Worker(concurrency=10)`, joblib sees 40 available workers. `n_jobs=-1` uses all of them. `n_jobs=20` would use 20.
+**Effective parallelism** is the compute's node count times the executor's concurrency. Four nodes at `concurrency=10` gives joblib 40 slots; `n_jobs=-1` uses all of them, `n_jobs=20` uses 20. When the compute is elastic, the node count used is its upper bound.
 
 ## Parameters
 
@@ -52,8 +44,8 @@ def slow_task(x):
 with sky.Compute(
     provider=sky.AWS(),
     nodes=10,
-    worker=sky.Worker(concurrency=10),
-    plugins=[sky.plugins.joblib()],
+    executor=sky.Executor(concurrency=10),
+    plugins=[sky.plugins.Joblib()],
 ) as compute:
     results = Parallel(n_jobs=-1)(
         delayed(slow_task)(i) for i in range(2000)
@@ -62,35 +54,35 @@ with sky.Compute(
 
 With 10 nodes and `concurrency=10`, effective parallelism is 100. The 2000 tasks take 5 seconds each. Ideal time: `2000 / 100 * 5 = 100s`. In practice, overhead from serialization and network round-trips adds a few percent — expect 97-98% efficiency for tasks of this duration.
 
-### Tuning with worker concurrency
+### Tuning concurrency
 
-The `Worker(concurrency=N)` parameter controls how many tasks each node handles simultaneously. This is the multiplier that makes joblib-on-Skyward practical:
+`Executor(concurrency=N)` controls how many tasks each node runs at once. This is the multiplier that makes joblib-on-Skyward practical:
 
 ```python
 with sky.Compute(
     provider=sky.AWS(),
     nodes=2,
-    vcpus=64,
-    worker=sky.Worker(concurrency=120),
-    plugins=[sky.plugins.joblib()],
+    cpus=64,
+    executor=sky.Executor(concurrency=120),
+    plugins=[sky.plugins.Joblib()],
 ) as compute:
     results = Parallel(n_jobs=-1)(
         delayed(slow_task)(i) for i in range(20000)
     )
 ```
 
-High concurrency works well for I/O-bound or sleep-heavy tasks (API calls, network requests, waiting on external services). For CPU-bound tasks, match concurrency to the number of available cores. The default executor is threaded, so Python's GIL applies — for CPU-bound pure-Python work, consider `Worker(executor="process")` to bypass it.
+High concurrency works well for I/O-bound or sleep-heavy tasks (API calls, network requests, waiting on external services). For CPU-bound tasks, match concurrency to the number of available cores. The default executor is threaded, so Python's GIL applies — for CPU-bound pure-Python work, consider `Executor(type="process")` to bypass it.
 
 ### With scikit-learn (via the sklearn plugin)
 
-If your workload is scikit-learn-based, prefer the `sklearn` plugin instead — it builds on the same `SkywardBackend` but also installs scikit-learn:
+If your workload is scikit-learn-based, prefer the `Sklearn` plugin instead — it enters this plugin's client hook, and additionally installs scikit-learn and scrubs the client's warning filters:
 
 ```python
 with sky.Compute(
     provider=sky.AWS(),
     nodes=4,
-    worker=sky.Worker(concurrency=4),
-    plugins=[sky.plugins.sklearn()],
+    executor=sky.Executor(concurrency=4),
+    plugins=[sky.plugins.Sklearn()],
 ) as compute:
     grid = GridSearchCV(SVC(), param_grid, cv=5, n_jobs=-1)
     grid.fit(X, y)
@@ -98,12 +90,12 @@ with sky.Compute(
 
 See the [sklearn plugin documentation](sklearn.md) for details.
 
-## Warning filter sanitization
+## Warning filters
 
-The plugin strips non-stdlib warning filters from `warnings.filters` before entering the joblib backend context. This prevents `ModuleNotFoundError` on workers when cloudpickle tries to deserialize warning category classes from packages (pytest, cloud SDKs, etc.) that are installed locally but not on the remote worker.
+Stripping the client's non-stdlib warning filters — the fix for scikit-learn's `Parallel` shipping them inside every batch and breaking the unpickle on a node that lacks the module — belongs to the [`Sklearn`](sklearn.md) plugin, not this one.
 
 ## Next steps
 
 - [Joblib Concurrency guide](../guides/joblib-concurrency.md) — Throughput analysis, real-world benchmarks, and cost model
-- [sklearn plugin](sklearn.md) — The scikit-learn plugin that builds on the same backend
-- [What are Plugins?](index.md) — How the plugin system works
+- [Scikit-learn plugin](sklearn.md) — the same backend, plus scikit-learn
+- [What are plugins?](index.md) — the hook model

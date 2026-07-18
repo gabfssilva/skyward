@@ -6,7 +6,7 @@ Skyward's `accelerate` plugin configures the entire FSDP environment — topolog
 
 ## The `accelerate` plugin
 
-Add `sky.plugins.accelerate()` to your pool's plugins with an FSDP config:
+Add `sky.plugins.Accelerate()` to your compute's plugins with an FSDP config:
 
 ```python
 --8<-- "guides/19_fsdp_huggingface.py:102:114"
@@ -95,14 +95,14 @@ The Trainer detects FSDP from the `ACCELERATE_USE_FSDP` environment variable the
 
 `trainer.train()` runs the full training loop — forward, backward, gradient sync, optimizer step — across all FSDP-sharded nodes. Each node reports back its peak GPU memory and the final training loss. `trainer.is_fsdp_enabled` confirms that FSDP actually activated — useful for debugging configuration issues.
 
-## `accelerate` vs `torch` plugin
+## `Accelerate` vs `Torch`
 
 Both plugins set up distributed PyTorch, but they target different use cases:
 
-- **`sky.plugins.torch()`** — Sets topology env vars and calls `init_process_group()`. Use for DDP, manual `all_reduce`, or any code that manages distribution itself.
-- **`sky.plugins.accelerate()`** — Does everything `torch()` does, plus configures FSDP/DeepSpeed via Accelerate env vars. Use when training with HuggingFace Trainer or Accelerate and you need FSDP or DeepSpeed.
+- **`sky.plugins.Torch()`** — Sets topology env vars and calls `init_process_group()`. Use for DDP, manual `all_reduce`, or any code that manages distribution itself.
+- **`sky.plugins.Accelerate()`** — Sets the same topology variables and forms the same group, plus the `ACCELERATE_*`/`FSDP_*` variables Accelerate reads. Use when training with HuggingFace Trainer or Accelerate and you need FSDP or DeepSpeed. It does not install PyTorch; put it in the `Image`, or list `Torch()` before it.
 
-If your model fits on a single GPU and you just want data parallelism, `torch()` with DDP is simpler. If your model doesn't fit — or you want features like mixed-precision offloading — use `accelerate()` with FSDP.
+If your model fits on a single GPU and you just want data parallelism, `Torch()` with DDP is simpler. If your model doesn't fit — or you want mixed-precision offloading — use `Accelerate()` with FSDP.
 
 ## Running it
 
@@ -126,8 +126,8 @@ uv run python guides/19_fsdp_huggingface.py
 
 **What you learned:**
 
-- **`sky.plugins.accelerate(config={...})`** configures FSDP environment variables and initializes the process group — the training function has zero FSDP code.
+- **`sky.plugins.Accelerate(config={...})`** configures FSDP environment variables and initializes the process group — the training function has zero FSDP code.
 - **FSDP shards everything** — parameters, gradients, and optimizer states are distributed across nodes, fitting models that would OOM on a single GPU.
 - **Config dict maps to Accelerate env vars** — `sharding_strategy`, `auto_wrap_policy`, `transformer_layer_cls_to_wrap`, and other keys translate directly to `FSDP_*` variables.
-- **`accelerate` vs `torch`** — use `accelerate()` for FSDP/DeepSpeed with HuggingFace Trainer; use `torch()` for DDP or manual distributed code.
+- **`Accelerate` vs `Torch`** — use `Accelerate()` for FSDP/DeepSpeed with HuggingFace Trainer; use `Torch()` for DDP or manual distributed code.
 - **Standard HuggingFace code** — the training function has zero FSDP-specific logic; the plugin handles everything before the function runs.

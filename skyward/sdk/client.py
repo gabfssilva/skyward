@@ -137,6 +137,39 @@ class Client:
                     case _:
                         continue
 
+    async def forward_up(self, compute: str, cid: str, port: int, route: str, chunks: AsyncIterator[bytes]) -> None:
+        """Send one connection's bytes up to a node, as a streaming request body.
+
+        The request stands open for the life of the connection: its body is the
+        socket, and it ends when the socket does. The daemon opens the channel on
+        the id this shares with :meth:`forward_down` and pumps the rest into the
+        node. Backpressure is the body itself — the next chunk is pulled only once
+        the node has taken the last.
+        """
+        response = await self._http.request(
+            "POST",
+            f"/v1/computes/{compute}/forward/up",
+            content=chunks,
+            params={"cid": cid, "port": str(port), "route": route},
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        if response.status_code >= 400:
+            raise refused(response.status_code, response.content)
+
+    async def forward_down(self, compute: str, cid: str) -> AsyncGenerator[bytes]:
+        """The node's bytes for this connection, raw and as they arrive.
+
+        No framing: a byte proxy has no frames to find. The stream is pulled one
+        chunk at a time and only as the caller writes them onward, which is what
+        carries the node's backpressure the whole way to the local socket.
+        """
+        async with self._http.stream("GET", f"/v1/computes/{compute}/forward/down", params={"cid": cid}) as response:
+            if response.status_code >= 400:
+                await response.aread()
+                raise refused(response.status_code, response.content)
+            async for chunk in response.aiter_bytes():
+                yield chunk
+
     async def _send(
         self,
         method: str,
@@ -178,7 +211,6 @@ class Embedded(httpx.AsyncBaseTransport):
         self._app = app
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        body = await request.aread()
         chunks: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=1)
         start: asyncio.Future[Message] = asyncio.get_running_loop().create_future()
 
@@ -197,23 +229,34 @@ class Embedded(httpx.AsyncBaseTransport):
             "root_path": "",
         }
 
-        consumed = False
+        source = request.stream
+        assert isinstance(source, httpx.AsyncByteStream)
+        body = aiter(source)
+        drained = False
         disconnected = asyncio.Event()
 
         async def receive() -> Message:
-            """The request once, and then nothing until the caller goes away.
+            """The request body a chunk at a time, then nothing until the caller leaves.
 
-            Answering ``http.request`` a second time is what a server would never do,
-            and what a streaming response takes as an invitation to ask again: it is
-            listening for the disconnect that this is supposed to be waiting for.
+            Reading the whole body up front and handing it over in one message is the
+            eager case, and for a request that streams — a forwarded socket, an upload
+            with no end in sight — it is the wrong one: it would wait for a body that
+            closes only when the caller does. So the chunks are pulled as the app asks
+            and the body is declared over only when the iterator is.
+
+            Once it is, answering ``http.request`` again is what a server would never
+            do, and what a streaming response takes as an invitation to ask once more:
+            it is listening for the disconnect this is now waiting to deliver.
             """
-            nonlocal consumed
-            if consumed:
+            nonlocal drained
+            if drained:
                 await disconnected.wait()
                 return {"type": "http.disconnect"}
-
-            consumed = True
-            return {"type": "http.request", "body": body, "more_body": False}
+            try:
+                return {"type": "http.request", "body": await anext(body), "more_body": True}
+            except StopAsyncIteration:
+                drained = True
+                return {"type": "http.request", "body": b"", "more_body": False}
 
         async def send(message: Message) -> None:
             match message["type"]:

@@ -12,7 +12,7 @@ Each partition gets its own MIG UUID, visible through `nvidia-smi -L`. When a pr
 
 ## The `mig` plugin
 
-Add `sky.plugins.mig()` to your pool and set the worker concurrency to match the number of partitions:
+Add `sky.plugins.Mig(profile=...)` to your compute and set the executor concurrency to match the number of partitions:
 
 ```python
 --8<-- "guides/18_nvidia_mig.py:5:6"
@@ -22,7 +22,7 @@ Add `sky.plugins.mig()` to your pool and set the worker concurrency to match the
 --8<-- "guides/18_nvidia_mig.py:61:68"
 ```
 
-Three things happen here. First, the `mig` plugin's `profile` parameter tells Skyward which MIG profile to create — in this case, `3g.40gb`, which splits the GPU into two partitions. Second, `Worker(concurrency=2, executor="process")` creates two loky subprocesses on the node, one per partition. Third, `Image(pip=["torch"])` installs PyTorch on the worker — we're not using `sky.plugins.torch()` here because the torch plugin is designed for multi-node distributed training (DDP), and MIG partitions on a single GPU are independent workloads, not a distributed cluster.
+Three things happen here. First, the `mig` plugin's `profile` parameter tells Skyward which MIG profile to create — in this case, `3g.40gb`, which splits the GPU into two partitions. Second, `Executor(type="process", concurrency=2, reuse=True)` creates two long-lived subprocesses on the node, one per partition — the plugin's indexing only holds under a reusing process executor, since it needs a stable `info.worker` per child. Third, `Image(pip=["torch"])` installs PyTorch on the worker — we're not using `sky.plugins.Torch()` here because the torch plugin is designed for multi-node distributed training (DDP), and MIG partitions on a single GPU are independent workloads, not a distributed cluster.
 
 The concurrency and the profile must agree: if a profile creates two partitions, concurrency should be two. If you set concurrency to three but the GPU only supports two instances of your profile, the bootstrap will fail.
 
@@ -42,7 +42,7 @@ The function itself doesn't know about MIG — it just sees a CUDA device:
 
 There are no `if torch.cuda.is_available()` guards — this code runs on a GPU node with MIG partitions, so CUDA is always present. `torch.device("cuda")` resolves to the MIG partition assigned by the plugin. The function trains a small feedforward network on synthetic data and returns the final metrics along with the worker index and partition UUID.
 
-`instance_info().worker` returns the subprocess index (0 or 1), which the plugin already used to assign the correct MIG partition. Each subprocess runs independently in its own loky process with its own CUDA context, so there's no shared state between the two training runs.
+`instance_info().worker` returns the subprocess index (0 or 1), which the plugin already used to assign the correct MIG partition. Each subprocess runs independently with its own CUDA context, so there's no shared state between the two training runs.
 
 ## Running both partitions in parallel
 
@@ -72,8 +72,8 @@ uv run python guides/18_nvidia_mig.py
 
 **What you learned:**
 
-- **`sky.plugins.mig(profile="3g.40gb")`** — enables MIG mode, creates partitions during bootstrap, and assigns each subprocess to its own MIG device.
-- **`Worker(concurrency=N, executor="process")`** — one loky subprocess per partition; concurrency must match the number of partitions the profile supports.
+- **`sky.plugins.Mig(profile="3g.40gb")`** — enables MIG mode, creates partitions during bootstrap, and assigns each subprocess to its own MIG device.
+- **`Executor(type="process", concurrency=N, reuse=True)`** — one long-lived subprocess per partition; concurrency must match the number of partitions the profile supports.
 - **Hardware isolation** — each partition has dedicated compute units, memory, and L2 cache; no time-slicing or contention.
-- **Transparent to `@sky.function`** — functions see a normal CUDA device; the plugin sets `CUDA_VISIBLE_DEVICES` per subprocess via the `around_process` hook.
+- **Transparent to `@sky.function`** — functions see a normal CUDA device; the plugin sets `CUDA_VISIBLE_DEVICES` per subprocess on that subprocess's first task.
 - **Profile choice** — more partitions means less compute per partition; pick based on your workload's memory and throughput needs.

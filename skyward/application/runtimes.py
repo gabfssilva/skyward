@@ -14,15 +14,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import suppress
 
 import asyncssh
 import casty
 
+from skyward.application.ports import Route
 from skyward.application.provider import Machine
-from skyward.protocol.schemas import Executor, Image, NodeState, PluginRef
-from skyward.runtime.node import Node
+from skyward.protocol.schemas import Executor, Image, NodeState, Options, PluginRef
+from skyward.runtime.node import DEFAULT_OPTIONS, Node
 from skyward.runtime.source import Source
+from skyward.runtime.ssh import Channel
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +92,8 @@ class Runtime:
         self._system: casty.Client | None = None
         self._tunnels: dict[str, str] = {}
         self._connecting = asyncio.Lock()
+        self._cursor = 0
+        """Where the next forwarded connection lands in the round-robin."""
 
     def track(self, node_id: str, node: Node) -> None:
         self.nodes[node_id] = node
@@ -161,6 +166,25 @@ class Runtime:
                     return found
                 await asyncio.sleep(0.2)
 
+    async def open_channel(self, remote_port: int, route: Route = "round_robin") -> Channel:
+        """One TCP channel to a ready node's port, chosen by ``route``.
+
+        Round-robin over the nodes ready right now — the same set the live cluster
+        routes to — so a port served on every node is spread across them one
+        connection at a time. The channel rides that node's existing SSH link,
+        opened per connection rather than held open the way the worker tunnel is.
+        """
+        ready = self.ready
+        if not ready:
+            raise RuntimeError(f"compute {self.compute} has no ready node to reach")
+
+        match route:
+            case "round_robin":
+                node = self.nodes[ready[self._cursor % len(ready)]]
+                self._cursor += 1
+
+        return await node._ssh.open_connection("127.0.0.1", remote_port)
+
     async def close(self) -> None:
         if self._system:
             await self._system.close()
@@ -208,6 +232,7 @@ class Runtimes:
         buffer: int = 0,
         executor: Executor = "thread",
         reuse: bool = True,
+        options: Options = DEFAULT_OPTIONS,
         user_code: bytes | None = None,
     ) -> None:
         """Bring a machine up, and wire what it learns back to the store.
@@ -229,6 +254,7 @@ class Runtimes:
             buffer=buffer,
             executor=executor,
             reuse=reuse,
+            options=options,
             plugins=plugins,
             user_code=user_code,
             listener=lambda state, error: self._listener(runtime.compute, node_id, state, error),
@@ -251,3 +277,61 @@ class Runtimes:
     async def shutdown(self) -> None:
         for compute in tuple(self._runtimes):
             await self.close(compute)
+
+
+class Forward:
+    """The two half-duplex streams of one forwarded connection, tied by id.
+
+    The transport is paired requests because HTTP/1.1 carries a body one way at a
+    time: the caller's bytes ride up, the node's ride down, and the id the caller
+    mints is what says the two are the same connection. The up half opens the
+    channel and hands its far end to the down half waiting on that id — so either
+    request may arrive first, and the one that does not open it simply waits.
+
+    The channel is half-closed, not slammed shut: the caller reaching the end of
+    what it has to send is not the node reaching the end of what it has to say. Up
+    signals EOF and stops; the channel is not released until down sees the node
+    close its side.
+    """
+
+    def __init__(self, runtimes: Runtimes) -> None:
+        self._runtimes = runtimes
+        self._channels: dict[str, asyncio.Future[Channel]] = {}
+
+    def _slot(self, cid: str) -> asyncio.Future[Channel]:
+        return self._channels.setdefault(cid, asyncio.get_running_loop().create_future())
+
+    async def up(self, compute_id: str, cid: str, remote_port: int, route: Route, chunks: AsyncIterator[bytes]) -> None:
+        slot = self._slot(cid)
+        try:
+            runtime = self._runtimes.of(compute_id)
+            if runtime is None:
+                raise RuntimeError(f"compute {compute_id} is not live on this daemon")
+            channel = await runtime.open_channel(remote_port, route)
+        except Exception as exc:
+            if not slot.done():
+                slot.set_exception(exc)
+            raise
+
+        slot.set_result(channel)
+        _, writer = channel
+        with suppress(OSError, asyncssh.Error):
+            async for chunk in chunks:
+                writer.write(chunk)
+                await writer.drain()
+            writer.write_eof()
+
+    async def down(self, cid: str) -> AsyncIterator[bytes]:
+        try:
+            reader, writer = await self._slot(cid)
+        except Exception:
+            self._channels.pop(cid, None)
+            raise
+        try:
+            with suppress(OSError, asyncssh.Error):
+                while data := await reader.read(65536):
+                    yield data
+        finally:
+            self._channels.pop(cid, None)
+            with suppress(OSError, asyncssh.Error):
+                writer.close()

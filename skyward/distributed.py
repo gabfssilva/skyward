@@ -26,11 +26,21 @@ import itertools
 from collections.abc import Callable, Hashable, Mapping, MutableMapping
 from dataclasses import dataclass
 from types import TracebackType
+from typing import Literal, TypedDict
 
 import casty
 
 from skyward.protocol.codec import dumps, loads
 from skyward.runtime.api import NotOnANodeError, instance_info
+
+type Consistency = Literal["strong", "eventual"]
+"""How hard a write is acknowledged before the call returns.
+
+- ``"strong"`` — the default: a majority of replicas must ack, so a value read
+  back after a write is the value written, and it survives losing a minority.
+- ``"eventual"`` — one replica acks and reads take the nearest copy. Cheaper, and
+  enough when a collection is a scratchpad rather than a source of truth.
+"""
 
 REPLICAS = 3
 """What a compute replicates to, when it is big enough to.
@@ -85,6 +95,24 @@ stays here and the far side holds only the token that names it."""
 _tokens = itertools.count()
 
 
+class _Regime(TypedDict, total=False):
+    write: casty.Consistency
+    read: casty.Consistency
+
+
+def _regime(params: Params) -> _Regime:
+    """The casty write/read acks for this call's consistency.
+
+    ``"strong"`` is the empty mapping — casty's own defaults (majority write, one
+    read), so a strong call is byte-for-byte the call it always was.
+    """
+    match params.get("consistency", "strong"):
+        case "eventual":
+            return {"write": casty.ONE, "read": casty.ONE}
+        case _:
+            return {}
+
+
 async def _apply(
     current: Cluster,
     kind: str,
@@ -95,11 +123,11 @@ async def _apply(
 ) -> object:
     match kind:
         case "map":
-            return await getattr(current.system.map(name, replicas=current.replicas), method)(*args)
+            return await getattr(current.system.map(name, replicas=current.replicas, **_regime(params)), method)(*args)
         case "set":
-            return await getattr(current.system.set(name, replicas=current.replicas), method)(*args)
+            return await getattr(current.system.set(name, replicas=current.replicas, **_regime(params)), method)(*args)
         case "counter":
-            return await getattr(current.system.counter(name, replicas=current.replicas), method)(*args)
+            return await getattr(current.system.counter(name, replicas=current.replicas, **_regime(params)), method)(*args)
         case "queue":
             return await getattr(current.system.queue(name, replicas=current.replicas), method)(*args)
         case "barrier":
@@ -196,73 +224,76 @@ def _pairs[K](value: object) -> list[tuple[K, bytes]]:
 class Dict[K: Hashable, V]:
     """A map every node sees, and that survives any one of them dying."""
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, consistency: Consistency = "strong") -> None:
         self._name = name
+        self._params: Params = {"consistency": consistency}
 
     def __setitem__(self, key: K, value: V) -> None:
-        invoke("map", self._name, "put", (key, dumps(value)))
+        invoke("map", self._name, "put", (key, dumps(value)), self._params)
 
     def __getitem__(self, key: K) -> V:
-        raw = _blob(invoke("map", self._name, "get", (key,)))
+        raw = _blob(invoke("map", self._name, "get", (key,), self._params))
         if raw is None:
             raise KeyError(key)
         return loads(raw)
 
     def __contains__(self, key: K) -> bool:
-        return _flag(invoke("map", self._name, "contains", (key,)))
+        return _flag(invoke("map", self._name, "contains", (key,), self._params))
 
     def __len__(self) -> int:
-        return _count(invoke("map", self._name, "size"))
+        return _count(invoke("map", self._name, "size", (), self._params))
 
     def get(self, key: K, default: V | None = None) -> V | None:
-        raw = _blob(invoke("map", self._name, "get", (key,)))
+        raw = _blob(invoke("map", self._name, "get", (key,), self._params))
         return default if raw is None else loads(raw)
 
     def pop(self, key: K) -> bool:
-        return _flag(invoke("map", self._name, "remove", (key,)))
+        return _flag(invoke("map", self._name, "remove", (key,), self._params))
 
     def items(self) -> list[tuple[K, V]]:
-        return [(key, loads(raw)) for key, raw in _pairs(invoke("map", self._name, "items"))]
+        return [(key, loads(raw)) for key, raw in _pairs(invoke("map", self._name, "items", (), self._params))]
 
     def clear(self) -> None:
-        invoke("map", self._name, "clear")
+        invoke("map", self._name, "clear", (), self._params)
 
 
 class Set[T]:
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, consistency: Consistency = "strong") -> None:
         self._name = name
+        self._params: Params = {"consistency": consistency}
 
     def add(self, item: T) -> bool:
-        return _flag(invoke("set", self._name, "add", (dumps(item),)))
+        return _flag(invoke("set", self._name, "add", (dumps(item),), self._params))
 
     def remove(self, item: T) -> bool:
-        return _flag(invoke("set", self._name, "remove", (dumps(item),)))
+        return _flag(invoke("set", self._name, "remove", (dumps(item),), self._params))
 
     def __contains__(self, item: T) -> bool:
-        return _flag(invoke("set", self._name, "contains", (dumps(item),)))
+        return _flag(invoke("set", self._name, "contains", (dumps(item),), self._params))
 
     def __len__(self) -> int:
-        return _count(invoke("set", self._name, "size"))
+        return _count(invoke("set", self._name, "size", (), self._params))
 
     def items(self) -> list[T]:
-        return [loads(raw) for raw in _blobs(invoke("set", self._name, "items"))]
+        return [loads(raw) for raw in _blobs(invoke("set", self._name, "items", (), self._params))]
 
     def clear(self) -> None:
-        invoke("set", self._name, "clear")
+        invoke("set", self._name, "clear", (), self._params)
 
 
 class Counter:
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, consistency: Consistency = "strong") -> None:
         self._name = name
+        self._params: Params = {"consistency": consistency}
 
     def add(self, delta: int = 1) -> None:
-        invoke("counter", self._name, "add", (delta,))
+        invoke("counter", self._name, "add", (delta,), self._params)
 
     def get(self) -> int:
-        return _count(invoke("counter", self._name, "get"))
+        return _count(invoke("counter", self._name, "get", (), self._params))
 
     def reset(self) -> None:
-        invoke("counter", self._name, "reset")
+        invoke("counter", self._name, "reset", (), self._params)
 
 
 class Queue[T]:
@@ -328,16 +359,49 @@ class Lock:
             self._token = None
 
 
-def dict[K: Hashable, V](name: str) -> Dict[K, V]:  # noqa: A001
-    return Dict(name)
+class DistributedRegistry[K: Hashable, V]:
+    """A named place to leave objects for the other nodes to find.
+
+        models = sky.registry("checkpoints")
+        models.register(step, model)          # on the node that trained it
+        model = models.lookup(latest_step)    # on any node that wants it
+
+    A map with a directory's vocabulary — ``register`` a value under a name,
+    ``lookup`` it from anywhere, ``list`` the names on offer. It replicates and
+    survives a dead node the same way the other collections do.
+    """
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    def register(self, key: K, value: V) -> None:
+        invoke("map", self._name, "put", (key, dumps(value)))
+
+    def lookup(self, key: K) -> V | None:
+        raw = _blob(invoke("map", self._name, "get", (key,)))
+        return None if raw is None else loads(raw)
+
+    def unregister(self, key: K) -> bool:
+        return _flag(invoke("map", self._name, "remove", (key,)))
+
+    def list(self) -> list[K]:
+        return [key for key, _ in _pairs(invoke("map", self._name, "items"))]
 
 
-def set[T](name: str) -> Set[T]:  # noqa: A001
-    return Set(name)
+def dict[K: Hashable, V](name: str, consistency: Consistency = "strong") -> Dict[K, V]:  # noqa: A001
+    return Dict(name, consistency)
 
 
-def counter(name: str) -> Counter:
-    return Counter(name)
+def set[T](name: str, consistency: Consistency = "strong") -> Set[T]:  # noqa: A001
+    return Set(name, consistency)
+
+
+def counter(name: str, consistency: Consistency = "strong") -> Counter:
+    return Counter(name, consistency)
+
+
+def registry[K: Hashable, V](name: str) -> DistributedRegistry[K, V]:
+    return DistributedRegistry(name)
 
 
 def queue[T](name: str) -> Queue[T]:

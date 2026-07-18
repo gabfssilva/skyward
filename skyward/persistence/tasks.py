@@ -59,6 +59,9 @@ class TaskStore:
         A task that reached a worker but was never written down is a task nobody
         can ask about after a crash — and the worker will happily run it anyway.
         The order is not an implementation detail.
+
+        A task that named no timeout takes the compute's, and takes it here: the
+        deadline is a fact about the task, and a task is only admitted once.
         """
 
         async def insert() -> str:
@@ -72,6 +75,7 @@ class TaskStore:
 
             task = ident("tsk")
             retry = body.retry if body.retry is not UNSET else compute.spec.retry
+            timeout = body.timeout_seconds or compute.spec.options.default_compute_timeout
             await TaskRow(
                 id=task,
                 compute_id=compute.id,
@@ -83,7 +87,7 @@ class TaskStore:
                 retry=await packed(retry),
                 correlation_id=body.correlation_id,
                 submitted_at=now(),
-                deadline_at=now() + timedelta(seconds=body.timeout_seconds) if body.timeout_seconds else None,
+                deadline_at=now() + timedelta(seconds=timeout) if timeout else None,
             ).save().run()
 
             for rank in await self._ranks(compute.id, body):
@@ -234,6 +238,30 @@ class TaskStore:
         """Tasks that have not reached a verdict — what the sweep re-offers."""
         rows = await TaskRow.select(TaskRow.id).where(TaskRow.state.is_in(["queued", "running"]))
         return tuple(row["id"] for row in rows)
+
+    async def expire(self) -> tuple[str, ...]:
+        """Time out the tasks whose deadline has passed.
+
+        The deadline is written at admission and nothing else reads it, so this is what
+        makes it mean anything. It runs on the tick because a deadline passing is not
+        something anybody does: there is no write to react to, and the only way to
+        notice is to look.
+
+        Every attempt still in flight goes, the ones that never left included — a
+        caller who asked for an answer within a window is no better served by an
+        attempt still waiting for a machine than by one that is running.
+        """
+        rows = await TaskRow.select(TaskRow.id).where(
+            TaskRow.state.is_in(["queued", "running"]) & (TaskRow.deadline_at < now()),
+        )
+        expired = tuple(row["id"] for row in rows)
+
+        for task_id in expired:
+            for execution in await self.attempts(task_id):
+                if execution.state in PENDING:
+                    await self.observe(execution.id, "timed_out")
+
+        return expired
 
     async def load(self, compute: str) -> int:
         """How many attempts this compute still owes an answer for.

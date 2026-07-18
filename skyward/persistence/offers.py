@@ -44,6 +44,9 @@ class OfferCache:
         refresh: bool,
     ) -> Page[Offer]:
         targets = await self._targets(provider, kind)
+        if not targets:
+            return Page(items=())
+
         await asyncio.gather(*(self._ensure_fresh(row, force=refresh) for row in targets))
 
         query = OfferRow.objects().output(load_json=True).where(OfferRow.provider_id.is_in([row.id for row in targets]))

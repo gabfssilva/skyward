@@ -14,19 +14,33 @@ from functools import partial, reduce
 from msgspec import ValidationError, convert
 
 from skyward.application.errors import UnsupportedPluginError
+from skyward.plugins.accelerate import Accelerate
+from skyward.plugins.cuml import Cuml
 from skyward.plugins.huggingface import HuggingFace
+from skyward.plugins.jax import Jax
 from skyward.plugins.joblib import Joblib
+from skyward.plugins.keras import Keras
+from skyward.plugins.mig import Mig
+from skyward.plugins.mps import Mps
 from skyward.plugins.plugin import Plugin
+from skyward.plugins.sklearn import Sklearn
 from skyward.plugins.torch import Torch
 from skyward.protocol.schemas import Image, PluginRef
 from skyward.runtime.api import Info
 
-__all__ = ["PLUGINS", "HuggingFace", "Joblib", "Plugin", "Torch", "chain", "image", "resolve"]
+__all__ = ["PLUGINS", "Accelerate", "Cuml", "HuggingFace", "Jax", "Joblib", "Keras", "Mig", "Mps", "Plugin", "Sklearn", "Torch", "chain", "image", "resolve"]
 
 PLUGINS: dict[str, type[Plugin]] = {
     Torch.kind: Torch,
     HuggingFace.kind: HuggingFace,
     Joblib.kind: Joblib,
+    Jax.kind: Jax,
+    Keras.kind: Keras,
+    Cuml.kind: Cuml,
+    Sklearn.kind: Sklearn,
+    Accelerate.kind: Accelerate,
+    Mig.kind: Mig,
+    Mps.kind: Mps,
 }
 
 

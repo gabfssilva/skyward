@@ -243,12 +243,12 @@ class Reconciler:
         if compute.spec.desired == "deleted":
             return sorted(alive, key=lambda node: node.rank, reverse=True)[:surplus]
 
-        idle = await self._idlers(compute.id)
+        idle = await self._idlers(compute.id, compute.spec.options.autoscale_idle_timeout)
         leavable = [node for node in alive if node.id in idle]
 
         return sorted(leavable, key=lambda node: node.rank, reverse=True)[:surplus]
 
-    async def _idlers(self, compute_id: str) -> set[str]:
+    async def _idlers(self, compute_id: str, idle_timeout: float) -> set[str]:
         """Nodes with nothing on them, and nothing owed to them, for long enough."""
         holding, owed = await self._tasks.busy(compute_id)
         now = monotonic()
@@ -260,7 +260,7 @@ class Reconciler:
                 continue
 
             since = self._idle.setdefault(node.id, now)
-            if now - since >= IDLE_SECONDS:
+            if now - since >= idle_timeout:
                 idle.add(node.id)
 
         return idle
@@ -291,7 +291,7 @@ class Reconciler:
 
         lower, _ = bounds(compute.spec)
         was = compute.status.state
-        state = "ready" if ready and len(ready) >= lower else "provisioning"
+        state = "ready" if len(ready) >= lower else "provisioning"
         if compute.spec.desired == "deleted":
             state = "deleting"
 
@@ -378,7 +378,7 @@ def bounds(spec: ComputeSpec) -> tuple[int, int]:
     if any(plugin.collective for plugin in plugins.resolve(spec.plugins)):
         return spec.nodes.desired, spec.nodes.desired
 
-    lower = spec.nodes.min or spec.nodes.desired
-    upper = spec.nodes.max or spec.nodes.desired
+    lower = spec.nodes.min if spec.nodes.min is not None else spec.nodes.desired
+    upper = spec.nodes.max if spec.nodes.max is not None else spec.nodes.desired
 
     return min(lower, upper), max(lower, upper)

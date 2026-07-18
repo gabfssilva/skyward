@@ -54,7 +54,7 @@ uv run python guides/16_cuml_acceleration.py
 
 **What you learned:**
 
-- **`plugins=[sky.plugins.cuml(), sky.plugins.sklearn()]`** — cuML plugin installs RAPIDS packages and configures indexes; sklearn plugin adds scikit-learn.
+- **`plugins=[sky.plugins.Cuml(), sky.plugins.Sklearn()]`** — cuML plugin installs RAPIDS packages and configures indexes; sklearn plugin adds scikit-learn.
 - **cuML estimators work with sklearn utilities** — `cross_val_score`, `GridSearchCV`, and `Pipeline` all accept cuML estimators.
 - **Zero-code-change acceleration** — cuML intercepts sklearn calls and routes them to the GPU transparently.
 - **Plugins handle dependencies** — no manual pip packages or index URLs needed in the Image.

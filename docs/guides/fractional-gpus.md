@@ -56,7 +56,7 @@ Both fractional GPUs and [NVIDIA MIG](nvidia-mig.md) give you a portion of a phy
 
 **Fractional GPUs are provider-managed.** The cloud provider partitions the GPU before you see the instance. You request `count=0.5` and receive a VM with half a GPU already carved out. Skyward installs the NVIDIA GRID driver during bootstrap — the only driver that supports vGPU devices. Your code sees a normal CUDA device; the partitioning is invisible.
 
-**MIG is user-managed.** You rent a full GPU (A100, H100) and partition it yourself using `sky.plugins.mig(profile="3g.40gb")`. The plugin enables MIG mode during bootstrap, creates the partitions, and assigns each subprocess to its own device. This gives you hardware-enforced isolation with dedicated streaming multiprocessors, memory controllers, and L2 cache per partition — stronger guarantees than hypervisor-level slicing.
+**MIG is user-managed.** You rent a full GPU (A100, H100) and partition it yourself using `sky.plugins.Mig(profile="3g.40gb")`. The plugin enables MIG mode during bootstrap, creates the partitions, and assigns each subprocess to its own device. This gives you hardware-enforced isolation with dedicated streaming multiprocessors, memory controllers, and L2 cache per partition — stronger guarantees than hypervisor-level slicing.
 
 | | Fractional GPU | MIG |
 |---|---|---|
@@ -64,7 +64,7 @@ Both fractional GPUs and [NVIDIA MIG](nvidia-mig.md) give you a portion of a phy
 | Isolation | Hypervisor / vGPU level | Hardware level (dedicated SMs, memory, L2 cache) |
 | GPU models | L4 (AWS), A16 (Vultr) | A100, A30, H100, H200, B200 |
 | Granularity | Provider-defined fractions (1/8, 1/4, 1/2) | MIG profiles (1g.10gb through 7g.80gb) |
-| Multiple workloads per GPU | One workload per VM | Multiple subprocesses via `Worker(concurrency=N)` |
+| Multiple workloads per GPU | One workload per VM | Multiple subprocesses via `Executor(type="process", concurrency=N)` |
 | Use case | Cost optimization for small inference workloads | Running multiple isolated workloads on a single large GPU |
 
 If your workload fits in 3-12 GB of VRAM and you want the simplest possible setup, fractional GPUs are the right choice. If you need hardware isolation, want to run multiple workloads on the same card, or need fine-grained control over the partition profile, use MIG.

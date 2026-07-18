@@ -99,7 +99,7 @@ if __name__ == "__main__":
             },
         ),
         plugins=[
-            sky.plugins.accelerate(config={
+            sky.plugins.Accelerate(config={
                 "mixed_precision": "fp16",
                 "fsdp": {
                     "sharding_strategy": "FULL_SHARD",

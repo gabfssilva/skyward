@@ -66,4 +66,4 @@ uv run python guides/08_huggingface_finetuning.py
 - **No Skyward-specific APIs inside the function** — standard HuggingFace `Trainer`, `AutoModel`, `load_dataset`.
 - **Remote imports** — `transformers` and `datasets` only need to be installed on the worker (via the Image's `pip` field), not locally.
 - **Ephemeral instances** — checkpoints are lost on teardown; save to persistent storage for production runs.
-- **Single-node fine-tuning** — the HuggingFace Trainer manages device placement internally; add `sky.plugins.torch()` for multi-node.
+- **Single-node fine-tuning** — the HuggingFace Trainer manages device placement internally; add `sky.plugins.Torch()` for multi-node.

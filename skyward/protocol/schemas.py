@@ -185,6 +185,10 @@ class Spec(Struct, frozen=True):
     cpus: int | None = None
     memory_gb: int | None = None
     region: str | None = None
+    disk_gb: int | None = None
+    """The least disk a machine must carry to satisfy this spec."""
+    max_hourly_cost: float | None = None
+    """The most an hour of one machine may cost, at the price it is actually bought on."""
 
 
 class NodeBounds(Struct, frozen=True):
@@ -198,6 +202,37 @@ class RetryPolicy(Struct, frozen=True):
     ambiguous_retries: int = 0
 
 
+class Options(Struct, frozen=True):
+    """Operational knobs the daemon reads off the spec.
+
+    Each defaults to the value the runtime hard-coded before the knob existed, so a
+    spec built without options behaves exactly as one built with ``Options()``. The
+    client-side timeouts are not here: they govern how long the owning process waits
+    for its own pool, never leave it, and so ride the SDK's ``Options`` rather than
+    the wire.
+    """
+
+    ssh_connect_timeout: float = 300.0
+    ssh_reconnect_attempts: int = 30
+    ssh_retry_delay: float = 2.0
+    worker_timeout: float = 180.0
+    autoscale_idle_timeout: float = 30.0
+    autoscale_cooldown: float = 0.0
+    """Seconds between autoscaling decisions. ``0`` is no cooldown — today's behavior."""
+    default_compute_timeout: float = 0.0
+    """Seconds a task may run when it names no deadline of its own. ``0`` is unbounded."""
+    health_command: str | None = None
+    """A shell command run on each node to ask whether the machine is still usable.
+
+    A nonzero exit is one failure, and ``health_failures`` consecutive ones make the
+    node ``lost`` — the same word a machine that went away gets, so the deficit it
+    leaves is closed the way any other is. ``None`` probes nothing, which is what the
+    runtime did before the knob existed.
+    """
+    health_interval: float = 30.0
+    health_failures: int = 3
+
+
 class ComputeSpec(Struct, frozen=True):
     specs: tuple[Spec, ...]
     nodes: NodeBounds
@@ -205,6 +240,7 @@ class ComputeSpec(Struct, frozen=True):
     allocation: Allocation = "spot_if_available"
     image: Image = field(default_factory=Image)
     worker: Worker = Worker()
+    options: Options = Options()
     plugins: tuple[PluginRef, ...] = ()
     retry: RetryPolicy = RetryPolicy()
     delete_on_exit: bool = False

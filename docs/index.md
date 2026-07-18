@@ -48,7 +48,7 @@ with sky.Compute(
     provider=sky.AWS(), 
     accelerator=sky.accelerators.H100(), 
     nodes=4,
-    plugins=[sky.plugins.torch()]
+    plugins=[sky.plugins.Torch()]
 ) as compute:
     result = train(my_data) @ compute  # broadcast to all 4 nodes
 ```
@@ -109,25 +109,35 @@ Define your remote environment declaratively. Python version, packages, system d
 === "Plugins"
     ```python
     from contextlib import contextmanager
-    from skyward.api.plugin import Plugin
+    from typing import ClassVar
 
-    @contextmanager
-    def wandb_tracking(info):
-        import wandb
-        wandb.init(project="my-project", group=f"node-{info.node_index}")
-        yield
-        wandb.finish()
+    from msgspec.structs import replace
 
-    wandb_plugin = (
-        Plugin.create("wandb")
-        .with_image_transform(lambda img, _: replace(img, pip=(*img.pip, "wandb")))
-        .with_around_app(wandb_tracking)
-    )
+    from skyward.plugins import PLUGINS, Plugin
+    from skyward.protocol.schemas import Image
+    from skyward.runtime.api import Info
+
+    class Wandb(Plugin, frozen=True):
+        kind: ClassVar[str] = "wandb"
+
+        project: str
+
+        def image(self, image: Image) -> Image:
+            return replace(image, pip=(*image.pip, "wandb"))
+
+        @contextmanager
+        def setup(self, info: Info):
+            import wandb
+            wandb.init(project=self.project, group=f"rank-{info.rank}")
+            yield
+            wandb.finish()
+
+    PLUGINS[Wandb.kind] = Wandb
 
     with sky.Compute(
         provider=sky.AWS(),
         accelerator=sky.accelerators.H100(),
-        plugins=[sky.plugins.torch(), wandb_plugin],
+        plugins=[sky.plugins.Torch(), Wandb(project="my-project")],
     ) as compute:
         result = train(data) >> compute
     ```
@@ -179,7 +189,7 @@ with sky.Compute(
     provider=sky.AWS(), 
     accelerator=sky.accelerators.H100(), 
     nodes=4,
-    plugins=[sky.plugins.torch()]
+    plugins=[sky.plugins.Torch()]
 ) as compute:
     # preprocess on one node, train on all, evaluate async
     data = preprocess(raw) >> compute
@@ -235,8 +245,8 @@ with sky.Compute(
     accelerator=sky.accelerators.H100(),
     nodes=4,
     plugins=[
-        sky.plugins.torch(), 
-        sky.plugins.accelerate({"fsdp": {"sharding_strategy": "FULL_SHARD"}})
+        sky.plugins.Torch(), 
+        sky.plugins.Accelerate({"fsdp": {"sharding_strategy": "FULL_SHARD"}})
     ],
 ) as compute:
     result = finetune(model, dataset) @ compute

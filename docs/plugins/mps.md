@@ -1,62 +1,47 @@
 # NVIDIA MPS
 
-When multiple CUDA processes share a single GPU — concurrent inference servers, multiple workers running independent forward passes, parallel data preprocessing pipelines — the default CUDA behavior is time-slicing. Each process gets exclusive access to the GPU for a time quantum, then yields to the next. Context switches between processes are expensive: the GPU must save and restore execution state, flush caches, and re-establish memory mappings. For workloads that do not saturate the GPU's compute capacity individually, time-slicing wastes significant throughput because the hardware sits idle during context switches and because each process's kernels cannot overlap with another's.
+When several CUDA processes share one GPU, the default behaviour is time-slicing: each gets the device for a quantum, then yields. The context switches are expensive — state saved and restored, caches flushed — and kernels from different processes never overlap. For workloads that do not individually saturate the GPU, that wastes most of it.
 
-NVIDIA Multi-Process Service (MPS) solves this. It provides a shared GPU context that multiple CUDA processes connect to through a single daemon. Instead of each process owning its own CUDA context and time-slicing, all processes submit work through the MPS daemon, which funnels their kernels into a unified execution stream. The GPU's SM (Streaming Multiprocessor) scheduler can then overlap kernels from different processes, filling compute gaps and improving utilization. The result is higher aggregate throughput and lower latency, especially for workloads where individual processes use only a fraction of the GPU's capacity.
+NVIDIA Multi-Process Service gives those processes one shared CUDA context, funnelled through a daemon. The SM scheduler can then overlap their kernels, filling the gaps.
 
-Skyward's `mps` plugin starts the MPS daemon during instance bootstrap and configures the environment variables that CUDA uses to connect to it. Every CUDA process on the worker — including concurrent task threads or processes managed by the `Worker` executor — automatically routes through MPS.
-
-## What it does
-
-**Image transform** — Sets environment variables that configure the MPS runtime:
-
-- `CUDA_MPS_PIPE_DIRECTORY` — The directory for the MPS daemon's named pipes (set to `/tmp/nvidia-mps`). All CUDA processes on the instance use this path to communicate with the daemon.
-- `CUDA_MPS_LOG_DIRECTORY` — The directory for MPS daemon logs (set to `/tmp/nvidia-mps-log`).
-- `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE` — Optionally limits the percentage of GPU compute threads each MPS client can use. This prevents a single client from monopolizing the GPU.
-- `CUDA_MPS_PINNED_DEVICE_MEM_LIMIT` — Optionally limits the amount of pinned (page-locked) memory each client can allocate per device.
-
-**Bootstrap** — After the base environment is set up, the plugin runs two commands: `mkdir -p /tmp/nvidia-mps /tmp/nvidia-mps-log` to create the pipe and log directories, then `nvidia-cuda-mps-control -d` to start the MPS daemon in the background. The daemon runs for the lifetime of the instance. Once it is running, any CUDA process that starts on the instance automatically connects to it through the pipe directory.
-
-## When to use MPS
-
-MPS is not for every workload. It is specifically valuable when multiple independent CUDA processes need to share a GPU concurrently, and each individual process does not fully saturate the GPU on its own.
-
-**High-concurrency inference** is the primary use case. If you are running a model serving workload where many requests arrive simultaneously, each running a forward pass through a relatively small model (ResNet-50, DistilBERT, a small diffusion model), the individual forward passes may only use 10-30% of the GPU's compute capacity. Without MPS, the GPU time-slices between them. With MPS, their kernels overlap on the SMs, and aggregate throughput increases substantially.
-
-**Multiple workers per GPU** is the related pattern. Skyward's `Worker(concurrency=N, executor="process")` runs N worker processes on each node. If the node has one GPU, all N processes share it. Without MPS, they context-switch. With MPS, they share efficiently. This is useful for workloads that are partially GPU-bound and partially CPU-bound — each process can use the GPU for its GPU portion while other processes use it for theirs.
-
-**Batch data preprocessing** that uses GPU-accelerated libraries (cuDF, cuPy, torchvision transforms on GPU) can also benefit, especially when multiple preprocessing pipelines run concurrently.
-
-MPS is generally **not useful** for:
-
-- **Single-process workloads** — If only one process uses the GPU, MPS adds no benefit (and a negligible amount of overhead).
-- **Workloads that saturate the GPU** — If a single process uses 90%+ of the GPU's compute, there is nothing to overlap. Multi-node training with DDP, where each node runs one training process that fully utilizes the GPU, does not benefit from MPS.
-- **Multi-GPU training** — MPS operates per-GPU. For multi-GPU setups, each GPU has its own MPS daemon. But if the training process already uses all GPUs via NCCL, MPS is irrelevant.
+`sky.plugins.Mps()` brings that daemon up in the worker process, before any task or subprocess exists, and puts the variables CUDA reads to find it in the environment every child inherits.
 
 ## Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `active_thread_percentage` | `int \| None` | `None` | Maximum percentage of GPU compute threads (1-100) each MPS client can use. Useful for fair scheduling across concurrent processes. |
-| `pinned_memory_limit` | `str \| None` | `None` | Per-device pinned memory limit per client (e.g. `"0=2G"` for 2 GB on device 0). Prevents a single client from exhausting pinned memory. |
+| `active_thread_percentage` | `int \| None` | `None` | Ceiling on the share of GPU compute one client may use, 1–100. Left to the MPS default when unset |
+| `pinned_memory_limit` | `str \| None` | `None` | Per-device pinned memory limit, e.g. `"0=2G"` for 2 GB on device 0 |
 
-**`active_thread_percentage`** controls how much of the GPU each MPS client can use. If you have 8 concurrent processes sharing a GPU, setting `active_thread_percentage=12` ensures each one gets roughly 12% of the SMs. Without this, a single client could submit enough work to saturate the GPU, starving others. A common heuristic is `100 // concurrency`.
+**`active_thread_percentage`** is fair-share scheduling. With 8 concurrent processes, `100 // 8 = 12` gives each roughly an eighth of the SMs; without it, one client can submit enough work to starve the rest.
 
-**`pinned_memory_limit`** restricts page-locked memory allocation per client. Pinned memory enables fast GPU transfers but is a finite resource. If 8 processes each try to pin 4 GB, the system may run out. The format is `"device_id=limit"` — for example, `"0=2G"` limits each client to 2 GB of pinned memory on GPU 0.
+**`pinned_memory_limit`** caps page-locked allocation per client. Pinned memory makes transfers fast and is finite; eight processes each pinning 4 GB will exhaust it. The format is `"device=limit"`.
 
-## How it differs from multi-node training
+## How it works
 
-MPS and multi-node distributed training solve fundamentally different problems. Multi-node training (via the `torch` plugin with DDP, or the `jax` plugin) splits a single training job across multiple GPUs on multiple machines, synchronizing gradients between them. Each GPU runs one process that fully utilizes it.
+The plugin has exactly one hook: `setup`, entered once in the worker process before it takes its first task. It:
 
-MPS enables multiple independent processes to share a single GPU efficiently. The processes do not coordinate — they each run their own workload, and MPS ensures their GPU operations overlap rather than time-slice.
+1. Creates `/tmp/nvidia-mps` and `/tmp/nvidia-mps-log`.
+2. Runs `nvidia-cuda-mps-control -d` to start the daemon.
+3. Sets `CUDA_MPS_PIPE_DIRECTORY` and `CUDA_MPS_LOG_DIRECTORY`, plus `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE` and `CUDA_MPS_PINNED_DEVICE_MEM_LIMIT` when those parameters are given.
 
-You can combine both patterns. A multi-node cluster with the `torch` plugin for DDP training does not need MPS (each node's GPU is dedicated to one training process). But a multi-node cluster for inference — where each node handles many concurrent requests — benefits from MPS on each node.
+There is no `image` hook and no `bootstrap` hook. MPS ships with the CUDA driver, so there is nothing to install, and the image's `env` reaches only the bootstrap shell — which has exited by the time the worker starts. The daemon and its variables have to be put up where the tasks actually run.
+
+**Starting the daemon is best-effort.** On a machine without the control binary the call fails and is swallowed: a worker that cannot share its GPU should still run the task on the whole one, not refuse to start.
+
+## When to use it
+
+MPS earns its keep when several independent CUDA processes share a GPU and none of them saturates it alone.
+
+- **High-concurrency inference.** Many small forward passes (ResNet-50, DistilBERT) that each use 10–30% of the card. Without MPS they time-slice; with it their kernels overlap.
+- **Several task slots per GPU.** `executor=sky.Executor(type="process", concurrency=N)` runs N processes on the node. If it has one GPU, they all share it.
+- **GPU-accelerated preprocessing** (cuDF, cuPy, GPU transforms) running in parallel pipelines.
+
+It is not useful for a single-process workload, for anything that already saturates the GPU — DDP training, where each node runs one process that owns the card — or as a substitute for multi-GPU work.
 
 ## Usage
 
 ### Concurrent inference
-
-Run multiple inference tasks concurrently on a single GPU node:
 
 ```python
 import skyward as sky
@@ -85,34 +70,26 @@ with sky.Compute(
     provider=sky.AWS(),
     nodes=1,
     accelerator=sky.accelerators.T4(),
-    worker=sky.Worker(concurrency=CONCURRENCY, executor="process"),
-    plugins=[
-        sky.plugins.torch(),
-        sky.plugins.mps(active_thread_percentage=100 // CONCURRENCY),
-    ],
-    image=sky.Image(pip=["torchvision"]),
+    executor=sky.Executor(type="process", concurrency=CONCURRENCY),
+    image=sky.Image(pip=["torch", "torchvision"]),
+    plugins=[sky.plugins.Mps(active_thread_percentage=100 // CONCURRENCY)],
 ) as compute:
     tasks = [inference(i, batch_size=1) for i in range(CONCURRENCY * 2)]
-    results = list(sky.gather(*tasks, stream=True) >> compute)
+    results = list(sky.gather(*tasks) >> compute)
 ```
 
-The `executor="process"` setting means each concurrent task runs in its own process with its own CUDA context. MPS unifies those contexts into a single shared context on the GPU. The `active_thread_percentage=100 // 8 = 12` ensures fair sharing across 8 concurrent processes.
+`type="process"` means each concurrent task has its own CUDA context; MPS unifies them into one on the card. The gain scales with how much of the GPU each process leaves idle — smaller models and smaller batches benefit most.
 
-Without MPS, these 8 processes would time-slice on the GPU. With MPS, their kernels overlap, and aggregate throughput is higher. The improvement depends on how much of the GPU each individual process utilizes — smaller models and smaller batch sizes see greater relative improvement because there is more idle compute to fill.
-
-### With higher concurrency
-
-For very high concurrency (many small tasks), increase the worker's concurrency and lower the per-client thread percentage:
+### Higher concurrency
 
 ```python
 with sky.Compute(
     provider=sky.AWS(),
     nodes=1,
     accelerator=sky.accelerators.A100(),
-    worker=sky.Worker(concurrency=32, executor="process"),
+    executor=sky.Executor(type="process", concurrency=32),
     plugins=[
-        sky.plugins.torch(),
-        sky.plugins.mps(
+        sky.plugins.Mps(
             active_thread_percentage=3,
             pinned_memory_limit="0=1G",
         ),
@@ -121,10 +98,14 @@ with sky.Compute(
     ...
 ```
 
-With 32 concurrent processes, each gets 3% of the GPU's compute threads and at most 1 GB of pinned memory. This is appropriate for very lightweight inference tasks (small models, single-sample batches) where the goal is maximum throughput from a single GPU.
+## How it differs from MIG
+
+MPS shares in software: one context, no memory isolation, any number of clients, works on any CUDA GPU. [MIG](mig.md) partitions in hardware: dedicated SMs, memory and L2 per slice, fixed at bootstrap, and only on supported datacenter cards.
+
+Use MPS for flexible sharing between trusted processes; MIG when you need guaranteed isolation and predictable per-partition performance.
 
 ## Next steps
 
-- [PyTorch Distributed](../guides/pytorch-distributed.md) — Multi-node training with DDP (complementary to MPS)
-- [Worker Executors](../guides/worker-executors.md) — Thread vs process executors and when to use each
-- [What are Plugins?](index.md) — How the plugin system works
+- [NVIDIA MIG](mig.md) — hardware partitioning instead
+- [Worker Executors](../guides/worker-executors.md) — thread vs process
+- [What are plugins?](index.md) — the hook model

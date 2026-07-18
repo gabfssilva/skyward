@@ -1,52 +1,44 @@
 # NVIDIA MIG
 
-A single A100 or H100 GPU has enormous compute capacity — often more than a single workload needs. Running a ResNet-50 inference or a small fine-tuning job on an 80 GB A100 leaves most of the hardware idle: hundreds of SMs without work, gigabytes of memory unaddressed, L2 cache serving a fraction of its bandwidth. You're paying for the full card but using a sliver of it.
+A single A100 or H100 has more compute than many workloads need. Running a small fine-tune on an 80 GB A100 leaves most of the card idle — hundreds of SMs without work, gigabytes unaddressed — and you pay for all of it.
 
-NVIDIA Multi-Instance GPU (MIG) solves this at the hardware level. It partitions one physical GPU into multiple isolated instances — each with its own dedicated compute units (SMs), its own memory controller, and its own L2 cache. These are not virtual devices sharing resources through time-slicing or software scheduling. They are physically isolated execution environments carved out of the silicon. Two processes running on two MIG partitions cannot interfere with each other: one cannot access the other's memory, steal its compute cycles, or compete for cache bandwidth. Each partition behaves like a smaller, independent GPU.
+NVIDIA Multi-Instance GPU partitions one physical GPU into isolated instances, each with its own SMs, memory controller and L2 cache. These are not time-sliced virtual devices: two processes on two MIG partitions cannot touch each other's memory, steal each other's cycles, or compete for cache bandwidth.
 
-The operational burden of MIG is what keeps most teams from using it. You need to enable MIG mode (which requires a GPU reset), create GPU instances with the right profile via `nvidia-smi`, create compute instances inside those GPU instances, enumerate the resulting MIG UUIDs, and assign each process to its partition by setting `CUDA_VISIBLE_DEVICES` to the correct UUID. Get any step wrong — mismatched profiles, wrong UUID indexing, MIG mode not enabled — and CUDA sees the wrong device or no device at all.
+The operational burden is what stops most teams using it. Enable MIG mode, create GPU instances with the right profile, create compute instances inside them, enumerate the resulting UUIDs, and point each process at its own through `CUDA_VISIBLE_DEVICES`. Get any of it wrong and CUDA sees the wrong device, or none.
 
-Skyward's `mig` plugin handles the full lifecycle: enables MIG mode during bootstrap, creates the requested partitions, and pins each subprocess to its own device before any task executes. Your `@sky.function` functions see a normal CUDA device — they don't know MIG exists.
-
-## What it does
-
-The plugin configures container-level GPU visibility, enables MIG mode and creates partitions during bootstrap, and assigns each subprocess its own MIG device at runtime.
+`sky.plugins.Mig()` does the whole sequence. Your `@sky.function` sees a normal CUDA device and does not know MIG exists.
 
 ## Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `profile` | `str` | — | MIG profile name (e.g. `"3g.40gb"`, `"1g.10gb"`, `"7g.80gb"`). Determines the size and maximum count of partitions. |
+| `profile` | `str` | — (required) | The MIG profile every slice is cut to, e.g. `"3g.40gb"` or `"1g.10gb"` |
 
-The profile string is passed directly to `nvidia-smi mig -cgi`. Available profiles depend on the GPU model — an A100 80GB supports seven profiles (from `1g.10gb` to `7g.80gb`), while an H100 supports a different set, and an A30 supports fewer still. The first number indicates compute slices (groups of SMs), not a fraction of the GPU: `3g.40gb` gets about 3/7 of the SMs, which is roughly 42 streaming multiprocessors on an A100. The second number is dedicated memory.
+The string is passed straight to `nvidia-smi mig -cgi`. Available profiles depend on the GPU: an A100 80GB supports seven, from `1g.10gb` to `7g.80gb`. The first number is compute slices (groups of SMs), not a fraction of the card; the second is dedicated memory.
 
-See [NVIDIA's supported GPUs page](https://docs.nvidia.com/datacenter/tesla/mig-user-guide/supported-gpus.html) for the full profile matrix per GPU, or run `nvidia-smi mig -lgip` on a MIG-capable node to list what the hardware supports.
+See [NVIDIA's supported GPUs page](https://docs.nvidia.com/datacenter/tesla/mig-user-guide/supported-gpus.html), or run `nvidia-smi mig -lgip` on a MIG-capable node.
+
+## Requirements
+
+The plugin's contract only holds under one executor configuration:
+
+```python
+executor=sky.Executor(type="process", concurrency=N, reuse=True)
+```
+
+Each concurrent slot has to be a distinct, long-lived child with a stable `info.worker`, because slice *k* is claimed by child *k* for that child's life. Under the thread executor every task shares one process and one `info.worker` of zero — they would all pin the same slice. Without `reuse`, a child dies after its task and the pinning buys nothing.
+
+Beyond that:
+
+- **A MIG-capable GPU** — datacenter and professional cards (A100, H100, B200). Consumer GPUs do not support MIG.
+- **Concurrency the profile can satisfy** — an A100 80GB fits 2 partitions at `3g.40gb`, 3 at `2g.20gb`, 7 at `1g.10gb`. Asking for more fails during bootstrap, which is the right time for it to fail.
+- **One GPU per node** — the implementation reads one flat list of slice UUIDs and indexes it by worker.
 
 ## How it works
 
-### Image transform
+### `bootstrap`
 
-The `transform` hook sets a single environment variable: `NVIDIA_VISIBLE_DEVICES=all`. This tells the NVIDIA container runtime to expose every MIG partition to the worker process. Without it, a container environment might present only a subset of devices — or a single device that maps to the whole GPU, bypassing the MIG partitions entirely. The variable is merged into the existing image environment using `replace()`, preserving any variables already defined in the `Image` or added by other plugins.
-
-### Bootstrap
-
-The `bootstrap` hook generates the shell commands that partition the GPU. It runs after the standard bootstrap phases (apt, pip, Python setup) and produces two kinds of commands:
-
-First, it enables MIG mode:
-
-```
-nvidia-smi -mig 1
-```
-
-This is a mode switch on the GPU — it reconfigures the hardware to support partitioning. On a freshly booted cloud instance, MIG mode is typically off by default. Enabling it does not require a GPU reset on supported drivers (R470+), but it must happen before any GPU instances are created.
-
-Then, for each worker subprocess (determined by `cluster.spec.worker.concurrency`), it creates one partition:
-
-```
-nvidia-smi mig -cgi <profile> -C
-```
-
-The `-cgi` flag creates a GPU Instance with the given profile, and `-C` immediately creates a Compute Instance inside it. For `concurrency=2` and `profile="3g.40gb"`, the bootstrap produces:
+The `bootstrap` hook returns two shell phases, appended after the image's own. The first enables MIG mode and cuts the card, once per concurrent slot:
 
 ```
 nvidia-smi -mig 1
@@ -54,58 +46,37 @@ nvidia-smi mig -cgi 3g.40gb -C
 nvidia-smi mig -cgi 3g.40gb -C
 ```
 
-The number of partitions created equals the worker concurrency. If the GPU does not support that many instances for the given profile — for example, requesting three `3g.40gb` partitions on an A100, which only supports two — `nvidia-smi` exits with an error and the bootstrap fails. This is intentional: the concurrency and profile must agree, and the failure happens early (during provisioning) rather than silently at runtime.
+`-cgi` creates a GPU Instance with the profile; `-C` immediately creates a Compute Instance inside it. The number of partitions is the executor's concurrency, which the hook is handed for exactly this reason.
 
-### Process lifecycle (`around_process`)
+The second phase installs NVIDIA DCGM (`datacenter-gpu-manager`) and starts `nv-hostengine` if it is not already up. Both are best-effort — the phase does not fail the bootstrap when the package is unavailable.
 
-The `around_process` hook runs once per subprocess, before the first task executes. It solves the last piece of the MIG puzzle: assigning each subprocess to its specific partition.
+There is no `image` hook: the plugin adds no packages and sets no image environment.
 
-The hook:
+### `run`
 
-1. Calls `nvidia-smi -L` to list all GPU devices and their MIG instances. The output includes MIG UUIDs in the format `MIG-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`.
-2. Extracts all MIG UUIDs using a regex match.
-3. Reads `instance_info().worker` to determine this subprocess's index (0, 1, 2, ...).
-4. Sets `CUDA_VISIBLE_DEVICES` to the UUID at that index.
+On the first task in each process, the plugin runs `nvidia-smi -L`, extracts the MIG UUIDs by regex, and sets `CUDA_VISIBLE_DEVICES` to the one at `info.worker`.
 
-After this, CUDA presents the assigned partition as the only available device. `torch.device("cuda")` resolves to this partition. `torch.cuda.device_count()` returns 1. The subprocess has no way to access other partitions — the isolation is enforced by both the environment variable and the hardware.
+It has to be the process that will import the GPU library and run the task — the child, not the worker that spawned it — which is why this is a `run` hook and not `setup`. A module-global flag under a lock keeps it to once per process; the pin is then stable for that child's life.
 
-Each subprocess runs this independently in its own process. Worker 0 gets the first MIG UUID, worker 1 gets the second, and so on. Because the hook runs exactly once per process (not per task), the device assignment is stable for the lifetime of the subprocess — subsequent tasks on the same worker reuse the same partition without re-running the hook.
+Afterwards CUDA presents the assigned partition as the only device: `torch.device("cuda")` resolves to it, `torch.cuda.device_count()` returns 1, and the isolation is enforced by the hardware as much as the variable.
 
 ## When to use MIG
 
-MIG is specifically valuable when you have a high-end GPU and workloads that don't need its full capacity.
+**Independent runs** are the main case — hyperparameter sweeps, architecture comparisons, ablations, where each run is its own job. Each gets guaranteed resources, so results are directly comparable with no contention noise.
 
-**Independent training runs** are the primary use case. If you're running hyperparameter sweeps, architecture comparisons, or ablation studies where each run is a separate training job, MIG lets you run multiple jobs on a single card. Each job gets guaranteed resources — no interference, no contention, predictable performance.
+**Concurrent inference** works when each model fits a partition's memory: better isolation than MPS, with no risk of one model's allocation starving another.
 
-**Concurrent inference** works well when each model fits within a partition's memory. Two models serving requests on two `3g.40gb` partitions of an A100 each get dedicated compute and memory — better isolation than MPS, with no risk of one model's memory allocation starving the other.
-
-**Development and experimentation** benefits from MIG when you have a powerful GPU but your experiments are small. Instead of wasting 70 GB of memory while fine-tuning a small model, partition the card and run several experiments simultaneously.
-
-MIG is generally **not useful** for:
-
-- **Workloads that saturate the GPU** — If your training loop uses all SMs and all memory, partitioning reduces performance. A single `7g.80gb` partition on an A100 has fewer SMs than the full card.
-- **Multi-GPU distributed training** — DDP and FSDP expect each rank to own a full GPU. MIG partitions are not designed for gradient synchronization across them. Use the `torch` plugin for distributed training instead.
-- **Unsupported GPUs** — Consumer GPUs do not support MIG. See [Requirements](#requirements) for the full constraint list.
-- **Dynamic workloads with varying resource needs** — MIG partitions are fixed at setup time. If your workload needs more memory for some tasks and less for others, MPS offers more flexibility.
-
-## How it differs from MPS
-
-MIG and MPS both allow multiple processes to share a GPU, but the isolation model is fundamentally different.
-
-**MIG** provides hardware-level isolation. Each partition has its own dedicated SMs, memory, and L2 cache. One partition cannot access another's memory or steal its compute cycles. The trade-off is that partitions are fixed — you choose a profile at setup time, and all partitions on a GPU must use the same profile. MIG is only available on [supported datacenter and professional GPUs](https://docs.nvidia.com/datacenter/tesla/mig-user-guide/supported-gpus.html).
-
-**MPS** provides software-level sharing. All processes submit kernels through a shared daemon, and the GPU scheduler overlaps their work. There is no memory isolation — a misbehaving process can consume all available memory. The benefit is flexibility: any number of processes can share the GPU without predefined partitions, and MPS works on any CUDA GPU.
-
-Use MIG when you need guaranteed isolation and predictable performance per partition. Use MPS when you need flexible sharing and the processes are trusted. The two are mutually exclusive on the same GPU — enabling MIG mode disables MPS-style sharing within each partition, though MPS can be used within a single MIG partition if needed.
+MIG is **not** useful for workloads that saturate the GPU (a `7g.80gb` slice has fewer SMs than the whole card), for distributed training (DDP and FSDP expect each rank to own a full GPU — use [`Torch`](torch.md)), on consumer GPUs, or for workloads whose resource needs vary, since partitions are fixed at bootstrap. For that last case, [MPS](mps.md) is the flexible alternative.
 
 ## Usage
 
 ### Independent training on partitions
 
-The most common pattern: run independent training jobs on separate partitions of a single GPU.
-
 ```python
 import skyward as sky
+
+PARTITIONS = 2
+PROFILE = "3g.40gb"
 
 
 @sky.function
@@ -122,9 +93,7 @@ def train_on_partition(epochs: int, lr: float) -> dict:
     model = nn.Sequential(
         nn.Linear(784, 256),
         nn.ReLU(),
-        nn.Linear(256, 128),
-        nn.ReLU(),
-        nn.Linear(128, 10),
+        nn.Linear(256, 10),
     ).to(device)
 
     x = torch.randn(5000, 784, device=device)
@@ -134,10 +103,9 @@ def train_on_partition(epochs: int, lr: float) -> dict:
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = nn.CrossEntropyLoss()
 
-    for epoch in range(epochs):
+    for _ in range(epochs):
         epoch_loss = 0.0
-        correct = 0
-        total = 0
+        correct = total = 0
         for batch_x, batch_y in loader:
             optimizer.zero_grad()
             output = model(batch_x)
@@ -157,103 +125,61 @@ def train_on_partition(epochs: int, lr: float) -> dict:
     }
 
 
-PARTITIONS = 2
-PROFILE = "3g.40gb"
-
 with sky.Compute(
     provider=sky.Verda(),
     nodes=1,
     accelerator=sky.accelerators.A100(),
-    worker=sky.Worker(concurrency=PARTITIONS, executor="process"),
+    executor=sky.Executor(type="process", concurrency=PARTITIONS, reuse=True),
     image=sky.Image(pip=["torch"]),
-    plugins=[sky.plugins.mig(profile=PROFILE)],
+    plugins=[sky.plugins.Mig(profile=PROFILE)],
 ) as compute:
     tasks = [train_on_partition(epochs=10, lr=1e-3) for _ in range(PARTITIONS)]
     results = list(sky.gather(*tasks, stream=True) >> compute)
 ```
 
-The concurrency and profile must agree. A `3g.40gb` profile on an A100 supports exactly two partitions, so `concurrency=2`. Setting concurrency to three would fail during bootstrap because the GPU cannot create a third instance of that profile.
+The concurrency and the profile must agree: `3g.40gb` on an A100 supports exactly two partitions, so `concurrency=2`.
 
-Notice that PyTorch is installed via `Image(pip=["torch"])`, not via `sky.plugins.torch()`. The torch plugin is designed for multi-node distributed training — it calls `init_process_group()`, which MIG partitions don't need. MIG partitions are independent workloads, not a distributed cluster.
+PyTorch comes from `Image(pip=["torch"])`, not from `sky.plugins.Torch()`. The torch plugin forms a process group, which independent MIG partitions have no use for — they are separate workloads, not a distributed job.
 
 ### Maximum partitions
-
-For lightweight workloads — small model inference, quick evaluations, data preprocessing with GPU-accelerated libraries — you can maximize the number of partitions with a smaller profile:
 
 ```python
 with sky.Compute(
     provider=sky.AWS(),
     nodes=1,
-    accelerator=sky.accelerators.A100(memory="80GB"),
-    worker=sky.Worker(concurrency=7, executor="process"),
+    accelerator=sky.accelerators.A100(),
+    executor=sky.Executor(type="process", concurrency=7, reuse=True),
     image=sky.Image(pip=["torch"]),
-    plugins=[sky.plugins.mig(profile="1g.10gb")],
+    plugins=[sky.plugins.Mig(profile="1g.10gb")],
 ) as compute:
     tasks = [evaluate(model_id=i) for i in range(7)]
     results = list(sky.gather(*tasks, stream=True) >> compute)
 ```
 
-Seven partitions from a single A100 80GB, each with ~10 GB of memory and 14 SMs. Each partition can run a small model (DistilBERT, ResNet-18, a lightweight diffusion decoder) independently. This is seven times the throughput of running them sequentially on the full card — at the cost of reduced per-partition compute.
+Seven slices of ~10 GB each from one A100 80GB. Enough for a small model apiece; less compute per slice than the whole card would give one of them.
 
-The `1g.10gb` profile is the smallest available on the A100. Smaller profiles mean more partitions but less compute and memory per partition. If your model needs more than 10 GB, step up to `2g.20gb` (three partitions) or `3g.40gb` (two partitions).
+### Multi-node
 
-### Hyperparameter sweep
-
-Different configurations running simultaneously on separate partitions — each partition explores a different point in the hyperparameter space:
-
-```python
-configs = [
-    {"epochs": 20, "lr": 1e-3},
-    {"epochs": 20, "lr": 3e-4},
-]
-
-with sky.Compute(
-    provider=sky.Verda(),
-    nodes=1,
-    accelerator=sky.accelerators.A100(),
-    worker=sky.Worker(concurrency=len(configs), executor="process"),
-    image=sky.Image(pip=["torch"]),
-    plugins=[sky.plugins.mig(profile="3g.40gb")],
-) as compute:
-    tasks = [train_on_partition(**cfg) for cfg in configs]
-    results = list(sky.gather(*tasks, stream=True) >> compute)
-
-    best = max(results, key=lambda r: r["accuracy"])
-    print(f"Best: worker {best['worker']} with acc={best['accuracy']}%")
-```
-
-Both configurations run simultaneously with hardware-enforced isolation. Neither run can affect the other's performance, so the results are directly comparable — no noise from resource contention.
-
-### Multi-node with MIG
-
-MIG works per-GPU, not per-cluster. On a multi-node pool, each node independently partitions its own GPU:
+MIG is per-GPU, not per-compute. On several nodes, each partitions its own card:
 
 ```python
 with sky.Compute(
     provider=sky.AWS(),
     nodes=3,
     accelerator=sky.accelerators.A100(),
-    worker=sky.Worker(concurrency=2, executor="process"),
+    executor=sky.Executor(type="process", concurrency=2, reuse=True),
     image=sky.Image(pip=["torch"]),
-    plugins=[sky.plugins.mig(profile="3g.40gb")],
+    plugins=[sky.plugins.Mig(profile="3g.40gb")],
 ) as compute:
-    # 3 nodes * 2 partitions = 6 independent workers
     tasks = [train_on_partition(epochs=10, lr=lr) for lr in [1e-2, 3e-3, 1e-3, 3e-4, 1e-4, 3e-5]]
     results = list(sky.gather(*tasks, stream=True) >> compute)
 ```
 
-Each of the 3 nodes gets its own A100 split into two `3g.40gb` partitions, giving you 6 independent workers total. Tasks are dispatched round-robin across all 6 workers. This is not distributed training — there is no gradient synchronization between partitions. Each task runs independently, which is exactly what you want for sweeps, evaluations, and embarrassingly parallel workloads.
-
-## Requirements
-
-- **MIG-capable GPU** — Supported on datacenter and professional GPUs such as A100, H100, and B200. Consumer GPUs do not support MIG. See [NVIDIA's supported GPUs page](https://docs.nvidia.com/datacenter/tesla/mig-user-guide/supported-gpus.html) for the current list.
-- **Process executor** — `Worker(executor="process")` is required. MIG device assignment works by setting `CUDA_VISIBLE_DEVICES` per subprocess. The thread executor shares a single process (and a single `CUDA_VISIBLE_DEVICES`), so all threads would see the same partition.
-- **Concurrency matches profile** — The `concurrency` value must not exceed the number of partitions the GPU supports for the given profile. An A100 80GB supports 2 partitions for `3g.40gb`, 3 for `2g.20gb`, and 7 for `1g.10gb`.
-- **Single GPU per node** — The current implementation assumes one GPU per node. Multi-GPU nodes with per-GPU MIG partitioning are not yet supported.
+Six independent slots — three nodes, two slices each. There is no gradient synchronization between them; this is for sweeps and embarrassingly parallel work.
 
 ## Next steps
 
-- [NVIDIA MIG Guide](../guides/nvidia-mig.md) — Step-by-step walkthrough with a training example
-- [NVIDIA MPS](mps.md) — Software-level GPU sharing (complementary approach)
-- [Worker Executors](../guides/worker-executors.md) — Thread vs process executors and when to use each
-- [What are Plugins?](index.md) — How the plugin system works
+- [NVIDIA MIG guide](../guides/nvidia-mig.md) — walkthrough with a training example
+- [NVIDIA MPS](mps.md) — software sharing, the complementary approach
+- [Worker Executors](../guides/worker-executors.md) — thread vs process
+- [What are plugins?](index.md) — the hook model

@@ -62,32 +62,27 @@ tasks:
   test:e2e:distributed:
     desc: "E2E: distributed collections (dict, set, counter, queue, barrier, lock)"
     cmds:
-      - uv run pytest tests/test_distributed.py {{.CLI_ARGS}}
+      - uv run pytest tests/test_distributed_e2e.py {{.CLI_ARGS}}
 
-  test:e2e:image:
-    desc: "E2E: image and bootstrap validation"
+  test:bootstrap:
+    desc: "Unit: bootstrap script generation"
     cmds:
-      - uv run pytest tests/test_image.py {{.CLI_ARGS}}
+      - uv run pytest tests/test_bootstrap.py {{.CLI_ARGS}}
 
-  test:e2e:torch:
-    desc: "E2E: PyTorch distributed training plugin"
+  test:plugins:
+    desc: "Unit: plugin image transforms and wire forms"
     cmds:
-      - uv run pytest tests/plugins/test_torch.py {{.CLI_ARGS}}
+      - uv run pytest tests/test_plugins.py {{.CLI_ARGS}}
 
-  test:e2e:jax:
-    desc: "E2E: JAX distributed plugin"
+  test:plugin:jax:
+    desc: "Unit: JAX plugin"
     cmds:
-      - uv run pytest tests/plugins/test_jax.py {{.CLI_ARGS}}
+      - uv run pytest tests/test_plugin_jax.py {{.CLI_ARGS}}
 
-  test:e2e:keras:
-    desc: "E2E: Keras plugin"
+  test:plugin:keras:
+    desc: "Unit: Keras plugin"
     cmds:
-      - uv run pytest tests/plugins/test_keras.py {{.CLI_ARGS}}
-
-  test:e2e:joblib:
-    desc: "E2E: Joblib parallel backend plugin"
-    cmds:
-      - uv run pytest tests/plugins/test_joblib.py {{.CLI_ARGS}}
+      - uv run pytest tests/test_plugin_keras.py {{.CLI_ARGS}}
 
   test:sanity:
     desc: Run sanity tests against real cloud providers
@@ -155,14 +150,9 @@ tasks:
       - uv run pytest -m "unit or e2e" {{.CLI_ARGS}}
 
   test:offers:
-    desc: "Offer catalog unit tests"
+    desc: "Offer cache tests"
     cmds:
-      - uv run pytest tests/offers/ -v -m "not integration" {{.CLI_ARGS}}
-
-  test:offers:integration:
-    desc: "Offer catalog integration tests (real API calls)"
-    cmds:
-      - uv run pytest tests/offers/ -v -m integration {{.CLI_ARGS}}
+      - uv run pytest tests/test_offers_cache.py -v {{.CLI_ARGS}}
 
   # ── Docs ─────────────────────────────────────────────────
 
@@ -223,12 +213,12 @@ tasks:
     cmds:
       - docker images --format '{{"{{"}}.Repository{{"}}"}}:{{"{{"}}.Tag{{"}}"}}' | grep 'ghcr.io/gabfssilva/skyward:' | xargs -r docker rmi 2>/dev/null || true
 
-  # ── Catalog ──────────────────────────────────────────────
+  # ── Codegen ──────────────────────────────────────────────
 
-  catalog:
-    desc: Refresh GPU offer catalog cache
+  gen:accelerators:
+    desc: Regenerate the accelerators type stub
     cmds:
-      - uv run python -c "import asyncio; from skyward.offers.feed import refresh; asyncio.run(refresh())"
+      - uv run python scripts/gen_accelerators_pyi.py
 
   # ── Build ────────────────────────────────────────────────
 

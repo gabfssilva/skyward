@@ -21,7 +21,7 @@ import msgspec
 
 from skyward.application import market
 from skyward.application.errors import CapabilityMismatchError
-from skyward.application.provider import Binding, Machine, Provider
+from skyward.application.provider import Binding, Machine, Preemptible, Provider
 from skyward.application.runtimes import keypair, public_key
 from skyward.persistence.computes import ComputeStore, Infrastructure
 from skyward.persistence.nodes import NodeStore
@@ -235,6 +235,15 @@ class Machines:
             watched = [node for node in nodes if node.state in ("connecting", "bootstrapping", "ready")]
 
             observed = await adapter.machines(infrastructure.binding)
+
+            if isinstance(adapter, Preemptible):
+                claimed_ids = tuple(node.machine for node in nodes if node.machine)
+                if claimed_ids:
+                    watched_by_machine = {node.machine: node for node in watched}
+                    warned = await adapter.interruptions(infrastructure.binding, claimed_ids)
+                    for machine_id, reason in warned.items():
+                        if node := watched_by_machine.get(machine_id):
+                            await self._lost(node, reason)
 
             claimed = {node.machine for node in nodes if node.machine}
             orphans = [machine for machine_id, machine in observed.items() if machine_id not in claimed]

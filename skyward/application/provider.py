@@ -258,3 +258,38 @@ class Provider(Catalog, Protocol):
             The infrastructure to take down.
         """
         ...
+
+
+@runtime_checkable
+class Preemptible(Catalog, Protocol):
+    """A provider that can be asked, ahead of the fact, which machines it is reclaiming.
+
+    Spot and preemptible capacity is taken back with warning: a rebalance
+    recommendation, an interruption notice, a marked-for-termination flag raised
+    while the machine is still up. A provider that surfaces such a warning
+    implements this so the control plane can turn it into a deficit before the
+    machine drops, rather than waiting for it to vanish from :meth:`machines`.
+
+    Detection stays optional and structural: an adapter that carries this method is
+    polled, one that does not is not. Nothing has to register.
+    """
+
+    async def interruptions(self, binding: Binding, machine_ids: tuple[str, ...]) -> Mapping[str, str]:
+        """Which of these machines the provider warns are being reclaimed, and why.
+
+        Parameters
+        ----------
+        binding : Binding
+            Identifies the compute the machines belong to.
+        machine_ids : tuple[str, ...]
+            The machines currently claimed by a node, the only ones worth asking about.
+
+        Returns
+        -------
+        Mapping[str, str]
+            Machine id to reason, and only for machines the provider is warning it
+            will take. A machine absent from the answer is one it has raised no
+            warning about — the same convention as :meth:`Provider.machines`, where
+            gone is simply absent.
+        """
+        ...

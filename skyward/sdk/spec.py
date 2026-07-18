@@ -16,6 +16,7 @@ from skyward.sdk.provider import Provider
 
 type NodeSpec = int | tuple[int, int] | Nodes
 type ExecutorType = Literal["thread", "process", "loky"]
+type Route = Literal["round_robin"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +70,94 @@ class Spec:
     cpus: int | None = None
     memory_gb: int | None = None
     region: str | None = None
+    disk_gb: int | None = None
+    max_hourly_cost: float | None = None
 
 
-__all__ = ["Accelerator", "Executor", "ExecutorType", "NodeSpec", "Nodes", "Spec"]
+@dataclass(frozen=True, slots=True)
+class Port:
+    """Expose a node port on a fixed local port.
+
+    Each connection to ``127.0.0.1:<local>`` is bridged to ``remote`` on a ready
+    node, chosen by ``route``, over that node's existing SSH connection. The local
+    listener binds loopback only.
+
+    Attributes
+    ----------
+    remote : int
+        The port the service listens on inside the node.
+    local : int
+        The local port to bind. ``0`` lets the OS choose one.
+    route : Route
+        How connections are spread across the ready nodes.
+
+    Examples
+    --------
+    >>> with sky.Compute(provider=sky.AWS(), nodes=2, ports=[sky.Port(remote=8080, local=8080)]) as pool:
+    ...     serve() @ pool  # a request to 127.0.0.1:8080 round-robins across the nodes
+    """
+
+    remote: int
+    local: int = 0
+    route: Route = "round_robin"
+
+
+@dataclass(frozen=True, slots=True)
+class Options:
+    """Operational tuning for a compute — timeouts, retries, autoscaling.
+
+    Sensible defaults reproduce the runtime's built-in behavior, so most pools never
+    construct one. The daemon-side knobs are carried to the control plane on the
+    spec; the two session timeouts (``ready_timeout``, ``shutdown_timeout``) stay in
+    this process, because they govern how long *this* client waits for its own pool
+    and never leave it.
+
+    Parameters
+    ----------
+    ssh_timeout : float
+        Seconds to keep dialing a machine before giving up on reaching it.
+    provision_retry_delay : float
+        Seconds between connection attempts to a machine still coming up.
+    max_provision_attempts : int
+        How many times a dropped connection is redialed before the node is lost.
+    worker_timeout : float
+        Seconds to wait for the worker to come up once bootstrap has finished.
+    autoscale_idle_timeout : float
+        Seconds a node must sit idle before an elastic pool may reclaim it.
+    autoscale_cooldown : float
+        Seconds between autoscaling decisions. ``0`` is no cooldown.
+    default_compute_timeout : float
+        Seconds a task may run when it names no deadline of its own. ``0`` is unbounded.
+    health_command : str | None
+        A shell command run on each node to ask whether the machine is still usable.
+        ``None`` probes nothing.
+    health_interval : float
+        Seconds between health probes.
+    health_failures : int
+        How many consecutive failed probes make a node lost, and so replaced.
+    ready_timeout : float
+        Seconds to wait for the pool to become ready before giving up.
+    shutdown_timeout : float
+        Seconds to wait for the pool to finish deleting on exit.
+
+    Examples
+    --------
+    >>> with sky.Compute(provider=sky.AWS(), options=sky.Options(ssh_timeout=120)) as pool:
+    ...     train(data) >> pool
+    """
+
+    ssh_timeout: float = 300.0
+    provision_retry_delay: float = 2.0
+    max_provision_attempts: int = 30
+    worker_timeout: float = 180.0
+    autoscale_idle_timeout: float = 30.0
+    autoscale_cooldown: float = 0.0
+    default_compute_timeout: float = 0.0
+    health_command: str | None = None
+    health_interval: float = 30.0
+    health_failures: int = 3
+    ready_timeout: float = 900.0
+    shutdown_timeout: float = 300.0
+
+
+__all__ = ["Accelerator", "Executor", "ExecutorType", "NodeSpec", "Nodes", "Options", "Port", "Route", "Spec"]

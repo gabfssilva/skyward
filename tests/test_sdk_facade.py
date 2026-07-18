@@ -10,10 +10,77 @@ import pytest
 import skyward as skyward
 from skyward import Compute
 from skyward.protocol.schemas import NodeBounds
+from skyward.sdk import context
+from skyward.sdk.context import sky
+from skyward.sdk.function import Group, Pending, Streaming, function
 
 
 def spec_of(pool: Compute):
     return pool._spec  # noqa: SLF001
+
+
+class FakePool:
+    """The Pool protocol, narrowed to remembering which pool answered."""
+
+    def __init__(self, tag: str) -> None:
+        self.tag = tag
+
+    def run[T](self, pending: Pending[T]) -> str:
+        return self.tag
+
+    def broadcast[T](self, pending: Pending[T]) -> list[str]:
+        return [self.tag]
+
+    def start[T](self, pending: Pending[T]):
+        raise NotImplementedError
+
+    def gather[T](self, group: Group[T]) -> list[str]:
+        return [self.tag]
+
+    def stream[T](self, pending: Streaming[T]) -> list[str]:
+        return [self.tag]
+
+
+@function
+def work() -> int:
+    return 1
+
+
+def test_sky_resolves_to_the_active_pool():
+    token = context.enter(FakePool("a"))
+    try:
+        assert work() >> sky == "a"
+        assert work() @ sky == ["a"]
+        assert (work() & work()) >> sky == ["a"]
+    finally:
+        context.reset(token)
+
+
+def test_the_skyward_module_is_itself_a_valid_implicit_target():
+    token = context.enter(FakePool("m"))
+    try:
+        assert work() >> skyward == "m"
+    finally:
+        context.reset(token)
+
+
+def test_sky_outside_a_block_is_a_clear_error():
+    with pytest.raises(RuntimeError, match="no pool to run on"):
+        work() >> sky
+
+
+def test_nesting_restores_the_outer_pool_on_exit():
+    outer = context.enter(FakePool("outer"))
+    try:
+        assert work() >> sky == "outer"
+        inner = context.enter(FakePool("inner"))
+        try:
+            assert work() >> sky == "inner"
+        finally:
+            context.reset(inner)
+        assert work() >> sky == "outer"
+    finally:
+        context.reset(outer)
 
 
 def test_a_provider_becomes_a_single_spec():

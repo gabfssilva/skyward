@@ -4,13 +4,24 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from typing import ClassVar
 
 import pytest
 
+from skyward.plugins.plugin import Plugin
 from skyward.protocol.schemas import Image, MetricSpec, PipIndex
 from skyward.runtime import bootstrap
 
 pytestmark = pytest.mark.unit
+
+
+class Slicer(Plugin, frozen=True):
+    """A plugin that only asks for a phase, so the postamble can be seen in the script."""
+
+    kind: ClassVar[str] = "slicer"
+
+    def bootstrap(self, image: Image, concurrency: int) -> tuple[str, ...]:
+        return (bootstrap.phase("slice", f"echo splitting into {concurrency}"),)
 
 
 def test_the_metrics_collectors_start_before_the_bootstrap_phases():
@@ -59,6 +70,24 @@ def test_scoped_pip_index_is_written_as_a_uv_source():
     assert "[tool.uv.sources]" in text
     assert 'torch = { index =' in text
     assert "uv add" in text
+
+
+def test_a_plugins_phase_lands_after_the_image_and_before_the_footer():
+    text = bootstrap.script(Image(), "skyward", (Slicer(),), 4)
+    assert "phase slice" in text
+    assert "splitting into 4" in text
+    assert text.index("phase skyward") < text.index("phase slice") < text.index(bootstrap.FOOTER)
+
+
+def test_no_plugins_is_byte_identical_to_the_bare_call():
+    """The new parameters default, so the no-plugin script is exactly what it was."""
+    assert bootstrap.script(Image(), "skyward") == bootstrap.script(Image(), "skyward", (), 1)
+    assert "phase slice" not in bootstrap.script(Image(), "skyward")
+
+
+def test_phase_joins_with_and_and_quotes_as_one_word():
+    built = bootstrap.phase("deps", "cd /opt", "uv pip install torch")
+    assert built == "phase deps 'cd /opt && uv pip install torch'"
 
 
 @pytest.mark.parametrize(

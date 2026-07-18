@@ -1,54 +1,48 @@
 # Scikit-learn
 
-scikit-learn is built on joblib for parallelism. Every estimator and utility that accepts `n_jobs` — `GridSearchCV`, `RandomizedSearchCV`, `cross_val_score`, `RFECV`, `BaggingClassifier`, `VotingClassifier`, and many others — delegates to `joblib.Parallel` internally. This means the parallelism strategy is pluggable: replace the joblib backend, and every scikit-learn operation that uses `n_jobs` distributes automatically.
+scikit-learn is built on joblib for parallelism. Every estimator and utility that accepts `n_jobs` — `GridSearchCV`, `RandomizedSearchCV`, `cross_val_score`, `RFECV`, `BaggingClassifier`, `VotingClassifier` — delegates to `joblib.Parallel` internally. Replace the joblib backend and every one of them distributes.
 
-Skyward's `sklearn` plugin does exactly this. It installs scikit-learn and joblib on the worker, registers the same `SkywardBackend` that the [joblib plugin](joblib.md) uses, and enters the `parallel_backend("skyward")` context for the duration of the pool. Inside the pool block, `n_jobs=-1` means "all workers in the cluster." No code changes are needed beyond the pool configuration — your existing scikit-learn code works as-is.
-
-## What it does
-
-**Image transform** — Appends `scikit-learn` (optionally at a pinned version) and `joblib` to the worker's pip dependencies. Both are needed on the worker because scikit-learn imports joblib internally, and the `SkywardBackend` dispatches tasks that need to be deserialized in an environment where both packages are available.
-
-**Client lifecycle (`around_client`)** — Reuses the joblib plugin's infrastructure: it calls `_setup_backend(pool)` to register `SkywardBackend`, calls `_strip_local_warning_filters()` to sanitize warning filters (see the [joblib plugin documentation](joblib.md) for why this matters), and enters `parallel_backend("skyward")`. This is the same machinery as the joblib plugin — the sklearn plugin is effectively the joblib plugin plus scikit-learn installation.
-
-## Relationship with the Joblib plugin
-
-The `sklearn` plugin and the `joblib` plugin share the same backend. Under the hood, both register `SkywardBackend` as a custom joblib parallel backend, and both enter the `parallel_backend("skyward")` context. The difference is what they install on the worker:
-
-- `sky.plugins.joblib()` installs only `joblib`.
-- `sky.plugins.sklearn()` installs `scikit-learn` and `joblib`.
-
-If your workload is scikit-learn-based, use the `sklearn` plugin alone — it includes everything the `joblib` plugin provides. You do not need to stack both plugins. If your workload is pure joblib without scikit-learn, use the `joblib` plugin.
-
-If you happen to specify both, nothing breaks — the backend registration is idempotent, and duplicate pip packages are harmless. But it is unnecessary.
+`sky.plugins.Sklearn()` does exactly that: it installs scikit-learn and joblib on the nodes, and on the client it points joblib's parallel backend at the compute for the lifetime of the `with` block. Inside that block, `n_jobs=-1` means "every slot in the compute".
 
 ## Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `version` | `str \| None` | `None` | Specific scikit-learn version to install (e.g. `"1.4.0"`). `None` installs the latest version. |
+| `version` | `str \| None` | `None` | Pin, if the code needs one. Otherwise whatever the index has |
 
-Version pinning is important when your local code depends on specific scikit-learn behavior, or when you need reproducibility across runs. The worker's scikit-learn version should match (or be compatible with) the version used to define the estimators and pipelines, because cloudpickle serializes Python objects and deserializes them in the worker's environment.
+Pinning matters when the estimators you build locally have to unpickle on the node: cloudpickle serializes here and deserializes there, and the versions should be compatible.
 
-## What works with `n_jobs`
+## How it works
 
-Everything in scikit-learn that accepts `n_jobs` distributes across the cluster without modification:
+### `image`
 
-- **`GridSearchCV`** — Each combination of hyperparameters and cross-validation fold is a separate task. A grid with 20 candidates and 5-fold CV produces 100 fits, all distributed.
-- **`RandomizedSearchCV`** — Same as `GridSearchCV` but with random sampling. `n_iter=50` with 5-fold CV produces 250 fits.
-- **`cross_val_score`** / **`cross_validate`** — Each fold is an independent fit+evaluate. 10-fold CV distributes 10 tasks.
-- **`RFECV`** (Recursive Feature Elimination with CV) — Each elimination step and fold is distributed.
-- **`BaggingClassifier`** / **`BaggingRegressor`** — Each base estimator is fit independently when `n_jobs=-1`.
-- **`VotingClassifier`** / **`VotingRegressor`** — Each constituent estimator is fit independently.
-- **`MultiOutputClassifier`** / **`MultiOutputRegressor`** — Each target's estimator is fit independently.
-- **`Pipeline` with parallel steps** — When combined with `GridSearchCV`, the full pipeline (preprocessing + estimator) is replicated per task.
+Appends `scikit-learn` (optionally at the pinned version) and `joblib` to the image's pip list.
 
-The pattern is consistent: scikit-learn calls `joblib.Parallel(n_jobs=self.n_jobs)` internally, the Skyward backend intercepts it, and each unit of work is dispatched to a remote worker.
+### `client`
+
+Runs in your process, not on a node. It does two things:
+
+1. **Strips non-stdlib warning filters.** scikit-learn's own `Parallel` captures `warnings.filters` and ships them inside every batch. A filter whose category class comes from a third-party package names a module the node may not have, and the batch then fails to unpickle there — a `ModuleNotFoundError` that reads like a missing dependency and is a warning filter. Dropping every filter whose category is not from the stdlib leaves only what every process is guaranteed to carry.
+2. **Enters the joblib plugin's client hook**, which registers the Skyward backend and wraps the block in `parallel_backend("skyward")`.
+
+## Relationship with the Joblib plugin
+
+They share one backend. The difference is what lands on the nodes:
+
+- `sky.plugins.Joblib()` installs joblib.
+- `sky.plugins.Sklearn()` installs scikit-learn and joblib, and adds the warning-filter scrub.
+
+If your workload is scikit-learn-based, use `Sklearn` alone — it includes everything `Joblib` provides. Stacking both is unnecessary.
+
+## What distributes
+
+Anything in scikit-learn that takes `n_jobs`, without modification: `GridSearchCV` and `RandomizedSearchCV` (one task per candidate/fold), `cross_val_score` and `cross_validate` (one per fold), `RFECV`, the `Bagging*`, `Voting*` and `MultiOutput*` estimators. The pattern is the same throughout — scikit-learn calls `joblib.Parallel(n_jobs=...)`, the Skyward backend intercepts, and each unit of work becomes a task.
+
+The number of parallel slots the backend reports is the compute's node count times the executor's concurrency.
 
 ## Usage
 
 ### Grid search
-
-The most common use case is distributing hyperparameter search:
 
 ```python
 import skyward as sky
@@ -58,79 +52,35 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 
+X, y = load_digits(return_X_y=True)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
 
-@sky.function
-def run_search() -> dict:
-    X, y = load_digits(return_X_y=True)
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
-
-    pipe = Pipeline([
-        ("scaler", StandardScaler()),
-        ("clf", SVC()),
-    ])
-
-    param_grid = {
-        "clf__C": [0.1, 1, 10, 100],
-        "clf__gamma": ["scale", "auto", 0.01, 0.001],
-        "clf__kernel": ["rbf", "poly"],
-    }
-
-    grid = GridSearchCV(pipe, param_grid, cv=5, n_jobs=-1, verbose=1)
-    grid.fit(X_train, y_train)
-
-    return {
-        "best_params": grid.best_params_,
-        "best_cv_score": grid.best_score_,
-        "test_score": grid.score(X_test, y_test),
-    }
-
+pipe = Pipeline([("scaler", StandardScaler()), ("clf", SVC())])
+param_grid = {
+    "clf__C": [0.1, 1, 10, 100],
+    "clf__gamma": ["scale", "auto", 0.01, 0.001],
+    "clf__kernel": ["rbf", "poly"],
+}
 
 with sky.Compute(
     provider=sky.AWS(),
     nodes=4,
-    worker=sky.Worker(concurrency=4),
-    plugins=[sky.plugins.sklearn()],
-) as compute:
-    result = run_search() >> compute
-    print(f"Best: {result['best_params']}, CV={result['best_cv_score']:.2%}")
+    executor=sky.Executor(concurrency=4),
+    plugins=[sky.plugins.Sklearn()],
+):
+    grid = GridSearchCV(pipe, param_grid, cv=5, n_jobs=-1, verbose=1)
+    grid.fit(X_train, y_train)
+
+print(f"Best: {grid.best_params_}, CV={grid.best_score_:.2%}")
 ```
 
-This grid has 32 candidates and 5-fold CV, producing 160 fits. With 4 nodes and `concurrency=4`, 16 fits run in parallel. The `n_jobs=-1` inside `GridSearchCV` tells joblib to use all available workers, which the Skyward backend reports as 16.
+32 candidates and 5-fold CV is 160 fits. With 4 nodes at `concurrency=4`, 16 run at a time.
 
-Note that the `GridSearchCV` call happens inside a `@sky.function` function. The grid search itself runs on a remote worker — it is the grid search's internal `Parallel` calls that distribute across the cluster. The outer `>> compute` dispatches the function to one node; that node's joblib backend then fans out the 160 individual fits across all nodes.
-
-### Cross-validation
-
-For a quick evaluation without hyperparameter tuning:
-
-```python
-@sky.function
-def evaluate_model() -> dict:
-    from sklearn.datasets import load_digits
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.model_selection import cross_val_score
-
-    X, y = load_digits(return_X_y=True)
-    clf = RandomForestClassifier(n_estimators=100)
-    scores = cross_val_score(clf, X, y, cv=10, n_jobs=-1)
-
-    return {"mean": scores.mean(), "std": scores.std()}
-
-
-with sky.Compute(
-    provider=sky.AWS(),
-    nodes=3,
-    worker=sky.Worker(concurrency=4),
-    plugins=[sky.plugins.sklearn()],
-) as compute:
-    result = evaluate_model() >> compute
-```
-
-Ten-fold CV distributes 10 independent fit+evaluate tasks across 12 workers.
+Note the shape: `GridSearchCV` runs **in your process**, and it is its internal `Parallel` calls that fan out. Nothing here is wrapped in `@sky.function` — the client hook is what makes the block distributed.
 
 ### Combining with cuML
 
-For GPU-accelerated scikit-learn, stack the `cuml` plugin with `sklearn`:
+For GPU-backed estimators, stack [`Cuml`](cuml.md):
 
 ```python
 with sky.Compute(
@@ -138,18 +88,16 @@ with sky.Compute(
     accelerator=sky.accelerators.L4(),
     nodes=1,
     plugins=[
-        sky.plugins.cuml(),
-        sky.plugins.sklearn(),
+        sky.plugins.Cuml(),
+        sky.plugins.Sklearn(),
     ],
 ) as compute:
     result = train_on_gpu() >> compute
 ```
 
-The `cuml` plugin intercepts sklearn calls and routes them to GPU. The `sklearn` plugin ensures scikit-learn and joblib are installed. See the [cuML plugin documentation](cuml.md) for details.
-
 ## Next steps
 
-- [Scikit Grid Search guide](../guides/scikit-grid-search.md) — Complete example with multiple estimator families and pipeline search
-- [joblib plugin](joblib.md) — How `SkywardBackend` works, warning filter sanitization, and tuning concurrency
-- [cuML plugin](cuml.md) — GPU-accelerated scikit-learn with NVIDIA RAPIDS
-- [What are Plugins?](index.md) — How the plugin system works
+- [Scikit Grid Search guide](../guides/scikit-grid-search.md) — a fuller example
+- [Joblib plugin](joblib.md) — the backend, and tuning concurrency
+- [cuML plugin](cuml.md) — GPU scikit-learn via RAPIDS
+- [What are plugins?](index.md) — the hook model

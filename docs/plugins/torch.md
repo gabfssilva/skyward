@@ -1,49 +1,36 @@
 # PyTorch
 
-PyTorch's distributed training model is built around `DistributedDataParallel` (DDP). Each process — typically one per node — holds a complete copy of the model. During the forward pass, each process computes gradients on its own data shard. During the backward pass, DDP synchronizes gradients across all processes using a collective communication backend (NCCL for GPUs, gloo for CPUs). The optimizer then steps with identical averaged gradients on every process, keeping the model copies in sync without explicit parameter transfers.
+PyTorch's distributed training model is built around `DistributedDataParallel`. Each process — one per node here — holds a complete copy of the model, computes gradients on its own shard, and DDP synchronizes them across processes through a collective backend (NCCL on GPUs, gloo on CPUs). The optimizer then steps with identical averaged gradients everywhere, keeping the copies in sync without explicit parameter transfers.
 
-The hard part is the setup. Before `init_process_group()` can be called, every process needs five pieces of information: the address of the rendezvous master (`MASTER_ADDR`), the master port (`MASTER_PORT`), the total number of processes (`WORLD_SIZE`), this process's global rank (`RANK`), and its local rank on the machine (`LOCAL_RANK`). These must be set as environment variables before any distributed operation. In a traditional setup, you write a launch script or use `torchrun` to inject these values. With Skyward, the `torch` plugin reads the cluster topology from `instance_info()` and sets everything before your function body runs.
-
-## What it does
-
-The plugin installs PyTorch with the correct CUDA wheels on the remote worker and initializes the distributed process group once per worker process.
+The hard part is the setup. Before `init_process_group()` can be called, every process needs the rendezvous address and port, the world size, and its own rank, all as environment variables. Normally you write a launch script or use `torchrun` to inject them. `sky.plugins.Torch()` reads the topology from the node and sets them before your function body runs.
 
 ## Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `backend` | `"nccl" \| "gloo" \| None` | `None` | Process group backend. Auto-detected if `None`: `nccl` when CUDA is available, `gloo` otherwise. |
-| `cuda` | `str` | `"cu128"` | CUDA version suffix for the PyTorch wheel index. Determines which prebuilt wheels are pulled from `download.pytorch.org`. |
-| `version` | `str` | `"latest"` | PyTorch version. `"latest"` installs the latest release. A bare version string (e.g. `"2.3.0"`) pins with `==`. Constraint prefixes like `">=2.3"` are passed through as-is. |
-| `vision` | `str \| None` | `None` | Torchvision version. Same semantics as `version`. `None` skips installation, `"latest"` installs the latest release. |
-| `audio` | `str \| None` | `None` | Torchaudio version. Same semantics as `version`. `None` skips installation, `"latest"` installs the latest release. |
+| `backend` | `"nccl" \| "gloo"` | `"nccl"` | `nccl` on GPUs, `gloo` on CPUs |
+| `cuda` | `str` | `"cu128"` | The CUDA build to install torch from, as a `download.pytorch.org/whl` suffix. Ignored for `gloo`, which takes the CPU wheel |
+| `version` | `str \| None` | `None` | Pin, if the code needs one. Otherwise whatever the index has |
 
-The `cuda` value determines the wheel index URL. When the cluster has a GPU accelerator (one with CUDA support in its metadata), the plugin uses `https://download.pytorch.org/whl/{cuda}` as the pip index. When the accelerator is `None` or does not support CUDA, it falls back to `https://download.pytorch.org/whl/cpu`. This auto-detection happens at image transform time, using the cluster's spec to decide.
+The `cuda` default is pinned rather than left to PyPI's, because PyPI tracks the newest CUDA and the newest CUDA outruns the driver the GPU images ship. A torch built for a CUDA the driver cannot load hangs on the first collective — which is exactly where it looks like a network fault and is not.
+
+Note that the wheel index follows `backend`, not the compute's accelerator: `backend="gloo"` installs from `download.pytorch.org/whl/cpu`, and anything else from `download.pytorch.org/whl/{cuda}`.
+
+`Torch` is a **collective** plugin: a compute running one cannot be resized, because removing a rank does not shrink the job, it hangs it at the next all-reduce.
 
 ## How it works
 
-### Image transform
+### `image`
 
-The `transform` hook builds the pip package list and index from the parameters. It assembles the list of PyTorch packages — always `torch`, optionally `torchvision` and `torchaudio` — with their version constraints, then selects the correct pip index based on the cluster's accelerator.
+Appends `torch` (optionally pinned) to the image's pip list, and the matching wheel index scoped to the `torch` package. Both are appended to whatever the image and the earlier plugins already asked for.
 
-The accelerator detection uses pattern matching on `cluster.spec.accelerator`. If the cluster has an `Accelerator` with CUDA metadata, the CUDA wheel index is used. Otherwise — no accelerator, or an accelerator without CUDA support — the CPU index is used. This means you do not need to manually switch between CUDA and CPU wheels; the plugin reads the cluster configuration and does it for you.
+### `run`
 
-The packages and index are appended to the existing image using `replace()`, preserving any packages and indexes already defined in the `Image` or added by other plugins.
+On the first task in each process, the plugin sets `MASTER_ADDR` (rank zero's address), `MASTER_PORT` (29500), `RANK`, `WORLD_SIZE`, `NODE_RANK`, and `LOCAL_RANK`/`LOCAL_WORLD_SIZE` fixed at `0`/`1` — Skyward runs one rank per node — then calls `dist.init_process_group(backend=..., rank=..., world_size=...)`.
 
-### Worker lifecycle (`around_process`)
+It happens on the first task rather than at worker startup because `init_process_group` is a collective, and the process that blocks in it has to be the one that runs the collective code afterwards. Under `executor="process"` that is the child, not the worker. A module-global flag under a lock keeps it to once per process; every task after calls straight through.
 
-The `around_process` hook initializes PyTorch's distributed process group once per executor subprocess. When the first task arrives, the hook:
-
-1. Imports `torch` and `torch.distributed` (these are remote-only imports — PyTorch does not need to be installed locally).
-2. Reads `instance_info()` from the hook's parameter to get the cluster topology.
-3. If the cluster has fewer than 2 nodes, yields immediately — no distributed setup needed for single-node pools.
-4. Sets the environment variables: `MASTER_ADDR`, `MASTER_PORT`, `WORLD_SIZE`, `RANK`, `LOCAL_RANK` (always `"0"` — Skyward runs one process per node), `LOCAL_WORLD_SIZE` (always `"1"`), and `NODE_RANK`.
-5. Selects the backend: if explicitly provided, uses that; otherwise, `"nccl"` when `torch.cuda.is_available()` and `"gloo"` otherwise.
-6. Calls `dist.init_process_group(backend=..., init_method="env://")`.
-7. Yields to the worker lifecycle — subsequent tasks run with the process group already active.
-8. On worker shutdown, calls `dist.destroy_process_group()` in the `finally` block.
-
-The environment variables come from `instance_info()`: `head_addr` becomes `MASTER_ADDR`, `head_port` becomes `MASTER_PORT`, `total_nodes` becomes `WORLD_SIZE`, and `node` becomes `RANK`. These values are populated from the `COMPUTE_POOL` environment variable that Skyward injects on each worker at startup.
+Unlike [`Accelerate`](accelerate.md), this hook does not check whether a group already exists. If you list both plugins, list `Torch` first.
 
 ## Usage
 
@@ -60,13 +47,13 @@ def train() -> dict:
     import torch.distributed as dist
     import torch.nn as nn
     from torch.nn.parallel import DistributedDataParallel as DDP
-    from torch.utils.data import DataLoader, DistributedSampler, TensorDataset
+    from torch.utils.data import DataLoader, TensorDataset
+    from torch.utils.data.distributed import DistributedSampler
 
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
-    model = nn.Linear(784, 10).cuda()
-    model = DDP(model)
+    model = DDP(nn.Linear(784, 10).cuda())
 
     x = torch.randn(1000, 784)
     y = torch.randint(0, 10, (1000,))
@@ -95,51 +82,58 @@ with sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.A100(),
     nodes=4,
-    plugins=[sky.plugins.torch()],
+    plugins=[sky.plugins.Torch()],
 ) as compute:
     results = train() @ compute
     for r in results:
         print(f"Rank {r['rank']}: loss={r['final_loss']:.4f}")
 ```
 
-The `@` operator broadcasts `train()` to all 4 nodes. Each node runs the same function, but `dist.get_rank()` returns a different value (0 through 3), and `DistributedSampler` partitions the data accordingly. DDP synchronizes gradients in the backward pass, so all nodes converge on the same model parameters.
+`@` broadcasts to all four nodes. Each runs the same function, but `dist.get_rank()` differs, and `DistributedSampler` partitions accordingly. `@sky.stdout(only="head")` silences the prints on every node but rank zero, so you see one set of epoch logs instead of four.
 
-`@sky.stdout(only="head")` silences print statements on non-head nodes, so you see one set of epoch logs instead of four.
+### Extra packages
 
-### With torchvision and torchaudio
+The plugin installs `torch` only. Torchvision, torchaudio and anything else go in the image:
 
 ```python
 with sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.A100(),
     nodes=2,
-    plugins=[sky.plugins.torch(vision="latest", audio="latest")],
+    image=sky.Image(
+        pip=["torchvision", "torchaudio"],
+        pip_indexes=[
+            sky.PipIndex(
+                url="https://download.pytorch.org/whl/cu128",
+                packages=["torchvision", "torchaudio"],
+            ),
+        ],
+    ),
+    plugins=[sky.plugins.Torch()],
 ) as compute:
     results = train() @ compute
 ```
 
-This installs `torch`, `torchvision`, and `torchaudio` from the CUDA wheel index. Inside the function, you can import `torchvision.models`, `torchvision.transforms`, `torchaudio`, etc.
-
-### Pinning versions
+### Pinning
 
 ```python
-plugins=[sky.plugins.torch(version="2.3.0", vision="0.18.0", cuda="cu124")]
+plugins=[sky.plugins.Torch(version="2.6.0", cuda="cu124")]
 ```
 
-This pins `torch==2.3.0` and `torchvision==0.18.0`, installed from the CUDA 12.4 wheel index. Version pinning is important for reproducibility — different PyTorch versions can produce different training results due to changes in default behaviors, numerical stability, and operator implementations.
+Installs `torch==2.6.0` from the CUDA 12.4 index. Pinning matters for reproducibility: different PyTorch versions differ in default behaviours, numerical stability and operator implementations.
 
-### CPU-only
+### CPU only
 
 ```python
 with sky.Compute(
     provider=sky.AWS(),
     nodes=4,
-    plugins=[sky.plugins.torch(backend="gloo")],
+    plugins=[sky.plugins.Torch(backend="gloo")],
 ) as compute:
     results = train() @ compute
 ```
 
-Without an `accelerator`, the pool uses CPU instances. The plugin detects the absence of a CUDA accelerator and installs the CPU-only PyTorch wheels from `download.pytorch.org/whl/cpu`. The `backend="gloo"` is explicit here — gloo is PyTorch's CPU-compatible collective communication backend.
+`gloo` selects the CPU wheel index and PyTorch's CPU-compatible collective backend.
 
 ### Combining with HuggingFace
 
@@ -148,20 +142,20 @@ with sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.A100(),
     nodes=2,
+    image=sky.Image(pip=["transformers", "datasets"]),
     plugins=[
-        sky.plugins.torch(),
-        sky.plugins.huggingface(token="hf_xxx"),
+        sky.plugins.Torch(),
+        sky.plugins.HuggingFace(token=os.environ["HF_TOKEN"]),
     ],
 ) as compute:
     results = finetune() @ compute
 ```
 
-The `torch` plugin handles DDP initialization, and the `huggingface` plugin handles authentication and installs `transformers`, `datasets`, and `tokenizers`. Inside the function, HuggingFace's `Trainer` auto-detects the distributed environment set up by the torch plugin and uses it for distributed training, gradient synchronization, and distributed evaluation.
+`Torch` forms the process group; `HuggingFace` installs `huggingface_hub` and puts the token you pass into the worker's environment as `HF_TOKEN`. The token is not read from your environment for you — pass it. It does **not** install `transformers` or `datasets` — those go in the image. Inside the function, `Trainer` detects the distributed environment the torch plugin set up.
 
 ## Next steps
 
-- [PyTorch Distributed guide](../guides/pytorch-distributed.md) — Step-by-step DDP training walkthrough
-- [PyTorch Model Roundtrip guide](../guides/torch-model-roundtrip.md) — Sending models to and from the cloud
-- [HuggingFace plugin](huggingface.md) — Fine-tuning Transformers on multiple nodes
-- [What are Plugins?](index.md) — How the plugin system works
-- [JAX plugin](jax.md) — The JAX equivalent for comparison
+- [PyTorch Distributed guide](../guides/pytorch-distributed.md) — a DDP walkthrough
+- [PyTorch Model Roundtrip guide](../guides/torch-model-roundtrip.md) — sending models to and from the cloud
+- [Accelerate](accelerate.md) — FSDP and DeepSpeed on top of the same group
+- [What are plugins?](index.md) — the hook model

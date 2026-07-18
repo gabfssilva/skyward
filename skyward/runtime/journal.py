@@ -22,7 +22,7 @@ from typing import Literal
 import msgspec
 from msgspec import Struct
 
-from skyward.runtime.api import Stream, policy, rank
+from skyward.runtime.api import Stream, instance_info, policy
 
 SKYWARD_DIR = "/opt/skyward"
 EVENTS = f"{SKYWARD_DIR}/events.jsonl"
@@ -117,7 +117,7 @@ class Journal(io.TextIOBase):
             self._partial = ""
 
     def _emit(self, content: str) -> None:
-        if policy.get().allows(self._stream, rank()):
+        if policy.get().allows(self._stream, instance_info()):
             emit(Console(content=content, task=task.get()))
 
     def isatty(self) -> bool:

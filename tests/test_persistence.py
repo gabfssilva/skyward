@@ -5,9 +5,11 @@ would be testing the fake. Each test gets its own file, so they run in parallel.
 """
 
 import asyncio
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
+from msgspec.structs import replace
 
 from skyward.application.errors import (
     DuplicationNotAcknowledgedError,
@@ -33,6 +35,7 @@ from skyward.protocol.schemas import (
     ExecutionCreate,
     LeaseClaim,
     NodeBounds,
+    Options,
     ProviderRef,
     Spec,
     TaskCreate,
@@ -78,6 +81,13 @@ async def ready_node(store: Stores, compute: str, rank: int) -> str:
 
 async def args(store: Stores, blob: bytes = b"args") -> str:
     return await store.blobs.store(blob)
+
+
+async def bounded(store: Stores, options: Options, key: str) -> str:
+    """A ready compute carrying options — the fixture's is deliberately plain."""
+    created, _ = await store.computes.create(ComputeCreate(spec=replace(SPEC, options=options), name=None), idempotency_key=key)
+    await store.computes.observe(created.id, ComputeStatus(state="ready", observed_generation=1, nodes_ready=1, nodes_total=1))
+    return created.id
 
 
 async def test_the_same_key_twice_is_one_compute(store: Stores):
@@ -299,6 +309,64 @@ async def test_a_failed_task_raises_rather_than_returning_nothing(store: Stores,
     await store.tasks.observe(task.executions[0].id, "failed", error=Error(code="task_failed", message="boom", retryable=False))
 
     with pytest.raises(TaskFailedError, match="boom"):
+        await store.tasks.result(task.id, wait_seconds=0)
+
+
+async def test_a_task_that_names_no_timeout_takes_the_computes(store: Stores):
+    compute = await bounded(store, Options(default_compute_timeout=60.0), key="c-default")
+    await ready_node(store, compute, rank=0)
+
+    task, _ = await store.tasks.submit(
+        TaskCreate(compute=compute, function="f" * 64, dispatch="one", args_sha256=await args(store)),
+        idempotency_key="t1",
+    )
+
+    assert task.deadline_at is not None
+    assert timedelta(seconds=59) <= task.deadline_at - task.submitted_at <= timedelta(seconds=61)
+
+
+async def test_a_task_that_names_its_own_timeout_keeps_it(store: Stores):
+    compute = await bounded(store, Options(default_compute_timeout=600.0), key="c-override")
+    await ready_node(store, compute, rank=0)
+
+    task, _ = await store.tasks.submit(
+        TaskCreate(compute=compute, function="f" * 64, dispatch="one", args_sha256=await args(store), timeout_seconds=5),
+        idempotency_key="t1",
+    )
+
+    assert task.deadline_at is not None
+    assert task.deadline_at - task.submitted_at <= timedelta(seconds=6), "the default is a fallback, not a ceiling"
+
+
+async def test_a_compute_that_set_no_default_leaves_the_task_unbounded(store: Stores, compute: str):
+    await ready_node(store, compute, rank=0)
+
+    task, _ = await store.tasks.submit(
+        TaskCreate(compute=compute, function="f" * 64, dispatch="one", args_sha256=await args(store)),
+        idempotency_key="t1",
+    )
+    await asyncio.sleep(0.01)
+
+    assert task.deadline_at is None
+    assert await store.tasks.expire() == (), "no deadline, nothing for the sweep to find"
+    assert (await store.tasks.get(task.id)).state == "queued"
+
+
+async def test_the_sweep_ends_a_task_that_outlived_its_deadline(store: Stores):
+    compute = await bounded(store, Options(default_compute_timeout=0.001), key="c-expired")
+    await ready_node(store, compute, rank=0)
+
+    task, _ = await store.tasks.submit(
+        TaskCreate(compute=compute, function="f" * 64, dispatch="one", args_sha256=await args(store)),
+        idempotency_key="t1",
+    )
+    await store.tasks.observe(task.executions[0].id, "started")
+    await asyncio.sleep(0.01)
+
+    assert await store.tasks.expire() == (task.id,)
+    assert (await store.tasks.get(task.id)).state == "timed_out"
+
+    with pytest.raises(TaskFailedError):
         await store.tasks.result(task.id, wait_seconds=0)
 
 
