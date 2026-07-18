@@ -128,6 +128,7 @@ class ScalewayProvider:
                     memory_gb=float(spec.get("ram") or 0) / GIB,
                     region=zone,
                     disk_gb=_disk_gb(spec),
+                    architecture=spec.get("arch"),
                     spot_price=None,
                     on_demand_price=float(hourly) if hourly else None,
                     available=_available(state),

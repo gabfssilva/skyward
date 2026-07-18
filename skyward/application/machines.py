@@ -1,8 +1,9 @@
 """The only thing in the control plane that talks to a cloud.
 
-Four verbs, and each one is somebody else's decision already taken: bind a compute
+Five verbs, and each one is somebody else's decision already taken: bind a compute
 to a provider, create the machine a row is asking for, find out what became of the
-machines we created, take one away. Nothing here decides how many.
+machines we created, take one away, keep one as an image because the spec asked for
+it. Nothing here decides how many.
 
 The order in ``create`` is the one a payment gateway uses and for the same reason:
 the intent is written down before the money is spent. The row exists in
@@ -21,14 +22,17 @@ import msgspec
 
 from skyward.application import market
 from skyward.application.errors import CapabilityMismatchError
-from skyward.application.provider import Binding, Machine, Preemptible, Provider
+from skyward.application.provider import Bakeable, Binding, Machine, Mount, Mountable, Preemptible, Provider
 from skyward.application.runtimes import keypair, public_key
 from skyward.persistence.computes import ComputeStore, Infrastructure
+from skyward.persistence.functions import BlobStore
 from skyward.persistence.nodes import NodeStore
 from skyward.persistence.offers import OfferCache
 from skyward.persistence.providers import ProviderStore
 from skyward.persistence.store import now
-from skyward.protocol.schemas import Compute, Error, Market, Node, Offer
+from skyward.protocol.schemas import Compute, ComputeSpec, Endpoint, Error, Image, Market, Node, Offer, Volume
+from skyward.runtime import bootstrap
+from skyward.runtime.source import detect, resolve
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +54,17 @@ class Machines:
         nodes: NodeStore,
         providers: ProviderStore,
         offers: OfferCache,
+        blobs: BlobStore,
     ) -> None:
         self._computes = computes
         self._nodes = nodes
         self._providers = providers
         self._offers = offers
+        self._blobs = blobs
         self._binding = asyncio.Lock()
         self._fleet: dict[str, asyncio.Lock] = {}
+        self._baked: set[tuple[str, str]] = set()
+        """Which compute has already had which environment offered to the provider, once."""
 
     async def create(self, compute_id: str, node_id: str) -> None:
         """Buy the machine one row is asking for, and write down what we got.
@@ -190,17 +198,141 @@ class Machines:
 
             private, public = await asyncio.to_thread(keypair)
             binding = await adapter.initialize(compute.id, compute.spec, offer, chosen, public)
+            binding = await self._reuse(adapter, compute.spec.image, binding)
+
+            mount = await self._mount(adapter, compute.spec, binding)
 
             infrastructure = Infrastructure(
                 provider_id=offer.provider_id,
                 offer_id=offer.id,
                 offer=offer,
-                binding=binding,
+                binding={**binding, **mount.binding_patch},
                 private_key=private,
                 markets=market.order(offer, compute.spec.allocation),
+                volumes=mount.phases,
             )
             await self._computes.bind(compute.id, infrastructure)
             return infrastructure
+
+    async def _mount(self, adapter: Provider, spec: ComputeSpec, binding: Binding) -> Mount:
+        """Turn the compute's volumes into a launch hint and a bootstrap phase, once.
+
+        Here rather than at connect time because the two halves have different
+        deadlines and only this seam meets both: a provider that attaches its own
+        storage must name it in the launch request, which is over before a node
+        exists, and the phases must be written down before the daemon that renders
+        them can die.
+
+        Two ways to reach a bucket, and never both in one compute. A volume with a
+        digest was resolved by the client, which had credentials the daemon has none
+        of — an R2 or Backblaze bucket that no provider record describes. A volume
+        without one is the provider's to resolve, from the account that is already
+        paying for the machines. Mixing them would mean two endpoints to sign for
+        under one set of mounts, and a compute that is half one account and half
+        another is a compute nobody can reason about the cost of.
+        """
+        if not spec.volumes:
+            return Mount()
+
+        managed: list[Volume] = []
+        brought: list[tuple[Volume, str]] = []
+        for volume in spec.volumes:
+            match volume.storage_sha256:
+                case None:
+                    managed.append(volume)
+                case digest:
+                    brought.append((volume, digest))
+
+        if managed and brought:
+            raise CapabilityMismatchError(
+                "a compute mounts volumes the client brought credentials for or volumes the provider resolves, not both",
+                provider=adapter.kind,
+            )
+
+        if brought:
+            resolved = [(volume, await self._endpoint(digest)) for volume, digest in brought]
+            return Mount(phases=(bootstrap.mounts(tuple(resolved)),))
+
+        if not isinstance(adapter, Mountable):
+            buckets = ", ".join(volume.bucket for volume in managed)
+            raise CapabilityMismatchError(
+                f"{adapter.kind} cannot mount {buckets}: pass storage= on the volume to bring your own credentials",
+                provider=adapter.kind,
+            )
+
+        return await adapter.mount(binding, tuple(managed))
+
+    async def _endpoint(self, digest: str) -> Endpoint:
+        return msgspec.json.decode(await self._blobs.get(digest), type=Endpoint)
+
+    async def _reuse(self, adapter: Provider, image: Image, binding: Binding) -> Binding:
+        """Point the binding at an image this environment was already baked into.
+
+        Every adapter resolves its boot image inside ``initialize`` and writes it into
+        the binding under the same key, so a warm image is not another code path — it
+        is another value, and everything downstream launches from it without being
+        told. The machine still bootstraps: every phase finds its work already done
+        and returns, which is what makes an image that has drifted slow rather than
+        wrong. That is the whole reason there is nothing here to skip.
+        """
+        tag = await self._tag(image)
+        if tag is None or not isinstance(adapter, Bakeable):
+            return binding
+
+        warm = await adapter.baked(binding, tag)
+        return {**binding, "image": warm} if warm else binding
+
+    async def bake(self, compute_id: str, node_id: str) -> None:
+        """Keep what a machine's bootstrap built, so the next compute does not build it again.
+
+        Asked of rank zero the first time it serves, because one snapshot describes the
+        whole compute: every node of it booted from the same image and bootstrapped to
+        the same place. Once per compute and environment, and not once per node that
+        comes up — the second snapshot would be of the same machine, and would cost
+        what the first one costs.
+
+        Best effort by construction. Nothing here is on the path to running work, so a
+        provider that will not commit is a line in the log and not a compute that
+        fails.
+        """
+        compute = await self._computes.get(compute_id)
+        tag = await self._tag(compute.spec.image)
+        if tag is None or (compute_id, tag) in self._baked:
+            return
+
+        node = await self._nodes.get(compute_id, node_id)
+        if node.rank != 0 or not node.machine:
+            return
+
+        infrastructure = await self._computes.infrastructure(compute_id)
+        adapter = await self.adapter(infrastructure.provider_id)
+        if not isinstance(adapter, Bakeable):
+            return
+
+        self._baked.add((compute_id, tag))
+        try:
+            if await adapter.baked(infrastructure.binding, tag) is None:
+                await adapter.bake(infrastructure.binding, node.machine, tag)
+        except Exception:
+            logger.warning("could not bake %s into an image for %s", node.machine, compute_id, exc_info=True)
+
+    async def _tag(self, image: Image) -> str | None:
+        """What to call the image this compute bakes to, or nothing if it must not bake one.
+
+        A local skyward is installed from a wheel built out of the daemon's own
+        checkout, and those bytes change with every edit that has been committed
+        nowhere. An image named after one would be handed, tomorrow, to a compute
+        expecting different code — so a compute running a local skyward bakes nothing,
+        whether it asked to or not.
+        """
+        if not image.warm:
+            return None
+
+        match image.skyward if image.skyward != "auto" else detect():
+            case "local":
+                return None
+            case mode:
+                return image.content_hash((await resolve(mode)).argument)
 
     async def resolve(self, compute: Compute, nodes: tuple[Node, ...]) -> None:
         """Ask the provider what became of the machines we asked it for.

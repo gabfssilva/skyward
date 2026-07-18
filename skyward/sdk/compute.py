@@ -17,7 +17,7 @@ from concurrent.futures import Future, as_completed
 from contextlib import ExitStack, aclosing, suppress
 from contextvars import Token
 from pathlib import Path
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 import msgspec
 
@@ -32,6 +32,7 @@ from skyward.protocol.schemas import (
     ComputeCreate,
     ComputeSpec,
     Dispatch,
+    Endpoint,
     Error,
     Image,
     Lease,
@@ -53,6 +54,9 @@ from skyward.protocol.schemas import (
 from skyward.protocol.schemas import (
     Spec as SpecRef,
 )
+from skyward.protocol.schemas import (
+    Volume as VolumeRef,
+)
 from skyward.sdk import context, usercode
 from skyward.sdk.client import Client
 from skyward.sdk.console import watcher
@@ -60,7 +64,10 @@ from skyward.sdk.errors import SkywardError, TaskFailedError
 from skyward.sdk.forward import TcpProxy
 from skyward.sdk.function import Group, Pending, Streaming
 from skyward.sdk.provider import Provider
-from skyward.sdk.spec import Executor, Nodes, NodeSpec, Options, Port, Spec
+from skyward.sdk.spec import Executor, Nodes, NodeSpec, Options, Port, Spec, Volume
+
+if TYPE_CHECKING:
+    from skyward.storage import Credential
 
 DEFAULT_IMAGE = Image()
 DEFAULT_EXECUTOR = Executor()
@@ -123,6 +130,7 @@ class Compute:
         executor: Executor = DEFAULT_EXECUTOR,
         options: Options = DEFAULT_OPTIONS,
         ports: Sequence[Port] = (),
+        volumes: Sequence[Volume] = (),
         ttl: int = 600,
         name: str | None = None,
         url: str | None = None,
@@ -173,6 +181,7 @@ class Compute:
         self._name = name
         self._plugins = tuple(plugins)
         self._ports = tuple(ports)
+        self._volumes = tuple(volumes)
         self._proxies: list[TcpProxy] = []
         self._client_stack = ExitStack()
         self._url = url or os.environ.get("SKYWARD_URL")
@@ -352,6 +361,7 @@ class Compute:
         else:
             await self._ensure_providers()
             await self._upload_includes()
+            await self._upload_volumes()
             compute = await self.client.call(
                 "POST",
                 "/v1/computes",
@@ -421,6 +431,41 @@ class Compute:
             self._spec,
             image=msgspec.structs.replace(image, includes_sha256=sha),
         )
+
+    async def _upload_volumes(self) -> None:
+        """Put the volumes on the spec, and the credentials for them somewhere else.
+
+        A volume with its own ``storage`` is one the daemon cannot reach on its
+        own — an R2 bucket, a Wasabi bucket, anything belonging to an account no
+        provider record describes. Its keys are resolved here, where the callables
+        that produce them live, and uploaded as a blob; the spec carries the digest
+        and nothing more, because the spec is written to the compute row and handed
+        back by ``GET /v1/computes/{id}``.
+        """
+        if not self._volumes:
+            return
+
+        refs: list[VolumeRef] = []
+        for volume in self._volumes:
+            ref = VolumeRef(bucket=volume.bucket, mount=volume.mount, prefix=volume.prefix, read_only=volume.read_only)
+            match volume.storage:
+                case None:
+                    refs.append(ref)
+                case storage:
+                    resolved = await storage.resolve()
+                    blob = msgspec.json.encode(
+                        Endpoint(
+                            url=resolved.endpoint,
+                            access_key=_credential(resolved.access_key),
+                            secret_key=_credential(resolved.secret_key),
+                            path_style=resolved.path_style,
+                        ),
+                    )
+                    sha = await codec.digest(blob)
+                    await self.client.upload(f"/v1/blobs/{sha}", blob)
+                    refs.append(msgspec.structs.replace(ref, storage_sha256=sha))
+
+        self._spec = msgspec.structs.replace(self._spec, volumes=tuple(refs))
 
     async def _claim(self) -> None:
         """Own the compute, and say so out loud.
@@ -559,8 +604,18 @@ def _wire(spec: Spec) -> SpecRef:
         memory_gb=spec.memory_gb,
         region=spec.region,
         disk_gb=spec.disk_gb,
+        architecture=spec.architecture,
         max_hourly_cost=spec.max_hourly_cost,
     )
+
+
+def _credential(value: Credential | None) -> str | None:
+    """The key itself, once ``Storage.resolve`` has run every callable that produced one."""
+    match value:
+        case str() as key:
+            return key
+        case _:
+            return None
 
 
 def _accelerator(wanted: str | Accelerator | None) -> tuple[str | None, int]:

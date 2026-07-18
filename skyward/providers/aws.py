@@ -11,8 +11,10 @@ from aiobotocore.client import AioBaseClient
 from botocore.exceptions import ClientError
 
 from skyward.application.errors import CapabilityMismatchError
-from skyward.application.provider import Binding, Machine
-from skyward.protocol.schemas import ComputeSpec, Market, Offer
+from skyward.application.provider import Binding, Machine, Mount
+from skyward.protocol.architectures import architecture
+from skyward.protocol.schemas import ComputeSpec, Endpoint, Market, Offer, Volume
+from skyward.runtime import bootstrap
 
 DEFAULT_REGIONS = (
     "us-east-1",
@@ -27,6 +29,8 @@ MIB = 1024
 
 COMPUTE_TAG = "skyward:compute"
 MANAGED_TAG = "skyward:managed"
+IMAGE_TAG = "skyward:image"
+WARM_NAME = "skyward-warm-{tag}"
 SSH_USER = "ubuntu"
 DEFAULT_UBUNTU = "24.04"
 DEFAULT_DISK_GB = 100
@@ -126,6 +130,7 @@ class AWSProvider:
                     memory_gb=float((raw.get("MemoryInfo") or {}).get("SizeInMiB") or 0) / MIB,
                     region=region,
                     disk_gb=float(storage.get("TotalSizeInGB")) if storage.get("TotalSizeInGB") else None,
+                    architecture=_architecture(raw),
                     spot_price=spot.get(instance_type),
                     on_demand_price=on_demand.get(instance_type),
                     fetched_at=now,
@@ -360,6 +365,64 @@ class AWSProvider:
             if instance_id and _reclaimed(code):
                 flagged[str(instance_id)] = "spot-interruption"
         return flagged
+
+    async def bake(self, binding: Binding, machine_id: str, tag: str) -> str:
+        """Register an AMI from the instance, and leave the instance alone.
+
+        ``NoReboot`` because this is a node that is serving: rebooting it to quiesce
+        the filesystem is exactly the thing that must not happen to it. The cost is
+        that the image is of a running machine, which for a bootstrap that has finished
+        writing is what it is anyway.
+
+        Both the image and the snapshot under it are tagged with the environment, which
+        is how :meth:`baked` finds them and how anybody who wants the storage back finds
+        them. Nothing here ever deregisters one.
+        """
+        name = WARM_NAME.format(tag=tag)
+        tags = [*_tags(name), {"Key": IMAGE_TAG, "Value": tag}]
+
+        async with self._ec2(binding["region"]) as ec2:
+            created = await ec2.create_image(
+                InstanceId=machine_id,
+                Name=name,
+                NoReboot=True,
+                TagSpecifications=[
+                    {"ResourceType": "image", "Tags": tags},
+                    {"ResourceType": "snapshot", "Tags": tags},
+                ],
+            )
+            return str(created["ImageId"])
+
+    async def baked(self, binding: Binding, tag: str) -> str | None:
+        """This account's own AMI for this environment in this region, once it can be booted.
+
+        ``Owners=["self"]`` because the tag is ours and a public image carrying it is
+        somebody else's claim about our environment. An image still being registered is
+        filtered out rather than returned: a fleet pointed at a ``pending`` AMI fails
+        outright, which is worse than bootstrapping from scratch.
+        """
+        async with self._ec2(binding["region"]) as ec2:
+            response = await ec2.describe_images(
+                Owners=["self"],
+                Filters=[
+                    {"Name": f"tag:{IMAGE_TAG}", "Values": [tag]},
+                    {"Name": "state", "Values": ["available"]},
+                ],
+            )
+
+        images = response.get("Images", [])
+        return str(images[0]["ImageId"]) if images else None
+
+    async def mount(self, binding: Binding, volumes: tuple[Volume, ...]) -> Mount:
+        """Reach the buckets with the machine's own identity, so no key is minted or shipped.
+
+        S3 in the region the compute was launched in, signed for by the instance
+        profile the machine already carries. Nothing here leaves the account: there
+        is no access key to create, none to write to the node's disk, and none to
+        revoke when the compute goes away.
+        """
+        endpoint = Endpoint(url=f"https://s3.{binding['region']}.amazonaws.com")
+        return Mount(phases=(bootstrap.mounts(tuple((volume, endpoint) for volume in volumes)),))
 
     async def terminate(self, binding: Binding, machine_ids: tuple[str, ...]) -> None:
         """Terminate the batch; if one of them is already gone, terminate the rest.
@@ -673,6 +736,19 @@ def _gpu(raw: dict[str, Any]) -> _Gpu:
     count = sum(int(gpu.get("Count") or 0) for gpu in gpus)
     vram = float((first.get("MemoryInfo") or {}).get("SizeInMiB") or 0) / MIB or None
     return _Gpu(first.get("Name") or None, count, vram, first.get("Manufacturer") or None)
+
+
+def _architecture(raw: dict[str, Any]) -> str | None:
+    """The first architecture AWS reports that the vocabulary has a name for.
+
+    ``SupportedArchitectures`` is a list because the older x86 families still
+    advertise 32-bit alongside 64-bit, and it is ordered by nothing in
+    particular. The mac families report an architecture nobody builds wheels
+    against, and an instance type that only offers one of those comes back as no
+    answer rather than a wrong one.
+    """
+    supported = (raw.get("ProcessorInfo") or {}).get("SupportedArchitectures") or ()
+    return next((named for arch in supported if (named := architecture(arch))), None)
 
 
 def _hourly(product: dict[str, Any]) -> float | None:

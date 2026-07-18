@@ -45,7 +45,9 @@ def version() -> None:
 
 from skyward.cli import compute as compute  # noqa: E402, F401
 from skyward.cli import config as config  # noqa: E402, F401
+from skyward.cli import console as console  # noqa: E402, F401
 from skyward.cli import log as log  # noqa: E402, F401
+from skyward.cli import monitor as monitor  # noqa: E402, F401
 from skyward.cli import offers as offers  # noqa: E402, F401
 from skyward.cli import providers as providers  # noqa: E402, F401
 from skyward.cli import server as server  # noqa: E402, F401

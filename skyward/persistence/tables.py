@@ -46,6 +46,7 @@ class OfferRow(Table, tablename="offers"):
     cpus = Integer(default=0)
     memory_gb = Float(default=0.0)
     disk_gb = Float(null=True, default=None)
+    architecture = Varchar(null=True, default=None)
     region = Varchar(null=True, default=None)
     spot_price = Float(null=True, default=None)
     on_demand_price = Float(null=True, default=None)
@@ -88,6 +89,7 @@ class ComputeRow(Table, tablename="computes"):
     binding = JSONB(default="{}")
     private_key = Text(null=True, default=None)
     markets = JSONB(default="[]")
+    volumes = JSONB(default="[]")
 
     status_state = Varchar(index=True)
     status_observed_generation = Integer(default=0)

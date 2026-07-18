@@ -8,11 +8,15 @@ whichever is cheaper" — and the control plane picks among the offers they matc
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from skyward.accelerators import Accelerator
+from skyward.protocol.architectures import Architecture
 from skyward.protocol.schemas import NodeBounds as Nodes
 from skyward.sdk.provider import Provider
+
+if TYPE_CHECKING:
+    from skyward.storage import Storage
 
 type NodeSpec = int | tuple[int, int] | Nodes
 type ExecutorType = Literal["thread", "process", "loky"]
@@ -71,6 +75,7 @@ class Spec:
     memory_gb: int | None = None
     region: str | None = None
     disk_gb: int | None = None
+    architecture: Architecture | None = None
     max_hourly_cost: float | None = None
 
 
@@ -160,4 +165,67 @@ class Options:
     shutdown_timeout: float = 300.0
 
 
-__all__ = ["Accelerator", "Executor", "ExecutorType", "NodeSpec", "Nodes", "Options", "Port", "Route", "Spec"]
+SYSTEM_PATHS = frozenset({"/", "/opt", "/opt/skyward", "/root", "/tmp"})
+"""Where a mount would take the machine down with it.
+
+``/opt/skyward`` is the venv, the bootstrap script and the journal the daemon
+reads the node's life from; ``/`` and ``/root`` are the machine. Shadowing any of
+them with a bucket is not a mount that fails, it is a node that never reports
+again.
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class Volume:
+    """A bucket every node mounts, at a path you choose.
+
+    The nodes see a directory: ordinary ``open`` and ``os.listdir`` work, and a
+    dataset too big to ship as user code is read straight off object storage
+    instead. It is a network filesystem wearing a directory's clothes, so it is
+    read-heavy by design — ``read_only`` is the default for that reason.
+
+    Where the credentials come from is what ``storage`` decides. Left ``None``,
+    the daemon resolves them from the provider the compute was bought on, and for
+    a bucket in that same account nothing secret is created or transmitted at all.
+    Set, they are yours — an R2 or Backblaze bucket the daemon has no account for —
+    and they travel to the daemon as a blob rather than on the spec, so they are
+    never served back by the compute API.
+
+    A compute takes one kind or the other, never a mix: two sets of credentials
+    under one set of mounts is a compute nobody can say who is paying for.
+
+    Attributes
+    ----------
+    bucket : str
+        The bucket to mount. On RunPod, which attaches storage instead of mounting
+        it, the id or name of a network volume.
+    mount : str
+        The absolute path the bucket appears at on every node.
+    prefix : str
+        A subdirectory of the bucket to mount, rather than its root.
+    read_only : bool
+        Whether writes are refused. Buckets shared by several volumes are mounted
+        writable if any of them asked to write.
+    storage : Storage | None
+        Credentials for buckets the provider cannot reach on its own.
+
+    Examples
+    --------
+    >>> with sky.Compute(provider=sky.AWS(), volumes=[sky.Volume(bucket="training-data", mount="/data")]) as pool:
+    ...     train() >> pool  # the node reads /data/*.parquet
+    """
+
+    bucket: str
+    mount: str
+    prefix: str = ""
+    read_only: bool = True
+    storage: Storage | None = None
+
+    def __post_init__(self) -> None:
+        if not self.mount.startswith("/"):
+            raise ValueError(f"a volume mounts at an absolute path, not {self.mount!r}")
+        if self.mount.rstrip("/") in SYSTEM_PATHS or self.mount == "/":
+            raise ValueError(f"{self.mount!r} is the machine's own, and mounting over it would take the node down")
+
+
+__all__ = ["Accelerator", "Architecture", "Executor", "ExecutorType", "NodeSpec", "Nodes", "Options", "Port", "Route", "Spec", "Volume"]

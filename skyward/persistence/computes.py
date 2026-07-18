@@ -52,6 +52,12 @@ class Infrastructure(Struct, frozen=True):
     binding: Binding = field(default_factory=dict)
     private_key: str | None = None
     markets: tuple[Market, ...] = ()
+    volumes: tuple[str, ...] = ()
+    """The bootstrap phases that mount the compute's buckets, as rendered at bind time.
+
+    Here and not on the spec for the same reason ``private_key`` is: they hold the
+    credentials the provider minted, and the spec is served back by the compute API.
+    """
 
 
 class ComputeStore:
@@ -169,6 +175,7 @@ class ComputeStore:
             binding=await unpacked(row.binding, dict[str, Any]),
             private_key=row.private_key,
             markets=await unpacked(row.markets, tuple[Market, ...]),
+            volumes=await unpacked(row.volumes, tuple[str, ...]),
         )
 
     async def bind(self, compute_id: str, infrastructure: Infrastructure) -> None:
@@ -186,6 +193,7 @@ class ComputeStore:
             ComputeRow.binding: await packed(infrastructure.binding),
             ComputeRow.private_key: infrastructure.private_key,
             ComputeRow.markets: await packed(infrastructure.markets),
+            ComputeRow.volumes: await packed(infrastructure.volumes),
             ComputeRow.revision: ComputeRow.revision + 1,
         }).where(ComputeRow.id == compute_id).run()
 

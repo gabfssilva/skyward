@@ -5,11 +5,14 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
+from skyward.application.errors import CapabilityMismatchError
 from skyward.application.provider import Binding, Machine
 from skyward.protocol.schemas import ComputeSpec, Market, Offer
 
 COMPUTE_LABEL = "skyward.compute"
 BASE_IMAGE = "ghcr.io/gabfssilva/skyward:py{python}"
+WARM_IMAGE = "skyward-warm:{tag}"
+APPLE = "container"
 DEFAULT_PYTHON = "3.13"
 CPUS = (1, 2, 4, 8, 16)
 MEMORY_GB = (1.0, 2.0, 4.0, 8.0, 16.0, 32.0)
@@ -106,6 +109,23 @@ class ContainerProvider:
 
     async def release(self, binding: Binding) -> None:
         await self._try("network", "rm", binding["network"])
+
+    async def bake(self, binding: Binding, machine_id: str, tag: str) -> str:
+        """Commit the container as it stands, bootstrapped venv and heavy wheels and all.
+
+        Apple's ``container`` has no commit verb, so on it there is nothing to keep and
+        saying so is the only honest answer.
+        """
+        if self._binary == APPLE:
+            raise CapabilityMismatchError("the apple container runtime cannot commit a running container", provider=self._name)
+
+        warm = WARM_IMAGE.format(tag=tag)
+        await self._cli("commit", machine_id, warm)
+        return warm
+
+    async def baked(self, binding: Binding, tag: str) -> str | None:
+        warm = WARM_IMAGE.format(tag=tag)
+        return warm if await self._try("image", "inspect", warm) is not None else None
 
     async def _start(self, binding: Binding) -> str:
         created = await self._cli(

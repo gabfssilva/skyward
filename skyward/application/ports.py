@@ -25,9 +25,17 @@ from skyward.protocol.schemas import (
     TaskCreate,
     TaskState,
 )
+from skyward.runtime.ssh import Result
 
 type Route = Literal["round_robin"]
 """How a forwarded connection picks among the ready nodes."""
+
+type Target = Literal["all"] | int
+"""Which nodes an operation reaches: every ready one, or the one holding this rank.
+
+There is no head to name. A rank is only an index into a symmetric world, so rank
+zero is where a caller with no opinion lands and means nothing more than that.
+"""
 
 
 @runtime_checkable
@@ -232,6 +240,66 @@ class Forwarder(Protocol):
 
     def down(self, cid: str) -> AsyncIterator[bytes]:
         """The node's bytes back to the caller, for the ``up`` that opened this id."""
+        ...
+
+
+@runtime_checkable
+class Files(Protocol):
+    """One compute's filesystem and shell, over the links the daemon already holds.
+
+    Deliberately not the byte proxy a :class:`Forwarder` is. That endpoint carries
+    raw bytes to a port on the node, so running SFTP across it would be SSH inside
+    SSH, and the far end would need the compute's private key — which is minted per
+    compute precisely so it never leaves the daemon.
+
+    Every operation takes a :data:`Target` rather than a node, because a file
+    written to one machine of four is not written to the compute. Reading is the
+    exception: it has a single stream, so it takes a single rank.
+    """
+
+    async def ls(self, compute_id: str, target: Target, path: str) -> tuple[tuple[str, Result], ...]: ...
+
+    async def rm(self, compute_id: str, target: Target, path: str) -> tuple[tuple[str, Result], ...]: ...
+
+    async def put(self, compute_id: str, target: Target, path: str, content: bytes) -> tuple[tuple[str, str | None], ...]:
+        """Per node, what stopped the write, or None where nothing did."""
+        ...
+
+    def get(self, compute_id: str, rank: int, path: str) -> AsyncIterator[bytes]:
+        """One node's copy of a file, as it is read off the machine."""
+        ...
+
+    async def run(self, compute_id: str, target: Target, command: str) -> tuple[tuple[str, Result], ...]:
+        """One shell command on each targeted node, and what each one said."""
+        ...
+
+
+@runtime_checkable
+class Shell(Protocol):
+    """Bridges one interactive session to a node's terminal, as two half-duplex streams.
+
+    The transport a :class:`Forwarder` uses, carrying a pseudo-terminal instead of a
+    socket: keystrokes up, everything the terminal paints down, tied by the id the
+    caller mints. Unlike a forward it takes a node, because a shell is somebody
+    sitting at one machine — picking a different one per connection would be the
+    wrong answer to every question they ask it.
+    """
+
+    async def up(
+        self,
+        compute_id: str,
+        cid: str,
+        node_id: str | None,
+        command: str | None,
+        term: str,
+        size: tuple[int, int],
+        chunks: AsyncIterator[bytes],
+    ) -> None:
+        """Open a terminal on a node and pump the caller's keystrokes into it."""
+        ...
+
+    def down(self, cid: str) -> AsyncIterator[bytes]:
+        """What the terminal paints, for the ``up`` that opened this id."""
         ...
 
 

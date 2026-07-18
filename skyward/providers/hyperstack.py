@@ -8,8 +8,9 @@ from typing import Any, ClassVar, Self
 import httpx
 
 from skyward.application.errors import CapabilityMismatchError
-from skyward.application.provider import Binding, Machine, MachineState
-from skyward.protocol.schemas import ComputeSpec, Market, Offer
+from skyward.application.provider import Binding, Machine, MachineState, Mount
+from skyward.protocol.schemas import ComputeSpec, Endpoint, Market, Offer, Volume
+from skyward.runtime import bootstrap
 
 BASE_URL = "https://infrahub-api.nexgencloud.com/v1"
 FLAVORS_PATH = "/core/flavors"
@@ -18,6 +19,10 @@ IMAGES_PATH = "/core/images"
 ENVIRONMENTS_PATH = "/core/environments"
 KEYPAIRS_PATH = "/core/keypairs"
 VMS_PATH = "/core/virtual-machines"
+ACCESS_KEYS_PATH = "/object-storage/access-keys"
+
+OBJECT_STORAGE_REGION = "CANADA-1"
+OBJECT_STORAGE_ENDPOINT = "https://ca1.obj.nexgencloud.io"
 
 CPU_VCPU_RATE = "vCPU (cpu-only-flavors)"
 CPU_RAM_RATE = "RAM (cpu-only-flavors)"
@@ -178,8 +183,38 @@ class HyperstackProvider:
             for machine_id in machine_ids:
                 group.create_task(self._delete(f"{VMS_PATH}/{machine_id}"))
 
+    async def mount(self, binding: Binding, volumes: tuple[Volume, ...]) -> Mount:
+        """Create an object-storage key for this compute and nothing else.
+
+        Hyperstack's object storage is reached with a key minted through the same
+        API that sells the machines, so the compute never needs one configured: it
+        gets one that is created at bind time, used by every node, and deleted with
+        the environment. Path-style addressing, because the endpoint does not serve
+        buckets as subdomains.
+        """
+        region = str(self._config.get("object_storage_region") or OBJECT_STORAGE_REGION)
+        created = await self._request("POST", ACCESS_KEYS_PATH, {"region": region})
+
+        endpoint = Endpoint(
+            url=str(self._config.get("object_storage_endpoint") or OBJECT_STORAGE_ENDPOINT),
+            access_key=created["access_key"],
+            secret_key=created["secret_key"],
+            path_style=True,
+        )
+        return Mount(
+            binding_patch={"access_key_id": created["id"]},
+            phases=(bootstrap.mounts(tuple((volume, endpoint) for volume in volumes)),),
+        )
+
     async def release(self, binding: Binding) -> None:
-        """Deleting the environment takes the keypair with it: the keypair is scoped to it."""
+        """Deleting the environment takes the keypair with it: the keypair is scoped to it.
+
+        The object-storage key is not scoped to anything, so it is deleted by hand —
+        one left behind is a standing credential to the account's buckets.
+        """
+        if access_key_id := binding.get("access_key_id"):
+            with suppress(httpx.HTTPError):
+                await self._delete(f"{ACCESS_KEYS_PATH}/{access_key_id}")
         await self._delete(f"{ENVIRONMENTS_PATH}/{binding['environment_id']}")
 
     async def _create(self, binding: Binding, count: int) -> tuple[Machine, ...]:

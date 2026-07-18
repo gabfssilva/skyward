@@ -9,9 +9,10 @@ from typing import Any, ClassVar, Self
 import httpx
 
 from skyward.application.errors import CapabilityMismatchError
-from skyward.application.provider import Binding, Machine
+from skyward.application.provider import Binding, Machine, Mount
 from skyward.protocol.accelerators import CATALOG, resolve
-from skyward.protocol.schemas import ComputeSpec, Market, Offer
+from skyward.protocol.schemas import ComputeSpec, Market, Offer, Volume
+from skyward.runtime import bootstrap
 
 GRAPHQL_URL = "https://api.runpod.io/graphql"
 REST_URL = "https://rest.runpod.io/v1"
@@ -392,6 +393,62 @@ class RunPodProvider:
             for machine_id in machine_ids:
                 group.create_task(self._destroy(client, machine_id))
 
+    async def mount(self, binding: Binding, volumes: tuple[Volume, ...]) -> Mount:
+        """Attach one network volume, because a pod cannot FUSE-mount anything.
+
+        A RunPod pod runs without ``CAP_SYS_ADMIN``, so geesefs has no mount syscall
+        available to it and no S3 bucket can be projected into the filesystem. What
+        RunPod has instead is a network volume the host attaches before the container
+        starts — so ``Volume.bucket`` is read here as the id or the name of one, and
+        the phases are symlinks into where the host already put it.
+
+        A pod takes exactly one, which is why several buckets are refused rather than
+        silently reduced to the first. Several *volumes* are fine: they become
+        different prefixes of the one attachment.
+        """
+        buckets = {volume.bucket for volume in volumes}
+        if len(buckets) > 1:
+            raise CapabilityMismatchError(
+                f"a runpod pod attaches one network volume, not {len(buckets)}: {', '.join(sorted(buckets))}. "
+                "Name one volume as bucket= and separate the datasets with prefix=",
+                provider=self._name,
+            )
+
+        path = str(binding.get("volume_mount_path") or "/workspace")
+        return Mount(
+            binding_patch={"network_volume_id": await self._network_volume(buckets.pop())},
+            phases=(bootstrap.symlinks(volumes, path),),
+        )
+
+    async def _network_volume(self, ref: str) -> str:
+        """The volume's id, given either its id or the name a person gave it.
+
+        The data centre is checked here and not left to the launch: RunPod refuses to
+        attach a volume from another one with ``network volume not found``, which
+        reads as a volume that does not exist rather than as one that is in the wrong
+        place.
+        """
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.get(f"{REST_URL}/networkvolumes", headers=self._headers)
+            response.raise_for_status()
+            volumes = response.json() or []
+
+        matched = next((volume for volume in volumes if ref in (volume.get("id"), volume.get("name"))), None)
+        if matched is None:
+            available = ", ".join(str(volume.get("name") or volume.get("id")) for volume in volumes) or "none"
+            raise CapabilityMismatchError(
+                f"runpod has no network volume {ref!r}. Available: {available}", provider=self._name,
+            )
+
+        centre = matched.get("dataCenterId")
+        pinned = self._data_center()
+        if centre and pinned and centre != pinned:
+            raise CapabilityMismatchError(
+                f"runpod network volume {ref!r} lives in {centre} but this provider is pinned to {pinned}",
+                provider=self._name,
+            )
+        return str(matched["id"])
+
     async def release(self, binding: Binding) -> None:
         """Terminate every pod still carrying the compute's name prefix.
 
@@ -482,6 +539,7 @@ def _deploy_input(binding: Binding, market: Market, image: str | None = None) ->
     }
     for field, value in (
         ("dataCenterId", binding.get("data_center_id")),
+        ("networkVolumeId", binding.get("network_volume_id")),
         ("countryCode", country),
         ("containerRegistryAuthId", binding.get("registry_auth_id")),
         ("minDownload", binding.get("min_download_mbps")),

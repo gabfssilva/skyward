@@ -78,10 +78,12 @@ class Client:
         method: str,
         path: str,
         kind: type[T],
+        /,
         body: bytes | None = None,
         headers: dict[str, str] | None = None,
         **query: object,
     ) -> T:
+        """The route is positional, so a query of its own may be called ``path``."""
         response = await self._send(method, path, body, JSON, headers, query)
         return msgspec.json.decode(response.content, type=kind)
 
@@ -96,6 +98,23 @@ class Client:
     async def delete(self, path: str) -> None:
         """For the endpoints that answer 204 — nothing to decode, so not ``call``."""
         await self._send("DELETE", path, None, JSON, None, {})
+
+    async def download(self, path: str, /, **query: object) -> AsyncGenerator[bytes]:
+        """A response body as raw bytes, as it arrives.
+
+        :meth:`blob` for a body that has no length to wait for. A file on a node is
+        as large as the user made it, and reading it into memory here to hand back
+        one ``bytes`` would size the client to the file. Pulled a chunk at a time
+        and only as the caller writes them onward, so the machine's own read is
+        what the caller's disk paces.
+        """
+        params = {key: str(value) for key, value in query.items() if value is not None}
+        async with self._http.stream("GET", path, params=params) as response:
+            if response.status_code >= 400:
+                await response.aread()
+                raise refused(response.status_code, response.content)
+            async for chunk in response.aiter_bytes():
+                yield chunk
 
     async def frames(self, path: str) -> AsyncGenerator[bytes]:
         """The frames of a stream, as they arrive.
@@ -164,6 +183,44 @@ class Client:
         carries the node's backpressure the whole way to the local socket.
         """
         async with self._http.stream("GET", f"/v1/computes/{compute}/forward/down", params={"cid": cid}) as response:
+            if response.status_code >= 400:
+                await response.aread()
+                raise refused(response.status_code, response.content)
+            async for chunk in response.aiter_bytes():
+                yield chunk
+
+    async def shell_up(
+        self,
+        compute: str,
+        cid: str,
+        node: str | None,
+        command: str | None,
+        term: str,
+        size: tuple[int, int],
+        chunks: AsyncIterator[bytes],
+    ) -> None:
+        """Send one session's keystrokes up to a node's terminal, as a streaming body.
+
+        :meth:`forward_up` with a terminal on the far end: the request stands open for
+        the life of the session, and the daemon opens the pseudo-terminal on the id
+        this shares with :meth:`shell_down`.
+        """
+        columns, rows = size
+        node_at = {"node": node} if node else {}
+        running = {"command": command} if command else {}
+        response = await self._http.request(
+            "POST",
+            f"/v1/computes/{compute}/shell/up",
+            content=chunks,
+            params={"cid": cid, "term": term, "columns": str(columns), "rows": str(rows), **node_at, **running},
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        if response.status_code >= 400:
+            raise refused(response.status_code, response.content)
+
+    async def shell_down(self, compute: str, cid: str) -> AsyncGenerator[bytes]:
+        """What the terminal paints, raw and as it arrives."""
+        async with self._http.stream("GET", f"/v1/computes/{compute}/shell/down", params={"cid": cid}) as response:
             if response.status_code >= 400:
                 await response.aread()
                 raise refused(response.status_code, response.content)

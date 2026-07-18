@@ -21,7 +21,7 @@ from skyward.sdk.provider import (
     Verda,
     Vultr,
 )
-from skyward.sdk.spec import Accelerator, Executor, Nodes, Options, Port, Spec
+from skyward.sdk.spec import Accelerator, Executor, Nodes, Options, Port, Spec, Volume
 
 __all__ = [
     "AWS",
@@ -55,6 +55,7 @@ __all__ = [
     "TensorDock",
     "VastAI",
     "Verda",
+    "Volume",
     "Vultr",
     "function",
     "gather",

@@ -73,6 +73,7 @@ async def _candidates(spec: ComputeSpec, offers: OfferCache) -> list[Buy]:
             and (wanted.memory_gb is None or offer.memory_gb >= wanted.memory_gb)
             and (wanted.region is None or offer.region == wanted.region)
             and (wanted.disk_gb is None or (offer.disk_gb is not None and offer.disk_gb >= wanted.disk_gb))
+            and (wanted.architecture is None or offer.architecture == wanted.architecture)
         ]
         buys = [
             buy

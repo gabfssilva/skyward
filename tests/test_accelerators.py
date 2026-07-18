@@ -2,6 +2,9 @@
 
 Every case here was copied from a live API response. This is the test that keeps
 `h100` and `h100-sxm` from becoming two different accelerators again.
+
+The architecture spellings are the same job over a smaller vocabulary, with the
+opposite rule for a name that is not in it.
 """
 
 import importlib.util
@@ -11,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from skyward.protocol.accelerators import CATALOG, resolve
+from skyward.protocol.architectures import architecture
 from skyward.protocol.schemas import Offer
 from skyward.providers.gcp import LEGACY_VRAM
 
@@ -62,6 +66,16 @@ GCP_LEGACY_NAMES = [
     ("nvidia-tesla-v100", "v100", 16, 32),
 ]
 
+ARCHITECTURES = [
+    ("x86_64", "x86_64"),
+    ("x86-64", "x86_64"),
+    ("amd64", "x86_64"),
+    ("X64", "x86_64"),
+    ("arm64", "arm64"),
+    ("aarch64", "arm64"),
+    ("arm", "arm64"),
+]
+
 
 @pytest.mark.parametrize(("raw", "name", "vram"), REAL_NAMES)
 def test_a_provider_name_resolves_to_the_shared_vocabulary(raw, name, vram):
@@ -98,6 +112,24 @@ def test_an_unknown_gpu_survives_instead_of_disappearing():
     assert name not in CATALOG
 
 
+@pytest.mark.parametrize(("raw", "named"), ARCHITECTURES)
+def test_an_architecture_spelling_resolves_to_the_shared_vocabulary(raw, named):
+    assert architecture(raw) == named
+
+
+@pytest.mark.parametrize("raw", [None, "", "i386", "x86_64_mac", "arm64_mac", "riscv64", "Ampere"])
+def test_an_architecture_nobody_ships_wheels_for_is_no_answer(raw):
+    """The opposite of the rule for an unknown GPU, and deliberately so.
+
+    An unknown card keeps its own squashed name, so a GPU nobody has catalogued
+    still shows up in the listing. An unknown architecture becomes nothing,
+    because the name is read as a promise that the machine runs the payload —
+    and `i386`, `arm64_mac` and JarvisLabs' `Ampere` are three promises Skyward
+    would not be keeping.
+    """
+    assert architecture(raw) is None
+
+
 def test_the_offer_normalizes_whatever_the_adapter_hands_it():
     offer = Offer(
         id="o1",
@@ -109,6 +141,7 @@ def test_the_offer_normalizes_whatever_the_adapter_hands_it():
         accelerator_count=8,
         cpus=96,
         memory_gb=1024.0,
+        architecture="aarch64",
         fetched_at=None,
         expires_at=None,
         spot_price=16.0,
@@ -116,6 +149,7 @@ def test_the_offer_normalizes_whatever_the_adapter_hands_it():
     )
 
     assert (offer.accelerator, offer.vram) == ("h100", 80)
+    assert offer.architecture == "arm64"
     assert offer.price == 16.0
 
 

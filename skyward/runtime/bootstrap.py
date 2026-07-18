@@ -1,14 +1,30 @@
+from __future__ import annotations
+
+import hashlib
 import re
 import shlex
+from typing import TYPE_CHECKING
 
-from skyward.plugins.plugin import Plugin
-from skyward.protocol.schemas import Image, MetricSpec
+from skyward.protocol.schemas import Endpoint, Image, MetricSpec, Volume
 from skyward.runtime.journal import SKYWARD_DIR
+
+if TYPE_CHECKING:
+    from skyward.plugins.plugin import Plugin
 
 SCRIPT = f"{SKYWARD_DIR}/bootstrap.sh"
 VENV = f"{SKYWARD_DIR}/.venv"
 PYTHON = f"{VENV}/bin/python"
 VARS = f"{SKYWARD_DIR}/vars.sh"
+
+GEESEFS = "v0.43.8"
+"""The geesefs release the nodes mount with, pinned.
+
+An unpinned ``/releases/latest`` is a different filesystem driver on every boot,
+which is a fleet that reads the same bucket two ways and a bug that cannot be
+reproduced from the spec that caused it.
+"""
+GEESEFS_BIN = "/usr/local/bin/geesefs"
+FUSE_ROOT = "/mnt/geesefs"
 
 HEADER = """#!/bin/bash
 set -e
@@ -138,6 +154,99 @@ def phase(name: str, *commands: str) -> str:
     return f"phase {name} {shlex.quote(' && '.join(commands))}"
 
 
+def mounts(volumes: tuple[tuple[Volume, Endpoint], ...]) -> str:
+    """The ``volumes`` phase: install geesefs, mount every bucket, link it where it was asked for.
+
+    One FUSE mount per ``(bucket, endpoint)`` pair rather than per volume, because
+    two volumes reading different prefixes of one bucket are one filesystem seen
+    twice, and mounting it twice would double the cache and the connections for
+    nothing. The prefixes then become symlinks into the single mount, which is also
+    what makes ``prefix`` cost nothing.
+
+    A pair is mounted read-write if any volume naming it asked to write, so a bucket
+    that is read-only in one place and written in another is writable — the narrower
+    of the two would fail the write, and the mount is shared.
+
+    Credentials are written per endpoint, once, as an AWS shared-config file at mode
+    600. An endpoint with no access key is signed for by the machine's own instance
+    identity instead, which is why an AWS bucket in the account that bought the
+    machine needs no secret to travel anywhere.
+
+    Parameters
+    ----------
+    volumes : tuple[tuple[Volume, Endpoint], ...]
+        Each volume paired with the endpoint it is reached through.
+
+    Returns
+    -------
+    str
+        A single ``phase`` line. Its commands are chained on success, so the first
+        that fails is what the journal reports.
+    """
+    lock = "-o DPkg::Lock::Timeout=-1"
+    commands = [
+        f"apt-get {lock} install -y -qq ca-certificates curl",
+        f"{{ apt-get {lock} install -y -qq fuse3 || apt-get {lock} install -y -qq fuse; }}",
+        "arch=$(uname -m)",
+        'case "$arch" in x86_64) a=amd64 ;; aarch64|arm64) a=arm64 ;; *) echo "geesefs: unsupported arch $arch" >&2; exit 1 ;; esac',
+        f'curl -fsSL -o {GEESEFS_BIN} "https://github.com/yandex-cloud/geesefs/releases/download/{GEESEFS}/geesefs-linux-${{a}}"',
+        f"chmod +x {GEESEFS_BIN}",
+    ]
+
+    endpoints = {endpoint.url: endpoint for _, endpoint in volumes}
+    credentials: dict[str, str] = {}
+    for url, endpoint in endpoints.items():
+        if endpoint.access_key is None:
+            continue
+        path = f"/etc/geesefs-creds-{hashlib.md5(url.encode()).hexdigest()[:8]}"
+        block = f"[default]\naws_access_key_id = {endpoint.access_key}\naws_secret_access_key = {endpoint.secret_key}\n"
+        commands.append(f"printf %s {shlex.quote(block)} > {path}")
+        commands.append(f"chmod 600 {path}")
+        credentials[url] = path
+
+    writable: dict[tuple[str, str], bool] = {}
+    for volume, endpoint in volumes:
+        target = (volume.bucket, endpoint.url)
+        writable[target] = writable.get(target, False) or not volume.read_only
+
+    for (bucket, url), rewritable in writable.items():
+        endpoint = endpoints[url]
+        mount = f"{FUSE_ROOT}/{bucket}"
+        log = f"/tmp/geesefs-{bucket}.log"
+        flags = [f"--endpoint={url}"]
+        if not endpoint.path_style:
+            flags.append("--subdomain")
+        flags.append(f"--shared-config={credentials[url]}" if url in credentials else "--iam --iam-flavor=imdsv1")
+        flags += ["--stat-cache-ttl=1s", f"--log-file={log}"]
+        options = "allow_other" if rewritable else "allow_other,ro"
+        commands.append(f"mkdir -p {mount}")
+        commands.append(f"{GEESEFS_BIN} {' '.join(flags)} -o {options} {bucket} {mount}")
+        commands.append(f"mountpoint -q {mount} || {{ cat {log} 2>/dev/null; echo 'geesefs: failed to mount {mount}' >&2; exit 1; }}")
+
+    for volume, _ in volumes:
+        source = f"{FUSE_ROOT}/{volume.bucket}/{volume.prefix}" if volume.prefix else f"{FUSE_ROOT}/{volume.bucket}"
+        if volume.prefix and not volume.read_only:
+            commands.append(f"mkdir -p {source}")
+        commands.append(f"ln -sfn {source} {volume.mount}")
+
+    return phase("volumes", *commands)
+
+
+def symlinks(volumes: tuple[Volume, ...], base: str) -> str:
+    """The ``volumes`` phase for a machine whose volume the host already mounted.
+
+    No install and no FUSE: the provider attached the storage at ``base`` before the
+    machine booted, so all that is owed is the path the user asked for. Each prefix
+    becomes a subdirectory of ``base``; a volume with none links ``base`` itself.
+    """
+    commands: list[str] = []
+    for volume in volumes:
+        target = f"{base}/{volume.prefix}".rstrip("/") if volume.prefix else base
+        commands.append(f"mkdir -p {target}")
+        commands.append(f"ln -sfn {target} {volume.mount}")
+    return phase("volumes", *commands)
+
+
 def _package_name(spec: str) -> str:
     """The bare name a requirement scopes to, dropping any version or extras."""
     return re.split(r"[<>=!~ \[]", spec, maxsplit=1)[0]
@@ -202,7 +311,7 @@ def _pyproject(image: Image) -> str:
     return "\n".join(lines)
 
 
-def script(image: Image, skyward: str, plugins: tuple[Plugin, ...] = (), concurrency: int = 1) -> str:
+def script(image: Image, skyward: str, plugins: tuple[Plugin, ...] = (), concurrency: int = 1, volumes: tuple[str, ...] = ()) -> str:
     """The bootstrap, as a shell script the machine runs on its own.
 
     It is written to run **detached**, and to say what happened by appending to
@@ -229,6 +338,10 @@ def script(image: Image, skyward: str, plugins: tuple[Plugin, ...] = (), concurr
     concurrency : int
         The worker's width, handed to each plugin's ``bootstrap`` — the datum a
         phase that partitions the machine needs and the image does not carry.
+    volumes : tuple[str, ...]
+        Phases that mount the compute's buckets, rendered by the daemon at bind
+        time because that is where the credentials are. They run before the
+        plugins', so a plugin that caches into a volume finds it there.
 
     Returns
     -------
@@ -254,7 +367,7 @@ def script(image: Image, skyward: str, plugins: tuple[Plugin, ...] = (), concurr
         pyproject = ""
         install = f"uv pip install --python {PYTHON}"
 
-    postamble = "\n".join(op for plugin in plugins for op in plugin.bootstrap(image, concurrency))
+    postamble = "\n".join((*volumes, *(op for plugin in plugins for op in plugin.bootstrap(image, concurrency))))
 
     return "\n".join(
         (

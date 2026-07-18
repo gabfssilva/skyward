@@ -1,10 +1,13 @@
+import hashlib
 from datetime import datetime
 from typing import Any, Literal
 
+import msgspec
 from msgspec import UNSET, Struct, UnsetType, field
 from msgspec.structs import force_setattr
 
 from skyward.protocol.accelerators import resolve
+from skyward.protocol.architectures import Architecture, architecture
 
 type ComputeState = Literal[
     "requested",
@@ -160,6 +163,82 @@ class Image(Struct, frozen=True):
     """``None`` leaves the built-in collectors in place; a list replaces them."""
     bootstrap_timeout: int = 900
     skyward: SkywardSource = "auto"
+    warm: bool = False
+    """Whether a machine that finished bootstrapping is kept as a boot image.
+
+    Off because what it creates is never removed: an AMI holds a snapshot that bills
+    for its storage until it is deregistered, and nothing here deregisters it. Turning
+    it on is taking that on. What is created carries :meth:`content_hash` as a tag, on
+    the image and on the snapshot behind it, so it can be found again and removed.
+    Only providers that can snapshot a running machine honor it.
+    """
+
+    def content_hash(self, source: str) -> str:
+        """Name the environment a bootstrapped machine ends up in.
+
+        Covers what the bootstrap installs — the base, the interpreter, the packages
+        and the indexes they are resolved from — together with ``source``, which is
+        what stands in for a skyward version now that a node installs whatever the
+        daemon is running.
+
+        Left out is everything the bootstrap re-applies on every boot: the exports,
+        the shell vars, the metric commands, and the user code, which is synced per
+        run. Folding those in would split the images over changes that cost nothing
+        to redo.
+
+        Parameters
+        ----------
+        source : str
+            :attr:`skyward.runtime.source.Source.argument` — what follows
+            ``uv pip install``. Never a locally built wheel: its bytes change with
+            every edit, so a name derived from it would outlive what it named.
+
+        Returns
+        -------
+        str
+            Twelve hex characters — long enough to name an image, short enough to read
+            in one.
+        """
+        identity = (self.base, self.python, self.pip, self.apt, self.pip_indexes, source)
+        return hashlib.sha256(msgspec.json.encode(identity)).hexdigest()[:12]
+
+
+class Volume(Struct, frozen=True):
+    """A bucket the nodes read and write as a directory.
+
+    ``bucket`` names an object-storage bucket, except on providers that attach a
+    volume of their own rather than mounting one — RunPod reads it as the id or
+    name of a network volume.
+
+    Where the credentials come from is what ``storage_sha256`` decides, and it is
+    the only reason the field exists. ``None`` means the daemon resolves them from
+    the provider record it already holds, and nothing about the bucket's access
+    ever reaches this struct. A digest means the client brought its own, put them
+    in the blob store, and left only the hash here — because a spec is written to
+    the compute row and served back by the compute API, and a secret written there
+    is a secret published.
+    """
+
+    bucket: str
+    mount: str
+    prefix: str = ""
+    read_only: bool = True
+    storage_sha256: str | None = None
+
+
+class Endpoint(Struct, frozen=True):
+    """Where a bucket is reached and what signs for it.
+
+    A blob, never a spec field: it carries the secret that :class:`Volume` refuses
+    to. ``access_key`` unset means the machine signs with its own instance
+    identity, which is how a bucket in the account that bought the machine is
+    reached with no credential in flight at all.
+    """
+
+    url: str
+    access_key: str | None = None
+    secret_key: str | None = None
+    path_style: bool = False
 
 
 class Worker(Struct, frozen=True):
@@ -187,6 +266,13 @@ class Spec(Struct, frozen=True):
     region: str | None = None
     disk_gb: int | None = None
     """The least disk a machine must carry to satisfy this spec."""
+    architecture: Architecture | None = None
+    """The instruction set the machine must run, when the payload only has wheels for one.
+
+    An offer that does not report its architecture does not satisfy this, because
+    it cannot be shown to: shipping x86 wheels to an arm machine is not a slow
+    node, it is a node that never runs a task.
+    """
     max_hourly_cost: float | None = None
     """The most an hour of one machine may cost, at the price it is actually bought on."""
 
@@ -252,6 +338,13 @@ class ComputeSpec(Struct, frozen=True):
     connection to every node for the pool's whole life, so a node that has had none for
     ``ttl`` seconds is one no daemon is coming back for. ``0`` disables it. Only providers
     that boot the machine from a container entrypoint (RunPod) honor it today."""
+    volumes: tuple[Volume, ...] = ()
+    """Buckets every node of the compute mounts.
+
+    On the compute and not on a :class:`Spec`, because the specs are a preference
+    list and only one of them is ever bought: a volume named against the spec that
+    lost would be a mount the fleet does not have.
+    """
 
 
 class ComputeSpecPatch(Struct, frozen=True):
@@ -427,6 +520,7 @@ class Offer(Struct, frozen=True):
     accelerator: str | None = None
     region: str | None = None
     disk_gb: float | None = None
+    architecture: str | None = None
     spot_price: float | None = None
     on_demand_price: float | None = None
     billing_unit: BillingUnit = "hour"
@@ -436,7 +530,7 @@ class Offer(Struct, frozen=True):
     specific: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        """Derive the two fields an offer is compared on: its accelerator and its price.
+        """Normalize what an adapter handed over into what the market compares on.
 
         ``accelerator`` may be handed in exactly as the provider spells it
         ("NVIDIA H100 80GB SXM5", "H100-80G-PCIe"); it is normalized here into
@@ -444,6 +538,12 @@ class Offer(Struct, frozen=True):
         it in the struct rather than in each adapter is the point: eleven
         adapters normalizing on their own is how `h100` and `h100-sxm` ended up
         being different accelerators.
+
+        ``architecture`` is normalized here for the same reason, with the opposite
+        treatment of the unknown: a spelling the vocabulary does not have becomes
+        ``None``. An adapter passes whatever its API said and cannot invent a
+        third architecture, and an offer that reports nothing stays unsellable to
+        a spec that asked for one.
 
         ``price`` is the cheapest the offer can be had for. Ordering and budget
         filters run on it, not on ``on_demand_price`` — several providers
@@ -453,6 +553,7 @@ class Offer(Struct, frozen=True):
         accelerator, vram = resolve(self.accelerator, self.vram)
         force_setattr(self, "accelerator", accelerator)
         force_setattr(self, "vram", vram)
+        force_setattr(self, "architecture", architecture(self.architecture))
 
         prices = [price for price in (self.spot_price, self.on_demand_price) if price is not None]
         force_setattr(self, "price", min(prices) if prices else None)

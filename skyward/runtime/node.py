@@ -67,6 +67,7 @@ class Node:
         options: Options = DEFAULT_OPTIONS,
         plugins: tuple[PluginRef, ...] = (),
         user_code: bytes | None = None,
+        volumes: tuple[str, ...] = (),
     ) -> None:
         if machine.host is None:
             raise ValueError(f"machine {machine.id} has no address to connect to")
@@ -88,6 +89,7 @@ class Node:
         self._reuse = reuse
         self._plugins = plugins
         self._user_code = user_code
+        self._volumes = volumes
         self._worker_timeout = options.worker_timeout
         self._health_command = options.health_command
         self._health_interval = options.health_interval
@@ -192,7 +194,7 @@ class Node:
         resolved = plugins.resolve(self._plugins)
         await self._ssh.put(
             bootstrap.SCRIPT,
-            bootstrap.script(self._image, self._source.argument, resolved, self._concurrency).encode(),
+            bootstrap.script(self._image, self._source.argument, resolved, self._concurrency, self._volumes).encode(),
         )
         await self._ssh.run(f"chmod +x {bootstrap.SCRIPT} && nohup {self._sudo}{bootstrap.SCRIPT} > /dev/null 2>&1 &")
 

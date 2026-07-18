@@ -14,18 +14,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable
+import shlex
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 
 import asyncssh
 import casty
 
-from skyward.application.ports import Route
+from skyward.application.ports import Route, Target
 from skyward.application.provider import Machine
 from skyward.protocol.schemas import Executor, Image, NodeState, Options, PluginRef
 from skyward.runtime.node import DEFAULT_OPTIONS, Node
 from skyward.runtime.source import Source
-from skyward.runtime.ssh import Channel
+from skyward.runtime.ssh import Channel, Result
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +186,89 @@ class Runtime:
 
         return await node._ssh.open_connection("127.0.0.1", remote_port)
 
+    async def open_shell(
+        self,
+        node_id: str | None = None,
+        command: str | None = None,
+        term: str = "xterm-256color",
+        size: tuple[int, int] = (80, 24),
+    ) -> Channel:
+        """A pseudo-terminal on one named node, or on the first ready one.
+
+        Deliberately not round-robin, which is what a forward does: a forward is one
+        connection among many to a service replicated across the compute, and a shell
+        is a person. Somebody who opens a terminal, reads a file and opens another
+        expects the same machine both times, so the choice is either the node they
+        named or the lowest-numbered one ready — never the next in a rotation.
+        """
+        ready = self.ready
+        if not ready:
+            raise RuntimeError(f"compute {self.compute} has no ready node to reach")
+
+        match node_id:
+            case None:
+                chosen = ready[0]
+            case named if named in ready:
+                chosen = named
+            case named:
+                raise RuntimeError(f"node {named} is not ready on compute {self.compute}")
+
+        return await self.nodes[chosen]._ssh.open_shell(command, term, size)
+
+    def _select(self, target: Target) -> tuple[str, ...]:
+        """The ready nodes an operation lands on.
+
+        ``all`` is every node ready right now, so an operation reaches the compute
+        the caller can see and not the one it was asked for. A rank is the single
+        node holding it, and a rank that is not ready is refused rather than
+        skipped: a write nobody performed is not a write that succeeded everywhere.
+        """
+        ready = self.ready
+        if not ready:
+            raise RuntimeError(f"compute {self.compute} has no ready node to reach")
+
+        match target:
+            case "all":
+                return ready
+            case rank:
+                chosen = tuple(node_id for node_id in ready if self.nodes[node_id]._rank == rank)
+                if not chosen:
+                    raise RuntimeError(f"compute {self.compute} has no ready node at rank {rank}")
+                return chosen
+
+    async def run(self, target: Target, command: str) -> tuple[tuple[str, Result], ...]:
+        """One command on every targeted node at once, tagged with whose answer it is."""
+        selected = self._select(target)
+        results = await asyncio.gather(*(self.nodes[node_id]._ssh.run(command) for node_id in selected))
+        return tuple(zip(selected, results, strict=True))
+
+    async def put(self, target: Target, path: str, content: bytes) -> tuple[tuple[str, str | None], ...]:
+        """Write the same bytes to every targeted node, and report per node.
+
+        A machine that refused the write is one line of the answer rather than the
+        end of it. The caller asked for four copies and is owed which of the four
+        exist — raising on the first refusal would leave them knowing neither.
+        """
+        selected = self._select(target)
+        outcomes = await asyncio.gather(
+            *(self.nodes[node_id]._ssh.put(path, content) for node_id in selected),
+            return_exceptions=True,
+        )
+        return tuple(
+            (node_id, None if outcome is None else str(outcome))
+            for node_id, outcome in zip(selected, outcomes, strict=True)
+        )
+
+    def get(self, rank: int, path: str) -> AsyncIterator[bytes]:
+        """One node's copy of a file.
+
+        Not itself a generator, so a rank nobody is holding is refused now rather
+        than at the first chunk — by which time a response has already been opened
+        and the status code spent.
+        """
+        (node_id,) = self._select(rank)
+        return self.nodes[node_id]._ssh.get(path)
+
     async def close(self) -> None:
         if self._system:
             await self._system.close()
@@ -234,6 +318,7 @@ class Runtimes:
         reuse: bool = True,
         options: Options = DEFAULT_OPTIONS,
         user_code: bytes | None = None,
+        volumes: tuple[str, ...] = (),
     ) -> None:
         """Bring a machine up, and wire what it learns back to the store.
 
@@ -257,6 +342,7 @@ class Runtimes:
             options=options,
             plugins=plugins,
             user_code=user_code,
+            volumes=volumes,
             listener=lambda state, error: self._listener(runtime.compute, node_id, state, error),
             output=lambda content, task: self._output(runtime.compute, node_id, content, task),
             sample=lambda name, value: self._sample(runtime.compute, node_id, name, value),
@@ -279,8 +365,8 @@ class Runtimes:
             await self.close(compute)
 
 
-class Forward:
-    """The two half-duplex streams of one forwarded connection, tied by id.
+class Paired:
+    """The two half-duplex streams of one channel to a node, tied by id.
 
     The transport is paired requests because HTTP/1.1 carries a body one way at a
     time: the caller's bytes ride up, the node's ride down, and the id the caller
@@ -292,6 +378,10 @@ class Forward:
     what it has to send is not the node reaching the end of what it has to say. Up
     signals EOF and stops; the channel is not released until down sees the node
     close its side.
+
+    What the channel is at the far end — a forwarded socket, a terminal — changes
+    nothing here, which is why opening it is the subclass's business and pumping it
+    is not.
     """
 
     def __init__(self, runtimes: Runtimes) -> None:
@@ -301,13 +391,16 @@ class Forward:
     def _slot(self, cid: str) -> asyncio.Future[Channel]:
         return self._channels.setdefault(cid, asyncio.get_running_loop().create_future())
 
-    async def up(self, compute_id: str, cid: str, remote_port: int, route: Route, chunks: AsyncIterator[bytes]) -> None:
+    def _runtime(self, compute_id: str) -> Runtime:
+        runtime = self._runtimes.of(compute_id)
+        if runtime is None:
+            raise RuntimeError(f"compute {compute_id} is not live on this daemon")
+        return runtime
+
+    async def _pump(self, cid: str, opening: Callable[[], Awaitable[Channel]], chunks: AsyncIterator[bytes]) -> None:
         slot = self._slot(cid)
         try:
-            runtime = self._runtimes.of(compute_id)
-            if runtime is None:
-                raise RuntimeError(f"compute {compute_id} is not live on this daemon")
-            channel = await runtime.open_channel(remote_port, route)
+            channel = await opening()
         except Exception as exc:
             if not slot.done():
                 slot.set_exception(exc)
@@ -335,3 +428,68 @@ class Forward:
             self._channels.pop(cid, None)
             with suppress(OSError, asyncssh.Error):
                 writer.close()
+
+
+class Forward(Paired):
+    """One local TCP connection carried to a node port."""
+
+    async def up(self, compute_id: str, cid: str, remote_port: int, route: Route, chunks: AsyncIterator[bytes]) -> None:
+        await self._pump(cid, lambda: self._runtime(compute_id).open_channel(remote_port, route), chunks)
+
+
+class Files:
+    """One compute's filesystem and shell, reached over the daemon's own SSH links.
+
+    Not a :class:`Paired`. A file operation is one request with one answer, so
+    there is no second half to rendezvous with and no per-connection state to hold
+    between them. What it shares with a forward is only where it arrives: the SSH
+    link the node already has, which the daemon holds and never hands out.
+
+    ``ls`` and ``rm`` are shell commands with the path quoted, because a path is
+    the user's and a shell will read ``;`` in one as an invitation.
+    """
+
+    def __init__(self, runtimes: Runtimes) -> None:
+        self._runtimes = runtimes
+
+    async def ls(self, compute_id: str, target: Target, path: str) -> tuple[tuple[str, Result], ...]:
+        return await self._live(compute_id).run(target, f"ls -la {shlex.quote(path)}")
+
+    async def rm(self, compute_id: str, target: Target, path: str) -> tuple[tuple[str, Result], ...]:
+        return await self._live(compute_id).run(target, f"rm -rf {shlex.quote(path)}")
+
+    async def put(self, compute_id: str, target: Target, path: str, content: bytes) -> tuple[tuple[str, str | None], ...]:
+        return await self._live(compute_id).put(target, path, content)
+
+    def get(self, compute_id: str, rank: int, path: str) -> AsyncIterator[bytes]:
+        return self._live(compute_id).get(rank, path)
+
+    async def run(self, compute_id: str, target: Target, command: str) -> tuple[tuple[str, Result], ...]:
+        return await self._live(compute_id).run(target, command)
+
+    def _live(self, compute_id: str) -> Runtime:
+        runtime = self._runtimes.of(compute_id)
+        if runtime is None:
+            raise RuntimeError(f"compute {compute_id} is not live on this daemon")
+        return runtime
+
+
+class Terminal(Paired):
+    """One interactive session carried to a node's pseudo-terminal.
+
+    The same pump as a forward, with a shell on the far end instead of a socket:
+    keystrokes go up, everything the terminal paints comes down, and the daemon is
+    the only side holding an SSH connection either way.
+    """
+
+    async def up(
+        self,
+        compute_id: str,
+        cid: str,
+        node_id: str | None,
+        command: str | None,
+        term: str,
+        size: tuple[int, int],
+        chunks: AsyncIterator[bytes],
+    ) -> None:
+        await self._pump(cid, lambda: self._runtime(compute_id).open_shell(node_id, command, term, size), chunks)

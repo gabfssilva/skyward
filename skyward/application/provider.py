@@ -2,9 +2,9 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import timedelta
 from typing import Any, ClassVar, Literal, Protocol, Self, runtime_checkable
 
-from msgspec import Struct
+from msgspec import Struct, field
 
-from skyward.protocol.schemas import ComputeSpec, Market, Offer
+from skyward.protocol.schemas import ComputeSpec, Market, Offer, Volume
 
 type Binding = Mapping[str, Any]
 """Whatever the adapter needs to remember about one compute's infrastructure.
@@ -291,5 +291,132 @@ class Preemptible(Catalog, Protocol):
             will take. A machine absent from the answer is one it has raised no
             warning about — the same convention as :meth:`Provider.machines`, where
             gone is simply absent.
+        """
+        ...
+
+
+class Mount(Struct, frozen=True):
+    """How one provider satisfies a compute's volumes: before the machine, and on it.
+
+    ``binding_patch`` is spent before anything is launched — it is how a provider
+    that attaches storage itself gets the volume named in the launch request, which
+    is a decision that cannot be taken once the machine exists. ``phases`` run on
+    the machine after SSH opens, and are rendered here rather than on the node
+    because the credentials they carry never leave the daemon.
+
+    A provider needs neither: one that mounts nothing and hints nothing returns an
+    empty ``Mount``, and the compute boots with no volume phase at all.
+    """
+
+    binding_patch: Binding = field(default_factory=dict)
+    phases: tuple[str, ...] = ()
+
+
+@runtime_checkable
+class Mountable(Protocol):
+    """A provider that can turn a compute's volumes into something a node can read.
+
+    What that means is the provider's own: an S3-compatible endpoint the machine
+    FUSE-mounts, credentials minted for the length of the compute, or a volume the
+    host attaches so the machine finds it already there. The control plane asks and
+    stores the answer; it does not know which of those happened.
+
+    Optional and structural, like :class:`Preemptible`: an adapter carrying this
+    method is asked, one that does not makes a compute with volumes a
+    ``capability_mismatch`` rather than a compute that boots without them.
+    """
+
+    async def mount(self, binding: Binding, volumes: tuple[Volume, ...]) -> Mount:
+        """Say what these volumes cost the launch and what they cost the boot.
+
+        Called once per compute, after :meth:`Provider.initialize` and before a
+        single machine is launched, so anything minted here — an access key, an
+        attachment — is created once and lives as long as the compute does.
+
+        Parameters
+        ----------
+        binding : Binding
+            The compute's infrastructure as :meth:`Provider.initialize` left it.
+            The region a bucket must be reached in and the account it belongs to
+            are read from here, not from the adapter's config.
+        volumes : tuple[Volume, ...]
+            The volumes whose credentials the daemon did not already have. A
+            volume the client brought its own credentials for never arrives here.
+
+        Returns
+        -------
+        Mount
+            Hints merged into the binding before launch, and phases appended to
+            every node's bootstrap.
+        """
+        ...
+
+
+@runtime_checkable
+class Bakeable(Protocol):
+    """A provider that can turn a machine which has finished bootstrapping into a boot image.
+
+    Bootstrap does the same work every time — the same apt packages, the same wheels,
+    the same driver — and on a fat image it is most of what a node does before it is
+    worth anything. A provider able to snapshot a running machine can be asked to keep
+    that work, so the next compute with the same environment boots into it already
+    done. Most providers cannot: one that boots from a docker image name has nowhere
+    to put a snapshot, and does not carry these methods.
+
+    Optional and structural, like :class:`Preemptible`: an adapter that has them is
+    asked, one that does not is not, and nothing registers.
+
+    Nothing here deletes. That is why baking is opt-in on
+    :attr:`skyward.protocol.schemas.Image.warm` — a snapshot bills for its storage
+    until somebody removes it, and the somebody is whoever turned it on.
+    """
+
+    async def bake(self, binding: Binding, machine_id: str, tag: str) -> str:
+        """Snapshot a machine that is up and serving into an image others can boot from.
+
+        Asked of one machine per compute, once it is working, and never of one on its
+        way out: the machine goes on running and goes on holding whatever it was given.
+
+        Parameters
+        ----------
+        binding : Binding
+            Identifies the compute the machine belongs to, and the region the image is
+            created in — a snapshot is not global on any provider that has regions.
+        machine_id : str
+            The machine to snapshot.
+        tag : str
+            Names the environment rather than the image: it is the hash of what the
+            bootstrap installed, so every compute that would bootstrap to the same
+            place asks for the same one. The adapter mints its own name from it and
+            marks what it creates, which is how :meth:`baked` finds it later.
+
+        Returns
+        -------
+        str
+            The image, in whatever form this adapter's binding carries one.
+        """
+        ...
+
+    async def baked(self, binding: Binding, tag: str) -> str | None:
+        """The image this environment was already baked into, if the provider still has it.
+
+        The provider is the authority and is asked every time. An image that was
+        deregistered, or that lives in an account or a region this binding is not
+        pointing at, is one that does not exist — and a table on this side would keep
+        claiming it did.
+
+        Parameters
+        ----------
+        binding : Binding
+            Identifies the compute, and the region to look in.
+        tag : str
+            The environment, as :meth:`bake` was given it.
+
+        Returns
+        -------
+        str | None
+            Something that can be booted right now, or ``None`` — which is also the
+            answer for an image that exists but is still being registered, since a
+            launch pointed at one of those fails.
         """
         ...

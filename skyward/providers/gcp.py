@@ -38,12 +38,21 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from skyward.application.errors import CapabilityMismatchError
-from skyward.application.provider import Binding, Machine, MachineState
-from skyward.protocol.schemas import ComputeSpec, Market, Offer
+from skyward.application.provider import Binding, Machine, MachineState, Mount
+from skyward.protocol.schemas import ComputeSpec, Endpoint, Market, Offer, Volume
+from skyward.runtime import bootstrap
 
 COMPUTE_URL = "https://compute.googleapis.com/compute/v1"
+STORAGE_URL = "https://storage.googleapis.com"
 VANTAGE_URL = "https://instances.vantage.sh/gcp/instances.json"
-SCOPE = "https://www.googleapis.com/auth/compute"
+SCOPE = "https://www.googleapis.com/auth/compute https://www.googleapis.com/auth/devstorage.full_control"
+"""What the minted token may be used for: machines, and the buckets a compute mounts.
+
+A ceiling and not a grant — the service account's own IAM decides what it may
+actually do, and one that was never given storage simply fails the HMAC call.
+Asking for the narrower scope instead would mean a second token, a second
+signature, and a second cache for the one call per compute that needs it.
+"""
 
 COMPUTE_LABEL = "skyward-compute"
 NODE_TAG = "skyward-node"
@@ -434,10 +443,59 @@ class GCPProvider:
             for machine_id in machine_ids:
                 group.create_task(self._delete(client, binding, machine_id))
 
+    async def mount(self, binding: Binding, volumes: tuple[Volume, ...]) -> Mount:
+        """Mint one HMAC key for the compute, because GCS speaks S3 only when signed that way.
+
+        Google Cloud Storage's S3-compatible endpoint authenticates with an HMAC
+        key pair and nothing else — the service-account token the rest of this
+        adapter uses is not a thing geesefs can present. So a key is created here,
+        lives exactly as long as the compute does, and its id rides the binding so
+        that :meth:`release` can take it back.
+        """
+        email = self._service_account["client_email"]
+        async with httpx.AsyncClient(base_url=STORAGE_URL, timeout=60, headers={"Accept": "application/json"}) as client:
+            token = await self._token(client)
+            response = await client.post(
+                f"/storage/v1/projects/{binding['project']}/hmacKeys",
+                params={"serviceAccountEmail": email},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            response.raise_for_status()
+            created = response.json()
+
+        endpoint = Endpoint(
+            url=STORAGE_URL,
+            access_key=created["metadata"]["accessId"],
+            secret_key=created["secret"],
+        )
+        return Mount(
+            binding_patch={"hmac_access_id": created["metadata"]["accessId"]},
+            phases=(bootstrap.mounts(tuple((volume, endpoint) for volume in volumes)),),
+        )
+
     async def release(self, binding: Binding) -> None:
+        await self._revoke(binding)
         async with self._api() as client:
             response = await client.delete(f"/projects/{binding['project']}/global/firewalls/{binding['firewall']}")
             _accept(response, 404)
+
+    async def _revoke(self, binding: Binding) -> None:
+        """Take back the HMAC key the compute was mounted with, if it had one.
+
+        Two calls because Google refuses to delete an active key: it is deactivated
+        first, then removed. A key that outlives its compute is a standing
+        credential to the project's buckets that nothing will ever use again.
+        """
+        access_id = binding.get("hmac_access_id")
+        if not access_id:
+            return
+
+        path = f"/storage/v1/projects/{binding['project']}/hmacKeys/{access_id}"
+        async with httpx.AsyncClient(base_url=STORAGE_URL, timeout=60, headers={"Accept": "application/json"}) as client:
+            token = await self._token(client)
+            client.headers["Authorization"] = f"Bearer {token}"
+            _accept(await client.put(path, json={"state": "INACTIVE"}), 404)
+            _accept(await client.delete(path), 404)
 
     async def _insert(self, client: httpx.AsyncClient, binding: Binding, market: Market) -> tuple[Machine | None, str | None]:
         """Create one instance, under a name chosen here rather than by GCP.

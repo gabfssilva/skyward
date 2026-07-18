@@ -20,7 +20,7 @@ from skyward.application.health import Health
 from skyward.application.machines import Machines
 from skyward.application.metering import Meter
 from skyward.application.reconciler import Reconciler, Wakeup
-from skyward.application.runtimes import Forward, Runtimes
+from skyward.application.runtimes import Files, Forward, Runtimes, Terminal
 from skyward.persistence.computes import ComputeStore, GenerationStore
 from skyward.persistence.db import DEFAULT_PATH, connect
 from skyward.persistence.events import EventStore
@@ -34,12 +34,14 @@ from skyward.protocol import codec
 from skyward.server.controllers.blobs import BlobController
 from skyward.server.controllers.computes import ComputeController
 from skyward.server.controllers.events import EventController
+from skyward.server.controllers.files import FileController
 from skyward.server.controllers.forward import ForwardController
 from skyward.server.controllers.functions import FunctionController
 from skyward.server.controllers.health import HealthController
 from skyward.server.controllers.nodes import NodeController
 from skyward.server.controllers.offers import OfferController
 from skyward.server.controllers.providers import ProviderController, ProviderKindController
+from skyward.server.controllers.shell import ShellController
 from skyward.server.controllers.tasks import TaskController
 from skyward.server.emitter import ReconcilingEventEmitter
 from skyward.server.exceptions import skyward_error_handler, unhandled_error_handler
@@ -70,6 +72,8 @@ class Services:
     runtimes: Runtimes | None = None
     meter: Meter | None = None
     forwarder: ports.Forwarder | None = None
+    shell: ports.Shell | None = None
+    files: ports.Files | None = None
 
 
 def mock_services() -> Services:
@@ -148,7 +152,7 @@ def services() -> Services:
 
     offers = OfferCache(providers)
     generations = GenerationStore(computes)
-    machines = Machines(computes=computes, nodes=nodes, providers=providers, offers=offers)
+    machines = Machines(computes=computes, nodes=nodes, providers=providers, offers=offers, blobs=blobs)
 
     return Services(
         computes=computes,
@@ -186,6 +190,8 @@ def services() -> Services:
         runtimes=runtimes,
         meter=Meter(computes=computes, nodes=nodes, events=events),
         forwarder=Forward(runtimes),
+        shell=Terminal(runtimes),
+        files=Files(runtimes),
     )
 
 
@@ -242,6 +248,8 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
             await svc.runtimes.shutdown()
 
     forwarding = [ForwardController] if svc.forwarder else []
+    shells = [ShellController] if svc.shell else []
+    filing = [FileController] if svc.files else []
 
     app = Litestar(
         path="/v1",
@@ -257,6 +265,8 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
             OfferController,
             HealthController,
             *forwarding,
+            *shells,
+            *filing,
         ],
         dependencies={
             "computes": Provide(lambda: svc.computes, sync_to_thread=False),
@@ -274,6 +284,8 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
             "dispatcher": Provide(lambda: svc.dispatcher, sync_to_thread=False),
             "wake": Provide(lambda: svc.wake, sync_to_thread=False),
             **({"forwarder": Provide(lambda: svc.forwarder, sync_to_thread=False)} if svc.forwarder else {}),
+            **({"shell": Provide(lambda: svc.shell, sync_to_thread=False)} if svc.shell else {}),
+            **({"files": Provide(lambda: svc.files, sync_to_thread=False)} if svc.files else {}),
         },
         listeners=build_listeners(svc.reconciler, svc.dispatcher, svc.machines, svc.connector),
         event_emitter_backend=ReconcilingEventEmitter,

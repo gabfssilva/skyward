@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 RETRY_DELAY = 2.0
 CONNECT_TIMEOUT = 10.0
+CHUNK = 65536
 
 type Channel = tuple[asyncssh.SSHReader[bytes], asyncssh.SSHWriter[bytes]]
 """One direct-tcpip connection to a node's port: bytes in, bytes out."""
@@ -129,6 +130,19 @@ class SshChannel:
 
         await self._attempt(write)
 
+    async def get(self, path: str) -> AsyncIterator[bytes]:
+        """Read a file off the machine, a chunk at a time.
+
+        Outside :meth:`_attempt`, which reruns an operation on the connection that
+        replaces a dead one: rerunning this one would hand the caller the start of
+        the file a second time, half way through writing it. A download that dies
+        on a reconnect dies — the same contract :meth:`stream` has.
+        """
+        conn = await self._ready()
+        async with conn.start_sftp_client() as sftp, sftp.open(path, "rb") as remote:
+            while chunk := await remote.read(CHUNK):
+                yield chunk
+
     async def _attempt[T](self, operation: Callable[[asyncssh.SSHClientConnection], Awaitable[T]]) -> T:
         """Run an operation, and run it again on the connection that replaces a dead one.
 
@@ -182,6 +196,34 @@ class SshChannel:
         """
         conn = await self._ready()
         return await conn.open_connection(remote_host, remote_port)
+
+    async def open_shell(
+        self,
+        command: str | None = None,
+        term: str = "xterm-256color",
+        size: tuple[int, int] = (80, 24),
+    ) -> Channel:
+        """Open one interactive session on the machine, behind a pseudo-terminal.
+
+        The PTY is what makes it a terminal rather than a pipe: it is what a login
+        shell reads its job control from, what a REPL asks before it prints a prompt,
+        and what ``ncurses`` sizes itself against — none of which a plain ``exec``
+        channel offers. ``command`` omitted is the user's login shell.
+
+        Reader and writer are the same pair :meth:`open_connection` hands back, so
+        whatever pumps bytes through a forwarded socket pumps them through this. The
+        error stream is folded into the output, because a terminal has one.
+        """
+        conn = await self._ready()
+        columns, rows = size
+        process = await conn.create_process(
+            command,
+            term_type=term,
+            term_size=(columns, rows),
+            encoding=None,
+            stderr=asyncssh.STDOUT,
+        )
+        return process.stdout, process.stdin
 
     async def close(self) -> None:
         if self._closed:

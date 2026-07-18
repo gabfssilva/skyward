@@ -124,6 +124,11 @@ class Reconciler:
         The only thing the reconciler is told rather than reads. No query can answer
         whether the SSH connection this process is holding got as far as a running
         worker — only the process holding it knows, and this is how it says so.
+
+        It is also the one moment a machine is known to be fully built, which is the
+        only moment an image of it is worth anything. Whether one is taken is the
+        spec's decision and the provider's capability, so it is asked of machines and
+        settled there.
         """
         await self._nodes.observe(
             node_id,
@@ -135,6 +140,7 @@ class Reconciler:
 
         if state == "ready":
             self._wake("compute.dispatch", compute_id=compute_id)
+            await self._machines.bake(compute_id, node_id)
 
     async def unsettled(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
         return await self._computes.live(), await self._tasks.unsettled()

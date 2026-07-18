@@ -86,6 +86,7 @@ class Connector:
             options=compute.spec.options,
             plugins=compute.spec.plugins,
             user_code=user_code,
+            volumes=infrastructure.volumes,
         )
 
     async def disconnect(self, compute_id: str, node_id: str) -> None:

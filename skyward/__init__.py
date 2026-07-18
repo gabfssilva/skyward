@@ -21,7 +21,7 @@ import importlib
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from skyward import accelerators, metrics, plugins, storage, time
+    from skyward import accelerators, metrics, observability, plugins, storage, time
     from skyward.distributed import Consistency, DistributedRegistry, barrier, counter, dict, lock, queue, registry, set
     from skyward.runtime.api import CallbackWriter, Info, instance_info, is_head, redirect_output, shard, silent, stderr, stdout
     from skyward.sdk import (
@@ -56,6 +56,7 @@ if TYPE_CHECKING:
         TensorDock,
         VastAI,
         Verda,
+        Volume,
         Vultr,
         function,
         gather,
@@ -112,6 +113,7 @@ __all__ = [
     "TensorDock",
     "VastAI",
     "Verda",
+    "Volume",
     "Vultr",
     "accelerators",
     "barrier",
@@ -123,6 +125,7 @@ __all__ = [
     "is_head",
     "lock",
     "metrics",
+    "observability",
     "plugins",
     "queue",
     "redirect_output",
@@ -141,7 +144,7 @@ __all__ = [
 
 def __getattr__(name: str) -> object:
     match name:
-        case "accelerators" | "metrics" | "plugins" | "storage" | "time":
+        case "accelerators" | "metrics" | "observability" | "plugins" | "storage" | "time":
             value = importlib.import_module(f"skyward.{name}")
         case "Storage":
             value = importlib.import_module("skyward.storage").Storage

@@ -60,7 +60,7 @@ class FakeProvider:
 
 class ScriptedMachines(Machines):
     def __init__(self, computes: ComputeStore, nodes: NodeStore, provider: FakeProvider) -> None:
-        super().__init__(computes, nodes, providers=None, offers=None)  # type: ignore[arg-type]
+        super().__init__(computes, nodes, providers=None, offers=None, blobs=None)  # type: ignore[arg-type]
         self._provider = provider
 
     async def adapter(self, provider_id: str | None) -> FakeProvider:  # type: ignore[override]
@@ -196,7 +196,7 @@ class PreemptibleProvider:
 
 class PreemptibleMachines(Machines):
     def __init__(self, computes: ComputeStore, nodes: NodeStore, provider: PreemptibleProvider) -> None:
-        super().__init__(computes, nodes, providers=None, offers=None)  # type: ignore[arg-type]
+        super().__init__(computes, nodes, providers=None, offers=None, blobs=None)  # type: ignore[arg-type]
         self._provider = provider
 
     async def adapter(self, provider_id: str | None) -> PreemptibleProvider:  # type: ignore[override]
@@ -297,7 +297,7 @@ class FakeOffers:
 
 class RegionMachines(Machines):
     def __init__(self, computes: ComputeStore, nodes: NodeStore, provider: RegionProvider, offers: FakeOffers) -> None:
-        super().__init__(computes, nodes, providers=None, offers=offers)  # type: ignore[arg-type]
+        super().__init__(computes, nodes, providers=None, offers=offers, blobs=None)  # type: ignore[arg-type]
         self._provider = provider
 
     async def adapter(self, provider_id: str | None) -> RegionProvider:  # type: ignore[override]
