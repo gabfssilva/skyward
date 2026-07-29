@@ -145,6 +145,10 @@ class Provider(Catalog, Protocol):
     an adapter takes nothing down with it.
     """
 
+    def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
+        """Whether this placement can give workers a shared network."""
+        ...
+
     async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, market: Market, public_key: str) -> Binding:
         """Create what the compute's machines will share, before any of them exists.
 

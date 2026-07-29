@@ -39,6 +39,9 @@ class MassedComputeProvider:
     credential_fields: ClassVar[tuple[str, ...]] = ("api_key",)
     offers_ttl: ClassVar[timedelta] = timedelta(minutes=10)
 
+    def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
+        return False
+
     def __init__(self, provider_id: str, name: str, api_key: str, config: Mapping[str, Any]) -> None:
         self._id = provider_id
         self._name = name

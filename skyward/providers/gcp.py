@@ -118,6 +118,9 @@ class GCPProvider:
     credential_fields: ClassVar[tuple[str, ...]] = ("service_account_json",)
     offers_ttl: ClassVar[timedelta] = timedelta(hours=6)
 
+    def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
+        return True
+
     def __init__(self, provider_id: str, name: str, service_account: Mapping[str, Any], config: Mapping[str, Any]) -> None:
         self._id = provider_id
         self._name = name

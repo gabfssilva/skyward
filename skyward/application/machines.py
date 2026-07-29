@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Protocol
 
 import msgspec
 
@@ -36,11 +37,30 @@ from skyward.runtime.source import detect, resolve
 
 logger = logging.getLogger(__name__)
 
-STANDALONE_PROVIDERS = frozenset({"runpod", "vastai", "tensordock", "jarvislabs", "novita", "massed_compute"})
+
+class _ClusterFormation(Protocol):
+    def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool: ...
 
 
-def _clustered(kind: str, requested: bool | None) -> bool:
-    return requested if requested is not None else kind not in STANDALONE_PROVIDERS
+def _clustered(adapter: _ClusterFormation, spec: ComputeSpec, offer: Offer) -> bool:
+    allowed = adapter.allows_cluster_formation(spec, offer)
+    requested = spec.options.cluster
+    if requested and not allowed:
+        raise CapabilityMismatchError(
+            f"{offer.provider_name} does not allow cluster formation",
+            provider=offer.provider_name,
+        )
+    return allowed if requested is None else requested
+
+
+def _effective_spec(adapter: Provider, spec: ComputeSpec, offer: Offer) -> ComputeSpec:
+    return msgspec.structs.replace(
+        spec,
+        options=msgspec.structs.replace(
+            spec.options,
+            cluster=_clustered(adapter, spec, offer),
+        ),
+    )
 
 DOUBT_SECONDS = 120.0
 """How old a machine must be before its absence from the provider's listing means death.
@@ -174,12 +194,13 @@ class Machines:
             raise CapabilityMismatchError(f"{adapter.kind} cannot relocate a compute with no key")
 
         markets = market.order(offer, compute.spec.allocation)
-        binding = await adapter.initialize(compute.id, compute.spec, offer, markets[0], public_key(infrastructure.private_key))
+        spec = _effective_spec(adapter, compute.spec, offer)
+        binding = await adapter.initialize(compute.id, spec, offer, markets[0], public_key(infrastructure.private_key))
         return msgspec.structs.replace(
             infrastructure,
             offer_id=offer.id,
             offer=offer,
-            binding={**binding, "skyward_cluster": _clustered(adapter.kind, compute.spec.options.cluster)},
+            binding={**binding, "skyward_cluster": spec.options.cluster},
             markets=markets,
         )
 
@@ -207,12 +228,13 @@ class Machines:
 
             offer, chosen = await market.pick(compute.spec, self._offers)
             adapter = await self.adapter(offer.provider_id)
+            spec = _effective_spec(adapter, compute.spec, offer)
 
             private, public = await asyncio.to_thread(keypair)
-            binding = await adapter.initialize(compute.id, compute.spec, offer, chosen, public)
-            binding = await self._reuse(adapter, compute.spec.image, binding)
+            binding = await adapter.initialize(compute.id, spec, offer, chosen, public)
+            binding = await self._reuse(adapter, spec.image, binding)
 
-            mount = await self._mount(adapter, compute.spec, binding)
+            mount = await self._mount(adapter, spec, binding)
 
             infrastructure = Infrastructure(
                 provider_id=offer.provider_id,
@@ -221,7 +243,7 @@ class Machines:
                 binding={
                     **binding,
                     **mount.binding_patch,
-                    "skyward_cluster": _clustered(adapter.kind, compute.spec.options.cluster),
+                    "skyward_cluster": spec.options.cluster,
                 },
                 private_key=private,
                 markets=market.order(offer, compute.spec.allocation),

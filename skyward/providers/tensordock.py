@@ -40,6 +40,9 @@ class TensorDockProvider:
     credential_fields: ClassVar[tuple[str, ...]] = ("api_token",)
     offers_ttl: ClassVar[timedelta] = timedelta(minutes=5)
 
+    def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
+        return False
+
     def __init__(self, provider_id: str, name: str, api_token: str, config: Mapping[str, Any]) -> None:
         self._id = provider_id
         self._name = name

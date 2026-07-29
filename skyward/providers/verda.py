@@ -34,6 +34,9 @@ class VerdaProvider:
     credential_fields: ClassVar[tuple[str, ...]] = ("client_id", "client_secret")
     offers_ttl: ClassVar[timedelta] = timedelta(minutes=15)
 
+    def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
+        return True
+
     def __init__(
         self,
         provider_id: str,

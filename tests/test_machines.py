@@ -19,12 +19,19 @@ import msgspec
 import pytest
 
 from skyward.application import machines as machines_module
+from skyward.application.errors import CapabilityMismatchError
 from skyward.application.machines import Machines
-from skyward.application.provider import Binding, Machine
+from skyward.application.provider import Binding, Machine, Provider
 from skyward.persistence.computes import ComputeStore, Infrastructure
 from skyward.persistence.db import connect
 from skyward.persistence.nodes import NodeStore
 from skyward.protocol.schemas import ComputeCreate, ComputeSpec, Market, NodeBounds, Offer, Options, Page, ProviderRef, Spec
+from skyward.providers.jarvislabs import JarvisLabsProvider
+from skyward.providers.massed_compute import MassedComputeProvider
+from skyward.providers.novita import NovitaProvider
+from skyward.providers.runpod import RunPodProvider
+from skyward.providers.tensordock import TensorDockProvider
+from skyward.providers.vastai import VastAIProvider
 
 SPEC = ComputeSpec(
     specs=(Spec(provider=ProviderRef(kind="fake"), cpus=1, memory_gb=1),),
@@ -32,26 +39,53 @@ SPEC = ComputeSpec(
 )
 
 
+class ClusterProvider:
+    kind = "cluster-provider"
+
+    def __init__(self, allowed: bool) -> None:
+        self.allowed = allowed
+
+    def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
+        return self.allowed
+
+
+@pytest.mark.parametrize(("allowed", "expected"), [(True, True), (False, False)])
+def test_unspecified_cluster_mode_follows_provider_capability(allowed: bool, expected: bool) -> None:
+    assert machines_module._clustered(ClusterProvider(allowed), SPEC, _offer("region", 1.0)) is expected
+
+
+def test_explicit_standalone_mode_overrides_provider_capability() -> None:
+    spec = msgspec.structs.replace(SPEC, options=Options(cluster=False))
+    assert not machines_module._clustered(ClusterProvider(True), spec, _offer("region", 1.0))
+
+
+def test_explicit_cluster_mode_is_refused_when_the_provider_cannot_form_one() -> None:
+    spec = msgspec.structs.replace(SPEC, options=Options(cluster=True))
+    with pytest.raises(CapabilityMismatchError, match="does not allow cluster formation"):
+        machines_module._clustered(ClusterProvider(False), spec, _offer("region", 1.0))
+
+
 @pytest.mark.parametrize(
-    ("kind", "expected"),
+    "adapter",
     [
-        ("aws", True),
-        ("container", True),
-        ("runpod", False),
-        ("vastai", False),
-        ("tensordock", False),
-        ("jarvislabs", False),
-        ("novita", False),
-        ("massed_compute", False),
+        JarvisLabsProvider("id", "jarvislabs", "key", {}),
+        MassedComputeProvider("id", "massed_compute", "key", {}),
+        NovitaProvider("id", "novita", "key", {}),
+        TensorDockProvider("id", "tensordock", "token", {}),
+        VastAIProvider("id", "vastai", "key", {}),
     ],
 )
-def test_cluster_mode_defaults_follow_provider_networking(kind: str, expected: bool) -> None:
-    assert machines_module._clustered(kind, None) is expected
+def test_providers_without_a_shared_network_refuse_cluster_formation(adapter: Provider) -> None:
+    assert not adapter.allows_cluster_formation(SPEC, _offer("region", 1.0))
 
 
-def test_explicit_cluster_mode_overrides_the_provider_default() -> None:
-    assert machines_module._clustered("runpod", True)
-    assert not machines_module._clustered("aws", False)
+def test_runpod_cluster_formation_depends_on_global_networking() -> None:
+    offer = _offer("region", 1.0)
+    enabled = RunPodProvider("id", "runpod", "key", {})
+    disabled = RunPodProvider("id", "runpod", "key", {"global_networking": False})
+
+    assert enabled.allows_cluster_formation(SPEC, offer)
+    assert not disabled.allows_cluster_formation(SPEC, offer)
 
 
 class FakeProvider:
@@ -286,15 +320,21 @@ class RegionProvider:
 
     kind = "fake"
 
-    def __init__(self, sells_in: str) -> None:
+    def __init__(self, sells_in: str, *, allows_cluster: bool = True) -> None:
         self.sells_in = sells_in
+        self.allows_cluster = allows_cluster
         self.initialized: list[str] = []
+        self.initialized_cluster: list[bool | None] = []
         self.released: list[str] = []
         self._machines: dict[str, Machine] = {}
+
+    def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
+        return self.allows_cluster
 
     async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, market: Market, public_key: str) -> Binding:
         assert offer.region is not None
         self.initialized.append(offer.region)
+        self.initialized_cluster.append(spec.options.cluster)
         return {"region": offer.region}
 
     async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, list[Machine]]:
@@ -369,6 +409,23 @@ async def test_explicit_standalone_mode_is_persisted_with_the_provider_binding(t
     row = await nodes.request(created.id, generation=1)
     await machines.create(created.id, row.id)
 
+    assert (await computes.infrastructure(created.id)).binding["skyward_cluster"] is False
+    assert provider.initialized_cluster == [False]
+
+
+async def test_provider_default_is_resolved_before_initialize(tmp_path: Path) -> None:
+    await connect(tmp_path / "skyward.sqlite")
+    computes = ComputeStore()
+    nodes = NodeStore()
+    created, _ = await computes.create(ComputeCreate(spec=SPEC, name=None), idempotency_key="k")
+    offer = _offer("only", 0.10)
+    provider = RegionProvider(sells_in="only", allows_cluster=False)
+    machines = RegionMachines(computes, nodes, provider, FakeOffers((offer,)))
+
+    row = await nodes.request(created.id, generation=1)
+    await machines.create(created.id, row.id)
+
+    assert provider.initialized_cluster == [False]
     assert (await computes.infrastructure(created.id)).binding["skyward_cluster"] is False
 
 

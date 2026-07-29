@@ -50,6 +50,9 @@ class ScalewayProvider:
     credential_fields: ClassVar[tuple[str, ...]] = ("secret_key", "project_id")
     offers_ttl: ClassVar[timedelta] = timedelta(minutes=10)
 
+    def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
+        return True
+
     def __init__(self, provider_id: str, name: str, secret_key: str, project_id: str, config: Mapping[str, Any]) -> None:
         self._id = provider_id
         self._name = name

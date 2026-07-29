@@ -41,6 +41,9 @@ class ContainerProvider:
     credential_fields: ClassVar[tuple[str, ...]] = ()
     offers_ttl: ClassVar[timedelta] = timedelta(days=1)
 
+    def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
+        return True
+
     def __init__(self, provider_id: str, name: str, config: Mapping[str, Any]) -> None:
         self._id = provider_id
         self._name = name

@@ -89,6 +89,9 @@ class WarmProvider:
 
     kind = "fake"
 
+    def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
+        return True
+
     def __init__(self, existing: str | None = None) -> None:
         self.existing = existing
         self.committed: list[tuple[str, str]] = []
@@ -116,6 +119,9 @@ class ColdProvider:
     """A provider with nowhere to put a snapshot — the shape of RunPod, Novita, Vast."""
 
     kind = "fake"
+
+    def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
+        return True
 
     async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, market: Market, public_key: str) -> Binding:
         return {"region": "fake-1", "image": "cold-image"}

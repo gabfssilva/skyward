@@ -60,6 +60,9 @@ class Deaf:
 
     kind = "deaf"
 
+    def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
+        return True
+
     async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, market: str, public_key: str) -> Binding:
         return {"region": "us-east-1"}
 
@@ -68,6 +71,9 @@ class Attaching:
     """A provider that satisfies volumes by attaching storage before the machine boots."""
 
     kind = "attaching"
+
+    def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
+        return True
 
     async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, market: str, public_key: str) -> Binding:
         return {"region": "us-east-1"}
