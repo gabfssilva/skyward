@@ -6,7 +6,7 @@ no node here, and there does not need to be one.
 
 import pytest
 
-from skyward.runtime.api import (
+from skyward.worker.api import (
     Info,
     NotOnANodeError,
     Policy,
@@ -42,7 +42,7 @@ def test_a_node_knows_where_it_is_among_the_others(node):
 
 
 def test_the_head_is_rank_zero_at_the_worker_port(node):
-    from skyward.runtime.worker import PORT
+    from skyward.worker.worker import PORT
 
     node(rank=1)
     info = instance_info()
@@ -152,7 +152,7 @@ def test_a_policy_can_narrow_by_a_predicate_on_the_node():
 
 
 def test_the_decorators_hold_their_policy_only_while_the_function_runs():
-    from skyward.runtime.api import policy
+    from skyward.worker.api import policy
 
     @stdout(only=0)
     def loud() -> Policy:
@@ -196,7 +196,7 @@ def test_overrides_shard_without_a_node(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_stdout_only_head_keeps_rank_zero():
-    from skyward.runtime.api import policy
+    from skyward.worker.api import policy
 
     @stdout(only="head")
     def loud() -> Policy:
@@ -209,7 +209,7 @@ def test_stdout_only_head_keeps_rank_zero():
 
 
 def test_stdout_only_a_predicate_travels_in_the_policy():
-    from skyward.runtime.api import policy
+    from skyward.worker.api import policy
 
     def keep(info: Info) -> bool:
         return info.rank in (0, 2)

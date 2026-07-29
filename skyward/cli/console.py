@@ -28,8 +28,8 @@ from cyclopts import Parameter
 
 from skyward.cli import app
 from skyward.cli._client import call
-from skyward.runtime.bootstrap import PYTHON
-from skyward.sdk.client import Client
+from skyward.core.client import Client
+from skyward.worker.bootstrap import PYTHON
 
 CHUNK = 65536
 

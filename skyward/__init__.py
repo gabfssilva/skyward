@@ -21,10 +21,7 @@ import importlib
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from skyward import accelerators, metrics, observability, plugins, storage, time
-    from skyward.distributed import Consistency, DistributedRegistry, barrier, counter, dict, lock, queue, registry, set
-    from skyward.runtime.api import CallbackWriter, Info, instance_info, is_head, redirect_output, shard, silent, stderr, stdout
-    from skyward.sdk import (
+    from skyward.core import (
         AWS,
         GCP,
         Accelerator,
@@ -59,23 +56,28 @@ if TYPE_CHECKING:
         Verda,
         Volume,
         Vultr,
+        accelerators,
         function,
         gather,
         sky,
         stream,
     )
-    from skyward.storage import Storage
+    from skyward.shared import observability, time
+    from skyward.worker import metrics, plugins, storage
+    from skyward.worker.api import CallbackWriter, Info, instance_info, is_head, redirect_output, shard, silent, stderr, stdout
+    from skyward.worker.distributed import Consistency, DistributedRegistry, barrier, counter, dict, lock, queue, registry, set
+    from skyward.worker.storage import Storage
 
 RUNTIME = ("CallbackWriter", "Info", "instance_info", "is_head", "redirect_output", "shard", "silent", "stderr", "stdout")
 """What a function asks while it is running, and the only names a node ever reaches for.
 
-They resolve out of ``skyward.runtime.api``, which imports the standard library and
+They resolve out of ``skyward.worker.api``, which imports the standard library and
 nothing else. Routing them through the SDK would put httpx on a machine whose only
 job is to run somebody's training loop.
 """
 
 SHARED = ("Consistency", "DistributedRegistry", "barrier", "counter", "dict", "lock", "queue", "registry", "set")
-"""The compute's own state, out of ``skyward.distributed``. Same reason."""
+"""The compute's own state, out of ``skyward.worker.distributed``. Same reason."""
 
 __all__ = [
     "AWS",
@@ -146,16 +148,23 @@ __all__ = [
 
 def __getattr__(name: str) -> object:
     match name:
-        case "accelerators" | "metrics" | "observability" | "plugins" | "storage" | "time":
-            value = importlib.import_module(f"skyward.{name}")
+        case "accelerators":
+            value = importlib.import_module("skyward.core.accelerators")
+        case "observability" | "time":
+            value = importlib.import_module(f"skyward.shared.{name}")
+        case "metrics" | "plugins" | "storage":
+            value = importlib.import_module(f"skyward.worker.{name}")
         case "Storage":
-            value = importlib.import_module("skyward.storage").Storage
+            value = importlib.import_module("skyward.worker.storage").Storage
         case _ if name in RUNTIME:
-            value = getattr(importlib.import_module("skyward.runtime.api"), name)
+            value = getattr(importlib.import_module("skyward.worker.api"), name)
         case _ if name in SHARED:
-            value = getattr(importlib.import_module("skyward.distributed"), name)
+            value = getattr(importlib.import_module("skyward.worker.distributed"), name)
         case _ if name in __all__:
-            value = getattr(importlib.import_module("skyward.sdk"), name)
+            try:
+                value = getattr(importlib.import_module("skyward.core"), name)
+            except ModuleNotFoundError as error:
+                raise ImportError(f"'{name}' is part of the client — install 'skyward[client]'") from error
         case _:
             raise AttributeError(f"module 'skyward' has no attribute '{name}'")
 

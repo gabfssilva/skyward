@@ -4,15 +4,15 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from litestar.testing import AsyncTestClient
 
-from skyward.application.errors import CapabilityMismatchError, NotFoundError
-from skyward.persistence.db import connect
-from skyward.persistence.offers import OfferCache
-from skyward.persistence.providers import ProviderStore
-from skyward.persistence.tables import OfferRow, ProviderRow
-from skyward.protocol.schemas import ProviderCreate
-from skyward.providers import REGISTRY
+from skyward.shared.errors import CapabilityMismatchError, NotFoundError
+from skyward.server.persistence.db import connect
+from skyward.server.persistence.offers import OfferCache
+from skyward.server.persistence.providers import ProviderStore
+from skyward.server.persistence.tables import OfferRow, ProviderRow
+from skyward.shared.schemas import ProviderCreate
+from skyward.providers.registry import REGISTRY
 from skyward.providers.fake import CATALOG, FakeProvider
-from skyward.server.app import create_app, with_real
+from skyward.server.http.app import create_app, with_real
 
 
 @pytest.fixture

@@ -1,6 +1,6 @@
 """``sky monitor`` — the pool's own dashboard, on a compute you did not start.
 
-The SDK already renders a compute while it holds one: :func:`skyward.sdk.console.watcher`
+The SDK already renders a compute while it holds one: :func:`skyward.core.console.watcher`
 picks the richest view the terminal can hold and follows the event stream with it.
 This is that, detached — the same watcher over the same stream, for a compute this
 process never created and will not delete.
@@ -20,10 +20,10 @@ from cyclopts import Parameter
 
 from skyward.cli import app
 from skyward.cli._client import call
-from skyward.protocol.schemas import Compute
-from skyward.sdk.client import Client
-from skyward.sdk.console import watcher
-from skyward.sdk.errors import SkywardError
+from skyward.core.client import Client
+from skyward.core.console import watcher
+from skyward.core.errors import SkywardError
+from skyward.shared.schemas import Compute
 
 
 @app.command(name="monitor")

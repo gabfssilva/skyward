@@ -15,10 +15,10 @@ import msgspec
 import pytest
 from litestar.testing import AsyncTestClient
 
-from skyward.persistence.db import connect
-from skyward.protocol import codec
-from skyward.protocol.codec import digest
-from skyward.protocol.schemas import (
+from skyward.server.persistence.db import connect
+from skyward.shared import codec
+from skyward.shared.codec import digest
+from skyward.shared.schemas import (
     Compute,
     ComputeCreate,
     ComputeSpec,
@@ -29,7 +29,7 @@ from skyward.protocol.schemas import (
     Task,
     TaskCreate,
 )
-from skyward.server.app import create_app, services
+from skyward.server.http.app import create_app, services
 
 pytestmark = pytest.mark.e2e
 

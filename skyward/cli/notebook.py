@@ -1,7 +1,7 @@
 """``sky notebook`` — the Jupyter kernelspec for a compute.
 
 Two commands that write and delete one file. What the kernel does lives in
-:mod:`skyward.notebook`; this only records which compute it should attach to,
+:mod:`skyward.core.notebook`; this only records which compute it should attach to,
 and through which daemon.
 """
 
@@ -34,7 +34,7 @@ def install_kernel(
     Open Jupyter afterwards and pick ``Skyward (<compute>)``.
     """
     try:
-        from skyward.notebook.kernelspec import install_kernelspec
+        from skyward.core.notebook.kernelspec import install_kernelspec
     except ModuleNotFoundError as missing:
         raise SystemExit(MISSING) from missing
 
@@ -51,7 +51,7 @@ def remove_kernel(
 ) -> None:
     """Remove a compute's Jupyter kernel."""
     try:
-        from skyward.notebook.kernelspec import remove_kernelspec
+        from skyward.core.notebook.kernelspec import remove_kernelspec
     except ModuleNotFoundError as missing:
         raise SystemExit(MISSING) from missing
 

@@ -1,7 +1,7 @@
 """The jax plugin as a value: what it installs, and how it travels."""
 
-from skyward.plugins.jax import Jax
-from skyward.protocol.schemas import Image, PipIndex, PluginRef
+from skyward.worker.plugins.jax import Jax
+from skyward.shared.schemas import Image, PipIndex, PluginRef
 
 
 def test_it_installs_the_cuda_wheel_from_the_jax_index():

@@ -18,14 +18,14 @@ from pathlib import Path
 import msgspec
 import pytest
 
-from skyward.application import machines as machines_module
-from skyward.application.errors import CapabilityMismatchError
-from skyward.application.machines import Machines
-from skyward.application.provider import Binding, Machine, Provider
-from skyward.persistence.computes import ComputeStore, Infrastructure
-from skyward.persistence.db import connect
-from skyward.persistence.nodes import NodeStore
-from skyward.protocol.schemas import ComputeCreate, ComputeSpec, Market, NodeBounds, Offer, Options, Page, ProviderRef, Spec
+from skyward.server.application import machines as machines_module
+from skyward.shared.errors import CapabilityMismatchError
+from skyward.server.application.machines import Machines
+from skyward.shared.provider import Binding, Machine, Provider
+from skyward.server.persistence.computes import ComputeStore, Infrastructure
+from skyward.server.persistence.db import connect
+from skyward.server.persistence.nodes import NodeStore
+from skyward.shared.schemas import ComputeCreate, ComputeSpec, Market, NodeBounds, Offer, Options, Page, ProviderRef, Spec
 from skyward.providers.jarvislabs import JarvisLabsProvider
 from skyward.providers.massed_compute import MassedComputeProvider
 from skyward.providers.novita import NovitaProvider
@@ -262,7 +262,7 @@ class PreemptibleMachines(Machines):
 
 
 async def test_resolve_marks_a_warned_node_lost_while_the_machine_is_still_present(tmp_path: Path) -> None:
-    from skyward.application.provider import Preemptible
+    from skyward.shared.provider import Preemptible
 
     await connect(tmp_path / "skyward.sqlite")
     computes = ComputeStore()

@@ -8,9 +8,9 @@ from typing import ClassVar
 
 import pytest
 
-from skyward.plugins.plugin import Plugin
-from skyward.protocol.schemas import Image, MetricSpec, PipIndex
-from skyward.runtime import bootstrap
+from skyward.worker.plugins.plugin import Plugin
+from skyward.shared.schemas import Image, MetricSpec, PipIndex
+from skyward.worker import bootstrap
 
 pytestmark = pytest.mark.unit
 

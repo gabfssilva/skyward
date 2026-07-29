@@ -5,9 +5,9 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
-from skyward.application.errors import CapabilityMismatchError
-from skyward.application.provider import Binding, Machine
-from skyward.protocol.schemas import ComputeSpec, Market, Offer
+from skyward.shared.errors import CapabilityMismatchError
+from skyward.shared.provider import Binding, Machine
+from skyward.shared.schemas import ComputeSpec, Market, Offer
 
 COMPUTE_LABEL = "skyward.compute"
 BASE_IMAGE = "ghcr.io/gabfssilva/skyward:py{python}"

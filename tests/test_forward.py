@@ -15,10 +15,10 @@ from contextlib import suppress
 
 import pytest
 
-from skyward.application.runtimes import Forward, Runtime, Runtimes
-from skyward.runtime.source import Source
-from skyward.sdk.forward import TcpProxy
-from skyward.sdk.spec import Port
+from skyward.server.application.runtimes import Forward, Runtime, Runtimes
+from skyward.server.application.source import Source
+from skyward.core.forward import TcpProxy
+from skyward.core.spec import Port
 
 pytestmark = pytest.mark.unit
 
@@ -29,7 +29,7 @@ def _noop(*_: object) -> None:
 
 def _runtime() -> tuple[Runtimes, Runtime]:
     runtimes = Runtimes(_noop, _noop, _noop, _noop)
-    return runtimes, runtimes.open("cmp", Source(argument="skyward"), "key")
+    return runtimes, runtimes.open("cmp", Source(arguments=("skyward",)), "key")
 
 
 class EchoChannel:

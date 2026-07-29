@@ -3,7 +3,7 @@
 import io
 from collections.abc import AsyncIterator
 
-from skyward.sdk.console import Console, render
+from skyward.core.console import Console, render
 
 
 class _Says:

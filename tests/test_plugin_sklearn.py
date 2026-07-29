@@ -5,8 +5,8 @@ tested is the two things the plugin decides on its own — what it puts on the n
 and how it names itself on the wire.
 """
 
-from skyward.plugins.sklearn import Sklearn
-from skyward.protocol.schemas import Image, PluginRef
+from skyward.worker.plugins.sklearn import Sklearn
+from skyward.shared.schemas import Image, PluginRef
 
 
 def test_the_image_gets_scikit_learn_and_joblib():

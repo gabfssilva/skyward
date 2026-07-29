@@ -11,22 +11,22 @@ from pathlib import Path
 import pytest
 from msgspec.structs import replace
 
-from skyward.application.errors import (
+from skyward.shared.errors import (
     DuplicationNotAcknowledgedError,
     IdempotencyConflictError,
     LeaseHeldError,
     RevisionConflictError,
     TaskFailedError,
 )
-from skyward.application.provider import Machine
-from skyward.persistence.computes import ComputeStore, GenerationStore
-from skyward.persistence.db import connect
-from skyward.persistence.events import EventStore
-from skyward.persistence.functions import BlobStore, FunctionStore
-from skyward.persistence.nodes import NodeStore
-from skyward.persistence.tasks import ExecutionStore, TaskStore
-from skyward.protocol.codec import digest
-from skyward.protocol.schemas import (
+from skyward.shared.provider import Machine
+from skyward.server.persistence.computes import ComputeStore, GenerationStore
+from skyward.server.persistence.db import connect
+from skyward.server.persistence.events import EventStore
+from skyward.server.persistence.functions import BlobStore, FunctionStore
+from skyward.server.persistence.nodes import NodeStore
+from skyward.server.persistence.tasks import ExecutionStore, TaskStore
+from skyward.shared.codec import digest
+from skyward.shared.schemas import (
     ComputeCreate,
     ComputeSpec,
     ComputeSpecPatch,
@@ -423,7 +423,7 @@ async def test_a_held_write_transaction_makes_writers_wait_not_fail(store: Store
     """
     from piccolo.engine.sqlite import TransactionType
 
-    from skyward.persistence.tables import OfferRow
+    from skyward.server.persistence.tables import OfferRow
 
     async def hold() -> None:
         async with OfferRow._meta.db.transaction(transaction_type=TransactionType.immediate):
@@ -446,7 +446,7 @@ async def test_queries_ride_a_small_pool_instead_of_a_connection_each(tmp_path: 
     """
     import aiosqlite
 
-    from skyward.persistence.db import POOL_SIZE
+    from skyward.server.persistence.db import POOL_SIZE
 
     opened = 0
     real = aiosqlite.connect

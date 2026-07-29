@@ -47,6 +47,7 @@ server = [
     "piccolo[sqlite]>=1.0",
     "asyncssh>=2.22.0",
     "aioboto3>=13.0.0",
+    "cryptography>=42",
     "uvicorn>=0.30",
 ]
 # The `sky` command. A node installs skyward to run a function and has no
@@ -72,7 +73,7 @@ storage = [
 sky = "skyward.cli:app"
 
 [project.entry-points."jupyter_client.kernel_provisioners"]
-skyward = "skyward.notebook.provisioner:SkywardKernelProvisioner"
+skyward = "skyward.core.notebook.provisioner:SkywardKernelProvisioner"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
@@ -107,7 +108,7 @@ known-first-party = ["skyward"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN"]
 "guides/**" = ["ANN"]
-"skyward/server/controllers/**" = ["B008"]
+"skyward/server/http/controllers/**" = ["B008"]
 
 [tool.pyright]
 pythonVersion = "3.12"
@@ -152,15 +153,41 @@ dev = [
     "pytest-timeout>=2.4.0",
     "pyright>=1.1",
     "ruff>=0.9",
+    "import-linter>=2.0",
     "litestar>=2.13",
     "piccolo[sqlite]>=1.0",
     "asyncssh>=2.22.0",
     "aioboto3>=13.0.0",
+    "cryptography>=42",
+    "uvicorn>=0.30",
+    "cyclopts>=3.0",
     "httpx>=0.28",
     "rich>=13.7",
     "jax>=0.8.2",
     "keras>=3.13.0",
     "scikit-learn>=1.8.0",
+]
+
+[tool.importlinter]
+root_package = "skyward"
+exclude_type_checking_imports = true
+
+[[tool.importlinter.contracts]]
+name = "Folders are layers"
+type = "layers"
+layers = [
+    "skyward.cli",
+    "skyward.core",
+    "skyward.server",
+    "skyward.providers",
+    "skyward.worker",
+    "skyward.shared",
+]
+ignore_imports = [
+    # The embedded transport: the client hosts the daemon in-process when asked to.
+    "skyward.core.client -> skyward.server.http.app",
+    # The joblib backend runs client-side only; the import is lazy and a node never reaches it.
+    "skyward.worker.plugins.joblib -> skyward.core.function",
 ]
 
 [tool.uv]

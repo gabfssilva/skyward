@@ -19,7 +19,7 @@ from pathlib import Path
 from skyward.cli import offers_app
 from skyward.cli._client import call
 from skyward.cli._output import EMPTY, Output, render
-from skyward.protocol.schemas import Offer, Page
+from skyward.shared.schemas import Offer, Page
 
 LIST_COLUMNS = ("PROVIDER", "KIND", "INSTANCE", "ACCELERATOR", "VRAM", "CPUS", "MEMORY", "REGION", "SPOT", "ON-DEMAND", "UNIT")
 SUMMARY_COLUMNS = ("ACCELERATOR", "PROVIDER", "OFFERS", "CHEAPEST", "AVERAGE", "DEAREST")

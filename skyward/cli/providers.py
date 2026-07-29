@@ -13,14 +13,14 @@ from typing import TYPE_CHECKING, Annotated
 
 from cyclopts import Parameter
 
-from skyward.protocol.schemas import Page, Provider, ProviderKind
+from skyward.shared.schemas import Page, Provider, ProviderKind
 
 from . import providers_app
 from ._client import call
 from ._output import Output, render
 
 if TYPE_CHECKING:
-    from skyward.sdk.client import Client
+    from skyward.core.client import Client
 
 KINDS = ("kind", "credentials", "offers ttl")
 REGISTERED = ("name", "kind", "id", "offers", "fetched")

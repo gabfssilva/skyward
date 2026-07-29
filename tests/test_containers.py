@@ -2,8 +2,8 @@
 
 import pytest
 
-from skyward.protocol.schemas import Image
-from skyward.sdk.containers import DockerImage
+from skyward.shared.schemas import Image
+from skyward.core.containers import DockerImage
 
 
 def test_of_returns_tag_verbatim() -> None:

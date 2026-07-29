@@ -37,10 +37,10 @@ import httpx
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
-from skyward.application.errors import CapabilityMismatchError
-from skyward.application.provider import Binding, Machine, MachineState, Mount
-from skyward.protocol.schemas import ComputeSpec, Endpoint, Market, Offer, Volume
-from skyward.runtime import bootstrap
+from skyward.shared.errors import CapabilityMismatchError
+from skyward.shared.provider import Binding, Machine, MachineState, Mount
+from skyward.shared.schemas import ComputeSpec, Endpoint, Market, Offer, Volume
+from skyward.worker import bootstrap
 
 COMPUTE_URL = "https://compute.googleapis.com/compute/v1"
 STORAGE_URL = "https://storage.googleapis.com"

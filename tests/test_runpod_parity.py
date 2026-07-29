@@ -12,9 +12,9 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from skyward.application.errors import CapabilityMismatchError
-from skyward.application.provider import Machine
-from skyward.protocol.schemas import ComputeSpec, Image, NodeBounds, ProviderRef, Spec
+from skyward.shared.errors import CapabilityMismatchError
+from skyward.shared.provider import Machine
+from skyward.shared.schemas import ComputeSpec, Image, NodeBounds, ProviderRef, Spec
 from skyward.providers.runpod import (
     _NVIDIA_VARIANT,
     DEFAULT_IMAGE,
@@ -25,7 +25,7 @@ from skyward.providers.runpod import (
     _machine,
     _select_image_candidates,
 )
-from skyward.sdk.provider import RunPod
+from skyward.core.provider import RunPod
 
 LEGACY_BINDING = {
     "prefix": "skyward-cmp_1-",

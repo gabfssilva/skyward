@@ -1,7 +1,7 @@
 """The cuML plugin, as the spec sees it: a name, a field, and the image it asks for."""
 
-from skyward.plugins.cuml import Cuml
-from skyward.protocol.schemas import Image, PipIndex, PluginRef
+from skyward.worker.plugins.cuml import Cuml
+from skyward.shared.schemas import Image, PipIndex, PluginRef
 
 
 def test_the_image_asks_for_the_rapids_wheel_from_nvidias_index():

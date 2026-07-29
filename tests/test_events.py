@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from skyward.persistence.db import connect
-from skyward.persistence.events import EventStore
-from skyward.persistence.tables import EventRow
+from skyward.server.persistence.db import connect
+from skyward.server.persistence.events import EventStore
+from skyward.server.persistence.tables import EventRow
 
 pytestmark = pytest.mark.unit
 

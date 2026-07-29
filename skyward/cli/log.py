@@ -21,7 +21,7 @@ from typing import Annotated
 
 from cyclopts import Parameter
 
-from skyward.sdk.client import Client
+from skyward.core.client import Client
 
 from . import log_app
 from ._client import call

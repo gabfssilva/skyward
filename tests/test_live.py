@@ -12,7 +12,7 @@ import pytest
 from rich.console import Console as RichConsole
 from rich.console import RenderableType
 
-from skyward.protocol.schemas import (
+from skyward.shared.schemas import (
     Compute,
     ComputeSpec,
     ComputeStatus,
@@ -29,7 +29,7 @@ from skyward.protocol.schemas import (
     Spec,
     Task,
 )
-from skyward.sdk.live import (
+from skyward.core.live import (
     Flats,
     Hexes,
     NodeRow,
@@ -593,6 +593,6 @@ def test_the_panel_hands_the_root_logger_back_as_it_found_it():
 
 
 def _task_row(task_id: str, state: str, function: str, node: str):
-    from skyward.sdk.live import TaskRow
+    from skyward.core.live import TaskRow
 
     return TaskRow(id=task_id, state=state, function=function, node=node, started_at=NOW, submitted_at=NOW)

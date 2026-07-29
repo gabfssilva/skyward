@@ -31,11 +31,17 @@ tasks:
     cmds:
       - uv run pyright --fix {{.SRC}}/
 
+  lint:imports:
+    desc: Check layer contracts between distributions
+    cmds:
+      - uv run lint-imports
+
   check:
-    desc: Run lint + typecheck
+    desc: Run lint + typecheck + layer contracts
     cmds:
       - task: lint
       - task: typecheck
+      - task: lint:imports
 
   # ── Testing ──────────────────────────────────────────────
 

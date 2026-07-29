@@ -9,7 +9,7 @@ import uuid
 
 import pytest
 
-from skyward.protocol.schemas import ComputeSpec, Image, NodeBounds, ProviderRef, Spec
+from skyward.shared.schemas import ComputeSpec, Image, NodeBounds, ProviderRef, Spec
 from skyward.providers.container import ContainerProvider
 
 pytestmark = pytest.mark.e2e

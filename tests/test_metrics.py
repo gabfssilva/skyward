@@ -1,7 +1,7 @@
 import pytest
 
-import skyward.metrics as metrics
-from skyward.protocol.schemas import MetricSpec
+import skyward.worker.metrics as metrics
+from skyward.shared.schemas import MetricSpec
 
 pytestmark = pytest.mark.unit
 

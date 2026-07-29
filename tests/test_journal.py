@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from skyward.runtime.journal import Console, Metric, Phase, parse
+from skyward.worker.journal import Console, Metric, Phase, parse
 
 pytestmark = pytest.mark.unit
 

@@ -3,8 +3,8 @@ import logging
 
 import pytest
 
-from skyward.observability import LogConfig, Logger, logger, setup_logging, teardown_logging
-from skyward.observability.logger import NAME
+from skyward.shared.observability import LogConfig, Logger, logger, setup_logging, teardown_logging
+from skyward.shared.observability.logger import NAME
 
 
 @pytest.fixture(autouse=True)
@@ -164,6 +164,6 @@ def test_the_logger_does_not_propagate():
 def test_the_daemons_loggers_still_reach_the_root(caplog):
     """The logger must not sit above ``skyward.*`` — the daemon logs there with the stdlib."""
     assert NAME.startswith("skyward.")
-    with caplog.at_level(logging.ERROR, logger="skyward.server.exceptions"):
-        logging.getLogger("skyward.server.exceptions").error("propagated")
+    with caplog.at_level(logging.ERROR, logger="skyward.server.http.exceptions"):
+        logging.getLogger("skyward.server.http.exceptions").error("propagated")
     assert "propagated" in caplog.text

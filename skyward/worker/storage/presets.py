@@ -1,0 +1,143 @@
+"""Factory functions for common S3-compatible storage providers."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from skyward.worker.storage import Credential, Storage
+
+
+def R2(*, account_id: str, access_key: Credential, secret_key: Credential) -> Storage:
+    """Cloudflare R2 storage.
+
+    Parameters
+    ----------
+    account_id
+        Cloudflare account ID.
+    access_key
+        R2 access key ID.
+    secret_key
+        R2 secret access key.
+    """
+    from skyward.worker.storage import Storage
+
+    return Storage(
+        endpoint=f"https://{account_id}.r2.cloudflarestorage.com",
+        access_key=access_key,
+        secret_key=secret_key,
+    )
+
+
+def S3(
+    *,
+    region: str = "us-east-1",
+    access_key: Credential | None = None,
+    secret_key: Credential | None = None,
+) -> Storage:
+    """Amazon S3 storage.
+
+    Parameters
+    ----------
+    region
+        AWS region.
+    access_key
+        AWS access key ID. ``None`` defers to environment / IAM credentials.
+    secret_key
+        AWS secret access key. ``None`` defers to environment / IAM credentials.
+    """
+    from skyward.worker.storage import Storage
+
+    return Storage(
+        endpoint=f"https://s3.{region}.amazonaws.com",
+        access_key=access_key,
+        secret_key=secret_key,
+    )
+
+
+def GCS(*, access_key: Credential, secret_key: Credential) -> Storage:
+    """Google Cloud Storage (S3-compatible interop).
+
+    Parameters
+    ----------
+    access_key
+        HMAC access key.
+    secret_key
+        HMAC secret key.
+    """
+    from skyward.worker.storage import Storage
+
+    return Storage(
+        endpoint="https://storage.googleapis.com",
+        access_key=access_key,
+        secret_key=secret_key,
+    )
+
+
+def Wasabi(*, region: str = "us-east-1", access_key: Credential, secret_key: Credential) -> Storage:
+    """Wasabi hot cloud storage.
+
+    Parameters
+    ----------
+    region
+        Wasabi region.
+    access_key
+        Wasabi access key.
+    secret_key
+        Wasabi secret key.
+    """
+    from skyward.worker.storage import Storage
+
+    return Storage(
+        endpoint=f"https://s3.{region}.wasabisys.com",
+        access_key=access_key,
+        secret_key=secret_key,
+    )
+
+
+def Backblaze(*, region: str, key_id: Credential, app_key: Credential) -> Storage:
+    """Backblaze B2 storage (S3-compatible).
+
+    Parameters
+    ----------
+    region
+        B2 region (e.g. ``us-west-004``).
+    key_id
+        B2 application key ID.
+    app_key
+        B2 application key.
+    """
+    from skyward.worker.storage import Storage
+
+    return Storage(
+        endpoint=f"https://s3.{region}.backblazeb2.com",
+        access_key=key_id,
+        secret_key=app_key,
+    )
+
+
+def Hyperstack(
+    *,
+    access_key: Credential,
+    secret_key: Credential,
+    endpoint: str = "https://ca1.obj.nexgencloud.io",
+) -> Storage:
+    """Hyperstack object storage (S3-compatible).
+
+    Parameters
+    ----------
+    access_key
+        Object storage access key.
+    secret_key
+        Object storage secret key.
+    endpoint
+        S3 endpoint. Defaults to the ``CANADA-1`` region endpoint.
+    """
+    from skyward.worker.storage import Storage
+
+    return Storage(
+        endpoint=endpoint,
+        access_key=access_key,
+        secret_key=secret_key,
+        path_style=True,
+    )

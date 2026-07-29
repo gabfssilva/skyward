@@ -5,8 +5,8 @@ import logging
 import pytest
 from litestar.testing import AsyncTestClient
 
-from skyward.application import mock
-from skyward.server.app import create_app, with_real
+from skyward.server.application import mock
+from skyward.server.http.app import create_app, with_real
 
 
 class _Broken(mock.MockTasks):
@@ -30,7 +30,7 @@ async def test_a_break_nobody_planned_for_is_still_a_500(client: AsyncTestClient
 
 async def test_a_500_says_what_it_was_for(client: AsyncTestClient, caplog: pytest.LogCaptureFixture):
     """Embedded, nothing else logs it: a 500 nobody records is a dead end for whoever hit it."""
-    with caplog.at_level(logging.ERROR, logger="skyward.server.exceptions"):
+    with caplog.at_level(logging.ERROR, logger="skyward.server.http.exceptions"):
         await client.get("/v1/tasks/tsk_1")
 
     assert "the database went away" in caplog.text

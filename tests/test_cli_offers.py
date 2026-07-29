@@ -9,7 +9,7 @@ import pytest
 pytest.importorskip("cyclopts")
 
 from skyward.cli import offers as cli
-from skyward.protocol.schemas import Offer, Page
+from skyward.shared.schemas import Offer, Page
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
 

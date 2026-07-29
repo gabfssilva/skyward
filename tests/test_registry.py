@@ -2,7 +2,7 @@
 
 ``casty.local()`` is a whole cluster of one member, which is all the collections
 need — the replica count folds to one and every write acks itself. Binding it into
-``skyward.distributed`` is exactly what the worker does, minus the network.
+``skyward.worker.distributed`` is exactly what the worker does, minus the network.
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ from collections.abc import Iterator
 import casty
 import pytest
 
-from skyward import distributed
-from skyward.runtime import worker
+from skyward.worker import distributed
+from skyward.worker import worker
 
 
 @pytest.fixture

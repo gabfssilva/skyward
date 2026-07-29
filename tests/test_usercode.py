@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from skyward.sdk import usercode
+from skyward.core import usercode
 
 pytestmark = pytest.mark.unit
 

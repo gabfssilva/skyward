@@ -5,8 +5,8 @@ absence of one; the clamp must read them as themselves rather than fall through 
 ``desired``. This is the regression that pinned an elastic pool at its ceiling.
 """
 
-from skyward.application.reconciler import bounds
-from skyward.protocol.schemas import ComputeSpec, NodeBounds, PluginRef, ProviderRef, Spec
+from skyward.server.application.reconciler import bounds
+from skyward.shared.schemas import ComputeSpec, NodeBounds, PluginRef, ProviderRef, Spec
 
 SPECS = (Spec(provider=ProviderRef(kind="fake")),)
 

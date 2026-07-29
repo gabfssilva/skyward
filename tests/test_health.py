@@ -18,14 +18,14 @@ from pathlib import Path
 
 import pytest
 
-from skyward.application.provider import Machine
-from skyward.protocol import codec
-from skyward.protocol.schemas import Image, NodeState, Options
-from skyward.runtime import journal
-from skyward.runtime import worker as worker_module
-from skyward.runtime.node import Node
-from skyward.runtime.source import Source
-from skyward.runtime.ssh import Result
+from skyward.shared.provider import Machine
+from skyward.shared import codec
+from skyward.shared.schemas import Image, NodeState, Options
+from skyward.worker import journal
+from skyward.worker import worker as worker_module
+from skyward.server.application.node import Node
+from skyward.server.application.source import Source
+from skyward.server.application.ssh import Result
 
 pytestmark = pytest.mark.unit
 
@@ -200,7 +200,7 @@ def _node(ssh: FakeSsh, *, command: str | None = PROBE, failures: int = 3) -> tu
         compute="cmp",
         private_key="",
         image=Image(),
-        source=Source(argument="skyward"),
+        source=Source(arguments=("skyward",)),
         listener=lambda state, _: seen.append((state, len(ssh.runs))),
         output=lambda *_: None,
         sample=lambda *_: None,

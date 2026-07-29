@@ -1,7 +1,7 @@
 """The MIG plugin, as the spec sees it: a profile, the phases it asks for, its wire form."""
 
-from skyward.plugins.mig import Mig
-from skyward.protocol.schemas import Image, PluginRef
+from skyward.worker.plugins.mig import Mig
+from skyward.shared.schemas import Image, PluginRef
 
 
 def test_bootstrap_enables_mig_and_cuts_one_slice_per_concurrent_slot():

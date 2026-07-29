@@ -11,7 +11,7 @@ from pathlib import Path
 import asyncssh
 import pytest
 
-from skyward.runtime.ssh import SshChannel, SshUnavailableError
+from skyward.server.application.ssh import SshChannel, SshUnavailableError
 
 
 class Sshd(asyncssh.SSHServer):

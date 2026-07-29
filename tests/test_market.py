@@ -12,8 +12,8 @@ set, so it is dropped rather than gambled on.
 
 from datetime import UTC, datetime
 
-from skyward.application.market import _candidates
-from skyward.protocol.schemas import ComputeSpec, NodeBounds, Offer, Page, ProviderRef, Spec
+from skyward.server.application.market import _candidates
+from skyward.shared.schemas import ComputeSpec, NodeBounds, Offer, Page, ProviderRef, Spec
 
 NOW = datetime.now(UTC)
 

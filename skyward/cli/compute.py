@@ -26,8 +26,12 @@ from cyclopts import Parameter
 from skyward.cli import compute_app
 from skyward.cli._client import Work, call
 from skyward.cli._output import Output, dump, render
-from skyward.protocol import codec
-from skyward.protocol.schemas import (
+from skyward.core import provider as factories
+from skyward.core.client import Client
+from skyward.core.errors import SkywardError
+from skyward.core.provider import Provider
+from skyward.shared import codec
+from skyward.shared.schemas import (
     Compute,
     ComputeCreate,
     ComputeSpec,
@@ -41,10 +45,6 @@ from skyward.protocol.schemas import (
     Task,
     TaskCreate,
 )
-from skyward.sdk import provider as factories
-from skyward.sdk.client import Client
-from skyward.sdk.errors import SkywardError
-from skyward.sdk.provider import Provider
 
 COMPUTE_COLUMNS = ("id", "name", "state", "ready", "total", "generation", "created")
 NODE_COLUMNS = ("id", "rank", "state", "desired", "machine", "address", "accelerator", "$/h")
@@ -130,7 +130,7 @@ def create_compute(
     output: Annotated[Output, Parameter(help="table or json")] = "table",
 ) -> None:
     """Create a compute and return without waiting for it to be ready."""
-    from skyward.protocol.accelerators import resolve
+    from skyward.shared.accelerators import resolve
 
     if provider not in FACTORIES:
         raise SystemExit(f"unknown provider '{provider}'; known: {', '.join(sorted(FACTORIES))}")

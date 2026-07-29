@@ -4,7 +4,7 @@ import pytest
 
 import skyward as sky
 from skyward import Compute, Executor
-from skyward.protocol.schemas import Worker
+from skyward.shared.schemas import Worker
 
 
 def test_default_is_a_reused_thread_pool_with_no_buffer() -> None:

@@ -11,8 +11,8 @@ import threading
 from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 
-from skyward.sdk.compute import Compute
-from skyward.sdk.function import Group, Pending, gather
+from skyward.core.compute import Compute
+from skyward.core.function import Group, Pending, gather
 
 
 class FakePool:

@@ -19,13 +19,13 @@ import casty
 import msgspec
 import pytest
 
-from skyward.application.provider import Machine
-from skyward.protocol import codec, frames
-from skyward.protocol.schemas import ComputeSpec, Image, NodeBounds, NodeState, ProviderRef, Spec
+from skyward.shared.provider import Machine
+from skyward.shared import codec, frames
+from skyward.shared.schemas import ComputeSpec, Image, NodeBounds, NodeState, ProviderRef, Spec
 from skyward.providers.container import ContainerProvider
-from skyward.runtime import worker
-from skyward.runtime.node import Node
-from skyward.runtime.source import Source, resolve
+from skyward.worker import worker
+from skyward.server.application.node import Node
+from skyward.server.application.source import Source, resolve
 
 pytestmark = pytest.mark.e2e
 

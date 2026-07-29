@@ -2,7 +2,7 @@ from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
-from skyward.protocol.schemas import Offer
+from skyward.shared.schemas import Offer
 
 CATALOG = (
     ("a100", 1, 12, 85.0, 1.10, 2.20),

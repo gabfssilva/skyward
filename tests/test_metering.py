@@ -13,13 +13,13 @@ from pathlib import Path
 import msgspec
 import pytest
 
-from skyward.application.metering import Meter, accrued
-from skyward.application.provider import Machine
-from skyward.persistence.computes import ComputeStore
-from skyward.persistence.db import connect
-from skyward.persistence.events import EventStore
-from skyward.persistence.nodes import NodeStore
-from skyward.protocol.schemas import (
+from skyward.server.application.metering import Meter, accrued
+from skyward.shared.provider import Machine
+from skyward.server.persistence.computes import ComputeStore
+from skyward.server.persistence.db import connect
+from skyward.server.persistence.events import EventStore
+from skyward.server.persistence.nodes import NodeStore
+from skyward.shared.schemas import (
     BillingUnit,
     ComputeCreate,
     ComputeSpec,

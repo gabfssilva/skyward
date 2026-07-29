@@ -1,6 +1,6 @@
 """``sky server`` — run the daemon, or find out whether one is running.
 
-The daemon is the Litestar app at :mod:`skyward.server.app`; this only starts a
+The daemon is the Litestar app at :mod:`skyward.server.http.app`; this only starts a
 process around it. ``start`` detaches by default and records the pid, because a
 control plane that dies with the terminal that launched it is not a control
 plane. ``--foreground`` keeps it attached, which is what a dev loop wants.
@@ -28,13 +28,13 @@ from cyclopts import Parameter
 from skyward.cli import server_app
 from skyward.cli._client import call, resolve
 from skyward.cli._output import Output, render
-from skyward.sdk.client import Client
+from skyward.core.client import Client
 
 RUNTIME_DIR = Path.home() / ".skyward"
 PID_FILE = RUNTIME_DIR / "server.pid"
 LOG_FILE = RUNTIME_DIR / "server.log"
 
-TARGET = "skyward.server.app:app"
+TARGET = "skyward.server.http.app:app"
 POLL_SECONDS = 0.2
 
 

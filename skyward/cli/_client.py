@@ -14,7 +14,7 @@ import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-from skyward.sdk.client import Client
+from skyward.core.client import Client
 
 type Work[T] = Callable[[Client], Awaitable[T]]
 
@@ -53,7 +53,7 @@ async def _run[T](work: Work[T], url: str | None, database: Path | None) -> T:
     if target := resolve(url):
         client = await Client.remote(target)
     else:
-        from skyward.persistence.db import DEFAULT_PATH
+        from skyward.server.persistence.db import DEFAULT_PATH
 
         client = await Client.embedded(database or DEFAULT_PATH)
 

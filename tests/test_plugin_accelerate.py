@@ -1,7 +1,7 @@
 """The accelerate plugin as a value: what it installs, and how it travels."""
 
-from skyward.plugins.accelerate import Accelerate
-from skyward.protocol.schemas import Image, PluginRef
+from skyward.worker.plugins.accelerate import Accelerate
+from skyward.shared.schemas import Image, PluginRef
 
 
 def test_it_appends_accelerate_to_the_pip_list():

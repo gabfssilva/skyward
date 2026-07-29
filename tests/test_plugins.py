@@ -11,10 +11,10 @@ from typing import ClassVar
 import pytest
 from msgspec.structs import replace
 
-from skyward.application.errors import UnsupportedPluginError
-from skyward.plugins import HuggingFace, Plugin, Torch, chain, image, resolve
-from skyward.protocol.schemas import Image, PluginRef
-from skyward.runtime.api import Info
+from skyward.shared.errors import UnsupportedPluginError
+from skyward.worker.plugins import HuggingFace, Plugin, Torch, chain, image, resolve
+from skyward.shared.schemas import Image, PluginRef
+from skyward.worker.api import Info
 
 INFO = Info(node="nod_1", compute="cmp_1", rank=0, peers=("10.0.0.0",))
 

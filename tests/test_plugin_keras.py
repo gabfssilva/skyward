@@ -7,9 +7,9 @@ all pure struct work.
 
 import os
 
-from skyward.plugins.keras import Keras
-from skyward.protocol.schemas import Image, PipIndex
-from skyward.runtime.api import Info
+from skyward.worker.plugins.keras import Keras
+from skyward.shared.schemas import Image, PipIndex
+from skyward.worker.api import Info
 
 
 def test_it_installs_keras_and_the_chosen_backend():

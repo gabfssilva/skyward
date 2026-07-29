@@ -3,7 +3,7 @@ import sys
 
 import pytest
 
-from skyward.storage import Storage, presets
+from skyward.worker.storage import Storage, presets
 
 pytestmark = pytest.mark.unit
 
@@ -18,10 +18,10 @@ def test_construction_defaults():
 
 def test_import_does_not_load_aioboto3():
     check = subprocess.run(
-        [sys.executable, "-c", "import skyward.storage, sys; sys.exit('aioboto3' in sys.modules)"],
+        [sys.executable, "-c", "import skyward.worker.storage, sys; sys.exit('aioboto3' in sys.modules)"],
         capture_output=True,
     )
-    assert check.returncode == 0, "importing skyward.storage must not import aioboto3"
+    assert check.returncode == 0, "importing skyward.worker.storage must not import aioboto3"
 
 
 def test_r2_preset():

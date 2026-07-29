@@ -21,7 +21,7 @@ type Setting = tuple[str, str, str]
 
 
 def _settings(url: str | None, database: Path | None) -> Setting:
-    from skyward.persistence.db import DEFAULT_PATH
+    from skyward.server.persistence.db import DEFAULT_PATH
 
     target = resolve(url)
     source = "flag" if url else "environment" if target else "embedded"

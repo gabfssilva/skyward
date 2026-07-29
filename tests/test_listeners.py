@@ -13,16 +13,16 @@ from pathlib import Path
 
 import pytest
 
-from skyward.application import mock
-from skyward.application.machines import Machines
-from skyward.application.reconciler import Reconciler, Wakeup
-from skyward.persistence.computes import ComputeStore, GenerationStore
-from skyward.persistence.db import connect
-from skyward.persistence.events import EventStore
-from skyward.persistence.functions import BlobStore
-from skyward.persistence.nodes import NodeStore
-from skyward.persistence.tasks import TaskStore
-from skyward.protocol.schemas import (
+from skyward.server.application import mock
+from skyward.server.application.machines import Machines
+from skyward.server.application.reconciler import Reconciler, Wakeup
+from skyward.server.persistence.computes import ComputeStore, GenerationStore
+from skyward.server.persistence.db import connect
+from skyward.server.persistence.events import EventStore
+from skyward.server.persistence.functions import BlobStore
+from skyward.server.persistence.nodes import NodeStore
+from skyward.server.persistence.tasks import TaskStore
+from skyward.shared.schemas import (
     Compute,
     ComputeCreate,
     ComputeSpec,
@@ -32,8 +32,8 @@ from skyward.protocol.schemas import (
     ProviderRef,
     Spec,
 )
-from skyward.server.emitter import ReconcilingEventEmitter
-from skyward.server.listeners import build_listeners
+from skyward.server.http.emitter import ReconcilingEventEmitter
+from skyward.server.http.listeners import build_listeners
 
 pytestmark = pytest.mark.unit
 

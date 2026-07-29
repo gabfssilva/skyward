@@ -6,8 +6,8 @@ pytest.importorskip("jupyter_client", reason="the Skyward kernel needs: pip inst
 
 from jupyter_client.provisioning.provisioner_base import KernelProvisionerBase
 
-from skyward.notebook import install_kernelspec, kernel_json, kernel_name, remove_kernelspec
-from skyward.notebook.provisioner import CHANNELS, SkywardKernelProvisioner
+from skyward.core.notebook import install_kernelspec, kernel_json, kernel_name, remove_kernelspec
+from skyward.core.notebook.provisioner import CHANNELS, SkywardKernelProvisioner
 
 
 @pytest.mark.unit

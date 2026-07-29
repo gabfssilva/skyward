@@ -150,7 +150,7 @@ def test_status_without_a_daemon_shows_no_pid(pidfile, monkeypatch):
 
 @pytest.mark.unit
 async def test_probe_is_false_when_nothing_answers():
-    from skyward.sdk.client import Client
+    from skyward.core.client import Client
 
     client = await Client.remote("http://127.0.0.1:1")
     try:

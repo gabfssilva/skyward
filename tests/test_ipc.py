@@ -12,8 +12,9 @@ from collections.abc import Iterator
 
 import pytest
 
-from skyward import Executor, distributed
-from skyward.runtime import ipc
+from skyward import Executor
+from skyward.worker import distributed
+from skyward.worker import ipc
 
 
 class Recorder:

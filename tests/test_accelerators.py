@@ -13,9 +13,9 @@ from pathlib import Path
 
 import pytest
 
-from skyward.protocol.accelerators import CATALOG, resolve
-from skyward.protocol.architectures import architecture
-from skyward.protocol.schemas import Offer
+from skyward.shared.accelerators import CATALOG, resolve
+from skyward.shared.architectures import architecture
+from skyward.shared.schemas import Offer
 from skyward.providers.gcp import LEGACY_VRAM
 
 REAL_NAMES = [

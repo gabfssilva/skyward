@@ -7,10 +7,10 @@ from typing import Any, ClassVar, Self
 
 import httpx
 
-from skyward.application.errors import CapabilityMismatchError
-from skyward.application.provider import Binding, Machine, MachineState, Mount
-from skyward.protocol.schemas import ComputeSpec, Endpoint, Market, Offer, Volume
-from skyward.runtime import bootstrap
+from skyward.shared.errors import CapabilityMismatchError
+from skyward.shared.provider import Binding, Machine, MachineState, Mount
+from skyward.shared.schemas import ComputeSpec, Endpoint, Market, Offer, Volume
+from skyward.worker import bootstrap
 
 BASE_URL = "https://infrahub-api.nexgencloud.com/v1"
 FLAVORS_PATH = "/core/flavors"

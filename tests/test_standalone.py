@@ -5,13 +5,13 @@ from unittest.mock import patch
 import msgspec
 import pytest
 
-from skyward.application import connector
-from skyward.application.mock import NODE
-from skyward.application.provider import Machine
-from skyward.application.runtimes import Runtime
-from skyward.protocol.schemas import Image, Options
-from skyward.runtime.node import Node
-from skyward.runtime.source import Source
+from skyward.server.application import connector
+from skyward.server.application.mock import NODE
+from skyward.shared.provider import Machine
+from skyward.server.application.runtimes import Runtime
+from skyward.shared.schemas import Image, Options
+from skyward.server.application.node import Node
+from skyward.server.application.source import Source
 
 pytestmark = pytest.mark.unit
 
@@ -31,7 +31,7 @@ def _node(name: str, rank: int) -> Node:
         compute="compute",
         private_key="key",
         image=Image(),
-        source=Source(argument="skyward"),
+        source=Source(arguments=("skyward",)),
         listener=lambda *_: None,
         output=lambda *_: None,
         sample=lambda *_: None,
@@ -45,7 +45,7 @@ def _node(name: str, rank: int) -> Node:
 
 
 async def test_standalone_runtime_connects_to_each_worker_independently() -> None:
-    runtime = Runtime("compute", Source(argument="skyward"), "key", cluster=False)
+    runtime = Runtime("compute", Source(arguments=("skyward",)), "key", cluster=False)
     runtime.track("n0", _node("n0", 0))
     runtime.track("n1", _node("n1", 1))
     seeds: list[tuple[str, ...]] = []
@@ -57,7 +57,7 @@ async def test_standalone_runtime_connects_to_each_worker_independently() -> Non
         clients.append(client)
         return client
 
-    with patch("skyward.application.runtimes.casty.connect", side_effect=connect):
+    with patch("skyward.server.application.runtimes.casty.connect", side_effect=connect):
         first = await runtime.system("n0")
         second = await runtime.system("n1")
         again = await runtime.system("n0")

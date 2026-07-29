@@ -6,7 +6,7 @@ import logging
 
 import pytest
 
-from skyward.server.app import create_app, mock_services
+from skyward.server.http.app import create_app, mock_services
 
 pytestmark = pytest.mark.unit
 

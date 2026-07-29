@@ -135,7 +135,7 @@ def test_a_plugin_puts_its_package_on_the_machine_and_its_env_in_the_worker(tmp_
         cpus=1,
         memory_gb=1,
         image=IMAGE,
-        plugins=[skyward.plugins.HuggingFace(token="hf_not_a_real_token")],
+        plugins=[skyward.worker.plugins.HuggingFace(token="hf_not_a_real_token")],
         database=tmp_path / "skyward.sqlite",
     ) as pool:
         assert hub() >> pool == ("hf_not_a_real_token", True)

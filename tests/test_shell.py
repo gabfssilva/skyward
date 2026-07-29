@@ -14,10 +14,10 @@ from collections.abc import AsyncIterator
 import pytest
 from litestar.testing import AsyncTestClient
 
-from skyward.application import ports
-from skyward.application.runtimes import Runtime, Runtimes, Terminal
-from skyward.runtime.source import Source
-from skyward.server.app import create_app, with_real
+from skyward.server.application import ports
+from skyward.server.application.runtimes import Runtime, Runtimes, Terminal
+from skyward.server.application.source import Source
+from skyward.server.http.app import create_app, with_real
 
 pytestmark = pytest.mark.unit
 
@@ -28,7 +28,7 @@ def _noop(*_: object) -> None:
 
 def _runtime() -> tuple[Runtimes, Runtime]:
     runtimes = Runtimes(_noop, _noop, _noop, _noop)
-    return runtimes, runtimes.open("cmp", Source(argument="skyward"), "key")
+    return runtimes, runtimes.open("cmp", Source(arguments=("skyward",)), "key")
 
 
 class EchoChannel:

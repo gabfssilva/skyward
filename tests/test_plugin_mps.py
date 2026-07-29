@@ -7,9 +7,9 @@ no-op; everything else is the worker environment ``setup`` leaves behind.
 import os
 import subprocess
 
-from skyward.plugins.mps import Mps
-from skyward.protocol.schemas import PluginRef
-from skyward.runtime.api import Info
+from skyward.worker.plugins.mps import Mps
+from skyward.shared.schemas import PluginRef
+from skyward.worker.api import Info
 
 INFO = Info(node="n", compute="c", rank=0, peers=("host",))
 

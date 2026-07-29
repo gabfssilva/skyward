@@ -15,16 +15,16 @@ from pathlib import Path
 
 import pytest
 
-from skyward.application.reconciler import ABANDON_SECONDS, Reconciler, Wakeup
-from skyward.persistence.computes import ComputeStore, GenerationStore
-from skyward.persistence.db import connect
-from skyward.persistence.events import EventStore
-from skyward.persistence.functions import BlobStore
-from skyward.persistence.nodes import NodeStore
-from skyward.persistence.store import now
-from skyward.persistence.tables import ComputeRow
-from skyward.persistence.tasks import TaskStore
-from skyward.protocol.schemas import (
+from skyward.server.application.reconciler import ABANDON_SECONDS, Reconciler, Wakeup
+from skyward.server.persistence.computes import ComputeStore, GenerationStore
+from skyward.server.persistence.db import connect
+from skyward.server.persistence.events import EventStore
+from skyward.server.persistence.functions import BlobStore
+from skyward.server.persistence.nodes import NodeStore
+from skyward.server.persistence.store import now
+from skyward.server.persistence.tables import ComputeRow
+from skyward.server.persistence.tasks import TaskStore
+from skyward.shared.schemas import (
     Compute,
     ComputeCreate,
     ComputeSpec,

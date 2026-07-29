@@ -16,18 +16,18 @@ from typing import Any
 
 import pytest
 
-from skyward.application import market
-from skyward.application.errors import CapabilityMismatchError
-from skyward.application.machines import Machines
-from skyward.application.provider import Binding, Machine, Mount, Mountable
-from skyward.persistence.computes import ComputeStore
-from skyward.persistence.db import connect
-from skyward.persistence.functions import BlobStore
-from skyward.protocol.schemas import ComputeCreate, ComputeSpec, Endpoint, NodeBounds, Offer, ProviderRef, Spec, Volume
+from skyward.server.application import market
+from skyward.shared.errors import CapabilityMismatchError
+from skyward.server.application.machines import Machines
+from skyward.shared.provider import Binding, Machine, Mount, Mountable
+from skyward.server.persistence.computes import ComputeStore
+from skyward.server.persistence.db import connect
+from skyward.server.persistence.functions import BlobStore
+from skyward.shared.schemas import ComputeCreate, ComputeSpec, Endpoint, NodeBounds, Offer, ProviderRef, Spec, Volume
 from skyward.providers.aws import AWSProvider
 from skyward.providers.runpod import RunPodProvider
-from skyward.runtime import bootstrap
-from skyward.sdk.spec import Volume as ClientVolume
+from skyward.worker import bootstrap
+from skyward.core.spec import Volume as ClientVolume
 
 pytestmark = pytest.mark.unit
 
@@ -255,7 +255,7 @@ def test_the_native_path_installs_nothing_and_only_links():
 
 def test_the_volume_phase_lands_before_the_plugins_and_inside_the_script():
     phase = bootstrap.mounts(((Volume(bucket="a", mount="/a"), Endpoint(url="https://s3.amazonaws.com")),))
-    from skyward.protocol.schemas import Image
+    from skyward.shared.schemas import Image
 
     text = bootstrap.script(Image(), "skyward", volumes=(phase,))
     assert "phase volumes" in text
@@ -263,7 +263,7 @@ def test_the_volume_phase_lands_before_the_plugins_and_inside_the_script():
 
 
 def test_a_compute_with_no_volumes_generates_the_script_it_always_did():
-    from skyward.protocol.schemas import Image
+    from skyward.shared.schemas import Image
 
     assert bootstrap.script(Image(), "skyward") == bootstrap.script(Image(), "skyward", (), 1, ())
     assert "phase volumes" not in bootstrap.script(Image(), "skyward")
@@ -282,7 +282,7 @@ def test_a_compute_with_no_volumes_generates_the_script_it_always_did():
 )
 def test_the_mount_phase_is_valid_bash(volumes: tuple[tuple[Volume, Endpoint], ...]):
     """Including when a key contains a quote — the credentials are quoted, not interpolated."""
-    from skyward.protocol.schemas import Image
+    from skyward.shared.schemas import Image
 
     text = bootstrap.script(Image(), "skyward", volumes=(bootstrap.mounts(volumes),))
     bash = shutil.which("bash")

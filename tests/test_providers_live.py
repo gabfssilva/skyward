@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from skyward.protocol.accelerators import CATALOG
-from skyward.providers import REGISTRY
+from skyward.shared.accelerators import CATALOG
+from skyward.providers.registry import REGISTRY
 
 CREDENTIALS = {
     "aws": {"access_key_id": "AWS_ACCESS_KEY_ID", "secret_access_key": "AWS_SECRET_ACCESS_KEY"},

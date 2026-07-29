@@ -1,4 +1,4 @@
-from skyward.sdk.provider import (
+from skyward.core.provider import (
     AWS,
     GCP,
     Container,

@@ -7,9 +7,9 @@ from typing import Any, ClassVar, Self
 
 import httpx
 
-from skyward.application.errors import CapabilityMismatchError
-from skyward.application.provider import Binding, Machine
-from skyward.protocol.schemas import ComputeSpec, Market, Offer
+from skyward.shared.errors import CapabilityMismatchError
+from skyward.shared.provider import Binding, Machine
+from skyward.shared.schemas import ComputeSpec, Market, Offer
 
 BASE_URL = "https://api.verda.com/v1"
 TOKEN_PATH = "/oauth2/token"

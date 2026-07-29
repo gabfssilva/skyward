@@ -7,11 +7,11 @@ from typing import Any, ClassVar, Self
 
 import httpx
 
-from skyward.application.errors import CapabilityMismatchError
-from skyward.application.provider import Binding, Machine, Mount
-from skyward.protocol.accelerators import CATALOG, resolve
-from skyward.protocol.schemas import ComputeSpec, Market, Offer, Volume
-from skyward.runtime import bootstrap
+from skyward.shared.accelerators import CATALOG, resolve
+from skyward.shared.errors import CapabilityMismatchError
+from skyward.shared.provider import Binding, Machine, Mount
+from skyward.shared.schemas import ComputeSpec, Market, Offer, Volume
+from skyward.worker import bootstrap
 
 API_URL = "https://api.runpod.io/v2"
 CLOUDS: tuple[str, ...] = ("SECURE", "COMMUNITY")

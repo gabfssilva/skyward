@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import pytest
 
-from skyward.application.provider import Machine
-from skyward.protocol.schemas import Image, Options
-from skyward.runtime import bootstrap
-from skyward.runtime.node import BootstrapFailedError, Node
-from skyward.runtime.source import Source
-from skyward.runtime.ssh import Result
+from skyward.shared.provider import Machine
+from skyward.shared.schemas import Image, Options
+from skyward.worker import bootstrap
+from skyward.server.application.node import BootstrapFailedError, Node
+from skyward.server.application.source import Source
+from skyward.server.application.ssh import Result
 
 pytestmark = pytest.mark.unit
 
@@ -57,7 +57,7 @@ def _node(
         compute="cmp",
         private_key="",
         image=Image(),
-        source=Source(argument="skyward"),
+        source=Source(arguments=("skyward",)),
         listener=lambda *_: None,
         output=lambda *_: None,
         sample=lambda *_: None,

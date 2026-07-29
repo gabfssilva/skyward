@@ -11,11 +11,11 @@ from aiobotocore.client import AioBaseClient
 from aiobotocore.config import AioConfig
 from botocore.exceptions import ClientError
 
-from skyward.application.errors import CapabilityMismatchError
-from skyward.application.provider import Binding, Machine, Mount
-from skyward.protocol.architectures import architecture
-from skyward.protocol.schemas import ComputeSpec, Endpoint, Market, Offer, Volume
-from skyward.runtime import bootstrap
+from skyward.shared.architectures import architecture
+from skyward.shared.errors import CapabilityMismatchError
+from skyward.shared.provider import Binding, Machine, Mount
+from skyward.shared.schemas import ComputeSpec, Endpoint, Market, Offer, Volume
+from skyward.worker import bootstrap
 
 DEFAULT_REGIONS = (
     "us-east-1",

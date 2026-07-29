@@ -13,18 +13,18 @@ import msgspec
 import pytest
 
 import skyward
-from skyward.application.provider import Machine
-from skyward.application.reconciler import IDLE_SECONDS
-from skyward.protocol import codec
-from skyward.protocol.schemas import ComputeSpec, Image
-from skyward.protocol.schemas import Options as OptionsRef
-from skyward.runtime.api import Info
-from skyward.runtime.node import WORKER_TIMEOUT, Node
-from skyward.runtime.source import Source
-from skyward.runtime.ssh import RETRY_DELAY, SshChannel
-from skyward.sdk import spec as spec_module
-from skyward.sdk.compute import DELETE_TIMEOUT, READY_TIMEOUT
-from skyward.sdk.spec import HealthChecker, Options
+from skyward.shared.provider import Machine
+from skyward.server.application.reconciler import IDLE_SECONDS
+from skyward.shared import codec
+from skyward.shared.schemas import ComputeSpec, Image
+from skyward.shared.schemas import Options as OptionsRef
+from skyward.worker.api import Info
+from skyward.server.application.node import WORKER_TIMEOUT, Node
+from skyward.server.application.source import Source
+from skyward.server.application.ssh import RETRY_DELAY, SshChannel
+from skyward.core import spec as spec_module
+from skyward.core.compute import DELETE_TIMEOUT, READY_TIMEOUT
+from skyward.core.spec import HealthChecker, Options
 
 pytestmark = pytest.mark.unit
 
@@ -171,7 +171,7 @@ def test_the_node_hands_its_channel_what_the_options_asked_for():
         compute="cmp",
         private_key="",
         image=Image(),
-        source=Source(argument="skyward"),
+        source=Source(arguments=("skyward",)),
         listener=lambda *_: None,
         output=lambda *_: None,
         sample=lambda *_: None,
@@ -191,7 +191,7 @@ def test_a_node_given_no_options_dials_the_way_it_always_did():
         compute="cmp",
         private_key="",
         image=Image(),
-        source=Source(argument="skyward"),
+        source=Source(arguments=("skyward",)),
         listener=lambda *_: None,
         output=lambda *_: None,
         sample=lambda *_: None,

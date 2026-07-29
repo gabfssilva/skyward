@@ -10,7 +10,7 @@ pytest.importorskip("cyclopts", reason="the sky CLI needs: pip install 'skyward[
 
 from skyward.cli import providers_app
 from skyward.cli.providers import _check, _verdict
-from skyward.protocol.schemas import Error, Provider
+from skyward.shared.schemas import Error, Provider
 
 pytestmark = pytest.mark.unit
 

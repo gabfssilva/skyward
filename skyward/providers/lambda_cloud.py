@@ -4,9 +4,9 @@ from typing import Any, ClassVar, Self
 
 import httpx
 
-from skyward.application.errors import CapabilityMismatchError
-from skyward.application.provider import Binding, Machine, MachineState
-from skyward.protocol.schemas import ComputeSpec, Market, Offer
+from skyward.shared.errors import CapabilityMismatchError
+from skyward.shared.provider import Binding, Machine, MachineState
+from skyward.shared.schemas import ComputeSpec, Market, Offer
 
 BASE_URL = "https://cloud.lambda.ai/api/v1"
 INSTANCE_TYPES_PATH = "/instance-types"

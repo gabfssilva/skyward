@@ -9,10 +9,10 @@ import pytest
 
 import skyward as skyward
 from skyward import Compute
-from skyward.protocol.schemas import NodeBounds
-from skyward.sdk import context
-from skyward.sdk.context import sky
-from skyward.sdk.function import Group, Pending, Streaming, function
+from skyward.shared.schemas import NodeBounds
+from skyward.core import context
+from skyward.core.context import sky
+from skyward.core.function import Group, Pending, Streaming, function
 
 
 def spec_of(pool: Compute):
@@ -96,7 +96,7 @@ def test_a_provider_becomes_a_single_spec():
 def test_specs_are_alternatives_and_each_provider_is_registered():
     pool = skyward.Compute(
         skyward.Spec(skyward.AWS(access_key_id="a", secret_access_key="b"), accelerator="A100"),
-        skyward.Spec(skyward.VastAI(api_key="k"), accelerator=skyward.accelerators.A100(count=2)),
+        skyward.Spec(skyward.VastAI(api_key="k"), accelerator=skyward.core.accelerators.A100(count=2)),
         selection="first",
     )
     spec = spec_of(pool)
@@ -137,7 +137,7 @@ def test_a_pool_needs_a_provider_or_specs_but_not_both():
 
 def test_an_unknown_accelerator_is_an_error_at_the_call_site():
     with pytest.raises(AttributeError, match="unknown accelerator"):
-        skyward.accelerators.H999()
+        skyward.core.accelerators.H999()
 
 
 def test_a_timeout_rides_on_the_pending_call():

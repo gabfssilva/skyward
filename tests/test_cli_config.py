@@ -23,7 +23,7 @@ def settings(output):
 
 @pytest.mark.unit
 def test_path_reports_the_default_database(monkeypatch):
-    from skyward.persistence.db import DEFAULT_PATH
+    from skyward.server.persistence.db import DEFAULT_PATH
 
     monkeypatch.delenv("SKYWARD_URL", raising=False)
     rows = settings(captured(lambda: config_path(output="json")))
