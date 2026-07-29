@@ -36,6 +36,12 @@ from skyward.runtime.source import detect, resolve
 
 logger = logging.getLogger(__name__)
 
+STANDALONE_PROVIDERS = frozenset({"runpod", "vastai", "tensordock", "jarvislabs", "novita", "massed_compute"})
+
+
+def _clustered(kind: str, requested: bool | None) -> bool:
+    return requested if requested is not None else kind not in STANDALONE_PROVIDERS
+
 DOUBT_SECONDS = 120.0
 """How old a machine must be before its absence from the provider's listing means death.
 
@@ -169,7 +175,13 @@ class Machines:
 
         markets = market.order(offer, compute.spec.allocation)
         binding = await adapter.initialize(compute.id, compute.spec, offer, markets[0], public_key(infrastructure.private_key))
-        return msgspec.structs.replace(infrastructure, offer_id=offer.id, offer=offer, binding=binding, markets=markets)
+        return msgspec.structs.replace(
+            infrastructure,
+            offer_id=offer.id,
+            offer=offer,
+            binding={**binding, "skyward_cluster": _clustered(adapter.kind, compute.spec.options.cluster)},
+            markets=markets,
+        )
 
     async def _abandon(self, adapter: Provider, infrastructure: Infrastructure) -> None:
         """Give back the network a region held for a launch it then refused.
@@ -206,7 +218,11 @@ class Machines:
                 provider_id=offer.provider_id,
                 offer_id=offer.id,
                 offer=offer,
-                binding={**binding, **mount.binding_patch},
+                binding={
+                    **binding,
+                    **mount.binding_patch,
+                    "skyward_cluster": _clustered(adapter.kind, compute.spec.options.cluster),
+                },
                 private_key=private,
                 markets=market.order(offer, compute.spec.allocation),
                 volumes=mount.phases,

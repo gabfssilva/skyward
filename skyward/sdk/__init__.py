@@ -21,7 +21,7 @@ from skyward.sdk.provider import (
     Verda,
     Vultr,
 )
-from skyward.sdk.spec import Accelerator, Executor, Nodes, Options, Port, Spec, Volume
+from skyward.sdk.spec import Accelerator, Executor, HealthChecker, Nodes, Options, Port, Spec, Volume
 
 __all__ = [
     "AWS",
@@ -32,6 +32,7 @@ __all__ = [
     "DockerImage",
     "Executor",
     "Group",
+    "HealthChecker",
     "Hyperstack",
     "Image",
     "JarvisLabs",

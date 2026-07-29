@@ -12,7 +12,7 @@ from skyward.application.provider import Machine
 from skyward.protocol.schemas import Executor, Image, NodeState, Options, PluginRef
 from skyward.runtime import bootstrap, worker
 from skyward.runtime.events import events
-from skyward.runtime.journal import SKYWARD_DIR, Console, Metric, NodeEvent, Phase
+from skyward.runtime.journal import SKYWARD_DIR, Console, Health, Metric, NodeEvent, Phase
 from skyward.runtime.source import Source
 from skyward.runtime.ssh import SshChannel
 
@@ -68,6 +68,7 @@ class Node:
         plugins: tuple[PluginRef, ...] = (),
         user_code: bytes | None = None,
         volumes: tuple[str, ...] = (),
+        instance_timeout: int | None = None,
     ) -> None:
         if machine.host is None:
             raise ValueError(f"machine {machine.id} has no address to connect to")
@@ -90,10 +91,15 @@ class Node:
         self._plugins = plugins
         self._user_code = user_code
         self._volumes = volumes
+        self._instance_timeout = instance_timeout
         self._worker_timeout = options.worker_timeout
         self._health_command = options.health_command
         self._health_interval = options.health_interval
         self._health_failures = options.health_failures
+        self._health_function = options.health_function
+        self._health_timeout = options.health_timeout
+        self._health_initial_delay = options.health_initial_delay
+        self._cluster = options.cluster is not False
         self._ssh = SshChannel(
             machine.host,
             port=machine.port,
@@ -147,6 +153,7 @@ class Node:
                 self._ready()
                 return
 
+            await self._arm_timeout()
             self._listener("bootstrapping", None)
             await self._bootstrap()
             await self._sync_user_code()
@@ -158,6 +165,14 @@ class Node:
         except Exception as exc:
             logger.warning("node %s failed: %s", self._machine.id, exc)
             self._listener("failed", str(exc))
+
+    async def _arm_timeout(self) -> None:
+        if not self._instance_timeout:
+            return
+        shutdown = f"{self._sudo}shutdown -h now"
+        await self._ssh.run(
+            f"nohup sh -c 'sleep {self._instance_timeout}; {shutdown}' > /dev/null 2>&1 &",
+        )
 
     def _ready(self) -> None:
         """Say the machine is usable, and start asking whether it stays that way.
@@ -229,6 +244,7 @@ class Node:
         is among the others is a fact about the compute — the one class of thing
         here a node cannot know about itself, and is not asked to.
         """
+        health = await self._health_environment()
         environment = " ".join(
             f"{name}={shlex.quote(value)}"
             for name, value in (
@@ -242,7 +258,9 @@ class Node:
                 ("SKYWARD_BUFFER", str(self._buffer)),
                 ("SKYWARD_EXECUTOR", self._executor),
                 ("SKYWARD_REUSE", "1" if self._reuse else "0"),
+                ("SKYWARD_CLUSTER", "1" if self._cluster else "0"),
                 ("SKYWARD_PLUGINS", msgspec.json.encode(self._plugins).decode()),
+                *health.items(),
             )
         )
         await self._ssh.run(
@@ -252,6 +270,19 @@ class Node:
 
         await self._reach("worker", self._worker_timeout)
         self.tunnel = await self._ssh.forward(worker.PORT)
+
+    async def _health_environment(self) -> dict[str, str]:
+        if self._health_function is None:
+            return {}
+        path = f"{SKYWARD_DIR}/health.bin"
+        await self._ssh.put(path, self._health_function)
+        return {
+            "SKYWARD_HEALTH": path,
+            "SKYWARD_HEALTH_INTERVAL": str(self._health_interval),
+            "SKYWARD_HEALTH_TIMEOUT": str(self._health_timeout),
+            "SKYWARD_HEALTH_FAILURES": str(self._health_failures),
+            "SKYWARD_HEALTH_INITIAL_DELAY": str(self._health_initial_delay),
+        }
 
     async def _reach(self, phase: str, timeout: float) -> None:
         async with asyncio.timeout(timeout):
@@ -313,6 +344,8 @@ class Node:
                 self._output(content, task)
             case Metric(name=name, value=value):
                 self._sample(name, value)
+            case Health(reason=reason):
+                self._listener("lost", reason)
             case Phase() as reached:
                 self._phase(reached.event, reached.phase, reached.error)
                 match reached:

@@ -54,7 +54,7 @@ class NovitaProvider:
         if cluster_id := self._config.get("cluster_id"):
             params["clusterId"] = cluster_id
 
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=30) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=int(self._config.get("request_timeout", 30))) as client:
             response = await client.get(
                 PRODUCTS_PATH,
                 params=params,
@@ -126,7 +126,7 @@ class NovitaProvider:
             "prefix": f"skyward-{compute_id}-",
             "product_id": str(offer.specific["product_id"]),
             "cluster_id": self._config.get("cluster_id") or offer.region,
-            "image": spec.image.base or DEFAULT_IMAGE,
+            "image": spec.image.base or self._config.get("docker_image") or DEFAULT_IMAGE,
             "gpu_num": offer.accelerator_count or 1,
             "rootfs_gb": max(rootfs_gb, min_rootfs_gb),
             "min_cuda_version": self._config.get("min_cuda_version"),
@@ -134,7 +134,11 @@ class NovitaProvider:
 
     async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
         async with (
-            httpx.AsyncClient(base_url=BASE_URL, timeout=60, headers=self._headers()) as client,
+            httpx.AsyncClient(
+                base_url=BASE_URL,
+                timeout=int(self._config.get("request_timeout", 30)),
+                headers=self._headers(),
+            ) as client,
             asyncio.TaskGroup() as group,
         ):
             attempts = [group.create_task(self._create(client, binding, market)) for _ in range(count)]
@@ -158,7 +162,11 @@ class NovitaProvider:
         """
         prefix = binding["prefix"]
 
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=30, headers=self._headers()) as client:
+        async with httpx.AsyncClient(
+            base_url=BASE_URL,
+            timeout=int(self._config.get("request_timeout", 30)),
+            headers=self._headers(),
+        ) as client:
             listed = await self._list(client)
             mine = [
                 str(instance["id"])
@@ -177,7 +185,11 @@ class NovitaProvider:
 
     async def terminate(self, binding: Binding, machine_ids: tuple[str, ...]) -> None:
         async with (
-            httpx.AsyncClient(base_url=BASE_URL, timeout=30, headers=self._headers()) as client,
+            httpx.AsyncClient(
+                base_url=BASE_URL,
+                timeout=int(self._config.get("request_timeout", 30)),
+                headers=self._headers(),
+            ) as client,
             asyncio.TaskGroup() as group,
         ):
             for machine_id in machine_ids:

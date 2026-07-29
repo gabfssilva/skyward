@@ -64,12 +64,18 @@ class Connector:
             return
 
         source = await resolve(compute.spec.image.skyward)
-        runtime = self._runtimes.open(compute_id, source, infrastructure.private_key)
+        cluster = bool(infrastructure.binding.get("skyward_cluster", True))
+        runtime = self._runtimes.open(compute_id, source, infrastructure.private_key, cluster)
         if node_id in runtime.nodes:
             return
 
         includes = compute.spec.image.includes_sha256
         user_code = await self._blobs.get(includes) if includes else None
+        match infrastructure.binding.get("instance_timeout"):
+            case int() as provider_timeout:
+                instance_timeout = compute.spec.ttl or provider_timeout
+            case _:
+                instance_timeout = None
 
         await self._runtimes.start(
             runtime,
@@ -78,15 +84,16 @@ class Connector:
             image=plugins.image(compute.spec.image, plugins.resolve(compute.spec.plugins)),
             rank=node.rank,
             peers=_peers(nodes),
-            seeds=_seeds(nodes, node),
+            seeds=_seeds(nodes, node, cluster),
             concurrency=compute.spec.worker.concurrency or 1,
             buffer=compute.spec.worker.buffer,
             executor=compute.spec.worker.executor,
             reuse=compute.spec.worker.reuse,
-            options=compute.spec.options,
+            options=msgspec.structs.replace(compute.spec.options, cluster=cluster),
             plugins=compute.spec.plugins,
             user_code=user_code,
             volumes=infrastructure.volumes,
+            instance_timeout=instance_timeout,
         )
 
     async def disconnect(self, compute_id: str, node_id: str) -> None:
@@ -130,7 +137,7 @@ def _peers(nodes: tuple[Node, ...]) -> tuple[str, ...]:
     return tuple(node.address or "" for node in sorted(nodes, key=lambda node: node.rank) if node.address and node.state in LIVE)
 
 
-def _seeds(nodes: tuple[Node, ...], node: Node) -> tuple[str, ...]:
+def _seeds(nodes: tuple[Node, ...], node: Node, cluster: bool = True) -> tuple[str, ...]:
     """Whom this worker knocks on to find the cluster.
 
     The lowest-ranked live node with an address, and the lowest-ranked node itself has
@@ -145,6 +152,8 @@ def _seeds(nodes: tuple[Node, ...], node: Node) -> tuple[str, ...]:
     It is a bootstrap contact and not a head. After the knock every member is equal,
     and the door may leave.
     """
+    if not cluster:
+        return ()
     ordered = [candidate for candidate in sorted(nodes, key=lambda node: node.rank) if candidate.address and candidate.state in LIVE]
     if not ordered or ordered[0].id == node.id:
         return ()

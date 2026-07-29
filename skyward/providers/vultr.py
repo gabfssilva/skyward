@@ -65,17 +65,23 @@ class VultrProvider:
 
     async def offers(self) -> AsyncIterator[Offer]:
         headers = {"Authorization": f"Bearer {self._api_key}", "Accept": "application/json"}
-        async with httpx.AsyncClient(base_url=BASE_URL, headers=headers, timeout=30) as client:
+        async with httpx.AsyncClient(
+            base_url=BASE_URL,
+            headers=headers,
+            timeout=int(self._config.get("request_timeout", 30)),
+        ) as client:
             now = datetime.now(UTC)
             expires_at = now + self.offers_ttl
 
-            async for plan in self._pages(client, PLANS_PATH, "plans"):
-                for offer in self._offers(plan, cpus=int(plan.get("vcpu_count") or 0), bare_metal=False, now=now, expires_at=expires_at):
-                    yield offer
-
-            async for plan in self._pages(client, METAL_PLANS_PATH, "plans_metal"):
-                for offer in self._offers(plan, cpus=int(plan.get("cpu_count") or 0), bare_metal=True, now=now, expires_at=expires_at):
-                    yield offer
+            mode = str(self._config.get("mode", "cloud"))
+            if mode == "cloud":
+                async for plan in self._pages(client, PLANS_PATH, "plans"):
+                    for offer in self._offers(plan, cpus=int(plan.get("vcpu_count") or 0), bare_metal=False, now=now, expires_at=expires_at):
+                        yield offer
+            if mode == "bare-metal":
+                async for plan in self._pages(client, METAL_PLANS_PATH, "plans_metal"):
+                    for offer in self._offers(plan, cpus=int(plan.get("cpu_count") or 0), bare_metal=True, now=now, expires_at=expires_at):
+                        yield offer
 
     def _offers(
         self,
@@ -97,6 +103,7 @@ class VultrProvider:
         specific = {
             "plan_type": plan.get("type"),
             "bare_metal": bare_metal,
+            "instance_timeout": int(self._config.get("instance_timeout", 300)),
             "gpu_brand": plan.get("gpu_brand"),
             "gpu_type": plan.get("gpu_type"),
             "gpu_vram_gb": plan.get("gpu_vram_gb") or _vram_from_id(plan_id) or None,
@@ -264,7 +271,7 @@ class VultrProvider:
                 "Accept": "application/json",
                 "Content-Type": "application/json",
             },
-            timeout=30,
+            timeout=int(self._config.get("request_timeout", 30)),
         )
 
 

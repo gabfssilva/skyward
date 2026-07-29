@@ -54,7 +54,7 @@ class VastAIProvider:
         return cls(provider_id, name, api_key, config)
 
     def _query(self) -> dict[str, Any]:
-        return {
+        query: dict[str, Any] = {
             "verified": {"eq": bool(self._config.get("verified_only", False))},
             "rentable": {"eq": True},
             "reliability2": {"gte": float(self._config.get("min_reliability", 0.9))},
@@ -63,9 +63,19 @@ class VastAIProvider:
             "type": "on-demand",
             "limit": int(self._config.get("limit", 500)),
         }
+        for field, value in (
+            ("geolocation", self._config.get("geolocation")),
+            ("inet_down", self._config.get("min_inet_down")),
+            ("inet_up", self._config.get("min_inet_up")),
+        ):
+            if value is not None:
+                query[field] = {"gte": value} if field.startswith("inet_") else {"eq": value}
+        if self._config.get("direct_port"):
+            query["direct_port_count"] = {"gte": 1}
+        return query
 
     async def offers(self) -> AsyncIterator[Offer]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=30) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=int(self._config.get("request_timeout", 30))) as client:
             response = await client.post(
                 SEARCH_PATH,
                 json=self._query(),
@@ -78,6 +88,8 @@ class VastAIProvider:
         expires_at = now + self.offers_ttl
 
         for bundle in bundles:
+            if float(bundle.get("cuda_max_good") or 0) < float(self._config.get("min_cuda", 0)):
+                continue
             gpus = int(bundle.get("num_gpus") or 0)
             on_demand = bundle.get("dph_total")
             gpu_name = bundle.get("gpu_name")
@@ -126,12 +138,13 @@ class VastAIProvider:
             "label": f"{LABEL_PREFIX}{compute_id}",
             "ssh_key_id": key_id,
             "public_key": public_key,
-            "image": spec.image.base or DEFAULT_IMAGE,
+            "image": spec.image.base or self._config.get("docker_image") or DEFAULT_IMAGE,
             "disk_gb": float(self._config.get("disk_gb", DEFAULT_DISK_GB)),
             "gpu_name": offer.specific.get("gpu_name") or offer.instance_type,
             "gpu_count": offer.accelerator_count,
-            "region": offer.region,
+            "region": self._config.get("geolocation") or offer.region,
             "direct": bool(self._config.get("direct_port", False)),
+            "instance_timeout": int(self._config.get("instance_timeout", 300)),
         }
 
     async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
@@ -188,7 +201,7 @@ class VastAIProvider:
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=BASE_URL,
-            timeout=30,
+            timeout=int(self._config.get("request_timeout", 30)),
             headers={"Authorization": f"Bearer {self._api_key}", "Accept": "application/json"},
         )
 
@@ -234,6 +247,10 @@ class VastAIProvider:
             query["verified"] = {"eq": True}
         if binding["direct"]:
             query["direct_port_count"] = {"gte": 1}
+        if (minimum := self._config.get("min_inet_down")) is not None:
+            query["inet_down"] = {"gte": minimum}
+        if (minimum := self._config.get("min_inet_up")) is not None:
+            query["inet_up"] = {"gte": minimum}
 
         response = await client.post(SEARCH_PATH, json=query)
         response.raise_for_status()
@@ -242,7 +259,8 @@ class VastAIProvider:
         price = "min_bid" if spot else "dph_total"
         asks = [
             ask for ask in response.json().get("offers", [])
-            if region is None or ask.get("geolocation") == region
+            if (region is None or ask.get("geolocation") == region)
+            and float(ask.get("cuda_max_good") or 0) >= float(self._config.get("min_cuda", 0))
         ]
         return sorted(asks, key=lambda ask: ask.get(price) or float("inf"))
 

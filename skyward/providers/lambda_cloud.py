@@ -26,20 +26,21 @@ class LambdaProvider:
     credential_fields: ClassVar[tuple[str, ...]] = ("api_key",)
     offers_ttl: ClassVar[timedelta] = timedelta(minutes=5)
 
-    def __init__(self, provider_id: str, name: str, api_key: str) -> None:
+    def __init__(self, provider_id: str, name: str, api_key: str, config: Mapping[str, Any]) -> None:
         self._id = provider_id
         self._name = name
         self._api_key = api_key
+        self._config = config
 
     @classmethod
     def create(cls, provider_id: str, name: str, credentials: Mapping[str, str], config: Mapping[str, Any]) -> Self:
         api_key = credentials.get("api_key")
         if not api_key:
             raise CapabilityMismatchError("lambda requires an api_key credential", provider=name)
-        return cls(provider_id, name, api_key)
+        return cls(provider_id, name, api_key, config)
 
     async def offers(self) -> AsyncIterator[Offer]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=30) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=int(self._config.get("request_timeout", 30))) as client:
             response = await client.get(
                 INSTANCE_TYPES_PATH,
                 auth=httpx.BasicAuth(self._api_key, ""),
@@ -216,7 +217,7 @@ class LambdaProvider:
         return str(regions[0]["name"])
 
     async def _request(self, method: str, path: str, body: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=30) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=int(self._config.get("request_timeout", 30))) as client:
             response = await client.request(
                 method,
                 path,

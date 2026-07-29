@@ -9,8 +9,11 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import httpx
 import pytest
 
+from skyward.application.errors import CapabilityMismatchError
+from skyward.application.provider import Machine
 from skyward.protocol.schemas import ComputeSpec, Image, NodeBounds, ProviderRef, Spec
 from skyward.providers.runpod import (
     _NVIDIA_VARIANT,
@@ -19,6 +22,7 @@ from skyward.providers.runpod import (
     RunPodProvider,
     _cuda_range,
     _deploy_input,
+    _machine,
     _select_image_candidates,
 )
 from skyward.sdk.provider import RunPod
@@ -37,11 +41,11 @@ LEGACY_BINDING = {
 }
 
 
-def _spec(image: Image = Image()) -> ComputeSpec:
+def _spec(image: Image | None = None) -> ComputeSpec:
     return ComputeSpec(
         specs=(Spec(provider=ProviderRef(kind="runpod")),),
         nodes=NodeBounds(desired=1),
-        image=image,
+        image=image or Image(),
     )
 
 
@@ -107,35 +111,31 @@ def test_data_center_global_means_no_pin() -> None:
 
 
 def test_a_binding_from_before_the_knobs_still_launches() -> None:
-    deploy, _, _ = _deploy_input(LEGACY_BINDING, "on_demand")
-    assert deploy["volumeInGb"] == 0, "a legacy binding defaults the volume instead of raising"
-    assert deploy["ports"] == "22/tcp"
-    assert "countryCode" not in deploy and "containerRegistryAuthId" not in deploy
+    deploy = _deploy_input(LEGACY_BINDING, "on_demand")
+    assert deploy["ports"] == ["22/tcp"]
+    assert "mounts" not in deploy and "registry" not in deploy
 
 
 def test_a_full_binding_carries_its_knobs_into_the_deploy() -> None:
-    deploy, mutation, key = _deploy_input({
+    deploy = _deploy_input({
         **LEGACY_BINDING,
-        "bid_per_gpu": 0.5,
         "volume_gb": 40,
         "volume_mount_path": "/data",
         "ports": "22/tcp,8888/http",
         "country_code": "US",
         "registry_auth_id": "ra_1",
         "min_download_mbps": 100,
-    }, "spot")
-    assert deploy["volumeInGb"] == 40
-    assert deploy["volumeMountPath"] == "/data"
-    assert deploy["ports"] == "22/tcp,8888/http"
-    assert deploy["countryCode"] == "US"
-    assert deploy["containerRegistryAuthId"] == "ra_1"
-    assert deploy["minDownload"] == 100
-    assert deploy["bidPerGpu"] == 0.5
-    assert key == "podRentInterruptable"
+    }, "on_demand")
+    assert deploy["mounts"] == {"persistent": {"size": 40, "path": "/data"}}
+    assert deploy["ports"] == ["22/tcp", "8888/http"]
+    assert deploy["registry"] == "ra_1"
+    assert "countryCodes" not in deploy and "minDownloadMbps" not in deploy
 
 
 def _env(deploy: dict[str, object]) -> dict[str, str]:
-    return {entry["key"]: entry["value"] for entry in deploy["env"]}  # type: ignore[index,union-attr]
+    env = deploy["env"]
+    assert isinstance(env, dict)
+    return {str(key): str(value) for key, value in env.items()}
 
 
 def test_the_deadswitch_survives_the_bash_c_wrapping() -> None:
@@ -145,12 +145,12 @@ def test_the_deadswitch_survives_the_bash_c_wrapping() -> None:
 
 
 def test_the_timeout_travels_as_an_env_var() -> None:
-    deploy, _, _ = _deploy_input({**LEGACY_BINDING, "ttl": 3600}, "on_demand")
+    deploy = _deploy_input({**LEGACY_BINDING, "ttl": 3600}, "on_demand")
     assert _env(deploy)["INSTANCE_TIMEOUT"] == "3600"
 
 
 def test_a_binding_without_a_ttl_disables_the_deadswitch() -> None:
-    deploy, _, _ = _deploy_input(LEGACY_BINDING, "on_demand")
+    deploy = _deploy_input(LEGACY_BINDING, "on_demand")
     assert _env(deploy)["INSTANCE_TIMEOUT"] == "0", "no ttl means the pod never self-terminates"
 
 
@@ -160,13 +160,35 @@ def test_the_ttl_reaches_the_binding() -> None:
 
 def test_country_is_drawn_from_the_allowed_set() -> None:
     binding = {**LEGACY_BINDING, "countries": ["US", "DE", "FR"]}
-    seen = {_deploy_input(binding, "on_demand")[0]["countryCode"] for _ in range(30)}
-    assert seen and seen <= {"US", "DE", "FR"}
+    assert "countryCodes" not in _deploy_input(binding, "on_demand")
 
 
 def test_image_candidates_are_tried_in_order() -> None:
     binding = {**LEGACY_BINDING, "image_candidates": ["img:a", "img:b"]}
-    assert _deploy_input(binding, "on_demand", "img:b")[0]["imageName"] == "img:b"
+    assert _deploy_input(binding, "on_demand", "img:b")["image"] == "img:b"
+
+
+def test_the_pod_payload_matches_the_official_rest_openapi() -> None:
+    deploy = _deploy_input(LEGACY_BINDING, "on_demand")
+
+    assert deploy["gpu"] == {"id": "NVIDIA A100", "count": 1}
+    assert deploy["cloud"] == "SECURE"
+    assert deploy["args"] == f"bash -c '{ENTRYPOINT}'"
+    assert "gpuTypeIds" not in deploy and "interruptible" not in deploy
+
+
+def test_network_volume_uses_the_v2_mount_shape() -> None:
+    deploy = _deploy_input({
+        **LEGACY_BINDING,
+        "network_volume_id": "vol_1",
+        "volume_mount_path": "/data",
+    }, "on_demand")
+    assert deploy["mounts"] == {"network": [{"volumeId": "vol_1", "path": "/data"}]}
+
+
+def test_v2_rejects_spot_until_the_api_exposes_it() -> None:
+    with pytest.raises(CapabilityMismatchError, match="REST v2.*spot"):
+        _deploy_input(LEGACY_BINDING, "spot")
 
 
 def test_cuda_range_comes_from_the_catalog() -> None:
@@ -184,6 +206,96 @@ def test_image_selection_picks_the_newest_patch_within_range() -> None:
     ]
     result = _select_image_candidates(tags, (12, 4), (13, 1), "newest", "nvidia/cuda", _NVIDIA_VARIANT)
     assert result == ("nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04",), "range clips 13.2 and 11.8, cudnn-runtime wins, newest patch"
+
+
+@pytest.mark.asyncio
+async def test_deploy_uses_the_official_rest_pods_endpoint() -> None:
+    posted: list[tuple[str, object]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        posted.append((str(request.url), request.read().decode()))
+        return httpx.Response(201, json={"id": "pod_1"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        result = await _adapter()._deploy(client, LEGACY_BINDING, "on_demand")
+
+    assert not isinstance(result, Exception)
+    assert result.id == "pod_1"
+    assert posted[0][0] == "https://api.runpod.io/v2/pods"
+    assert '"gpu":{"id":"NVIDIA A100","count":1}' in str(posted[0][1])
+
+
+@pytest.mark.asyncio
+async def test_registry_credentials_use_the_official_rest_endpoint() -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://api.runpod.io/v2/registries"
+        return httpx.Response(200, json={"registries": [{"id": "auth_1", "name": "docker hub"}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        assert await _adapter(registry_auth="docker hub")._registry_auth_id(client) == "auth_1"
+
+
+@pytest.mark.asyncio
+async def test_catalog_uses_v2_and_preserves_secure_and_community_prices() -> None:
+    requested_clouds: list[str] = []
+
+    class FakeResponse:
+        def raise_for_status(self) -> None: ...
+
+        def json(self) -> object:
+            return {"gpus": [{
+                "id": "NVIDIA A100",
+                "name": "A100",
+                "memory": 80,
+                "secure": True,
+                "community": True,
+                "price": {"secure": 2.0, "community": 1.5},
+                "maxCount": {"secure": 1, "community": 1},
+                "availability": "HIGH",
+            }]}
+
+    class FakeClient:
+        async def __aenter__(self) -> FakeClient:
+            return self
+
+        async def __aexit__(self, *_: object) -> bool:
+            return False
+
+        async def get(
+            self,
+            url: str,
+            params: dict[str, str],
+            headers: object = None,
+        ) -> FakeResponse:
+            assert url == "https://api.runpod.io/v2/catalog/gpus"
+            requested_clouds.append(params["cloud"])
+            return FakeResponse()
+
+    with patch("skyward.providers.runpod.httpx.AsyncClient", return_value=FakeClient()):
+        offers = [offer async for offer in _adapter(cloud_type="all").offers()]
+
+    assert requested_clouds == ["SECURE", "COMMUNITY"]
+    assert [(offer.specific["cloud_type"], offer.on_demand_price) for offer in offers] == [
+        ("SECURE", 2.0),
+        ("COMMUNITY", 1.5),
+    ]
+    assert all(offer.spot_price is None for offer in offers)
+
+
+@pytest.mark.asyncio
+async def test_country_filter_resolves_v2_datacenter_ids() -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://api.runpod.io/v2/catalog/datacenters"
+        return httpx.Response(200, json={"dataCenters": [
+            {"id": "US-TX-3"},
+            {"id": "EU-RO-1"},
+            {"id": "CA-MTL-1"},
+        ]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        centers = await _adapter(country_codes=("US", "RO", "CA"))._data_centers(client)
+
+    assert centers == ("US-TX-3", "EU-RO-1", "CA-MTL-1")
 
 
 @pytest.mark.asyncio
@@ -209,10 +321,10 @@ async def test_release_sweeps_the_pods_that_carry_the_prefix() -> None:
             return False
 
         async def get(self, url: str, headers: object = None) -> FakeResponse:
-            return FakeResponse([
+            return FakeResponse({"pods": [
                 {"id": "pod_other", "name": "skyward-cmp_2-aaaa"},
                 {"id": "pod_mine", "name": "skyward-cmp_1-bbbb"},
-            ])
+            ]})
 
         async def delete(self, url: str, headers: object = None) -> FakeResponse:
             deleted.append(url.rsplit("/", 1)[-1])
@@ -222,3 +334,27 @@ async def test_release_sweeps_the_pods_that_carry_the_prefix() -> None:
         await _adapter().release({"prefix": "skyward-cmp_1-"})
 
     assert deleted == ["pod_mine"], "only the leftover pod named after this compute is swept"
+
+
+def test_v2_running_pod_maps_its_live_ssh_and_private_dns() -> None:
+    machine = _machine({
+        "id": "pod_1",
+        "status": "RUNNING",
+        "runtime": {"ports": [{"private": 22, "public": 43122, "ip": "1.2.3.4"}]},
+        "globalNetworking": {
+            "enabled": True,
+            "ip": "10.0.0.2",
+            "internalDns": "pod_1.runpod.internal",
+        },
+    })
+    assert machine == Machine(
+        id="pod_1",
+        state="running",
+        host="1.2.3.4",
+        port=43122,
+        private_host="pod_1.runpod.internal",
+    )
+
+
+def test_v2_terminal_pods_are_absent() -> None:
+    assert _machine({"id": "pod_1", "status": "TERMINATED"}) is None

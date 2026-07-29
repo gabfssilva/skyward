@@ -54,7 +54,7 @@ class TensorDockProvider:
         return cls(provider_id, name, api_token, config)
 
     async def offers(self) -> AsyncIterator[Offer]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=30) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=int(self._config.get("request_timeout", 120))) as client:
             response = await client.get(
                 LOCATIONS_PATH,
                 headers={"Authorization": f"Bearer {self._api_token}", "Accept": "application/json"},
@@ -67,6 +67,12 @@ class TensorDockProvider:
         storage_gb = int(self._config.get("storage_gb", DEFAULT_STORAGE_GB))
 
         for location in locations:
+            if (tier := self._config.get("tier")) is not None and location.get("tier") != tier:
+                continue
+            if (configured := self._config.get("location")) and (
+                str(location.get("country") or "").lower() != str(configured).lower()
+            ):
+                continue
             for gpu in location.get("gpus", []):
                 model = str(gpu.get("v0Name") or "")
                 count = int(gpu.get("max_count") or 0)
@@ -75,9 +81,13 @@ class TensorDockProvider:
 
                 resources = gpu.get("resources") or {}
                 pricing = gpu.get("pricing") or {}
-                cpus = int(resources.get("max_vcpus") or 0)
-                memory_gb = float(resources.get("max_ram_gb") or 0)
-                disk_gb = float(min(storage_gb, int(resources.get("max_storage_gb") or storage_gb)))
+                cpus = int(self._config.get("min_vcpus") or 4)
+                memory_gb = float(self._config.get("min_ram_gb") or 16)
+                if cpus > int(resources.get("max_vcpus") or 0) or memory_gb > float(resources.get("max_ram_gb") or 0):
+                    continue
+                if storage_gb > int(resources.get("max_storage_gb") or 0):
+                    continue
+                disk_gb = float(storage_gb)
 
                 price = (
                     count * float(gpu.get("price_per_hr") or 0)
@@ -142,8 +152,13 @@ class TensorDockProvider:
             "vcpus": offer.cpus,
             "ram_gb": int(offer.memory_gb),
             "storage_gb": int(offer.disk_gb or DEFAULT_STORAGE_GB),
-            "image": str(self._config.get("image") or (GPU_IMAGE if offer.accelerator_count else CPU_IMAGE)),
+            "image": str(
+                self._config.get("operating_system")
+                or self._config.get("image")
+                or (GPU_IMAGE if offer.accelerator_count else CPU_IMAGE)
+            ),
             "public_key": public_key,
+            "instance_timeout": int(self._config.get("instance_timeout", 300)),
         }
 
     async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
@@ -221,7 +236,7 @@ class TensorDockProvider:
     async def _request(
         self, method: str, path: str, json: Mapping[str, Any] | None = None, allow: tuple[int, ...] = (),
     ) -> dict[str, Any]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=60) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=int(self._config.get("request_timeout", 120))) as client:
             response = await client.request(
                 method, path, json=json,
                 headers={"Authorization": f"Bearer {self._api_token}", "Accept": "application/json"},

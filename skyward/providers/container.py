@@ -44,6 +44,7 @@ class ContainerProvider:
     def __init__(self, provider_id: str, name: str, config: Mapping[str, Any]) -> None:
         self._id = provider_id
         self._name = name
+        self._config = config
         self._binary = str(config.get("binary", "docker"))
 
     @classmethod
@@ -70,8 +71,9 @@ class ContainerProvider:
                 )
 
     async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, market: Market, public_key: str) -> Binding:
-        image = BASE_IMAGE.format(python=spec.image.python or DEFAULT_PYTHON)
-        network = f"skyward-{compute_id}"
+        python = spec.image.python or DEFAULT_PYTHON
+        image = str(self._config.get("image") or BASE_IMAGE).format(python=python, python_version=python)
+        network = str(self._config.get("network") or f"skyward-{compute_id}")
 
         await self._pull(image)
         await self._network(network)
@@ -83,6 +85,9 @@ class ContainerProvider:
             "public_key": public_key,
             "cpus": offer.cpus,
             "memory_gb": offer.memory_gb,
+            "ssh_user": str(self._config.get("ssh_user", "root")),
+            "container_prefix": str(self._config.get("container_prefix") or "skyward"),
+            "managed_network": not self._config.get("network"),
         }
 
     async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
@@ -99,7 +104,7 @@ class ContainerProvider:
             return {}
 
         inspected = json.loads(await self._cli("inspect", *ids))
-        machines = (_machine(data) for data in inspected)
+        machines = (_machine(data, str(binding.get("ssh_user") or "root")) for data in inspected)
         return {machine.id: machine for machine in machines if machine is not None}
 
     async def terminate(self, binding: Binding, machine_ids: tuple[str, ...]) -> None:
@@ -108,7 +113,8 @@ class ContainerProvider:
                 group.create_task(self._try("rm", "-f", machine_id))
 
     async def release(self, binding: Binding) -> None:
-        await self._try("network", "rm", binding["network"])
+        if binding.get("managed_network", True):
+            await self._try("network", "rm", binding["network"])
 
     async def bake(self, binding: Binding, machine_id: str, tag: str) -> str:
         """Commit the container as it stands, bootstrapped venv and heavy wheels and all.
@@ -130,7 +136,7 @@ class ContainerProvider:
     async def _start(self, binding: Binding) -> str:
         created = await self._cli(
             "run", "-d",
-            "--name", f"skyward-{uuid.uuid4().hex[:12]}",
+            "--name", f"{binding.get('container_prefix') or 'skyward'}-{uuid.uuid4().hex[:12]}",
             "--label", f"{COMPUTE_LABEL}={binding['compute_id']}",
             "--network", binding["network"],
             "--env", f"SSH_PUB_KEY={binding['public_key']}",
@@ -175,7 +181,7 @@ class ContainerProvider:
             return None
 
 
-def _machine(data: dict[str, Any]) -> Machine | None:
+def _machine(data: dict[str, Any], user: str = "root") -> Machine | None:
     if not data["State"]["Running"]:
         return None
 
@@ -187,5 +193,6 @@ def _machine(data: dict[str, Any]) -> Machine | None:
         state="running",
         host="127.0.0.1",
         port=int(published[0]["HostPort"]) if published else 22,
+        user=user,
         private_host=network.get("IPAddress") or None,
     )

@@ -15,19 +15,43 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import msgspec
 import pytest
 
+from skyward.application import machines as machines_module
 from skyward.application.machines import Machines
 from skyward.application.provider import Binding, Machine
 from skyward.persistence.computes import ComputeStore, Infrastructure
 from skyward.persistence.db import connect
 from skyward.persistence.nodes import NodeStore
-from skyward.protocol.schemas import ComputeCreate, ComputeSpec, Market, NodeBounds, Offer, Page, ProviderRef, Spec
+from skyward.protocol.schemas import ComputeCreate, ComputeSpec, Market, NodeBounds, Offer, Options, Page, ProviderRef, Spec
 
 SPEC = ComputeSpec(
     specs=(Spec(provider=ProviderRef(kind="fake"), cpus=1, memory_gb=1),),
     nodes=NodeBounds(desired=4),
 )
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("aws", True),
+        ("container", True),
+        ("runpod", False),
+        ("vastai", False),
+        ("tensordock", False),
+        ("jarvislabs", False),
+        ("novita", False),
+        ("massed_compute", False),
+    ],
+)
+def test_cluster_mode_defaults_follow_provider_networking(kind: str, expected: bool) -> None:
+    assert machines_module._clustered(kind, None) is expected
+
+
+def test_explicit_cluster_mode_overrides_the_provider_default() -> None:
+    assert machines_module._clustered("runpod", True)
+    assert not machines_module._clustered("aws", False)
 
 
 class FakeProvider:
@@ -329,6 +353,23 @@ async def test_placement_relocates_to_a_region_that_will_sell_and_releases_the_o
     infrastructure = await computes.infrastructure(created.id)
     assert infrastructure.offer_id == quota.id, "the compute must be re-bound to the region that sold"
     assert infrastructure.binding["region"] == "quota"
+    assert infrastructure.binding["skyward_cluster"] is True
+
+
+async def test_explicit_standalone_mode_is_persisted_with_the_provider_binding(tmp_path: Path) -> None:
+    await connect(tmp_path / "skyward.sqlite")
+    computes = ComputeStore()
+    nodes = NodeStore()
+    spec = msgspec.structs.replace(SPEC, options=Options(cluster=False))
+    created, _ = await computes.create(ComputeCreate(spec=spec, name=None), idempotency_key="k")
+    offer = _offer("only", 0.10)
+    provider = RegionProvider(sells_in="only")
+    machines = RegionMachines(computes, nodes, provider, FakeOffers((offer,)))
+
+    row = await nodes.request(created.id, generation=1)
+    await machines.create(created.id, row.id)
+
+    assert (await computes.infrastructure(created.id)).binding["skyward_cluster"] is False
 
 
 async def test_a_second_node_inherits_the_region_the_first_settled_on(tmp_path: Path) -> None:

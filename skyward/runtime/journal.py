@@ -58,7 +58,11 @@ class Metric(Struct, frozen=True, tag="metric", tag_field="type"):
     value: float
 
 
-type NodeEvent = Phase | Console | Metric
+class Health(Struct, frozen=True, tag="health", tag_field="type"):
+    reason: str
+
+
+type NodeEvent = Phase | Console | Metric | Health
 
 _decode = msgspec.json.Decoder(NodeEvent)
 

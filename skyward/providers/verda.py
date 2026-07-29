@@ -71,7 +71,7 @@ class VerdaProvider:
         return response.json()["access_token"]
 
     async def offers(self) -> AsyncIterator[Offer]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=30) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=int(self._config.get("request_timeout", 30))) as client:
             headers = {"Authorization": f"Bearer {await self._token(client)}"}
 
             types_response = await client.get(INSTANCE_TYPES_PATH, headers=headers)
@@ -145,7 +145,8 @@ class VerdaProvider:
         )
 
         async with self._session() as (client, headers):
-            key_id = await self._ssh_key(client, headers, name, public_key)
+            configured_key = self._config.get("ssh_key_id")
+            key_id = str(configured_key) if configured_key else await self._ssh_key(client, headers, name, public_key)
             region = await self._region(client, headers, offer, market)
 
         return {
@@ -155,6 +156,8 @@ class VerdaProvider:
             "instance_type": offer.instance_type,
             "image": image,
             "region": region,
+            "managed_ssh_key": configured_key is None,
+            "instance_timeout": int(self._config.get("instance_timeout", 300)),
         }
 
     async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
@@ -197,6 +200,8 @@ class VerdaProvider:
                 group.create_task(self._delete(client, headers, machine_id))
 
     async def release(self, binding: Binding) -> None:
+        if not binding.get("managed_ssh_key", True):
+            return
         async with self._session() as (client, headers):
             deleted = await client.delete(f"{SSH_KEYS_PATH}/{binding['ssh_key_id']}", headers=headers)
             if deleted.is_client_error:
@@ -205,7 +210,7 @@ class VerdaProvider:
 
     @asynccontextmanager
     async def _session(self) -> AsyncIterator[tuple[httpx.AsyncClient, dict[str, str]]]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=30) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=int(self._config.get("request_timeout", 30))) as client:
             yield client, {"Authorization": f"Bearer {await self._token(client)}"}
 
     async def _ssh_key(

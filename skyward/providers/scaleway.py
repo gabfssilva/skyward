@@ -76,7 +76,7 @@ class ScalewayProvider:
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=BASE_URL,
-            timeout=30,
+            timeout=int(self._config.get("request_timeout", 30)),
             headers={
                 "X-Auth-Token": self._secret_key,
                 "Accept": "application/json",
@@ -97,7 +97,7 @@ class ScalewayProvider:
         zones = self._zones
         async with httpx.AsyncClient(
             base_url=BASE_URL,
-            timeout=30,
+            timeout=int(self._config.get("request_timeout", 30)),
             headers={"X-Auth-Token": self._secret_key, "Accept": "application/json"},
         ) as client:
             results = await asyncio.gather(*(self._fetch_zone(client, zone) for zone in zones))
@@ -164,6 +164,7 @@ class ScalewayProvider:
             "commercial_type": commercial_type,
             "image_id": image_id,
             "ssh_key_id": ssh_key_id,
+            "instance_timeout": int(self._config.get("instance_timeout", 300)),
         }
 
     async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:

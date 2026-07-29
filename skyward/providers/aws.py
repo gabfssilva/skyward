@@ -8,6 +8,7 @@ from typing import Any, ClassVar, NamedTuple, Self
 
 import aioboto3
 from aiobotocore.client import AioBaseClient
+from aiobotocore.config import AioConfig
 from botocore.exceptions import ClientError
 
 from skyward.application.errors import CapabilityMismatchError
@@ -97,9 +98,17 @@ class AWSProvider:
             aws_session_token=self._session_token,
         )
 
+    def _client_config(self) -> AioConfig:
+        timeout = int(self._config.get("request_timeout", 30))
+        return AioConfig(connect_timeout=timeout, read_timeout=timeout)
+
     @asynccontextmanager
     async def _ec2(self, region: str):  # noqa: ANN202 — aioboto3's client type is unexpressible; let it infer
-        async with self._session().client("ec2", region_name=region) as client:
+        async with self._session().client(
+            "ec2",
+            region_name=region,
+            config=self._client_config(),
+        ) as client:
             yield client
 
     async def offers(self) -> AsyncIterator[Offer]:
@@ -111,6 +120,8 @@ class AWSProvider:
 
         for region, (instance_types, spot, on_demand) in zip(regions, results, strict=True):
             for raw in instance_types:
+                if self._config.get("exclude_burstable") and raw.get("BurstablePerformanceSupported"):
+                    continue
                 instance_type = raw["InstanceType"]
                 gpu = _gpu(raw)
                 network = raw.get("NetworkInfo") or {}
@@ -166,7 +177,7 @@ class AWSProvider:
 
     async def _instance_types(self, session: aioboto3.Session, region: str) -> list[dict[str, Any]]:
         types: list[dict[str, Any]] = []
-        async with session.client("ec2", region_name=region) as ec2:
+        async with session.client("ec2", region_name=region, config=self._client_config()) as ec2:
             paginator = ec2.get_paginator("describe_instance_types")
             async for page in paginator.paginate():
                 types.extend(page.get("InstanceTypes", []))
@@ -182,7 +193,7 @@ class AWSProvider:
         """
         prices: dict[str, float] = {}
         now = datetime.now(UTC)
-        async with session.client("ec2", region_name=region) as ec2:
+        async with session.client("ec2", region_name=region, config=self._client_config()) as ec2:
             paginator = ec2.get_paginator("describe_spot_price_history")
             async for page in paginator.paginate(ProductDescriptions=["Linux/UNIX"], StartTime=now, EndTime=now):
                 for entry in page.get("SpotPriceHistory", []):
@@ -209,7 +220,7 @@ class AWSProvider:
             {"Type": "TERM_MATCH", "Field": "licenseModel", "Value": "No License required"},
             {"Type": "TERM_MATCH", "Field": "marketoption", "Value": "OnDemand"},
         ]
-        async with session.client("pricing", region_name=PRICING_REGION) as pricing:
+        async with session.client("pricing", region_name=PRICING_REGION, config=self._client_config()) as pricing:
             paginator = pricing.get_paginator("get_products")
             async for page in paginator.paginate(ServiceCode="AmazonEC2", Filters=filters):
                 for raw in page.get("PriceList", []):
@@ -227,14 +238,31 @@ class AWSProvider:
 
         name = f"skyward-{compute_id}"
         session = self._session()
-        async with session.client("ec2", region_name=region) as ec2:
-            vpc = await self._vpc(ec2)
+        async with session.client("ec2", region_name=region, config=self._client_config()) as ec2:
+            if configured_subnet := self._config.get("subnet_id"):
+                described = await ec2.describe_subnets(SubnetIds=[configured_subnet])
+                subnet = described["Subnets"][0]
+                vpc = str(subnet["VpcId"])
+                subnets = {str(subnet["AvailabilityZone"]): str(configured_subnet)}
+            else:
+                vpc = await self._vpc(ec2)
+                subnets = await self._subnets(ec2, vpc, offer.instance_type)
 
             async with asyncio.TaskGroup() as group:
                 key = group.create_task(self._key_pair(ec2, name, public_key))
-                security_group = group.create_task(self._security_group(ec2, "skyward-sg", vpc))
-                subnets = group.create_task(self._subnets(ec2, vpc, offer.instance_type))
                 image = group.create_task(self._image(session, region, offer))
+                security_group = (
+                    None
+                    if self._config.get("security_group_id")
+                    else group.create_task(self._security_group(ec2, "skyward-sg", vpc))
+                )
+
+        if configured_group := self._config.get("security_group_id"):
+            security_group_id = str(configured_group)
+        elif security_group is not None:
+            security_group_id = security_group.result()
+        else:
+            raise RuntimeError("AWS security group resolution produced no group")
 
         return {
             "compute_id": compute_id,
@@ -242,10 +270,13 @@ class AWSProvider:
             "instance_type": offer.instance_type,
             "image": image.result(),
             "key_name": key.result(),
-            "security_group_id": security_group.result(),
-            "subnets": subnets.result(),
-            "user": SSH_USER,
+            "security_group_id": security_group_id,
+            "subnets": subnets,
+            "user": str(self._config.get("username") or SSH_USER),
             "disk_gb": int(self._config.get("disk_gb") or DEFAULT_DISK_GB),
+            "instance_profile_arn": self._config.get("instance_profile_arn"),
+            "allocation_strategy": str(self._config.get("allocation_strategy") or FLEET_STRATEGY),
+            "instance_timeout": int(self._config.get("instance_timeout", 300)),
         }
 
     async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
@@ -267,7 +298,7 @@ class AWSProvider:
         candidate = {pinned: subnets[pinned]} if pinned else subnets
 
         session = self._session()
-        async with session.client("ec2", region_name=binding["region"]) as ec2:
+        async with session.client("ec2", region_name=binding["region"], config=self._client_config()) as ec2:
             template = await ec2.create_launch_template(
                 LaunchTemplateName=f"skyward-{uuid.uuid4().hex[:8]}",
                 LaunchTemplateData=_template(binding),
@@ -319,7 +350,11 @@ class AWSProvider:
 
     async def machines(self, binding: Binding) -> Mapping[str, Machine]:
         found: dict[str, Machine] = {}
-        async with self._session().client("ec2", region_name=binding["region"]) as ec2:
+        async with self._session().client(
+            "ec2",
+            region_name=binding["region"],
+            config=self._client_config(),
+        ) as ec2:
             paginator = ec2.get_paginator("describe_instances")
             pages = paginator.paginate(
                 Filters=[
@@ -435,7 +470,11 @@ class AWSProvider:
         if not machine_ids:
             return
 
-        async with self._session().client("ec2", region_name=binding["region"]) as ec2:
+        async with self._session().client(
+            "ec2",
+            region_name=binding["region"],
+            config=self._client_config(),
+        ) as ec2:
             try:
                 await ec2.terminate_instances(InstanceIds=list(machine_ids))
             except ClientError as error:
@@ -592,7 +631,7 @@ class AWSProvider:
                 f"/{'arm64' if arm else 'amd64'}/hvm/{ebs}/ami-id"
             )
 
-        async with session.client("ssm", region_name=region) as ssm:
+        async with session.client("ssm", region_name=region, config=self._client_config()) as ssm:
             response = await ssm.get_parameter(Name=parameter)
             return str(response["Parameter"]["Value"])
 
@@ -604,7 +643,7 @@ def _template(binding: Binding) -> dict[str, Any]:
     Fleet is the thing choosing the subnet and needs the pair alongside each one.
     Everything a machine of this compute shares is what remains.
     """
-    return {
+    template: dict[str, Any] = {
         "KeyName": binding["key_name"],
         "NetworkInterfaces": [{
             "DeviceIndex": 0,
@@ -626,6 +665,9 @@ def _template(binding: Binding) -> dict[str, Any]:
         "MetadataOptions": {"HttpTokens": "required", "HttpEndpoint": "enabled"},
         "InstanceInitiatedShutdownBehavior": "terminate",
     }
+    if profile := binding.get("instance_profile_arn"):
+        template["IamInstanceProfile"] = {"Arn": profile}
+    return template
 
 
 def _fleet(binding: Binding, market: Market, template_id: str, subnets: Mapping[str, str], count: int, min_count: int) -> dict[str, Any]:
@@ -654,7 +696,7 @@ def _fleet(binding: Binding, market: Market, template_id: str, subnets: Mapping[
             "OnDemandTargetCapacity": 0 if spot else count,
         },
         "SpotOptions": {
-            "AllocationStrategy": FLEET_STRATEGY,
+            "AllocationStrategy": binding.get("allocation_strategy") or FLEET_STRATEGY,
             "SingleAvailabilityZone": True,
             "SingleInstanceType": True,
             "MinTargetCapacity": min_count,

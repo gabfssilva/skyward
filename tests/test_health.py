@@ -12,12 +12,17 @@ exactly three" and "not before" are the same assertion written once.
 from __future__ import annotations
 
 import asyncio
+import time
 from contextlib import suppress
+from pathlib import Path
 
 import pytest
 
 from skyward.application.provider import Machine
+from skyward.protocol import codec
 from skyward.protocol.schemas import Image, NodeState, Options
+from skyward.runtime import journal
+from skyward.runtime import worker as worker_module
 from skyward.runtime.node import Node
 from skyward.runtime.source import Source
 from skyward.runtime.ssh import Result
@@ -25,6 +30,148 @@ from skyward.runtime.ssh import Result
 pytestmark = pytest.mark.unit
 
 PROBE = "nvidia-smi"
+
+
+def test_the_worker_exposes_the_remote_health_loop() -> None:
+    assert getattr(worker_module, "health", None) is not None
+
+
+async def test_remote_health_probe_returns_the_predicate_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SKYWARD_NODE", "node")
+    monkeypatch.setenv("SKYWARD_COMPUTE", "compute")
+    monkeypatch.setenv("SKYWARD_RANK", "0")
+    monkeypatch.setenv("SKYWARD_PEERS", "127.0.0.1")
+
+    result = await anext(worker_module.health(lambda info: info.node == "node", 0.01, 1.0, 0.0))
+
+    assert result == (True, None)
+
+
+async def test_remote_health_probe_preserves_a_failure_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SKYWARD_NODE", "node")
+    monkeypatch.setenv("SKYWARD_COMPUTE", "compute")
+    monkeypatch.setenv("SKYWARD_RANK", "0")
+    monkeypatch.setenv("SKYWARD_PEERS", "127.0.0.1")
+
+    result = await anext(worker_module.health(lambda _: "GPU unavailable", 0.01, 1.0, 0.0))
+
+    assert result == (False, "GPU unavailable")
+
+
+async def test_remote_health_probe_reports_exceptions(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SKYWARD_NODE", "node")
+    monkeypatch.setenv("SKYWARD_COMPUTE", "compute")
+    monkeypatch.setenv("SKYWARD_RANK", "0")
+    monkeypatch.setenv("SKYWARD_PEERS", "127.0.0.1")
+
+    def fail(_: object) -> bool:
+        raise RuntimeError("broken")
+
+    healthy, reason = await anext(worker_module.health(fail, 0.01, 1.0, 0.0))
+
+    assert not healthy
+    assert reason is not None and "RuntimeError" in reason and "broken" in reason
+
+
+async def test_remote_health_probe_enforces_its_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SKYWARD_NODE", "node")
+    monkeypatch.setenv("SKYWARD_COMPUTE", "compute")
+    monkeypatch.setenv("SKYWARD_RANK", "0")
+    monkeypatch.setenv("SKYWARD_PEERS", "127.0.0.1")
+
+    def slow(_: object) -> bool:
+        time.sleep(0.2)
+        return True
+
+    healthy, reason = await anext(worker_module.health(slow, 0.01, 0.01, 0.0))
+
+    assert not healthy
+    assert reason is not None and "timeout" in reason
+
+
+async def test_remote_health_probe_waits_before_its_first_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SKYWARD_NODE", "node")
+    monkeypatch.setenv("SKYWARD_COMPUTE", "compute")
+    monkeypatch.setenv("SKYWARD_RANK", "0")
+    monkeypatch.setenv("SKYWARD_PEERS", "127.0.0.1")
+    started = time.monotonic()
+
+    await anext(worker_module.health(lambda _: True, 0.01, 1.0, 0.05))
+
+    assert time.monotonic() - started >= 0.05
+
+
+async def _checks(*results: tuple[bool, str | None]):
+    for result in results:
+        yield result
+
+
+async def test_warming_waits_for_the_first_success() -> None:
+    checks = _checks((False, "one"), (False, "two"), (True, None))
+
+    await worker_module.warm(checks, consecutive_failures=3)
+
+    with pytest.raises(StopAsyncIteration):
+        await anext(checks)
+
+
+async def test_warming_fails_when_the_streak_reaches_the_limit() -> None:
+    checks = _checks((False, "one"), (False, "GPU unavailable"), (True, None))
+
+    with pytest.raises(RuntimeError, match="GPU unavailable"):
+        await worker_module.warm(checks, consecutive_failures=2)
+
+
+async def test_steady_health_resets_the_failure_streak() -> None:
+    checks = _checks((False, "one"), (True, None), (False, "two"), (False, "three"))
+
+    reason = await worker_module.unhealthy(checks, consecutive_failures=2)
+
+    assert "three" in reason
+
+
+async def test_the_worker_loads_the_serialized_health_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "health.bin"
+    path.write_bytes(codec.dumps(lambda info: info.compute == "compute"))
+    monkeypatch.setenv("SKYWARD_NODE", "node")
+    monkeypatch.setenv("SKYWARD_COMPUTE", "compute")
+    monkeypatch.setenv("SKYWARD_RANK", "0")
+    monkeypatch.setenv("SKYWARD_PEERS", "127.0.0.1")
+    monkeypatch.setenv("SKYWARD_HEALTH", str(path))
+    monkeypatch.setenv("SKYWARD_HEALTH_INTERVAL", "4")
+    monkeypatch.setenv("SKYWARD_HEALTH_TIMEOUT", "1.5")
+    monkeypatch.setenv("SKYWARD_HEALTH_FAILURES", "5")
+    monkeypatch.setenv("SKYWARD_HEALTH_INITIAL_DELAY", "0")
+
+    configured = worker_module.health_checks()
+
+    assert configured is not None
+    checks, failures = configured
+    assert failures == 5
+    assert await anext(checks) == (True, None)
+
+
+async def test_health_monitor_starts_only_after_the_warming_success() -> None:
+    configured = (
+        _checks((False, "warming"), (True, None), (False, "one"), (False, "terminal")),
+        2,
+    )
+
+    monitor = await worker_module.start_health(configured)
+
+    assert monitor is not None
+    assert "terminal" in await monitor
+
+
+def test_a_terminal_remote_health_event_marks_the_node_lost() -> None:
+    node, seen = _node(FakeSsh(), command=None)
+
+    node._observe(journal.Health(reason="health check failed 3 times: GPU unavailable"))
+
+    assert seen == [("lost", 0)]
 
 
 class Exhausted(RuntimeError):

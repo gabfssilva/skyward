@@ -295,7 +295,7 @@ class Dispatcher:
             return
 
         member = await runtime.member(execution.node_id)
-        system = await runtime.system()
+        system = await runtime.system(execution.node_id)
         control = system.service(worker.Control, at=member)
 
         match await _LOOKUPS.decode(await control.result(execution.id)):
@@ -337,7 +337,7 @@ class Dispatcher:
         await self._record("task.indeterminate", task.compute_id, task=task.id)
 
     async def _worker(self, runtime: Runtime, node_id: str) -> worker.Worker:
-        system = await runtime.system()
+        system = await runtime.system(node_id)
         return system.service(worker.Worker, at=await runtime.member(node_id))
 
     def _lock(self, compute_id: str) -> asyncio.Lock:

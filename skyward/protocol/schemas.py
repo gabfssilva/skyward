@@ -317,6 +317,10 @@ class Options(Struct, frozen=True):
     """
     health_interval: float = 30.0
     health_failures: int = 3
+    health_function: bytes | None = None
+    health_timeout: float = 15.0
+    health_initial_delay: float = 0.0
+    cluster: bool | None = None
 
 
 class ComputeSpec(Struct, frozen=True):

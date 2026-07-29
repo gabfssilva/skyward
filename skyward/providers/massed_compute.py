@@ -53,7 +53,7 @@ class MassedComputeProvider:
         return cls(provider_id, name, api_key, config)
 
     async def offers(self) -> AsyncIterator[Offer]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=30) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=int(self._config.get("request_timeout", 30))) as client:
             response = await client.get(
                 INVENTORY_PATH,
                 headers={
@@ -184,7 +184,7 @@ class MassedComputeProvider:
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=BASE_URL,
-            timeout=30,
+            timeout=int(self._config.get("request_timeout", 30)),
             headers={
                 "Authorization": f"Bearer {self._api_key}",
                 "Accept": "application/json",

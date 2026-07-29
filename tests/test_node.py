@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from skyward.application.provider import Machine
-from skyward.protocol.schemas import Image
+from skyward.protocol.schemas import Image, Options
 from skyward.runtime import bootstrap
 from skyward.runtime.node import BootstrapFailedError, Node
 from skyward.runtime.source import Source
@@ -40,8 +40,18 @@ class FakeSsh:
             return Result(exit_code=self._extract_code, stdout="", stderr="boom" if self._extract_code else "")
         return Result(exit_code=0, stdout="", stderr="")
 
+    async def forward(self, port: int) -> int:
+        return port
 
-def _node(user_code: bytes | None, *, user: str = "root", ssh: FakeSsh | None = None) -> tuple[Node, FakeSsh]:
+
+def _node(
+    user_code: bytes | None,
+    *,
+    user: str = "root",
+    ssh: FakeSsh | None = None,
+    options: Options | None = None,
+    instance_timeout: int | None = None,
+) -> tuple[Node, FakeSsh]:
     node = Node(
         Machine(id="mch", state="running", host="127.0.0.1", user=user),
         compute="cmp",
@@ -53,6 +63,8 @@ def _node(user_code: bytes | None, *, user: str = "root", ssh: FakeSsh | None = 
         sample=lambda *_: None,
         phase=lambda *_: None,
         user_code=user_code,
+        options=options or Options(),
+        instance_timeout=instance_timeout,
     )
     fake = ssh or FakeSsh()
     node._ssh = fake  # type: ignore[assignment]
@@ -94,3 +106,45 @@ async def test_an_undiscoverable_site_packages_fails_the_node():
 def test_the_extract_uses_the_bootstrap_python():
     """A guard that the query targets the venv the worker actually runs from."""
     assert bootstrap.PYTHON.endswith("/.venv/bin/python")
+
+
+async def test_the_remote_health_predicate_is_uploaded_with_its_limits() -> None:
+    node, fake = _node(
+        None,
+        options=Options(
+            health_function=b"predicate",
+            health_interval=4.0,
+            health_timeout=1.5,
+            health_failures=5,
+            health_initial_delay=2.0,
+        ),
+    )
+
+    environment = await node._health_environment()
+
+    assert fake.puts == [("/opt/skyward/health.bin", b"predicate")]
+    assert environment == {
+        "SKYWARD_HEALTH": "/opt/skyward/health.bin",
+        "SKYWARD_HEALTH_INTERVAL": "4.0",
+        "SKYWARD_HEALTH_TIMEOUT": "1.5",
+        "SKYWARD_HEALTH_FAILURES": "5",
+        "SKYWARD_HEALTH_INITIAL_DELAY": "2.0",
+    }
+
+
+@pytest.mark.parametrize(("cluster", "value"), [(True, "1"), (False, "0")])
+async def test_cluster_mode_reaches_the_worker_environment(cluster: bool, value: str) -> None:
+    node, fake = _node(None, options=Options(cluster=cluster))
+    node._settle("worker", None)
+
+    await node._launch()
+
+    assert any(f"SKYWARD_CLUSTER={value}" in command for command in fake.runs)
+
+
+async def test_provider_instance_timeout_arms_remote_shutdown() -> None:
+    node, fake = _node(None, user="ubuntu", instance_timeout=45)
+
+    await node._arm_timeout()
+
+    assert fake.runs == ["nohup sh -c 'sleep 45; sudo shutdown -h now' > /dev/null 2>&1 &"]

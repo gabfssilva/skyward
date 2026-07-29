@@ -15,15 +15,74 @@ import pytest
 import skyward
 from skyward.application.provider import Machine
 from skyward.application.reconciler import IDLE_SECONDS
+from skyward.protocol import codec
 from skyward.protocol.schemas import ComputeSpec, Image
 from skyward.protocol.schemas import Options as OptionsRef
+from skyward.runtime.api import Info
 from skyward.runtime.node import WORKER_TIMEOUT, Node
 from skyward.runtime.source import Source
 from skyward.runtime.ssh import RETRY_DELAY, SshChannel
+from skyward.sdk import spec as spec_module
 from skyward.sdk.compute import DELETE_TIMEOUT, READY_TIMEOUT
-from skyward.sdk.spec import Options
+from skyward.sdk.spec import HealthChecker, Options
 
 pytestmark = pytest.mark.unit
+
+
+def test_health_checker_is_part_of_the_public_spec_surface() -> None:
+    assert getattr(spec_module, "HealthChecker", None) is not None
+
+
+def test_health_checker_defaults_match_the_v1_contract() -> None:
+    checker = HealthChecker(lambda _: True)
+
+    assert checker.interval == 30.0
+    assert checker.timeout == 15.0
+    assert checker.consecutive_failures == 3
+    assert checker.initial_delay == 0.0
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("interval", 0.0),
+        ("timeout", 0.0),
+        ("consecutive_failures", 0),
+        ("initial_delay", -0.1),
+    ],
+)
+def test_health_checker_rejects_invalid_limits(field: str, value: float) -> None:
+    with pytest.raises(ValueError):
+        HealthChecker(lambda _: True, **{field: value})
+
+
+def test_health_checker_is_exported_from_the_sdk_facade() -> None:
+    assert skyward.HealthChecker is HealthChecker
+
+
+def test_health_checker_reaches_the_wire_with_its_predicate() -> None:
+    checker = HealthChecker(
+        lambda info: info.rank == 2,
+        interval=4.0,
+        timeout=1.5,
+        consecutive_failures=5,
+        initial_delay=2.0,
+    )
+
+    wire = spec_of(built(Options(health_checker=checker))).options
+    fn = codec.loads(wire.health_function)
+
+    assert fn(Info(node="n", compute="c", rank=2, peers=("a", "b", "c")))
+    assert wire.health_interval == 4.0
+    assert wire.health_timeout == 1.5
+    assert wire.health_failures == 5
+    assert wire.health_initial_delay == 2.0
+
+
+def test_cluster_mode_reaches_the_wire_without_resolving_provider_defaults() -> None:
+    assert spec_of(built(Options())).options.cluster is None
+    assert spec_of(built(Options(cluster=False))).options.cluster is False
+    assert spec_of(built(Options(cluster=True))).options.cluster is True
 
 
 def built(options: Options) -> skyward.Compute:

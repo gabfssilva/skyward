@@ -394,6 +394,7 @@ class GCPProvider:
             "disk_type": str(self._config.get("disk_type") or DEFAULT_DISK_TYPE),
             "service_account": str(service_account) if service_account else None,
             "public_key": public_key,
+            "instance_timeout": int(self._config.get("instance_timeout", 300)),
         }
 
         async with self._api() as client:

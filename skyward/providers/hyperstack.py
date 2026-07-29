@@ -60,7 +60,7 @@ class HyperstackProvider:
     async def offers(self) -> AsyncIterator[Offer]:
         async with httpx.AsyncClient(
             base_url=BASE_URL,
-            timeout=30,
+            timeout=int(self._config.get("request_timeout", 30)),
             headers={"api_key": self._api_key, "Accept": "application/json"},
         ) as client:
             flavors_response = await client.get(FLAVORS_PATH)
@@ -84,6 +84,15 @@ class HyperstackProvider:
                 price = _hourly_price(gpu, gpu_count, cpus, memory_gb, prices)
                 region = flavor.get("region_name") or group.get("region_name")
                 features = flavor.get("features") or {}
+                configured = self._config.get("region")
+                regions = (configured,) if isinstance(configured, str) else tuple(configured or ())
+                if regions and region not in regions:
+                    continue
+                if self._config.get("network_optimised") and (
+                    not features.get("network_optimised")
+                    or region not in tuple(self._config.get("network_optimised_regions") or ())
+                ):
+                    continue
 
                 yield Offer(
                     id=str(flavor["id"]),
@@ -140,6 +149,7 @@ class HyperstackProvider:
             "region": region,
             "flavor": str(offer.specific.get("flavor_name") or offer.instance_type),
             "image": str(self._config.get("image") or await self._image(region)),
+            "instance_timeout": int(self._config.get("instance_timeout", 300)),
         }
 
     async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
@@ -216,6 +226,11 @@ class HyperstackProvider:
             with suppress(httpx.HTTPError):
                 await self._delete(f"{ACCESS_KEYS_PATH}/{access_key_id}")
         await self._delete(f"{ENVIRONMENTS_PATH}/{binding['environment_id']}")
+        timeout = float(self._config.get("teardown_timeout", 120))
+        interval = float(self._config.get("teardown_poll_interval", 2.0))
+        async with asyncio.timeout(timeout):
+            while await self._environment_id(str(binding["name"])) is not None:
+                await asyncio.sleep(interval)
 
     async def _create(self, binding: Binding, count: int) -> tuple[Machine, ...]:
         """The VM name is the compute's, suffixed: a node is one create call, and names collide.
@@ -354,7 +369,7 @@ class HyperstackProvider:
     ) -> dict[str, Any]:
         async with httpx.AsyncClient(
             base_url=BASE_URL,
-            timeout=30,
+            timeout=int(self._config.get("request_timeout", 30)),
             headers={"api_key": self._api_key, "Accept": "application/json"},
         ) as client:
             response = await client.request(method, path, json=body, params=params)

@@ -82,15 +82,16 @@ class Runtime:
     nothing to connect to until a node says it is ready.
     """
 
-    def __init__(self, compute: str, source: Source, private_key: str) -> None:
+    def __init__(self, compute: str, source: Source, private_key: str, cluster: bool = True) -> None:
         self.compute = compute
         self.source = source
         self.private_key = private_key
+        self.cluster = cluster
         self.nodes: dict[str, Node] = {}
         self.dispatched: set[str] = set()
         """Executions already in flight. Two coalesced reconciles must not both send one."""
 
-        self._system: casty.Client | None = None
+        self._systems: dict[str | None, casty.Client] = {}
         self._tunnels: dict[str, str] = {}
         self._connecting = asyncio.Lock()
         self._cursor = 0
@@ -119,12 +120,14 @@ class Runtime:
             await node.close()
             node.tunnel = None
             self._refresh()
+        if not self.cluster and (system := self._systems.pop(node_id, None)):
+            await system.close()
 
     @property
     def ready(self) -> tuple[str, ...]:
         return tuple(node_id for node_id, node in self.nodes.items() if node.tunnel)
 
-    async def system(self) -> casty.Client:
+    async def system(self, node_id: str | None = None) -> casty.Client:
         """The client, dialling every worker through its own tunnel.
 
         The address map is the whole trick. Workers advertise themselves on the
@@ -140,14 +143,24 @@ class Runtime:
         long is the task's own deadline to answer, and a node that has actually died
         is reported by the membership protocol, which has its own much shorter clock.
         """
+        if not self.cluster and node_id is None:
+            raise ValueError("a standalone runtime needs the node whose worker it should reach")
+        if self.cluster:
+            key = None
+            seeds = [self.nodes[ready].seed for ready in self.ready]
+        else:
+            if node_id is None:
+                raise ValueError("a standalone runtime needs the node whose worker it should reach")
+            key = node_id
+            seeds = [self.nodes[node_id].seed]
+
         async with self._connecting:
-            if self._system is None:
-                seeds = [self.nodes[node_id].seed for node_id in self.ready]
+            if key not in self._systems:
                 if not seeds:
                     raise RuntimeError(f"compute {self.compute} has no ready node to connect to")
 
                 self._refresh()
-                self._system = await casty.connect(
+                self._systems[key] = await casty.connect(
                     seeds,
                     config=casty.Config(call_timeout=CALL_TIMEOUT),
                     address_map=lambda addr: self._tunnels.get(addr, addr),
@@ -155,10 +168,10 @@ class Runtime:
                 )
 
         self._refresh()
-        return self._system
+        return self._systems[key]
 
     async def member(self, node_id: str) -> casty.Member:
-        system = await self.system()
+        system = await self.system(node_id)
         seed = self.nodes[node_id].seed
 
         async with asyncio.timeout(30):
@@ -270,9 +283,9 @@ class Runtime:
         return self.nodes[node_id]._ssh.get(path)
 
     async def close(self) -> None:
-        if self._system:
-            await self._system.close()
-            self._system = None
+        for system in self._systems.values():
+            await system.close()
+        self._systems.clear()
 
         for node in self.nodes.values():
             await node.close()
@@ -299,8 +312,8 @@ class Runtimes:
     def of(self, compute: str) -> Runtime | None:
         return self._runtimes.get(compute)
 
-    def open(self, compute: str, source: Source, private_key: str) -> Runtime:
-        return self._runtimes.setdefault(compute, Runtime(compute, source, private_key))
+    def open(self, compute: str, source: Source, private_key: str, cluster: bool = True) -> Runtime:
+        return self._runtimes.setdefault(compute, Runtime(compute, source, private_key, cluster))
 
     async def start(
         self,
@@ -319,6 +332,7 @@ class Runtimes:
         options: Options = DEFAULT_OPTIONS,
         user_code: bytes | None = None,
         volumes: tuple[str, ...] = (),
+        instance_timeout: int | None = None,
     ) -> None:
         """Bring a machine up, and wire what it learns back to the store.
 
@@ -343,6 +357,7 @@ class Runtimes:
             plugins=plugins,
             user_code=user_code,
             volumes=volumes,
+            instance_timeout=instance_timeout,
             listener=lambda state, error: self._listener(runtime.compute, node_id, state, error),
             output=lambda content, task: self._output(runtime.compute, node_id, content, task),
             sample=lambda name, value: self._sample(runtime.compute, node_id, name, value),

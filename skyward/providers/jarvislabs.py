@@ -84,6 +84,8 @@ class JarvisLabsProvider:
             region = str(entry.get("region") or "")
             if region in CLOSED_REGIONS:
                 continue
+            if (configured := self._config.get("region")) and region != configured:
+                continue
 
             workload = entry.get("workload_type")
             unit_price = entry.get("price_per_hour")
@@ -140,9 +142,10 @@ class JarvisLabsProvider:
             "gpu_type": str(offer.specific.get("gpu_type") or offer.accelerator or ""),
             "num_gpus": int(offer.specific.get("num_gpus") or offer.accelerator_count or 1),
             "storage_gb": storage,
-            "template": TEMPLATE,
+            "template": str(self._config.get("template", TEMPLATE)),
             "ssh_key_id": key_id,
             "ssh_key_name": key_name,
+            "instance_timeout": int(self._config.get("instance_timeout", 300)),
         }
 
     async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:

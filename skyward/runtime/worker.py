@@ -17,10 +17,11 @@ import contextvars
 import os
 import sys
 import traceback
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import ExitStack
 from functools import partial
+from pathlib import Path
 from typing import Literal
 
 import casty
@@ -33,8 +34,8 @@ from skyward.protocol.frames import Chunk, Done, End, Failed, Lookup, Outcome, P
 from skyward.protocol.schemas import Executor as ExecutorKind
 from skyward.protocol.schemas import PluginRef
 from skyward.runtime import ipc
-from skyward.runtime.api import instance_info
-from skyward.runtime.journal import Journal, Phase, emit, task
+from skyward.runtime.api import Info, instance_info
+from skyward.runtime.journal import Health, Journal, Phase, emit, task
 
 PORT = 25520
 SEED_TIMEOUT = 180.0
@@ -59,6 +60,8 @@ MODE = _mode()
 
 
 type Arguments = tuple[tuple[object, ...], dict[str, object]]
+type HealthCheck = Callable[[Info], bool | str]
+type HealthChecks = tuple[AsyncIterator[tuple[bool, str | None]], int]
 
 DONE = object()
 """``StopIteration`` does not survive a thread hop; this does."""
@@ -80,6 +83,84 @@ thread_pool: Executor
 """Where a generator always runs, whatever the task pool is: pulling an item blocks,
 and a subprocess cannot hold the far end of a stream the caller is pacing. It is the
 task pool itself under ``thread``, a pool of its own otherwise."""
+
+
+async def health(
+    fn: HealthCheck,
+    interval: float,
+    timeout: float,
+    initial_delay: float,
+) -> AsyncIterator[tuple[bool, str | None]]:
+    if initial_delay:
+        await asyncio.sleep(initial_delay)
+    while True:
+        try:
+            async with asyncio.timeout(timeout):
+                result = await asyncio.to_thread(fn, instance_info())
+        except TimeoutError:
+            yield False, f"timeout after {timeout}s"
+        except Exception as exc:
+            yield False, repr(exc)
+        else:
+            match result:
+                case True:
+                    yield True, None
+                case str() as reason if reason:
+                    yield False, reason
+                case _:
+                    yield False, None
+        await asyncio.sleep(interval)
+
+
+async def warm(checks: AsyncIterator[tuple[bool, str | None]], consecutive_failures: int) -> None:
+    failures = 0
+    async for healthy, reason in checks:
+        if healthy:
+            return
+        failures += 1
+        if failures >= consecutive_failures:
+            raise RuntimeError(f"health check failed {failures} times: {reason or 'unspecified'}")
+    raise RuntimeError("health check ended before the node became ready")
+
+
+async def unhealthy(checks: AsyncIterator[tuple[bool, str | None]], consecutive_failures: int) -> str:
+    failures = 0
+    async for healthy, reason in checks:
+        if healthy:
+            failures = 0
+            continue
+        failures += 1
+        if failures >= consecutive_failures:
+            return f"health check failed {failures} times: {reason or 'unspecified'}"
+    raise RuntimeError("health check ended while the node was running")
+
+
+def health_checks() -> HealthChecks | None:
+    if not (path := os.environ.get("SKYWARD_HEALTH")):
+        return None
+    fn: HealthCheck = codec.loads(Path(path).read_bytes())
+    return (
+        health(
+            fn,
+            interval=float(os.environ["SKYWARD_HEALTH_INTERVAL"]),
+            timeout=float(os.environ["SKYWARD_HEALTH_TIMEOUT"]),
+            initial_delay=float(os.environ["SKYWARD_HEALTH_INITIAL_DELAY"]),
+        ),
+        int(os.environ["SKYWARD_HEALTH_FAILURES"]),
+    )
+
+
+async def start_health(configured: HealthChecks | None) -> asyncio.Task[str] | None:
+    if configured is None:
+        return None
+    checks, consecutive_failures = configured
+    await warm(checks, consecutive_failures)
+    return asyncio.create_task(unhealthy(checks, consecutive_failures))
+
+
+def bind_distributed(system: casty.ActorSystem) -> None:
+    if os.environ.get("SKYWARD_CLUSTER", "1") == "1":
+        distributed.bind(system, asyncio.get_running_loop())
 
 
 @casty.service(name="skyward.Worker", concurrency=CONCURRENCY + BUFFER)
@@ -227,19 +308,22 @@ async def advance(id: str) -> Step:
     usually a file being read or a model emitting tokens — and a step that blocked
     the loop would stop the node answering for as long as it took.
     """
-    def pull(iterator: Iterator[object]) -> object:
-        try:
-            return next(iterator)
-        except StopIteration:
-            return DONE
-        finally:
-            sys.stdout.flush()
-            sys.stderr.flush()
-
     loop = asyncio.get_running_loop()
     token = task.set(id)
     try:
-        item = await loop.run_in_executor(thread_pool, contextvars.copy_context().run, pull, generators[id])
+        iterator = generators[id]
+
+        def pull() -> object:
+            try:
+                return next(iterator)
+            except StopIteration:
+                return DONE
+            finally:
+                sys.stdout.flush()
+                sys.stderr.flush()
+
+        wrapped = partial(contextvars.copy_context().run, pull)
+        item = await loop.run_in_executor(thread_pool, wrapped)
         if item is DONE:
             generators.pop(id, None)
             return End()
@@ -341,13 +425,17 @@ async def main() -> None:
     )
     stack = ExitStack()
     try:
-        distributed.bind(system, asyncio.get_running_loop())
+        bind_distributed(system)
         task_pool = stack.enter_context(ipc.executor(MODE, REUSE, CONCURRENCY))
         thread_pool = task_pool if MODE == "thread" else stack.enter_context(ThreadPoolExecutor(max_workers=CONCURRENCY))
         await asyncio.to_thread(setup, stack)
 
+        health_monitor = await start_health(health_checks())
         emit(Phase(event="completed", phase="worker"))
-        await asyncio.Event().wait()
+        if health_monitor is None:
+            await asyncio.Event().wait()
+        else:
+            emit(Health(reason=await health_monitor))
     finally:
         distributed.unbind()
         await asyncio.to_thread(stack.close)

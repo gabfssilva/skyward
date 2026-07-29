@@ -7,6 +7,7 @@ whichever is cheaper" — and the control plane picks among the offers they matc
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -16,11 +17,31 @@ from skyward.protocol.schemas import NodeBounds as Nodes
 from skyward.sdk.provider import Provider
 
 if TYPE_CHECKING:
+    from skyward.runtime.api import Info
     from skyward.storage import Storage
 
 type NodeSpec = int | tuple[int, int] | Nodes
 type ExecutorType = Literal["thread", "process", "loky"]
 type Route = Literal["round_robin"]
+
+
+@dataclass(frozen=True, slots=True)
+class HealthChecker:
+    fn: Callable[[Info], bool | str]
+    interval: float = 30.0
+    timeout: float = 15.0
+    consecutive_failures: int = 3
+    initial_delay: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.interval <= 0:
+            raise ValueError(f"interval must be > 0, got {self.interval}")
+        if self.timeout <= 0:
+            raise ValueError(f"timeout must be > 0, got {self.timeout}")
+        if self.consecutive_failures < 1:
+            raise ValueError(f"consecutive_failures must be >= 1, got {self.consecutive_failures}")
+        if self.initial_delay < 0:
+            raise ValueError(f"initial_delay must be >= 0, got {self.initial_delay}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +182,8 @@ class Options:
     health_command: str | None = None
     health_interval: float = 30.0
     health_failures: int = 3
+    health_checker: HealthChecker | None = None
+    cluster: bool | None = None
     ready_timeout: float = 900.0
     shutdown_timeout: float = 300.0
 

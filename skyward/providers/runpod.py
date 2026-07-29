@@ -1,5 +1,4 @@
 import asyncio
-import random
 import re
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -14,46 +13,8 @@ from skyward.protocol.accelerators import CATALOG, resolve
 from skyward.protocol.schemas import ComputeSpec, Market, Offer, Volume
 from skyward.runtime import bootstrap
 
-GRAPHQL_URL = "https://api.runpod.io/graphql"
-REST_URL = "https://rest.runpod.io/v1"
-
-GPU_TYPES_QUERY = """
-query GpuTypes($secureCloud: Boolean) {
-  gpuTypes {
-    id
-    displayName
-    memoryInGb
-    secureCloud
-    communityCloud
-    maxGpuCount
-    maxGpuCountSecureCloud
-    maxGpuCountCommunityCloud
-    lowestPrice(input: {gpuCount: 1, secureCloud: $secureCloud}) {
-      minimumBidPrice
-      uninterruptablePrice
-      stockStatus
-      totalCount
-      rentedCount
-      minVcpu
-      minMemory
-    }
-  }
-}
-"""
-
-CLOUDS: tuple[tuple[str, bool], ...] = (("SECURE", True), ("COMMUNITY", False))
-
-DEPLOY_ON_DEMAND = """
-mutation DeployOnDemand($input: PodFindAndDeployOnDemandInput) {
-  podFindAndDeployOnDemand(input: $input) { id }
-}
-"""
-
-DEPLOY_SPOT = """
-mutation DeploySpot($input: PodRentInterruptableInput!) {
-  podRentInterruptable(input: $input) { id }
-}
-"""
+API_URL = "https://api.runpod.io/v2"
+CLOUDS: tuple[str, ...] = ("SECURE", "COMMUNITY")
 
 DEFAULT_IMAGE = "nvidia/cuda:12.8.0-cudnn-runtime-ubuntu24.04"
 DEFAULT_DISK_GB = 50
@@ -83,8 +44,6 @@ _NVIDIA_VARIANT = re.compile(r"cudnn\d*-runtime")
 KNOWN_COUNTRIES: tuple[str, ...] = (
     "US", "CA", "DE", "FR", "NL", "SE", "CZ", "RO", "IS", "NO", "DK", "GB", "JP", "IN", "SG", "AU",
 )
-
-REGISTRY_AUTHS_QUERY = "query { myself { containerRegistryCreds { id name } } }"
 
 DEADSWITCH = (
     'if [ "${INSTANCE_TIMEOUT:-0}" -gt 0 ] 2>/dev/null; then '
@@ -215,68 +174,65 @@ class RunPodProvider:
         centers = self._config.get("data_center_ids", "global")
         return None if centers == "global" or not centers else str(centers[0])
 
+    async def _data_centers(self, client: httpx.AsyncClient) -> tuple[str, ...]:
+        countries = self._countries()
+        if not countries:
+            return ()
+        response = await client.get(f"{API_URL}/catalog/datacenters", headers=self._headers)
+        response.raise_for_status()
+        centers = (response.json() or {}).get("dataCenters") or []
+        allowed = frozenset(countries)
+        return tuple(
+            str(center["id"])
+            for center in centers
+            if allowed.intersection(str(center["id"]).split("-"))
+        )
+
     async def _registry_auth_id(self, client: httpx.AsyncClient) -> str | None:
         """Resolve the named registry credential to its id, ``None`` if unset or absent."""
         name = self._config.get("registry_auth")
         if not name:
             return None
-        data = await self._graphql(client, REGISTRY_AUTHS_QUERY, {})
-        creds = (data.get("myself") or {}).get("containerRegistryCreds") or []
+        response = await client.get(f"{API_URL}/registries", headers=self._headers)
+        response.raise_for_status()
+        creds = (response.json() or {}).get("registries") or []
         return next((c["id"] for c in creds if str(c.get("name", "")).lower() == str(name).lower()), None)
 
-    async def _graphql(
-        self, client: httpx.AsyncClient, query: str, variables: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        response = await client.post(
-            GRAPHQL_URL,
-            json={"query": query, "variables": dict(variables)},
+    async def _gpu_types(self, client: httpx.AsyncClient, cloud: str) -> list[dict[str, Any]]:
+        response = await client.get(
+            f"{API_URL}/catalog/gpus",
+            params={"include": "AVAILABILITY", "product": "POD", "cloud": cloud},
             headers=self._headers,
         )
         response.raise_for_status()
-        payload = response.json()
-        if errors := payload.get("errors"):
-            raise RuntimeError(f"runpod graphql error: {errors}")
-        return payload.get("data") or {}
-
-    async def _gpu_types(self, client: httpx.AsyncClient, secure: bool) -> list[dict[str, Any]]:
-        data = await self._graphql(client, GPU_TYPES_QUERY, {"secureCloud": secure})
-        return data.get("gpuTypes") or []
+        return (response.json() or {}).get("gpus") or []
 
     async def offers(self) -> AsyncIterator[Offer]:
         wanted = str(self._config.get("cloud_type", "secure")).upper()
-        clouds = tuple(entry for entry in CLOUDS if entry[0] == wanted) or CLOUDS
+        clouds = tuple(cloud for cloud in CLOUDS if cloud == wanted) or CLOUDS
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            catalogs = await asyncio.gather(*(self._gpu_types(client, secure) for _, secure in clouds))
+            catalogs = await asyncio.gather(*(self._gpu_types(client, cloud) for cloud in clouds))
 
         now = datetime.now(UTC)
         expires_at = now + self.offers_ttl
 
-        for (cloud, secure), gpu_types in zip(clouds, catalogs, strict=True):
+        for cloud, gpu_types in zip(clouds, catalogs, strict=True):
+            tier = cloud.lower()
             for gpu in gpu_types:
-                if not gpu.get("secureCloud" if secure else "communityCloud"):
+                if not gpu.get(tier):
                     continue
 
-                price = gpu.get("lowestPrice") or {}
-                bid = price.get("minimumBidPrice")
-                on_demand = price.get("uninterruptablePrice")
-                if bid is None and on_demand is None:
+                price = gpu.get("price") or {}
+                on_demand = price.get(tier)
+                if on_demand is None:
                     continue
 
                 gpu_id = str(gpu["id"])
-                display = str(gpu.get("displayName") or gpu_id)
-                vram_gb = int(gpu.get("memoryInGb") or 0)
-                vcpus = int(price.get("minVcpu") or 0)
-                memory_gb = float(price.get("minMemory") or 0)
-                total = price.get("totalCount")
-                rented = int(price.get("rentedCount") or 0)
-                available = max(int(total) - rented, 0) if total else None
-
-                max_count = int(
-                    gpu.get("maxGpuCountSecureCloud" if secure else "maxGpuCountCommunityCloud")
-                    or gpu.get("maxGpuCount")
-                    or 1
-                )
+                display = str(gpu.get("name") or gpu_id)
+                vram_gb = int(gpu.get("memory") or 0)
+                max_count = int((gpu.get("maxCount") or {}).get(tier) or 1)
+                available = 0 if gpu.get("availability") == "NONE" else None
 
                 for count in range(1, max_count + 1):
                     yield Offer(
@@ -289,9 +245,9 @@ class RunPodProvider:
                         accelerator=display,
                         accelerator_count=count,
                         vram=float(vram_gb) or None,
-                        cpus=vcpus * count,
-                        memory_gb=memory_gb * count,
-                        spot_price=round(bid * count, 4) if bid is not None else None,
+                        cpus=0,
+                        memory_gb=0,
+                        spot_price=None,
                         on_demand_price=round(on_demand * count, 4) if on_demand is not None else None,
                         available=available,
                         fetched_at=now,
@@ -301,7 +257,7 @@ class RunPodProvider:
                             "cloud_type": cloud,
                             "gpu_display_name": display,
                             "gpu_memory_gb": vram_gb,
-                            "stock_status": price.get("stockStatus"),
+                            "stock_status": gpu.get("availability"),
                         },
                     )
 
@@ -319,6 +275,21 @@ class RunPodProvider:
             raise CapabilityMismatchError(
                 f"{offer.id} was picked on the spot market and carries no bid price", provider=self._name,
             )
+        if self._config.get("cluster_mode", "individual") != "individual":
+            raise CapabilityMismatchError(
+                "RunPod REST v2 beta does not expose Instant Cluster creation",
+                provider=self._name,
+            )
+        if self._config.get("cpu_clock", "3c") != "3c":
+            raise CapabilityMismatchError(
+                "RunPod REST v2 beta does not expose GPU host CPU-clock filtering",
+                provider=self._name,
+            )
+        if self._config.get("min_inet_down") is not None or self._config.get("min_inet_up") is not None:
+            raise CapabilityMismatchError(
+                "RunPod REST v2 beta does not expose pod network-speed filtering",
+                provider=self._name,
+            )
 
         data_center_id = self._data_center() or next(
             (s.region for s in spec.specs if s.provider.kind == self.kind and s.region), None,
@@ -328,7 +299,9 @@ class RunPodProvider:
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             registry_auth_id = await self._registry_auth_id(client)
+            country_centers = await self._data_centers(client)
         candidates = await self._image_candidates(spec, offer)
+        data_center_ids = (str(data_center_id),) if data_center_id else country_centers
 
         return {
             "compute_id": compute_id,
@@ -340,7 +313,8 @@ class RunPodProvider:
             "gpu_type_id": offer.specific["gpu_type_id"],
             "gpu_count": gpu_count,
             "cloud_type": offer.specific["cloud_type"],
-            "data_center_id": str(data_center_id) if data_center_id else None,
+            "data_center_id": data_center_ids[0] if len(data_center_ids) == 1 else None,
+            "data_center_ids": list(data_center_ids),
             "countries": list(countries),
             "country_code": countries[0] if countries else None,
             "container_disk_gb": int(self._config.get("container_disk_gb", DEFAULT_DISK_GB)),
@@ -348,13 +322,16 @@ class RunPodProvider:
             "volume_mount_path": str(self._config.get("volume_mount_path", "/workspace")),
             "ports": ",".join(self._config.get("ports") or DEFAULT_PORTS),
             "registry_auth_id": registry_auth_id,
-            "min_download_mbps": int(m) if (m := self._config.get("min_inet_down")) is not None else None,
-            "min_upload_mbps": int(m) if (m := self._config.get("min_inet_up")) is not None else None,
+            "global_networking": (
+                self._config["global_networking"]
+                if self._config.get("global_networking") is not None
+                else bool(spec.options.cluster)
+            ),
             "bid_per_gpu": round(offer.spot_price * multiplier / gpu_count, 4) if offer.spot_price else None,
         }
 
     async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
-        async with httpx.AsyncClient(timeout=120) as client, asyncio.TaskGroup() as group:
+        async with httpx.AsyncClient(timeout=self._timeout) as client, asyncio.TaskGroup() as group:
             attempts = [group.create_task(self._deploy(client, binding, market)) for _ in range(count)]
 
         results = [task.result() for task in attempts]
@@ -373,10 +350,10 @@ class RunPodProvider:
         adapter controls and can filter an account-wide listing on, so the
         compute id is carried in it.
         """
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(f"{REST_URL}/pods", headers=self._headers)
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.get(f"{API_URL}/pods", headers=self._headers)
             response.raise_for_status()
-            pods = response.json() or []
+            pods = (response.json() or {}).get("pods") or []
 
         found = (
             _machine(pod)
@@ -389,7 +366,7 @@ class RunPodProvider:
         if not machine_ids:
             return
 
-        async with httpx.AsyncClient(timeout=60) as client, asyncio.TaskGroup() as group:
+        async with httpx.AsyncClient(timeout=self._timeout) as client, asyncio.TaskGroup() as group:
             for machine_id in machine_ids:
                 group.create_task(self._destroy(client, machine_id))
 
@@ -429,9 +406,9 @@ class RunPodProvider:
         place.
         """
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.get(f"{REST_URL}/networkvolumes", headers=self._headers)
+            response = await client.get(f"{API_URL}/network-volumes", headers=self._headers)
             response.raise_for_status()
-            volumes = response.json() or []
+            volumes = (response.json() or {}).get("networkVolumes") or []
 
         matched = next((volume for volume in volumes if ref in (volume.get("id"), volume.get("name"))), None)
         if matched is None:
@@ -440,7 +417,7 @@ class RunPodProvider:
                 f"runpod has no network volume {ref!r}. Available: {available}", provider=self._name,
             )
 
-        centre = matched.get("dataCenterId")
+        centre = matched.get("dataCenter")
         pinned = self._data_center()
         if centre and pinned and centre != pinned:
             raise CapabilityMismatchError(
@@ -458,12 +435,12 @@ class RunPodProvider:
         it exists. The name is the compute id, so the pod is found here and stopped when
         the compute is released. Idempotent: a second release finds nothing left.
         """
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.get(f"{REST_URL}/pods", headers=self._headers)
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.get(f"{API_URL}/pods", headers=self._headers)
             response.raise_for_status()
             orphans = tuple(
                 str(pod["id"])
-                for pod in (response.json() or [])
+                for pod in ((response.json() or {}).get("pods") or [])
                 if str(pod.get("name") or "").startswith(binding["prefix"])
             )
             if orphans:
@@ -484,76 +461,79 @@ class RunPodProvider:
         error: Exception = RuntimeError("runpod produced no image candidate to deploy")
 
         for image in candidates:
-            deploy, mutation, key = _deploy_input(binding, market, image)
+            deploy = _deploy_input(binding, market, image)
             try:
-                data = await self._graphql(client, mutation, {"input": deploy})
-            except (httpx.HTTPError, RuntimeError) as exc:
+                response = await client.post(f"{API_URL}/pods", json=deploy, headers=self._headers)
+                response.raise_for_status()
+                data = response.json()
+            except httpx.HTTPError as exc:
                 error = exc
                 continue
 
-            match data.get(key):
+            match data:
                 case {"id": str(pod_id)}:
                     return Machine(id=pod_id, state="pending")
                 case _:
-                    error = RuntimeError(f"runpod {key} returned no pod: {data}")
+                    error = RuntimeError(f"runpod REST create returned no pod: {data}")
 
         return error
 
     async def _destroy(self, client: httpx.AsyncClient, machine_id: str) -> None:
-        response = await client.delete(f"{REST_URL}/pods/{machine_id}", headers=self._headers)
+        response = await client.delete(f"{API_URL}/pods/{machine_id}", headers=self._headers)
         if response.status_code != 404:
             response.raise_for_status()
 
 
-def _deploy_input(binding: Binding, market: Market, image: str | None = None) -> tuple[dict[str, Any], str, str]:
-    """The deploy request, the mutation to send it with, and the field to read back.
+def _deploy_input(binding: Binding, market: Market, image: str | None = None) -> dict[str, Any]:
+    """Build a PodCreateInput from RunPod's official REST OpenAPI.
 
     Reads the knob keys with defaults rather than by subscript: a binding is
     persisted and a compute outlives the code that bound it, so one written before
     a knob existed must still launch under the version that added it.
 
-    A country is drawn at random from the allowed set on every call, so a fleet of
-    pods spreads across regions instead of stacking onto whichever host tops one list —
-    which is how a spot launch of many finds capacity that a single region has run out
-    of. A binding from before the set existed falls back to its lone ``country_code``.
+    A binding from before country lists existed falls back to its lone
+    ``country_code``.
     """
-    countries = binding.get("countries")
-    country = random.choice(countries) if countries else binding.get("country_code")
+    if market == "spot":
+        raise CapabilityMismatchError(
+            "RunPod REST v2 beta does not expose spot pod creation",
+            provider="runpod",
+        )
+    ports = binding.get("ports", ",".join(DEFAULT_PORTS))
+    normalized_ports = ports.split(",") if isinstance(ports, str) else list(ports)
 
     deploy: dict[str, Any] = {
         "name": f"{binding['prefix']}{uuid.uuid4().hex[:8]}",
-        "imageName": image or binding["image"],
-        "gpuTypeId": binding["gpu_type_id"],
-        "gpuCount": binding["gpu_count"],
-        "cloudType": binding["cloud_type"],
-        "containerDiskInGb": binding["container_disk_gb"],
-        "volumeInGb": binding.get("volume_gb", 0),
-        "volumeMountPath": binding.get("volume_mount_path", "/workspace"),
-        "ports": binding.get("ports", ",".join(DEFAULT_PORTS)),
-        "supportPublicIp": True,
-        "dockerArgs": f"bash -c '{ENTRYPOINT}'",
-        "env": [
-            {"key": "PUBLIC_KEY", "value": binding["public_key"]},
-            {"key": "INSTANCE_TIMEOUT", "value": str(binding.get("ttl", 0))},
-        ],
+        "image": image or binding["image"],
+        "args": f"bash -c '{ENTRYPOINT}'",
+        "gpu": {"id": binding["gpu_type_id"], "count": binding["gpu_count"]},
+        "cloud": binding["cloud_type"],
+        "disk": binding["container_disk_gb"],
+        "ports": normalized_ports,
+        "env": {
+            "PUBLIC_KEY": binding["public_key"],
+            "INSTANCE_TIMEOUT": str(binding.get("ttl", 0)),
+        },
     }
+    path = str(binding.get("volume_mount_path", "/workspace"))
+    if network_volume_id := binding.get("network_volume_id"):
+        deploy["mounts"] = {"network": [{"volumeId": network_volume_id, "path": path}]}
+    elif volume_gb := binding.get("volume_gb", 0):
+        deploy["mounts"] = {"persistent": {"size": volume_gb, "path": path}}
+
     for field, value in (
-        ("dataCenterId", binding.get("data_center_id")),
-        ("networkVolumeId", binding.get("network_volume_id")),
-        ("countryCode", country),
-        ("containerRegistryAuthId", binding.get("registry_auth_id")),
-        ("minDownload", binding.get("min_download_mbps")),
-        ("minUpload", binding.get("min_upload_mbps")),
+        (
+            "dataCenterIds",
+            binding.get("data_center_ids")
+            or ([center] if (center := binding.get("data_center_id")) else None),
+        ),
+        ("registry", binding.get("registry_auth_id")),
+        ("globalNetworking", binding.get("global_networking")),
     ):
         if value is not None:
             deploy[field] = value
 
-    match market:
-        case "spot":
-            deploy["bidPerGpu"] = binding["bid_per_gpu"]
-            return deploy, DEPLOY_SPOT, "podRentInterruptable"
-        case _:
-            return deploy, DEPLOY_ON_DEMAND, "podFindAndDeployOnDemand"
+    return deploy
 
 
 def _cuda_pair(version: str) -> tuple[int, int]:
@@ -651,15 +631,19 @@ def _machine(pod: Mapping[str, Any]) -> Machine | None:
     and it keeps billing its disk for as long as it exists. Reporting it absent is
     what turns it into a lost node, and a lost node is terminated.
     """
-    match pod.get("desiredStatus"):
-        case "EXITED" | "TERMINATED":
+    match pod.get("status"):
+        case "EXITED" | "ERROR" | "TERMINATED":
             return None
         case _:
-            host = pod.get("publicIp") or None
-            ports = pod.get("portMappings") or {}
+            runtime = pod.get("runtime") or {}
+            ports = runtime.get("ports") or []
+            ssh = next((port for port in ports if port.get("private") == 22), {})
+            host = ssh.get("ip") or None
+            networking = pod.get("globalNetworking") or {}
             return Machine(
                 id=pod["id"],
                 state="running" if host else "pending",
                 host=host,
-                port=int(ports.get("22", 22)),
+                port=int(ssh.get("public") or 22),
+                private_host=networking.get("internalDns") or networking.get("ip") or None,
             )

@@ -15,6 +15,7 @@ import casty
 import pytest
 
 from skyward import distributed
+from skyward.runtime import worker
 
 
 @pytest.fixture
@@ -72,3 +73,20 @@ def test_registry_registers_and_looks_up(bound: None) -> None:
 
     assert reg.unregister("step1") is True
     assert reg.lookup("step1") is None
+
+
+async def test_standalone_worker_does_not_expose_distributed_collections(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SKYWARD_NODE", "n0")
+    monkeypatch.setenv("SKYWARD_COMPUTE", "c0")
+    monkeypatch.setenv("SKYWARD_RANK", "0")
+    monkeypatch.setenv("SKYWARD_PEERS", "n0")
+    monkeypatch.setenv("SKYWARD_CLUSTER", "0")
+    system = casty.local()
+    try:
+        worker.bind_distributed(system)
+
+        with pytest.raises(RuntimeError):
+            distributed.cluster()
+    finally:
+        distributed.unbind()
+        await system.close()
