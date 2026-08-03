@@ -46,49 +46,24 @@ tasks:
   # ── Testing ──────────────────────────────────────────────
 
   test:
-    desc: Run unit tests (default, parallel)
+    desc: Run every feature test (needs a container runtime)
     cmds:
       - uv run pytest {{.CLI_ARGS}}
 
-  test:unit:
-    desc: Run unit tests only
+  test:cov:
+    desc: Run every feature test with coverage (daemon and CLI subprocesses included)
     cmds:
-      - uv run pytest -m unit {{.CLI_ARGS}}
+      - uv run pytest --cov --cov-report=term-missing {{.CLI_ARGS}}
 
-  test:e2e:
-    desc: Run all e2e tests (requires Docker)
+  test:local:
+    desc: "Features that need nothing but this process"
     cmds:
-      - uv run pytest -m e2e {{.CLI_ARGS}}
+      - uv run pytest -m local {{.CLI_ARGS}}
 
-  test:e2e:pool:
-    desc: "E2E: compute, broadcast, runtime, output control, async, parallel, streaming"
+  test:compute:
+    desc: "Features that need a live pool, and so a container runtime"
     cmds:
-      - uv run pytest -m e2e -k "not (Integration or distributed or image or provision_retry or node_recovery or plugins)" {{.CLI_ARGS}}
-
-  test:e2e:distributed:
-    desc: "E2E: distributed collections (dict, set, counter, queue, barrier, lock)"
-    cmds:
-      - uv run pytest tests/test_distributed_e2e.py {{.CLI_ARGS}}
-
-  test:bootstrap:
-    desc: "Unit: bootstrap script generation"
-    cmds:
-      - uv run pytest tests/test_bootstrap.py {{.CLI_ARGS}}
-
-  test:plugins:
-    desc: "Unit: plugin image transforms and wire forms"
-    cmds:
-      - uv run pytest tests/test_plugins.py {{.CLI_ARGS}}
-
-  test:plugin:jax:
-    desc: "Unit: JAX plugin"
-    cmds:
-      - uv run pytest tests/test_plugin_jax.py {{.CLI_ARGS}}
-
-  test:plugin:keras:
-    desc: "Unit: Keras plugin"
-    cmds:
-      - uv run pytest tests/test_plugin_keras.py {{.CLI_ARGS}}
+      - uv run pytest -m compute {{.CLI_ARGS}}
 
   test:sanity:
     desc: Run sanity tests against real cloud providers
@@ -150,15 +125,27 @@ tasks:
     cmds:
       - uv run pytest -m "sanity and vultr" {{.CLI_ARGS}}
 
-  test:all:
-    desc: Run unit + e2e tests
+  test:sanity:salad:
+    desc: Run Salad Cloud sanity tests
     cmds:
-      - uv run pytest -m "unit or e2e" {{.CLI_ARGS}}
+      - uv run pytest -m "sanity and salad" {{.CLI_ARGS}}
 
-  test:offers:
-    desc: "Offer cache tests"
+  test:sanity:scaleway:
+    desc: Run Scaleway sanity tests
     cmds:
-      - uv run pytest tests/test_offers_cache.py -v {{.CLI_ARGS}}
+      - uv run pytest -m "sanity and scaleway" {{.CLI_ARGS}}
+
+  test:sanity:jarvislabs:
+    desc: Run Jarvis Labs sanity tests
+    cmds:
+      - uv run pytest -m "sanity and jarvislabs" {{.CLI_ARGS}}
+
+  # ── Clouds ───────────────────────────────────────────────
+
+  cloud:inventory:
+    desc: "List what every cloud account is holding, read-only (--mine, --json, --diff FILE)"
+    cmds:
+      - uv run python scripts/cloud_inventory.py {{.CLI_ARGS}}
 
   # ── Docs ─────────────────────────────────────────────────
 

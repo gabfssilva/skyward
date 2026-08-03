@@ -6,9 +6,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
 import httpx
+import msgspec
 
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine
+from skyward.shared.providers import Scaleway
 from skyward.shared.schemas import ComputeSpec, Market, Offer
 
 BASE_URL = "https://api.scaleway.com"
@@ -20,18 +22,6 @@ VOLUMES_PATH = "/block/v1alpha1/zones/{zone}/volumes"
 SSH_KEYS_PATH = "/iam/v1alpha1/ssh-keys"
 
 COMPUTE_TAG = "skyward.compute"
-
-DEFAULT_ZONES = (
-    "fr-par-1",
-    "fr-par-2",
-    "fr-par-3",
-    "nl-ams-1",
-    "nl-ams-2",
-    "nl-ams-3",
-    "pl-waw-1",
-    "pl-waw-2",
-    "pl-waw-3",
-)
 
 GIB = 1024**3
 GB = 1_000_000_000
@@ -53,7 +43,7 @@ class ScalewayProvider:
     def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
         return True
 
-    def __init__(self, provider_id: str, name: str, secret_key: str, project_id: str, config: Mapping[str, Any]) -> None:
+    def __init__(self, provider_id: str, name: str, secret_key: str, project_id: str, config: Scaleway) -> None:
         self._id = provider_id
         self._name = name
         self._secret_key = secret_key
@@ -62,24 +52,23 @@ class ScalewayProvider:
 
     @classmethod
     def create(cls, provider_id: str, name: str, credentials: Mapping[str, str], config: Mapping[str, Any]) -> Self:
-        secret_key = credentials.get("secret_key")
-        if not secret_key:
+        settings = msgspec.convert({**credentials, **config}, Scaleway)
+        if not settings.secret_key:
             raise CapabilityMismatchError("scaleway requires a secret_key credential", provider=name)
 
-        project_id = credentials.get("project_id")
-        if not project_id:
+        if not settings.project_id:
             raise CapabilityMismatchError("scaleway requires a project_id credential", provider=name)
 
-        return cls(provider_id, name, secret_key, project_id, config)
+        return cls(provider_id, name, settings.secret_key, settings.project_id, settings)
 
     @property
     def _zones(self) -> tuple[str, ...]:
-        return tuple(self._config.get("zones") or DEFAULT_ZONES)
+        return self._config.zones
 
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=BASE_URL,
-            timeout=int(self._config.get("request_timeout", 30)),
+            timeout=self._config.request_timeout,
             headers={
                 "X-Auth-Token": self._secret_key,
                 "Accept": "application/json",
@@ -100,7 +89,7 @@ class ScalewayProvider:
         zones = self._zones
         async with httpx.AsyncClient(
             base_url=BASE_URL,
-            timeout=int(self._config.get("request_timeout", 30)),
+            timeout=self._config.request_timeout,
             headers={"X-Auth-Token": self._secret_key, "Accept": "application/json"},
         ) as client:
             results = await asyncio.gather(*(self._fetch_zone(client, zone) for zone in zones))
@@ -158,7 +147,7 @@ class ScalewayProvider:
 
         async with self._client() as client:
             ssh_key_id = await _ensure_ssh_key(client, f"skyward-{compute_id}", public_key, self._project_id)
-            image_id = str(self._config.get("image") or await _resolve_image(client, zone))
+            image_id = self._config.image or await _resolve_image(client, zone)
 
         return {
             "compute_id": compute_id,
@@ -167,7 +156,7 @@ class ScalewayProvider:
             "commercial_type": commercial_type,
             "image_id": image_id,
             "ssh_key_id": ssh_key_id,
-            "instance_timeout": int(self._config.get("instance_timeout", 300)),
+            "instance_timeout": self._config.instance_timeout,
         }
 
     async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:

@@ -263,7 +263,8 @@ class Node:
             )
         )
         await self._ssh.run(
-            f"nohup {self._sudo}env {environment} {bootstrap.PYTHON} -m skyward.worker.worker "
+            f"nohup {self._sudo}env {environment} sh -c "
+            f'"[ -f {bootstrap.ENV} ] && . {bootstrap.ENV}; exec {bootstrap.PYTHON} -m skyward.worker.worker" '
             f">> {SKYWARD_DIR}/worker.log 2>&1 &",
         )
 

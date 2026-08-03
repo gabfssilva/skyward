@@ -5,9 +5,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
 import httpx
+import msgspec
 
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine, MachineState
+from skyward.shared.providers import TensorDock
 from skyward.shared.schemas import ComputeSpec, Market, Offer
 
 BASE_URL = "https://dashboard.tensordock.com"
@@ -15,8 +17,6 @@ LOCATIONS_PATH = "/api/v2/locations"
 INSTANCES_PATH = "/api/v2/instances"
 
 DEFAULT_STORAGE_GB = 100
-GPU_IMAGE = "ubuntu2404_ml_everything"
-CPU_IMAGE = "ubuntu2404"
 SSH_USER = "user"
 
 
@@ -43,7 +43,7 @@ class TensorDockProvider:
     def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
         return False
 
-    def __init__(self, provider_id: str, name: str, api_token: str, config: Mapping[str, Any]) -> None:
+    def __init__(self, provider_id: str, name: str, api_token: str, config: TensorDock) -> None:
         self._id = provider_id
         self._name = name
         self._api_token = api_token
@@ -51,13 +51,13 @@ class TensorDockProvider:
 
     @classmethod
     def create(cls, provider_id: str, name: str, credentials: Mapping[str, str], config: Mapping[str, Any]) -> Self:
-        api_token = credentials.get("api_token")
-        if not api_token:
+        settings = msgspec.convert({**credentials, **config}, TensorDock)
+        if not settings.api_token:
             raise CapabilityMismatchError("tensordock requires an api_token credential", provider=name)
-        return cls(provider_id, name, api_token, config)
+        return cls(provider_id, name, settings.api_token, settings)
 
     async def offers(self) -> AsyncIterator[Offer]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=int(self._config.get("request_timeout", 120))) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout) as client:
             response = await client.get(
                 LOCATIONS_PATH,
                 headers={"Authorization": f"Bearer {self._api_token}", "Accept": "application/json"},
@@ -67,12 +67,12 @@ class TensorDockProvider:
 
         now = datetime.now(UTC)
         expires_at = now + self.offers_ttl
-        storage_gb = int(self._config.get("storage_gb", DEFAULT_STORAGE_GB))
+        storage_gb = self._config.storage_gb
 
         for location in locations:
-            if (tier := self._config.get("tier")) is not None and location.get("tier") != tier:
+            if (tier := self._config.tier) is not None and location.get("tier") != tier:
                 continue
-            if (configured := self._config.get("location")) and (
+            if (configured := self._config.location) and (
                 str(location.get("country") or "").lower() != str(configured).lower()
             ):
                 continue
@@ -84,8 +84,8 @@ class TensorDockProvider:
 
                 resources = gpu.get("resources") or {}
                 pricing = gpu.get("pricing") or {}
-                cpus = int(self._config.get("min_vcpus") or 4)
-                memory_gb = float(self._config.get("min_ram_gb") or 16)
+                cpus = self._config.min_vcpus or 4
+                memory_gb = float(self._config.min_ram_gb or 16)
                 if cpus > int(resources.get("max_vcpus") or 0) or memory_gb > float(resources.get("max_ram_gb") or 0):
                     continue
                 if storage_gb > int(resources.get("max_storage_gb") or 0):
@@ -155,13 +155,9 @@ class TensorDockProvider:
             "vcpus": offer.cpus,
             "ram_gb": int(offer.memory_gb),
             "storage_gb": int(offer.disk_gb or DEFAULT_STORAGE_GB),
-            "image": str(
-                self._config.get("operating_system")
-                or self._config.get("image")
-                or (GPU_IMAGE if offer.accelerator_count else CPU_IMAGE)
-            ),
+            "image": self._config.operating_system,
             "public_key": public_key,
-            "instance_timeout": int(self._config.get("instance_timeout", 300)),
+            "instance_timeout": self._config.instance_timeout,
         }
 
     async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
@@ -239,7 +235,7 @@ class TensorDockProvider:
     async def _request(
         self, method: str, path: str, json: Mapping[str, Any] | None = None, allow: tuple[int, ...] = (),
     ) -> dict[str, Any]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=int(self._config.get("request_timeout", 120))) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout) as client:
             response = await client.request(
                 method, path, json=json,
                 headers={"Authorization": f"Bearer {self._api_token}", "Accept": "application/json"},

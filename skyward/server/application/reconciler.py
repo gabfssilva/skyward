@@ -221,6 +221,10 @@ class Reconciler:
         running together, because they are the same demand seen a moment apart.
         Sizing to what is running would size the pool to what the pool can already
         do, and a queue would never be a reason to grow.
+
+        Without a ``max`` the compute is not elastic, and ``min`` is a readiness
+        floor rather than a size: the machines asked for are all launched, the
+        caller is simply released before the last of them is up.
         """
         if compute.spec.desired == "deleted":
             return 0
@@ -229,7 +233,8 @@ class Reconciler:
         slots = compute.spec.worker.concurrency or 1
         load = await self._tasks.load(compute.id)
 
-        return max(lower, min(upper, ceil(load / slots)))
+        floor = compute.spec.nodes.desired if compute.spec.nodes.max is None else lower
+        return max(floor, min(upper, ceil(load / slots)))
 
     async def _surplus(self, compute: Compute, alive: list[Node], surplus: int) -> list[Node]:
         """Which machines to give back, if any.

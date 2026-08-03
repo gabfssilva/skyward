@@ -54,7 +54,15 @@ async def rank(spec: ComputeSpec, offers: OfferCache) -> tuple[Offer, ...]:
 
 
 async def _candidates(spec: ComputeSpec, offers: OfferCache) -> list[Buy]:
-    """Every way to buy every offer that fits the spec, across all its alternatives."""
+    """Every way to buy every offer that fits the spec, across all its alternatives.
+
+    The accelerator count is the one requirement matched exactly rather than as a
+    minimum. A provider that sells the same GPU in every multiple — RunPod lists
+    a 1x through an 8x of each — turns "more is also fine" into a ladder the
+    fallback walks: the 1x refused for want of capacity, the next cheapest offer
+    is the same GPU three at a time, at three times the price. Asking for one
+    means one.
+    """
     candidates: list[Buy] = []
 
     for wanted in spec.specs:
@@ -69,7 +77,8 @@ async def _candidates(spec: ComputeSpec, offers: OfferCache) -> list[Buy]:
         )
         fitting = [
             offer for offer in page.items
-            if (wanted.cpus is None or offer.cpus >= wanted.cpus)
+            if (wanted.accelerator is None or offer.accelerator_count == wanted.accelerator_count)
+            and (wanted.cpus is None or offer.cpus >= wanted.cpus)
             and (wanted.memory_gb is None or offer.memory_gb >= wanted.memory_gb)
             and (wanted.region is None or offer.region == wanted.region)
             and (wanted.disk_gb is None or (offer.disk_gb is not None and offer.disk_gb >= wanted.disk_gb))

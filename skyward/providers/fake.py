@@ -2,6 +2,9 @@ from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
+import msgspec
+
+from skyward.shared.providers import Fake
 from skyward.shared.schemas import Offer
 
 CATALOG = (
@@ -27,14 +30,14 @@ class FakeProvider:
     credential_fields: ClassVar[tuple[str, ...]] = ()
     offers_ttl: ClassVar[timedelta] = timedelta(minutes=5)
 
-    def __init__(self, provider_id: str, name: str, config: Mapping[str, Any]) -> None:
+    def __init__(self, provider_id: str, name: str, config: Fake) -> None:
         self._id = provider_id
         self._name = name
-        self._region = str(config.get("region", "fake-1"))
+        self._region = config.region
 
     @classmethod
     def create(cls, provider_id: str, name: str, credentials: Mapping[str, str], config: Mapping[str, Any]) -> Self:
-        return cls(provider_id, name, config)
+        return cls(provider_id, name, msgspec.convert({**credentials, **config}, Fake))
 
     async def offers(self) -> AsyncIterator[Offer]:
         now = datetime.now(UTC)

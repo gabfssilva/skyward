@@ -100,7 +100,7 @@ Writes use revisions and `If-Match`. Idempotent requests use `Idempotency-Key`, 
 
 The SDK creates a Compute in the following order:
 
-1. Provider factories resolve credentials and produce provider account values.
+1. Provider accounts resolve credentials in the client process.
 2. The client registers the account in the selected daemon when the Compute needs it.
 3. User-code archives and external volume credentials are uploaded as blobs when required; secrets are not placed in the Compute spec.
 4. `POST /v1/computes` persists the desired definition.

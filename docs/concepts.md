@@ -197,7 +197,7 @@ The control plane stores intent and observation separately:
 
 The SDK follows this sequence:
 
-1. Resolve provider factories, upload user-code and external storage credentials as blobs when needed, and create the Compute resource.
+1. Resolve provider accounts, upload user-code and external storage credentials as blobs when needed, and create the Compute resource.
 2. Claim and renew its lease.
 3. Wait for reconciliation to make enough nodes ready.
 4. Submit tasks through the `/v1/tasks` resource.
@@ -240,7 +240,7 @@ Streaming tasks use `dispatch="stream"`. The HTTP request that consumes the stre
 
 ## Providers and offers
 
-A provider factory is a value containing a provider kind, credentials, configuration, and an optional account name:
+A provider account is a frozen value containing a provider kind, credentials, configuration, and an optional account name:
 
 ```python
 aws = sky.AWS(

@@ -85,6 +85,8 @@ class TcpProxy:
                 async for chunk in self._client.forward_down(self._compute, cid):
                     writer.write(chunk)
                     await writer.drain()
+                if writer.can_write_eof():
+                    writer.write_eof()
 
         try:
             await asyncio.gather(

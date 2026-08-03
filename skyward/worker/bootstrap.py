@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 import shlex
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from skyward.shared.schemas import Endpoint, Image, MetricSpec, Volume
@@ -15,6 +16,7 @@ SCRIPT = f"{SKYWARD_DIR}/bootstrap.sh"
 VENV = f"{SKYWARD_DIR}/.venv"
 PYTHON = f"{VENV}/bin/python"
 VARS = f"{SKYWARD_DIR}/vars.sh"
+ENV = f"{SKYWARD_DIR}/env.sh"
 
 GEESEFS = "v0.43.8"
 """The geesefs release the nodes mount with, pinned.
@@ -122,7 +124,7 @@ def _collector(name: str, command: str, interval: float) -> str:
     )
 
 
-def metrics(specs: tuple[MetricSpec, ...] | None = None) -> str:
+def metrics(specs: Sequence[MetricSpec] | None = None) -> str:
     """The collectors, and the one call that sets them going.
 
     Started before the bootstrap phases and left running as background jobs: the
@@ -252,7 +254,7 @@ def _package_name(spec: str) -> str:
     return re.split(r"[<>=!~ \[]", spec, maxsplit=1)[0]
 
 
-def _apt(extra: tuple[str, ...]) -> str:
+def _apt(extra: Sequence[str]) -> str:
     """Install ``curl`` and ``git`` — the uv installer and git sources need them — plus extras.
 
     Always present: a minimal base image (RunPod) ships without ``curl``, so the
@@ -357,7 +359,8 @@ def script(image: Image, skyward: str, plugins: tuple[Plugin, ...] = (), concurr
     """
     python = image.python or "3.13"
     packages = " ".join(image.pip)
-    exports = " ".join(f"export {key}={value!r};" for key, value in image.env.items())
+    exports = "\n".join(f"export {key}={value!r}" for key, value in image.env.items())
+    env_file = f"cat > {ENV} <<'ENVSH'\n{exports}\nENVSH" if exports else ""
     preload = f"source {VARS} 2>/dev/null; " if image.shell_vars else ""
 
     if image.pip_indexes:
@@ -374,7 +377,7 @@ def script(image: Image, skyward: str, plugins: tuple[Plugin, ...] = (), concurr
             HEADER,
             metrics(image.metrics),
             _shell_vars(image.shell_vars) if image.shell_vars else "",
-            f"phase env '{exports} true'" if exports else "",
+            env_file,
             _apt(image.apt),
             f"phase uv '{UV}'",
             f"phase venv 'uv venv {VENV} --python {python} --allow-existing'",

@@ -4,17 +4,17 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
 import httpx
+import msgspec
 
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine
+from skyward.shared.providers import VastAI
 from skyward.shared.schemas import ComputeSpec, Market, Offer
 
 BASE_URL = "https://console.vast.ai"
 SEARCH_PATH = "/api/v0/bundles/"
 LABEL_PREFIX = "skyward-"
 DEFAULT_IMAGE = "nvcr.io/nvidia/cuda:12.9.1-runtime-ubuntu24.04"
-DEFAULT_DISK_GB = 100.0
-DEFAULT_BID_MULTIPLIER = 1.2
 
 ONSTART = """#!/bin/bash
 set -e
@@ -43,7 +43,7 @@ class VastAIProvider:
     def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
         return False
 
-    def __init__(self, provider_id: str, name: str, api_key: str, config: Mapping[str, Any]) -> None:
+    def __init__(self, provider_id: str, name: str, api_key: str, config: VastAI) -> None:
         self._id = provider_id
         self._name = name
         self._api_key = api_key
@@ -51,34 +51,34 @@ class VastAIProvider:
 
     @classmethod
     def create(cls, provider_id: str, name: str, credentials: Mapping[str, str], config: Mapping[str, Any]) -> Self:
-        api_key = credentials.get("api_key")
-        if not api_key:
+        settings = msgspec.convert({**credentials, **config}, VastAI)
+        if not settings.api_key:
             raise CapabilityMismatchError("vastai requires an api_key credential", provider=name)
-        return cls(provider_id, name, api_key, config)
+        return cls(provider_id, name, settings.api_key, settings)
 
     def _query(self) -> dict[str, Any]:
         query: dict[str, Any] = {
-            "verified": {"eq": bool(self._config.get("verified_only", False))},
+            "verified": {"eq": self._config.verified_only},
             "rentable": {"eq": True},
-            "reliability2": {"gte": float(self._config.get("min_reliability", 0.9))},
+            "reliability2": {"gte": self._config.min_reliability},
             "num_gpus": {"gte": 1},
             "order": [["score", "desc"]],
             "type": "on-demand",
-            "limit": int(self._config.get("limit", 500)),
+            "limit": self._config.limit,
         }
         for field, value in (
-            ("geolocation", self._config.get("geolocation")),
-            ("inet_down", self._config.get("min_inet_down")),
-            ("inet_up", self._config.get("min_inet_up")),
+            ("geolocation", self._config.geolocation),
+            ("inet_down", self._config.min_inet_down),
+            ("inet_up", self._config.min_inet_up),
         ):
             if value is not None:
                 query[field] = {"gte": value} if field.startswith("inet_") else {"eq": value}
-        if self._config.get("direct_port"):
+        if self._config.require_direct_port:
             query["direct_port_count"] = {"gte": 1}
         return query
 
     async def offers(self) -> AsyncIterator[Offer]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=int(self._config.get("request_timeout", 30))) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout) as client:
             response = await client.post(
                 SEARCH_PATH,
                 json=self._query(),
@@ -91,7 +91,7 @@ class VastAIProvider:
         expires_at = now + self.offers_ttl
 
         for bundle in bundles:
-            if float(bundle.get("cuda_max_good") or 0) < float(self._config.get("min_cuda", 0)):
+            if float(bundle.get("cuda_max_good") or 0) < self._config.min_cuda:
                 continue
             gpus = int(bundle.get("num_gpus") or 0)
             on_demand = bundle.get("dph_total")
@@ -141,13 +141,13 @@ class VastAIProvider:
             "label": f"{LABEL_PREFIX}{compute_id}",
             "ssh_key_id": key_id,
             "public_key": public_key,
-            "image": spec.image.base or self._config.get("docker_image") or DEFAULT_IMAGE,
-            "disk_gb": float(self._config.get("disk_gb", DEFAULT_DISK_GB)),
+            "image": spec.image.base or self._config.docker_image or DEFAULT_IMAGE,
+            "disk_gb": self._config.disk_gb,
             "gpu_name": offer.specific.get("gpu_name") or offer.instance_type,
             "gpu_count": offer.accelerator_count,
-            "region": self._config.get("geolocation") or offer.region,
-            "direct": bool(self._config.get("direct_port", False)),
-            "instance_timeout": int(self._config.get("instance_timeout", 300)),
+            "region": self._config.geolocation or offer.region,
+            "direct": self._config.require_direct_port,
+            "instance_timeout": self._config.instance_timeout,
         }
 
     async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
@@ -204,7 +204,7 @@ class VastAIProvider:
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=BASE_URL,
-            timeout=int(self._config.get("request_timeout", 30)),
+            timeout=self._config.request_timeout,
             headers={"Authorization": f"Bearer {self._api_key}", "Accept": "application/json"},
         )
 
@@ -239,20 +239,20 @@ class VastAIProvider:
             "rented": {"eq": False},
             "gpu_name": {"eq": binding["gpu_name"]},
             "num_gpus": {"gte": binding["gpu_count"]},
-            "reliability": {"gt": float(self._config.get("min_reliability", 0.95))},
+            "reliability": {"gt": self._config.min_reliability},
             "disk_space": {"gte": binding["disk_gb"]},
             "allocated_storage": 5.0,
             "type": "bid" if spot else "on-demand",
             "order": [["score", "desc"]],
             "limit": 64,
         }
-        if self._config.get("verified_only", True):
+        if self._config.verified_only:
             query["verified"] = {"eq": True}
         if binding["direct"]:
             query["direct_port_count"] = {"gte": 1}
-        if (minimum := self._config.get("min_inet_down")) is not None:
+        if (minimum := self._config.min_inet_down) is not None:
             query["inet_down"] = {"gte": minimum}
-        if (minimum := self._config.get("min_inet_up")) is not None:
+        if (minimum := self._config.min_inet_up) is not None:
             query["inet_up"] = {"gte": minimum}
 
         response = await client.post(SEARCH_PATH, json=query)
@@ -263,7 +263,7 @@ class VastAIProvider:
         asks = [
             ask for ask in response.json().get("offers", [])
             if (region is None or ask.get("geolocation") == region)
-            and float(ask.get("cuda_max_good") or 0) >= float(self._config.get("min_cuda", 0))
+            and float(ask.get("cuda_max_good") or 0) >= self._config.min_cuda
         ]
         return sorted(asks, key=lambda ask: ask.get(price) or float("inf"))
 
@@ -280,7 +280,7 @@ class VastAIProvider:
         if market == "spot":
             if (min_bid := ask.get("min_bid")) is None:
                 return None
-            body["price"] = float(min_bid) * float(self._config.get("bid_multiplier", DEFAULT_BID_MULTIPLIER))
+            body["price"] = float(min_bid) * self._config.bid_multiplier
 
         response = await client.put(f"/api/v0/asks/{ask['id']}/", json=body)
         if response.status_code >= 400:

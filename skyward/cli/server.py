@@ -102,17 +102,27 @@ def _require_uvicorn() -> None:
         raise SystemExit("the daemon needs an ASGI server: pip install uvicorn")
 
 
-def _foreground(host: str, port: int) -> None:
+def _environment(database: Path | None) -> dict[str, str]:
+    if database is None:
+        return dict(os.environ)
+    return {**os.environ, "SKYWARD_DATABASE": str(database)}
+
+
+def _foreground(host: str, port: int, database: Path | None) -> None:
     import uvicorn
 
+    if database is not None:
+        os.environ["SKYWARD_DATABASE"] = str(database)
     uvicorn.run(TARGET, host=host, port=port, factory=True)
 
 
-def _spawn(host: str, port: int) -> int:
+def _spawn(host: str, port: int, database: Path | None) -> int:
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     log = LOG_FILE.open("ab")  # noqa: SIM115
     command = [sys.executable, "-m", "uvicorn", TARGET, "--factory", "--host", host, "--port", str(port)]
-    process = subprocess.Popen(command, stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+    process = subprocess.Popen(
+        command, stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True, close_fds=True, env=_environment(database)
+    )
     PID_FILE.write_text(str(process.pid))
     return process.pid
 
@@ -124,6 +134,7 @@ def start(
     port: Annotated[int, Parameter(help="Bind port")] = 7590,
     foreground: Annotated[bool, Parameter(help="Stay attached to the terminal")] = False,
     timeout: Annotated[float, Parameter(help="Seconds to wait for the daemon to answer")] = 30.0,
+    database: Annotated[Path | None, Parameter(help="SQLite path (default: ~/.skyward/skyward.sqlite)")] = None,
 ) -> None:
     """Start the Skyward daemon.
 
@@ -137,18 +148,20 @@ def start(
         Run attached, ending with the terminal, instead of detaching.
     timeout
         How long to wait for liveness before giving up on a detached start.
+    database
+        The SQLite file the daemon keeps its state in.
     """
     _require_uvicorn()
 
     if foreground:
-        _foreground(host, port)
+        _foreground(host, port, database)
         return
 
     if (running := pid()) and alive(running):
         raise SystemExit(f"already running (pid {running}) — sky server stop")
 
     PID_FILE.unlink(missing_ok=True)
-    process = _spawn(host, port)
+    process = _spawn(host, port, database)
 
     if not _wait_live(f"http://{host}:{port}", timeout):
         if alive(process):

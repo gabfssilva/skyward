@@ -1,4 +1,4 @@
-"""The v1 Rich console with a v2 state adapter."""
+"""The live Rich console: daemon events in, widgets out."""
 
 from __future__ import annotations
 
@@ -20,7 +20,8 @@ from rich.live import Live
 from rich.table import Table
 from rich.text import Text
 
-from skyward.core._live_v1 import (
+from skyward.core.client import Client
+from skyward.core.widgets import (
     _LOGO_LINES,
     DIM,
     WARNING_STYLE,
@@ -43,7 +44,6 @@ from skyward.core._live_v1 import (
     _ssh_url,
     _State,
 )
-from skyward.core.client import Client
 from skyward.shared.observability import NAME as LOGGER_NAME
 from skyward.shared.schemas import Compute, Function, Node, Page, Task
 

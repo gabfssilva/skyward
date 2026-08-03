@@ -11,12 +11,13 @@ from __future__ import annotations
 import fnmatch
 import io
 import tarfile
+from collections.abc import Sequence
 from pathlib import Path
 
 _DEFAULT_EXCLUDES = ("__pycache__", "*.pyc", "*.pyo", ".git", ".venv", "node_modules", "*.egg-info")
 
 
-def tarball(includes: tuple[str, ...], excludes: tuple[str, ...] = ()) -> bytes:
+def tarball(includes: Sequence[str], excludes: Sequence[str] = ()) -> bytes:
     """A tar.gz of the given paths, resolved against the working directory.
 
     Directories are walked; a path that does not exist is skipped. ``excludes`` and
@@ -25,7 +26,7 @@ def tarball(includes: tuple[str, ...], excludes: tuple[str, ...] = ()) -> bytes:
     a git history along with it.
     """
     root = Path.cwd()
-    patterns = _DEFAULT_EXCLUDES + excludes
+    patterns = (*_DEFAULT_EXCLUDES, *excludes)
 
     def excluded(path: Path) -> bool:
         return any(fnmatch.fnmatch(part, pattern) for part in path.parts for pattern in patterns)

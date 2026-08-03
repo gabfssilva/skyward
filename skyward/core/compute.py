@@ -29,6 +29,7 @@ from skyward.core.errors import SkywardError, TaskFailedError
 from skyward.core.forward import TcpProxy
 from skyward.core.function import Group, Pending, Streaming
 from skyward.core.provider import Provider
+from skyward.core.provider import resolve as resolve_provider
 from skyward.core.spec import Executor, Nodes, NodeSpec, Options, Port, Spec, Volume
 from skyward.server.persistence.db import DEFAULT_PATH
 from skyward.shared import codec
@@ -152,7 +153,7 @@ class Compute:
             raise ValueError("a pool needs a provider, or at least one spec")
 
         self._attach = attach
-        self._providers = {spec.provider.name: spec.provider for spec in specs}
+        self._providers = {spec.provider.name or spec.provider.kind: spec.provider for spec in specs}
         self._spec = ComputeSpec(
             specs=tuple(_wire(spec) for spec in specs),
             nodes=_bounds(nodes),
@@ -400,15 +401,11 @@ class Compute:
         the row holds what it takes to log in. Registering it here is what makes
         ``Compute(provider=Container())`` enough on a store that has never seen one.
         """
-        for provider in self._providers.values():
-            body = ProviderCreate(
-                name=provider.name,
-                kind=provider.kind,
-                credentials=dict(provider.credentials),
-                config=dict(provider.config),
-            )
+        for name, provider in self._providers.items():
+            credentials, config = resolve_provider(provider)
+            body = ProviderCreate(name=name, kind=provider.kind, credentials=credentials, config=config)
             try:
-                existing = await self.client.call("GET", f"/v1/providers/{provider.name}", ProviderView)
+                existing = await self.client.call("GET", f"/v1/providers/{name}", ProviderView)
             except SkywardError as error:
                 if error.code != "not_found":
                     raise
@@ -419,11 +416,11 @@ class Compute:
                     body=msgspec.json.encode(body),
                 )
             else:
-                config = msgspec.json.decode(msgspec.json.encode(provider.config), type=dict[str, object])
-                if existing.kind != provider.kind or existing.config != config:
+                stored = msgspec.json.decode(msgspec.json.encode(config), type=dict[str, object])
+                if existing.kind != provider.kind or existing.config != stored:
                     await self.client.call(
                         "PUT",
-                        f"/v1/providers/{provider.name}",
+                        f"/v1/providers/{name}",
                         dict[str, object],
                         body=msgspec.json.encode(body),
                     )
@@ -612,7 +609,7 @@ async def _next(frames: AsyncIterator[bytes]) -> bytes | None:
 def _wire(spec: Spec) -> SpecRef:
     accelerator, count = _accelerator(spec.accelerator)
     return SpecRef(
-        provider=ProviderRef(kind=spec.provider.kind, config=dict(spec.provider.config)),
+        provider=ProviderRef(kind=spec.provider.kind, config=resolve_provider(spec.provider)[1]),
         accelerator=accelerator,
         accelerator_count=count,
         cpus=spec.cpus,

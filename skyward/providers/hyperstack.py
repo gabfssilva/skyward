@@ -6,9 +6,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
 import httpx
+import msgspec
 
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine, MachineState, Mount
+from skyward.shared.providers import Hyperstack
 from skyward.shared.schemas import ComputeSpec, Endpoint, Market, Offer, Volume
 from skyward.worker import bootstrap
 
@@ -20,9 +22,6 @@ ENVIRONMENTS_PATH = "/core/environments"
 KEYPAIRS_PATH = "/core/keypairs"
 VMS_PATH = "/core/virtual-machines"
 ACCESS_KEYS_PATH = "/object-storage/access-keys"
-
-OBJECT_STORAGE_REGION = "CANADA-1"
-OBJECT_STORAGE_ENDPOINT = "https://ca1.obj.nexgencloud.io"
 
 CPU_VCPU_RATE = "vCPU (cpu-only-flavors)"
 CPU_RAM_RATE = "RAM (cpu-only-flavors)"
@@ -47,7 +46,7 @@ class HyperstackProvider:
     def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
         return True
 
-    def __init__(self, provider_id: str, name: str, api_key: str, config: Mapping[str, Any]) -> None:
+    def __init__(self, provider_id: str, name: str, api_key: str, config: Hyperstack) -> None:
         self._id = provider_id
         self._name = name
         self._api_key = api_key
@@ -55,15 +54,15 @@ class HyperstackProvider:
 
     @classmethod
     def create(cls, provider_id: str, name: str, credentials: Mapping[str, str], config: Mapping[str, Any]) -> Self:
-        api_key = credentials.get("api_key")
-        if not api_key:
+        settings = msgspec.convert({**credentials, **config}, Hyperstack)
+        if not settings.api_key:
             raise CapabilityMismatchError("hyperstack requires an api_key credential", provider=name)
-        return cls(provider_id, name, api_key, config)
+        return cls(provider_id, name, settings.api_key, settings)
 
     async def offers(self) -> AsyncIterator[Offer]:
         async with httpx.AsyncClient(
             base_url=BASE_URL,
-            timeout=int(self._config.get("request_timeout", 30)),
+            timeout=self._config.request_timeout,
             headers={"api_key": self._api_key, "Accept": "application/json"},
         ) as client:
             flavors_response = await client.get(FLAVORS_PATH)
@@ -87,13 +86,12 @@ class HyperstackProvider:
                 price = _hourly_price(gpu, gpu_count, cpus, memory_gb, prices)
                 region = flavor.get("region_name") or group.get("region_name")
                 features = flavor.get("features") or {}
-                configured = self._config.get("region")
-                regions = (configured,) if isinstance(configured, str) else tuple(configured or ())
+                regions = self._config.regions
                 if regions and region not in regions:
                     continue
-                if self._config.get("network_optimised") and (
+                if self._config.network_optimised and (
                     not features.get("network_optimised")
-                    or region not in tuple(self._config.get("network_optimised_regions") or ())
+                    or region not in self._config.network_optimised_regions
                 ):
                     continue
 
@@ -151,8 +149,8 @@ class HyperstackProvider:
             "environment_id": environment,
             "region": region,
             "flavor": str(offer.specific.get("flavor_name") or offer.instance_type),
-            "image": str(self._config.get("image") or await self._image(region)),
-            "instance_timeout": int(self._config.get("instance_timeout", 300)),
+            "image": self._config.image or await self._image(region),
+            "instance_timeout": self._config.instance_timeout,
         }
 
     async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
@@ -205,11 +203,11 @@ class HyperstackProvider:
         the environment. Path-style addressing, because the endpoint does not serve
         buckets as subdomains.
         """
-        region = str(self._config.get("object_storage_region") or OBJECT_STORAGE_REGION)
+        region = self._config.object_storage_region
         created = await self._request("POST", ACCESS_KEYS_PATH, {"region": region})
 
         endpoint = Endpoint(
-            url=str(self._config.get("object_storage_endpoint") or OBJECT_STORAGE_ENDPOINT),
+            url=self._config.object_storage_endpoint,
             access_key=created["access_key"],
             secret_key=created["secret_key"],
             path_style=True,
@@ -229,8 +227,8 @@ class HyperstackProvider:
             with suppress(httpx.HTTPError):
                 await self._delete(f"{ACCESS_KEYS_PATH}/{access_key_id}")
         await self._delete(f"{ENVIRONMENTS_PATH}/{binding['environment_id']}")
-        timeout = float(self._config.get("teardown_timeout", 120))
-        interval = float(self._config.get("teardown_poll_interval", 2.0))
+        timeout = self._config.teardown_timeout
+        interval = self._config.teardown_poll_interval
         async with asyncio.timeout(timeout):
             while await self._environment_id(str(binding["name"])) is not None:
                 await asyncio.sleep(interval)
@@ -372,7 +370,7 @@ class HyperstackProvider:
     ) -> dict[str, Any]:
         async with httpx.AsyncClient(
             base_url=BASE_URL,
-            timeout=int(self._config.get("request_timeout", 30)),
+            timeout=self._config.request_timeout,
             headers={"api_key": self._api_key, "Accept": "application/json"},
         ) as client:
             response = await client.request(method, path, json=body, params=params)

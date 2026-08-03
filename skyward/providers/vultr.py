@@ -6,9 +6,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
 import httpx
+import msgspec
 
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine
+from skyward.shared.providers import Vultr
 from skyward.shared.schemas import ComputeSpec, Market, Offer
 
 BASE_URL = "https://api.vultr.com/v2"
@@ -18,7 +20,6 @@ SSH_KEYS_PATH = "/ssh-keys"
 INSTANCES = ("/instances", "instances", "instance")
 BARE_METALS = ("/bare-metals", "bare_metals", "bare_metal")
 PAGE_SIZE = 500
-DEFAULT_OS_ID = 2284
 
 VRAM_SUFFIX = re.compile(r"(\d+)vram$")
 
@@ -38,7 +39,7 @@ class VultrProvider:
     def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
         return True
 
-    def __init__(self, provider_id: str, name: str, api_key: str, config: Mapping[str, Any]) -> None:
+    def __init__(self, provider_id: str, name: str, api_key: str, config: Vultr) -> None:
         self._id = provider_id
         self._name = name
         self._api_key = api_key
@@ -46,10 +47,10 @@ class VultrProvider:
 
     @classmethod
     def create(cls, provider_id: str, name: str, credentials: Mapping[str, str], config: Mapping[str, Any]) -> Self:
-        api_key = credentials.get("api_key")
-        if not api_key:
+        settings = msgspec.convert({**credentials, **config}, Vultr)
+        if not settings.api_key:
             raise CapabilityMismatchError("vultr requires an api_key credential", provider=name)
-        return cls(provider_id, name, api_key, config)
+        return cls(provider_id, name, settings.api_key, settings)
 
     async def _pages(self, client: httpx.AsyncClient, path: str, key: str) -> AsyncIterator[dict[str, Any]]:
         cursor: str | None = None
@@ -71,12 +72,12 @@ class VultrProvider:
         async with httpx.AsyncClient(
             base_url=BASE_URL,
             headers=headers,
-            timeout=int(self._config.get("request_timeout", 30)),
+            timeout=self._config.request_timeout,
         ) as client:
             now = datetime.now(UTC)
             expires_at = now + self.offers_ttl
 
-            mode = str(self._config.get("mode", "cloud"))
+            mode = self._config.mode
             if mode == "cloud":
                 async for plan in self._pages(client, PLANS_PATH, "plans"):
                     for offer in self._offers(plan, cpus=int(plan.get("vcpu_count") or 0), bare_metal=False, now=now, expires_at=expires_at):
@@ -106,7 +107,7 @@ class VultrProvider:
         specific = {
             "plan_type": plan.get("type"),
             "bare_metal": bare_metal,
-            "instance_timeout": int(self._config.get("instance_timeout", 300)),
+            "instance_timeout": self._config.instance_timeout,
             "gpu_brand": plan.get("gpu_brand"),
             "gpu_type": plan.get("gpu_type"),
             "gpu_vram_gb": plan.get("gpu_vram_gb") or _vram_from_id(plan_id) or None,
@@ -149,7 +150,7 @@ class VultrProvider:
         what makes :meth:`machines` able to find a machine whose id nobody wrote down.
         """
         bare_metal = bool(offer.specific.get("bare_metal"))
-        region = offer.region or self._config.get("region")
+        region = offer.region or self._config.region
 
         if not region:
             raise CapabilityMismatchError("vultr needs a region and the offer carries none", provider=self._name)
@@ -168,7 +169,7 @@ class VultrProvider:
             "ssh_key_id": ssh_key_id,
             "plan": offer.instance_type,
             "region": region,
-            "os_id": int(self._config.get("os_id", DEFAULT_OS_ID)),
+            "os_id": self._config.os_id,
             "bare_metal": bare_metal,
         }
 
@@ -274,7 +275,7 @@ class VultrProvider:
                 "Accept": "application/json",
                 "Content-Type": "application/json",
             },
-            timeout=int(self._config.get("request_timeout", 30)),
+            timeout=self._config.request_timeout,
         )
 
 

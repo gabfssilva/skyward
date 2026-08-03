@@ -30,6 +30,7 @@ from skyward.core import provider as factories
 from skyward.core.client import Client
 from skyward.core.errors import SkywardError
 from skyward.core.provider import Provider
+from skyward.core.provider import resolve as resolve_provider
 from skyward.shared import codec
 from skyward.shared.schemas import (
     Compute,
@@ -139,7 +140,7 @@ def create_compute(
     spec = ComputeSpec(
         specs=(
             Spec(
-                provider=ProviderRef(kind=account.kind, config=dict(account.config)),
+                provider=ProviderRef(kind=account.kind, config=resolve_provider(account)[1]),
                 accelerator=resolve(accelerator, None)[0],
                 cpus=cpus,
                 memory_gb=memory,
@@ -508,23 +509,18 @@ def _node_row(node: Node) -> tuple[object, ...]:
 
 async def _register(client: Client, account: Provider) -> None:
     """Make sure the daemon has an account of this kind to log in with."""
+    name = account.name or account.kind
     try:
-        await client.call("GET", f"/v1/providers/{account.name}", dict[str, object])
+        await client.call("GET", f"/v1/providers/{name}", dict[str, object])
     except SkywardError as error:
         if error.code != "not_found":
             raise
+        credentials, config = resolve_provider(account)
         await client.call(
             "POST",
             "/v1/providers",
             dict[str, object],
-            body=msgspec.json.encode(
-                ProviderCreate(
-                    name=account.name,
-                    kind=account.kind,
-                    credentials=dict(account.credentials),
-                    config=dict(account.config),
-                ),
-            ),
+            body=msgspec.json.encode(ProviderCreate(name=name, kind=account.kind, credentials=credentials, config=config)),
         )
 
 

@@ -110,7 +110,7 @@ packages = ["skyward"]
 [tool.ruff]
 target-version = "py312"
 line-length = 160
-exclude = ["skyward/_version.py", "tests/**", "guides/**"]
+exclude = ["skyward/_version.py", "tests/.old/**", "guides/**"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "ANN", "B", "C4", "SIM"]
@@ -125,27 +125,26 @@ ignore = [
 known-first-party = ["skyward"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["ANN"]
 "guides/**" = ["ANN"]
 "skyward/server/http/controllers/**" = ["B008"]
 
 [tool.pyright]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
-include = ["skyward"]
+include = ["skyward", "tests"]
+exclude = ["tests/.old"]
 reportMissingImports = "warning"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-addopts = "--durations=0 --dist loadgroup -n auto --log-cli-level=WARNING -m 'not sanity and not integration'"
-timeout_func_only = true
+addopts = "--durations=0 --dist loadgroup -n auto --log-cli-level=WARNING -m 'not sanity'"
+timeout = 120
+timeout_method = "thread"
 markers = [
-    "unit: fast unit tests with no external dependencies",
-    "e2e: end-to-end tests requiring container runtime",
-    "slow: tests that take >10s",
-    "integration: marks tests as integration tests (require Docker)",
+    "compute: features that need a live pool, and so a container runtime",
+    "local: features that need nothing but this process",
     "sanity: provider sanity tests (real cloud, real GPUs)",
     "aws: AWS provider tests",
     "runpod: RunPod provider tests",
@@ -163,12 +162,19 @@ markers = [
     "salad: Salad Cloud provider tests",
 ]
 
+[tool.coverage.run]
+source = ["skyward"]
+parallel = true
+sigterm = true
+patch = ["subprocess"]
+
 [dependency-groups]
 dev = [
     "skyward[all]",
     "pytest>=8.0",
     "pytest-asyncio>=0.25",
     "pytest-cov>=7.0.0",
+    "pytest-describe>=3.2",
     "pytest-sugar>=1.1.1",
     "pytest-xdist>=3.8.0",
     "pytest-timeout>=2.4.0",

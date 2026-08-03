@@ -6,10 +6,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
 import httpx
+import msgspec
 
 from skyward.shared.accelerators import CATALOG, resolve
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine, Mount
+from skyward.shared.providers import RunPod
 from skyward.shared.schemas import ComputeSpec, Market, Offer, Volume
 from skyward.worker import bootstrap
 
@@ -17,7 +19,6 @@ API_URL = "https://api.runpod.io/v2"
 CLOUDS: tuple[str, ...] = ("SECURE", "COMMUNITY")
 
 DEFAULT_IMAGE = "nvidia/cuda:12.8.0-cudnn-runtime-ubuntu24.04"
-DEFAULT_DISK_GB = 50
 DEFAULT_PORTS: tuple[str, ...] = ("22/tcp",)
 
 BASE_IMAGE_FALLBACKS: dict[str, str] = {
@@ -94,9 +95,9 @@ class RunPodProvider:
     offers_ttl: ClassVar[timedelta] = timedelta(minutes=10)
 
     def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
-        return offer.specific.get("cloud_type") != "COMMUNITY" and self._config.get("global_networking") is True
+        return offer.specific.get("cloud_type") != "COMMUNITY" and self._config.global_networking is True
 
-    def __init__(self, provider_id: str, name: str, api_key: str, config: Mapping[str, Any]) -> None:
+    def __init__(self, provider_id: str, name: str, api_key: str, config: RunPod) -> None:
         self._id = provider_id
         self._name = name
         self._api_key = api_key
@@ -104,10 +105,10 @@ class RunPodProvider:
 
     @classmethod
     def create(cls, provider_id: str, name: str, credentials: Mapping[str, str], config: Mapping[str, Any]) -> Self:
-        api_key = credentials.get("api_key")
-        if not api_key:
+        settings = msgspec.convert({**credentials, **config}, RunPod)
+        if not settings.api_key:
             raise CapabilityMismatchError("runpod requires an api_key credential", provider=name)
-        return cls(provider_id, name, api_key, config)
+        return cls(provider_id, name, settings.api_key, settings)
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -115,7 +116,7 @@ class RunPodProvider:
 
     @property
     def _timeout(self) -> int:
-        return int(self._config.get("request_timeout", 30))
+        return self._config.request_timeout
 
     def _image(self, spec: ComputeSpec) -> str:
         """The image to run, in precedence order.
@@ -124,12 +125,7 @@ class RunPodProvider:
         wins; then the provider's own ``container_image`` override; then the family
         picked by ``base_image``; then the built-in default.
         """
-        base_image = str(self._config.get("base_image", "nvidia"))
-        return (
-            spec.image.base
-            or self._config.get("container_image")
-            or BASE_IMAGE_FALLBACKS.get(base_image, DEFAULT_IMAGE)
-        )
+        return spec.image.base or self._config.container_image or BASE_IMAGE_FALLBACKS.get(self._config.base_image, DEFAULT_IMAGE)
 
     async def _image_candidates(self, spec: ComputeSpec, offer: Offer) -> tuple[str, ...]:
         """The images to try, newest supported CUDA first.
@@ -141,10 +137,10 @@ class RunPodProvider:
         next rather than failing the launch. The static fallback answers when Docker Hub
         is unreachable or the accelerator has no known CUDA range.
         """
-        if spec.image.base or self._config.get("container_image"):
+        if spec.image.base or self._config.container_image:
             return (self._image(spec),)
 
-        base_image = str(self._config.get("base_image", "nvidia"))
+        base_image = self._config.base_image
         repo = BASE_IMAGE_REPOS.get(base_image)
         cuda_min, cuda_max = _cuda_range(offer.accelerator)
         if repo is None or cuda_min is None:
@@ -156,7 +152,7 @@ class RunPodProvider:
             tags,
             _cuda_pair(cuda_min),
             _cuda_pair(cuda_max) if cuda_max else CUDA_OPEN_UPPER,
-            str(self._config.get("ubuntu", "newest")),
+            self._config.ubuntu,
             repo,
             variant,
         )
@@ -164,18 +160,18 @@ class RunPodProvider:
 
     def _countries(self) -> tuple[str, ...]:
         """Allowed country codes after exclusions; empty means no constraint."""
-        excluded = frozenset(self._config.get("exclude_country_codes") or ())
-        match self._config.get("country_codes"):
-            case None if not excluded:
+        excluded = self._config.excluded
+        match self._config.countries:
+            case () if not excluded:
                 return ()
-            case None:
+            case ():
                 return tuple(c for c in KNOWN_COUNTRIES if c not in excluded)
             case allowed:
                 return tuple(c for c in allowed if c not in excluded)
 
     def _data_center(self) -> str | None:
-        centers = self._config.get("data_center_ids", "global")
-        return None if centers == "global" or not centers else str(centers[0])
+        centers = self._config.centers
+        return centers[0] if centers else None
 
     async def _data_centers(self, client: httpx.AsyncClient) -> tuple[str, ...]:
         countries = self._countries()
@@ -193,7 +189,7 @@ class RunPodProvider:
 
     async def _registry_auth_id(self, client: httpx.AsyncClient) -> str | None:
         """Resolve the named registry credential to its id, ``None`` if unset or absent."""
-        name = self._config.get("registry_auth")
+        name = self._config.registry_auth
         if not name:
             return None
         response = await client.get(f"{API_URL}/registries", headers=self._headers)
@@ -211,7 +207,7 @@ class RunPodProvider:
         return (response.json() or {}).get("gpus") or []
 
     async def offers(self) -> AsyncIterator[Offer]:
-        wanted = str(self._config.get("cloud_type", "secure")).upper()
+        wanted = self._config.cloud_type.upper()
         clouds = tuple(cloud for cloud in CLOUDS if cloud == wanted) or CLOUDS
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
@@ -278,17 +274,17 @@ class RunPodProvider:
             raise CapabilityMismatchError(
                 f"{offer.id} was picked on the spot market and carries no bid price", provider=self._name,
             )
-        if self._config.get("cluster_mode", "individual") != "individual":
+        if self._config.cluster_mode != "individual":
             raise CapabilityMismatchError(
                 "RunPod REST v2 beta does not expose Instant Cluster creation",
                 provider=self._name,
             )
-        if self._config.get("cpu_clock", "3c") != "3c":
+        if self._config.cpu_clock != "3c":
             raise CapabilityMismatchError(
                 "RunPod REST v2 beta does not expose GPU host CPU-clock filtering",
                 provider=self._name,
             )
-        if self._config.get("min_inet_down") is not None or self._config.get("min_inet_up") is not None:
+        if self._config.min_inet_down is not None or self._config.min_inet_up is not None:
             raise CapabilityMismatchError(
                 "RunPod REST v2 beta does not expose pod network-speed filtering",
                 provider=self._name,
@@ -298,7 +294,7 @@ class RunPodProvider:
             (s.region for s in spec.specs if s.provider.kind == self.kind and s.region), None,
         )
         countries = self._countries()
-        multiplier = float(self._config.get("bid_multiplier", 1.0))
+        multiplier = self._config.bid_multiplier
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             registry_auth_id = await self._registry_auth_id(client)
@@ -320,14 +316,14 @@ class RunPodProvider:
             "data_center_ids": list(data_center_ids),
             "countries": list(countries),
             "country_code": countries[0] if countries else None,
-            "container_disk_gb": int(self._config.get("container_disk_gb", DEFAULT_DISK_GB)),
-            "volume_gb": int(self._config.get("volume_gb", 0)),
-            "volume_mount_path": str(self._config.get("volume_mount_path", "/workspace")),
-            "ports": ",".join(self._config.get("ports") or DEFAULT_PORTS),
+            "container_disk_gb": self._config.container_disk_gb,
+            "volume_gb": self._config.volume_gb,
+            "volume_mount_path": self._config.volume_mount_path,
+            "ports": ",".join(self._config.ports),
             "registry_auth_id": registry_auth_id,
             "global_networking": (
-                self._config["global_networking"]
-                if self._config.get("global_networking") is not None
+                self._config.global_networking
+                if self._config.global_networking is not None
                 else bool(spec.options.cluster)
             ),
             "bid_per_gpu": round(offer.spot_price * multiplier / gpu_count, 4) if offer.spot_price else None,

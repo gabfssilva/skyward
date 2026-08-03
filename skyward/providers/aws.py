@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, NamedTuple, Self
 
 import aioboto3
+import msgspec
 from aiobotocore.client import AioBaseClient
 from aiobotocore.config import AioConfig
 from botocore.exceptions import ClientError
@@ -14,16 +15,9 @@ from botocore.exceptions import ClientError
 from skyward.shared.architectures import architecture
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine, Mount
+from skyward.shared.providers import AWS
 from skyward.shared.schemas import ComputeSpec, Endpoint, Market, Offer, Volume
 from skyward.worker import bootstrap
-
-DEFAULT_REGIONS = (
-    "us-east-1",
-    "us-east-2",
-    "us-west-2",
-    "eu-west-1",
-    "eu-central-1",
-)
 
 PRICING_REGION = "us-east-1"
 MIB = 1024
@@ -33,8 +27,6 @@ MANAGED_TAG = "skyward:managed"
 IMAGE_TAG = "skyward:image"
 WARM_NAME = "skyward-warm-{tag}"
 SSH_USER = "ubuntu"
-DEFAULT_UBUNTU = "24.04"
-DEFAULT_DISK_GB = 100
 FLEET_STRATEGY = "price-capacity-optimized"
 
 
@@ -66,27 +58,24 @@ class AWSProvider:
         name: str,
         access_key_id: str,
         secret_access_key: str,
-        session_token: str | None,
-        config: Mapping[str, Any],
+        config: AWS,
     ) -> None:
         self._id = provider_id
         self._name = name
         self._access_key_id = access_key_id
         self._secret_access_key = secret_access_key
-        self._session_token = session_token
         self._config = config
 
     @classmethod
     def create(cls, provider_id: str, name: str, credentials: Mapping[str, str], config: Mapping[str, Any]) -> Self:
-        access_key_id = credentials.get("access_key_id")
-        secret_access_key = credentials.get("secret_access_key")
-        if not access_key_id or not secret_access_key:
+        settings = msgspec.convert({**credentials, **config}, AWS)
+        if not settings.access_key_id or not settings.secret_access_key:
             raise CapabilityMismatchError("aws requires access_key_id and secret_access_key credentials", provider=name)
-        return cls(provider_id, name, access_key_id, secret_access_key, credentials.get("session_token") or None, config)
+        return cls(provider_id, name, settings.access_key_id, settings.secret_access_key, settings)
 
     @property
     def _regions(self) -> tuple[str, ...]:
-        return tuple(self._config.get("regions") or DEFAULT_REGIONS)
+        return self._config.regions
 
     def _session(self) -> aioboto3.Session:
         """Always the explicit credentials — never boto3's default chain.
@@ -98,11 +87,11 @@ class AWSProvider:
         return aioboto3.Session(
             aws_access_key_id=self._access_key_id,
             aws_secret_access_key=self._secret_access_key,
-            aws_session_token=self._session_token,
+            aws_session_token=self._config.session_token,
         )
 
     def _client_config(self) -> AioConfig:
-        timeout = int(self._config.get("request_timeout", 30))
+        timeout = self._config.request_timeout
         return AioConfig(connect_timeout=timeout, read_timeout=timeout)
 
     @asynccontextmanager
@@ -123,7 +112,7 @@ class AWSProvider:
 
         for region, (instance_types, spot, on_demand) in zip(regions, results, strict=True):
             for raw in instance_types:
-                if self._config.get("exclude_burstable") and raw.get("BurstablePerformanceSupported"):
+                if self._config.exclude_burstable and raw.get("BurstablePerformanceSupported"):
                     continue
                 instance_type = raw["InstanceType"]
                 gpu = _gpu(raw)
@@ -242,7 +231,7 @@ class AWSProvider:
         name = f"skyward-{compute_id}"
         session = self._session()
         async with session.client("ec2", region_name=region, config=self._client_config()) as ec2:
-            if configured_subnet := self._config.get("subnet_id"):
+            if configured_subnet := self._config.subnet_id:
                 described = await ec2.describe_subnets(SubnetIds=[configured_subnet])
                 subnet = described["Subnets"][0]
                 vpc = str(subnet["VpcId"])
@@ -256,11 +245,11 @@ class AWSProvider:
                 image = group.create_task(self._image(session, region, offer))
                 security_group = (
                     None
-                    if self._config.get("security_group_id")
+                    if self._config.security_group_id
                     else group.create_task(self._security_group(ec2, "skyward-sg", vpc))
                 )
 
-        if configured_group := self._config.get("security_group_id"):
+        if configured_group := self._config.security_group_id:
             security_group_id = str(configured_group)
         elif security_group is not None:
             security_group_id = security_group.result()
@@ -275,11 +264,11 @@ class AWSProvider:
             "key_name": key.result(),
             "security_group_id": security_group_id,
             "subnets": subnets,
-            "user": str(self._config.get("username") or SSH_USER),
-            "disk_gb": int(self._config.get("disk_gb") or DEFAULT_DISK_GB),
-            "instance_profile_arn": self._config.get("instance_profile_arn"),
-            "allocation_strategy": str(self._config.get("allocation_strategy") or FLEET_STRATEGY),
-            "instance_timeout": int(self._config.get("instance_timeout", 300)),
+            "user": self._config.username or SSH_USER,
+            "disk_gb": self._config.disk_gb,
+            "instance_profile_arn": self._config.instance_profile_arn,
+            "allocation_strategy": self._config.allocation_strategy,
+            "instance_timeout": self._config.instance_timeout,
         }
 
     async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
@@ -608,7 +597,7 @@ class AWSProvider:
 
     async def _image(self, session: aioboto3.Session, region: str, offer: Offer) -> str:
         """The AMI id: the config's own, or the current one from SSM."""
-        return str(self._config.get("ami") or await self._latest(session, region, offer))
+        return self._config.ami or await self._latest(session, region, offer)
 
     async def _latest(self, session: aioboto3.Session, region: str, offer: Offer) -> str:
         """The current AMI, from the SSM public parameters rather than from a hardcoded id.
@@ -620,7 +609,7 @@ class AWSProvider:
         """
         architectures = offer.specific.get("architectures") or ()
         arm = "arm64" in architectures
-        version = str(self._config.get("ubuntu_version") or DEFAULT_UBUNTU)
+        version = self._config.ubuntu_version
 
         if offer.accelerator_count:
             parameter = (

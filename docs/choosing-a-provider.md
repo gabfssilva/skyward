@@ -45,7 +45,7 @@ The current adapters expose these account fields and cache intervals:
 | `verda` | `client_id`, `client_secret` | 15 min |
 | `vultr` | `api_key` | 6 h |
 
-Use the provider factory in Python when you need provider configuration beyond
+Use the provider account in Python when you need provider configuration beyond
 the CLI's basic `create` flags:
 
 ```python

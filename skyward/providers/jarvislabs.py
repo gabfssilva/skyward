@@ -5,9 +5,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
 import httpx
+import msgspec
 
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine
+from skyward.shared.providers import JarvisLabs
 from skyward.shared.schemas import ComputeSpec, Market, Offer
 
 BASE_URL = "https://backendprod.jarvislabs.net"
@@ -32,8 +34,6 @@ REGION_URLS = {
     EUROPE_REGION: "https://backendeu.jarvislabs.net",
 }
 
-TEMPLATE = "pytorch"
-DEFAULT_STORAGE_GB = 50
 NAME_PREFIX = "skyward"
 
 
@@ -54,7 +54,7 @@ class JarvisLabsProvider:
     def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
         return False
 
-    def __init__(self, provider_id: str, name: str, api_key: str, config: Mapping[str, Any]) -> None:
+    def __init__(self, provider_id: str, name: str, api_key: str, config: JarvisLabs) -> None:
         self._id = provider_id
         self._name = name
         self._api_key = api_key
@@ -62,10 +62,10 @@ class JarvisLabsProvider:
 
     @classmethod
     def create(cls, provider_id: str, name: str, credentials: Mapping[str, str], config: Mapping[str, Any]) -> Self:
-        api_key = credentials.get("api_key")
-        if not api_key:
+        settings = msgspec.convert({**credentials, **config}, JarvisLabs)
+        if not settings.api_key:
             raise CapabilityMismatchError("jarvislabs requires an api_key credential", provider=name)
-        return cls(provider_id, name, api_key, config)
+        return cls(provider_id, name, settings.api_key, settings)
 
     async def offers(self) -> AsyncIterator[Offer]:
         async with httpx.AsyncClient(base_url=BASE_URL, timeout=30) as client:
@@ -87,7 +87,7 @@ class JarvisLabsProvider:
             region = str(entry.get("region") or "")
             if region in CLOSED_REGIONS:
                 continue
-            if (configured := self._config.get("region")) and region != configured:
+            if (configured := self._config.region) and region != configured:
                 continue
 
             workload = entry.get("workload_type")
@@ -132,7 +132,7 @@ class JarvisLabsProvider:
 
     async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, market: Market, public_key: str) -> Binding:
         region = str(offer.specific.get("region") or DEFAULT_REGION)
-        storage = int(self._config.get("storage_gb", DEFAULT_STORAGE_GB))
+        storage = self._config.storage_gb
         if region == EUROPE_REGION:
             storage = max(storage, EUROPE_MIN_STORAGE_GB)
 
@@ -145,10 +145,10 @@ class JarvisLabsProvider:
             "gpu_type": str(offer.specific.get("gpu_type") or offer.accelerator or ""),
             "num_gpus": int(offer.specific.get("num_gpus") or offer.accelerator_count or 1),
             "storage_gb": storage,
-            "template": str(self._config.get("template", TEMPLATE)),
+            "template": self._config.template,
             "ssh_key_id": key_id,
             "ssh_key_name": key_name,
-            "instance_timeout": int(self._config.get("instance_timeout", 300)),
+            "instance_timeout": self._config.instance_timeout,
         }
 
     async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:

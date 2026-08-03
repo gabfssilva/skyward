@@ -5,12 +5,14 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
+import msgspec
+
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine
+from skyward.shared.providers import Container
 from skyward.shared.schemas import ComputeSpec, Market, Offer
 
 COMPUTE_LABEL = "skyward.compute"
-BASE_IMAGE = "ghcr.io/gabfssilva/skyward:py{python}"
 WARM_IMAGE = "skyward-warm:{tag}"
 APPLE = "container"
 DEFAULT_PYTHON = "3.13"
@@ -44,15 +46,15 @@ class ContainerProvider:
     def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
         return True
 
-    def __init__(self, provider_id: str, name: str, config: Mapping[str, Any]) -> None:
+    def __init__(self, provider_id: str, name: str, config: Container) -> None:
         self._id = provider_id
         self._name = name
         self._config = config
-        self._binary = str(config.get("binary", "docker"))
+        self._binary = config.binary
 
     @classmethod
     def create(cls, provider_id: str, name: str, credentials: Mapping[str, str], config: Mapping[str, Any]) -> Self:
-        return cls(provider_id, name, config)
+        return cls(provider_id, name, msgspec.convert({**credentials, **config}, Container))
 
     async def offers(self) -> AsyncIterator[Offer]:
         now = datetime.now(UTC)
@@ -75,8 +77,8 @@ class ContainerProvider:
 
     async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, market: Market, public_key: str) -> Binding:
         python = spec.image.python or DEFAULT_PYTHON
-        image = str(self._config.get("image") or BASE_IMAGE).format(python=python, python_version=python)
-        network = str(self._config.get("network") or f"skyward-{compute_id}")
+        image = self._config.image.format(python=python, python_version=python)
+        network = self._config.network or f"skyward-{compute_id}"
 
         await self._pull(image)
         await self._network(network)
@@ -88,9 +90,9 @@ class ContainerProvider:
             "public_key": public_key,
             "cpus": offer.cpus,
             "memory_gb": offer.memory_gb,
-            "ssh_user": str(self._config.get("ssh_user", "root")),
-            "container_prefix": str(self._config.get("container_prefix") or "skyward"),
-            "managed_network": not self._config.get("network"),
+            "ssh_user": self._config.ssh_user,
+            "container_prefix": self._config.container_prefix or "skyward",
+            "managed_network": not self._config.network,
         }
 
     async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:

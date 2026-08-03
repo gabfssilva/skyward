@@ -20,7 +20,7 @@ from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import wraps
-from typing import Literal, Protocol, overload, runtime_checkable
+from typing import Any, Literal, Protocol, cast, overload, runtime_checkable
 
 from skyward.worker import slot
 
@@ -302,7 +302,7 @@ def shard(
 type Predicate = Callable[[Info], bool]
 """Given the node's own view of itself, whether its output makes the trip back."""
 
-type OutputSpec = int | tuple[int, ...] | Literal["head"] | Predicate
+type OutputSpec = int | Sequence[int] | Literal["head"] | Predicate
 """Which nodes an output decorator keeps: ranks, ``"head"`` for rank zero, or a test."""
 
 
@@ -356,7 +356,7 @@ def stdout[**P, T](
 ) -> Callable[P, T] | Callable[[Callable[P, T]], Callable[P, T]]:
     """Forward stdout and drop stderr, optionally from ``only`` some of the nodes.
 
-    ``only`` is a rank, a tuple of ranks, ``"head"`` for rank zero, or a predicate
+    ``only`` is a rank, a sequence of ranks, ``"head"`` for rank zero, or a predicate
     on the node's own :class:`Info`. ``only="head"`` is what turns a broadcast onto
     sixty-four nodes back into something a human can read.
     """
@@ -389,8 +389,8 @@ def _narrow(stream: Stream, only: OutputSpec | None) -> Policy:
             return Policy(streams=streams, ranks=frozenset({0}))
         case int():
             return Policy(streams=streams, ranks=frozenset({only}))
-        case tuple():
-            return Policy(streams=streams, ranks=frozenset(only))
+        case [*ranks]:
+            return Policy(streams=streams, ranks=frozenset(ranks))
         case _:
             return Policy(streams=streams, where=only)
 
@@ -408,16 +408,29 @@ def _stream[**P, T](
     return decorate(fn) if fn else decorate
 
 
-def _under[**P, T](fn: Callable[P, T], wanted: Policy) -> Callable[P, T]:
-    @wraps(fn)
-    def run(*args: P.args, **kwargs: P.kwargs) -> T:
-        token = policy.set(wanted)
+class _Under:
+    """A callable that runs its function under a policy.
+
+    A class rather than a closure so that pickling it never touches the module's
+    ``policy`` ContextVar: instances carry only the function and the policy, and
+    the code is found again by reference on the node.
+    """
+
+    def __init__(self, fn: Callable[..., Any], wanted: Policy) -> None:
+        self._fn = fn
+        self._wanted = wanted
+        wraps(fn)(self)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        token = policy.set(self._wanted)
         try:
-            return fn(*args, **kwargs)
+            return self._fn(*args, **kwargs)
         finally:
             policy.reset(token)
 
-    return run
+
+def _under[**P, T](fn: Callable[P, T], wanted: Policy) -> Callable[P, T]:
+    return cast(Callable[P, T], _Under(fn, wanted))
 
 
 class CallbackWriter(io.TextIOBase):

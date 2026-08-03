@@ -81,7 +81,7 @@ The supported provider kinds are:
 
 The available create flags are `--provider`, `--name`, `--accelerator`,
 `--nodes`, `--region`, `--cpus`, `--memory`, `--url`, `--database`, and
-`--output`. The provider factory reads credentials from the current process.
+`--output`. The provider account reads credentials from the current process.
 Credential values are not printed by the CLI.
 
 `sky new` is an alias for `sky compute create`:

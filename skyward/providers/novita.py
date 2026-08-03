@@ -5,9 +5,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
 import httpx
+import msgspec
 
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine
+from skyward.shared.providers import Novita
 from skyward.shared.schemas import ComputeSpec, Market, Offer
 
 BASE_URL = "https://api.novita.ai/gpu-instance/openapi/v1"
@@ -19,7 +21,6 @@ INSTANCES_PATH = "/gpu/instances"
 
 PRICE_DIVISOR = 100_000
 DEFAULT_IMAGE = "nvcr.io/nvidia/cuda:12.9.1-runtime-ubuntu24.04"
-DEFAULT_ROOTFS_GB = 50
 PAGE_SIZE = 100
 GONE = ("removed", "exited", "terminated", "error", "failed")
 
@@ -39,7 +40,7 @@ class NovitaProvider:
     def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
         return False
 
-    def __init__(self, provider_id: str, name: str, api_key: str, config: Mapping[str, Any]) -> None:
+    def __init__(self, provider_id: str, name: str, api_key: str, config: Novita) -> None:
         self._id = provider_id
         self._name = name
         self._api_key = api_key
@@ -47,17 +48,17 @@ class NovitaProvider:
 
     @classmethod
     def create(cls, provider_id: str, name: str, credentials: Mapping[str, str], config: Mapping[str, Any]) -> Self:
-        api_key = credentials.get("api_key")
-        if not api_key:
+        settings = msgspec.convert({**credentials, **config}, Novita)
+        if not settings.api_key:
             raise CapabilityMismatchError("novita requires an api_key credential", provider=name)
-        return cls(provider_id, name, api_key, config)
+        return cls(provider_id, name, settings.api_key, settings)
 
     async def offers(self) -> AsyncIterator[Offer]:
         params: dict[str, Any] = {}
-        if cluster_id := self._config.get("cluster_id"):
+        if cluster_id := self._config.cluster_id:
             params["clusterId"] = cluster_id
 
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=int(self._config.get("request_timeout", 30))) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout) as client:
             response = await client.get(
                 PRODUCTS_PATH,
                 params=params,
@@ -121,25 +122,25 @@ class NovitaProvider:
         public key has nowhere to go, and the binding is only the launch recipe,
         which is what makes this trivially idempotent and :meth:`release` a no-op.
         """
-        rootfs_gb = int(self._config.get("rootfs_size", DEFAULT_ROOTFS_GB))
+        rootfs_gb = self._config.rootfs_size
         min_rootfs_gb = int(offer.specific.get("min_rootfs_gb") or 0)
 
         return {
             "compute_id": compute_id,
             "prefix": f"skyward-{compute_id}-",
             "product_id": str(offer.specific["product_id"]),
-            "cluster_id": self._config.get("cluster_id") or offer.region,
-            "image": spec.image.base or self._config.get("docker_image") or DEFAULT_IMAGE,
+            "cluster_id": self._config.cluster_id or offer.region,
+            "image": spec.image.base or self._config.docker_image or DEFAULT_IMAGE,
             "gpu_num": offer.accelerator_count or 1,
             "rootfs_gb": max(rootfs_gb, min_rootfs_gb),
-            "min_cuda_version": self._config.get("min_cuda_version"),
+            "min_cuda_version": self._config.min_cuda_version,
         }
 
     async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
         async with (
             httpx.AsyncClient(
                 base_url=BASE_URL,
-                timeout=int(self._config.get("request_timeout", 30)),
+                timeout=self._config.request_timeout,
                 headers=self._headers(),
             ) as client,
             asyncio.TaskGroup() as group,
@@ -167,7 +168,7 @@ class NovitaProvider:
 
         async with httpx.AsyncClient(
             base_url=BASE_URL,
-            timeout=int(self._config.get("request_timeout", 30)),
+            timeout=self._config.request_timeout,
             headers=self._headers(),
         ) as client:
             listed = await self._list(client)
@@ -190,7 +191,7 @@ class NovitaProvider:
         async with (
             httpx.AsyncClient(
                 base_url=BASE_URL,
-                timeout=int(self._config.get("request_timeout", 30)),
+                timeout=self._config.request_timeout,
                 headers=self._headers(),
             ) as client,
             asyncio.TaskGroup() as group,

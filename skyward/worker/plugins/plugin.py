@@ -12,7 +12,7 @@ a plugin because they agree about its name and its fields.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, ClassVar
 
@@ -52,7 +52,7 @@ class Plugin(Struct, frozen=True):
         """
         return image
 
-    def bootstrap(self, image: Image, concurrency: int) -> tuple[str, ...]:
+    def bootstrap(self, image: Image, concurrency: int) -> Sequence[str]:
         """Extra shell phases, appended after the image's own bootstrap.
 
         Runs on the daemon at script-generation time, like :meth:`image` — not on

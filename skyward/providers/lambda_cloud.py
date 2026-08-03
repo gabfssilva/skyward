@@ -3,9 +3,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
 import httpx
+import msgspec
 
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine, MachineState
+from skyward.shared.providers import Lambda
 from skyward.shared.schemas import ComputeSpec, Market, Offer
 
 BASE_URL = "https://cloud.lambda.ai/api/v1"
@@ -29,7 +31,7 @@ class LambdaProvider:
     def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
         return True
 
-    def __init__(self, provider_id: str, name: str, api_key: str, config: Mapping[str, Any]) -> None:
+    def __init__(self, provider_id: str, name: str, api_key: str, config: Lambda) -> None:
         self._id = provider_id
         self._name = name
         self._api_key = api_key
@@ -37,13 +39,13 @@ class LambdaProvider:
 
     @classmethod
     def create(cls, provider_id: str, name: str, credentials: Mapping[str, str], config: Mapping[str, Any]) -> Self:
-        api_key = credentials.get("api_key")
-        if not api_key:
+        settings = msgspec.convert({**credentials, **config}, Lambda)
+        if not settings.api_key:
             raise CapabilityMismatchError("lambda requires an api_key credential", provider=name)
-        return cls(provider_id, name, api_key, config)
+        return cls(provider_id, name, settings.api_key, settings)
 
     async def offers(self) -> AsyncIterator[Offer]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=int(self._config.get("request_timeout", 30))) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout) as client:
             response = await client.get(
                 INSTANCE_TYPES_PATH,
                 auth=httpx.BasicAuth(self._api_key, ""),
@@ -220,7 +222,7 @@ class LambdaProvider:
         return str(regions[0]["name"])
 
     async def _request(self, method: str, path: str, body: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=int(self._config.get("request_timeout", 30))) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout) as client:
             response = await client.request(
                 method,
                 path,

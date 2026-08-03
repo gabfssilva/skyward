@@ -34,7 +34,7 @@ sky config validate
 
 ## Provider accounts
 
-Provider factories resolve credentials in the client process. A provider descriptor contains the provider kind, its non-secret configuration, credentials, and an optional account name. When a compute starts, the descriptor registers the named account with the daemon if it does not exist. Credentials are not returned by provider read operations.
+Provider accounts resolve credentials in the client process. A provider descriptor contains the provider kind, its non-secret configuration, credentials, and an optional account name. When a compute starts, the descriptor registers the named account with the daemon if it does not exist. Credentials are not returned by provider read operations.
 
 ```python
 provider = sky.AWS(name="production", region="us-east-1")

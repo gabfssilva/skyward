@@ -75,9 +75,9 @@ The `with` block creates a Compute definition, waits until its node is ready, su
 
 ## Provider credentials
 
-Provider factories resolve credentials in the calling process. Explicit arguments take precedence over environment variables. The selected control plane stores the provider account so that the daemon can fetch offers and provision machines; provider read responses do not include credentials.
+Provider accounts resolve credentials in the calling process. Explicit arguments take precedence over environment variables. The selected control plane stores the provider account so that the daemon can fetch offers and provision machines; provider read responses do not include credentials.
 
-Configure only the providers you use. The complete factory list is documented in [Providers](providers.md).
+Configure only the providers you use. The complete list is documented in [Providers](providers.md).
 
 ### AWS
 
@@ -87,7 +87,7 @@ export AWS_SECRET_ACCESS_KEY=your_secret_key
 export AWS_DEFAULT_REGION=us-east-1
 ```
 
-The factory also reads the standard AWS shared credentials file and instance credentials. The account needs permissions to manage the instances and their networking. SSM permissions are optional when direct SSH is available.
+`sky.AWS` also reads the standard AWS shared credentials file. The account needs permissions to manage the instances and their networking. SSM permissions are optional when direct SSH is available.
 
 ### GCP
 

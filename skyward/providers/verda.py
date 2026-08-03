@@ -6,9 +6,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
 import httpx
+import msgspec
 
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine
+from skyward.shared.providers import Verda
 from skyward.shared.schemas import ComputeSpec, Market, Offer
 
 BASE_URL = "https://api.verda.com/v1"
@@ -18,7 +20,6 @@ AVAILABILITY_PATH = "/instance-availability"
 SSH_KEYS_PATH = "/ssh-keys"
 INSTANCES_PATH = "/instances"
 
-DEFAULT_CUDA = "13.0"
 CUDA_IMAGE = "ubuntu-24.04-cuda-{cuda}-open"
 CPU_IMAGE = "ubuntu-24.04"
 
@@ -43,7 +44,7 @@ class VerdaProvider:
         name: str,
         client_id: str,
         client_secret: str,
-        config: Mapping[str, Any],
+        config: Verda,
     ) -> None:
         self._id = provider_id
         self._name = name
@@ -53,13 +54,12 @@ class VerdaProvider:
 
     @classmethod
     def create(cls, provider_id: str, name: str, credentials: Mapping[str, str], config: Mapping[str, Any]) -> Self:
-        client_id = credentials.get("client_id")
-        client_secret = credentials.get("client_secret")
-        if not client_id or not client_secret:
+        settings = msgspec.convert({**credentials, **config}, Verda)
+        if not settings.client_id or not settings.client_secret:
             raise CapabilityMismatchError(
                 "verda requires client_id and client_secret credentials", provider=name
             )
-        return cls(provider_id, name, client_id, client_secret, config)
+        return cls(provider_id, name, settings.client_id, settings.client_secret, settings)
 
     async def _token(self, client: httpx.AsyncClient) -> str:
         response = await client.post(
@@ -74,7 +74,7 @@ class VerdaProvider:
         return response.json()["access_token"]
 
     async def offers(self) -> AsyncIterator[Offer]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=int(self._config.get("request_timeout", 30))) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout) as client:
             headers = {"Authorization": f"Bearer {await self._token(client)}"}
 
             types_response = await client.get(INSTANCE_TYPES_PATH, headers=headers)
@@ -141,15 +141,14 @@ class VerdaProvider:
         that was created by a process that died before it could write the id down.
         """
         name = f"skyward-{compute_id}"
-        image = self._config.get("image") or (
-            CUDA_IMAGE.format(cuda=self._config.get("cuda", DEFAULT_CUDA))
+        image = self._config.image or (
+            CUDA_IMAGE.format(cuda=self._config.cuda)
             if offer.accelerator_count
             else CPU_IMAGE
         )
 
         async with self._session() as (client, headers):
-            configured_key = self._config.get("ssh_key_id")
-            key_id = str(configured_key) if configured_key else await self._ssh_key(client, headers, name, public_key)
+            key_id = self._config.ssh_key_id or await self._ssh_key(client, headers, name, public_key)
             region = await self._region(client, headers, offer, market)
 
         return {
@@ -159,8 +158,8 @@ class VerdaProvider:
             "instance_type": offer.instance_type,
             "image": image,
             "region": region,
-            "managed_ssh_key": configured_key is None,
-            "instance_timeout": int(self._config.get("instance_timeout", 300)),
+            "managed_ssh_key": self._config.ssh_key_id is None,
+            "instance_timeout": self._config.instance_timeout,
         }
 
     async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
@@ -213,7 +212,7 @@ class VerdaProvider:
 
     @asynccontextmanager
     async def _session(self) -> AsyncIterator[tuple[httpx.AsyncClient, dict[str, str]]]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=int(self._config.get("request_timeout", 30))) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout) as client:
             yield client, {"Authorization": f"Bearer {await self._token(client)}"}
 
     async def _ssh_key(
@@ -250,7 +249,7 @@ class VerdaProvider:
     ) -> str:
         available = await _availability(client, headers, is_spot=market == "spot")
         regions = available.get(offer.instance_type, frozenset())
-        preferred = offer.region or self._config.get("region")
+        preferred = offer.region or self._config.region
 
         if preferred in regions:
             return str(preferred)

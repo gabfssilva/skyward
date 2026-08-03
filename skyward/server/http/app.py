@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Coroutine
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -322,4 +323,5 @@ def daemon() -> Litestar:
     and a guest does not get to install sinks on the host application's behalf.
     """
     setup_logging(LogConfig())
-    return create_app(services(), database=DEFAULT_PATH)
+    database = Path(env) if (env := os.environ.get("SKYWARD_DATABASE")) else DEFAULT_PATH
+    return create_app(services(), database=database)

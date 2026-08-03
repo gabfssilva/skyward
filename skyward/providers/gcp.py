@@ -34,11 +34,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
 import httpx
+import msgspec
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine, MachineState, Mount
+from skyward.shared.providers import GCP
 from skyward.shared.schemas import ComputeSpec, Endpoint, Market, Offer, Volume
 from skyward.worker import bootstrap
 
@@ -59,17 +61,6 @@ NODE_TAG = "skyward-node"
 
 GPU_IMAGE = "projects/deeplearning-platform-release/global/images/family/common-cu128-ubuntu-2204-nvidia-570"
 CPU_IMAGE = "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64"
-
-DEFAULT_DISK_GB = 200
-DEFAULT_DISK_TYPE = "pd-balanced"
-DEFAULT_NETWORK = "default"
-
-DEFAULT_ZONES = (
-    "us-central1-a",
-    "us-central1-b",
-    "us-central1-c",
-    "us-central1-f",
-)
 
 # GPUs that are not part of a machine type: they are attached to an N1 at
 # create time, in a count the caller picks. Everything else (a2, a3, a4, g2)
@@ -121,7 +112,7 @@ class GCPProvider:
     def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
         return True
 
-    def __init__(self, provider_id: str, name: str, service_account: Mapping[str, Any], config: Mapping[str, Any]) -> None:
+    def __init__(self, provider_id: str, name: str, service_account: Mapping[str, Any], config: GCP) -> None:
         self._id = provider_id
         self._name = name
         self._service_account = service_account
@@ -131,7 +122,8 @@ class GCPProvider:
 
     @classmethod
     def create(cls, provider_id: str, name: str, credentials: Mapping[str, str], config: Mapping[str, Any]) -> Self:
-        raw = credentials.get("service_account_json")
+        settings = msgspec.convert({**credentials, **config}, GCP)
+        raw = settings.service_account_json
         if not raw:
             raise CapabilityMismatchError("gcp requires a service_account_json credential", provider=name)
 
@@ -144,18 +136,18 @@ class GCPProvider:
         if missing:
             raise CapabilityMismatchError(f"gcp service_account_json is missing {', '.join(missing)}", provider=name)
 
-        if not (config.get("project") or service_account.get("project_id")):
+        if not (settings.project or service_account.get("project_id")):
             raise CapabilityMismatchError("gcp needs a project: set config.project or use a key with project_id", provider=name)
 
-        return cls(provider_id, name, service_account, config)
+        return cls(provider_id, name, service_account, settings)
 
     @property
     def _project(self) -> str:
-        return str(self._config.get("project") or self._service_account["project_id"])
+        return self._config.project or str(self._service_account["project_id"])
 
     @property
     def _zones(self) -> tuple[str, ...]:
-        return tuple(self._config.get("zones") or DEFAULT_ZONES)
+        return self._config.zones
 
     async def _token(self, client: httpx.AsyncClient) -> str:
         """Mint an access token from the service-account key.
@@ -373,9 +365,9 @@ class GCPProvider:
 
         label = _label(compute_id)
         tag = _name(label)
-        network = str(self._config.get("network") or DEFAULT_NETWORK)
-        subnet = self._config.get("subnet")
-        service_account = self._config.get("service_account")
+        network = self._config.network
+        subnet = self._config.subnet
+        service_account = self._config.service_account
         count = int(specific.get("accelerator_count") or 0)
         accelerator = specific.get("accelerator_type") if specific.get("uses_guest_accelerators") else None
 
@@ -387,17 +379,17 @@ class GCPProvider:
             "zone": zone,
             "region": _region(zone),
             "network": network,
-            "subnet": str(subnet) if subnet else None,
+            "subnet": subnet,
             "firewall": tag,
             "machine_type": str(specific.get("machine_type") or offer.instance_type),
             "image": GPU_IMAGE if count else CPU_IMAGE,
             "accelerator_type": str(accelerator) if accelerator else None,
             "accelerator_count": count,
-            "disk_gb": int(self._config.get("disk_gb") or DEFAULT_DISK_GB),
-            "disk_type": str(self._config.get("disk_type") or DEFAULT_DISK_TYPE),
-            "service_account": str(service_account) if service_account else None,
+            "disk_gb": self._config.disk_size_gb,
+            "disk_type": self._config.disk_type,
+            "service_account": service_account,
             "public_key": public_key,
-            "instance_timeout": int(self._config.get("instance_timeout", 300)),
+            "instance_timeout": self._config.instance_timeout,
         }
 
         async with self._api() as client:

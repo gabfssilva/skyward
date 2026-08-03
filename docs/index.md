@@ -45,7 +45,7 @@ with sky.Compute(
 
 ## A single API. Any cloud.
 
-Provider factories describe an account and its non-secret configuration. Changing the provider does not change the function being submitted.
+Provider accounts describe a login and its non-secret configuration. Changing the provider does not change the function being submitted.
 
 === "AWS"
     ```python

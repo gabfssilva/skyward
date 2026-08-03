@@ -32,8 +32,9 @@ import re
 import secrets
 from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import ClassVar, Self
+from typing import Any, ClassVar, Self
 
+import msgspec
 from salad_cloud_sdk import SaladCloudSdkAsync
 from salad_cloud_sdk.models import (
     ContainerConfiguration,
@@ -51,13 +52,13 @@ from websockets.exceptions import WebSocketException
 
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine, MachineState
+from skyward.shared.providers import Salad
 from skyward.shared.schemas import ComputeSpec, Market, Offer
 
 SSH_USER = "root"
 DEFAULT_IMAGE = "nvidia/cuda:12.8.0-cudnn-runtime-ubuntu24.04"
 GATEWAY_PORT = 8888
 WEBSOCAT_URL = "https://github.com/vi/websocat/releases/download/v1.13.0/websocat.x86_64-unknown-linux-musl"
-PRIORITIES = frozenset(("high", "medium", "low", "batch"))
 
 NODE_COMMAND = (
     "([ -x /usr/sbin/sshd ] && command -v curl > /dev/null || ("
@@ -178,22 +179,22 @@ class SaladProvider:
     credential_fields: ClassVar[tuple[str, ...]] = ("api_key",)
     offers_ttl: ClassVar[timedelta] = timedelta(minutes=10)
 
-    def __init__(self, provider_id: str, name: str, api_key: str, config: Mapping[str, object]) -> None:
+    def __init__(self, provider_id: str, name: str, api_key: str, config: Salad) -> None:
         self._id = provider_id
         self._name = name
-        self._organization = _required_config(config, "organization", name)
-        self._project = _required_config(config, "project", name).lower()
-        self._priority = _priority(config.get("priority", "low"), name)
+        self._organization = _required(config.organization, "organization", name)
+        self._project = _required(config.project, "project", name).lower()
+        self._priority = config.priority
         self._config = config
-        self._sdk = SaladCloudSdkAsync(timeout=int(_config_number(config, "request_timeout", 30) * 1000))
+        self._sdk = SaladCloudSdkAsync(timeout=config.request_timeout * 1000)
         self._sdk.set_api_key(api_key, "Salad-Api-Key")
 
     @classmethod
-    def create(cls, provider_id: str, name: str, credentials: Mapping[str, str], config: Mapping[str, object]) -> Self:
-        api_key = credentials.get("api_key")
-        if not api_key:
+    def create(cls, provider_id: str, name: str, credentials: Mapping[str, str], config: Mapping[str, Any]) -> Self:
+        settings = msgspec.convert({**credentials, **config}, Salad)
+        if not settings.api_key:
             raise CapabilityMismatchError("salad requires an api_key credential", provider=name)
-        return cls(provider_id, name, api_key, config)
+        return cls(provider_id, name, settings.api_key, settings)
 
     def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
         return False
@@ -248,9 +249,7 @@ class SaladProvider:
         if not isinstance(gpu_class_id, str) or not gpu_class_id:
             raise CapabilityMismatchError("salad offer has no gpu class id", provider=self._name)
 
-        image = spec.image.base or self._config.get("image") or DEFAULT_IMAGE
-        if not isinstance(image, str):
-            raise CapabilityMismatchError("salad image must be a string", provider=self._name)
+        image = spec.image.base or self._config.image or DEFAULT_IMAGE
 
         return {
             "compute_id": compute_id,
@@ -260,7 +259,7 @@ class SaladProvider:
             "public_key": public_key,
             "cpu": max(1, offer.cpus),
             "memory": max(1024, int(offer.memory_gb * 1024)),
-            "storage": max(1024**3, int(_config_number(self._config, "storage_gb", 50) * 1024**3)),
+            "storage": max(1024**3, self._config.storage_gb * 1024**3),
             "groups": {},
         }
 
@@ -321,7 +320,7 @@ class SaladProvider:
 
     async def _allocated(self, group_names: tuple[str, ...], min_count: int) -> None:
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + _config_number(self._config, "allocation_timeout", 300.0)
+        deadline = loop.time() + self._config.allocation_timeout
         allocated: set[str] = set()
         while len(allocated) < min_count:
             for group_name in group_names:
@@ -334,7 +333,7 @@ class SaladProvider:
                     f"salad did not allocate {min_count} container instance(s)",
                     provider=self._name,
                 )
-            await asyncio.sleep(_config_number(self._config, "poll_interval", 2.0))
+            await asyncio.sleep(self._config.poll_interval)
 
     async def _discard(self, group_name: str) -> None:
         try:
@@ -372,7 +371,7 @@ class SaladProvider:
             port=GATEWAY_PORT,
             protocol=ContainerNetworkingProtocol.HTTP,
         )
-        country_codes = _country_codes(self._config.get("country_codes"))
+        country_codes = _country_codes(self._config.countries)
         if country_codes:
             return ContainerGroupCreationRequest(
                 autostart_policy=True,
@@ -469,23 +468,10 @@ def _group_name(compute_id: str) -> str:
     return f"{stem}-{secrets.token_hex(4)}"
 
 
-def _required_config(config: Mapping[str, object], key: str, provider: str) -> str:
-    value = config.get(key)
-    if not isinstance(value, str) or not value:
+def _required(value: str | None, key: str, provider: str) -> str:
+    if not value:
         raise CapabilityMismatchError(f"salad needs config.{key}", provider=provider)
     return value
-
-
-def _priority(value: object, provider: str) -> str:
-    priority = "batch" if value == "lowest" else value
-    if not isinstance(priority, str) or priority not in PRIORITIES:
-        raise CapabilityMismatchError("salad priority must be high, medium, low, or batch", provider=provider)
-    return priority
-
-
-def _config_number(config: Mapping[str, object], key: str, default: float) -> float:
-    value = config.get(key, default)
-    return float(value) if isinstance(value, int | float) else default
 
 
 def _binding_text(binding: Binding, key: str) -> str:
@@ -541,15 +527,11 @@ def _required_text(value: object, field: str) -> str:
     return text
 
 
-def _country_codes(value: object) -> list[CountryCode]:
-    if value is None:
-        return []
-    if isinstance(value, tuple | list):
-        try:
-            return [CountryCode(code) for code in value if isinstance(code, str)]
-        except ValueError as error:
-            raise CapabilityMismatchError("salad country_codes contains an invalid country code") from error
-    raise CapabilityMismatchError("salad country_codes must be a sequence")
+def _country_codes(codes: tuple[str, ...]) -> list[CountryCode]:
+    try:
+        return [CountryCode(code) for code in codes]
+    except ValueError as error:
+        raise CapabilityMismatchError("salad country_codes contains an invalid country code") from error
 
 
 def _text(value: object) -> str | None:

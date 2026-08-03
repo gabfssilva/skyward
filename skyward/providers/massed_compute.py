@@ -6,9 +6,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, Self
 
 import httpx
+import msgspec
 
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.provider import Binding, Machine, MachineState
+from skyward.shared.providers import MassedCompute
 from skyward.shared.schemas import ComputeSpec, Market, Offer
 
 BASE_URL = "https://vm.massedcompute.com/api/v1"
@@ -18,7 +20,6 @@ LAUNCH_PATH = "/instance/launch"
 TERMINATE_PATH = "/instance/terminate"
 KEYS_PATH = "/ssh-keys"
 
-DEFAULT_IMAGE_ID = 184
 DEFAULT_USER = "Ubuntu"
 ANY_REGION = "any"
 
@@ -42,7 +43,7 @@ class MassedComputeProvider:
     def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
         return False
 
-    def __init__(self, provider_id: str, name: str, api_key: str, config: Mapping[str, Any]) -> None:
+    def __init__(self, provider_id: str, name: str, api_key: str, config: MassedCompute) -> None:
         self._id = provider_id
         self._name = name
         self._api_key = api_key
@@ -50,13 +51,13 @@ class MassedComputeProvider:
 
     @classmethod
     def create(cls, provider_id: str, name: str, credentials: Mapping[str, str], config: Mapping[str, Any]) -> Self:
-        api_key = credentials.get("api_key")
-        if not api_key:
+        settings = msgspec.convert({**credentials, **config}, MassedCompute)
+        if not settings.api_key:
             raise CapabilityMismatchError("massed_compute requires an api_key credential", provider=name)
-        return cls(provider_id, name, api_key, config)
+        return cls(provider_id, name, settings.api_key, settings)
 
     async def offers(self) -> AsyncIterator[Offer]:
-        async with httpx.AsyncClient(base_url=BASE_URL, timeout=int(self._config.get("request_timeout", 30))) as client:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=self._config.request_timeout) as client:
             response = await client.get(
                 INVENTORY_PATH,
                 headers={
@@ -126,7 +127,7 @@ class MassedComputeProvider:
         return {
             "compute_id": compute_id,
             "product": offer.instance_type,
-            "image_id": int(self._config.get("image_id", DEFAULT_IMAGE_ID)),
+            "image_id": self._config.image_id,
             "ssh_key_id": key_id,
             "ssh_key_name": key_name,
             "prefix": _prefix(compute_id),
@@ -187,7 +188,7 @@ class MassedComputeProvider:
     def _client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             base_url=BASE_URL,
-            timeout=int(self._config.get("request_timeout", 30)),
+            timeout=self._config.request_timeout,
             headers={
                 "Authorization": f"Bearer {self._api_key}",
                 "Accept": "application/json",

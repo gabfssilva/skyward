@@ -1,4 +1,5 @@
 import hashlib
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any, Literal
 
@@ -130,7 +131,10 @@ class PipIndex(Struct, frozen=True):
     """
 
     url: str
-    packages: tuple[str, ...] = ()
+    packages: Sequence[str] = ()
+
+    def __post_init__(self) -> None:
+        force_setattr(self, "packages", (self.packages,) if isinstance(self.packages, str) else tuple(self.packages))
 
 
 class MetricSpec(Struct, frozen=True):
@@ -148,18 +152,18 @@ class MetricSpec(Struct, frozen=True):
 class Image(Struct, frozen=True):
     base: str | None = None
     python: str | None = None
-    pip: tuple[str, ...] = ()
-    apt: tuple[str, ...] = ()
-    pip_indexes: tuple[PipIndex, ...] = ()
+    pip: Sequence[str] = ()
+    apt: Sequence[str] = ()
+    pip_indexes: Sequence[PipIndex] = ()
     env: dict[str, str] = field(default_factory=dict)
     shell_vars: dict[str, str] = field(default_factory=dict)
-    includes: tuple[str, ...] = ()
-    excludes: tuple[str, ...] = ()
+    includes: Sequence[str] = ()
+    excludes: Sequence[str] = ()
     includes_sha256: str | None = None
     """The user-code tarball, once the client has built it and put it in the blob
     store. ``includes``/``excludes`` are the client's inputs; this is what the node
     reads."""
-    metrics: tuple[MetricSpec, ...] | None = None
+    metrics: Sequence[MetricSpec] | None = None
     """``None`` leaves the built-in collectors in place; a list replaces them."""
     bootstrap_timeout: int = 900
     skyward: SkywardSource = "auto"
@@ -172,6 +176,13 @@ class Image(Struct, frozen=True):
     the image and on the snapshot behind it, so it can be found again and removed.
     Only providers that can snapshot a running machine honor it.
     """
+
+    def __post_init__(self) -> None:
+        for name in ("pip", "apt", "pip_indexes", "includes", "excludes"):
+            value = getattr(self, name)
+            force_setattr(self, name, (value,) if isinstance(value, str) else tuple(value))
+        if self.metrics is not None:
+            force_setattr(self, "metrics", tuple(self.metrics))
 
     def content_hash(self, source: str) -> str:
         """Name the environment a bootstrapped machine ends up in.

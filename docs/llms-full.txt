@@ -106,12 +106,13 @@ current owner and events report reconciliation and task progress.
 
 ## Providers and offers
 
-Provider factories create account descriptors. Credentials are resolved in the
+Provider classes are account descriptors. Credentials are resolved in the
 client process and registered with the daemon; provider read operations never
-return credentials. Current factories are:
+return credentials. The accounts are:
 
 `AWS`, `GCP`, `Hyperstack`, `JarvisLabs`, `Lambda`, `MassedCompute`, `Novita`,
-`RunPod`, `Scaleway`, `TensorDock`, `VastAI`, `Verda`, `Vultr`, and `Container`.
+`RunPod`, `Salad`, `Scaleway`, `TensorDock`, `VastAI`, `Verda`, `Vultr`, and
+`Container`.
 
 ```python
 with sky.Compute(

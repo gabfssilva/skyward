@@ -5,7 +5,7 @@ A provider has two identities in v2:
 - a **kind**, such as `aws` or `runpod`, which selects an adapter;
 - an **account**, which is a named set of credentials and non-secret configuration stored by the daemon.
 
-The public factories return account descriptors. They read credentials in the client process; an explicitly passed credential takes precedence over its environment source.
+The public classes are account descriptors. Credentials are read in the client process; an explicitly passed credential takes precedence over its environment source.
 
 ```python
 import skyward as sky
@@ -45,7 +45,7 @@ The credentials column is the field required by the provider adapter. Environmen
 | `sky.Vultr` | `vultr` | `api_key` | 6 h |
 | `sky.Container` | `container` | none | 1 day |
 
-Each factory's complete signature is available in the [provider reference pages](reference/providers/aws.md).
+Each account's complete signature is available in the [provider reference pages](reference/providers/aws.md).
 
 ## Credential sources
 
@@ -67,7 +67,7 @@ Each factory's complete signature is available in the [provider reference pages]
 | Vultr | `VULTR_API_KEY` |
 | Container | no credentials |
 
-Pass credentials directly to the factory when the process should not read them from the environment. The daemon adapter receives resolved credentials through the provider account record; it does not read environment variables on its own.
+Pass credentials directly to the account when the process should not read them from the environment. The daemon adapter receives resolved credentials through the provider account record; it does not read environment variables on its own.
 
 ## Cached offers
 
@@ -97,11 +97,11 @@ with sky.Compute(
     train(data) >> compute
 ```
 
-Use it for local development and CI. Its provider factory accepts the container image, SSH user, runtime binary, container-name prefix, network, and account name.
+Use it for local development and CI. Its provider account accepts the container image, SSH user, runtime binary, container-name prefix, network, and account name.
 
 ## Choosing a provider
 
-Choose based on the catalog returned for the account rather than a fixed hardware list. Accelerator names and VRAM are normalized into the shared vocabulary, while provider-specific filters remain in each factory's configuration.
+Choose based on the catalog returned for the account rather than a fixed hardware list. Accelerator names and VRAM are normalized into the shared vocabulary, while provider-specific filters remain in each account's configuration.
 
 - Use AWS or GCP for account-managed infrastructure and broad regional catalogs.
 - Use marketplace providers when price and rapidly changing capacity matter.
