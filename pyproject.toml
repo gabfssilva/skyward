@@ -141,6 +141,7 @@ markers = [
     "scaleway: Scaleway provider tests",
     "vultr: Vultr provider tests",
     "lambda_cloud: Lambda Cloud provider tests",
+    "salad: Salad Cloud provider tests",
 ]
 
 [dependency-groups]

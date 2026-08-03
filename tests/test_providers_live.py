@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from skyward.shared.accelerators import CATALOG
 from skyward.providers.registry import REGISTRY
+from skyward.shared.accelerators import CATALOG
 
 CREDENTIALS = {
     "aws": {"access_key_id": "AWS_ACCESS_KEY_ID", "secret_access_key": "AWS_SECRET_ACCESS_KEY"},
@@ -23,6 +23,7 @@ CREDENTIALS = {
     "massed_compute": {"api_key": "MASSED_API_KEY"},
     "novita": {"api_key": "NOVITA_API_KEY"},
     "runpod": {"api_key": "RUNPOD_API_KEY"},
+    "salad": {"api_key": "SALAD_API_KEY"},
     "scaleway": {"secret_key": "SCW_SECRET_KEY"},
     "tensordock": {"api_token": "TENSORDOCK_API_TOKEN"},
     "vastai": {"api_key": "VAST_API_KEY"},
@@ -32,7 +33,10 @@ CREDENTIALS = {
 
 PRICED_KINDS = sorted(set(CREDENTIALS) - {"tensordock"})
 
-CONFIG = {"aws": {"regions": ["us-east-1"]}}
+CONFIG = {
+    "aws": {"regions": ["us-east-1"]},
+    "salad": {"organization": os.environ.get("SALAD_ORGANIZATION", ""), "project": os.environ.get("SALAD_PROJECT", "")},
+}
 
 AWS_PROFILE = Path.home() / ".aws" / "credentials"
 

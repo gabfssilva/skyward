@@ -179,6 +179,37 @@ def Lambda(  # noqa: N802
     )
 
 
+def Salad(  # noqa: N802
+    api_key: str | None = None,
+    organization: str | None = None,
+    project: str | None = None,
+    priority: str = "low",
+    country_codes: tuple[str, ...] | str | None = None,
+    image: str | None = None,
+    storage_gb: int = 50,
+    request_timeout: int = 30,
+    allocation_timeout: float = 300.0,
+    poll_interval: float = 2.0,
+    name: str = "",
+) -> Provider:
+    return _provider(
+        "salad",
+        name,
+        _some(api_key=api_key or os.environ.get("SALAD_API_KEY")),
+        _some(
+            organization=organization or os.environ.get("SALAD_ORGANIZATION"),
+            project=project or os.environ.get("SALAD_PROJECT"),
+            priority=priority,
+            country_codes=_as_tuple(country_codes),
+            image=image,
+            storage_gb=storage_gb,
+            request_timeout=request_timeout,
+            allocation_timeout=allocation_timeout,
+            poll_interval=poll_interval,
+        ),
+    )
+
+
 def MassedCompute(  # noqa: N802
     api_key: str | None = None,
     image_id: int = 184,

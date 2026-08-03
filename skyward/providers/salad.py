@@ -1,0 +1,559 @@
+"""Salad Cloud, reached through its HTTP gateway rather than its SSH relay.
+
+Salad rents containers, not machines, and gives a container exactly one way in:
+the Container Gateway, an HTTP reverse proxy in front of one port. There is no
+inbound TCP to a node, and the SSH relay the portal advertises is a preview
+feature that runs on Salad's side of the container — on a node whose relay agent
+fails, it drops the connection before the banner and only a reallocation fixes
+it. Neither the daemon nor the node can do anything about that from here.
+
+So the gateway is made to look like a socket. The container runs sshd and a
+WebSocket-to-TCP bridge on the gateway port, and the daemon runs one loopback
+listener per node whose accepted connections become WebSockets to that node's
+gateway. Above :meth:`SaladProvider.machines` nothing knows: it hands back a
+host and a port, and ``asyncssh`` dials them like any other provider's.
+
+Two constraints of the gateway shape the design. It cannot carry the
+``Salad-Api-Key`` header on a WebSocket upgrade, so the gateway is opened with
+``auth=False`` and the security of a node rests on its unguessable domain name
+and on sshd taking public keys only. And its domain name addresses a *container
+group*, load balancing across that group's replicas, so a group with two
+replicas has no way to reach one of them: every node is its own group of one,
+which is also what makes a node individually terminable.
+
+Nodes still cannot reach each other — the gateway is the only inbound and it is
+the daemon's — so :meth:`allows_cluster_formation` stays false and a compute
+here is a fleet of independent nodes.
+"""
+
+import asyncio
+import contextlib
+import re
+import secrets
+from collections.abc import AsyncIterator, Mapping, Sequence
+from datetime import UTC, datetime, timedelta
+from typing import ClassVar, Self
+
+from salad_cloud_sdk import SaladCloudSdkAsync
+from salad_cloud_sdk.models import (
+    ContainerConfiguration,
+    ContainerGroupCreationRequest,
+    ContainerGroupPriority,
+    ContainerNetworkingProtocol,
+    ContainerRestartPolicy,
+    CountryCode,
+    CreateContainerGroupNetworking,
+    CreateContainerResourceRequirements,
+)
+from salad_cloud_sdk.net.transport.api_error import ApiError
+from websockets.asyncio.client import ClientConnection, connect
+from websockets.exceptions import WebSocketException
+
+from skyward.shared.errors import CapabilityMismatchError
+from skyward.shared.provider import Binding, Machine, MachineState
+from skyward.shared.schemas import ComputeSpec, Market, Offer
+
+SSH_USER = "root"
+DEFAULT_IMAGE = "nvidia/cuda:12.8.0-cudnn-runtime-ubuntu24.04"
+GATEWAY_PORT = 8888
+WEBSOCAT_URL = "https://github.com/vi/websocat/releases/download/v1.13.0/websocat.x86_64-unknown-linux-musl"
+PRIORITIES = frozenset(("high", "medium", "low", "batch"))
+
+NODE_COMMAND = (
+    "([ -x /usr/sbin/sshd ] && command -v curl > /dev/null || ("
+    "apt-get update && "
+    "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssh-server curl ca-certificates"
+    ")) && "
+    "mkdir -p /run/sshd /root/.ssh && "
+    'printf \'%s\\n\' "$PUBLIC_KEY" > /root/.ssh/authorized_keys && '
+    "chmod 700 /root/.ssh && chmod 600 /root/.ssh/authorized_keys && "
+    "ssh-keygen -A && "
+    "/usr/sbin/sshd -o PermitRootLogin=prohibit-password -o PasswordAuthentication=no && "
+    "([ -x /usr/local/bin/websocat ] || ("
+    f"curl -fsSL -o /usr/local/bin/websocat {WEBSOCAT_URL} && "
+    "chmod +x /usr/local/bin/websocat"
+    ")) && "
+    f"exec /usr/local/bin/websocat --binary ws-l:[::]:{GATEWAY_PORT} tcp:127.0.0.1:22"
+)
+"""What the container runs.
+
+sshd is started in the background and the bridge is what the container *is*, so
+the gateway's port is served by PID 1 and a bridge that dies takes the node with
+it rather than leaving one Salad still believes in.
+
+The two guards are what an image is allowed to satisfy in advance: one that
+already carries sshd, curl and websocat reaches the bridge without a package
+manager, which is the difference between a cold start and a dice roll.
+
+The bridge binds ``[::]`` because the gateway reaches the container over IPv6: a
+listener on ``0.0.0.0`` passes every probe inside the container and still leaves
+the gateway answering 503, having found nothing to route to.
+
+Writing to a file under ``/etc/ssh`` is avoided on purpose — Salad's WAF rejects
+a container group whose command contains that path — so sshd's two settings
+arrive as flags.
+"""
+
+
+class _Bridge:
+    """A loopback port that carries one node's SSH over its gateway."""
+
+    def __init__(self, url: str) -> None:
+        self._url = url
+        self._server: asyncio.Server | None = None
+
+    @property
+    def port(self) -> int:
+        if self._server is None:
+            raise CapabilityMismatchError("salad bridge was never started")
+        return int(self._server.sockets[0].getsockname()[1])
+
+    async def start(self) -> None:
+        self._server = await asyncio.start_server(self._pump, host="127.0.0.1", port=0)
+
+    async def close(self) -> None:
+        if self._server is None:
+            return
+        self._server.close()
+        with contextlib.suppress(Exception):
+            await self._server.wait_closed()
+
+    async def _pump(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            async with connect(self._url, max_size=None, ping_interval=None) as socket:
+                streams = (
+                    asyncio.create_task(_upstream(reader, socket)),
+                    asyncio.create_task(_downstream(socket, writer)),
+                )
+                try:
+                    await asyncio.wait(streams, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    for stream in streams:
+                        stream.cancel()
+        except (OSError, WebSocketException):
+            pass
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+
+
+_BRIDGES: dict[str, _Bridge] = {}
+_BRIDGE_LOCK = asyncio.Lock()
+
+
+async def _upstream(reader: asyncio.StreamReader, socket: ClientConnection) -> None:
+    while chunk := await reader.read(65536):
+        await socket.send(chunk)
+    await socket.close()
+
+
+async def _downstream(socket: ClientConnection, writer: asyncio.StreamWriter) -> None:
+    async for message in socket:
+        writer.write(message if isinstance(message, bytes) else message.encode())
+        await writer.drain()
+
+
+async def _bridge(dns: str) -> _Bridge:
+    async with _BRIDGE_LOCK:
+        if (running := _BRIDGES.get(dns)) is not None:
+            return running
+        bridge = _Bridge(f"wss://{dns}/")
+        await bridge.start()
+        _BRIDGES[dns] = bridge
+        return bridge
+
+
+async def _release_bridge(dns: str | None) -> None:
+    if not dns:
+        return
+    async with _BRIDGE_LOCK:
+        bridge = _BRIDGES.pop(dns, None)
+    if bridge is not None:
+        await bridge.close()
+
+
+class SaladProvider:
+    kind: ClassVar[str] = "salad"
+    credential_fields: ClassVar[tuple[str, ...]] = ("api_key",)
+    offers_ttl: ClassVar[timedelta] = timedelta(minutes=10)
+
+    def __init__(self, provider_id: str, name: str, api_key: str, config: Mapping[str, object]) -> None:
+        self._id = provider_id
+        self._name = name
+        self._organization = _required_config(config, "organization", name)
+        self._project = _required_config(config, "project", name).lower()
+        self._priority = _priority(config.get("priority", "low"), name)
+        self._config = config
+        self._sdk = SaladCloudSdkAsync(timeout=int(_config_number(config, "request_timeout", 30) * 1000))
+        self._sdk.set_api_key(api_key, "Salad-Api-Key")
+
+    @classmethod
+    def create(cls, provider_id: str, name: str, credentials: Mapping[str, str], config: Mapping[str, object]) -> Self:
+        api_key = credentials.get("api_key")
+        if not api_key:
+            raise CapabilityMismatchError("salad requires an api_key credential", provider=name)
+        return cls(provider_id, name, api_key, config)
+
+    def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
+        return False
+
+    async def offers(self) -> AsyncIterator[Offer]:
+        catalog = await self._sdk.organization_data.list_gpu_classes(self._organization)
+        now = datetime.now(UTC)
+        expires_at = now + self.offers_ttl
+
+        for gpu_class in catalog.items or ():
+            price = next(
+                (
+                    _number(getattr(entry, "price", None))
+                    for entry in gpu_class.prices or ()
+                    if _enum_value(getattr(entry, "priority", None)) == self._priority
+                ),
+                None,
+            )
+            if price is None:
+                continue
+            gpu_class_id = _required_text(getattr(gpu_class, "id_", None), "GPU class id")
+            gpu_class_name = _required_text(getattr(gpu_class, "name", None), "GPU class name")
+
+            yield Offer(
+                id=f"{gpu_class_id}:{self._priority}",
+                provider_id=self._id,
+                provider_name=self._name,
+                kind=self.kind,
+                instance_type=gpu_class_name,
+                accelerator=gpu_class_name,
+                accelerator_count=_integer(getattr(gpu_class, "gpu_count", None), 1),
+                cpus=_integer(getattr(gpu_class, "max_vcpu", None)),
+                memory_gb=_integer(getattr(gpu_class, "max_ram", None)) / 1024,
+                disk_gb=_integer(getattr(gpu_class, "max_storage", None)) / 1024**3,
+                spot_price=None,
+                on_demand_price=price,
+                billing_unit="second",
+                fetched_at=now,
+                expires_at=expires_at,
+                specific={
+                    "gpu_class_id": gpu_class_id,
+                    "priority": self._priority,
+                    "gpu_class_type": _enum_value(getattr(gpu_class, "gpu_class_type", None)),
+                    "min_vcpu": _integer(getattr(gpu_class, "min_vcpu", None)),
+                    "min_ram_mb": _integer(getattr(gpu_class, "min_ram", None)),
+                    "min_storage_bytes": _integer(getattr(gpu_class, "min_storage", None)),
+                },
+            )
+
+    async def initialize(self, compute_id: str, spec: ComputeSpec, offer: Offer, market: Market, public_key: str) -> Binding:
+        gpu_class_id = offer.specific.get("gpu_class_id")
+        if not isinstance(gpu_class_id, str) or not gpu_class_id:
+            raise CapabilityMismatchError("salad offer has no gpu class id", provider=self._name)
+
+        image = spec.image.base or self._config.get("image") or DEFAULT_IMAGE
+        if not isinstance(image, str):
+            raise CapabilityMismatchError("salad image must be a string", provider=self._name)
+
+        return {
+            "compute_id": compute_id,
+            "gpu_class_id": gpu_class_id,
+            "priority": self._priority,
+            "image": image.format(python=spec.image.python or "3.13"),
+            "public_key": public_key,
+            "cpu": max(1, offer.cpus),
+            "memory": max(1024, int(offer.memory_gb * 1024)),
+            "storage": max(1024**3, int(_config_number(self._config, "storage_gb", 50) * 1024**3)),
+            "groups": {},
+        }
+
+    async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+        compute_id = _binding_text(binding, "compute_id")
+        minted: dict[str, str] = {}
+        try:
+            for _ in range(count):
+                group_name = _group_name(compute_id)
+                created = await self._sdk.container_groups.create_container_group(
+                    self._group_body(group_name, binding),
+                    self._organization,
+                    self._project,
+                )
+                minted[group_name] = _dns(created) or ""
+            await self._allocated(tuple(minted), min_count)
+        except Exception:
+            for group_name in minted:
+                await self._discard(group_name)
+            raise
+
+        updated = {**binding, "groups": {**_binding_groups(binding), **minted}}
+        return updated, tuple(Machine(id=group_name, state="pending", user=SSH_USER) for group_name in minted)
+
+    async def machines(self, binding: Binding) -> Mapping[str, Machine]:
+        machines: dict[str, Machine] = {}
+        for group_name, dns in _binding_groups(binding).items():
+            instances = await self._instances(group_name)
+            if instances is None:
+                continue
+            if _state(next(iter(instances), None)) != "running":
+                machines[group_name] = Machine(id=group_name, state="pending", user=SSH_USER)
+                continue
+            address = dns or await self._dns(group_name)
+            if not address:
+                machines[group_name] = Machine(id=group_name, state="pending", user=SSH_USER)
+                continue
+            bridge = await _bridge(address)
+            machines[group_name] = Machine(
+                id=group_name,
+                state="running",
+                host="127.0.0.1",
+                port=bridge.port,
+                user=SSH_USER,
+            )
+        return machines
+
+    async def terminate(self, binding: Binding, machine_ids: tuple[str, ...]) -> None:
+        groups = _binding_groups(binding)
+        for group_name in machine_ids:
+            await self._discard(group_name)
+            await _release_bridge(groups.get(group_name))
+
+    async def release(self, binding: Binding) -> None:
+        for group_name, dns in _binding_groups(binding).items():
+            await self._discard(group_name)
+            await _release_bridge(dns)
+
+    async def _allocated(self, group_names: tuple[str, ...], min_count: int) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _config_number(self._config, "allocation_timeout", 300.0)
+        allocated: set[str] = set()
+        while len(allocated) < min_count:
+            for group_name in group_names:
+                if group_name not in allocated and await self._instances(group_name):
+                    allocated.add(group_name)
+            if len(allocated) >= min_count:
+                return
+            if loop.time() >= deadline:
+                raise CapabilityMismatchError(
+                    f"salad did not allocate {min_count} container instance(s)",
+                    provider=self._name,
+                )
+            await asyncio.sleep(_config_number(self._config, "poll_interval", 2.0))
+
+    async def _discard(self, group_name: str) -> None:
+        try:
+            await self._sdk.container_groups.delete_container_group(self._organization, self._project, group_name)
+        except ApiError as error:
+            if error.status != 404:
+                raise
+
+    async def _dns(self, group_name: str) -> str:
+        try:
+            group = await self._sdk.container_groups.get_container_group(self._organization, self._project, group_name)
+        except ApiError as error:
+            if error.status == 404:
+                return ""
+            raise
+        return _dns(group) or ""
+
+    def _group_body(self, group_name: str, binding: Binding) -> ContainerGroupCreationRequest:
+        resources = CreateContainerResourceRequirements(
+            cpu=_binding_integer(binding, "cpu", 1),
+            memory=_binding_integer(binding, "memory", 1024),
+            gpu_classes=[_binding_text(binding, "gpu_class_id")],
+            storage_amount=_binding_integer(binding, "storage", 1024**3),
+        )
+        container = ContainerConfiguration(
+            image=_binding_text(binding, "image"),
+            command=["sh", "-c", NODE_COMMAND],
+            environment_variables={"PUBLIC_KEY": _binding_text(binding, "public_key")},
+            image_caching=True,
+            priority=ContainerGroupPriority(self._priority),
+            resources=resources,
+        )
+        networking = CreateContainerGroupNetworking(
+            auth=False,
+            port=GATEWAY_PORT,
+            protocol=ContainerNetworkingProtocol.HTTP,
+        )
+        country_codes = _country_codes(self._config.get("country_codes"))
+        if country_codes:
+            return ContainerGroupCreationRequest(
+                autostart_policy=True,
+                container=container,
+                name=group_name,
+                networking=networking,
+                replicas=1,
+                restart_policy=ContainerRestartPolicy.ALWAYS,
+                country_codes=country_codes,
+                display_name=group_name,
+            )
+        return ContainerGroupCreationRequest(
+            autostart_policy=True,
+            container=container,
+            name=group_name,
+            networking=networking,
+            replicas=1,
+            restart_policy=ContainerRestartPolicy.ALWAYS,
+            display_name=group_name,
+        )
+
+    async def _instances(self, group_name: str) -> tuple[object, ...] | None:
+        try:
+            collection = await self._sdk.container_groups.list_container_group_instances(
+                self._organization,
+                self._project,
+                group_name,
+            )
+        except ApiError as error:
+            if error.status == 404:
+                return None
+            if error.status is None or not 500 <= error.status < 600:
+                raise
+            return await self._instances_from_system_logs(group_name)
+        return tuple(collection.instances or ())
+
+    async def _instances_from_system_logs(self, group_name: str) -> tuple[object, ...]:
+        try:
+            logs = await self._sdk.system_logs.get_system_logs(self._organization, self._project, group_name)
+        except ApiError as error:
+            if error.status == 404 or error.status is not None and 500 <= error.status < 600:
+                return ()
+            raise
+        except TypeError:
+            response = getattr(self._sdk.system_logs, "_last_response", None)
+            body = getattr(response, "body", None)
+            if not isinstance(body, Mapping) or not isinstance(body.get("items"), list):
+                raise
+            logs_items = body["items"]
+        else:
+            logs_items = logs.items or ()
+
+        instance_ids = tuple(
+            dict.fromkeys(
+                instance_id
+                for log in logs_items
+                if (
+                    instance_id := _text(
+                        log.get("instance_id") if isinstance(log, Mapping) else getattr(log, "instance_id", None)
+                    )
+                )
+            )
+        )
+        instances: list[object] = []
+        for instance_id in instance_ids:
+            try:
+                instance = await self._sdk.container_groups.get_container_group_instance(
+                    self._organization,
+                    self._project,
+                    group_name,
+                    instance_id,
+                )
+            except ApiError as error:
+                if error.status == 404 or error.status is not None and 500 <= error.status < 600:
+                    continue
+                raise
+            instances.append(instance)
+        return tuple(instances)
+
+
+def _state(instance: object) -> MachineState:
+    if instance is None:
+        return "pending"
+    ready = bool(getattr(instance, "ready", False))
+    return "running" if _enum_value(getattr(instance, "state", None)) == "running" and ready else "pending"
+
+
+def _dns(group: object) -> str | None:
+    return _text(getattr(getattr(group, "networking", None), "dns", None))
+
+
+def _group_name(compute_id: str) -> str:
+    stem = re.sub(r"[^a-z0-9-]", "-", f"skyward-{compute_id.lower()}").strip("-")[:54].rstrip("-")
+    return f"{stem}-{secrets.token_hex(4)}"
+
+
+def _required_config(config: Mapping[str, object], key: str, provider: str) -> str:
+    value = config.get(key)
+    if not isinstance(value, str) or not value:
+        raise CapabilityMismatchError(f"salad needs config.{key}", provider=provider)
+    return value
+
+
+def _priority(value: object, provider: str) -> str:
+    priority = "batch" if value == "lowest" else value
+    if not isinstance(priority, str) or priority not in PRIORITIES:
+        raise CapabilityMismatchError("salad priority must be high, medium, low, or batch", provider=provider)
+    return priority
+
+
+def _config_number(config: Mapping[str, object], key: str, default: float) -> float:
+    value = config.get(key, default)
+    return float(value) if isinstance(value, int | float) else default
+
+
+def _binding_text(binding: Binding, key: str) -> str:
+    value = binding.get(key)
+    if not isinstance(value, str) or not value:
+        raise CapabilityMismatchError(f"salad binding has no {key}")
+    return value
+
+
+def _binding_integer(binding: Binding, key: str, default: int) -> int:
+    value = binding.get(key)
+    return int(value) if isinstance(value, int | float) else default
+
+
+def _binding_groups(binding: Binding) -> dict[str, str]:
+    value = binding.get("groups")
+    if not isinstance(value, Mapping):
+        return {}
+    return {name: dns for name, dns in value.items() if isinstance(name, str) and isinstance(dns, str)}
+
+
+def _enum_value(value: object) -> str | None:
+    member = getattr(value, "value", value)
+    return member if isinstance(member, str) else None
+
+
+def _number(value: object) -> float | None:
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _integer(value: object, default: int = 0) -> int:
+    if isinstance(value, int | float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value))
+        except ValueError:
+            return default
+    return default
+
+
+def _required_text(value: object, field: str) -> str:
+    text = _text(value)
+    if text is None or not text:
+        raise CapabilityMismatchError(f"salad returned no {field}")
+    return text
+
+
+def _country_codes(value: object) -> list[CountryCode]:
+    if value is None:
+        return []
+    if isinstance(value, tuple | list):
+        try:
+            return [CountryCode(code) for code in value if isinstance(code, str)]
+        except ValueError as error:
+            raise CapabilityMismatchError("salad country_codes contains an invalid country code") from error
+    raise CapabilityMismatchError("salad country_codes must be a sequence")
+
+
+def _text(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+__all__ = ["SaladProvider"]
