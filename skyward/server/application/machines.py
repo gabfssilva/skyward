@@ -16,7 +16,6 @@ nobody will ever find and everybody will keep paying for.
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import Protocol
 
 import msgspec
@@ -31,11 +30,12 @@ from skyward.server.persistence.offers import OfferCache
 from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.store import now
 from skyward.shared.errors import CapabilityMismatchError
+from skyward.shared.observability import logger
 from skyward.shared.provider import Bakeable, Binding, Machine, Mount, Mountable, Preemptible, Provider
 from skyward.shared.schemas import Compute, ComputeSpec, Endpoint, Error, Image, Market, Node, Offer, Volume
 from skyward.worker import bootstrap
 
-logger = logging.getLogger(__name__)
+logger = logger.bind(component="machines")
 
 
 class _ClusterFormation(Protocol):
@@ -213,7 +213,7 @@ class Machines:
         try:
             await adapter.release(infrastructure.binding)
         except Exception:
-            logger.warning("could not release the abandoned binding %s", infrastructure.binding, exc_info=True)
+            logger.warning("could not release the abandoned binding {}", infrastructure.binding, exc_info=True)
 
     async def bind(self, compute: Compute) -> Infrastructure:
         """Give the compute an address in the world, once, before anything is launched.
@@ -352,7 +352,7 @@ class Machines:
             if await adapter.baked(infrastructure.binding, tag) is None:
                 await adapter.bake(infrastructure.binding, node.machine, tag)
         except Exception:
-            logger.warning("could not bake %s into an image for %s", node.machine, compute_id, exc_info=True)
+            logger.bind(compute_id=compute_id).warning("could not bake {} into an image", node.machine, exc_info=True)
 
     async def _tag(self, image: Image) -> str | None:
         """What to call the image this compute bakes to, or nothing if it must not bake one.
@@ -422,7 +422,7 @@ class Machines:
                 if node.machine is None and orphans:
                     market_guess = infrastructure.markets[0] if infrastructure.markets else None
                     await self._nodes.launched(node.id, orphans.pop(0), offer=infrastructure.offer, market=market_guess)
-                    logger.warning("node %s adopted a machine nobody had written down", node.id)
+                    logger.bind(node_id=node.id).warning("adopted a machine nobody had written down")
                     continue
 
                 match observed.get(node.machine or ""):

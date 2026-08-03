@@ -9,10 +9,11 @@ Metrics live in ``skyward.worker.metrics`` (the public ``sky.metrics`` namespace
 deliberately not re-exported here — one name, one import path.
 """
 
-from skyward.shared.observability.logger import Logger, logger
+from skyward.shared.observability.logger import NAME, Logger, logger
 from skyward.shared.observability.logging import LogConfig, LogLevel, setup_logging, teardown_logging
 
 __all__ = [
+    "NAME",
     "LogConfig",
     "LogLevel",
     "Logger",

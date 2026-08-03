@@ -12,11 +12,10 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from skyward.shared.errors import CapabilityMismatchError
-from skyward.shared.provider import Machine
-from skyward.shared.schemas import ComputeSpec, Image, NodeBounds, ProviderRef, Spec
+from skyward.core.provider import RunPod
 from skyward.providers.runpod import (
     _NVIDIA_VARIANT,
+    DEADSWITCH,
     DEFAULT_IMAGE,
     ENTRYPOINT,
     RunPodProvider,
@@ -25,7 +24,9 @@ from skyward.providers.runpod import (
     _machine,
     _select_image_candidates,
 )
-from skyward.core.provider import RunPod
+from skyward.shared.errors import CapabilityMismatchError
+from skyward.shared.provider import Machine
+from skyward.shared.schemas import ComputeSpec, Image, NodeBounds, ProviderRef, Spec
 
 LEGACY_BINDING = {
     "prefix": "skyward-cmp_1-",
@@ -142,6 +143,11 @@ def test_the_deadswitch_survives_the_bash_c_wrapping() -> None:
     assert "'" not in ENTRYPOINT, "a single quote would break bash -c '<entrypoint>'"
     assert "INSTANCE_TIMEOUT" in ENTRYPOINT
     assert "runpodctl remove pod" in ENTRYPOINT and "kill 1" in ENTRYPOINT, "full removal, kill as fallback"
+
+
+def test_ssh_setup_stops_at_the_first_failed_command() -> None:
+    ssh_setup = ENTRYPOINT.removeprefix(DEADSWITCH)
+    assert "; " not in ssh_setup
 
 
 def test_the_timeout_travels_as_an_env_var() -> None:

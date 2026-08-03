@@ -32,7 +32,7 @@ if __name__ == "__main__":
 
         # gather() runs all calls in parallel
         results = sky.gather(*[process_chunk(c) for c in chunks]) >> compute
-        print(f"Chunk sums: {results}")  # (6, 15, 24)
+        print(f"Chunk sums: {results}")  # [6, 15, 24]
 
         # & operator for type-safe parallel execution
         a, b = (multiply(2, 3) & multiply(4, 5)) >> compute
@@ -45,6 +45,6 @@ if __name__ == "__main__":
         # gather(stream=True) yields results as they complete
         tasks = [process_chunk([i] * 1000) for i in range(5)]
         start = time.monotonic()
-        for result in sky.gather(*tasks, stream=True) >> compute:
+        for result in sky.gather(*tasks, stream=True, ordered=False) >> compute:
             elapsed = time.monotonic() - start
             print(f"  [{elapsed:.1f}s] Got: {result}")

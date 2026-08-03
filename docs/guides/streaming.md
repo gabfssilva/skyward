@@ -2,7 +2,7 @@
 
 Most of the time, `@sky.function` functions run remotely and return a single result — the entire return value is serialized, sent back over the network, and handed to the caller at once. This works well for most workloads, but some patterns don't fit: a function that produces millions of rows can't materialize them all in memory before sending; a training loop that yields metrics every epoch shouldn't wait until the last epoch to report; a pipeline that feeds data into a remote model shouldn't serialize the entire dataset upfront.
 
-Streaming solves this. A `@sky.function` function that uses `yield` instead of `return` becomes a **streaming computation** — results flow back to the caller one at a time as they're produced, and the caller consumes them as a regular Python iterator. No special API, no callback registration, no async boilerplate. You write a generator, dispatch it with `>>`, and iterate.
+Streaming solves this. A generator decorated with `@sky.stream` becomes a **streaming computation** — results flow back to the caller one at a time as they're produced, and the caller consumes them as a regular Python iterator. Input streaming remains a `@sky.function` call with an `Iterator[T]` parameter.
 
 ## Output streaming
 
@@ -12,7 +12,7 @@ The simplest form: the remote function `yield`s values instead of returning a si
 --8<-- "guides/13_streaming.py:20:26"
 ```
 
-Dispatching this function returns something you can iterate over immediately — results arrive as the remote function produces them, not after it finishes:
+Dispatching this function returns a `Streaming` computation that produces an iterator — results arrive as the remote function yields them, not after it finishes:
 
 ```python
 --8<-- "guides/13_streaming.py:61:62"
@@ -66,8 +66,8 @@ uv run python guides/13_streaming.py
 
 **What you learned:**
 
-- **Output streaming** — `@sky.function` generators yield results incrementally; `>>` returns a synchronous iterator on the client side.
+- **Output streaming** — `@sky.stream` generators yield results incrementally; `>>` returns a synchronous iterator on the client side.
 - **Input streaming** — Parameters annotated as `Iterator[T]` are streamed to the worker instead of serialized whole.
 - **Bidirectional** — Combine both: stream data in with `Iterator[T]`, yield results out with `yield`. Neither side buffers the full dataset.
 - **Backpressure** — Casty's stream protocol pauses the producer if the consumer falls behind, preventing unbounded memory growth.
-- **Zero API overhead** — No special classes or protocols. Write a generator, annotate with `Iterator`, and the streaming machinery activates automatically.
+- **Explicit output API** — Use `@sky.stream` for generator functions and `@sky.function` for functions that consume streamed input.

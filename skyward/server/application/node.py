@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import shlex
 from collections.abc import Callable
 
@@ -10,12 +9,13 @@ import msgspec
 from skyward.server.application.events import events
 from skyward.server.application.source import Source
 from skyward.server.application.ssh import SshChannel
+from skyward.shared.observability import logger
 from skyward.shared.provider import Machine
 from skyward.shared.schemas import Executor, Image, NodeState, Options, PluginRef
 from skyward.worker import bootstrap, plugins, worker
 from skyward.worker.journal import SKYWARD_DIR, Console, Health, Metric, NodeEvent, Phase
 
-logger = logging.getLogger(__name__)
+logger = logger.bind(component="node")
 
 WORKER_TIMEOUT = 180.0
 DEFAULT_OPTIONS = Options()
@@ -162,7 +162,7 @@ class Node:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.warning("node %s failed: %s", self._machine.id, exc)
+            logger.bind(instance_id=self._machine.id).warning("node failed: {}", exc)
             self._listener("failed", str(exc))
 
     async def _arm_timeout(self) -> None:

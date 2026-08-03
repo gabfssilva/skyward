@@ -26,7 +26,7 @@ def node_info() -> dict:
     assert info is not None
     return {
         "node": info.node,
-        "total_nodes": info.total_nodes,
+        "nodes": info.nodes,
         "is_head": info.is_head,
     }
 
@@ -55,7 +55,7 @@ if __name__ == "__main__":
     with sky.Compute(provider=sky.Container(), nodes=3) as compute:
         results = node_info() @ compute
         for r in results:
-            print(f"  Node {r['node']}/{r['total_nodes']} (head={r['is_head']})")
+            print(f"  Node {r['node']}/{r['nodes']} (head={r['is_head']})")
 
         partial_sums = shard_sum(list(range(100))) @ compute
         print(f"  Total: {sum(partial_sums)}")

@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Protocol, runtime_checkable
 
 import asyncssh
 from msgspec import Struct
 
-logger = logging.getLogger(__name__)
+from skyward.shared.observability import logger
+
+logger = logger.bind(component="ssh")
 
 RETRY_DELAY = 2.0
 CONNECT_TIMEOUT = 10.0
@@ -280,7 +281,7 @@ class SshChannel:
 
         self._up.clear()
         self._drop_listeners()
-        logger.warning("ssh: %s dropped, reconnecting", self._host)
+        logger.warning("ssh: {} dropped, reconnecting", self._host)
 
         for _ in range(self._reconnect_attempts):
             await asyncio.sleep(self._retry_delay)
@@ -292,7 +293,7 @@ class SshChannel:
                     await self._listen(fresh, remote_host, remote_port, local_port)
             except (OSError, asyncssh.Error):
                 continue
-            logger.info("ssh: %s back", self._host)
+            logger.info("ssh: {} back", self._host)
             self._attach(fresh)
             return
 

@@ -1,11 +1,11 @@
-"""Fractional GPUs — run inference on a slice of a GPU for lower cost."""
+"""GPU inference — inspect the device available to a remote function."""
 
 import skyward as sky
 
 
 @sky.function
 def classify(texts: list[str]) -> dict:
-    """Classify sentiment on a fractional GPU."""
+    """Classify sentiment on a GPU."""
     import torch
     from transformers import pipeline
 
@@ -24,7 +24,6 @@ def classify(texts: list[str]) -> dict:
         "predictions": results,
         "device": str(device),
         "vram_gb": round(vram_gb, 1),
-        "accelerators": info.accelerators,
         "node": info.node,
     }
 
@@ -39,13 +38,12 @@ TEXTS = [
 if __name__ == "__main__":
     with sky.Compute(
         provider=sky.AWS(),
-        accelerator=sky.accelerators.L4(count=0.5),
+        accelerator=sky.accelerators.L4(),
         image=sky.Image(pip=["torch", "transformers"]),
-        options=sky.Options(provision_timeout=600),
+        options=sky.Options(ready_timeout=600),
     ) as compute:
         result = classify(TEXTS) >> compute
 
         print(f"Device: {result['device']} ({result['vram_gb']} GB VRAM)")
-        print(f"Accelerator count: {result['accelerators']}")
         for text, pred in zip(TEXTS, result["predictions"]):
             print(f"  {pred['label']} ({pred['score']:.2f}): {text[:60]}")

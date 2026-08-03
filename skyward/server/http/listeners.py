@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-import logging
-
 from litestar.events import EventListener, listener
 
 from skyward.server.application import ports
 from skyward.server.application.connector import Connector
 from skyward.server.application.machines import Machines
 from skyward.shared.errors import CapabilityMismatchError
+from skyward.shared.observability import logger
 from skyward.shared.schemas import NodeState
 
-logger = logging.getLogger(__name__)
+logger = logger.bind(component="listeners")
 
 
 def build_listeners(
@@ -46,7 +45,7 @@ def build_listeners(
         try:
             await machines.create(compute_id, node_id)
         except CapabilityMismatchError as mismatch:
-            logger.warning("node %s not placed: %s", node_id, mismatch)
+            logger.bind(compute_id=compute_id, node_id=node_id).warning("node not placed: {}", mismatch)
 
     @listener("node.connect")
     async def on_node_connect(compute_id: str, node_id: str) -> None:

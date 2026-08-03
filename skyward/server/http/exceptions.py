@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import logging
-
 from litestar import Request, Response
 from litestar.exceptions import HTTPException
 from litestar.exceptions.responses import create_exception_response
 
 from skyward.shared.errors import SkywardError
+from skyward.shared.observability import logger
 from skyward.shared.schemas import Error
 
-logger = logging.getLogger(__name__)
+logger = logger.bind(component="http")
 
 
 def skyward_error_handler(request: Request, exc: SkywardError) -> Response[Error]:
@@ -37,5 +36,5 @@ def unhandled_error_handler(request: Request, exc: Exception) -> Response:
         case HTTPException(status_code=status) if status < 500:
             pass
         case _:
-            logger.error("unhandled error: %s %s", request.method, request.url.path, exc_info=exc)
+            logger.error("unhandled error: {} {}", request.method, request.url.path, exc_info=exc)
     return create_exception_response(request, exc)

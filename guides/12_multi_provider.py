@@ -27,6 +27,7 @@ if __name__ == "__main__":
         sky.Spec(provider=sky.VastAI(), accelerator=sky.accelerators.A100()),
         sky.Spec(provider=sky.AWS(), accelerator=sky.accelerators.A100()),
         selection="cheapest",
+        allocation="spot_if_available",
         image=sky.Image(pip=["torch"]),
     ) as compute:
         result = train(10) >> compute
@@ -34,33 +35,33 @@ if __name__ == "__main__":
 
     # First available (priority order)
     with sky.Compute(
-        sky.Spec(provider=sky.RunPod(), accelerator=sky.accelerators.H100(), nodes=4),
-        sky.Spec(provider=sky.AWS(), accelerator=sky.accelerators.H100(), nodes=4),
+        sky.Spec(provider=sky.RunPod(), accelerator=sky.accelerators.H100()),
+        sky.Spec(provider=sky.AWS(), accelerator=sky.accelerators.H100()),
         selection="first",
+        allocation="on_demand",
+        nodes=4,
         image=sky.Image(pip=["torch"]),
     ) as compute:
         results = train(10) @ compute
         print(f"First available: {results}")
 
-    # Per-spec constraints
+    # Provider-specific constraints
     with sky.Compute(
         sky.Spec(
             provider=sky.VastAI(),
             accelerator=sky.accelerators.A100(),
             max_hourly_cost=2.50,
-            allocation="spot",
         ),
         sky.Spec(
             provider=sky.Verda(),
             accelerator=sky.accelerators.A100(),
-            allocation="spot-if-available",
         ),
         sky.Spec(
             provider=sky.AWS(),
             accelerator=sky.accelerators.A100(),
-            allocation="on-demand",
         ),
         selection="cheapest",
+        allocation="spot_if_available",
         image=sky.Image(pip=["torch"]),
     ) as compute:
         result = train(10) >> compute

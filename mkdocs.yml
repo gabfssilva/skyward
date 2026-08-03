@@ -139,15 +139,24 @@ nav:
           - cuML GPU acceleration: guides/cuml-acceleration.md
   - API reference:
       - Core:
-          - Pool & compute: reference/pool.md
+          - Compute and task dispatch: reference/pool.md
           - Runtime: reference/runtime.md
           - Configuration: reference/config.md
       - Providers:
           - AWS: reference/providers/aws.md
           - GCP: reference/providers/gcp.md
+          - Container: reference/providers/container.md
+          - Hyperstack: reference/providers/hyperstack.md
+          - Jarvis Labs: reference/providers/jarvislabs.md
+          - Lambda: reference/providers/lambda.md
+          - Massed Compute: reference/providers/massed-compute.md
+          - Novita: reference/providers/novita.md
           - RunPod: reference/providers/runpod.md
+          - Scaleway: reference/providers/scaleway.md
+          - TensorDock: reference/providers/tensordock.md
           - VastAI: reference/providers/vastai.md
           - Verda: reference/providers/verda.md
+          - Vultr: reference/providers/vultr.md
       - Distributed collections: reference/distributed.md
       - Events: reference/events.md
       - Plugins: reference/plugins.md

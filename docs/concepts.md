@@ -1,516 +1,335 @@
 # Core concepts
 
-Skyward's programming model is built on a simple idea: **computation and location should be separate concerns**. You write ordinary Python functions. You decide where they run — on which cloud, on how many machines, on which accelerators — at the call site, not inside the function itself. This separation is what makes the same code work on a laptop, a single GPU, or a cluster of eight H100s.
-
-This page walks through the concepts that make this possible.
+Skyward separates the description of work from the control plane that runs it. A Python call becomes a value, a `Compute` describes the resources that may run it, and the daemon turns the desired definition into machines and tasks.
 
 ## Lazy computation
 
-The central abstraction in Skyward is `@sky.function`. It transforms a regular function into a **lazy computation** — calling the function no longer executes it. Instead, it produces a `PendingFunction` object: a frozen, serializable description of *what* to compute, without committing to *where* or *when*.
+`@sky.function` changes a function so that calling it creates a `Pending` value instead of executing the function:
 
 ```python
 import skyward as sky
 
 
 @sky.function
-def train(epochs: int) -> float:
-    model = build_model()
-    return model.fit(epochs=epochs)
+def train(batch: list[float]) -> float:
+    return sum(batch) / len(batch)
 
 
-pending = train(10)  # nothing runs — returns PendingFunction[float]
+pending = train([1.0, 2.0, 3.0])
 ```
 
-In functional programming, this pattern is known as reifying an **effect**. Calling `train(10)` doesn't produce a result — it produces a *description* of a computation that, when interpreted, will produce a result. The side effects (provisioning a GPU, transferring data, executing remotely) are not performed at the call site. They are deferred to an interpreter — in this case, the pool and its operators. This is the same idea behind `IO` in Haskell, `Effect` in ZIO, or `suspend` in Kotlin: separating the description of a program from its execution so that the runtime can decide how, where, and when to run it.
+`pending` contains the function, its arguments, keyword arguments, and an optional timeout. It is immutable and serializable. Creating it does not select a provider, allocate a machine, or contact the daemon.
 
-Because `PendingFunction` is a value — not a running process — it can be serialized, sent over the network, and executed on a remote machine. It can also be composed: combined with other computations via `&`, collected into a `gather()`, or stored and dispatched later. None of this triggers execution. The program you're building is a data structure that only materializes when you commit to a target with `>>` or `@`.
-
-The generic type is preserved throughout — `train(10)` produces `PendingFunction[float]`, and dispatching it returns `float`. Your type checker sees the same types whether the function runs locally or on a remote GPU.
-
-If you need to bypass this and run the original function directly (for testing, debugging, or local profiling), every decorated function exposes the unwrapped version via `.local`:
+The call becomes a task only when an operator gives it a target:
 
 ```python
-result = train.local(10)  # executes immediately, returns float
+with sky.Compute(provider=sky.Container()) as compute:
+    result = pending >> compute
 ```
 
-## The pool
-
-A `Compute` pool is a context manager that represents a set of cloud instances with a defined lifecycle. When you enter the block, Skyward provisions the machines, installs dependencies, and establishes connectivity. When you exit — whether normally or through an exception — everything is torn down.
+The original function is available through `.local` for unit tests:
 
 ```python
-with sky.Compute(
-    provider=sky.AWS(),
-    accelerator=sky.accelerators.A100(),
-    nodes=4,
-    image=sky.Image(pip=["torch", "transformers"]),
-) as compute:
-    result = train(10) >> compute
-# all instances terminated
+assert train.local([1.0, 2.0, 3.0]) == 2.0
 ```
 
-This is what it means for compute to be **ephemeral**: the infrastructure exists only for the duration of the work. There are no machines to forget about, no environments that drift over time, no idle costs accumulating overnight. The pool's lifetime is the job's lifetime.
+### Operators
 
-This model fits ML workloads naturally. Training runs, fine-tuning jobs, hyperparameter sweeps, batch inference — these are all tasks with a beginning and an end. The pool captures that shape: provision what you need, do the work, release everything.
+| Expression | Meaning | Result |
+|------------|---------|--------|
+| `pending >> compute` | Submit one execution and wait | `T` |
+| `pending @ compute` | Submit one execution per admitted node | `list[T]` |
+| `pending > compute` | Submit without waiting | `Future[T]` |
+| `pending_a & pending_b` | Build a group of calls | `Group[T]` |
+| `sky.gather(*pending)` | Build a group programmatically | `Group[T]` |
+| `pending.with_timeout(seconds)` | Override the call deadline | `Pending[T]` |
 
-### Lifecycle
-
-Behind the `with` block, the pool orchestrates a hierarchy of components — each with its own lifecycle — to bring a cluster from zero to ready.
-
-Internally, this orchestration is plain **asyncio**. Each component in the hierarchy (pool, node) is an ordinary Python object whose lifecycle is a coroutine: a node walks a linear `provision()` — poll the cloud API, connect SSH, bootstrap, start the worker — while periodic concerns (autoscaling, reconciliation, health checks) run as background tasks. This makes the concurrent lifecycle of multiple nodes — each progressing at a different speed — straightforward to reason about: the event loop interleaves independent coroutines, and the system scales to hundreds of nodes without requiring proportional memory or CPU on your laptop. The remote workers, in contrast, form a real distributed system, powered by [Casty](https://gabfssilva.github.io/casty/) — see [Clustering](architecture.md).
-
-Despite being fully asynchronous internally, Skyward exposes a **synchronous API**. The asyncio event loop runs in a background daemon thread, and every public method bridges into it via `run_coroutine_threadsafe`. This means you write normal, blocking Python — `result = task() >> compute` — while the orchestration underneath remains non-blocking and concurrent.
-
-A **pool** manages the overall process: it asks the **provider** (AWS, RunPod, VastAI, etc.) to prepare infrastructure and launch instances. Each launched instance becomes a **node**, which handles the low-level work — polling the cloud API until the machine is running, opening an SSH tunnel, bootstrapping the environment, and starting the worker process.
-
-The full sequence looks like this:
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Pool
-    participant Provider
-    participant Node
-    participant Instance
-
-    User->>Pool: __enter__
-    Pool->>Provider: offers()
-    Provider-->>Pool: Offer (selected)
-    Pool->>Provider: prepare(spec, offer)
-    Provider-->>Pool: Cluster
-    Pool->>Provider: provision(cluster, N)
-    Provider-->>Pool: Instances
-
-    loop for each instance
-        Pool->>Node: Provision
-        Node->>Instance: spawn
-        Instance->>Provider: get_instance() (poll)
-        Provider-->>Instance: running + IP
-        Instance->>Instance: SSH tunnel
-        Instance->>Instance: bootstrap environment
-        Instance->>Instance: start worker
-        Instance-->>Node: InstanceBecameReady
-        Node-->>Pool: NodeBecameReady
-    end
-
-    Pool-->>User: pool ready
-
-    User->>Pool: __exit__
-    Pool->>Provider: terminate + teardown
-    Pool-->>User: done
-```
-
-The provider is only involved at the boundaries: preparing infrastructure, launching instances, polling status, and tearing down. Everything in between — SSH, bootstrap, worker startup, cluster formation — is handled by the node lifecycle, which means the same orchestration logic works identically across all providers.
-
-Node 0 plays a special role: it's the **head node**. Once its instance is ready, it broadcasts its address to all other nodes so they can form a cluster. This is how distributed training frameworks (PyTorch DDP, JAX, etc.) discover each other — and Skyward's plugins (`sky.plugins.Torch()`, `sky.plugins.Jax()`) configure these frameworks using the head node's address automatically.
-
-If a spot instance is preempted, the node detects the loss, notifies the pool, and requests a replacement from the provider. Tasks that were in flight are re-queued. From the user's perspective, the pool self-heals — though of course repeated preemptions will slow things down.
-
-The pool is also the dispatch target for computations. You don't configure job queues or submit YAML — you use Python operators to express how computations should be distributed across the pool's nodes.
-
-### Node specification
-
-The `nodes` parameter controls how many machines the pool provisions and when work can begin. The simplest form is an integer — `nodes=4` provisions four machines and waits for all of them. But Skyward supports two additional modes through the `sky.Nodes` dataclass.
-
-**Partial readiness** lets the pool start working before all nodes are up. An 8-node training job that can make progress with 4 nodes shouldn't wait for the slowest machine to boot:
+`Group` values are also dispatched with `>>`. By default, results are collected in submission order. Set `stream=True` to yield grouped results as they complete, and `ordered=False` to use completion order:
 
 ```python
-with sky.Compute(
-    provider=sky.AWS(),
-    nodes=sky.Nodes(desired=8, min=4),
-) as compute:
-    result = train(data) @ compute  # starts with 4 nodes, grows to 8
+with sky.Compute(provider=sky.Container()) as compute:
+    results = sky.gather(
+        train([1.0]),
+        train([2.0]),
+        train([3.0]),
+        stream=True,
+        ordered=False,
+    ) >> compute
+
+    for result in results:
+        print(result)
 ```
 
-The pool becomes operational when `min` nodes are ready. The remaining nodes join as they come up — tasks dispatched with `>>` pick up new nodes via round-robin, and `@` broadcasts to all currently ready nodes.
-
-**Elastic pools** scale the cluster size based on workload pressure:
-
-```python
-with sky.Compute(
-    provider=sky.AWS(),
-    nodes=sky.Nodes(desired=2, max=16),  # or just nodes=(2, 16)
-) as compute:
-    results = sky.gather(*tasks) >> compute  # scales between 2 and 16
-```
-
-Both modes compose — `sky.Nodes(desired=4, min=2, max=16)` creates an elastic pool that starts work with 2 nodes and can scale up to 16. For the full details on how elastic pools make scaling decisions, see [Provision Controllers](provision-controllers.md).
-
-## Workers
-
-Each node in the pool runs a **worker** — a long-lived process that receives serialized tasks, executes them, and sends results back. The `Worker` dataclass controls two things: how many tasks a node handles concurrently, and which execution backend runs them.
-
-```python
-with sky.Compute(
-    provider=sky.AWS(),
-    nodes=4,
-    worker=sky.Worker(concurrency=2),
-) as compute:
-    result = train(10) >> compute
-```
-
-`concurrency` sets the number of task slots per node. Total parallelism across the cluster is `nodes * concurrency` — four nodes with `concurrency=2` means eight tasks running simultaneously.
-
-The `executor` field determines *how* those tasks run. The default is `"auto"`, which resolves to `"thread"`: tasks run as threads inside the worker process. Threads share the GIL, so CPU-bound Python code is limited to one core regardless of concurrency. On a 2-vCPU machine, you'd see ~50% CPU. Threads are the right choice for I/O-bound work (network calls, disk reads) and for C extensions that release the GIL (NumPy, PyTorch inference). Distributed collections (`sky.dict()`, `sky.counter()`, etc.) work with both executors.
-
-The alternative is `"process"`, which runs each task in a separate OS process via `ProcessPoolExecutor`, meaning each has its own Python interpreter and its own GIL. CPU-bound Python code saturates all available cores — a 2-vCPU machine with two concurrent tasks reaches 100% utilization. This is the right choice for numerical computation, data transformation, and training loops.
-
-For a practical comparison with benchmarks, see the [Worker Executors](guides/worker-executors.md) guide.
-
-### Standalone mode
-
-On providers with private networking (AWS, GCP, Hyperstack, Lambda, Scaleway, Verda, Vultr, Container), workers form a Casty cluster — a peer-to-peer actor system that enables distributed collections and inter-node coordination. Providers that don't offer private networking between instances (RunPod, VastAI, TensorDock, JarvisLabs, Novita, MassedCompute) default to standalone mode, where each worker runs independently:
-
-```python
-with sky.Compute(
-    provider=sky.RunPod(),
-    nodes=4,
-) as compute:
-    results = sky.gather(*tasks) >> compute
-```
-
-To force standalone on a cluster-capable provider, pass `options=sky.Options(cluster=False)`; to force cluster mode on a standalone-default provider that supports private networking, pass `options=sky.Options(cluster=True)`. In standalone mode, the client connects to each worker directly via its own SSH tunnel. Task dispatch works identically — `>>`, `@`, `&`, and `gather()` behave the same — but distributed collections (`sky.dict()`, `sky.barrier()`, etc.) are not available. For a detailed walkthrough, see the [Standalone Workers](guides/standalone-workers.md) guide.
-
-## Operators
-
-Most distributed computing frameworks require you to express execution through configuration files, job submission APIs, or method calls like `pool.submit(fn, args)`. Skyward takes a different approach: it uses Python's operator overloading to create a small vocabulary where the syntax itself communicates intent. The expression `train(10) >> compute` reads as "send this computation to the pool" — and that's exactly what it does.
-
-This works because `@sky.function` returns a `PendingFunction` value, not a result. Operators are defined on `PendingFunction` (via `__rshift__`, `__matmul__`, `__and__`, `__gt__`), and each one triggers a different dispatch strategy on the pool. The pool serializes the function and arguments with cloudpickle, sends the payload to the appropriate worker(s) over SSH, waits for the result, deserializes it, and returns it to the caller.
-
-### `>>` — Execute on one node
-
-The most common operation. Sends the computation to a single worker and blocks until the result is available:
-
-```python
-result = train(10) >> compute
-```
-
-The pool selects the target node using round-robin scheduling. If you send ten tasks with `>>`, they'll be distributed evenly across the available nodes. This is the right operator for independent tasks that don't need to run on every node — hyperparameter trials, inference on different inputs, or any embarrassingly parallel workload.
-
-### `@` — Broadcast to all nodes
-
-Sends the same computation to every node in the pool. Returns a list with one result per node:
-
-```python
-with sky.Compute(provider=sky.AWS(), nodes=4) as compute:
-    # runs on all 4 nodes, returns list of 4 results
-    results = initialize_model(config) @ compute
-```
-
-Broadcast is the foundation for distributed training patterns. When combined with `sky.shard()` inside the function, each node receives the full arguments but operates on its own partition of the data. The function body is identical across nodes — the differentiation happens at runtime based on `sky.instance_info()`.
-
-This is also the natural way to run setup or teardown operations that must happen on every machine: loading a model into GPU memory, warming up a cache, or writing checkpoints to local disk.
-
-### `&` — Parallel composition
-
-Combines multiple *different* computations into a group that executes in parallel. Results are returned as a tuple with full type inference:
-
-```python
-a, b, c = (preprocess() & train() & evaluate()) >> compute
-```
-
-The distinction from broadcast is important: `@` runs the *same* function on all nodes, while `&` runs *different* functions concurrently. Each computation in the group may go to a different node (round-robin), and the group blocks until all of them complete. The types are preserved individually — if `preprocess` returns `DataFrame`, `train` returns `Model`, and `evaluate` returns `float`, the destructured result is `tuple[DataFrame, Model, float]`.
-
-### `>` — Async dispatch
-
-Like `>>`, but returns a `Future[T]` immediately instead of blocking. This lets you overlap remote computation with local work:
-
-```python
-future = train(10) > compute
-# ... do local work while the remote computation runs ...
-result = future.result()  # blocks only when you need the result
-```
-
-The `Future` follows Python's `concurrent.futures` protocol, so it integrates with existing code that already works with futures — including `as_completed()`, `wait()`, and executor patterns.
-
-### `gather()` — Dynamic parallelism
-
-`&` works when the number of parallel tasks is known at write time. When it isn't — because you're iterating over a dataset, a list of configurations, or any dynamic collection — `gather` groups an arbitrary number of computations:
-
-```python
-tasks = [process(chunk) for chunk in chunks]
-results = sky.gather(*tasks) >> compute
-```
-
-Under the hood, `gather` creates a `PendingFunctionGroup` — the same type that `&` produces — so the dispatch behavior is identical. The difference is purely syntactic: `&` is for a fixed set of typed computations, `gather` is for a dynamic collection.
-
-With `stream=True`, results are yielded as they complete rather than waiting for all of them. This is useful when tasks have variable duration and you want to start processing results early:
-
-```python
-for result in sky.gather(*tasks, stream=True) >> compute:
-    save(result)
-```
-
-By default, streaming preserves the original order (the first yielded result corresponds to the first task). With `ordered=False`, results arrive in completion order — faster overall, but you lose the positional correspondence.
-
-## Image
-
-Remote workers start as bare cloud instances — a fresh OS with no Python, no libraries, no knowledge of your project. The `Image` dataclass describes the full environment that should exist on each worker before any computation runs. It's a declarative specification: you state what you need, and Skyward generates an idempotent bootstrap script that provisions it.
-
-```python
-image = sky.Image(
-    python="3.13",
-    pip=["torch", "numpy", "transformers"],
-    apt=["ffmpeg", "libsndfile1"],
-    env={"KERAS_BACKEND": "jax"},
-    includes=["./my_module/"],
-)
-
-with sky.Compute(provider=sky.AWS(), image=image) as compute:
-    ...
-```
-
-Each field maps to a phase of the bootstrap process:
-
-- `python` — The Python version to install. Defaults to `"auto"`, which detects your local version and matches it on the worker. Workers use `uv` as the package manager, so installation is fast.
-- `pip` — Python packages to install in the worker's virtual environment.
-- `apt` — System-level packages installed before Python setup.
-- `env` — Environment variables set before your function executes. Useful for framework configuration (`KERAS_BACKEND`, `HF_TOKEN`, etc.).
-- `includes` — Local directories to sync to the workers via SSH. This is how your own code reaches the remote machines without being published as a package.
-- `excludes` — Glob patterns to skip during sync (e.g., `["__pycache__", "*.pyc"]`).
-
-The bootstrap script is generated once and runs identically on every instance. Because the `Image` is a frozen dataclass, two pools created with the same image produce the same environment — same Python version, same packages, same system dependencies. This is reproducibility without Docker: the environment specification lives in your Python code, versioned alongside your experiments.
-
-There's also `skyward_source`, which controls how Skyward itself reaches the workers. In most cases the default `"auto"` is what you want: it detects whether you're running from an editable install (development mode) and, if so, copies your local Skyward source to the workers instead of installing from PyPI. This means changes to Skyward's own code are reflected immediately on remote machines during development, without publishing a new version.
-
-## Runtime context
-
-Skyward operates in two worlds. The **client side** is your local machine — where `Compute` runs, where operators dispatch tasks, where results come back. The **worker side** is the remote instance — where your `@sky.function` function actually executes. These are separate processes on separate machines, connected by SSH tunnels.
-
-Inside a `@sky.function` function, you're in the worker world. The function has access to the remote machine's resources (GPUs, local disk, network), but it doesn't have a reference to the pool object or the client's memory. What it does have is `sky.instance_info()`: a view of the cluster topology from this node's perspective.
-
-```python
-@sky.function
-def distributed_task(data):
-    info = sky.instance_info()
-    print(f"Node {info.node} of {info.total_nodes}")
-
-    if info.is_head:
-        coordinate_others()
-    return process(data)
-```
-
-`InstanceInfo` is populated from a `COMPUTE_POOL` environment variable that Skyward injects before starting the worker process. It contains the node's index (`node`), the total cluster size (`total_nodes`), whether this is the head node (`is_head`), the head node's address and port (for coordination protocols), the number of accelerators on this node, and a list of all peers with their private IPs.
-
-This is the same mechanism that Skyward's plugins use internally. The `torch` plugin, for example, reads `instance_info()` to configure `MASTER_ADDR`, `WORLD_SIZE`, and `RANK` before calling `init_process_group`. You don't need plugins to access this information — `instance_info()` is always available inside any `@sky.function` function, whether you're using a plugin or writing raw distributed logic.
-
-### Data sharding
-
-A common pattern in distributed computing is to send the *same function* to all nodes but have each node operate on a *different slice* of the data. `sky.shard()` automates this: it reads the current node's position from `instance_info()` and returns only the portion of the data that belongs to this node.
-
-```python
-@sky.function
-def process(full_dataset):
-    local_data = sky.shard(full_dataset)
-    return analyze(local_data)
-
-
-with sky.Compute(provider=sky.AWS(), nodes=4) as compute:
-    # each node gets 1/4 of the data
-    results = process(dataset) @ compute
-```
-
-The function receives the *full* dataset as an argument — the serialization cost is paid once — but each node only processes its shard. The sharding algorithm uses modulo striding by default (`indices[node::total_nodes]`), which distributes elements evenly regardless of whether the total is divisible by the node count.
-
-Sharding is type-preserving: lists produce lists, tuples produce tuples, NumPy arrays produce arrays, PyTorch tensors produce tensors. This means you can shard a tensor and immediately pass it to a model without type conversions.
-
-When sharding multiple arrays, indices are aligned — the same positions are selected from each array, so paired data (features and labels, inputs and targets) stays consistent:
-
-```python
-@sky.function
-def train(x_full, y_full):
-    x, y = sky.shard(x_full, y_full, shuffle=True, seed=42)
-    # x[i] still corresponds to y[i]
-    return fit(x, y)
-```
-
-The `shuffle` parameter randomizes the order before sharding, with a fixed `seed` ensuring all nodes agree on the same permutation. `drop_last=True` switches from striding to contiguous blocks and discards leftover elements, guaranteeing equal shard sizes — useful when your training loop requires fixed batch dimensions.
-
-## Streaming
-
-The patterns above — `>>`, `@`, `&`, `gather` — all follow the same shape: serialize the function and arguments, ship them to a worker, execute, serialize the result, ship it back. The full result materializes on the worker before anything crosses the network. For most workloads this is fine. But some computations produce results incrementally — a training loop that yields metrics every epoch, a data pipeline that emits rows one at a time, a search that finds matches progressively. Waiting for the entire result before returning anything wastes time and memory.
-
-Streaming changes this. If a `@sky.function` function is a generator — it uses `yield` instead of `return` — Skyward streams the values back to the caller as they're produced. The dispatch expression `task() >> compute` returns a synchronous iterator instead of a single value, and each element arrives as soon as the worker yields it:
-
-```python
-@sky.function
-def generate_samples(n: int):
-    for i in range(n):
-        yield expensive_sample(i)
-
-
-with sky.Compute(provider=sky.AWS(), nodes=1) as compute:
-    for sample in generate_samples(1000) >> compute:
-        save(sample)  # processes each sample as it arrives
-```
-
-The inverse also works: parameters annotated with `Iterator[T]` are streamed *to* the worker instead of being serialized as a single blob. This means a 10GB dataset doesn't need to fit in a single cloudpickle payload — it flows to the worker element by element, and the worker consumes it as a regular `for` loop:
+Generator functions have a separate `Streaming` value because the result is consumed incrementally:
 
 ```python
 from collections.abc import Iterator
 
 
-@sky.function
-def process(data: Iterator[dict]) -> int:
-    count = 0
-    for record in data:
-        transform(record)
-        count += 1
-    return count
+@sky.stream
+def tokens(text: str) -> Iterator[str]:
+    yield from text.split()
 
 
-result = process(iter(huge_dataset)) >> compute
+with sky.Compute(provider=sky.Container()) as compute:
+    for token in tokens("one two three") >> compute:
+        print(token)
 ```
 
-Both directions can be combined: a function that takes an `Iterator` input and yields results creates a bidirectional stream — data flows in, transformed results flow out, and neither side buffers the full dataset in memory.
+The stream is dispatched by the request that reads it. It is not replayable or resumable.
 
-Under the hood, streaming is built on RPCs against the node's worker-control service over the SSH-tunneled TCP connection: generator output is pulled chunk by chunk, and `Iterator` arguments are pushed element by element. If the consumer falls behind, the producer pauses automatically. The detection is fully implicit: Skyward inspects the function at dispatch time — if it's a generator, it wraps the output in a stream; if a parameter has an `Iterator[T]` annotation, it wraps the argument in an input stream. No configuration, no special classes.
+## Compute is the resource definition
 
-For a practical walkthrough with code examples, see the [Streaming](guides/streaming.md) guide.
-
-## Providers
-
-Throughout this page, the `provider` parameter has appeared in every `Compute` example — `sky.AWS()`, `sky.RunPod()`, `sky.VastAI()`, `sky.Verda()`, `sky.Container()`. The provider is the bridge between Skyward's orchestration model and a specific cloud's API. It knows how to translate abstract requests ("I need 4 machines with A100 GPUs") into the concrete API calls that each cloud requires.
-
-All providers implement the same protocol — `Provider[C, S]` — which defines six operations that map directly to the pool lifecycle discussed earlier:
-
-- `offers()` — Query available machine types and pricing. Returns an async iterator of `Offer` objects — the provider's full unfiltered catalog of hardware and pricing. Filtering by accelerator, region, cost cap, and other spec constraints happens in the OfferRepository SQL layer, which enables cross-provider selection.
-- `prepare(spec, offer)` — Set up cluster-level infrastructure for the selected offer: register SSH keys, create VPCs and security groups (AWS), resolve GPU types, configure overlay networks. Returns an immutable `Cluster` context that flows through all subsequent calls.
-- `provision(cluster, count)` — Launch the requested number of instances. Returns them in a "provisioning" state — the machines exist, but may not be running yet.
-- `get_instance(cluster, id)` — Poll the status of a single instance. The node calls this repeatedly until the machine is running and has an IP address.
-- `terminate(cluster, ids)` — Destroy specific instances.
-- `teardown(cluster)` — Clean up everything `prepare` created: delete security groups, deregister keys, remove temporary infrastructure.
-
-This protocol is what makes the orchestration layer provider-agnostic. The pool and node lifecycles don't know whether they're talking to AWS, RunPod, or a local Docker daemon — they only know the six methods above. Adding a new cloud provider means implementing this protocol; nothing else in the system needs to change.
-
-Provider configs (`sky.AWS()`, `sky.RunPod()`, etc.) are deliberately lightweight. They're plain dataclasses that hold configuration — region, credentials path, API keys — but don't import any cloud SDK at module level. The actual SDK (`boto3`, `aioboto3`, RunPod's GraphQL client, etc.) is loaded lazily when `create_provider()` is called at pool start. This means `import skyward` stays fast regardless of which providers are installed, and you only pay the import cost for the provider you're actually using.
-
-For details on configuring each provider, see the [Providers](providers.md) page.
-
-## Accelerators
-
-The `accelerator` parameter on `Compute` tells the provider what hardware you need. Use the factory functions under `sky.accelerators`, which provide IDE autocomplete and carry catalog metadata like VRAM size and CUDA compatibility:
-
-```python
-sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.A100())
-sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.H100(count=4))
-sky.Compute(provider=sky.AWS(), accelerator=sky.accelerators.A100(memory="40GB"))
-```
-
-Each factory returns an `Accelerator` dataclass — a frozen, immutable specification with `name`, `memory`, `count`, and optional `metadata`. The factory functions look up defaults from an internal catalog (VRAM sizes, CUDA versions, form factors), so `sky.accelerators.H100()` already knows it has 80GB of memory without you specifying it.
-
-Each cloud provider uses its own naming conventions and instance type structures: an "A100" on AWS is a `p4d.24xlarge`, on RunPod it's a pod with a specific `gpuTypeId`, on VastAI it's a marketplace offer filtered by GPU model. The translation from a logical accelerator to a provider-specific resource isn't a simple string match — it involves resolving instance types, memory variants, multi-GPU configurations, and availability constraints. The catalog centralizes this complexity so that `sky.accelerators.A100(count=4)` resolves correctly on any provider that supports it.
-
-The catalog covers NVIDIA datacenter GPUs (H100, H200, A100, L40S, T4, etc.), consumer cards (RTX 4090 down to GTX 1060), AMD Instinct (MI300X, MI250X), AWS Trainium and Inferentia, Habana Gaudi, and Google TPUs.
-
-For a complete list, see the [Accelerators](accelerators.md) page.
-
-## Allocation strategies
-
-Cloud providers offer different pricing models for the same hardware. The most important distinction is between **on-demand** instances (guaranteed availability, full price) and **spot** instances (surplus capacity sold at a discount, but reclaimable by the provider with short notice).
-
-Skyward exposes this as an `allocation` parameter on the pool:
-
-```python
-# Try spot instances first, fall back to on-demand if unavailable (default)
-sky.Compute(allocation="spot-if-available")
-
-# Always use spot — cheaper, but can be interrupted
-sky.Compute(allocation="spot")
-
-# Always on-demand — more expensive, but guaranteed availability
-sky.Compute(allocation="on-demand")
-
-# Compare all options and pick the cheapest
-sky.Compute(allocation="cheapest")
-```
-
-Spot instances are typically 60-90% cheaper than on-demand. The trade-off is that the cloud provider can reclaim them with short notice. For fault-tolerant workloads — checkpointed training, idempotent batch jobs, embarrassingly parallel inference — spot is a practical default. For time-sensitive or non-resumable work, on-demand is the safer choice.
-
-The default `"spot-if-available"` tries to get the best of both: it requests spot capacity first and falls back to on-demand if none is available. This means your pool always starts, even during periods of high spot demand, without requiring you to handle the fallback logic yourself.
-
-## Resource selection
-
-The previous sections described choosing a single provider and a single allocation strategy. But accelerator availability and pricing vary across providers and change constantly. An A100 on VastAI might cost $1.50/hr right now while the same accelerator on AWS is $3.00/hr — or VastAI might have no capacity at all. Skyward's resource selection system lets you describe multiple hardware preferences and let the system find the best option.
-
-### Spec
-
-A `Spec` is a frozen dataclass that bundles a provider with hardware preferences into a single, composable unit:
-
-```python
-sky.Spec(
-    provider=sky.VastAI(),
-    accelerator=sky.accelerators.A100(),
-    nodes=4,
-    allocation="spot",
-    max_hourly_cost=2.50,
-)
-```
-
-It carries the same fields you'd normally pass to `Compute` — `accelerator`, `nodes`, `vcpus`, `memory_gb`, `disk_gb`, `architecture`, `allocation`, `region`, `max_hourly_cost`, `ttl` — but scoped to a specific provider. `Compute` accepts multiple `Spec` objects as positional arguments:
+`Compute` describes the machines and runtime used by submitted tasks. It is both a synchronous SDK object and a resource stored by the control plane.
 
 ```python
 with sky.Compute(
-    sky.Spec(provider=sky.VastAI(), accelerator=sky.accelerators.A100()),
-    sky.Spec(provider=sky.AWS(), accelerator=sky.accelerators.A100()),
+    provider=sky.AWS(),
+    accelerator=sky.accelerators.H100(),
+    nodes=4,
+    image=sky.Image(pip=["torch"]),
+    plugins=[sky.plugins.Torch()],
+    executor=sky.Executor(type="thread", concurrency=2),
+    options=sky.Options(ready_timeout=1800),
+) as compute:
+    train(data) >> compute
+```
+
+The main Compute fields are:
+
+- `provider`, `accelerator`, `cpus`, `memory_gb`, and `region` describe a single placement choice;
+- one or more `sky.Spec` values describe alternative placement choices;
+- `nodes` describes the lower and upper node bounds;
+- `allocation` and `selection` choose how matching offers are used;
+- `image`, `plugins`, and `executor` describe the node runtime;
+- `options` carries SSH, worker, health, and autoscaling settings;
+- `ports` and `volumes` configure access to node services and object storage;
+- `ttl`, `name`, `url`, `database`, and `delete_on_exit` control lifecycle and transport.
+
+Placement fields belong to `Spec`, not to `Spec`'s node count:
+
+```python
+with sky.Compute(
+    sky.Spec(
+        provider=sky.VastAI(),
+        accelerator=sky.accelerators.H100(),
+        cpus=16,
+        memory_gb=64,
+        max_hourly_cost=4.0,
+    ),
+    sky.Spec(
+        provider=sky.AWS(),
+        accelerator=sky.accelerators.H100(),
+        region="us-east-1",
+    ),
     selection="cheapest",
 ) as compute:
-    result = train(data) >> compute
+    train(data) >> compute
 ```
 
-The single-provider form still works — `Compute(provider=sky.AWS(), accelerator=sky.accelerators.A100())` internally creates a single `Spec` and wraps it in a tuple.
+`Spec` contains `provider`, `accelerator`, `cpus`, `memory_gb`, `region`, `disk_gb`, `architecture`, and `max_hourly_cost`. `nodes`, `allocation`, `image`, `plugins`, `executor`, `options`, `ports`, and `volumes` belong to the Compute definition because they apply after one placement has been selected.
 
-### Offers and instance types
+### Node bounds
 
-Cross-provider comparison requires a common representation of what each provider offers. Skyward models this with two types:
+`nodes` accepts an integer, a `(minimum, maximum)` tuple, or `sky.Nodes`:
 
-- **`InstanceType`** — A normalized, cacheable hardware description: machine name, accelerator, vCPUs, memory, architecture. This is the same across spot and on-demand pricing for the same machine.
-- **`Offer`** — Ephemeral pricing and availability on top of an `InstanceType`: spot price, on-demand price, billing unit (second, minute, or hour). Each provider's `offers()` method yields `Offer` objects for a given spec.
+```python
+sky.Compute(provider=sky.AWS(), nodes=4)
+sky.Compute(provider=sky.AWS(), nodes=(2, 16))
+sky.Compute(provider=sky.AWS(), nodes=sky.Nodes(desired=8, min=4))
+sky.Compute(provider=sky.AWS(), nodes=sky.Nodes(desired=4, min=2, max=16))
+```
 
-Because different providers produce structurally identical `Offer` objects, Skyward can compare an AWS `p4d.24xlarge` against a VastAI marketplace listing against a Verda H100 — all as normalized offers with comparable prices.
+An integer fixes the lower and upper bound. A tuple is shorthand for an elastic range whose lower bound is 2 and upper bound is 16. With `sky.Nodes`, `min` controls the number of ready nodes required before the Compute is ready; `max` controls the upper bound when present. The reconciler uses queued and running task load to choose a count inside those bounds.
 
-### Selection strategies
+Collective plugins freeze the world of a distributed job. A Compute using one cannot be resized while that definition is active.
 
-The `selection` parameter on `Compute` controls how Skyward chooses among the offers from multiple specs:
+### Image, executor, and options
 
-- **`"cheapest"`** (default) — Queries all specs, collects all available offers, and picks the one with the lowest price. Best when you want cost optimization and don't have a strong provider preference.
-- **`"first"`** — Tries specs in the order you listed them, and stops at the first provider with available offers. Best when you have a preferred provider and want deterministic fallback.
+`Image` describes bootstrap inputs:
 
-### The selection flow
+```python
+image = sky.Image(
+    base="ubuntu:24.04",
+    python="3.12",
+    pip=["torch", "numpy"],
+    apt=["ffmpeg"],
+    env={"TOKENIZERS_PARALLELISM": "false"},
+)
+```
 
-Before provisioning anything, `Compute` runs a selection phase to determine where to provision:
+`Executor` selects the local execution backend inside each node runtime:
+
+- `"thread"` is the default and shares the node runtime address space;
+- `"process"` uses subprocesses and can disable reuse with `reuse=False`;
+- `"loky"` uses a reusable process backend.
+
+`concurrency` sets the number of task slots per node. `buffer` admits additional queued tasks as backpressure. `Options` carries operational settings such as `ssh_timeout`, `worker_timeout`, `autoscale_idle_timeout`, `autoscale_cooldown`, health checks, and client-side `ready_timeout` and `shutdown_timeout`.
+
+## Embedded and remote control planes
+
+The SDK always uses the same HTTP-shaped client. The transport changes, not the resource model:
 
 ```mermaid
-sequenceDiagram
-    participant User
-    participant Pool
-    participant Provider A
-    participant Provider B
-
-    User->>Pool: __enter__
-
-    Pool->>Provider A: offers(spec_a)
-    Provider A-->>Pool: Offer[]
-    Pool->>Provider B: offers(spec_b)
-    Provider B-->>Pool: Offer[]
-
-    Pool->>Pool: select best offer
-
-    Pool->>Provider B: prepare(spec, offer)
-    Provider B-->>Pool: Cluster
-    Pool->>Provider B: provision(cluster, N)
-    Note over Pool,Provider B: (lifecycle continues as usual)
+flowchart LR
+    SDK[Python SDK]
+    SDK -->|no URL| Embedded[Embedded ASGI daemon]
+    SDK -->|url or SKYWARD_URL| Remote[Remote daemon]
+    Embedded --> API["/v1 control-plane API"]
+    Remote --> API
+    API --> SQLite[(SQLite persistence)]
+    API --> Recon[Reconciler]
 ```
 
-The key insight is that offer querying is fast (API calls to check availability and pricing) while provisioning is slow (launching machines). By querying all providers before committing to one, Skyward makes an informed decision without wasting time on failed provisioning attempts.
+With no `url`, `Compute` runs a daemon in the current process against `~/.skyward/skyward.sqlite` by default. With `url` or `SKYWARD_URL`, it uses a remote daemon. Both paths expose the same resources and event stream.
 
-For a practical walkthrough with code examples, see the [Multi-Provider Selection](guides/multi-provider.md) guide.
+The SDK does not wait for a separate operation resource. Creating a Compute returns its stored definition with `status.state="requested"`; the client follows the Compute's events until the state becomes `"ready"`, `"failed"`, or `"degraded"`.
 
-## Next steps
+## Resource lifecycle
 
-- **[Getting Started](getting-started.md)** — Installation, credentials, and first example
-- **[Distributed Training](distributed-training.md)** — Multi-node training with PyTorch, Keras, and JAX
-- **[Providers](providers.md)** — AWS, GCP, RunPod, VastAI, and Verda
-- **[Distributed Collections](distributed-collections.md)** — Shared state across nodes
-- **[Streaming](guides/streaming.md)** — Incremental input and output with generators
-- **[Multi-Provider Selection](guides/multi-provider.md)** — Cross-provider price comparison
-- **[API Reference](reference/pool.md)** — Complete API documentation
+The control plane stores intent and observation separately:
+
+- `spec` is the desired definition;
+- `status` records the observed Compute state, ready node count, total live node count, generation progress, drift, and the last error;
+- `revision` protects writes with `If-Match`;
+- `generation` identifies a definition version;
+- `lease` identifies the process currently owning the Compute.
+
+The SDK follows this sequence:
+
+1. Resolve provider factories, upload user-code and external storage credentials as blobs when needed, and create the Compute resource.
+2. Claim and renew its lease.
+3. Wait for reconciliation to make enough nodes ready.
+4. Submit tasks through the `/v1/tasks` resource.
+5. Follow task and Compute events rather than polling at a fixed application interval.
+6. Mark the Compute for deletion on exit when `delete_on_exit=True`, or release only the lease when it is false.
+
+The resource can outlive the process that created it:
+
+```python
+with sky.Compute(
+    provider=sky.AWS(),
+    name="training",
+    delete_on_exit=False,
+) as compute:
+    train(data) >> compute
+
+with sky.Compute.attached("training") as compute:
+    evaluate() >> compute
+```
+
+`Compute.attached()` takes a name or id and does not restate the definition. It does not delete the resource on exit by default.
+
+## Tasks and executions
+
+A task is one logical function call. It is persisted before dispatch and remains the stable handle returned by the SDK. An execution is one physical attempt of that task on one node.
+
+The task state is derived from its executions:
+
+```text
+queued → running → succeeded
+                 ↘ failed
+                 ↘ cancelled
+                 ↘ timed_out
+                 ↘ indeterminate
+```
+
+`>>` creates a task with one execution. `@` creates one execution per ready node admitted at submission and pins each execution to its rank. A retry creates another execution while keeping the same task id. If the daemon loses contact after code may have run, the execution is `indeterminate`; retrying it requires acknowledging possible duplication.
+
+Streaming tasks use `dispatch="stream"`. The HTTP request that consumes the stream is also what starts the execution, which prevents a daemon from producing items with no consumer.
+
+## Providers and offers
+
+A provider factory is a value containing a provider kind, credentials, configuration, and an optional account name:
+
+```python
+aws = sky.AWS(
+    region="us-east-1",
+    name="training-account",
+)
+```
+
+The SDK registers the provider account in the selected daemon when a Compute needs it. A `Spec` carries the provider kind and non-secret configuration; the account row supplies credentials to the adapter. Multiple accounts of the same provider kind can coexist under different names.
+
+Providers implement two related capabilities:
+
+- a catalog that yields offers;
+- a provisioning adapter that initializes infrastructure, launches machines, reports machine state, terminates machines, and releases shared infrastructure.
+
+Offers are cached per provider account. The provider defines the TTL because a marketplace listing and a fixed instance catalog do not become stale at the same rate. The `/v1/offers` endpoint filters the cache by provider, kind, accelerator, accelerator count, VRAM, and maximum price. A failed refresh leaves stale rows available and records the provider error.
+
+Accelerator names are normalized through one catalog. `sky.accelerators.H100()` and a provider's equivalent offer name resolve to the same canonical accelerator and VRAM value.
+
+## Nodes and runtime information
+
+A node is the control-plane record for one provider machine. Its lifecycle is observed independently from the Compute:
+
+```text
+requested → provisioning → connecting → bootstrapping → ready
+                                                        ↘ draining → deleting → deleted
+                                                        ↘ lost
+                                                        ↘ failed
+```
+
+The connector owns the live SSH connection and starts the node runtime. The runtime receives the Compute's peer topology and rank. Code running inside a task reads that topology through `sky.instance_info()`:
+
+```python
+@sky.function
+def topology() -> dict[str, object]:
+    info = sky.instance_info()
+    return {
+        "node": info.node,
+        "compute": info.compute,
+        "rank": info.rank,
+        "nodes": info.nodes,
+        "peers": info.peers,
+        "worker": info.worker,
+        "workers_per_node": info.workers_per_node,
+    }
+```
+
+`sky.shard()` uses the rank and node count to make a deterministic contiguous partition. `sky.is_head()` is a convenience for `info.is_head`; rank zero is the rendezvous convention used by libraries that require a head address.
+
+## Plugins and distributed state
+
+Plugins are frozen values with a registered `kind` and serializable parameters. They can transform the image, append bootstrap phases, set up the node runtime, wrap each task, or integrate with the client:
+
+```python
+with sky.Compute(
+    provider=sky.AWS(),
+    accelerator=sky.accelerators.H100(),
+    plugins=[
+        sky.plugins.Torch(),
+        sky.plugins.Accelerate(config={"mixed_precision": "bf16"}),
+    ],
+) as compute:
+    train(data) >> compute
+```
+
+The node runtime exposes named distributed collections to code running inside a Compute:
+
+```python
+counts = sky.counter("processed")
+models = sky.registry("checkpoints")
+
+counts.add(1)
+models.register("latest", model)
+```
+
+Maps, sets, and counters accept `consistency="strong"` or `"eventual"`. Values are serialized; map and set keys must be hashable. Queues, barriers, locks, and registries are shared by name and are available only from a running node task.
+
+## Events and leases
+
+The daemon records lifecycle and task events in one ordered event log. `GET /v1/events` serves Server-Sent Events, supports Compute and task filters, and replays from `Last-Event-ID`. Recorded events have a global sequence and can be replayed. Metrics are live publications and are not persisted as history.
+
+The SDK uses the event stream to observe readiness and task progress. This keeps the resource state in the daemon and lets a client reconnect without losing bootstrap or task transitions.
+
+A lease is the liveness signal for a client that owns a Compute. The SDK claims it after creation or attachment and renews it in the background. Releasing a lease is not deletion. If `delete_on_exit` is true, an abandoned Compute is eligible for reconciliation and teardown; if it is false, the resource remains available for a later attachment.
+
+## Further reading
+
+- [Architecture](architecture.md) — Control plane, persistence, reconciliation, and node runtime
+- [Reconciliation and provisioning](provision-controllers.md) — Desired capacity and node recovery
+- [Providers](providers.md) — Provider accounts and offer catalogs
+- [Distributed training](distributed-training.md) — Multi-node framework setup
+- [Events](reference/events.md) — Event stream and replay semantics

@@ -3,7 +3,7 @@
 import io
 from collections.abc import AsyncIterator
 
-from skyward.core.console import Console, render
+from skyward.core.console import Console, render, watcher
 
 
 class _Says:
@@ -15,6 +15,11 @@ class _Says:
     async def events(self, compute: str) -> AsyncIterator[tuple[str, bytes]]:
         for event in self._events:
             yield event
+
+
+class _TTY(io.StringIO):
+    def isatty(self) -> bool:
+        return True
 
 
 def test_what_the_code_on_a_node_printed_is_the_point():
@@ -59,3 +64,10 @@ def test_colour_only_when_asked():
     assert "\033[" not in render("node.ready", {"node": "nod_1"})
     coloured = render("node.ready", {"node": "nod_1"}, color=True)
     assert "\033[" in coloured and "ready" in coloured and coloured.endswith("\033[0m")
+
+
+def test_watcher_has_only_rich_and_log_modes():
+    client = _Says()
+
+    assert type(watcher(client, "cmp_1", _TTY(), mode="rich")).__name__ == "RichConsole"
+    assert type(watcher(client, "cmp_1", _TTY(), mode="log")) is Console

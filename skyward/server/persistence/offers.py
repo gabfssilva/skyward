@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections import defaultdict
 from datetime import UTC, datetime
 from itertools import batched
@@ -12,9 +11,10 @@ from piccolo.engine.sqlite import TransactionType
 from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.tables import OfferRow, ProviderRow
 from skyward.shared.accelerators import resolve
+from skyward.shared.observability import logger
 from skyward.shared.schemas import BillingUnit, Offer, Page
 
-logger = logging.getLogger(__name__)
+logger = logger.bind(component="offers")
 
 BATCH_SIZE = 500
 """Rows per INSERT. SQLite caps a statement at 32766 bound variables, and an
@@ -77,7 +77,7 @@ class OfferCache:
             try:
                 await self._refresh(row)
             except Exception as exc:
-                logger.warning("offers refresh failed for %s: %s", row.name, exc)
+                logger.bind(provider=row.name).warning("offers refresh failed: {}", exc)
                 await ProviderRow.update({ProviderRow.last_error: str(exc)}).where(ProviderRow.id == row.id).run()
 
     async def _is_stale(self, provider_id: str) -> bool:

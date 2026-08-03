@@ -1,14 +1,4 @@
-"""``sky monitor`` — the pool's own dashboard, on a compute you did not start.
-
-The SDK already renders a compute while it holds one: :func:`skyward.core.console.watcher`
-picks the richest view the terminal can hold and follows the event stream with it.
-This is that, detached — the same watcher over the same stream, for a compute this
-process never created and will not delete.
-
-So there is no second dashboard, and no second decision about whether to draw one:
-the watcher probes the terminal and falls back to the line console on its own, and
-a command that repeated the probe would only be able to get it wrong.
-"""
+"""Watch an existing compute through the Rich footer or the line log."""
 
 from __future__ import annotations
 
@@ -21,7 +11,7 @@ from cyclopts import Parameter
 from skyward.cli import app
 from skyward.cli._client import call
 from skyward.core.client import Client
-from skyward.core.console import watcher
+from skyward.core.console import ConsoleMode, watcher
 from skyward.core.errors import SkywardError
 from skyward.shared.schemas import Compute
 
@@ -30,6 +20,7 @@ from skyward.shared.schemas import Compute
 def monitor(
     ref: Annotated[str, Parameter(help="A compute id or name")],
     *,
+    mode: Annotated[ConsoleMode, Parameter(help="rich or log")] = "rich",
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
     database: Annotated[Path | None, Parameter(help="Embedded daemon database")] = None,
 ) -> None:
@@ -40,6 +31,8 @@ def monitor(
     ref
         The compute to attach to, by id or by name. It has to exist already —
         monitoring creates nothing.
+    mode
+        ``rich`` for the live footer or ``log`` for plain lines.
     url
         Overrides ``SKYWARD_URL``.
     database
@@ -48,7 +41,7 @@ def monitor(
 
     async def work(client: Client) -> None:
         compute = await client.call("GET", f"/v1/computes/{ref}", Compute)
-        follower = await asyncio.to_thread(watcher, client, compute.id)
+        follower = await asyncio.to_thread(watcher, client, compute.id, mode=mode)
         await follower.follow()
 
     try:

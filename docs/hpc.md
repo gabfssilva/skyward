@@ -2,7 +2,7 @@
 
 If you're coming from traditional HPC — SLURM, MPI, shared filesystems, queue-based scheduling — Skyward solves the same fundamental problem through a different model. Instead of submitting jobs to a scheduler and waiting for allocation on a shared cluster, you provision ephemeral clusters on demand from commercial cloud providers. They exist for the duration of your workload and shut down when done.
 
-The concepts map directly. What SLURM calls a "rank" is `instance_info().node`. What MPI calls `MPI_COMM_WORLD.Get_size()` is `instance_info().total_nodes`. Rank 0 is `is_head`. Data decomposition across ranks becomes `shard()`. Module loads and environment setup become the `Image()` specification. The distributed training patterns — head node coordinating workers, data sharded across ranks, gradients synchronized — are identical. The difference is how you get there.
+The concepts map directly. What SLURM calls a "rank" is `instance_info().rank`. What MPI calls `MPI_COMM_WORLD.Get_size()` is `instance_info().nodes`. Rank 0 is `is_head`. Data decomposition across ranks becomes `shard()`. Module loads and environment setup become the `Image()` specification. The distributed training patterns — head node coordinating workers, data sharded across ranks, gradients synchronized — are identical. The difference is how you get there.
 
 ## Environment setup
 
@@ -29,7 +29,7 @@ Skyward sets up the environment variables that frameworks expect — `MASTER_ADD
 
 Your distributed training patterns work unchanged. You still have a head node coordinating workers, you still shard data across ranks, you still synchronize gradients. The framework-level code — `DistributedDataParallel`, `all_reduce`, `DistributedSampler`, `jax.pmap` — is the same whether it runs on a SLURM cluster or a Skyward pool. If you've spent time learning these APIs, that knowledge transfers directly.
 
-Data sharding patterns also carry over. `sky.shard()` does modulo striding across ranks, which is the same approach as `DistributedSampler` or manual MPI-based decomposition. If you're doing domain decomposition or custom data splitting, `instance_info()` gives you the same rank/world-size information you'd get from `MPI_Comm_rank()` and `MPI_Comm_size()`.
+Data sharding patterns also carry over. `sky.shard()` takes a contiguous rank-ordered slice, with optional deterministic shuffling and `drop_last`. If you're doing domain decomposition or custom data splitting, `instance_info()` gives you the same rank/world-size information you'd get from `MPI_Comm_rank()` and `MPI_Comm_size()`.
 
 ## What doesn't carry over
 

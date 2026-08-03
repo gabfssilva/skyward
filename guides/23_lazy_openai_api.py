@@ -1,9 +1,8 @@
-"""Lazy OpenAI API — serve a model on an on-demand GPU, query it at localhost:8001.
+"""OpenAI-compatible API — serve a model on a GPU and query it at localhost:8001.
 
-The pool is born empty (``Nodes(desired=0)``). Dispatching the server task wakes
-it, provisions one on-demand GPU, and runs vLLM's OpenAI-compatible server on the
-node's port 8000. ``sky.Port`` bridges that to ``127.0.0.1:8001`` over SSH, so a
-local OpenAI client talks to the remote model as if it were running next door.
+The compute provisions one on-demand GPU and runs vLLM's OpenAI-compatible server
+on port 8000. ``sky.Port`` bridges that to ``127.0.0.1:8001`` over SSH, so a local
+OpenAI client talks to the remote model as if it were running next door.
 """
 
 import time
@@ -41,29 +40,26 @@ def wait_until_ready(client: OpenAI, timeout: float = 600.0) -> None:
     raise TimeoutError("model server did not become ready in time")
 
 
-@sky.app(
-    provider=sky.RunPod(),
-    accelerator=sky.accelerators.A40(),
-    allocation="on-demand",
-    nodes=sky.Nodes(min=0, desired=1, max=1),
-    image=sky.Image(
-        pip=["vllm"],
-        apt=["gcc"],
-        env={"VLLM_USE_FLASHINFER_SAMPLER": "0"},
-    ),
-    ports=[sky.Port(remote=8000, local=8001)],
-)
-def main(compute) -> None:
-    server = serve() > compute  # lazy: wakes the pool, serves until the block exits
-
-    client = OpenAI(base_url="http://localhost:8001/v1", api_key="skyward")
-    wait_until_ready(client)
-
-    reply = client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "user", "content": "In one sentence, what is Skyward?"}],
-    )
-    print(reply.choices[0].message.content)
-
 if __name__ == "__main__":
-    main()
+    with sky.Compute(
+        provider=sky.RunPod(),
+        accelerator=sky.accelerators.A40(),
+        allocation="on_demand",
+        nodes=sky.Nodes(min=0, desired=1, max=1),
+        image=sky.Image(
+            pip=["vllm"],
+            apt=["gcc"],
+            env={"VLLM_USE_FLASHINFER_SAMPLER": "0"},
+        ),
+        ports=[sky.Port(remote=8000, local=8001)],
+    ) as compute:
+        server = serve() > compute
+
+        client = OpenAI(base_url="http://localhost:8001/v1", api_key="skyward")
+        wait_until_ready(client)
+
+        reply = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": "In one sentence, what is Skyward?"}],
+        )
+        print(reply.choices[0].message.content)

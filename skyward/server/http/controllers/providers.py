@@ -1,4 +1,4 @@
-from litestar import Controller, delete, get, post
+from litestar import Controller, delete, get, post, put
 
 from skyward.providers import registry
 from skyward.server.application import ports
@@ -44,6 +44,10 @@ class ProviderController(Controller):
     @get("/{provider_id:str}", summary="Read a provider", description="Accepts an id or a name. Credentials are never included.")
     async def read(self, provider_id: str, providers: ports.Providers) -> Provider:
         return await providers.get(provider_id)
+
+    @put("/{provider_id:str}", summary="Update a provider account")
+    async def update(self, provider_id: str, data: ProviderCreate, providers: ports.Providers) -> Provider:
+        return await providers.update(provider_id, data)
 
     @delete(
         "/{provider_id:str}",

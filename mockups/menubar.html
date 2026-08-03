@@ -1,0 +1,1366 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skyward — menubar</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fragment+Mono&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#0a0e15;
+  --surface:#0f1522;
+  --surface-2:#151d2d;
+  --code:#080c14;
+  --line:#222d44;
+  --line-strong:#2c3a56;
+  --text:#e9edf5;
+  --text-2:#9aa7c0;
+  --text-3:#67748f;
+  --track:rgba(255,255,255,.07);
+  --gray:#6b7688;
+  --blue:#5aa9ff;
+  --green:#3ecf8e;
+  --yellow:#ffd166;
+  --red:#ff6e6e;
+  --amber:#ffb25e;
+  --rose:#ff7e9d;
+  --violet:#a78bfa;
+  --horizon:linear-gradient(90deg,var(--amber),var(--rose) 48%,var(--violet));
+  --shadow:0 24px 60px rgba(0,0,0,.5),0 2px 8px rgba(0,0,0,.35);
+  --menubar:rgba(13,18,30,.82);
+  --desktop:radial-gradient(900px 340px at 78% -40px, rgba(167,139,250,.10), transparent 60%),
+            radial-gradient(700px 300px at 30% 120%, rgba(95,212,192,.05), transparent 60%);
+  --font-ui:'Space Grotesk',system-ui,sans-serif;
+  --font-mono:'Fragment Mono',ui-monospace,SFMono-Regular,monospace;
+}
+[data-theme="light"]{
+  color-scheme:light;
+  --bg:#eef1f8;
+  --surface:#fbfcfe;
+  --surface-2:#f1f4fa;
+  --code:#f4f6fb;
+  --line:#e2e8f2;
+  --line-strong:#cfd9e8;
+  --text:#151c2e;
+  --text-2:#5a6882;
+  --text-3:#8d99b2;
+  --track:rgba(15,25,50,.09);
+  --gray:#8a94a6;
+  --blue:#1f7ae0;
+  --green:#1a9e77;
+  --yellow:#d98f1f;
+  --red:#e5484d;
+  --amber:#e08a2e;
+  --rose:#e05f86;
+  --violet:#8b6ff0;
+  --shadow:0 20px 50px rgba(20,30,60,.16),0 1px 4px rgba(20,30,60,.06);
+  --menubar:rgba(251,252,254,.82);
+  --desktop:radial-gradient(900px 340px at 78% -40px, rgba(224,95,134,.08), transparent 60%),
+            radial-gradient(700px 300px at 30% 120%, rgba(31,169,154,.05), transparent 60%);
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{
+  background:var(--desktop),var(--bg);
+  background-attachment:fixed;
+  color:var(--text);font-family:var(--font-ui);font-size:13px;
+  -webkit-font-smoothing:antialiased;
+}
+body,.popover,.menubar,.compute,.node,.task,.provider{transition:background-color .25s ease,border-color .25s ease,color .25s ease}
+[hidden]{display:none!important}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--line-strong);border-radius:5px;border:2px solid var(--surface)}
+::-webkit-scrollbar-track{background:transparent}
+:focus-visible{outline:2px solid var(--blue);outline-offset:2px;border-radius:6px}
+
+/* ---------- menubar ---------- */
+.menubar{
+  display:flex;align-items:center;justify-content:space-between;
+  position:sticky;top:0;z-index:5;
+  height:30px;padding:0 16px;
+  background:var(--menubar);backdrop-filter:blur(16px);
+  border-bottom:1px solid var(--line);
+  color:var(--text-2);
+}
+.menubar__left,.menubar__right{display:flex;align-items:center;gap:16px}
+.menubar__apple{font-size:15px;transform:translateY(-.5px)}
+.menubar__app{font-weight:600;color:var(--text)}
+.menubar__item{cursor:default}
+.menubar__right{font-size:13px;gap:14px}
+.status{
+  display:flex;align-items:center;gap:8px;
+  height:24px;padding:0 11px;border-radius:12px;
+  background:var(--surface-2);border:1px solid var(--line);
+  cursor:pointer;color:var(--text);
+}
+.status:hover{border-color:var(--line-strong)}
+.status__dot{
+  width:8px;height:8px;border-radius:50%;
+  background:currentColor;color:var(--gray);
+  animation:ringpulse 2.4s ease-out infinite;
+}
+.status__label{font-variant-numeric:tabular-nums;font-weight:500;font-size:12.5px}
+.status__spark{display:block;color:var(--green)}
+.theme-btn{
+  width:24px;height:24px;display:grid;place-items:center;border-radius:12px;
+  background:transparent;border:1px solid transparent;color:var(--text-3);cursor:pointer;
+}
+.theme-btn:hover{color:var(--text);border-color:var(--line)}
+.theme-btn svg{width:13px;height:13px}
+.menubar__right svg{color:var(--text-3)}
+
+/* ---------- popover ---------- */
+.popover{
+  position:relative;margin:16px 14px 0 auto;width:min(464px,calc(100vw - 28px));
+  background:var(--surface);border:1px solid var(--line);border-radius:18px;
+  box-shadow:var(--shadow);overflow:hidden;
+  animation:pop .22s ease;
+}
+.popover.hidden{display:none}
+.popover__tail{
+  position:absolute;top:-5px;right:30px;width:10px;height:10px;
+  background:var(--surface);border-left:1px solid var(--line);border-top:1px solid var(--line);
+  transform:rotate(45deg);
+}
+.horizon{height:2px;background:var(--horizon)}
+@keyframes pop{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+@keyframes ringpulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 45%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
+@keyframes dotpulse{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.panel-head{display:flex;align-items:baseline;gap:12px;padding:18px 20px 10px}
+.panel-head__title{font-size:17px;font-weight:700;letter-spacing:.01em}
+.panel-head__badge{font-family:var(--font-mono);font-size:10.5px;color:var(--text-3);border:1px solid var(--line);border-radius:5px;padding:1px 5px;align-self:center}
+.panel-head__agg{margin-left:auto;font-size:12px;color:var(--text-2);font-variant-numeric:tabular-nums;text-align:right}
+.panel-head__agg b{color:var(--text);font-weight:600}
+.live-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green);margin-right:6px;vertical-align:1px;animation:dotpulse 3s ease-in-out infinite}
+
+/* ---------- tabs ---------- */
+.tabs{display:flex;gap:4px;padding:4px 20px 12px}
+.tab{
+  display:flex;align-items:center;gap:7px;
+  padding:6px 12px;border-radius:9px;
+  background:transparent;border:1px solid transparent;color:var(--text-2);
+  font-size:12.5px;font-weight:500;cursor:pointer;font-family:var(--font-ui);
+}
+.tab:hover{color:var(--text);background:var(--surface-2)}
+.tab.is-active{color:var(--text);background:var(--surface-2);border-color:var(--line)}
+.tab__count{font-family:var(--font-mono);font-size:10.5px;color:var(--text-3)}
+.tab.is-active .tab__count{color:var(--text-2)}
+
+.panel-tool{display:flex;align-items:center;gap:10px;padding:0 20px 14px}
+.search{
+  flex:1;display:flex;align-items:center;gap:8px;
+  background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:7px 11px;
+}
+.search:focus-within{border-color:var(--line-strong)}
+.search svg{width:12px;height:12px;color:var(--text-3);flex:none}
+.search input{background:none;border:0;outline:0;color:var(--text);font-family:var(--font-ui);font-size:12.5px;width:100%}
+.search input::placeholder{color:var(--text-3)}
+.sync{font-family:var(--font-mono);font-size:10.5px;color:var(--text-3);white-space:nowrap;font-variant-numeric:tabular-nums}
+.icon-btn{
+  width:28px;height:28px;flex:none;display:grid;place-items:center;
+  background:var(--surface-2);border:1px solid var(--line);border-radius:9px;color:var(--text-2);cursor:pointer;
+}
+.icon-btn:hover{color:var(--text);border-color:var(--line-strong)}
+.icon-btn svg{width:12px;height:12px}
+
+/* ---------- panels ---------- */
+.tab-panel{display:none}
+.tab-panel.is-active{display:block}
+
+/* ---------- compute rows ---------- */
+.computes{display:flex;flex-direction:column;gap:4px;padding:0 12px 12px}
+.compute{border-radius:12px;padding:13px 14px;transition:background-color .15s ease}
+.compute:hover{background:var(--surface-2)}
+.compute.is-open{background:var(--surface-2)}
+.compute__head{
+  display:flex;align-items:center;gap:12px;width:100%;
+  padding:0;background:none;border:0;color:var(--text);text-align:left;cursor:pointer;font:inherit;
+}
+.compute__state{width:9px;height:9px;border-radius:50%;background:var(--gray);flex:none}
+.compute[data-color="blue"] .compute__state{background:var(--blue);animation:dotpulse 1.6s ease-in-out infinite}
+.compute[data-color="green"] .compute__state{background:var(--green)}
+.compute[data-color="yellow"] .compute__state{background:var(--yellow)}
+.compute[data-color="red"] .compute__state{background:var(--red)}
+.compute__meta{flex:1;min-width:0}
+.compute__name{font-size:15.5px;font-weight:600;display:block;line-height:1.25}
+.compute__sub{font-size:11.5px;color:var(--text-3);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;margin-top:1px}
+.compute__warn{color:var(--red)}
+.compute__load{width:64px;flex:none;display:flex;flex-direction:column;gap:4px}
+.compute__load .num{font-family:var(--font-mono);font-size:11px;font-variant-numeric:tabular-nums;color:var(--text-2);text-align:right}
+.compute__cost{font-family:var(--font-mono);font-size:11.5px;color:var(--text-2);font-variant-numeric:tabular-nums;flex:none}
+.compute__chev{color:var(--text-3);flex:none;display:grid;place-items:center;transition:transform .25s ease}
+.compute.is-open .compute__chev{transform:rotate(180deg)}
+
+.compute__body{display:grid;grid-template-rows:0fr;transition:grid-template-rows .3s ease}
+.compute.is-open .compute__body{grid-template-rows:1fr}
+.compute__body-inner{overflow:hidden;min-height:0}
+
+.bar{display:block;height:5px;background:var(--track);border-radius:3px;overflow:hidden}
+.bar__fill{display:block;height:100%;border-radius:3px;background:var(--green);transition:width .4s ease}
+
+/* machine list */
+.node-table{padding:13px 0 2px;border-top:1px solid var(--line);margin-top:13px}
+.node-cols,.node{display:grid;grid-template-columns:10px 1.4fr .8fr .8fr 1fr 1fr 24px;gap:8px;align-items:center}
+.node-cols{font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--text-3);padding:0 2px 6px}
+.node-cols span:nth-child(3),.node-cols span:nth-child(4),.node-cols span:nth-child(5),.node-cols span:nth-child(6){text-align:right}
+.node{
+  width:100%;padding:8px 2px;background:none;border:0;border-top:1px solid var(--line);
+  color:var(--text);text-align:left;cursor:pointer;font:inherit;border-radius:6px;
+}
+.node:first-of-type{border-top:0}
+.node:hover{background:var(--surface)}
+.node.is-down{opacity:.55}
+.node__dot{width:7px;height:7px;border-radius:50%;background:var(--green)}
+.node.is-down .node__dot{background:var(--red)}
+.node__id{font-family:var(--font-mono);font-size:12.5px;white-space:nowrap}
+.node__rank{color:var(--text-3)}
+.node__muted{font-family:var(--font-mono);font-size:10px;color:var(--text-3);text-align:right;grid-column:3/7}
+.node__tag{
+  display:inline-block;font-size:8.5px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--red);background:color-mix(in srgb, var(--red) 14%, transparent);
+  border-radius:4px;padding:1px 4px;margin-left:5px;vertical-align:1px;
+}
+.node__val{font-family:var(--font-mono);font-size:11px;color:var(--text-2);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.node__chev{color:var(--text-3);display:grid;place-items:center;justify-self:end}
+.node:hover .node__chev{color:var(--text-2)}
+.pager{display:flex;align-items:center;gap:4px;margin-top:12px;padding-top:10px;border-top:1px solid var(--line)}
+.pager__btn{
+  min-width:22px;height:22px;padding:0 4px;display:grid;place-items:center;
+  border-radius:6px;background:var(--surface);border:1px solid var(--line);
+  color:var(--text-2);font-size:10.5px;cursor:pointer;font-family:var(--font-mono);font-variant-numeric:tabular-nums;
+}
+.pager__btn:hover:not(:disabled){color:var(--text);border-color:var(--line-strong)}
+.pager__btn:disabled{opacity:.4;cursor:default}
+.pager__btn.is-active{background:var(--surface-2);border-color:var(--line-strong);color:var(--text);font-weight:600}
+.pager__ellipsis{color:var(--text-3);padding:0 2px;font-size:10px}
+.pager__info{margin-left:auto;font-family:var(--font-mono);font-size:9.5px;color:var(--text-3);font-variant-numeric:tabular-nums}
+
+.compute__note{
+  display:flex;align-items:center;gap:9px;margin-top:13px;padding-top:13px;border-top:1px solid var(--line);
+  font-family:var(--font-mono);font-size:12px;color:var(--text-2);
+}
+.compute__note b{color:var(--text);font-weight:500}
+.spinner{width:9px;height:9px;border:1.5px solid var(--line-strong);border-top-color:var(--blue);border-radius:50%;animation:spin 1s linear infinite;flex:none}
+.boot{font-variant-numeric:tabular-nums}
+
+.compute__actions{display:flex;align-items:center;gap:10px;margin-top:13px;padding-top:13px;border-top:1px solid var(--line)}
+.scale{display:flex;align-items:center;gap:6px}
+.scale__label{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:var(--text-3)}
+.scale__btn{
+  width:23px;height:23px;border-radius:7px;background:var(--surface);border:1px solid var(--line-strong);
+  color:var(--text-2);cursor:pointer;font-size:14px;line-height:1;display:grid;place-items:center;font-family:var(--font-ui);
+}
+.scale__btn:hover:not(:disabled){color:var(--text);border-color:var(--text-3)}
+.scale__btn:disabled{opacity:.4;cursor:default}
+.scale__value{
+  width:36px;height:23px;text-align:center;font-family:var(--font-mono);font-size:12px;color:var(--text);
+  background:var(--surface-2);border:1px solid var(--line);border-radius:7px;font-variant-numeric:tabular-nums;
+}
+.scale__value:focus-visible{outline-offset:0}
+.scale__range{font-family:var(--font-mono);font-size:10px;color:var(--text-3)}
+.scale__apply{
+  margin-left:2px;height:23px;padding:0 10px;border-radius:7px;background:var(--surface);border:1px solid var(--line-strong);
+  color:var(--text-2);font-size:11px;cursor:pointer;font-family:var(--font-ui);
+}
+.scale__apply:hover{color:var(--text);border-color:var(--text-3)}
+.scale__apply.done{color:var(--green);border-color:color-mix(in srgb, var(--green) 50%, transparent)}
+.kill{
+  margin-left:auto;height:24px;padding:0 10px;border-radius:7px;background:transparent;
+  border:1px solid color-mix(in srgb, var(--red) 45%, transparent);color:var(--red);font-size:11px;cursor:pointer;font-family:var(--font-ui);
+}
+.kill:hover{background:color-mix(in srgb, var(--red) 8%, transparent);border-color:var(--red)}
+.kill-confirm{display:none;align-items:center;gap:8px;margin-left:auto}
+.kill-confirm .q{font-size:11px;color:var(--text-2)}
+.kill-confirm button{height:24px;padding:0 11px;border-radius:7px;font-size:11px;cursor:pointer;border:1px solid;font-family:var(--font-ui)}
+.btn--kill{background:var(--red);border-color:var(--red);color:#fff;font-weight:600}
+.btn--kill:hover{filter:brightness(1.08)}
+.btn--keep{background:transparent;border-color:var(--line-strong);color:var(--text-2)}
+.btn--keep:hover{color:var(--text)}
+.compute.dying{opacity:.5;pointer-events:none;transition:opacity .4s}
+.compute.gone{display:none}
+
+/* ---------- machine view ---------- */
+.machine-view{padding:0 0 12px}
+.mv-head{display:flex;align-items:center;gap:10px;padding:6px 16px 12px}
+.mv-back{
+  width:26px;height:26px;flex:none;display:grid;place-items:center;border-radius:7px;
+  background:var(--surface-2);border:1px solid var(--line);color:var(--text-2);cursor:pointer;
+}
+.mv-back:hover{color:var(--text);border-color:var(--line-strong)}
+.mv-back svg{width:12px;height:12px}
+.mv-crumb{flex:1;min-width:0}
+.mv-crumb__name{font-size:14px;font-weight:600;display:block;line-height:1.2}
+.mv-crumb__node{font-family:var(--font-mono);font-size:11.5px;color:var(--text-3);display:block;margin-top:1px}
+.mv-temp{
+  flex:none;display:flex;align-items:baseline;gap:5px;height:24px;padding:0 9px;border-radius:7px;
+  background:var(--surface-2);border:1px solid var(--line);
+}
+.mv-temp__label{font-size:8.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-3)}
+.mv-temp__val{font-family:var(--font-mono);font-size:11px;color:var(--text-2);font-variant-numeric:tabular-nums}
+.mv-temp__val.warm{color:var(--yellow)}
+.mv-temp__val.hot{color:var(--red)}
+.mv-ssh{
+  flex:none;height:24px;padding:0 10px;border-radius:7px;background:var(--surface-2);
+  border:1px solid var(--line-strong);color:var(--text-2);font-size:11px;cursor:pointer;font-family:var(--font-ui);
+}
+.mv-ssh:hover{color:var(--text);border-color:var(--text-3)}
+.mv-charts{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:0 16px 12px}
+.chart-card{background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.chart-card__head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:7px}
+.chart-card__label{font-size:9.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--text-3)}
+.chart-card__val{font-family:var(--font-mono);font-size:13px;font-variant-numeric:tabular-nums;color:var(--text)}
+.chart{width:100%;height:44px;display:block}
+.chart polyline{fill:none;stroke:var(--green);stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.chart path{fill:color-mix(in srgb, var(--green) 14%, transparent)}
+.mv-logs{padding:0 16px}
+.mv-logs__head{
+  display:flex;align-items:center;gap:8px;padding:8px 12px;
+  background:var(--surface-2);border:1px solid var(--line);border-bottom:0;border-radius:10px 10px 0 0;
+  font-size:9.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--text-3);
+}
+.mv-logs__live{margin-left:auto;color:var(--green);font-size:9px;letter-spacing:.06em}
+.mv-logs__live .dot{width:5px;height:5px;border-radius:50%;background:var(--green);display:inline-block;margin-right:5px;vertical-align:1px;animation:dotpulse 1.6s ease-in-out infinite}
+.mv-logs__body{
+  height:150px;overflow:auto;margin:0;padding:10px 12px;
+  background:var(--code);border:1px solid var(--line);border-radius:0 0 10px 10px;
+  font-family:var(--font-mono);font-size:10.5px;line-height:1.7;color:var(--text-2);
+  white-space:pre-wrap;
+}
+.log-ts{color:var(--text-3);opacity:.75}
+.log-lvl{font-weight:600}
+.log-info,.log-debug{color:var(--text-3)}
+.log-warn{color:var(--yellow)}
+.log-error{color:var(--red)}
+
+/* ---------- task rows ---------- */
+.tasks{display:flex;flex-direction:column;gap:2px;padding:0 12px 12px}
+.task{display:flex;align-items:center;gap:11px;padding:11px 14px;border-radius:10px}
+.task:hover{background:var(--surface-2)}
+.task__dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--gray)}
+.task[data-status="running"] .task__dot{background:var(--blue);animation:dotpulse 2s ease-in-out infinite}
+.task[data-status="queued"] .task__dot{background:var(--gray)}
+.task[data-status="succeeded"] .task__dot{background:var(--green)}
+.task[data-status="failed"] .task__dot{background:var(--red)}
+.task__meta{flex:1;min-width:0}
+.task__fn{font-family:var(--font-mono);font-size:12.5px;display:block;line-height:1.3}
+.task__sub{font-size:11.5px;color:var(--text-3);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;margin-top:1px}
+.task__status{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;flex:none}
+.task__status.running{color:var(--blue)}
+.task__status.queued{color:var(--gray)}
+.task__status.succeeded{color:var(--green)}
+.task__status.failed{color:var(--red)}
+.task__dur{font-family:var(--font-mono);font-size:12px;color:var(--text-2);font-variant-numeric:tabular-nums;flex:none;width:42px;text-align:right}
+.task__act{flex:none;opacity:0;transition:opacity .15s ease}
+.task:hover .task__act,.task:focus-within .task__act{opacity:1}
+@media (hover:none){.task__act{opacity:1}}
+.task__act button{
+  width:22px;height:22px;display:grid;place-items:center;
+  background:var(--surface);border:1px solid var(--line);border-radius:6px;color:var(--text-2);cursor:pointer;
+}
+.task__act button:hover{color:var(--text);border-color:var(--line-strong)}
+.task__act svg{width:11px;height:11px}
+
+/* ---------- provider rows ---------- */
+.providers{display:flex;flex-direction:column;gap:2px;padding:0 12px 12px}
+.provider{display:flex;align-items:center;gap:11px;padding:11px 14px;border-radius:10px}
+.provider:hover{background:var(--surface-2)}
+.provider__dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--gray)}
+.provider__dot.ok{background:var(--green)}
+.provider__meta{flex:1;min-width:0}
+.provider__name{font-size:14px;font-weight:600;display:block;line-height:1.25}
+.provider__sub{font-size:11.5px;color:var(--text-3);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;margin-top:1px}
+.provider__age{font-family:var(--font-mono);font-size:10.5px;color:var(--text-3);flex:none;width:64px;text-align:right;font-variant-numeric:tabular-nums}
+.provider__badge{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;padding:3px 8px;border-radius:6px;flex:none}
+.provider__badge.ok{color:var(--green);background:color-mix(in srgb, var(--green) 12%, transparent)}
+.provider__badge.missing{color:var(--gray);background:var(--surface-2);border:1px solid var(--line)}
+.provider__check{
+  width:22px;height:22px;flex:none;display:grid;place-items:center;
+  background:var(--surface);border:1px solid var(--line);border-radius:6px;color:var(--text-2);cursor:pointer;
+}
+.provider__check:hover{color:var(--text);border-color:var(--line-strong)}
+.provider__check svg{width:11px;height:11px}
+
+/* ---------- overview ---------- */
+.overview{padding:2px 14px 14px}
+.ov-hero{padding:8px 2px 12px;border-bottom:1px solid var(--line)}
+.ov-hero__line1{font-size:16px;font-weight:700;letter-spacing:.01em;line-height:1.35;font-variant-numeric:tabular-nums}
+.ov-hero__line2{font-size:12.5px;color:var(--text-2);margin-top:3px;font-variant-numeric:tabular-nums}
+.ov-hero__line2 b{color:var(--text);font-weight:600}
+.ov-hero__line2 .ov-down{color:var(--red);font-weight:600}
+.ov-sep{color:var(--text-3);margin:0 2px}
+.ov-chip{display:inline-flex;align-items:center;gap:6px}
+.ov-chip__dot{width:8px;height:8px;border-radius:50%;background:var(--gray);flex:none}
+.ov-chip__dot[data-c="running"]{background:var(--green)}
+.ov-chip__dot[data-c="scaling"]{background:var(--blue);animation:dotpulse 1.6s ease-in-out infinite}
+.ov-health{display:flex;height:5px;border-radius:3px;overflow:hidden;background:var(--track);margin-top:12px}
+.ov-health i{display:block;height:100%}
+.ov-health i[data-c="green"]{background:var(--green)}
+.ov-health i[data-c="blue"]{background:var(--blue)}
+.ov-health i[data-c="gray"]{background:var(--gray)}
+.ov-health i[data-c="yellow"]{background:var(--yellow)}
+.ov-health i[data-c="red"]{background:var(--red)}
+.ov-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding-top:12px}
+.ov-card{background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-width:0}
+.ov-card__label{font-size:9px;text-transform:uppercase;letter-spacing:.09em;color:var(--text-3);display:block}
+.ov-card__val{font-size:21px;font-weight:700;display:block;margin-top:2px;line-height:1.15;font-variant-numeric:tabular-nums}
+.ov-card__sub{font-size:10.5px;color:var(--text-3);display:block;margin-top:2px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ov-card__sub b{color:var(--red);font-weight:600}
+.ov-spend{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}
+.ov-spend__head{display:flex;justify-content:space-between;align-items:baseline;font-size:9px;text-transform:uppercase;letter-spacing:.09em;color:var(--text-3);padding:0 2px 8px}
+.ov-spend__total{font-family:var(--font-mono);font-size:10px;color:var(--text-2);letter-spacing:0;text-transform:none}
+.ov-spend__row{display:grid;grid-template-columns:64px 1fr 96px;gap:10px;align-items:center;padding:4px 2px}
+.ov-spend__name{font-size:11.5px;font-weight:500;text-transform:capitalize}
+.ov-spend__bar{height:5px;border-radius:3px;background:var(--track);overflow:hidden}
+.ov-spend__fill{display:block;height:100%;border-radius:3px;background:var(--horizon);transition:width .4s ease}
+.ov-spend__cost{font-family:var(--font-mono);font-size:10px;color:var(--text-2);text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+
+/* ---------- empty state ---------- */
+.empty{padding:28px 20px 30px;text-align:center}
+.empty__icon{width:30px;height:30px;color:var(--text-3);margin:0 auto 12px}
+.empty__title{font-size:15px;font-weight:600;margin:0 0 5px}
+.empty__sub{font-size:12.5px;color:var(--text-2);margin:0 0 12px}
+.empty__code{
+  display:inline-block;font-family:var(--font-mono);font-size:11px;color:var(--green);
+  background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:7px 11px;
+}
+
+@media (prefers-reduced-motion:reduce){
+  *{animation:none!important;transition:none!important}
+}
+@media (max-width:480px){
+  .menubar__item{display:none}
+  .menubar__left{gap:11px}
+}
+</style>
+</head>
+<body>
+<div class="stage">
+
+  <header class="menubar">
+    <div class="menubar__left">
+      <span class="menubar__apple"></span>
+      <span class="menubar__app">Skyward</span>
+      <span class="menubar__item">File</span>
+      <span class="menubar__item">Edit</span>
+      <span class="menubar__item">View</span>
+      <span class="menubar__item">Window</span>
+    </div>
+    <div class="menubar__right">
+      <button class="theme-btn" id="theme-btn" title="Toggle theme" aria-label="Toggle light or dark theme"></button>
+      <button class="status" id="status" title="Skyward — click to collapse">
+        <span class="status__dot" id="status-dot"></span>
+        <span class="status__label" id="status-label">sk 4 · $1.90</span>
+        <svg class="status__spark" width="32" height="13" viewBox="0 0 32 13" fill="none" aria-hidden="true">
+          <polyline points="0,10 4,8 8,9 12,5 16,6 20,4 24,5 28,3 32,2"
+            stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <svg width="15" height="11" viewBox="0 0 15 11" fill="none" aria-hidden="true">
+        <path d="M7.5 9a.9.9 0 1 0 .001 0M2 4a7.6 7.6 0 0 1 11 0M4.2 6a4.8 4.8 0 0 1 6.6 0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      <svg width="23" height="12" viewBox="0 0 23 12" fill="none" aria-hidden="true">
+        <rect x=".5" y=".5" width="19" height="11" rx="3" stroke="currentColor"/>
+        <rect x="2.5" y="2.5" width="12" height="7" rx="1.2" fill="currentColor"/>
+        <path d="M21.5 4v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+      <span id="clock">--:--</span>
+    </div>
+  </header>
+
+  <div class="popover" id="popover">
+    <div class="popover__tail"></div>
+    <div class="horizon"></div>
+
+    <header class="panel-head">
+      <span class="panel-head__title">Skyward</span>
+      <span class="panel-head__badge">v2</span>
+      <span class="panel-head__agg"><span class="live-dot"></span><span id="agg-text">…</span></span>
+    </header>
+
+    <nav class="tabs" aria-label="Sections">
+      <button class="tab is-active" data-tab="overview">Overview<span class="tab__count" id="count-overview">48</span></button>
+      <button class="tab" data-tab="compute">Compute<span class="tab__count" id="count-compute">4</span></button>
+      <button class="tab" data-tab="tasks">Tasks<span class="tab__count" id="count-tasks">8</span></button>
+      <button class="tab" data-tab="providers">Providers<span class="tab__count" id="count-providers">6</span></button>
+    </nav>
+
+    <div class="panel-tool">
+      <label class="search">
+        <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><circle cx="5" cy="5" r="3.5"/><path d="M7.7 7.7 10.5 10.5"/></svg>
+        <input id="search" type="text" placeholder="Filter computes…" aria-label="Filter computes">
+      </label>
+      <span class="sync" id="sync">synced just now</span>
+      <button class="icon-btn" id="refresh" title="Refresh" aria-label="Refresh">
+        <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 4.2A4 4 0 1 0 10 6"/><path d="M9.5 1.5v2.7h-2.7"/></svg>
+      </button>
+    </div>
+
+    <section class="tab-panel is-active" data-tab="overview">
+      <div class="overview">
+        <div class="ov-hero">
+          <div class="ov-hero__line1" id="ov-line1">…</div>
+          <div class="ov-hero__line2" id="ov-line2">…</div>
+          <div class="ov-health" id="ov-health" title="Fleet health by compute"></div>
+        </div>
+        <div class="ov-grid">
+          <div class="ov-card">
+            <span class="ov-card__label">computes</span>
+            <span class="ov-card__val" id="ov-computes-val">—</span>
+            <span class="ov-card__sub" id="ov-computes-sub">—</span>
+          </div>
+          <div class="ov-card">
+            <span class="ov-card__label">nodes</span>
+            <span class="ov-card__val" id="ov-nodes-val">—</span>
+            <span class="ov-card__sub" id="ov-nodes-sub">—</span>
+          </div>
+          <div class="ov-card">
+            <span class="ov-card__label">tasks</span>
+            <span class="ov-card__val" id="ov-tasks-val">—</span>
+            <span class="ov-card__sub" id="ov-tasks-sub">—</span>
+          </div>
+          <div class="ov-card">
+            <span class="ov-card__label">providers</span>
+            <span class="ov-card__val" id="ov-providers-val">—</span>
+            <span class="ov-card__sub" id="ov-providers-sub">—</span>
+          </div>
+        </div>
+        <div class="ov-spend">
+          <div class="ov-spend__head"><span>spend by provider</span><span class="ov-spend__total" id="ov-spend-total">—</span></div>
+          <div class="ov-spend__rows" id="ov-spend-rows"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" data-tab="compute">
+      <div class="computes" id="computes"></div>
+      <div class="empty" id="empty" hidden>
+        <svg class="empty__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/><circle cx="12" cy="12" r="3"/>
+        </svg>
+        <p class="empty__title">No computes running</p>
+        <p class="empty__sub">Start one from any notebook or terminal:</p>
+        <code class="empty__code">with sky.Compute(sky.AWS(), sky.accelerators.A100()) as pool:</code>
+      </div>
+
+      <div class="machine-view" id="machine-view" hidden>
+        <div class="mv-head">
+          <button class="mv-back" id="mv-back" aria-label="Back to computes">
+            <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 2.5 3 6l4.5 3.5"/></svg>
+          </button>
+          <div class="mv-crumb">
+            <span class="mv-crumb__name" id="mv-name">…</span>
+            <span class="mv-crumb__node" id="mv-node">…</span>
+          </div>
+          <div class="mv-temp"><span class="mv-temp__label">temp</span><span class="mv-temp__val" id="m-temp-val">—</span></div>
+          <button class="mv-ssh" id="mv-ssh">SSH</button>
+        </div>
+        <div class="mv-charts">
+          <div class="chart-card">
+            <div class="chart-card__head"><span class="chart-card__label">GPU</span><span class="chart-card__val" id="m-gpu-val">—</span></div>
+            <svg class="chart" id="m-gpu-chart" viewBox="0 0 120 40" preserveAspectRatio="none" aria-hidden="true"><path class="chart__area"/><polyline class="chart__line" fill="none"/></svg>
+          </div>
+          <div class="chart-card">
+            <div class="chart-card__head"><span class="chart-card__label">CPU</span><span class="chart-card__val" id="m-cpu-val">—</span></div>
+            <svg class="chart" id="m-cpu-chart" viewBox="0 0 120 40" preserveAspectRatio="none" aria-hidden="true"><path class="chart__area"/><polyline class="chart__line" fill="none"/></svg>
+          </div>
+          <div class="chart-card">
+            <div class="chart-card__head"><span class="chart-card__label">VRAM</span><span class="chart-card__val" id="m-vram-val">—</span></div>
+            <svg class="chart" id="m-vram-chart" viewBox="0 0 120 40" preserveAspectRatio="none" aria-hidden="true"><path class="chart__area"/><polyline class="chart__line" fill="none"/></svg>
+          </div>
+          <div class="chart-card">
+            <div class="chart-card__head"><span class="chart-card__label">RAM</span><span class="chart-card__val" id="m-ram-val">—</span></div>
+            <svg class="chart" id="m-ram-chart" viewBox="0 0 120 40" preserveAspectRatio="none" aria-hidden="true"><path class="chart__area"/><polyline class="chart__line" fill="none"/></svg>
+          </div>
+        </div>
+        <div class="mv-logs">
+          <div class="mv-logs__head"><span>logs</span><span class="mv-logs__live"><span class="dot"></span>following</span></div>
+          <pre class="mv-logs__body" id="mv-logs"></pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" data-tab="tasks">
+      <div class="tasks" id="tasks"></div>
+    </section>
+
+    <section class="tab-panel" data-tab="providers">
+      <div class="providers" id="providers"></div>
+    </section>
+
+  </div>
+
+</div>
+
+<script>
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const clamp = (v,a,b)=>Math.min(b,Math.max(a,v));
+const esc = s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+const SUN_SVG = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><circle cx="6" cy="6" r="2.4"/><path d="M6 1v1.4M6 9.6V11M1 6h1.4M9.6 6H11M2.5 2.5l1 1M8.5 8.5l1 1M9.5 2.5l-1 1M3.5 8.5l-1 1"/></svg>';
+const MOON_SVG = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M10 7.5A4.5 4.5 0 1 1 4.5 2a3.6 3.6 0 0 0 5.5 5.5Z"/></svg>';
+const LOGS_SVG = '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 1h5L9 3.5v5.5H1.5z"/><path d="M6 1v2.5H9M3 5.5h4M3 7.5h3"/></svg>';
+const CHEV_SVG = '<svg viewBox="0 0 12 12" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5l3 3 3-3"/></svg>';
+const CHECK_SVG = '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 4.2A4 4 0 1 0 10 6"/><path d="M9.5 1.5v2.7h-2.7"/></svg>';
+
+/* ---------- data ---------- */
+function makeNodes(prefix, count, base, vmax, ramMax){
+  return Array.from({length:count}, (_,k)=>{
+    const id = `${prefix}${String(k).padStart(2,'0')}`;
+    return {
+      id, rank:k,
+      gpu:clamp(base.gpu + (Math.random()*22-11), 2, 100),
+      cpu:clamp(base.cpu + (Math.random()*14-7), 2, 100),
+      vram:clamp(base.vram + (Math.random()*6-3), 2, vmax),
+      vmax,
+      ram:clamp(base.ram + (Math.random()*5-2.5), 2, ramMax),
+      ramMax,
+      temp:clamp(base.temp + (Math.random()*6-3), 32, 92),
+    };
+  });
+}
+
+const DATA = [
+  {
+    name:'gpt-finetune', state:'running', prov:'aws', accel:'A100 · 40G',
+    min:2, cur:4, max:8, cost:1.12, open:false,
+    nodes:[
+      {id:'n-3f1a', rank:0, gpu:94, vram:72, vmax:80, ram:51, ramMax:128, cpu:38, temp:74},
+      {id:'n-3f1b', rank:1, gpu:12, vram:9,  vmax:80, ram:30, ramMax:128, cpu:8,  temp:44},
+      {id:'n-3f1c', rank:2, gpu:88, vram:65, vmax:80, ram:47, ramMax:128, cpu:31, temp:70},
+      {id:'n-3f1d', rank:3, gpu:90, vram:67, vmax:80, ram:45, ramMax:128, cpu:33, temp:71},
+    ],
+  },
+  {
+    name:'rl-tuning', state:'scaling', prov:'runpod', accel:'H100 · 80G',
+    min:2, cur:3, max:6, cost:0.58,
+    nodes:[
+      {id:'n-9c2e', rank:0, gpu:61, vram:48, vmax:80, ram:46, ramMax:128, cpu:22, temp:63},
+      {id:'n-9c2f', rank:1, gpu:57, vram:44, vmax:80, ram:43, ramMax:128, cpu:20, temp:61},
+      {id:'n-9c30', rank:2, gpu:54, vram:41, vmax:80, ram:42, ramMax:128, cpu:19, temp:60},
+    ],
+    note:'scaling to 6',
+  },
+  {
+    name:'mixer-v2', state:'running', prov:'aws', accel:'A100 · 40G',
+    min:4, cur:6, max:8, cost:1.68,
+    nodes:[
+      {id:'n-a1e0', rank:0, gpu:88, vram:70, vmax:80, ram:49, ramMax:128, cpu:29, temp:71},
+      {id:'n-a1e1', rank:1, gpu:91, vram:73, vmax:80, ram:52, ramMax:128, cpu:32, temp:72},
+      {id:'n-a1e2', rank:2, gpu:85, vram:68, vmax:80, ram:46, ramMax:128, cpu:28, temp:70},
+      {id:'n-a1e3', rank:3, down:true},
+      {id:'n-a1e4', rank:4, gpu:90, vram:71, vmax:80, ram:50, ramMax:128, cpu:30, temp:71},
+      {id:'n-a1e5', rank:5, gpu:86, vram:69, vmax:80, ram:48, ramMax:128, cpu:27, temp:69},
+    ],
+  },
+  {
+    name:'sweep-2048', state:'running', prov:'runpod', accel:'H100 · 80G',
+    min:2, cur:5, max:8, cost:0.95,
+    nodes:[
+      {id:'n-b2c0', rank:0, gpu:92, vram:75, vmax:80, ram:61, ramMax:128, cpu:35, temp:73},
+      {id:'n-b2c1', rank:1, down:true},
+      {id:'n-b2c2', rank:2, gpu:88, vram:70, vmax:80, ram:59, ramMax:128, cpu:30, temp:71},
+      {id:'n-b2c3', rank:3, down:true},
+      {id:'n-b2c4', rank:4, gpu:84, vram:67, vmax:80, ram:57, ramMax:128, cpu:27, temp:69},
+    ],
+  },
+  {
+    name:'shared-lab', state:'idle', prov:'gcp', accel:'T4 · 16G',
+    min:1, cur:2, max:2, cost:0.06,
+    nodes:[
+      {id:'n-b7d0', rank:0, gpu:0, vram:1, vmax:16, ram:8,  ramMax:64, cpu:2,  temp:37},
+      {id:'n-b7d1', rank:1, gpu:0, vram:1, vmax:16, ram:7,  ramMax:64, cpu:2,  temp:37},
+    ],
+  },
+  {
+    name:'prod-serving', state:'running', prov:'aws', accel:'A100 · 80G',
+    min:8, cur:28, max:64, cost:7.84, open:true,
+    nodes: makeNodes('n-p', 28, {gpu:76, cpu:41, vram:63, ram:58, temp:68}, 80, 128),
+  },
+];
+
+const TASKS = [
+  {fn:'train(data)',    pool:'gpt-finetune', node:'n-3f1a', status:'running',   dur:252},
+  {fn:'eval(data)',     pool:'gpt-finetune', node:'n-3f1b', status:'running',   dur:118},
+  {fn:'tokenize(batch)',pool:'gpt-finetune', node:'n-3f1c', status:'succeeded', dur:44},
+  {fn:'tokenize(batch)',pool:'gpt-finetune', node:'n-3f1d', status:'queued',    dur:0},
+  {fn:'rollout()',      pool:'rl-tuning',    node:'n-9c2e', status:'running',   dur:151},
+  {fn:'rollout()',      pool:'rl-tuning',    node:'n-9c2f', status:'succeeded', dur:72},
+  {fn:'score(ref)',     pool:'mixer-v2',     node:'—',      status:'queued',    dur:0},
+  {fn:'data:load',      pool:'sweep-2048',   node:'n-b2c0', status:'failed',    dur:2},
+];
+
+const PROVIDERS = [
+  {name:'AWS',       ok:true,  region:'us-east-1',       machines:10, age:40},
+  {name:'RunPod',    ok:true,  region:'SECURE-community', machines:8,  age:95},
+  {name:'VastAI',    ok:true,  region:'us-east',         machines:1,  age:130},
+  {name:'GCP',       ok:true,  region:'us-central1',     machines:2,  age:72},
+  {name:'Hyperstack',ok:false, region:'',                machines:0,  age:null},
+  {name:'Scaleway',  ok:false, region:'',                machines:0,  age:null},
+];
+
+const STATUS_LABEL = {running:'running', queued:'queued', succeeded:'done', failed:'failed'};
+const fmtDur = s => Math.floor(s/60)+':'+String(s%60).padStart(2,'0');
+const fmtAge = s => s<60 ? s+'s ago' : Math.floor(s/60)+'m ago';
+
+/* ---------- health ---------- */
+function computeColor(c){
+  if(c.state==='provisioning' || c.state==='scaling') return 'blue';
+  if(c.state==='idle') return 'gray';
+  const total = c.nodes.length;
+  const bad = c.nodes.filter(n=>n.down).length;
+  if(!total || !bad) return 'green';
+  return bad/total < 0.2 ? 'yellow' : 'red';
+}
+const SEV = {gray:0, green:1, blue:2, yellow:3, red:4};
+const SEV_COLOR = ['gray','green','blue','yellow','red'];
+function aggregateColor(){
+  const alive = DATA.filter(c=>!c.terminated);
+  if(!alive.length) return 'gray';
+  let worst = 0;
+  alive.forEach(c=>{ worst = Math.max(worst, SEV[computeColor(c)]); });
+  return SEV_COLOR[worst];
+}
+function countDown(c){ return c.nodes.filter(n=>n.down).length; }
+
+/* ---------- history / sparklines ---------- */
+function initHist(n){
+  const shape = (base, amp)=>Array.from({length:24},(_,k)=>clamp(base + amp*Math.sin(k*0.55) + (Math.random()*amp*2-amp), 0, 100));
+  n.gpuH  = shape(n.gpu, 14);
+  n.cpuH  = shape(n.cpu, 10);
+  n.vramH = shape(n.vmax ? n.vram/n.vmax*100 : 0, 4);
+  n.ramH  = shape(n.ramMax ? n.ram/n.ramMax*100 : 0, 3);
+}
+function pushHist(arr, v, cap){ arr.push(v); if(arr.length > cap) arr.shift(); }
+
+function drawSpark(svg, values){
+  if(!svg || !values || !values.length) return;
+  const vb = svg.viewBox.baseVal;
+  const vw = vb.width, vh = vb.height;
+  const max = Math.max(...values, 1);
+  const pad = vh*0.1;
+  const xs = i => (i/(values.length-1))*vw;
+  const ys = v => (vh-pad) - (v/max)*(vh-2*pad);
+  const pts = values.map((v,i)=>`${xs(i).toFixed(1)},${ys(v).toFixed(1)}`).join(' ');
+  const line = svg.querySelector('polyline');
+  if(line) line.setAttribute('points', pts);
+  const area = svg.querySelector('path');
+  if(area) area.setAttribute('d', `M0,${vh} L${values.map((v,i)=>`${xs(i).toFixed(1)},${ys(v).toFixed(1)}`).join(' L')} L${vw},${vh} Z`);
+}
+const ZEROS = () => Array.from({length:24}, ()=>0);
+
+/* ---------- compute ---------- */
+const regs = [];
+
+function loadPct(c){
+  if(!c.nodes.length) return '—';
+  const sum = c.nodes.reduce((s,n)=>s+(n.down?0:n.gpu),0);
+  return Math.round(sum/c.nodes.length)+'%';
+}
+
+function nodeRow(n, i){
+  if(n.down){
+    return `<button class="node is-down" data-ci="${i}" data-node="${n.id}">
+      <span class="node__dot"></span>
+      <span class="node__id">${n.id}<span class="node__rank"> ·${n.rank}</span><span class="node__tag">down</span></span>
+      <span class="node__muted">metrics —</span>
+      <span class="node__chev">${CHEV_SVG}</span>
+    </button>`;
+  }
+  return `<button class="node" data-ci="${i}" data-node="${n.id}">
+    <span class="node__dot"></span>
+    <span class="node__id">${n.id}<span class="node__rank"> ·${n.rank}</span></span>
+    <span class="node__val n-gpu">${Math.round(n.gpu)}%</span>
+    <span class="node__val n-cpu">${Math.round(n.cpu)}%</span>
+    <span class="node__val n-vram">${Math.round(n.vram)}/${n.vmax}G</span>
+    <span class="node__val n-ram">${Math.round(n.ram)}/${n.ramMax}G</span>
+    <span class="node__chev">${CHEV_SVG}</span>
+  </button>`;
+}
+
+const PER_PAGE = 10;
+
+function pageList(cur, pages){
+  const set = new Set([0, pages-1, cur-1, cur, cur+1]);
+  const out = [];
+  let prev = null;
+  for(let p=0;p<pages;p++){
+    if(set.has(p)){
+      if(prev!==null && p-prev>1) out.push('…');
+      out.push(p); prev = p;
+    }
+  }
+  return out;
+}
+
+function renderNodePage(art, c){
+  const area = art.querySelector('.node-area');
+  const total = c.nodes.length;
+  const pages = Math.max(1, Math.ceil(total/PER_PAGE));
+  c.page = c.page===undefined ? 0 : c.page;
+  c.page = clamp(c.page, 0, pages-1);
+  const start = c.page*PER_PAGE;
+  const slice = c.nodes.slice(start, start+PER_PAGE);
+
+  const head = '<div class="node-cols"><span>node</span><span></span><span>gpu</span><span>cpu</span><span>vram</span><span>ram</span><span></span></div>';
+  const rows = slice.map((n,i)=>nodeRow(n, start+i)).join('');
+
+  let pager = '';
+  if(pages>1){
+    const nums = pageList(c.page, pages).map(p => p==='…'
+      ? '<span class="pager__ellipsis">…</span>'
+      : `<button class="pager__btn${p===c.page?' is-active':''}" data-page="${p}">${p+1}</button>`
+    ).join('');
+    const to = Math.min(start+PER_PAGE, total);
+    pager = `<div class="pager">
+      <button class="pager__btn" data-page="0"${c.page===0?' disabled':''} aria-label="First page">«</button>
+      <button class="pager__btn" data-page="${c.page-1}"${c.page===0?' disabled':''} aria-label="Previous page">‹</button>
+      ${nums}
+      <button class="pager__btn" data-page="${c.page+1}"${c.page===pages-1?' disabled':''} aria-label="Next page">›</button>
+      <button class="pager__btn" data-page="${pages-1}"${c.page===pages-1?' disabled':''} aria-label="Last page">»</button>
+      <span class="pager__info">${start+1}–${to} of ${total}</span>
+    </div>`;
+  }
+
+  area.innerHTML = head + rows + pager;
+
+  area.querySelectorAll('.node').forEach(row=>{
+    const ci = +row.dataset.ci;
+    row.addEventListener('click', ()=> openMachineView(c, c.nodes[ci], ci));
+  });
+  area.querySelectorAll('[data-page]').forEach(btn=>{
+    btn.addEventListener('click', ()=> renderNodePage(art, c));
+  });
+
+  // refresh live refs for the current page
+  const reg = regs[+art.dataset.i];
+  const cells = reg.cells = [];
+  area.querySelectorAll('.node').forEach(row=>{
+    const ci = +row.dataset.ci;
+    cells[ci] = {
+      gpu:row.querySelector('.n-gpu'),
+      cpu:row.querySelector('.n-cpu'),
+      vram:row.querySelector('.n-vram'),
+      ram:row.querySelector('.n-ram'),
+    };
+  });
+}
+
+function noteHtml(c){
+  if(c.state==='provisioning'){
+    return `<div class="compute__note"><span class="spinner"></span>provisioning · boot <span class="boot">${Math.round(c.boot)}%</span></div>`;
+  }
+  return `<div class="compute__note"><span class="spinner"></span>${c.note} · <b>${c.cur}/${c.max}</b> ready</div>`;
+}
+
+function actionsHtml(c){
+  return `<div class="compute__actions">
+    <span class="scale__label">scale</span>
+    <button class="scale__btn s-dec" aria-label="Decrease nodes">−</button>
+    <input class="scale__value s-val" value="${c.cur}" inputmode="numeric" aria-label="Target nodes">
+    <button class="scale__btn s-inc" aria-label="Increase nodes">+</button>
+    <span class="scale__range s-range"></span>
+    <button class="scale__apply s-apply">Apply</button>
+    <button class="kill">Terminate pool</button>
+    <span class="kill-confirm">
+      <span class="q">Terminate ${c.cur} nodes?</span>
+      <button class="btn--kill">Terminate</button>
+      <button class="btn--keep">Keep</button>
+    </span>
+  </div>`;
+}
+
+function renderComputes(){
+  const root = document.getElementById('computes');
+  root.innerHTML = '';
+  regs.length = 0;
+  DATA.forEach((c,i)=>{
+    if(c.terminated) return;
+    c.nodes.forEach(n=>{ if(!n.down && !n.gpuH) initHist(n); });
+    const meta = c.min===c.max ? `${c.cur} nodes` : `${c.cur}/${c.max} nodes`;
+    const down = countDown(c);
+    const warn = down>0 ? ` · <span class="compute__warn">${down} down</span>` : '';
+    const art = document.createElement('article');
+    art.className = 'compute'+(c.open?' is-open':'');
+    art.dataset.color = computeColor(c);
+    art.dataset.i = i;
+    art.dataset.search = c.name.toLowerCase();
+    art.innerHTML = `
+      <button class="compute__head" aria-expanded="${!!c.open}">
+        <span class="compute__state"></span>
+        <span class="compute__meta">
+          <span class="compute__name">${c.name}</span>
+          <span class="compute__sub">${c.prov} · ${c.accel} · ${meta}${warn}</span>
+        </span>
+        <span class="compute__load"><span class="bar"><span class="bar__fill loadfill"></span></span><span class="num loadnum">${loadPct(c)}</span></span>
+        <span class="compute__cost">$${c.cost.toFixed(2)}/h</span>
+        <span class="compute__chev">${CHEV_SVG}</span>
+      </button>
+      <div class="compute__body"><div class="compute__body-inner">
+        ${c.nodes.length ? '<div class="node-area"></div>' : noteHtml(c)}
+        ${c.nodes.length ? actionsHtml(c) : ''}
+      </div></div>`;
+
+    const head = art.querySelector('.compute__head');
+    head.addEventListener('click', ()=>{
+      const open = art.classList.toggle('is-open');
+      head.setAttribute('aria-expanded', open);
+    });
+
+    const reg = { c,
+      loadFill:art.querySelector('.loadfill'),
+      loadNum:art.querySelector('.loadnum'),
+      boot:art.querySelector('.boot'),
+      cells:[],
+    };
+    regs[i] = reg;
+
+    if(c.nodes.length){
+      renderNodePage(art, c);
+      wireScale(art, c);
+      wireKill(art, c);
+    }
+    setLoad(reg);
+    root.appendChild(art);
+  });
+  renderAgg();
+}
+
+function setLoad(reg){
+  const {c} = reg;
+  if(!c.nodes.length){ reg.loadFill.style.width='0%'; return; }
+  const avg = c.nodes.reduce((s,n)=>s+(n.down?0:n.gpu),0)/c.nodes.length;
+  reg.loadFill.style.width = avg+'%';
+  reg.loadNum.textContent = Math.round(avg)+'%';
+}
+
+function wireScale(art, c){
+  const dec=art.querySelector('.s-dec'), inc=art.querySelector('.s-inc');
+  const val=art.querySelector('.s-val'), range=art.querySelector('.s-range');
+  const apply=art.querySelector('.s-apply');
+  range.textContent = `${c.min}–${c.max}`;
+  const sync=()=>{ val.value=c.cur; dec.disabled=c.cur<=c.min; inc.disabled=c.cur>=c.max; };
+  sync();
+  dec.addEventListener('click', ()=>{ c.cur--; sync(); resetApply(); });
+  inc.addEventListener('click', ()=>{ c.cur++; sync(); resetApply(); });
+  val.addEventListener('input', ()=>{
+    const v = parseInt(val.value,10);
+    if(!isNaN(v)){ c.cur = clamp(v,c.min,c.max); dec.disabled=c.cur<=c.min; inc.disabled=c.cur>=c.max; }
+  });
+  function resetApply(){ apply.classList.remove('done'); apply.textContent='Apply'; }
+  apply.addEventListener('click', ()=>{
+    apply.classList.add('done'); apply.textContent='Applied ✓';
+    setTimeout(()=>{ if(apply.isConnected) resetApply(); }, 1600);
+  });
+}
+
+function wireKill(art, c){
+  const kill=art.querySelector('.kill'), confirm=art.querySelector('.kill-confirm');
+  const btnKill=confirm.querySelector('.btn--kill'), btnKeep=confirm.querySelector('.btn--keep');
+  kill.addEventListener('click', ()=>{ kill.style.display='none'; confirm.style.display='flex'; });
+  btnKeep.addEventListener('click', ()=>{ confirm.style.display='none'; kill.style.display=''; });
+  btnKill.addEventListener('click', ()=>{
+    btnKill.textContent='Terminating…';
+    art.classList.add('dying');
+    setTimeout(()=>{
+      art.classList.add('gone');
+      c.terminated = true;
+      if(mv && mv.c === c) closeMachineView();
+      renderAgg();
+      updateStatus();
+    }, reduce ? 0 : 1500);
+  });
+}
+
+/* ---------- machine view ---------- */
+let mv = null;
+const LOG_POOL = [
+  ['INFO','epoch 12/40 · loss 1.234 · lr 3.1e-05'],
+  ['INFO','step 1820 · grad_norm 0.84 · clip 1.0'],
+  ['DEBUG','batch loaded in 41ms'],
+  ['INFO','rank 0 all-reduce ok (1.2 GB)'],
+  ['WARN','allocator fragmentation 12%'],
+  ['INFO','checkpoint saved (step 1820)'],
+  ['INFO','eval ppl 3.41 on val'],
+  ['DEBUG','rpc roundtrip 8ms'],
+  ['INFO','lr warmup → 4.2e-05'],
+];
+const DOWN_LOG_POOL = [
+  ['WARN','heartbeat timeout 12s'],
+  ['ERROR','ssh handshake failed (connection reset)'],
+  ['ERROR','worker rpc unreachable'],
+  ['WARN','last journal: epoch 7/40'],
+];
+
+function openMachineView(c, n){
+  mv = { c, n, down:!!n.down };
+  document.getElementById('computes').hidden = true;
+  document.getElementById('empty').hidden = true;
+  document.getElementById('machine-view').hidden = false;
+  document.getElementById('mv-name').textContent = c.name;
+  document.getElementById('mv-node').textContent = `${n.id} · rank ${n.rank}`;
+  mv.refs = {
+    gpuVal:document.getElementById('m-gpu-val'),   gpuChart:document.getElementById('m-gpu-chart'),
+    cpuVal:document.getElementById('m-cpu-val'),   cpuChart:document.getElementById('m-cpu-chart'),
+    vramVal:document.getElementById('m-vram-val'), vramChart:document.getElementById('m-vram-chart'),
+    ramVal:document.getElementById('m-ram-val'),   ramChart:document.getElementById('m-ram-chart'),
+    tempVal:document.getElementById('m-temp-val'),
+    logs:document.getElementById('mv-logs'),
+  };
+  mv.refs.logs.innerHTML = '';
+  appendLog('INFO', `attached to ${n.id} (rank ${n.rank})`);
+  appendLog('INFO', `compute ${c.name} · ${c.prov} · ${c.accel}`);
+  if(n.down) appendLog('ERROR', 'node unreachable — check instance state');
+  renderMvMetrics();
+}
+
+function closeMachineView(){
+  mv = null;
+  document.getElementById('machine-view').hidden = true;
+  document.getElementById('computes').hidden = false;
+  const alive = DATA.filter(c=>!c.terminated).length;
+  document.getElementById('empty').hidden = alive>0;
+}
+
+function renderMvMetrics(){
+  const {n, down, refs} = mv;
+  if(down){
+    drawSpark(refs.gpuChart, ZEROS());  refs.gpuVal.textContent='—';
+    drawSpark(refs.cpuChart, ZEROS());  refs.cpuVal.textContent='—';
+    drawSpark(refs.vramChart, ZEROS()); refs.vramVal.textContent='—';
+    drawSpark(refs.ramChart, ZEROS());  refs.ramVal.textContent='—';
+    refs.tempVal.textContent='—'; refs.tempVal.className='mv-temp__val';
+    return;
+  }
+  drawSpark(refs.gpuChart, n.gpuH);  refs.gpuVal.textContent  = Math.round(n.gpu)+'%';
+  drawSpark(refs.cpuChart, n.cpuH);  refs.cpuVal.textContent  = Math.round(n.cpu)+'%';
+  drawSpark(refs.vramChart, n.vramH);refs.vramVal.textContent = `${Math.round(n.vram)}/${n.vmax}G`;
+  drawSpark(refs.ramChart, n.ramH);  refs.ramVal.textContent  = `${Math.round(n.ram)}/${n.ramMax}G`;
+  const t = Math.round(n.temp);
+  refs.tempVal.textContent = t+'°';
+  refs.tempVal.className = 'mv-temp__val' + (t>72?' hot':t>58?' warm':'');
+}
+
+function appendLog(level, msg){
+  const el = mv.refs.logs;
+  const ts = new Date().toLocaleTimeString('en-GB');
+  const line = document.createElement('div');
+  line.innerHTML = `<span class="log-ts">${ts}</span> <span class="log-lvl log-${level.toLowerCase()}">${level}</span>  ${esc(msg)}`;
+  el.appendChild(line);
+  while(el.childNodes.length > 400) el.removeChild(el.firstChild);
+  el.scrollTop = el.scrollHeight;
+}
+
+document.getElementById('mv-back').addEventListener('click', closeMachineView);
+document.getElementById('mv-ssh').addEventListener('click', ()=>{
+  const b = document.getElementById('mv-ssh');
+  b.textContent = 'connecting…';
+  setTimeout(()=>{ if(b.isConnected) b.textContent = 'SSH'; }, 1100);
+});
+
+/* ---------- tasks ---------- */
+const taskRefs = [];
+function renderTasks(){
+  const root = document.getElementById('tasks');
+  root.innerHTML = '';
+  taskRefs.length = 0;
+  TASKS.forEach((t,i)=>{
+    const row = document.createElement('div');
+    row.className = 'task';
+    row.dataset.status = t.status;
+    row.dataset.search = (t.fn+' '+t.pool).toLowerCase();
+    row.innerHTML = `
+      <span class="task__dot"></span>
+      <span class="task__meta">
+        <span class="task__fn">${t.fn}</span>
+        <span class="task__sub">${t.pool} · ${t.node}</span>
+      </span>
+      <span class="task__status ${t.status}">${STATUS_LABEL[t.status]}</span>
+      <span class="task__dur">${t.status==='queued'?'—':fmtDur(t.dur)}</span>
+      <span class="task__act"><button title="Stream logs" aria-label="Stream logs for ${t.fn}">${LOGS_SVG}</button></span>
+    `;
+    root.appendChild(row);
+    taskRefs[i] = { t, row, durEl:row.querySelector('.task__dur') };
+  });
+}
+
+function setTaskStatus(idx, status){
+  const {t, row, durEl} = taskRefs[idx];
+  if(t.status === status) return;
+  t.status = status;
+  row.dataset.status = status;
+  const lbl = row.querySelector('.task__status');
+  lbl.className = 'task__status ' + status;
+  lbl.textContent = STATUS_LABEL[status];
+  durEl.textContent = status==='queued' ? '—' : fmtDur(t.dur);
+  renderAgg();
+}
+
+/* ---------- providers ---------- */
+const provRefs = [];
+function renderProviders(){
+  const root = document.getElementById('providers');
+  root.innerHTML = '';
+  provRefs.length = 0;
+  PROVIDERS.forEach((p,i)=>{
+    const row = document.createElement('div');
+    row.className = 'provider';
+    row.dataset.search = p.name.toLowerCase();
+    const mLabel = p.machines===1 ? '1 machine' : p.machines+' machines';
+    row.innerHTML = `
+      <span class="provider__dot ${p.ok?'ok':''}"></span>
+      <span class="provider__meta">
+        <span class="provider__name">${p.name}</span>
+        <span class="provider__sub">${p.ok ? p.region+' · '+mLabel : 'no credentials'}</span>
+      </span>
+      ${p.ok ? `<span class="provider__age">${fmtAge(p.age)}</span>` : ''}
+      <span class="provider__badge ${p.ok?'ok':'missing'}">${p.ok?'configured':'missing'}</span>
+      ${p.ok ? `<button class="provider__check" title="Re-check offers" aria-label="Re-check offers for ${p.name}">${CHECK_SVG}</button>` : ''}
+    `;
+    root.appendChild(row);
+    provRefs[i] = { p, ageEl:row.querySelector('.provider__age') };
+    const check = row.querySelector('.provider__check');
+    if(check){
+      check.addEventListener('click', ()=>{
+        check.style.opacity = '.5';
+        setTimeout(()=>{ check.style.opacity = ''; }, 900);
+      });
+    }
+  });
+}
+
+/* ---------- overview ---------- */
+const ov = {
+  line1:document.getElementById('ov-line1'),
+  line2:document.getElementById('ov-line2'),
+  health:document.getElementById('ov-health'),
+  computesVal:document.getElementById('ov-computes-val'),
+  computesSub:document.getElementById('ov-computes-sub'),
+  nodesVal:document.getElementById('ov-nodes-val'),
+  nodesSub:document.getElementById('ov-nodes-sub'),
+  tasksVal:document.getElementById('ov-tasks-val'),
+  tasksSub:document.getElementById('ov-tasks-sub'),
+  provVal:document.getElementById('ov-providers-val'),
+  provSub:document.getElementById('ov-providers-sub'),
+  spendTotal:document.getElementById('ov-spend-total'),
+  spendRows:document.getElementById('ov-spend-rows'),
+};
+const ovChip = (s,n)=>`<span class="ov-chip"><span class="ov-chip__dot" data-c="${s}"></span>${n} ${s}</span>`;
+
+function renderOverview(){
+  const alive = DATA.filter(c=>!c.terminated);
+  const nodes = alive.reduce((s,c)=>s+c.nodes.length,0);
+  const cost  = alive.reduce((s,c)=>s+c.cost,0);
+  const down  = alive.reduce((s,c)=>s+countDown(c),0);
+
+  const running = alive.filter(c=>c.state==='running').length;
+  const scaling = alive.filter(c=>c.state==='scaling').length;
+  const idle    = alive.filter(c=>c.state==='idle').length;
+
+  ov.line1.innerHTML = [running&&ovChip('running',running), scaling&&ovChip('scaling',scaling), idle&&ovChip('idle',idle)]
+    .filter(Boolean).join('<span class="ov-sep">·</span>');
+  ov.line2.innerHTML = `${nodes} nodes · <b>$${cost.toFixed(2)}</b>/hr` + (down ? ` · <b class="ov-down">${down} down</b>` : '');
+
+  const counts = {};
+  alive.forEach(c=>{ const col = computeColor(c); counts[col] = (counts[col]||0)+1; });
+  ov.health.innerHTML = ['green','blue','gray','yellow','red'].filter(col=>counts[col])
+    .map(col=>`<i data-c="${col}" style="flex:${counts[col]}"></i>`).join('');
+
+  ov.computesVal.textContent = running;
+  ov.computesSub.innerHTML = [scaling&&`${scaling} scaling`, idle&&`${idle} idle`].filter(Boolean).join(' · ') || 'all running';
+  ov.nodesVal.textContent = nodes;
+  ov.nodesSub.innerHTML = down ? `<b>${down} down</b>` : 'all healthy';
+  const r=TASKS.filter(t=>t.status==='running').length;
+  const q=TASKS.filter(t=>t.status==='queued').length;
+  const d=TASKS.filter(t=>t.status==='succeeded').length;
+  const f=TASKS.filter(t=>t.status==='failed').length;
+  ov.tasksVal.textContent = r;
+  ov.tasksSub.textContent = `${q} queued · ${d} done · ${f} failed`;
+  const conf = PROVIDERS.filter(p=>p.ok).length;
+  ov.provVal.textContent = conf;
+  ov.provSub.textContent = `${PROVIDERS.length-conf} missing`;
+
+  const byProv = {};
+  alive.forEach(c=>{ byProv[c.prov] = (byProv[c.prov]||0) + c.cost; });
+  ov.spendTotal.textContent = `$${cost.toFixed(2)}/hr`;
+  ov.spendRows.innerHTML = Object.entries(byProv).sort((a,b)=>b[1]-a[1])
+    .map(([name,c])=>{
+      const pct = cost ? Math.round(c/cost*100) : 0;
+      return `<div class="ov-spend__row">
+        <span class="ov-spend__name">${name[0].toUpperCase()+name.slice(1)}</span>
+        <span class="ov-spend__bar"><span class="ov-spend__fill" style="width:${pct}%"></span></span>
+        <span class="ov-spend__cost">$${c.toFixed(2)}/h · ${pct}%</span>
+      </div>`;
+    }).join('');
+}
+
+/* ---------- tabs / agg ---------- */
+let currentTab = 'overview';
+
+function renderAgg(){
+  const alive = DATA.filter(c=>!c.terminated);
+  const nodes = alive.reduce((s,c)=>s+c.nodes.length,0);
+  const cost  = alive.reduce((s,c)=>s+c.cost,0);
+  const down  = alive.reduce((s,c)=>s+countDown(c),0);
+  let html;
+  if(currentTab === 'tasks'){
+    const r=TASKS.filter(t=>t.status==='running').length;
+    const q=TASKS.filter(t=>t.status==='queued').length;
+    const d=TASKS.filter(t=>t.status==='succeeded').length;
+    const f=TASKS.filter(t=>t.status==='failed').length;
+    html = `${r} running · ${q} queued · ${d} done · <b>${f}</b> failed`;
+  } else if(currentTab === 'providers'){
+    const conf = PROVIDERS.filter(p=>p.ok).length;
+    html = `<b>${conf}</b> of ${PROVIDERS.length} configured`;
+  } else if(currentTab === 'overview'){
+    html = `<b>$${cost.toFixed(2)}</b>/hr` + (down ? ` · <b style="color:var(--red)">${down} down</b>` : '');
+  } else {
+    html = `<b>${nodes}</b> nodes · <b>$${cost.toFixed(2)}</b>/hr` + (down ? ` · <b style="color:var(--red)">${down} down</b>` : '');
+  }
+  document.getElementById('agg-text').innerHTML = html;
+  renderOverview();
+}
+
+function updateStatus(){
+  const alive = DATA.filter(c=>!c.terminated);
+  const color = aggregateColor();
+  const dot = document.getElementById('status-dot');
+  dot.style.color = `var(--${color})`;
+  dot.style.background = `var(--${color})`;
+  document.getElementById('status-label').textContent =
+    `sk ${alive.length} · $${alive.reduce((s,c)=>s+c.cost,0).toFixed(2)}`;
+  document.getElementById('count-compute').textContent = alive.length;
+  const ovCount = document.getElementById('count-overview');
+  ovCount.textContent = alive.reduce((s,c)=>s+c.nodes.length,0);
+  ovCount.style.color = alive.reduce((s,c)=>s+countDown(c),0) ? 'var(--red)' : '';
+  if(!mv) document.getElementById('empty').hidden = alive.length>0;
+}
+
+function switchTab(t){
+  currentTab = t;
+  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('is-active', b.dataset.tab===t));
+  document.querySelectorAll('.tab-panel').forEach(p=>p.classList.toggle('is-active', p.dataset.tab===t));
+  const search = document.getElementById('search');
+  search.value = '';
+  search.placeholder = {overview:'Filter…', compute:'Filter computes…', tasks:'Filter tasks…', providers:'Filter providers…'}[t];
+  search.setAttribute('aria-label', 'Filter '+t);
+  document.querySelectorAll('[data-search]').forEach(r=>r.style.display='');
+  renderAgg();
+}
+document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click', ()=>switchTab(b.dataset.tab)));
+
+document.getElementById('search').addEventListener('input', e=>{
+  const q = e.target.value.trim().toLowerCase();
+  document.querySelector('.tab-panel.is-active').querySelectorAll('[data-search]').forEach(r=>{
+    r.style.display = r.dataset.search.includes(q) ? '' : 'none';
+  });
+});
+
+document.getElementById('refresh').addEventListener('click', ()=>{
+  document.getElementById('sync').textContent = 'synced just now';
+  tick();
+});
+
+/* ---------- live ---------- */
+let tickCount = 0;
+function tick(){
+  tickCount++;
+  regs.forEach(reg=>{
+    const {c} = reg;
+    if(!reg.loadFill.isConnected) return;
+    if(c.nodes.length){
+      c.nodes.forEach((n,ci)=>{
+        if(n.down) return;
+        n.gpu  = clamp(n.gpu + (Math.random()*10-5), 0, 100);
+        n.cpu  = clamp(n.cpu + (Math.random()*8-4), 0, 100);
+        n.temp = clamp(32 + n.gpu*0.42 + (Math.random()*4-2), 30, 95);
+        n.vram = clamp(n.vram + (Math.random()*3-1.5), 0, n.vmax);
+        n.ram  = clamp(n.ram  + (Math.random()*2-1),  0, n.ramMax);
+        pushHist(n.gpuH, n.gpu, 40);
+        pushHist(n.cpuH, n.cpu, 40);
+        pushHist(n.vramH, n.vmax ? n.vram/n.vmax*100 : 0, 40);
+        pushHist(n.ramH, n.ramMax ? n.ram/n.ramMax*100 : 0, 40);
+        const cl = reg.cells[ci];
+        if(cl && cl.gpu){
+          cl.gpu.textContent  = Math.round(n.gpu)+'%';
+          cl.cpu.textContent  = Math.round(n.cpu)+'%';
+          cl.vram.textContent = `${Math.round(n.vram)}/${n.vmax}G`;
+          cl.ram.textContent  = `${Math.round(n.ram)}/${n.ramMax}G`;
+        }
+      });
+      setLoad(reg);
+    } else if(reg.boot && c.state==='provisioning'){
+      c.boot = Math.min(99, c.boot + Math.random()*0.7);
+      reg.boot.textContent = Math.round(c.boot)+'%';
+    }
+  });
+
+  if(mv && !mv.c.terminated){
+    renderMvMetrics();
+    mv.logTick = (mv.logTick||0) + 1;
+    if(mv.logTick % 2 === 0){
+      const pool = mv.down ? DOWN_LOG_POOL : LOG_POOL;
+      appendLog(...pool[Math.floor(Math.random()*pool.length)]);
+    }
+  }
+
+  taskRefs.forEach(r=>{
+    if(r.t.status==='running'){ r.t.dur++; r.durEl.textContent = fmtDur(r.t.dur); }
+  });
+  provRefs.forEach(r=>{
+    if(r.p.ok){ r.p.age++; r.ageEl.textContent = fmtAge(r.p.age); }
+  });
+
+  // status transitions happen in place — no new rows
+  if(tickCount===8)  setTaskStatus(6, 'running');
+  if(tickCount===22) setTaskStatus(6, 'succeeded');
+  if(tickCount===30) setTaskStatus(0, 'succeeded');
+}
+
+/* ---------- theme ---------- */
+const root = document.documentElement;
+const themeBtn = document.getElementById('theme-btn');
+const sysTheme = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+let theme = localStorage.getItem('skyward-theme') || sysTheme;
+function syncIcon(){
+  themeBtn.innerHTML = theme==='light' ? MOON_SVG : SUN_SVG;
+  themeBtn.title = theme==='light' ? 'Switch to dark theme' : 'Switch to light theme';
+}
+function setTheme(t){
+  theme = t;
+  root.dataset.theme = t;
+  localStorage.setItem('skyward-theme', t);
+  syncIcon();
+}
+setTheme(theme);
+themeBtn.addEventListener('click', ()=> setTheme(theme==='light' ? 'dark' : 'light'));
+
+/* ---------- status pill / init ---------- */
+document.getElementById('status').addEventListener('click', ()=>{
+  document.getElementById('popover').classList.toggle('hidden');
+});
+
+let syncSec = 0;
+function tickClock(){
+  const d = new Date();
+  document.getElementById('clock').textContent =
+    String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+}
+tickClock();
+renderComputes();
+renderTasks();
+renderProviders();
+updateStatus();
+setInterval(()=>{
+  tickClock();
+  if(!reduce) tick();
+  syncSec = (syncSec+1)%60;
+  if(syncSec) document.getElementById('sync').textContent = `synced ${syncSec}s ago`;
+}, 1000);
+</script>
+</body>
+</html>

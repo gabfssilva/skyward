@@ -46,6 +46,7 @@ from skyward.server.persistence.store import now
 from skyward.server.persistence.tasks import ExecutionStore, TaskStore
 from skyward.shared import codec
 from skyward.shared.errors import SkywardError
+from skyward.shared.observability import LogConfig, setup_logging
 
 TICK_SECONDS = 5
 METER_SECONDS = 10
@@ -313,4 +314,12 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
     return app
 
 
-app = create_app(services(), database=DEFAULT_PATH)
+def daemon() -> Litestar:
+    """The app a standalone daemon serves, as uvicorn's factory.
+
+    The one deployment that owns its process is also the only one allowed to say where
+    logs go: ``create_app`` is imported into the user's process by the embedded client,
+    and a guest does not get to install sinks on the host application's behalf.
+    """
+    setup_logging(LogConfig())
+    return create_app(services(), database=DEFAULT_PATH)

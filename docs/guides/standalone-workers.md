@@ -40,7 +40,7 @@ Your compute function does not change. The `@sky.function` decorator, lazy evalu
 --8<-- "guides/21_standalone_workers.py:function"
 ```
 
-The function runs on a single node, receives its arguments via cloudpickle, and returns its result over SSH. `sky.instance_info()` still works — each worker knows its own node index, accelerator info, and total node count. The difference is purely in how workers relate to each other: they don't.
+The function runs on a single node, receives its arguments via cloudpickle, and returns its result over SSH. `sky.instance_info()` still works — each worker knows its node id, rank, and `nodes` value. The difference is purely in how workers relate to each other: they don't.
 
 ## Activating standalone mode
 
@@ -60,7 +60,7 @@ Task dispatch is unaffected. `>>` sends to one node (round-robin), `@` broadcast
 
 Standalone mode disables all features that require inter-node communication:
 
-**Distributed collections.** Calling `sky.dict()`, `sky.counter()`, `sky.set()`, `sky.queue()`, `sky.barrier()`, or `sky.lock()` inside a `@sky.function` will raise `RuntimeError`. These collections are backed by Casty's replicated collections, which require the cluster mesh. Without it, there is no replication layer and no way to share state between workers.
+**Distributed collections.** Calling `sky.dict()`, `sky.counter()`, `sky.set()`, `sky.queue()`, `sky.barrier()`, `sky.lock()`, or `sky.registry()` inside a `@sky.function` cannot provide shared state between standalone workers. These collections are backed by Casty's replicated collections, which require the cluster mesh.
 
 **Distributed training.** Frameworks like PyTorch DDP, JAX multi-host, and NCCL-based training need `MASTER_ADDR` and peer discovery, both of which come from cluster formation. The `sky.plugins.Torch(backend="nccl")` plugin will fail to initialize in standalone mode because workers cannot reach each other for collective operations (all-reduce, all-gather, broadcast).
 

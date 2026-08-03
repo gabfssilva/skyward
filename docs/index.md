@@ -17,47 +17,35 @@
   <img src="demo.gif" alt="Skyward Demo" width="800">
 </p>
 
-Skyward is a Python library for ephemeral accelerator compute. Spin up cloud accelerators (GPUs, TPUs, Trainium, and more), run your ML training code, and tear them down automatically. No infrastructure to manage.
+Skyward is a Python control plane for accelerator compute. Describe the machines, image, providers, and runtime in Python; submit ordinary functions as tasks; and let the daemon reconcile the requested state with the machines that exist. The same SDK can use an embedded daemon or a remote one.
 
 ---
 
 ```python
 import skyward as sky
 
+
 @sky.function
-def train(data):
-    import torch
-    import torch.nn as nn
+def train(batch: list[float]) -> float:
+    return sum(batch) / len(batch)
 
-    model = nn.Sequential(
-        nn.Linear(784, 128), 
-        nn.ReLU(), 
-        nn.Linear(128, 10)
-    ).cuda()
-
-    optimizer = torch.optim.Adam(model.parameters())
-
-    for batch in data:
-        loss = nn.functional.cross_entropy(model(batch.cuda()), targets.cuda())
-        loss.backward()
-        optimizer.step()
-    
-    return model.state_dict()
 
 with sky.Compute(
-    provider=sky.AWS(), 
-    accelerator=sky.accelerators.H100(), 
+    provider=sky.AWS(),
+    accelerator=sky.accelerators.H100(),
     nodes=4,
-    plugins=[sky.plugins.Torch()]
+    plugins=[sky.plugins.Torch()],
 ) as compute:
-    result = train(my_data) @ compute  # broadcast to all 4 nodes
+    result = train([1.0, 2.0, 3.0]) >> compute
 ```
+
+`@sky.function` creates a lazy `Pending` value. The `>>` operator submits it to one node and waits for its result. The context manager creates a Compute resource, waits for it to become ready, and releases it on exit by default.
 
 ---
 
 ## A single API. Any cloud.
 
-Write your function once. Run it on any provider by changing a single argument.
+Provider factories describe an account and its non-secret configuration. Changing the provider does not change the function being submitted.
 
 === "AWS"
     ```python
@@ -80,13 +68,15 @@ Write your function once. Run it on any provider by changing a single argument.
         result = train(data) >> compute
     ```
 
+The daemon keeps provider accounts and never includes their credentials in a provider response. Offers are fetched through the provider adapter and cached according to that provider's freshness interval. A Compute may contain several `sky.Spec` values; the control plane selects a matching offer according to `selection`.
+
 ---
 
 ## Fully customizable.
 
-Define your remote environment declaratively. Python version, packages, system deps, env vars, file syncing — all in one place.
+Define the remote environment declaratively. Python version, packages, system dependencies, environment variables, user-code files, volumes, and ports are part of the Compute definition.
 
-=== "Packages"
+=== "Image"
     ```python
     with sky.Compute(
         provider=sky.AWS(),
@@ -97,9 +87,8 @@ Define your remote environment declaratively. Python version, packages, system d
             apt=["ffmpeg", "libsndfile1"],
             pip_indexes=[
                 sky.PipIndex(
-                    name="private",
                     url="https://pypi.internal.co/simple",
-                    packages=["my-internal-lib"],
+                    packages=("my-internal-lib",),
                 ),
             ],
         ),
@@ -108,53 +97,13 @@ Define your remote environment declaratively. Python version, packages, system d
     ```
 === "Plugins"
     ```python
-    from contextlib import contextmanager
-    from typing import ClassVar
-
-    from msgspec.structs import replace
-
-    from skyward.plugins import PLUGINS, Plugin
-    from skyward.protocol.schemas import Image
-    from skyward.runtime.api import Info
-
-    class Wandb(Plugin, frozen=True):
-        kind: ClassVar[str] = "wandb"
-
-        project: str
-
-        def image(self, image: Image) -> Image:
-            return replace(image, pip=(*image.pip, "wandb"))
-
-        @contextmanager
-        def setup(self, info: Info):
-            import wandb
-            wandb.init(project=self.project, group=f"rank-{info.rank}")
-            yield
-            wandb.finish()
-
-    PLUGINS[Wandb.kind] = Wandb
-
     with sky.Compute(
         provider=sky.AWS(),
         accelerator=sky.accelerators.H100(),
-        plugins=[sky.plugins.Torch(), Wandb(project="my-project")],
-    ) as compute:
-        result = train(data) >> compute
-    ```
-=== "Metrics"
-    ```python
-    with sky.Compute(
-        provider=sky.AWS(),
-        accelerator=sky.accelerators.H100(),
-        image=sky.Image(
-            metrics=[
-                sky.metrics.CPU(interval=1),
-                sky.metrics.GPU(interval=2),
-                sky.metrics.GPUMemory(interval=2),
-                sky.metrics.GPUTemp(interval=5),
-                sky.metrics.Disk("/data", interval=10),
-            ],
-        ),
+        plugins=[
+            sky.plugins.Torch(),
+            sky.plugins.Accelerate(config={"mixed_precision": "bf16"}),
+        ],
     ) as compute:
         result = train(data) >> compute
     ```
@@ -170,98 +119,116 @@ Define your remote environment declaratively. Python version, packages, system d
     ) as compute:
         result = train(data) >> compute
     ```
+=== "Ports"
+    ```python
+    with sky.Compute(
+        provider=sky.AWS(),
+        accelerator=sky.accelerators.H100(),
+        ports=[sky.Port(remote=8080, local=8080)],
+    ) as compute:
+        serve() >> compute
+    ```
+
+Plugins are immutable values serialized into the Compute definition. Built-in plugins configure the image, bootstrap, worker lifetime, task execution, or client-side integration. See [Plugins](plugins/index.md).
 
 ---
 
-## Simple operators. Real workloads.
+## Operators for real workloads.
 
-No job configs. No submission scripts. Python operators dispatch work.
+The operators choose how a lazy call becomes a task.
 
-| Operator | What it does |
-|----------|-------------|
-| `train() >> compute` | Run on a single node |
-| `train() @ compute` | Broadcast to **all** nodes |
-| `task_a() & task_b() >> compute` | Run in parallel, collect results |
-| `train() > compute` | Fire and forget — returns a `Future[T]` |
-
-```python
-with sky.Compute(
-    provider=sky.AWS(), 
-    accelerator=sky.accelerators.H100(), 
-    nodes=4,
-    plugins=[sky.plugins.Torch()]
-) as compute:
-    # preprocess on one node, train on all, evaluate async
-    data = preprocess(raw) >> compute
-    weights = train(data) @ compute
-    future = evaluate(weights) > compute
-
-    # parallelize independent work
-    metrics, report = (compute_metrics() & generate_report()) >> compute
-```
-
----
-
-## Spot instances without the headache.
-
-Save 60–90% on compute. Skyward handles spot allocation, preemption detection, and automatic node replacement. You just pick a strategy.
+| Operator | Result |
+|----------|--------|
+| `task() >> compute` | Run one task on one node and wait for its result |
+| `task() @ compute` | Create one execution per ready node admitted for the broadcast |
+| `task() > compute` | Start asynchronously and return a `Future` |
+| `(task_a() & task_b()) >> compute` | Submit independent tasks and collect their results |
+| `sky.gather(task_a(), task_b(), stream=True) >> compute` | Yield grouped results as executions finish |
+| `@sky.stream` plus `>>` | Consume a generator result item by item |
 
 ```python
+@sky.function
+def evaluate(weights: bytes) -> float:
+    return score(weights)
+
+
 with sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.H100(),
     nodes=4,
-    allocation="spot",  # or "on-demand", "spot-if-available"
+    plugins=[sky.plugins.Torch()],
 ) as compute:
-    result = train(data) @ compute
-    # node preempted? already replaced. your code doesn't change.
+    weights = train(data) >> compute
+    scores = evaluate(weights) @ compute
+    pending_score = evaluate(weights) > compute
+    score = pending_score.result()
 ```
+
+All calls are persisted as tasks by the daemon. A task keeps its identity across physical execution retries; the SDK's `Future` points to that stable task.
 
 ---
 
-## The cheapest GPU across clouds.
+## Declarative Compute.
 
-Define multiple specs across providers. Skyward picks the cheapest available option.
+`Compute` combines one or more placement `Spec` values with the desired node bounds, image, plugins, executor, options, ports, volumes, and lifecycle policy.
 
 ```python
 with sky.Compute(
     sky.Spec(provider=sky.VastAI(), accelerator=sky.accelerators.H100()),
     sky.Spec(provider=sky.AWS(), accelerator=sky.accelerators.H100()),
-    sky.Spec(provider=sky.RunPod(), accelerator=sky.accelerators.H100()),
     selection="cheapest",
+    nodes=sky.Nodes(desired=2, max=8),
+    delete_on_exit=False,
+    name="training",
 ) as compute:
-    result = train(data) @ compute
+    train(data) >> compute
 ```
+
+The definition is the desired state. The daemon stores it, gives it a generation, and reports observed state separately. A process can leave a Compute running and another process can attach to it:
+
+```python
+with sky.Compute.attached("training") as compute:
+    evaluate(weights) >> compute
+```
+
+With no `url`, the SDK runs the control plane in the current process against the default SQLite database. With `url` or `SKYWARD_URL`, it uses the same HTTP API against a remote daemon.
 
 ---
 
-## Batteries included.
+## Runtime information and distributed state.
 
-Plugins configure distributed runtimes, install dependencies, and handle framework-specific setup. You just pass them in.
+Code running on a node can ask for its topology without contacting the client:
 
 ```python
-with sky.Compute(
-    provider=sky.AWS(),
-    accelerator=sky.accelerators.H100(),
-    nodes=4,
-    plugins=[
-        sky.plugins.Torch(), 
-        sky.plugins.Accelerate({"fsdp": {"sharding_strategy": "FULL_SHARD"}})
-    ],
-) as compute:
-    result = finetune(model, dataset) @ compute
+@sky.function
+def rank_info() -> dict[str, object]:
+    info = sky.instance_info()
+    return {
+        "rank": info.rank,
+        "nodes": info.nodes,
+        "worker": info.worker,
+        "is_head": info.is_head,
+    }
 ```
 
-<div class="grid cards" markdown>
+`sky.shard()` makes a deterministic contiguous slice for the current rank. `sky.dict`, `sky.set`, `sky.counter`, `sky.queue`, `sky.registry`, `sky.barrier`, and `sky.lock` provide named state shared by the nodes of one Compute. Values are serialized; collection names identify the shared state.
 
-- **PyTorch** — DDP, FSDP, NCCL backend
-- **Accelerate** — HuggingFace Trainer, DeepSpeed, FSDP
-- **JAX** — Multi-host distributed initialization
-- **Keras 3** — Backend-agnostic data parallelism
-- **Joblib** — Drop-in parallel backend for scikit-learn
-- **cuML** — GPU-accelerated scikit-learn estimators
+---
 
-</div>
+## Local development.
+
+The `Container` provider exercises the same SSH bootstrap and control-plane path without cloud credentials:
+
+```python
+with sky.Compute(provider=sky.Container()) as compute:
+    result = train([1.0, 2.0, 3.0]) >> compute
+```
+
+The provider requires Docker by default. For function-only tests, call the original implementation through `.local`:
+
+```python
+result = train.local([1.0, 2.0, 3.0])
+```
 
 ---
 
@@ -269,11 +236,11 @@ with sky.Compute(
 
 <div class="grid cards" markdown>
 
-- :material-rocket-launch: **[Install & run](getting-started.md)** — Up and running in 5 minutes
-- :material-lightbulb: **[Core concepts](concepts.md)** — Functions, operators, and pools
-- :material-cloud: **[Providers](providers.md)** — AWS, GCP, RunPod, VastAI, and more
-- :material-puzzle: **[Plugins](plugins/index.md)** — PyTorch, JAX, Keras, HuggingFace
-- :material-server-network: **[Distributed training](distributed-training.md)** — Scale to many nodes
-- :material-api: **[API reference](reference/pool.md)** — Full autodoc of all public types
+- :material-rocket-launch: **[Install and run](getting-started.md)** — Install the SDK and run the first task
+- :material-lightbulb: **[Core concepts](concepts.md)** — Lazy calls, Compute resources, tasks, and leases
+- :material-server-network: **[Architecture](architecture.md)** — The daemon, control plane, and node runtime
+- :material-cloud: **[Providers](providers.md)** — Provider accounts and accelerator offers
+- :material-puzzle: **[Plugins](plugins/index.md)** — PyTorch, JAX, Keras, HuggingFace, and more
+- :material-api: **[API reference](reference/pool.md)** — Public Python types and functions
 
 </div>

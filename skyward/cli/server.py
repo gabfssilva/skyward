@@ -34,7 +34,7 @@ RUNTIME_DIR = Path.home() / ".skyward"
 PID_FILE = RUNTIME_DIR / "server.pid"
 LOG_FILE = RUNTIME_DIR / "server.log"
 
-TARGET = "skyward.server.http.app:app"
+TARGET = "skyward.server.http.app:daemon"
 POLL_SECONDS = 0.2
 
 
@@ -105,13 +105,13 @@ def _require_uvicorn() -> None:
 def _foreground(host: str, port: int) -> None:
     import uvicorn
 
-    uvicorn.run(TARGET, host=host, port=port)
+    uvicorn.run(TARGET, host=host, port=port, factory=True)
 
 
 def _spawn(host: str, port: int) -> int:
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     log = LOG_FILE.open("ab")  # noqa: SIM115
-    command = [sys.executable, "-m", "uvicorn", TARGET, "--host", host, "--port", str(port)]
+    command = [sys.executable, "-m", "uvicorn", TARGET, "--factory", "--host", host, "--port", str(port)]
     process = subprocess.Popen(command, stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True, close_fds=True)
     PID_FILE.write_text(str(process.pid))
     return process.pid

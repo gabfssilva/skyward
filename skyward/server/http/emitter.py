@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import Sequence
 from typing import Any
 
 from litestar.events import BaseEventEmitterBackend, EventListener
 
-logger = logging.getLogger(__name__)
+from skyward.shared.observability import logger
+
+logger = logger.bind(component="emitter")
 
 type Key = tuple[EventListener, str, int]
 
@@ -74,7 +75,7 @@ class ReconcilingEventEmitter(BaseEventEmitterBackend):
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("event listener failed: %s", listener.fn.__name__)
+            logger.exception("event listener failed: {}", listener.fn.__name__)
 
     @staticmethod
     def _key(listener: EventListener, event_id: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Key | None:

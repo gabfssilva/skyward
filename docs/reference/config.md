@@ -1,58 +1,61 @@
 # Configuration
 
-## TOML configuration files
+Skyward v2 does not read a configuration file. The control plane target is resolved for each client or CLI call.
 
-Skyward loads configuration from two TOML files, merged with project settings taking precedence:
+## Control plane resolution
 
-1. **Global defaults:** `~/.skyward/defaults.toml`
-2. **Project config:** `skyward.toml` (in the current working directory)
+The resolution order is:
 
-### File format
+1. an explicit `url` or `--url`;
+2. `SKYWARD_URL`;
+3. an embedded daemon in the current process.
 
-```toml
-[providers.my-aws]
-type = "aws"
-region = "us-west-2"
-
-[providers.my-vastai]
-type = "vastai"
-min_reliability = 0.95
-geolocation = "US"
-
-[pools.training]
-provider = "my-aws"
-nodes = 4
-accelerator = "A100"
-
-[pools.training.image]
-python = "3.13"
-pip = ["torch", "transformers"]
-apt = ["ffmpeg"]
-
-[[pools.training.volumes]]
-bucket = "my-bucket"
-mount = "/data"
-```
-
-The `[providers]` section defines named provider configurations. Each must have a `type` field matching a supported provider (`aws`, `gcp`, `hyperstack`, `tensordock`, `vastai`, `runpod`, `verda`). All other fields are passed to the provider's config class.
-
-The `[pools]` section defines named pools that reference a provider by name. Pools support `nodes`, `accelerator` (as a string name), `image` (as a sub-table), and `volumes` (as an array of tables).
-
-### Using named pools
+The embedded daemon stores its SQLite database at `~/.skyward/skyward.sqlite` by default. Pass `database=` to `Compute` or `--database` to the CLI to select another path. A database path is ignored when a remote URL is selected.
 
 ```python
-with sky.Compute.Named("training") as compute:
-    result = train() >> compute
+import skyward as sky
+
+# Embedded daemon, using ~/.skyward/skyward.sqlite.
+with sky.Compute(provider=sky.Container()) as compute:
+    result = train(data) >> compute
+
+# Remote daemon.
+with sky.Compute(provider=sky.AWS(), url="http://127.0.0.1:7590") as compute:
+    result = train(data) >> compute
 ```
 
-## API reference
+The `Compute` client and the CLI use the same resolution rules. Inspect the resolved values with:
 
-::: skyward.PoolSpec
+```bash
+sky config path
+sky config show
+sky config validate
+```
+
+## Provider accounts
+
+Provider factories resolve credentials in the client process. A provider descriptor contains the provider kind, its non-secret configuration, credentials, and an optional account name. When a compute starts, the descriptor registers the named account with the daemon if it does not exist. Credentials are not returned by provider read operations.
+
+```python
+provider = sky.AWS(name="production", region="us-east-1")
+
+with sky.Compute(provider=provider, accelerator="A100") as compute:
+    train(data) >> compute
+```
+
+Use a distinct `name` for multiple accounts of the same provider kind. Provider configuration belongs to the account, not to a global singleton.
+
+## Compute configuration
+
+The public configuration objects are composed at the `Compute` boundary:
+
+- `Spec` describes one provider and hardware alternative;
+- `Options` controls timeouts, retries, health checks, and autoscaling;
+- `Executor` controls task execution on each node;
+- `Image`, `Volume`, and `Port` describe the node environment and local tunnels.
+
+See [Compute and task dispatch](pool.md) for the full Python surface and [Cloud providers](../providers.md) for account credentials and offer caching.
+
+::: skyward.Provider
 
 ::: skyward.Image
-
-::: skyward.DEFAULT_IMAGE
-
-::: skyward.AllocationStrategy
-
-::: skyward.api.spec.PoolState

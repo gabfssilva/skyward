@@ -10,7 +10,6 @@ and running locally is a transport, not a second product.
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine, MutableMapping
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -20,11 +19,12 @@ import httpx
 import msgspec
 
 from skyward.core.errors import refused
+from skyward.shared.observability import logger
 
 if TYPE_CHECKING:
     from litestar import Litestar
 
-logger = logging.getLogger(__name__)
+logger = logger.bind(component="client")
 
 BLOB = "application/vnd.skyward.blob"
 JSON = "application/json"

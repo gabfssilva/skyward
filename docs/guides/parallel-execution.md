@@ -18,7 +18,7 @@ When you have a dynamic number of tasks — iterating over a list of chunks, a s
 --8<-- "guides/02_parallel_execution.py:33:35"
 ```
 
-`gather()` collects multiple `PendingFunction` values into a `PendingFunctionGroup`. When dispatched with `>>`, all tasks execute concurrently on the pool's nodes (distributed via round-robin) and the results come back as a tuple. The pool handles serialization, dispatch, and collection — you just express which tasks should run in parallel.
+`gather()` collects multiple `Pending` values into a `Group`. When dispatched with `>>`, all tasks execute concurrently on the pool's nodes (distributed via round-robin) and the results come back as a list. The pool handles serialization, dispatch, and collection — you just express which tasks should run in parallel.
 
 ## Type-safe parallel with `&`
 
@@ -28,7 +28,7 @@ When the number of parallel tasks is fixed and you want full type inference, use
 --8<-- "guides/02_parallel_execution.py:37:39"
 ```
 
-The `&` operator creates the same `PendingFunctionGroup` that `gather()` produces, but with a key difference: the types are preserved individually. Here, `a` and `b` are both `int` because `multiply` returns `int`. If you chain three different functions — `preprocess() & train() & evaluate()` — the result type is `tuple[DataFrame, Model, float]`, not `tuple[Any, ...]`.
+The `&` operator builds a `Group` from a fixed set of `Pending` values. Here, `a` and `b` are both `int` because `multiply` returns `int`. Groups with different return types are allowed, but their common result type is `object`.
 
 ## Mixing different computations
 
@@ -38,19 +38,19 @@ Since `&` preserves types per-position, you can compose completely different fun
 --8<-- "guides/02_parallel_execution.py:41:43"
 ```
 
-Each computation may go to a different node (round-robin scheduling), and the group blocks until all of them complete. The destructured variables `s`, `p`, `f` each carry their correct type.
+Each computation may go to a different node (round-robin scheduling), and the group blocks until all of them complete. The destructured values are returned in submission order.
 
 The distinction from broadcast (`@`) is important: `@` runs the *same* function on *all* nodes, while `&` runs *different* functions concurrently. Use `@` when every node should do the same work; use `&` when you have distinct, independent tasks.
 
 ## Streaming results
 
-By default, `gather()` waits for all tasks to finish before returning. With `stream=True`, results are yielded as they complete — useful when tasks have variable duration and you want to start processing early:
+By default, `gather()` waits for all tasks to finish before returning a list. With `stream=True`, it returns an iterator that yields results incrementally:
 
 ```python
 --8<-- "guides/02_parallel_execution.py:45:50"
 ```
 
-Streaming changes the return type from a tuple to a generator. Results arrive in **completion order**, not submission order — the fastest tasks come first. This is ideal for displaying progress, feeding partial results into a downstream pipeline, or reducing time-to-first-result when tasks have uneven durations.
+Streaming changes the return type from a list to an iterator. The default `ordered=True` preserves submission order. Pass `ordered=False` to yield results in **completion order**, with the fastest tasks first.
 
 If you need results in the original submission order even while streaming, pass `ordered=True` (the default). Skyward will buffer internally and yield in order, though this means you won't see a result until all preceding tasks have also completed.
 

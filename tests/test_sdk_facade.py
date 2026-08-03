@@ -5,14 +5,16 @@ credentials. No control plane is started — the point is that the spec the daem
 would receive is the spec the user described.
 """
 
+import msgspec
 import pytest
 
 import skyward as skyward
 from skyward import Compute
-from skyward.shared.schemas import NodeBounds
 from skyward.core import context
+from skyward.core.client import Client
 from skyward.core.context import sky
 from skyward.core.function import Group, Pending, Streaming, function
+from skyward.shared.schemas import NodeBounds
 
 
 def spec_of(pool: Compute):
@@ -113,6 +115,47 @@ def test_credentials_come_from_the_environment_when_not_given(monkeypatch: pytes
 
     assert skyward.RunPod().credentials == {"api_key": "from-the-env"}
     assert skyward.RunPod(api_key="explicit").credentials == {"api_key": "explicit"}
+
+
+@pytest.mark.asyncio
+async def test_an_existing_provider_is_updated_when_its_config_changes():
+    calls: list[tuple[str, str, bytes | None]] = []
+
+    class RecordingClient(Client):
+        def __init__(self) -> None:
+            pass
+
+        async def call[T](
+            self,
+            method: str,
+            path: str,
+            kind: type[T],
+            /,
+            body: bytes | None = None,
+            headers: dict[str, str] | None = None,
+            **query: object,
+        ) -> T:
+            calls.append((method, path, body))
+            return msgspec.convert(
+                {
+                    "id": "prv_1",
+                    "name": "runpod",
+                    "kind": "runpod",
+                    "config": {"cloud_type": "secure"},
+                    "offers_ttl_seconds": 60,
+                    "created_at": "2026-07-30T00:00:00Z",
+                },
+                type=kind,
+            )
+
+    pool = skyward.Compute(provider=skyward.RunPod(api_key="key", cloud_type="community"))
+    pool._client = RecordingClient()  # noqa: SLF001
+
+    await pool._ensure_providers()  # noqa: SLF001
+
+    method, path, body = calls[-1]
+    assert (method, path) == ("PUT", "/v1/providers/runpod")
+    assert msgspec.json.decode(body)["config"]["cloud_type"] == "community"
 
 
 @pytest.mark.parametrize(

@@ -1,6 +1,6 @@
 # Worker executors
 
-Every node in a Skyward pool runs a worker process that receives tasks and executes them. The `Worker` dataclass controls how that execution happens — specifically, whether tasks run as **separate OS processes** or as **threads** inside the worker. This choice determines whether CPU-bound Python code can use all available cores or is limited by the GIL.
+Every node in a Skyward compute runs a worker process that receives tasks and executes them. The `Executor` dataclass controls how that execution happens — specifically, whether tasks run as **separate OS processes** or as **threads** inside the worker. This choice determines whether CPU-bound Python code can use all available cores or is limited by the GIL.
 
 ## A CPU-bound task
 
@@ -20,7 +20,7 @@ The thread executor runs tasks as threads inside the worker process. All threads
 --8<-- "guides/14_worker_executors.py:28:40"
 ```
 
-Threads are lightweight, support streaming (generator functions and iterator parameters), and work seamlessly with distributed collections. For most workloads — I/O-bound tasks, C extension heavy code (NumPy, PyTorch), and mixed workloads — the thread executor is the right choice. The `executor="thread"` is the default, so `Worker(concurrency=2)` is equivalent.
+Threads are lightweight, support streaming, and work seamlessly with distributed collections. For most workloads — I/O-bound tasks, C extension heavy code (NumPy, PyTorch), and mixed workloads — the thread executor is the right choice. The `type="thread"` is the default, so `Executor(concurrency=2)` is equivalent.
 
 ## Process executor
 
@@ -70,8 +70,8 @@ uv run python guides/14_worker_executors.py
 
 **What you learned:**
 
-- **`Worker(executor="thread")`** (default) runs tasks as threads — lightweight, supports streaming, shares memory, but GIL-limited for pure-Python CPU-bound code.
-- **`Worker(executor="process")`** runs tasks in separate OS processes — bypasses the GIL, full CPU utilization for compute-heavy work.
+- **`Executor(type="thread")`** (default) runs tasks as threads — lightweight, supports streaming, shares memory, but is GIL-limited for pure-Python CPU-bound code.
+- **`Executor(type="process")`** runs tasks in separate OS processes — bypasses the GIL, with full CPU utilization for compute-heavy work.
 - **`concurrency`** controls task slots per node — total parallelism = `nodes * concurrency`.
 - **Distributed collections** work with both executors — the process executor uses an IPC bridge to proxy operations to the parent worker.
 - **Choose based on workload**: process for CPU-bound, thread for I/O-bound.

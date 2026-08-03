@@ -1,92 +1,68 @@
 # Getting started
 
-This page covers installation, credential setup, and your first remote computation. By the end, you'll have run a Python function on a cloud instance and seen the full lifecycle — provision, execute, return, tear down — in action.
+This page covers installation, a local first run, provider credentials, and a first cloud task. Skyward's Python API is synchronous; the control plane underneath persists Computes, tasks, nodes, and events.
 
-Skyward requires Python 3.12 or higher and credentials for at least one cloud provider (AWS, RunPod, VastAI, or Verda). For local development and testing without cloud credentials, the `Container` provider works with Docker or Podman.
+Skyward requires Python 3.12 or higher. A client that creates an embedded Compute needs the `client` and `server` extras. The `Container` provider also needs Docker or Podman-compatible container tooling.
 
 ## Installation
 
-The recommended way to install Skyward is with `uv`:
+Install the SDK and the embedded control plane with `uv`:
 
 ```bash
-uv add skyward
+uv add "skyward[client,server]"
 ```
 
 Or with pip:
 
 ```bash
-pip install skyward
+pip install "skyward[client,server]"
 ```
 
-Skyward also provides optional extras for framework-specific type hints and dependencies. These are not required — the frameworks themselves only need to be installed on the remote workers via the `Image` — but the extras add local type stubs and tooling support:
+The optional extras are split by role:
 
 ```bash
-uv add skyward[pytorch]      # PyTorch type hints
-uv add skyward[huggingface]  # HuggingFace type hints
-uv add skyward[aws]          # AWS (boto3) type hints
-uv add skyward[all]          # All extras
+uv add "skyward[client]"    # SDK for a remote daemon
+uv add "skyward[server]"    # embedded or standalone daemon
+uv add "skyward[cli]"       # sky command
+uv add "skyward[notebook]"  # Jupyter kernel provisioning
+uv add "skyward[tui]"       # terminal rendering
+uv add "skyward[storage]"   # user-facing object storage helpers
+uv add "skyward[all]"       # every extra below plus every provider
 ```
 
-## Provider credentials
-
-Each provider needs credentials before Skyward can provision instances. You only need to configure the provider you intend to use.
-
-### AWS
-
-Skyward uses standard AWS credential resolution — the same chain that `boto3` and the AWS CLI use. The simplest approach is environment variables:
+Three providers need an SDK the daemon does not install by itself, and each has an extra of its own. The other twelve speak plain HTTP and are always available:
 
 ```bash
-export AWS_ACCESS_KEY_ID=your_access_key
-export AWS_SECRET_ACCESS_KEY=your_secret_key
-export AWS_DEFAULT_REGION=us-east-1
+uv add "skyward[aws]"        # aioboto3
+uv add "skyward[gcp]"        # cryptography, for the service-account signature
+uv add "skyward[salad]"      # salad-cloud-sdk and websockets
+uv add "skyward[providers]"  # all three at once
 ```
 
-You can also use `aws configure` to write credentials to `~/.aws/credentials`, or rely on IAM roles if running from an EC2 instance. Any method that `boto3` recognizes will work.
+A provider whose SDK is missing is not registered: `sky providers list` omits it, and asking for it names the extra that brings it back.
 
-The AWS provider needs `ec2:*` permissions for instance management and `iam:PassRole` for instance profiles. SSM permissions (`ssm:*`) are optional but recommended — they enable Session Manager connectivity as a fallback when direct SSH isn't available.
+Frameworks belong in the remote image or in a plugin. They do not need to be installed locally just to define a function.
 
-### RunPod
+## Your first local Compute
 
-```bash
-export RUNPOD_API_KEY=your_api_key
-```
+The `Container` provider uses local containers as machines. It has no credentials and exercises the same SSH, bootstrap, worker, and task paths as a cloud provider.
 
-Get your API key from **Settings > API Keys** at [runpod.io](https://www.runpod.io/).
-
-### VastAI
-
-```bash
-pip install vastai
-vastai set api-key YOUR_API_KEY
-```
-
-Get your API key at [cloud.vast.ai/account](https://cloud.vast.ai/account/).
-
-### Verda
-
-```bash
-export VERDA_CLIENT_ID=your_client_id
-export VERDA_CLIENT_SECRET=your_client_secret
-```
-
-## Your first remote function
-
-Create a file called `hello.py`:
+Create `hello.py`:
 
 ```python
+import socket
+
 import skyward as sky
 
 
 @sky.function
 def hello() -> str:
-    """This function runs on a remote instance."""
-    import socket
+    """This function runs on a node, not in the calling process."""
     return f"Hello from {socket.gethostname()}!"
 
 
-with sky.Compute(provider=sky.AWS()) as compute:
-    result = hello() >> compute
-    print(result)
+with sky.Compute(provider=sky.Container()) as compute:
+    print(hello() >> compute)
 ```
 
 Run it:
@@ -95,44 +71,69 @@ Run it:
 uv run python hello.py
 ```
 
-When you execute this, Skyward provisions an EC2 instance, opens an SSH tunnel to it, installs Python and Skyward on the remote machine via an idempotent bootstrap script, serializes your `hello` function with cloudpickle, sends it over the tunnel, executes it on the remote instance, serializes the result back, and returns it to your local process. When the `with` block exits, the instance is terminated. The entire lifecycle — from bare metal to running Python to cleanup — happens automatically.
+The `with` block creates a Compute definition, waits until its node is ready, submits one task, and marks the Compute for deletion when the block exits. The task result is returned to the calling process.
 
-The output will look something like this:
+## Provider credentials
 
-```
-[ClusterProvisioned] Cluster ready in us-east-1
-[InstanceLaunched] Launching instance i-0abc123...
-[InstanceRunning] Instance running (52.1.2.3)
-[InstanceProvisioned] Instance provisioned, starting bootstrap
-[BootstrapPhase] Phase 'apt' started
-[BootstrapPhase] Phase 'apt' completed (12s)
-[BootstrapPhase] Phase 'pip' started
-[BootstrapPhase] Phase 'pip' completed (45s)
-[InstanceBootstrapped] Bootstrap complete
-[NodeReady] Node 0 ready
-[ClusterReady] Cluster ready with 1 node(s)
-Hello from ip-172-31-0-1!
-[TaskCompleted] Task completed in 2.3s
-[ClusterDestroyed] Cluster terminated
+Provider factories resolve credentials in the calling process. Explicit arguments take precedence over environment variables. The selected control plane stores the provider account so that the daemon can fetch offers and provision machines; provider read responses do not include credentials.
+
+Configure only the providers you use. The complete factory list is documented in [Providers](providers.md).
+
+### AWS
+
+```bash
+export AWS_ACCESS_KEY_ID=your_access_key
+export AWS_SECRET_ACCESS_KEY=your_secret_key
+export AWS_DEFAULT_REGION=us-east-1
 ```
 
-Each line is an event from the pool's lifecycle. The sequence reflects the stages described in [Core Concepts](concepts.md) — the pool asks the provider to launch an instance, the node polls until it's running, opens the SSH tunnel, runs the bootstrap script phase by phase, starts the worker, and reports ready. After the task completes, everything is torn down.
+The factory also reads the standard AWS shared credentials file and instance credentials. The account needs permissions to manage the instances and their networking. SSM permissions are optional when direct SSH is available.
 
-## Your first accelerator job
+### GCP
 
-To run on a GPU, add the `accelerator` and `image` parameters to the pool. The `accelerator` specifies what hardware you need, and the `image` describes what software should be installed on the remote worker:
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+export GOOGLE_CLOUD_PROJECT=your-project
+```
+
+The JSON file contents are passed to the provider account. The path itself is not stored as a credential.
+
+### RunPod
+
+```bash
+export RUNPOD_API_KEY=your_api_key
+```
+
+### VastAI
+
+```bash
+export VAST_API_KEY=your_api_key
+```
+
+### Verda
+
+```bash
+export VERDA_CLIENT_ID=your_client_id
+export VERDA_CLIENT_SECRET=your_client_secret
+```
+
+## Your first cloud task
+
+Replace `sky.Container()` with a cloud provider and put heavy imports inside the decorated function:
 
 ```python
 import skyward as sky
 
 
 @sky.function
-def gpu_info() -> dict:
+def gpu_info() -> dict[str, object]:
     import torch
+
+    available = torch.cuda.is_available()
     return {
-        "cuda_available": torch.cuda.is_available(),
+        "cuda_available": available,
         "device_count": torch.cuda.device_count(),
-        "device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+        "device_name": torch.cuda.get_device_name(0) if available else None,
     }
 
 
@@ -140,116 +141,160 @@ with sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.T4(),
     image=sky.Image(pip=["torch"]),
-    allocation="spot",
+    allocation="spot_if_available",
 ) as compute:
-    info = gpu_info() >> compute
-    print(f"GPU: {info['device_name']}")
-    print(f"CUDA devices: {info['device_count']}")
+    print(gpu_info() >> compute)
 ```
 
-Notice that `torch` is imported *inside* the function, not at the top of the file. This is intentional: `torch` doesn't need to be installed on your local machine — it only needs to exist on the remote worker, where the function actually runs. The `Image(pip=["torch"])` tells Skyward to install it there during bootstrap. This pattern — importing heavy dependencies inside `@sky.function` functions — keeps your local environment lightweight.
-
-The `allocation="spot"` parameter requests spot instances, which are typically 60-90% cheaper than on-demand. If spot capacity isn't available, the pool will fail rather than fall back. Use `allocation="spot-if-available"` (the default) to automatically fall back to on-demand pricing.
+`Image(pip=["torch"])` installs PyTorch on the node during bootstrap. The local process only needs the Skyward client. `allocation="spot_if_available"` tries the preferred lower-cost market and can use on-demand capacity when the preferred market is unavailable. The other values are `"spot"`, `"on_demand"`, and `"cheapest"`.
 
 ## Parallel execution
 
-A single `>>` sends one computation to one node. When you have multiple independent tasks, `gather()` dispatches them all concurrently:
+`>>` submits one task. Use `&` or `sky.gather()` for independent calls:
 
 ```python
 import skyward as sky
 
 
 @sky.function
-def square(x: int) -> int:
-    return x * x
+def square(value: int) -> int:
+    return value * value
 
 
-with sky.Compute(provider=sky.AWS()) as compute:
+with sky.Compute(provider=sky.Container()) as compute:
     results = sky.gather(square(1), square(2), square(3)) >> compute
-    print(results)  # (1, 4, 9)
-```
+    print(results)  # [1, 4, 9]
 
-The `&` operator does the same thing with a fixed set of computations and full type inference:
-
-```python
     a, b, c = (square(4) & square(5) & square(6)) >> compute
     print(a, b, c)  # 16 25 36
 ```
 
-Both approaches dispatch tasks to the pool's nodes via round-robin scheduling. For a deeper look at parallel execution patterns, see the [Parallel Execution guide](guides/parallel-execution.md).
+The calls are submitted together. Results from the ordinary group are returned in submission order. `sky.gather(..., stream=True, ordered=False)` returns an iterator in completion order.
 
-## Multi-node clusters
+For a collection of inputs, `Compute.map()` submits one pending call per item and returns results in input order:
 
-To scale beyond a single instance, set `nodes` on the pool. The `@` operator broadcasts a function to every node:
+```python
+with sky.Compute(provider=sky.Container()) as compute:
+    results = compute.map(lambda value: square(value), range(10))
+```
+
+## Streaming results
+
+Generator functions use `@sky.stream`, which produces a `Streaming` value. The result is an iterator and is pulled from the node as the caller consumes it.
+
+```python
+from collections.abc import Iterator
+
+import skyward as sky
+
+
+@sky.stream
+def tokens(prompt: str) -> Iterator[str]:
+    for token in prompt.split():
+        yield token
+
+
+with sky.Compute(provider=sky.Container()) as compute:
+    for token in tokens("streamed output") >> compute:
+        print(token)
+```
+
+A streaming task is not resumable. Closing the iterator closes the remote generator.
+
+## Multi-node Compute
+
+Set `nodes` and broadcast a call with `@`. The broadcast freezes the ready node set when the task is admitted and returns results in rank order.
 
 ```python
 import skyward as sky
 
 
 @sky.function
-def worker_info() -> dict:
+def rank_info() -> dict[str, object]:
     info = sky.instance_info()
     return {
         "node": info.node,
-        "total": info.total_nodes,
+        "rank": info.rank,
+        "nodes": info.nodes,
         "is_head": info.is_head,
     }
 
 
 with sky.Compute(provider=sky.AWS(), nodes=4) as compute:
-    results = worker_info() @ compute
-    for r in results:
-        print(f"Node {r['node']}/{r['total']} (head={r['is_head']})")
+    for result in rank_info() @ compute:
+        print(result)
 ```
 
-Where `>>` sends work to one node, `@` sends it to all of them. Each node runs the same function independently, but `sky.instance_info()` returns different values on each one — node index, total count, head status — so the function can adapt its behavior based on where it's running. This is the foundation for distributed training, data-parallel processing, and any workload that benefits from multiple machines. See [Broadcast](guides/broadcast.md) for more.
+`Info` also exposes `peers`, `worker`, `workers_per_node`, `total_workers`, `global_worker_index`, `host`, `head_addr`, `head_port`, and `job_id`. See [Distributed training](distributed-training.md).
 
-For larger clusters, you can use `sky.Nodes` to start working before all nodes are ready — `nodes=sky.Nodes(desired=8, min=4)` provisions 8 nodes but becomes operational when 4 are up. For elastic pools that scale with demand, use a tuple or `sky.Nodes(desired=2, max=16)`. See [Provision Controllers](provision-controllers.md) for details.
+For a fixed Compute that can start with partial readiness, use `sky.Nodes`:
+
+```python
+with sky.Compute(
+    provider=sky.AWS(),
+    nodes=sky.Nodes(desired=8, min=4),
+) as compute:
+    train() @ compute
+```
+
+The lower bound controls readiness. The reconciler can add capacity up to the upper bound as queued work requires it. A tuple is shorthand for an elastic range: `nodes=(2, 16)` means a lower bound of 2 and an upper bound of 16. See [Reconciliation and provisioning](provision-controllers.md).
+
+## Persistent Computes and remote daemons
+
+By default, the SDK runs an embedded daemon against `~/.skyward/skyward.sqlite`. Set `url` or `SKYWARD_URL` to use a daemon running elsewhere:
+
+```python
+with sky.Compute(
+    provider=sky.AWS(),
+    nodes=4,
+    url="http://127.0.0.1:7590",
+    name="training",
+    delete_on_exit=False,
+) as compute:
+    train() >> compute
+```
+
+The daemon keeps the Compute after the process exits. A later process can attach by name or id without restating its definition:
+
+```python
+with sky.Compute.attached("training", url="http://127.0.0.1:7590") as compute:
+    evaluate() >> compute
+```
+
+The SDK claims and renews a lease while it owns the Compute. `Compute.attached()` does not delete on exit by default.
 
 ## Local testing
 
-During development, you'll want to test your functions without provisioning any cloud infrastructure. Every `@sky.function` function exposes the original, unwrapped version via `.local`:
+Every decorated function keeps its original implementation on `.local`:
 
 ```python
-result = my_function.local(test_data)  # executes immediately, no cloud
+value = gpu_info.local()
 ```
 
-This bypasses the lazy computation entirely — no `PendingFunction`, no serialization, no pool required. It's the fastest way to iterate on function logic before sending it to the cloud.
-
-For integration testing with the full Skyward lifecycle (serialization, bootstrap, worker execution) but without cloud costs, use the `Container` provider:
-
-```python
-import skyward as sky
-
-with sky.Compute(provider=sky.Container(), nodes=2) as compute:
-    result = hello() >> compute  # runs in local Docker containers
-```
-
-## Verbose logging
-
-Skyward logs lifecycle events through Python's standard `logging` module under the `"skyward"` logger. To see detailed debug output:
-
-```python
-import logging
-
-logging.getLogger("skyward").setLevel(logging.DEBUG)
-```
-
-This will show SSH connection details, bootstrap script output, serialization sizes, and RPC traces — useful for diagnosing connectivity or performance issues.
+This calls the function immediately and bypasses the daemon, serialization, and remote image. Use the `Container` provider when the bootstrap and task path also need coverage.
 
 ## Troubleshooting
 
-If the pool fails with **"No instances available"**, the provider couldn't find capacity for the requested hardware. Try a different region, a different accelerator, or use `allocation="spot-if-available"` to fall back to on-demand pricing.
+If the SDK reports that the client or daemon dependencies are missing, install the role-specific extras:
 
-**"Permission denied"** errors typically mean your IAM or API credentials don't have the required permissions. For AWS, verify that your role or user has `ec2:*` and `iam:PassRole`.
+```bash
+uv add "skyward[client,server]"
+```
 
-If bootstrap takes too long or **times out**, the most common cause is a large `pip` list — installing PyTorch from scratch on a fresh instance takes time. You can increase the timeout with `provision_timeout=7200` on the pool, or reduce the number of pip dependencies.
+If a Compute does not become ready, inspect the provider credentials, offer availability, SSH reachability, and the image bootstrap dependencies. Increase the client-side wait with `sky.Options(ready_timeout=...)`:
 
-**Connection issues on AWS** usually mean the instance doesn't have outbound internet access (needed for package installation) or the security group doesn't allow the SSH connection. Skyward creates a temporary security group during `prepare()`, but VPC configurations can override this. Enabling SSM access provides a fallback connectivity path that doesn't require open inbound ports.
+```python
+with sky.Compute(
+    provider=sky.AWS(),
+    options=sky.Options(ready_timeout=1800),
+) as compute:
+    train() >> compute
+```
 
 ## Next steps
 
-- **[Core Concepts](concepts.md)** — The programming model: lazy computation, operators, ephemeral pools
-- **[Providers](providers.md)** — Detailed configuration for AWS, RunPod, VastAI, Verda, and Container
-- **[Distributed Training](distributed-training.md)** — Multi-node training with PyTorch, Keras, JAX
-- **[Plugins](plugins/index.md)** — Framework plugins for PyTorch, JAX, Keras, joblib, and scikit-learn
+- [Core concepts](concepts.md) — Lazy calls, Compute definitions, tasks, executions, and leases
+- [Architecture](architecture.md) — Embedded and remote control planes
+- [Providers](providers.md) — Accounts, offers, and provider capabilities
+- [CLI](cli.md) — Manage the daemon and Computes from the terminal
+- [Distributed collections](distributed-collections.md) — Shared state across nodes

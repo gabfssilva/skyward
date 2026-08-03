@@ -42,6 +42,31 @@ class ProviderStore:
         rows = await ProviderRow.objects().output(load_json=True).order_by(ProviderRow.created_at)
         return Page(items=tuple([await _to_provider(row) for row in rows]))
 
+    async def update(self, ref: str, body: ProviderCreate) -> Provider:
+        provider = await self.get(ref)
+        if body.kind != provider.kind:
+            raise IdempotencyConflictError(
+                f"provider {provider.name} is {provider.kind}, not {body.kind}",
+            )
+
+        adapter = adapter_for(body.kind)
+        if missing := [f for f in adapter.credential_fields if not body.credentials.get(f)]:
+            raise CapabilityMismatchError(
+                f"{body.kind} requires credentials: {', '.join(adapter.credential_fields)}",
+                missing=missing,
+            )
+
+        await ProviderRow.update(
+            {
+                ProviderRow.credentials: dict(body.credentials),
+                ProviderRow.config: dict(body.config),
+                ProviderRow.offers_fetched_at: None,
+                ProviderRow.last_error: None,
+            },
+        ).where(ProviderRow.id == provider.id).run()
+        await OfferRow.delete().where(OfferRow.provider_id == provider.id).run()
+        return await self.get(provider.id)
+
     async def delete(self, ref: str) -> None:
         provider = await self.get(ref)
         await OfferRow.delete().where(OfferRow.provider_id == provider.id).run()

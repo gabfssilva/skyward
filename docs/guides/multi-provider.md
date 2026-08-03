@@ -1,64 +1,66 @@
 # Multi-provider selection
 
-Accelerator prices fluctuate. Availability varies by region, time of day, and provider. An A100 on VastAI might cost $1.50/hr right now but have no capacity, while the same accelerator on AWS is $3.00/hr with instant availability. Instead of checking pricing pages manually, you can describe your hardware need across multiple providers and let Skyward query all of them, compare offers, and provision from the best option.
+Availability and price vary by provider. A `Compute` can receive several `Spec` values and choose one matching offer before it provisions the nodes.
 
 ## The spec
 
-A `sky.Spec` bundles a provider with hardware preferences into a single, composable unit:
+A `sky.Spec` binds a provider to machine requirements:
 
 ```python
 sky.Spec(
     provider=sky.VastAI(),
     accelerator=sky.accelerators.A100(),
     max_hourly_cost=2.50,
-    allocation="spot",
 )
 ```
 
-It carries the same fields you'd normally pass to `Compute` — `accelerator`, `nodes`, `vcpus`, `memory_gb`, `disk_gb`, `architecture`, `allocation`, `region`, `max_hourly_cost`, `ttl` — but scoped to a specific provider. This separation is what makes cross-provider comparison possible: each `Spec` is a self-contained description of "what I want, from whom."
+`Spec` contains `provider`, `accelerator`, `cpus`, `memory_gb`, `region`, `disk_gb`, `architecture`, and `max_hourly_cost`. Node count, allocation, selection, image, plugins, volumes, and task options belong to `Compute`, because they apply to the selected specification rather than to one provider alternative.
 
 ## Cheapest across providers
 
-Pass multiple `Spec` objects to `Compute` and Skyward queries each provider's available offers, compares prices, and provisions from the cheapest:
+Pass multiple `Spec` objects to `Compute`. With `selection="cheapest"`, the control plane compares matching cached offers and selects the lowest priced viable option:
 
 ```python
---8<-- "guides/12_multi_provider.py:26:33"
+--8<-- "guides/12_multi_provider.py:26:34"
 ```
 
-With `selection="cheapest"` (the default), Skyward calls `offers()` on every provider in the list, collects all available machine types with their pricing, and picks the one with the lowest cost. The pool then provisions from that provider — the rest of the lifecycle (SSH, bootstrap, task dispatch) is unchanged.
-
-This is useful when you don't have a strong provider preference and want cost optimization. The same A100 workload might end up on VastAI one day and AWS the next, depending on current market prices.
+The provider can change between runs as its offer cache changes. The compute lifecycle after selection is the same: provision, bootstrap, start workers, and dispatch tasks.
 
 ## First available
 
-When you have a preferred provider but want a fallback, use `selection="first"`:
+Use `selection="first"` when the order of the specifications is the priority order:
 
 ```python
---8<-- "guides/12_multi_provider.py:36:43"
+--8<-- "guides/12_multi_provider.py:37:46"
 ```
 
-Specs are tried in order. Skyward queries RunPod first — if it has H100 offers available, that's where the pool provisions. If RunPod has no capacity, Skyward moves to AWS. This gives you deterministic priority ordering while still avoiding manual retries when your preferred provider is out of stock.
+The selected `Spec` determines the provider and machine shape. `nodes=4` and `allocation="on_demand"` apply to the compute as a whole.
 
-## Per-spec constraints
+## Per-provider constraints
 
-Each `Spec` can have its own allocation strategy, cost cap, and region. This enables escalating fallback patterns — start aggressive, fall back to safer options:
+Constraints that identify a provider alternative stay on its `Spec`, while shared compute settings remain on `Compute`:
 
 ```python
---8<-- "guides/12_multi_provider.py:46:66"
+--8<-- "guides/12_multi_provider.py:49:66"
 ```
 
-The first spec tries spot instances on VastAI with a $2.50/hr cap — the cheapest option if available. If that fails (no capacity, or prices exceed the cap), the second spec tries Verda with spot-if-available. The third spec is the safety net: on-demand AWS, which is more expensive but virtually always available. Skyward evaluates all three and picks the cheapest viable option.
+Here the VastAI alternative has a cost cap, while the Verda and AWS alternatives are fallback shapes. The allocation policy is shared by the compute; it is not a field of `Spec`.
 
-## How it works
+## Single-provider mode
 
-When `Compute.__enter__` runs, Skyward iterates through your specs before provisioning anything:
+For one provider, use the direct `Compute` form:
 
-1. For each `Spec`, it creates a provider instance and calls `provider.offers()` — an async generator that yields the provider's full catalog of available machine types with pricing. The spec-based filtering (accelerator, region, cost cap, etc.) happens in the OfferRepository SQL layer.
-2. Based on the `selection` strategy, it either takes the first available offer or collects all offers and picks the cheapest.
-3. The winning offer — which carries the selected provider, machine type, and pricing — is passed to `provider.prepare(spec, offer)` to set up infrastructure.
-4. From there, the lifecycle proceeds normally: provision instances, bootstrap, start workers.
+```python
+with sky.Compute(
+    provider=sky.AWS(),
+    accelerator=sky.accelerators.A100(),
+    nodes=2,
+    allocation="spot_if_available",
+) as compute:
+    train(10) >> compute
+```
 
-The key insight is that offer querying is fast (API calls to check availability and pricing) while provisioning is slow (launching machines). By querying all providers before committing to one, Skyward makes an informed decision without wasting time on failed provisioning attempts.
+This form is equivalent to a compute with one `Spec`.
 
 ## Run the full example
 
@@ -72,9 +74,8 @@ uv run python guides/12_multi_provider.py
 
 **What you learned:**
 
-- **`sky.Spec`** bundles a provider with hardware preferences into a composable unit — accelerator, nodes, allocation, cost cap, all scoped to one provider.
-- **Multi-spec `Compute`** accepts multiple Specs as positional arguments and selects the best offer before provisioning.
-- **`selection="cheapest"`** (default) queries all providers and picks the lowest price across all of them.
-- **`selection="first"`** respects your priority ordering — tries specs in sequence, stops at the first with available offers.
-- **Per-spec constraints** let each Spec have its own allocation strategy and cost cap, enabling escalating fallback patterns.
-- **Single-provider mode still works** — `Compute(provider=sky.AWS(), ...)` is unchanged and internally wraps a single `Spec`.
+- **`sky.Spec`** binds a provider to hardware and offer constraints.
+- **Multi-spec `Compute`** chooses one provider alternative before provisioning.
+- **`selection="cheapest"`** compares viable matching offers.
+- **`selection="first"`** uses specification order as priority.
+- **`allocation`, `nodes`, and `image`** are compute-level settings shared by the selected specification.

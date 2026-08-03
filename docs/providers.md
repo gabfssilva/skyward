@@ -1,808 +1,130 @@
 # Cloud providers
 
-Skyward supports thirteen providers. Twelve are cloud services — AWS, GCP, Hyperstack, JarvisLabs, Massed Compute, Novita, RunPod, Scaleway, TensorDock, Verda, VastAI, Vultr — and one is local containers for development and CI. All implement the same `Provider` protocol, so the orchestration layer (node lifecycle, SSH tunnels, bootstrap, task dispatch) works identically regardless of which provider you choose. The difference is in how instances are provisioned, what hardware is available, and how authentication works.
+A provider has two identities in v2:
 
-Provider configs are lightweight frozen dataclasses. They hold configuration — region, API keys, disk sizes — but don't import any cloud SDK at module level. The SDK is loaded lazily when the pool starts, so `import skyward` stays fast regardless of which providers are installed.
+- a **kind**, such as `aws` or `runpod`, which selects an adapter;
+- an **account**, which is a named set of credentials and non-secret configuration stored by the daemon.
 
-### Disk size
-
-You can set disk size uniformly across providers using `disk_gb` on `Spec` or directly on `Compute`:
-
-```python
-sky.Compute(provider=sky.AWS(), disk_gb=500)
-```
-
-When set, `disk_gb` overrides the provider's own default. When omitted (`None`), each provider uses its built-in default (e.g., 100 GB for AWS, 200 GB for GCP, 50 GB for RunPod). Providers where disk is determined by the instance plan (Vultr, Hyperstack) ignore this parameter.
-
-## Provider comparison
-
-| Feature | AWS | GCP | Hyperstack | JarvisLabs | Massed Compute | Novita | RunPod | Scaleway | TensorDock | Verda | VastAI | Vultr | Container |
-|---------|-----|-----|------------|------------|----------------|--------|--------|----------|------------|-------|--------|-------|-----------|
-| **GPUs** | H100, A100, T4, L4, Trainium, Inferentia | H100, A100, T4, L4, V100, H200 | A100, H100, RTX series | H200, H100, A100, A100-80GB, A6000, RTX6000Ada, L4 | H200 NVL, H100, A100, RTX PRO 6000 Blackwell, RTX A6000, L40S, L40, RTX 6000 Ada, A30 | H100, A100, RTX series (dynamic catalog) | H100, A100, A40, RTX series | L4, L40S, H100, H100 SXM, B300 | H100, A100, L40, RTX series, V100 | H100, A100, H200, GB200 | Marketplace (varies) | A16, A40, A100, L40S (cloud); H100, B200, MI300X (bare metal) | None (CPU) |
-| **Spot Instances** | Yes (60-90% savings) | Yes (preemptible/spot) | No (on-demand only) | No (on-demand only) | Yes (17-20% savings) | Yes | Yes | No (on-demand only) | No (on-demand only) | Yes | Yes (bid-based) | No (on-demand only) | N/A |
-| **Regions** | 20+ | 40+ zones | Canada, Norway, US | IN1, IN2 (India), EU1 (Finland) | US (Kansas City, Des Moines, Wichita, Beltsville, Omaha) | Cluster-based (dynamic) | Global (Secure + Community) | fr-par-1, fr-par-2, fr-par-3, nl-ams, pl-waw | 100+ locations, 20+ countries | FIN, ICL, ISR | Global marketplace | EWR, ORD, DFW, LAX + more | Local |
-| **Auth** | AWS credentials | Application Default Credentials | API key | API token | API key | API key | API key | Secret key | API key + token | Client ID + Secret | API key | API key | None |
-| **Billing** | Per-second | Per-second | Per-second | Per-minute | Per-minute | Per-hour | Per-second | Per-hour | Per-second | Per-second | Per-minute | Hourly | Free |
-
-## AWS
-
-AWS uses EC2 Fleet for provisioning, with automatic spot-to-on-demand fallback. Instances are launched in a VPC with security groups managed by Skyward (or you can provide your own). SSH keys are created per cluster and cleaned up on teardown.
-
-AMI resolution happens automatically via SSM Parameter Store — Skyward looks up the latest Ubuntu AMI for your chosen version and architecture. You can override this with a custom AMI.
-
-### Setup
-
-```bash
-export AWS_ACCESS_KEY_ID=your_access_key
-export AWS_SECRET_ACCESS_KEY=your_secret_key
-export AWS_DEFAULT_REGION=us-east-1
-```
-
-Or use the AWS CLI:
-
-```bash
-aws configure
-```
-
-### Usage
+The public factories return account descriptors. They read credentials in the client process; an explicitly passed credential takes precedence over its environment source.
 
 ```python
 import skyward as sky
 
+aws = sky.AWS(name="production", region="us-east-1")
+vast = sky.VastAI(name="marketplace", geolocation="US")
+
 with sky.Compute(
-    provider=sky.AWS(region="us-east-1"),
-    accelerator=sky.accelerators.A100(),
-    nodes=2,
+    sky.Spec(aws, accelerator="A100"),
+    sky.Spec(vast, accelerator="A100", max_hourly_cost=2.0),
+    selection="cheapest",
 ) as compute:
-    result = train(data) >> compute
+    train(data) >> compute
 ```
 
-### Parameters
+`name` is the account alias. It defaults to the provider kind, so use explicit names when more than one account of a kind is needed. Entering a `Compute` registers missing accounts with the daemon. Provider read operations return the account id, name, kind, configuration, offer-cache metadata, and the last error; they never return credentials.
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `region` | `str` | `"us-east-1"` | AWS region |
-| `ami` | `str or None` | `None` | Custom AMI ID. Auto-resolved via SSM if not set. |
-| `ubuntu_version` | `str` | `"24.04"` | Ubuntu LTS version for auto-resolved AMIs |
-| `subnet_id` | `str or None` | `None` | VPC subnet. Uses default VPC if not set. |
-| `security_group_id` | `str or None` | `None` | Security group. Auto-created if not set. |
-| `instance_profile_arn` | `str or None` | `None` | IAM instance profile. Auto-created if not set. |
-| `username` | `str or None` | `None` | SSH user. Auto-detected from AMI if not set. |
-| `instance_timeout` | `int` | `300` | Safety timeout in seconds (auto-shutdown timer) |
-| `request_timeout` | `int` | `30` | HTTP request timeout in seconds |
-| `allocation_strategy` | `str` | `"price-capacity-optimized"` | EC2 Fleet spot allocation strategy |
-| `exclude_burstable` | `bool` | `False` | Exclude burstable instances (t3, t4g) |
+## Supported provider kinds
 
-### Required IAM permissions
+The credentials column is the field required by the provider adapter. Environment variables are listed in the next section.
 
-```json
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": [
-                "ec2:RunInstances",
-                "ec2:TerminateInstances",
-                "ec2:DescribeInstances",
-                "ec2:DescribeInstanceTypes",
-                "ec2:DescribeImages",
-                "ec2:CreateSecurityGroup",
-                "ec2:AuthorizeSecurityGroupIngress",
-                "ec2:DescribeSecurityGroups",
-                "ec2:CreateKeyPair",
-                "ec2:DescribeKeyPairs",
-                "ec2:CreateFleet",
-                "ec2:DescribeFleets",
-                "ssm:GetParameter"
-            ],
-            "Resource": "*"
-        },
-        {
-            "Effect": "Allow",
-            "Action": "iam:PassRole",
-            "Resource": "arn:aws:iam::*:role/*"
-        }
-    ]
-}
-```
+| Factory | Kind | Required credential fields | Catalog TTL |
+|---|---|---|---:|
+| `sky.AWS` | `aws` | `access_key_id`, `secret_access_key` | 30 min |
+| `sky.GCP` | `gcp` | `service_account_json` | 6 h |
+| `sky.Hyperstack` | `hyperstack` | `api_key` | 1 h |
+| `sky.JarvisLabs` | `jarvislabs` | `api_key` | 15 min |
+| `sky.Lambda` | `lambda` | `api_key` | 5 min |
+| `sky.MassedCompute` | `massed_compute` | `api_key` | 10 min |
+| `sky.Novita` | `novita` | `api_key` | 15 min |
+| `sky.RunPod` | `runpod` | `api_key` | 10 min |
+| `sky.Salad` | `salad` | `api_key` | 10 min |
+| `sky.Scaleway` | `scaleway` | `secret_key`, `project_id` | 10 min |
+| `sky.TensorDock` | `tensordock` | `api_token` | 5 min |
+| `sky.VastAI` | `vastai` | `api_key` | 2 min |
+| `sky.Verda` | `verda` | `client_id`, `client_secret` | 15 min |
+| `sky.Vultr` | `vultr` | `api_key` | 6 h |
+| `sky.Container` | `container` | none | 1 day |
 
-## GCP
+Each factory's complete signature is available in the [provider reference pages](reference/providers/aws.md).
 
-GCP uses Compute Engine with instance templates and `bulk_insert` for fleet-style provisioning. Skyward resolves the best machine type dynamically — for GPUs like T4 and V100, it uses N1 machines with guest accelerators; for A100 and H100, it picks the matching A2/A3 machine family with built-in GPUs. Spot instances use the `SPOT` provisioning model with automatic deletion on preemption.
+## Credential sources
 
-SSH keys are injected via instance metadata. The project is auto-detected from Application Default Credentials or `GOOGLE_CLOUD_PROJECT`. GCP API calls use sync clients dispatched to a dedicated thread pool (configurable via `thread_pool_size`).
+| Provider | Environment or local source |
+|---|---|
+| AWS | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`; otherwise the selected profile in `~/.aws/credentials` |
+| GCP | `GOOGLE_APPLICATION_CREDENTIALS` points to a service-account JSON file; `GOOGLE_CLOUD_PROJECT` supplies the project |
+| Hyperstack | `HYPERSTACK_API_KEY` |
+| JarvisLabs | `JL_API_KEY` |
+| Lambda | `LAMBDA_API_KEY` |
+| Massed Compute | `MASSED_API_KEY` |
+| Novita | `NOVITA_API_KEY` |
+| RunPod | `RUNPOD_API_KEY` |
+| Salad | `SALAD_API_KEY`; `SALAD_ORGANIZATION` and `SALAD_PROJECT` are required configuration |
+| Scaleway | `SCW_SECRET_KEY`, `SCW_DEFAULT_PROJECT_ID` |
+| TensorDock | `TENSORDOCK_API_KEY`, `TENSORDOCK_API_TOKEN` |
+| VastAI | `VAST_API_KEY` |
+| Verda | `VERDA_CLIENT_ID`, `VERDA_CLIENT_SECRET` |
+| Vultr | `VULTR_API_KEY` |
+| Container | no credentials |
 
-Skyward creates an instance template and a firewall rule per cluster, both cleaned up on teardown. Instances use Google's Deep Learning VM images (CUDA 12.x, NVIDIA 570 drivers) for GPU workloads.
+Pass credentials directly to the factory when the process should not read them from the environment. The daemon adapter receives resolved credentials through the provider account record; it does not read environment variables on its own.
 
-### Setup
+## Cached offers
+
+The daemon keeps one hardware catalog per registered account. Each adapter declares its own freshness interval because marketplace capacity changes at a different rate from fixed instance types.
+
+The catalog is queried through `GET /v1/offers` or the CLI:
 
 ```bash
-gcloud auth application-default login
+sky offers list --accelerator A100 --min-vram 40 --max-price 3
+sky offers fetch
+sky offers summary --accelerator H100
 ```
 
-Or set the project explicitly:
+Queries filter the cached rows by provider, accelerator, accelerator count, VRAM, and price. An expired account is refreshed before its rows are returned. `refresh=true` or the CLI `--refresh` flag forces a refetch.
 
-```bash
-export GOOGLE_CLOUD_PROJECT=your_project_id
-```
+A failed refresh does not erase the previous rows. The stale rows remain available and the provider account records the last error. The compute market uses the same cache when matching `Spec` alternatives; it does not call every provider separately for each scheduling decision.
 
-!!! warning "GPU Quotas"
-    Listing available accelerator types does not mean you have quota. Check your quotas with:
-    ```bash
-    gcloud compute regions describe <region> --format="table(quotas.metric,quotas.limit,quotas.usage)" | grep GPU
-    ```
-    Request quota increases in the [Cloud Console](https://console.cloud.google.com/iam-admin/quotas).
+## Local containers
 
-### Usage
-
-```python
-import skyward as sky
-
-with sky.Compute(
-    provider=sky.GCP(zone="us-central1-a"),
-    accelerator=sky.accelerators.T4(),
-    nodes=2,
-) as compute:
-    result = train(data) >> compute
-```
-
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `project` | `str or None` | `None` | GCP project ID. Auto-detected from ADC or `GOOGLE_CLOUD_PROJECT`. |
-| `zone` | `str` | `"us-central1-a"` | Compute Engine zone |
-| `network` | `str` | `"default"` | VPC network name |
-| `subnet` | `str or None` | `None` | Specific subnet. Uses auto-mode subnet if not set. |
-| `disk_size_gb` | `int` | `200` | Boot disk size in GB |
-| `disk_type` | `str` | `"pd-balanced"` | Boot disk type |
-| `instance_timeout` | `int` | `300` | Safety timeout in seconds (self-destruction timer) |
-| `service_account` | `str or None` | `None` | GCE service account email |
-| `thread_pool_size` | `int` | `8` | Thread pool size for blocking GCP API calls |
-
-### Required permissions
-
-The authenticated principal needs the following roles (or equivalent permissions):
-
-- `compute.instances.create`, `compute.instances.delete`, `compute.instances.list`, `compute.instances.get`
-- `compute.instanceTemplates.create`, `compute.instanceTemplates.delete`
-- `compute.firewalls.create`, `compute.firewalls.delete`, `compute.firewalls.get`
-- `compute.machineTypes.list`, `compute.acceleratorTypes.list`
-- `compute.images.getFromFamily`
-
-The simplest approach is the **Compute Admin** role (`roles/compute.admin`).
-
-### Install
-
-```bash
-uv add "skyward[gcp]"
-```
-
-## Novita
-
-Novita.ai is a GPU cloud where instances are Docker containers with configurable GPU count and root filesystem size. SSH access is provided through Novita's proxy — no openssh-server or key injection is needed inside the container. Skyward reads the SSH connection details from the instance metadata and connects through the proxy automatically.
-
-Novita resolves CUDA compatibility dynamically. When provisioning, Skyward queries the instance's maximum supported CUDA version and tries descending versions until it finds a host with availability. If you provide a custom Docker image, it's used as-is.
-
-### Setup
-
-```bash
-export NOVITA_API_KEY=your_api_key
-```
-
-### Usage
-
-```python
-import skyward as sky
-
-with sky.Compute(
-    provider=sky.Novita(),
-    accelerator=sky.accelerators.A100(),
-    nodes=2,
-) as compute:
-    result = train(data) >> compute
-```
-
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `api_key` | `str or None` | `None` | API key. Falls back to `NOVITA_API_KEY` env var. |
-| `cluster_id` | `str or None` | `None` | Target cluster/region ID. `None` for auto-selection. |
-| `rootfs_size` | `int` | `50` | Root filesystem size in GB. |
-| `docker_image` | `str or None` | `None` | Base Docker image. Defaults to `nvcr.io/nvidia/cuda:12.9.1-runtime-ubuntu24.04`. |
-| `min_cuda_version` | `str or None` | `None` | Minimum CUDA version requirement (e.g., `"12.4"`). |
-| `request_timeout` | `int` | `30` | HTTP request timeout in seconds. |
-
-Novita also provides a helper for building NVIDIA CUDA base images:
-
-```python
-image_name = sky.Novita.ubuntu(version="24.04", cuda="12.9.1")
-# → "nvcr.io/nvidia/cuda:12.9.1-runtime-ubuntu24.04"
-```
-
-## RunPod
-
-RunPod offers GPU pods in two tiers: **Secure Cloud** (enterprise-grade, dedicated hardware) and **Community Cloud** (lower-cost, peer-hosted). Skyward provisions pods via RunPod's GraphQL API, configures SSH access, and manages the full lifecycle.
-
-SSH keys are auto-detected from `~/.ssh/id_ed25519.pub` or `~/.ssh/id_rsa.pub` and registered on your RunPod account.
-
-### Setup
-
-```bash
-export RUNPOD_API_KEY=your_api_key
-```
-
-### Usage
-
-```python
-import skyward as sky
-
-with sky.Compute(
-    provider=sky.RunPod(),
-    accelerator=sky.accelerators.A100(),
-    nodes=2,
-) as compute:
-    result = train(data) >> compute
-```
-
-### Standalone mode
-
-RunPod's individual pods don't share a private network — each pod gets its own IP, but pods can't reach each other directly. RunPod therefore defaults to standalone mode, so multi-node workloads that don't require inter-node communication (hyperparameter sweeps, batch inference) work without extra configuration:
+`Container` uses a local container runtime and needs no cloud account:
 
 ```python
 with sky.Compute(
-    provider=sky.RunPod(),
-    accelerator=sky.accelerators.A100(),
-    nodes=4,
-) as compute:
-    results = sky.gather(*tasks) >> compute
-```
-
-The client connects to each worker independently via SSH. Distributed collections and distributed training are not available in this mode. If you've enabled RunPod global networking and want cluster mode, override with `options=sky.Options(cluster=True)`. See the [Standalone Workers](guides/standalone-workers.md) guide for details.
-
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `cluster_mode` | `ClusterMode` | `"individual"` | Cluster mode (`"instant"` or `"individual"`) |
-| `global_networking` | `bool or None` | `None` | Enable global networking |
-| `api_key` | `str or None` | `None` | API key (falls back to `RUNPOD_API_KEY` env var) |
-| `cloud_type` | `Literal["community", "secure"]` | `"secure"` | Cloud type: `"secure"` or `"community"` |
-| `ubuntu` | `str` | `"newest"` | Ubuntu version (`"20.04"`, `"22.04"`, `"24.04"`, `"newest"`) |
-| `container_disk_gb` | `int` | `50` | Container disk size in GB |
-| `volume_gb` | `int` | `20` | Persistent volume size in GB |
-| `volume_mount_path` | `str` | `"/workspace"` | Volume mount path |
-| `data_center_ids` | `tuple or "global"` | `"global"` | Preferred data centers or `"global"` for auto-selection |
-| `ports` | `tuple[str, ...]` | `("22/tcp",)` | Port mappings |
-| `provision_timeout` | `float` | `300.0` | Instance provision timeout in seconds |
-| `bootstrap_timeout` | `float` | `600.0` | Bootstrap timeout in seconds |
-| `instance_timeout` | `int` | `300` | Auto-shutdown safety timeout in seconds |
-| `request_timeout` | `int` | `30` | HTTP request timeout in seconds |
-| `cpu_clock` | `str` | `"3c"` | CPU clock tier (`"3c"` or `"5c"`) |
-| `bid_multiplier` | `float` | `1` | Multiplier for spot bid price |
-| `registry_auth` | `str or None` | `"docker hub"` | Container registry credential name. `None` to skip. |
-
-## Verda
-
-Verda is a GPU cloud with data centers in Europe and the Middle East. It uses OAuth2 authentication with a client ID and secret — not a single API key.
-
-SSH keys are auto-detected and registered on Verda if needed. If `region` is not specified (the default is `"FIN-01"`), Verda uses its default region. The provider also supports auto-region discovery: if the requested GPU isn't available in the configured region, Skyward finds another region with availability.
-
-### Setup
-
-```bash
-export VERDA_CLIENT_ID=your_client_id
-export VERDA_CLIENT_SECRET=your_client_secret
-```
-
-### Usage
-
-```python
-import skyward as sky
-
-with sky.Compute(
-    provider=sky.Verda(),
-    accelerator=sky.accelerators.H100(),
-    nodes=4,
-) as compute:
-    results = train() @ compute
-```
-
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `region` | `str` | `"FIN-01"` | Preferred region |
-| `client_id` | `str or None` | `None` | OAuth2 client ID (falls back to `VERDA_CLIENT_ID`) |
-| `client_secret` | `str or None` | `None` | OAuth2 client secret (falls back to `VERDA_CLIENT_SECRET`) |
-| `ssh_key_id` | `str or None` | `None` | Specific SSH key ID to use |
-| `instance_timeout` | `int` | `300` | Safety timeout in seconds |
-| `request_timeout` | `int` | `30` | HTTP request timeout in seconds |
-
-### Available regions
-
-| Region | Location | GPUs |
-|--------|----------|------|
-| `FIN-01` | Finland | H100, A100, H200, GB200 |
-| `ICL-01` | Iceland | H100, A100 |
-| `ISR-01` | Israel | H100, A100 |
-
-## VastAI
-
-VastAI is a GPU marketplace — instances are Docker containers running on hosts from independent providers worldwide. Pricing is dynamic, and reliability varies by host. Skyward filters offers by reliability score, CUDA version, and optional geolocation, then provisions containers via the VastAI API.
-
-SSH keys are auto-detected from `~/.ssh/id_ed25519.pub` or `~/.ssh/id_rsa.pub` and registered on VastAI if needed. For multi-node clusters, VastAI supports overlay networks for NCCL communication between instances.
-
-### Setup
-
-```bash
-export VAST_API_KEY=your_api_key
-```
-
-Get your API key at: [https://cloud.vast.ai/account/](https://cloud.vast.ai/account/)
-
-### Usage
-
-```python
-import skyward as sky
-
-with sky.Compute(
-    provider=sky.VastAI(geolocation="US"),
-    accelerator=sky.accelerators.RTX_4090(),
-    nodes=2,
-) as compute:
-    result = train(data) >> compute
-```
-
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `api_key` | `str or None` | `None` | API key (falls back to `VAST_API_KEY`) |
-| `min_reliability` | `float` | `0.95` | Minimum host reliability score (0.0-1.0) |
-| `verified_only` | `bool` | `True` | Only select offers from verified hosts |
-| `min_cuda` | `float` | `12.0` | Minimum CUDA version |
-| `geolocation` | `str or None` | `None` | Filter by region/country (e.g., `"US"`, `"EU"`) |
-| `bid_multiplier` | `float` | `1.2` | Multiplier for spot bid price |
-| `instance_timeout` | `int` | `300` | Auto-shutdown safety timeout in seconds |
-| `request_timeout` | `int` | `30` | HTTP request timeout in seconds |
-| `docker_image` | `str or None` | `None` | Base Docker image for containers |
-| `disk_gb` | `int` | `100` | Disk space in GB |
-| `overlay_timeout` | `int` | `120` | Timeout for overlay operations in seconds |
-| `require_direct_port` | `bool` | `False` | Only select offers with direct port access |
-
-VastAI also provides a helper for building NVIDIA CUDA base images:
-
-```python
-image_name = sky.VastAI.ubuntu(version="24.04", cuda="12.9.1")
-# → "nvcr.io/nvidia/cuda:12.9.1-runtime-ubuntu24.04"
-```
-
-## Hyperstack
-
-Hyperstack provides bare-metal GPU instances via their InfraHub API. Resources are organized into environments that group VMs, keypairs, and volumes within a region. Environments are created per cluster and cascade-deleted on teardown. All instances are on-demand — no spot pricing.
-
-### Setup
-
-```bash
-export HYPERSTACK_API_KEY=your_api_key
-```
-
-Get your API key at the [Hyperstack Console](https://infrahub.nexgencloud.com/).
-
-### Usage
-
-```python
-import skyward as sky
-
-with sky.Compute(
-    provider=sky.Hyperstack(region="CANADA-1"),
-    accelerator=sky.accelerators.A100(),
-    nodes=2,
-) as compute:
-    result = train(data) >> compute
-```
-
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `api_key` | `str or None` | `None` | API key (falls back to `HYPERSTACK_API_KEY` env var) |
-| `region` | `str or tuple or None` | `None` | Deployment region(s). A single string (e.g. `"CANADA-1"`), a tuple (e.g. `("CANADA-1", "NORWAY-1")`), or `None` to search all regions. |
-| `image` | `str or None` | `None` | OS image name override. Auto-selects newest Ubuntu + CUDA image if not set. |
-| `network_optimised` | `bool` | `False` | Require network-optimised environments with SR-IOV support |
-| `network_optimised_regions` | `tuple[str, ...]` | `("CANADA-1", "US-1")` | Regions known to support network-optimised environments |
-| `object_storage_region` | `str` | `"CANADA-1"` | Region for S3-compatible object storage (volume mounts) |
-| `object_storage_endpoint` | `str` | `"https://ca1.obj.nexgencloud.io"` | Endpoint URL for S3-compatible object storage |
-| `instance_timeout` | `int` | `300` | Auto-shutdown safety timeout in seconds |
-| `request_timeout` | `int` | `30` | HTTP request timeout in seconds |
-| `teardown_timeout` | `int` | `120` | Timeout for teardown operations in seconds |
-| `teardown_poll_interval` | `float` | `2.0` | Poll interval during teardown in seconds |
-
-### Available regions
-
-| Region | Location |
-|--------|----------|
-| `CANADA-1` | Canada |
-| `NORWAY-1` | Norway |
-| `US-1` | United States |
-
-## TensorDock
-
-TensorDock is a GPU marketplace with bare-metal VMs across 100+ locations in 20+ countries. Per-second billing, on-demand only (no spot). Skyward queries available hostnodes, selects the cheapest matching your GPU requirements, and deploys VMs with cloud-init for SSH key injection.
-
-SSH keys are injected per-instance via cloud-init (TensorDock has no SSH key registration API). The SSH user is `user` (not root). Port forwarding maps internal ports to random external ports — Skyward handles this automatically.
-
-### Setup
-
-```bash
-export TENSORDOCK_API_KEY=your_api_key
-export TENSORDOCK_API_TOKEN=your_api_token
-```
-
-Get your credentials at: [https://console.tensordock.com/api](https://console.tensordock.com/api)
-
-### Usage
-
-```python
-import skyward as sky
-
-with sky.Compute(
-    provider=sky.TensorDock(location="us"),
-    accelerator=sky.accelerators.RTX_4090(),
-    nodes=2,
-) as compute:
-    result = train(data) >> compute
-```
-
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `api_key` | `str or None` | `None` | API key (falls back to `TENSORDOCK_API_KEY`) |
-| `api_token` | `str or None` | `None` | API token (falls back to `TENSORDOCK_API_TOKEN`) |
-| `location` | `str or None` | `None` | Country filter (e.g., `"United States"`, `"Germany"`). Global if not set. |
-| `tier` | `int or None` | `None` | Hostnode tier (0-4). `None` for any tier. |
-| `storage_gb` | `int` | `100` | Disk storage per VM in GB |
-| `operating_system` | `str` | `"ubuntu2404"` | OS image ID (e.g., `"ubuntu2404"`, `"ubuntu2204"`) |
-| `instance_timeout` | `int` | `300` | Auto-shutdown in seconds |
-| `request_timeout` | `int` | `120` | HTTP request timeout in seconds |
-| `min_ram_gb` | `int or None` | `None` | Minimum RAM per VM in GB |
-| `min_vcpus` | `int or None` | `None` | Minimum vCPUs per VM |
-
-!!! note "Port forwarding"
-    TensorDock maps internal ports to random external ports. SSH is never on port 22 externally. Skyward reads the port mapping from the deploy response and configures SSH tunnels accordingly — no manual port configuration needed.
-
-## Vultr
-
-Vultr offers GPU instances in two modes: **Cloud GPU** (virtual instances with vGPU/passthrough, faster provisioning, fractional GPU support) and **Bare Metal** (dedicated physical servers with no virtualization overhead). Cloud GPU is the default.
-
-Cloud GPU supports NVIDIA A16, A40, A100, and L40S. Bare Metal adds H100, GH200, HGX B200, and AMD MI300X/MI355X. All instances are billed hourly.
-
-### Setup
-
-```bash
-export VULTR_API_KEY=your_api_key
-```
-
-Generate an API key from the [Vultr customer portal](https://my.vultr.com/settings/#settingsapi).
-
-### Usage
-
-```python
-import skyward as sky
-
-# Cloud GPU (default)
-with sky.Compute(
-    provider=sky.Vultr(region="ewr"),
-    accelerator=sky.accelerators.A100(),
-    nodes=2,
-) as compute:
-    result = train(data) >> compute
-
-# Bare Metal
-with sky.Compute(
-    provider=sky.Vultr(mode="bare-metal", region="ewr"),
-    accelerator=sky.accelerators.H100(),
-    nodes=2,
-) as compute:
-    result = train(data) >> compute
-```
-
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `api_key` | `str or None` | `None` | API key. Falls back to `VULTR_API_KEY` env var. |
-| `mode` | `"cloud" or "bare-metal"` | `"cloud"` | Cloud GPU (virtual) or bare metal (dedicated). |
-| `region` | `str` | `"ewr"` | Vultr region ID (e.g., `"ewr"`, `"ord"`, `"dfw"`). |
-| `os_id` | `int` | `2284` | OS image ID. Default is Ubuntu 24.04. |
-| `instance_timeout` | `int` | `300` | Safety timeout in seconds. |
-| `request_timeout` | `int` | `30` | HTTP request timeout in seconds. |
-
-## Scaleway
-
-Scaleway provides GPU instances in European data centers (Paris, Amsterdam, Warsaw). GPU instances range from L4 (24 GB) to H100 SXM (80 GB) and B300 (288 GB). Pricing is per-hour, on-demand only (no spot).
-
-### Setup
-
-```bash
-export SCW_SECRET_KEY=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-export SCW_DEFAULT_PROJECT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-```
-
-### Usage
-
-```python
-import skyward as sky
-
-with sky.Compute(
-    provider=sky.Scaleway(zone="fr-par-2"),
-    accelerator=sky.accelerators.H100(),
-    nodes=2,
-) as compute:
-    result = train(data) >> compute
-```
-
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `secret_key` | `str \| None` | `None` | API secret key. Falls back to `SCW_SECRET_KEY` env var. |
-| `project_id` | `str \| None` | `None` | Project ID. Falls back to `SCW_DEFAULT_PROJECT_ID` env var. |
-| `zone` | `str \| None` | `None` | Availability zone. `None` searches all GPU zones automatically. |
-| `image` | `str \| None` | `None` | OS image UUID override. Auto-selects Ubuntu GPU image when None. |
-| `instance_timeout` | `int` | `300` | Auto-shutdown safety timeout in seconds. |
-| `request_timeout` | `int` | `30` | HTTP request timeout in seconds. |
-
-## Jarvis Labs
-
-Jarvis Labs is a GPU cloud platform offering instances in India (IN1, IN2) and Europe/Finland (EU1). Per-minute billing with a prepaid wallet model. SSH keys are auto-registered by Skyward via the SDK. The provider uses the `jarvislabs` Python SDK (sync calls dispatched to a thread pool).
-
-EU1 region only supports H100 and H200 GPUs with either 1 or 8 GPUs, and requires minimum 100GB storage.
-
-### Setup
-
-```bash
-export JL_API_KEY=your_api_token
-```
-
-Get your token from [jarvislabs.ai/settings/api-keys](https://jarvislabs.ai/settings/api-keys).
-
-Install the SDK:
-
-```bash
-uv add "skyward[jarvis]"
-```
-
-### Usage
-
-```python
-import skyward as sky
-
-with sky.Compute(
-    provider=sky.JarvisLabs(region="IN2"),
-    accelerator=sky.accelerators.L4(),
-    nodes=2,
-) as compute:
-    result = train(data) >> compute
-```
-
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `api_key` | `str or None` | `None` | API token. Falls back to `JL_API_KEY` env var. |
-| `region` | `str or None` | `None` | Region: `IN1`, `IN2`, `EU1`. Auto-selects if not set. |
-| `template` | `str` | `"pytorch"` | Framework template: `pytorch`, `tensorflow`, `jax`, `vm`. |
-| `storage_gb` | `int` | `50` | Disk storage in GB. Minimum 100 for EU1/VM. |
-| `instance_timeout` | `int` | `300` | Auto-shutdown safety timer in seconds. |
-| `thread_pool_size` | `int` | `8` | Max threads for SDK calls. |
-
-### GPU availability
-
-| GPU | VRAM | Price/hr | Regions |
-|-----|------|----------|---------|
-| H200 SXM | 141 GB | $3.80 | EU1 |
-| H100 SXM | 80 GB | $2.99 | EU1 |
-| A100-80GB | 80 GB | $1.49 | IN2 |
-| A100 | 40 GB | $1.29 | IN1, IN2 |
-| RTX 6000 Ada | 48 GB | $0.99 | IN1 |
-| A6000 | 48 GB | $0.79 | IN1 |
-| L4 | 24 GB | $0.44 | IN2 |
-
-## Lambda Cloud
-
-Lambda Cloud offers on-demand GPU instances with a straightforward API. Instances run Ubuntu with NVIDIA drivers pre-installed. SSH keys are auto-registered and cleaned up by Skyward. Per-minute billing.
-
-If no region is specified, Lambda Cloud auto-selects the first region with available capacity.
-
-### Setup
-
-```bash
-export LAMBDA_API_KEY=your_api_key
-```
-
-### Usage
-
-```python
-import skyward as sky
-
-with sky.Compute(
-    provider=sky.LambdaCloud(),
-    accelerator=sky.accelerators.H100(),
-    nodes=2,
-) as compute:
-    result = train(data) >> compute
-```
-
-Pick a specific region:
-
-```python
-sky.LambdaCloud(region="us-east-3")
-```
-
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `api_key` | `str or None` | `None` | API key. Falls back to `LAMBDA_API_KEY` env var. |
-| `region` | `str or None` | `None` | Preferred region (e.g., `"us-east-3"`). Auto-selects region with capacity if not set. |
-| `request_timeout` | `int` | `30` | HTTP request timeout in seconds. |
-
-## Massed Compute
-
-Massed Compute is a bare-metal GPU cloud with data centers across the US. Instances run Ubuntu with NVIDIA drivers pre-installed, SSH access via key or password, and all ports open by default (no firewall configuration needed). SSH keys are auto-registered and cleaned up by Skyward.
-
-Spot instances are available on select GPU types (H100, A6000, L40, H200 NVL) at 17-20% discount. Region is auto-placed — Massed Compute assigns the best available data center.
-
-### Setup
-
-```bash
-export MASSED_API_KEY=your_api_key
-```
-
-### Usage
-
-```python
-import skyward as sky
-
-with sky.Compute(
-    provider=sky.MassedCompute(),
-    accelerator=sky.accelerators.RTX_A6000(),
-    nodes=2,
-) as compute:
-    result = train(data) >> compute
-```
-
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `api_key` | `str or None` | `None` | API key. Falls back to `MASSED_API_KEY` env var. |
-| `image_id` | `int` | `184` | OS image ID. `184` = Ubuntu 24.04, `84` = Ubuntu 22.04 w/ drivers. |
-| `request_timeout` | `int` | `30` | HTTP request timeout in seconds. |
-
-### GPU availability
-
-| GPU | VRAM | Price/hr | Spot Price/hr |
-|-----|------|----------|---------------|
-| RTX PRO 6000 Blackwell | 96 GB | $1.74 | — |
-| H200 NVL | 141 GB | $2.83 | — |
-| H100 | 80 GB | $2.40 | $1.98 |
-| H100 NVL | 94 GB | $3.11 | — |
-| A100 SXM4 | 80 GB | $1.28 | — |
-| DGX A100 | 80 GB | $1.28 | — |
-| L40S | 48 GB | $0.88 | — |
-| L40 | 48 GB | $0.84 | $0.67 |
-| RTX 6000 Ada | 48 GB | $0.79 | — |
-| RTX A6000 | 48 GB | $0.57 | $0.45 |
-| RTX A5000 | 24 GB | $0.44 | — |
-| A30 | 24 GB | $0.35 | — |
-
-Prices are per GPU. Multi-GPU configurations (2x, 4x, 8x) scale linearly.
-
-## Container
-
-The Container provider runs compute nodes as local containers — Docker, podman, nerdctl, or Apple's container CLI. No cloud credentials, no costs. Useful for development, CI testing, and validating your code before deploying to real hardware.
-
-Containers are launched with SSH access, joined to a shared network, and bootstrapped the same way cloud instances are. From the pool's perspective, they look like any other nodes.
-
-### Usage
-
-```python
-import skyward as sky
-
-with sky.Compute(
-    provider=sky.Container(),
-    nodes=2,
+    provider=sky.Container(binary="docker"),
     image=sky.Image(pip=["numpy"]),
 ) as compute:
-    result = train(data) >> compute
+    train(data) >> compute
 ```
 
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `image` | `str` | `"ghcr.io/gabfssilva/skyward:py{python_version}"` | Docker image (Python version auto-detected) |
-| `ssh_user` | `str` | `"root"` | SSH user inside the container |
-| `binary` | `str` | `"docker"` | Container runtime (`"docker"`, `"podman"`, `"nerdctl"`) |
-| `container_prefix` | `str or None` | `None` | Prefix for container names |
-| `network` | `str or None` | `None` | Docker network name. Auto-created if not set. |
+Use it for local development and CI. Its provider factory accepts the container image, SSH user, runtime binary, container-name prefix, network, and account name.
 
 ## Choosing a provider
 
-**AWS** — When you need specific hardware (H100, Trainium, Inferentia), spot instance savings, or enterprise reliability. Best if you're already in the AWS ecosystem.
+Choose based on the catalog returned for the account rather than a fixed hardware list. Accelerator names and VRAM are normalized into the shared vocabulary, while provider-specific filters remain in each factory's configuration.
 
-**GCP** — Deep integration with Google Cloud. Deep Learning VM images with pre-installed CUDA drivers, dynamic machine type resolution, fleet-style provisioning via `bulk_insert`. Supports T4, L4, V100, A100, H100, H200.
+- Use AWS or GCP for account-managed infrastructure and broad regional catalogs.
+- Use marketplace providers when price and rapidly changing capacity matter.
+- Use RunPod, VastAI, TensorDock, or similar providers when their networking and capacity model fits the workload.
+- Use Salad for standalone GPU containers. It does not provide the private network required by clustered computes.
+- Use Container before provisioning a cloud account.
 
-**Novita** — Docker-based GPU cloud with automatic CUDA version resolution. SSH through Novita's proxy — no key injection or openssh-server setup. Spot instances available.
+See [Compute and task dispatch](reference/pool.md) for `Spec` alternatives and [Accelerators](accelerators.md) for the shared accelerator vocabulary.
 
-**RunPod** — Fast provisioning, competitive pricing, minimal setup. Both Secure Cloud (dedicated) and Community Cloud (cheaper) tiers. Good for A100/H100/RTX workloads.
+## Provider references
 
-**Hyperstack** — Bare-metal GPU cloud with environment-scoped resource management. On-demand only, regions in Canada, Norway, and US.
-
-**JarvisLabs** — GPU cloud with data centers in India and Finland. Per-minute billing with a prepaid wallet model. Good for A100, H100, H200 workloads. On-demand only.
-
-**Massed Compute** — Bare-metal GPU cloud across US data centers. Wide GPU range from A30 to H200 NVL and RTX PRO 6000 Blackwell. Spot instances on H100, A6000, L40. Per-minute billing, auto-placed regions, all ports open by default.
-
-**Verda** — European data residency (Finland, Iceland, Israel). H100/A100/H200/GB200 availability with automatic region selection.
-
-**TensorDock** — Bare-metal VMs across 100+ locations with per-second billing. Good for RTX 4090, A100, H100 workloads without spot complexity. On-demand only.
-
-**VastAI** — Maximum cost savings through marketplace pricing. Consumer GPUs (RTX 4090, 3090) available alongside datacenter hardware. Overlay networks for multi-node training.
-
-**Scaleway** — European GPU cloud with instances in Paris, Amsterdam, and Warsaw. L4 through H100 SXM and B300. On-demand only, per-hour billing. Good for EU data residency requirements.
-
-**Vultr** — Two modes in one provider: Cloud GPU for fast virtual instances with fractional GPU support, and Bare Metal for dedicated servers with H100, B200, and AMD MI300X/MI355X. Hourly billing, simple API key auth.
-
-**Container** — Local development and CI. Zero cost, instant provisioning. Validates your code end-to-end before deploying to a real provider.
-
-## Common issues
-
-### GCP: "No GCP accelerator matches"
-
-1. Check available accelerators in your zone: `gcloud compute accelerator-types list --filter="zone:us-central1-a"`
-2. Try a different zone — GPU availability varies by zone
-3. Request GPU quota increases in the [Cloud Console](https://console.cloud.google.com/iam-admin/quotas)
-
-### GCP: "Quota exceeded"
-
-1. Check current quotas: `gcloud compute regions describe <region> | grep -A2 GPU`
-2. Request increases for the specific GPU type (e.g., `NVIDIA_T4_GPUS`, `NVIDIA_L4_GPUS`)
-3. Both on-demand and preemptible quotas are separate — check both
-
-### AWS: "No instances available"
-
-1. Try a different region
-2. Use `allocation="spot-if-available"` (the default) to fall back to on-demand
-3. Request a service quota increase in the AWS console
-
-### Verda: "Region not available"
-
-1. The default region is `"FIN-01"` — try a different one or let auto-discovery find capacity
-2. Check your account's region access
-
-### TensorDock: "No hostnodes available"
-
-1. Try a different location or remove the `location` filter
-2. Try a different GPU type — hostnode availability is dynamic
-3. Check marketplace availability at [https://marketplace.tensordock.com](https://marketplace.tensordock.com)
-
-### VastAI: "No offers available"
-
-1. Lower `min_reliability` (e.g., 0.8)
-2. Expand or remove the `geolocation` filter
-3. Try a different accelerator type
-4. Check marketplace availability at [https://cloud.vast.ai/](https://cloud.vast.ai/)
-
----
-
-## Related topics
-
-- [Getting Started](getting-started.md) — Installation and credentials setup
-- [Accelerators](accelerators.md) — Accelerator selection guide
-- [API Reference](reference/pool.md) — Complete API documentation
+- [AWS](reference/providers/aws.md)
+- [GCP](reference/providers/gcp.md)
+- [Hyperstack](reference/providers/hyperstack.md)
+- [JarvisLabs](reference/providers/jarvislabs.md)
+- [Lambda](reference/providers/lambda.md)
+- [Massed Compute](reference/providers/massed-compute.md)
+- [Novita](reference/providers/novita.md)
+- [RunPod](reference/providers/runpod.md)
+- [Salad](reference/providers/salad.md)
+- [Scaleway](reference/providers/scaleway.md)
+- [TensorDock](reference/providers/tensordock.md)
+- [VastAI](reference/providers/vastai.md)
+- [Verda](reference/providers/verda.md)
+- [Vultr](reference/providers/vultr.md)
+- [Container](reference/providers/container.md)

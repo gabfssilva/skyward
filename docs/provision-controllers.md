@@ -1,225 +1,195 @@
-# Provision controllers
+# Reconciliation and provisioning
 
-A fixed-size pool works well when you know in advance how much compute you need. But many workloads don't have that property. A hyperparameter sweep might start with a burst of 200 trials and taper off as early stopping kills the losers. An inference service might see ten requests per second at noon and zero at midnight. A data pipeline might have phases — heavy preprocessing, then light aggregation — where the ideal cluster size changes mid-job.
+Skyward treats capacity as desired state. A Compute definition says which provider and runtime are allowed and how many nodes may be used. The daemon stores that definition, observes the nodes it owns, and repeatedly closes the difference.
 
-Skyward handles this with **elastic pools**: pools whose node count adjusts automatically based on workload pressure. Two controllers make this work — the **autoscaler** and the **reconciler** — and they are designed around a clean separation: the autoscaler is a pure policy engine that decides *how many* nodes are needed, while the reconciler is the actuator that provisions and terminates cloud instances to match that decision. Neither knows about the other's internals. They communicate through a single call: `set_desired(count, reason)`.
+There is no separate submission operation to track. Compute creation writes the resource and wakes reconciliation; node and task events wake the relevant pass again. A periodic daemon tick revisits unsettled resources when an event or deadline was missed.
 
-## Node specification
+## Node bounds
 
-Before diving into elastic pools, it helps to understand the three ways to specify node counts. All three are different expressions of the same underlying type — `sky.Nodes` — a frozen dataclass with three fields: `desired`, `min`, and `max`.
-
-### Fixed pools
-
-The simplest form: an integer. Skyward provisions exactly that many nodes and waits for all of them before the pool becomes operational.
+`nodes` accepts a fixed count, a range, or explicit `sky.Nodes` bounds:
 
 ```python
+import skyward as sky
+
+
 sky.Compute(provider=sky.AWS(), nodes=4)
-```
-
-This is equivalent to `sky.Nodes(desired=4)`. Four nodes are requested, four must be ready before any work starts.
-
-### Partial readiness
-
-Sometimes you want a fixed number of nodes but don't need all of them before starting work. A training run that benefits from 8 nodes can still make progress with 4 — waiting for the last few to boot is wasted time.
-
-```python
-sky.Compute(provider=sky.AWS(), nodes=sky.Nodes(desired=8, min=4))
-```
-
-Skyward provisions 8 nodes but marks the pool as operational when 4 are ready. The remaining nodes join as they come up. Tasks dispatched with `>>` use round-robin across whatever nodes are available; `@` broadcasts to ready nodes and automatically includes latecomers as they appear.
-
-`min` must be `<= desired` in fixed pools (you can't require more ready nodes than you requested). Omitting `min` is the same as `min=desired` — wait for all.
-
-### Elastic pools
-
-Pass a tuple or use `sky.Nodes` with a `max` field. The pool scales between `min` and `max` based on workload pressure.
-
-```python
-# Tuple shorthand
 sky.Compute(provider=sky.AWS(), nodes=(2, 16))
-
-# Explicit form
-sky.Compute(provider=sky.AWS(), nodes=sky.Nodes(desired=2, max=16))
+sky.Compute(provider=sky.AWS(), nodes=sky.Nodes(desired=8, min=4))
+sky.Compute(provider=sky.AWS(), nodes=sky.Nodes(desired=4, min=2, max=16))
 ```
 
-The pool starts with the desired count (2) and grows up to the maximum (16) when demand increases. When workload decreases, it shrinks back — but never below the desired count.
+The forms mean:
 
-### Elastic pools with partial readiness
+| Definition | Lower bound | Upper bound | Readiness |
+|------------|-------------|-------------|-----------|
+| `nodes=4` | 4 | 4 | Four ready nodes |
+| `nodes=(2, 16)` | 2 | 16 | Two ready nodes |
+| `Nodes(desired=8, min=4)` | 4 | 8 | Four ready nodes |
+| `Nodes(desired=4, min=2, max=16)` | 2 | 16 | Two ready nodes |
 
-The two concepts compose naturally. You can set `desired` on an elastic pool to start working before all initial nodes are ready:
+The lower bound is the number of ready nodes required before `status.state` becomes `"ready"`. The upper bound limits demand-driven growth. With no outstanding work, reconciliation retains the lower bound; it does not provision the upper bound merely because it is available.
+
+## Demand and capacity
+
+For a non-collective Compute, the reconciler reads the number of queued and running task attempts and the executor's per-node slot count:
+
+```text
+target = clamp(ceil(outstanding_attempts / slots_per_node), lower, upper)
+```
+
+It then compares `target` with the live node rows. A fixed definition has equal bounds, so demand cannot change its target. An elastic definition grows when queued work requires more free slots and shrinks toward its lower bound after nodes have been idle for `Options.autoscale_idle_timeout`.
+
+The executor determines the denominator:
 
 ```python
-sky.Compute(
+with sky.Compute(
     provider=sky.AWS(),
     nodes=sky.Nodes(desired=4, min=2, max=16),
-)
+    executor=sky.Executor(concurrency=4, buffer=2),
+    options=sky.Options(autoscale_idle_timeout=60),
+) as compute:
+    run_batch() >> compute
 ```
 
-This provisions at least 4 nodes, starts work when 2 are ready, and can scale up to 16. With autoscaling, `min` can be up to `max` — the system will scale to meet the readiness threshold.
+Each ready node has four execution slots in this example. The buffer admits work ahead of the slots and supplies the task-load signal used for growth.
 
-### Summary
+Collective plugins make the world size part of the runtime contract. A Compute using a collective keeps its requested node count fixed while that definition is active; reducing one rank would leave the other ranks waiting for a peer that no longer exists.
 
-| Form | Equivalent `Nodes` | Behavior |
-|------|-------------------|----------|
-| `nodes=4` | `Nodes(desired=4)` | Fixed, wait for all |
-| `nodes=Nodes(desired=8, min=4)` | — | Fixed, start early |
-| `nodes=(2, 16)` | `Nodes(desired=2, max=16)` | Elastic, wait for all desired |
-| `nodes=Nodes(desired=4, min=2, max=16)` | — | Elastic, start early |
+## The reconciliation pass
 
-## Enabling elastic pools
-
-With the node specification covered, the rest of this page focuses on how elastic pools work internally. The two tuning knobs are `autoscale_cooldown` and `autoscale_idle_timeout`:
-
-```python
-sky.Compute(
-    provider=sky.AWS(),
-    nodes=(2, 16),
-    autoscale_cooldown=30.0,         # minimum seconds between scaling decisions
-    autoscale_idle_timeout=60.0,     # seconds of idleness before scaling down
-    reconcile_tick_interval=15.0,    # seconds between drift-check ticks
-)
-```
-
-`autoscale_cooldown` prevents rapid oscillation — the autoscaler won't change its mind more than once every 30 seconds. `autoscale_idle_timeout` controls how patient the system is before releasing idle capacity — a cluster with no inflight tasks must stay idle for 60 seconds before the autoscaler decides to shrink it. `reconcile_tick_interval` sets how often the reconciler checks for drift between the desired and actual cluster size — lower values detect failures faster but add more overhead.
-
-## The autoscaler
-
-The autoscaler receives **pressure reports** from the task manager and translates them into scaling decisions. A pressure report is a snapshot of the task manager's state: how many tasks are queued, how many are currently running, what the total capacity is, and how many nodes exist. The task manager emits a report on every state change — task submitted, task completed, node added, node removed — so the autoscaler always has a current picture.
-
-The scaling logic is a pure function. It takes the current pressure, the current desired count, and the configuration parameters, and returns a new desired count. No cloud API calls, no side effects, no internal state beyond what's passed in. This makes the algorithm trivially testable — and trivially replaceable, if you ever need a different policy.
-
-### The decision tree
-
-The autoscaler evaluates these conditions in priority order:
-
-**Scale up — queued tasks.** If tasks are waiting in the queue with no available slots, the cluster needs to grow. The autoscaler computes how many additional nodes would be needed to drain the queue (`ceil(queued / slots_per_node)`) and adds that many to the current count, capped at `max_nodes`. This is the only condition that scales aggressively — it reacts immediately to demand rather than waiting for a cooldown cycle.
-
-**Scale down — fully idle.** If no tasks are running (`inflight == 0`) and the cluster has been idle for longer than `autoscale_idle_timeout`, collapse to `min_nodes`. This is the steady-state response: when there's genuinely no work, release everything that isn't in the minimum set.
-
-**Scale down — low utilization.** If there's no queue but utilization is below 30%, the cluster is over-provisioned for the current workload. The autoscaler computes the minimum number of nodes that would handle the current inflight tasks (`ceil(inflight / slots_per_node) + 1`, with a +1 buffer) and scales down to that. This catches the case where a burst of work has finished but a trickle remains — you don't need 16 nodes for 3 running tasks.
-
-**Steady state.** If none of the above conditions are met, the desired count stays the same. The cluster is appropriately sized for its current workload.
-
-### Cooldown and the timer tick
-
-Two mechanisms prevent the autoscaler from thrashing:
-
-The **cooldown window** (default 30 seconds) suppresses decisions. If the last scaling action was less than `cooldown` seconds ago, incoming pressure reports are stored but not acted upon. This gives the cluster time to absorb the effects of a previous scaling decision — new nodes need time to boot, and tasks need time to migrate — before the autoscaler re-evaluates.
-
-The **timer tick** fires every `cooldown` seconds and replays the most recent pressure report. This is essential for scale-down: if the cluster becomes idle and no new tasks arrive, there are no pressure reports to trigger a re-evaluation. The tick ensures that the "fully idle" condition is eventually detected even in the absence of new activity. Without it, an idle cluster would stay at its current size forever.
-
-## The reconciler
-
-The reconciler translates the autoscaler's decisions into infrastructure changes. It tracks three sets of nodes — `current` (active and healthy), `pending` (provisioning in flight), and `draining` (being removed) — and progresses through three states to bring the actual cluster size in line with the desired count.
+The reconciler reads the store rather than relying on in-memory history. A pass is safe to repeat after a crash or a duplicate wakeup.
 
 ```mermaid
-graph LR
-    watching["<b>watching</b><br/>monitoring for changes"]
-    scaling_up["<b>scaling_up</b><br/>provisioning in flight"]
-    draining["<b>draining</b><br/>removing excess nodes"]
-
-    watching -- "desired > effective" --> scaling_up
-    watching -- "desired < current" --> draining
-    scaling_up -- "provision complete" --> watching
-    scaling_up -- "still need more" --> scaling_up
-    draining -- "all nodes drained" --> watching
-    draining -- "desired increased" --> watching
-    draining -- "desired increased" --> scaling_up
+stateDiagram-v2
+    [*] --> requested
+    requested --> provisioning: node rows are requested
+    provisioning --> connecting: provider returns a machine
+    connecting --> bootstrapping: SSH connects
+    bootstrapping --> ready: runtime reports ready
+    ready --> draining: capacity is no longer needed
+    draining --> deleting: no execution is held
+    deleting --> deleted: provider confirms termination
+    ready --> lost: machine disappears
+    lost --> deleting: cleanup is requested
+    bootstrapping --> failed: bootstrap cannot complete
+    provisioning --> failed: provider cannot launch
 ```
 
-The key metric is **effective count**: `len(current) + len(pending)`. Nodes that are still booting count toward the total, which prevents the reconciler from over-provisioning while instances are starting up.
+The pass performs these decisions:
 
-### Watching
+1. If the Compute is already deleted, it does nothing.
+2. If its lease is abandoned and `delete_on_exit=True`, it changes the desired state to deleted.
+3. It asks the provider adapter to resolve the machines behind existing node rows.
+4. It calculates the target count from bounds and outstanding work.
+5. It creates `requested` node rows for a deficit.
+6. It marks idle surplus nodes as `draining`.
+7. It re-offers requested, connecting, bootstrapping, ready, lost, failed, and deleting rows to the component responsible for the next transition.
+8. It writes the observed Compute status and generation progress.
 
-The default state. The reconciler monitors for three kinds of events:
+Rows are created before provider side effects. A node that is already requested or launching counts toward the desired capacity, so another pass does not launch a duplicate machine.
 
-- **`set_desired`** — The autoscaler decided the cluster should be a different size. If the desired count exceeds the effective count, transition to `scaling_up`. If it's less than the current count, transition to `draining`. Otherwise, nothing to do.
-- **`node_lost`** — A node died (spot preemption, network failure, crash). Remove it from the active set and, if the cluster is now below the desired count, transition to `scaling_up`.
-- **`node_joined`** — A previously pending node finished booting and is now active. Move it from `pending` to `current`.
+## Provider and machine control
 
-### Scaling up
+The reconciler does not call a cloud SDK directly. `Machines` resolves the provider account and owns provider-specific infrastructure:
 
-The reconciler asks the pool to scale up (`pool.scale_up(count)`), which provisions instances and spawns a `Node` for each; the reconciler moves their IDs into the `pending` set, and checks whether the effective count now meets the desired count. If not — because the desired count changed mid-flight, or because the provider returned fewer instances than requested — it issues another provision call. Once the effective count meets or exceeds the desired count, it returns to `watching`.
+```mermaid
+flowchart LR
+    Reconciler -->|requested node| Machines
+    Machines -->|offer and initialize| Provider[Provider adapter]
+    Provider -->|machine id and address| Machines
+    Machines --> Connector
+    Connector -->|SSH, bootstrap, runtime| Node[Node]
+    Node -->|observed state| Reconciler
+```
 
-If provisioning fails (cloud quota exceeded, API error, transient failure), the reconciler logs the error and returns to `watching`. It doesn't retry immediately — the reconcile tick (described below) will catch the drift and try again on the next cycle. This avoids hammering a failing API.
+The adapter may create shared infrastructure such as a network, security group, keypair, or container network. The binding is persisted with the Compute because the daemon may restart or a later process may attach to the resource.
 
-### Draining
+When the provider reports a machine as gone, the corresponding node becomes `lost`. The reconciler deletes the old node after cleanup and creates a replacement if the Compute still needs the capacity. Provider calls are written to tolerate retries and already-completed operations.
 
-When the cluster needs to shrink, the reconciler selects victim nodes — highest ID first — and asks the pool to drain them. Node 0 (the head node) is explicitly excluded from victim selection, because distributed training frameworks depend on the head node's address for coordination.
+## Connection and readiness
 
-Draining is **cooperative**. The reconciler calls `pool.drain_nodes(...)`, which removes each node from the task manager's rotation (so no new tasks are dispatched to it) and reports back `drain_complete`. For each drained node, the pool issues `provider.terminate` to destroy the cloud instance. Termination is fire-and-forget — the reconciler doesn't wait for the cloud API to confirm the instance is gone.
+`Connector` is responsible for the live connection that cannot be stored in SQLite. It reconnects every node whose row says it is connecting, bootstrapping, or ready. This is required after a daemon restart and when a second process attaches to a Compute created elsewhere.
 
-If the desired count increases while draining is in progress (new tasks arrived, the autoscaler changed its mind), the reconciler can abort the drain. It clears the draining set and, if the new desired count exceeds the effective count, transitions directly to `scaling_up`. This means the system responds to new demand even in the middle of scaling down.
+The connector waits until the current cohort has addresses before starting the runtime. The runtime receives the rank-ordered peer list, image, plugins, executor settings, user-code blob, and mounted volumes. It reports bootstrap phases and readiness back to the control plane.
 
-### The reconcile tick
+The Compute becomes ready when the number of ready nodes reaches the lower bound. The remaining nodes may join later if the target count is higher. A task broadcast is admitted against the ready set at submission; later nodes do not receive executions for that task.
 
-Periodically (every `reconcile_tick_interval` seconds — 15 by default), the reconciler checks for **drift**: is the effective count below the desired count? If so, it initiates a scale-up. This is the self-healing mechanism — if a provisioning call failed, if a node crashed between ticks, if the cloud provider returned fewer instances than requested, the tick catches the discrepancy and corrects it. The reconciler doesn't need explicit retry logic because the tick provides implicit, periodic retries.
+## Dispatch and scale-up
 
-## Always-on reconciliation
-
-The reconciler is spawned for **every** pool — not just elastic ones. In a fixed-size pool (`nodes=4`), the reconciler starts with `desired = max = 4` and the autoscaler is never created. No `set_desired` calls arrive, so the reconciler stays in the `watching` state permanently.
-
-But the reconcile tick still fires, and `node_lost` notifications still arrive. If a node dies in a fixed pool, the reconciler detects that the effective count (3) is below the desired count (4) and provisions a replacement. The pool self-heals without any elastic configuration — the reconciliation loop handles node replacement as a natural consequence of keeping `effective == desired`.
-
-Partial-readiness pools (those with `min` set) work the same way. The reconciler doesn't know about the readiness threshold — that's the pool's concern. The pool transitions to operational when `min` nodes are ready, and the reconciler continues provisioning the remaining nodes in the background. From the reconciler's perspective, it's just a normal fixed or elastic pool converging toward its target count.
-
-## How they interact
-
-The full interaction involves four components: the **task manager** observes workload pressure, the **autoscaler** decides the right cluster size, the **reconciler** makes it happen, and the **pool** manages node lifecycles.
+The dispatcher places work only on ready nodes with free slots. A queued task stays queued when no slot is available. That queue is visible to the reconciler and can cause the target count to grow within the configured upper bound.
 
 ```mermaid
 sequenceDiagram
-    participant TM as Task Manager
-    participant AS as Autoscaler
-    participant RC as Reconciler
-    participant Pool as Pool
-    participant Cloud as Cloud Provider
+    participant User
+    participant API
+    participant Reconciler
+    participant Dispatcher
+    participant Node
 
-    Note over TM: tasks accumulate in queue
-
-    TM->>AS: PressureReport(queued=12, inflight=4, capacity=8)
-    AS->>AS: compute_desired() → 6 nodes
-    AS->>RC: set_desired(6)
-    RC->>Pool: scale_up(2)
-    Pool->>Cloud: provision(cluster, 2)
-    Cloud-->>Pool: 2 new instances
-    Pool->>Pool: spawn nodes 4, 5
-
-    Note over Pool: nodes boot, bootstrap, join
-
-    Pool->>RC: node_joined(4)
-    Pool->>RC: node_joined(5)
-    Pool->>TM: node_available(4)
-    Pool->>TM: node_available(5)
-
-    Note over TM: queue drains with more capacity
-
-    TM->>AS: PressureReport(queued=0, inflight=2, capacity=12)
-
-    Note over AS: idle for 60s, tick fires
-
-    AS->>RC: set_desired(2)
-    RC->>Pool: drain_nodes({5, 4, 3, 2})
-    Pool-->>RC: drain_complete(5), drain_complete(4), drain_complete(3), drain_complete(2)
-    Pool->>Cloud: terminate instances
+    User->>API: POST /v1/tasks
+    API-->>User: persisted task
+    API->>Reconciler: task.changed
+    Reconciler->>Reconciler: read outstanding load
+    Reconciler->>Dispatcher: compute.dispatch
+    Dispatcher->>Node: assign execution
+    Node-->>Dispatcher: result
+    Dispatcher->>API: task.succeeded or task.failed
 ```
 
-The flow is fully event-driven. The task manager doesn't know about the autoscaler — it just emits pressure reports to whoever registers as an observer. The autoscaler doesn't know about the cloud provider — it just tells the reconciler what the desired count should be. The reconciler doesn't know about task scheduling — it just brings the infrastructure in line with the desired count. Each component has a single, well-defined responsibility, and communication happens through narrow, typed interfaces (`Protocol` classes).
+When a task finishes, the dispatcher wakes reconciliation and dispatch again. The daemon tick also re-offers queued work after a restart or lost event.
 
-## Design decisions
+## Drain and scale-down
 
-**Policy and mechanism are separate.** The autoscaler is a pure function wrapped in a thin class. It has no cloud SDK dependency, no async I/O, no state beyond a few numbers. The reconciler does all the infrastructure work. This means you can reason about scaling policy by reading a single function (`_compute_desired`), and you can reason about infrastructure orchestration by reading the reconciler's state machine — without either concern polluting the other.
+When the target is below the number of live nodes, the reconciler marks idle nodes as `draining`. A draining node is removed from new task placement but remains available until executions already assigned to it finish. Once it holds no work, the connector disconnects and `Machines` asks the provider to terminate it.
 
-**Pending nodes count toward effective.** When the reconciler calls `provision()`, the new node IDs are added to the `pending` set and counted in the effective total. This prevents the autoscaler from seeing a gap (desired 6, effective 4) and triggering another provision call while the first batch is still booting. Over-provisioning wastes money; counting pending nodes prevents it.
+Compute deletion skips the idle wait: its desired node count becomes zero and all nodes are drained and terminated. The Compute reaches `status.state="deleted"` only after provider resources and shared infrastructure have been released.
 
-**The head node is protected.** Drain victim selection sorts nodes by ID in descending order and explicitly excludes node 0. This guarantees that the head node — whose address is used as `MASTER_ADDR` for distributed training frameworks — survives any scale-down event. Removing the head mid-training would break every framework's coordination protocol.
+## Generations and drift
 
-**Drains are abortable.** If the autoscaler raises the desired count while a drain is in progress, the reconciler clears the draining set and scales up immediately. This avoids the pathological case where the system scales down and immediately scales back up — the in-progress drain is simply cancelled, and the surviving nodes absorb the new work.
+The API treats the Compute definition as versioned state. A `PATCH` can change `spec.nodes` in place and creates a new generation for the resize. Other definition fields are immutable in place. Changing the provider, image, executor, plugins, volumes, or ports is recorded as drift rather than silently replacing machines.
 
-**The reconcile tick provides implicit retries.** Rather than implementing explicit retry logic with exponential backoff, the reconciler checks for drift every `reconcile_tick_interval` seconds (default 15). If a provision call fails, the next tick detects that `effective < desired` and tries again. This is simpler, more robust, and naturally rate-limited.
+To apply a changed immutable definition, create a new generation:
+
+```text
+POST /v1/computes/{id}/generations
+```
+
+The generation operation drains and replaces the old infrastructure under the same Compute id. Without `force`, active executions prevent replacement. With `force`, unresolved executions become `indeterminate` before the replacement proceeds.
+
+Revisions protect concurrent changes. Reads return an `ETag`; writes send it back as `If-Match`. Idempotency keys make repeated create, delete, and generation requests safe to retry.
+
+## Leases and abandoned resources
+
+A lease records which client process is actively using a Compute. The SDK claims it after creating or attaching and renews it in the background:
+
+```python
+with sky.Compute(
+    provider=sky.AWS(),
+    name="long-running",
+    delete_on_exit=False,
+) as compute:
+    train() >> compute
+```
+
+Releasing the lease is a detach, not a delete. A process that stops renewing leaves the Compute ownerless. If its definition has `delete_on_exit=True`, the reconciler eventually marks it for deletion; if false, it remains available to `Compute.attached()`.
+
+## Events and recovery
+
+Controller writes emit wakeups, and lifecycle transitions are recorded in the event store. The event stream is not the source of truth: the reconciler and dispatcher reread persistence on each pass.
+
+Recorded events have a global sequence and are replayed by `GET /v1/events`. Clients use `Last-Event-ID` to resume. A live metric sample may be published without a row because a gauge has no replay value.
+
+This division gives the daemon restart behavior without an outbox protocol:
+
+- persisted node rows tell the connector which runtimes to reattach;
+- persisted in-flight executions tell the dispatcher which outcomes to query;
+- persisted task deadlines are checked by the periodic tick;
+- persisted Compute definitions let the reconciler rebuild missing capacity;
+- persisted events let SDK clients reconstruct the lifecycle they missed.
 
 ## Further reading
 
-- **[Core Concepts](concepts.md)** — Lazy computation, operators, and the pool lifecycle
-- **[Architecture](architecture.md)** — The two planes and cluster formation
-- **[Providers](providers.md)** — Cloud provider configuration and protocols
+- [Core concepts](concepts.md) — Public Python API and resource semantics
+- [Architecture](architecture.md) — Control-plane components and node runtime
+- [Events](reference/events.md) — Event filters and replay
+- [Providers](providers.md) — Provider accounts and offers

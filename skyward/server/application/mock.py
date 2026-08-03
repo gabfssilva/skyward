@@ -271,6 +271,9 @@ class MockProviders:
     async def create(self, body: ProviderCreate) -> Provider:
         return PROVIDER
 
+    async def update(self, ref: str, body: ProviderCreate) -> Provider:
+        return PROVIDER
+
     async def get(self, ref: str) -> Provider:
         return PROVIDER
 

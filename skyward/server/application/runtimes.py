@@ -13,7 +13,6 @@ believe they were the one bootstrapping it.
 from __future__ import annotations
 
 import asyncio
-import logging
 import shlex
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
@@ -25,10 +24,11 @@ from skyward.server.application.node import DEFAULT_OPTIONS, Node
 from skyward.server.application.ports import Route, Target
 from skyward.server.application.source import Source
 from skyward.server.application.ssh import Channel, Result
+from skyward.shared.observability import logger
 from skyward.shared.provider import Machine
 from skyward.shared.schemas import Executor, Image, NodeState, Options, PluginRef
 
-logger = logging.getLogger(__name__)
+logger = logger.bind(component="runtimes")
 
 type Listener = Callable[[str, str, NodeState, str | None], None]
 """(compute, node, state, error)"""

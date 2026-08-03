@@ -116,7 +116,7 @@ if __name__ == "__main__":
 
     with sky.Compute(
         provider=sky.Container(),
-        vcpus=4,
+        cpus=4,
         memory_gb=2,
         image=sky.Image(
             pip=[f"torch=={TORCH_VERSION}"],

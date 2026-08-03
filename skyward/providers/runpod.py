@@ -68,17 +68,17 @@ long as it takes."""
 
 ENTRYPOINT = (
     DEADSWITCH
-    + "{ [ -x /usr/sbin/sshd ] || ("
+    + "([ -x /usr/sbin/sshd ] || ("
     "apt-get -o DPkg::Lock::Timeout=-1 update && "
     "DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=-1 "
     "install -y --no-install-recommends openssh-server"
-    "); "
-    "mkdir -p /run/sshd ~/.ssh; "
-    'echo "$PUBLIC_KEY" >> ~/.ssh/authorized_keys; '
-    "chmod 700 ~/.ssh; chmod 600 ~/.ssh/authorized_keys; "
-    "ssh-keygen -A; "
-    'sed -i "s/#PermitRootLogin.*/PermitRootLogin yes/" /etc/ssh/sshd_config; '
-    "/usr/sbin/sshd; }; sleep infinity"
+    ")) && "
+    "mkdir -p /run/sshd ~/.ssh && "
+    'echo "$PUBLIC_KEY" >> ~/.ssh/authorized_keys && '
+    "chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && "
+    "ssh-keygen -A && "
+    'sed -i "s/#PermitRootLogin.*/PermitRootLogin yes/" /etc/ssh/sshd_config && '
+    "/usr/sbin/sshd && sleep infinity"
 )
 
 
@@ -94,7 +94,7 @@ class RunPodProvider:
     offers_ttl: ClassVar[timedelta] = timedelta(minutes=10)
 
     def allows_cluster_formation(self, spec: ComputeSpec, offer: Offer) -> bool:
-        return self._config.get("global_networking") is not False
+        return offer.specific.get("cloud_type") != "COMMUNITY" and self._config.get("global_networking") is True
 
     def __init__(self, provider_id: str, name: str, api_key: str, config: Mapping[str, Any]) -> None:
         self._id = provider_id

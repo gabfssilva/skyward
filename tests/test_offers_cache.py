@@ -4,15 +4,15 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from litestar.testing import AsyncTestClient
 
-from skyward.shared.errors import CapabilityMismatchError, NotFoundError
+from skyward.providers.fake import CATALOG, FakeProvider
+from skyward.providers.registry import REGISTRY
+from skyward.server.http.app import create_app, with_real
 from skyward.server.persistence.db import connect
 from skyward.server.persistence.offers import OfferCache
 from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.tables import OfferRow, ProviderRow
+from skyward.shared.errors import CapabilityMismatchError, NotFoundError
 from skyward.shared.schemas import ProviderCreate
-from skyward.providers.registry import REGISTRY
-from skyward.providers.fake import CATALOG, FakeProvider
-from skyward.server.http.app import create_app, with_real
 
 
 @pytest.fixture
@@ -174,6 +174,20 @@ async def test_deleting_a_provider_drops_its_offers(store, cache):
     assert await OfferRow.count().where(OfferRow.provider_id == provider.id) == 0
     with pytest.raises(NotFoundError):
         await store.get("local")
+
+
+async def test_updating_a_provider_replaces_its_config_and_invalidates_its_offers(store, cache):
+    provider = await store.create(ProviderCreate(name="local", kind="fake", config={"region": "old"}))
+    await cache.list(None, None, None, None, None, None, refresh=False)
+
+    updated = await store.update(
+        "local",
+        ProviderCreate(name="local", kind="fake", config={"region": "new"}),
+    )
+
+    assert updated.id == provider.id
+    assert updated.config == {"region": "new"}
+    assert await OfferRow.count().where(OfferRow.provider_id == provider.id) == 0
 
 
 async def test_the_whole_path_over_http(tmp_path):

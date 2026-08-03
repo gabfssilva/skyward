@@ -54,7 +54,7 @@ The Container provider supports `nodes > 1`. Each node becomes a separate contai
 --8<-- "guides/11_local_containers.py:55:63"
 ```
 
-Each container gets its own `instance_info()` with the correct `node`, `total_nodes`, and `is_head` values. `sky.shard()` works as expected — each node processes its portion of the data. This is the same behavior you'd see on a 3-node AWS cluster, just running on `localhost`.
+Each container gets its own `instance_info()` with the correct `node`, `nodes`, and `is_head` values. `sky.shard()` works as expected — each node processes its portion of the data. This is the same behavior you'd see on a 3-node AWS cluster, just running on `localhost`.
 
 ## Configuration
 
@@ -72,13 +72,13 @@ sky.Container(
 - `binary` — The container runtime. Useful for environments where Docker isn't available (Podman in rootless mode, nerdctl with containerd).
 - `network` — By default, each pool creates its own isolated Docker network and tears it down on exit. If you set a shared network name, multiple concurrent pools reuse the same network — useful when running parallel test suites.
 
-Resource limits (`vcpus` and `memory_gb`) are set on the pool, not the provider:
+Resource limits (`cpus` and `memory_gb`) are set on the compute, not the provider:
 
 ```python
 sky.Compute(
     provider=sky.Container(),
     nodes=2,
-    vcpus=1,
+    cpus=1,
     memory_gb=1,
 )
 ```
@@ -100,7 +100,7 @@ def pool():
     with sky.Compute(
         provider=sky.Container(network="skyward-ci"),
         nodes=2,
-        vcpus=1,
+        cpus=1,
         memory_gb=1,
     ) as p:
         yield p

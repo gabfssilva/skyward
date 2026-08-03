@@ -10,8 +10,8 @@ underneath is ``logging``::
     log.info("started {n} nodes", n=4)
 
 Every record goes to one non-propagating logger of its own, so adding a sink here
-cannot disturb whatever logging the host application has already set up, and the
-daemon's ``skyward.*`` loggers keep reaching it. Bound fields ride on the record
+cannot disturb whatever logging the host application has already set up, and
+nothing the daemon logs leaks into it. Bound fields ride on the record
 as ``extras``, out of reach of the reserved
 ``LogRecord`` attributes, and a patcher may fold them into the formatted line.
 """
@@ -33,18 +33,26 @@ logging.addLevelName(TRACE, "TRACE")
 NAME = "skyward.log"
 """The logger every record here goes to.
 
-Deliberately not ``skyward``: the daemon logs through ``skyward.server.http.*`` and
-friends with the standard library, and a non-propagating logger at ``skyward``
-would swallow their records on the way to whatever the host application
-configured. This one is nobody's ancestor.
+Deliberately not ``skyward``: a non-propagating logger at ``skyward`` would be an
+ancestor of every ``skyward.*`` logger the host application or a library happens to
+own, and would swallow their records on the way to whatever they configured. This
+one is nobody's ancestor.
 """
 
 _root = logging.getLogger(NAME)
 
 type Patcher = Callable[[logging.LogRecord], None]
 
-_FORMAT = "%(asctime)s.%(msecs)03d | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d%(_ctx)s - %(message)s"
+_FORMAT = "%(asctime)s.%(msecs)03d | %(levelname)-8s | %(module)s:%(funcName)s:%(lineno)d%(_ctx)s - %(message)s"
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def _exception(value: object) -> BaseException | bool:
+    match value:
+        case BaseException() as exc:
+            return exc
+        case _:
+            return bool(value)
 
 
 def _format(message: str, args: tuple[object, ...], kwargs: Mapping[str, object]) -> str:
@@ -75,7 +83,7 @@ class Logger:
         return self._fields
 
     def _log(self, level: int, message: str, args: tuple[object, ...], kwargs: dict[str, object]) -> None:
-        exc_info = bool(kwargs.pop("exc_info", False))
+        exc_info = _exception(kwargs.pop("exc_info", False))
         if not _root.isEnabledFor(level):
             return
         _root.log(

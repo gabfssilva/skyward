@@ -1,6 +1,6 @@
 # Hello, Skyward!
 
-This guide walks you through running your first function on a remote cloud instance. By the end, you'll understand the three core ideas in Skyward: compute functions, pools, and the `>>` operator — and what happens behind the scenes when you combine them.
+This guide walks you through running your first function on a remote cloud instance. By the end, you'll understand the three core ideas in Skyward: compute functions, `Compute`, and the `>>` operator — and what happens behind the scenes when you combine them.
 
 ## The compute function
 
@@ -10,9 +10,9 @@ Any Python function can run on the cloud. The only change is adding the `@sky.fu
 --8<-- "guides/01_hello_skyward.py:6:19"
 ```
 
-This decorator doesn't execute anything. Calling `add(2, 3)` no longer returns `5` — it returns a `PendingFunction[int]`, a frozen description of the computation. The arguments are captured, the function is recorded, but nothing runs. This is **lazy computation**: you're building a description of work, not performing it. The actual execution — serializing the function, sending it to a remote machine, running it there — doesn't happen until you dispatch the computation with an operator like `>>`.
+This decorator doesn't execute anything. Calling `add(2, 3)` no longer returns `5` — it returns a `Pending[int]`, a frozen description of the computation. The arguments are captured, the function is recorded, but nothing runs. This is **lazy computation**: you're building a description of work, not performing it. The actual execution — serializing the function, sending it to a remote machine, running it there — doesn't happen until you dispatch the computation with an operator like `>>`.
 
-This design means `PendingFunction` is a value you can pass around, compose with other computations, or store for later. It's also what makes remote execution possible: because the computation is a data structure rather than a running process, it can be serialized with cloudpickle, sent over the network, and executed on a different machine.
+This design means `Pending` is a value you can pass around, compose with other computations, or store for later. It's also what makes remote execution possible: because the computation is a data structure rather than a running process, it can be serialized with cloudpickle, sent over the network, and executed on a different machine.
 
 ## The pool
 
@@ -36,17 +36,18 @@ result = add(2, 3) >> pool
 
 This single expression triggers the full execution pipeline. The pool serializes the function and its arguments using cloudpickle (compressed with zlib), sends the payload to the remote worker over the SSH tunnel, the worker deserializes and executes `add(2, 3)`, and the result — `5` — is serialized back and returned to your local process. From your perspective, it looks like a normal function call that happens to return from a remote machine.
 
-The generic type flows through the entire chain: `add(2, 3)` produces `PendingFunction[int]`, and `>> pool` returns `int`. Your type checker sees the correct types whether the function runs locally or on a cloud GPU.
+The generic type flows through the entire chain: `add(2, 3)` produces `Pending[int]`, and `>> pool` returns `int`. Your type checker sees the correct types whether the function runs locally or on a cloud GPU.
 
 ## Local execution
 
-During development, you often want to test a compute function without provisioning any infrastructure. Every `@sky.function` function exposes the original, unwrapped version via `.local`:
+During development, use the `Container` provider to run the same dispatch path without cloud credentials:
 
 ```python
-result = add.local(2, 3)  # executes immediately, returns 5
+with sky.Compute(provider=sky.Container()) as compute:
+    result = add(2, 3) >> compute
 ```
 
-This bypasses the lazy computation entirely — no `PendingFunction`, no serialization, no pool required. It's useful for unit testing, debugging, and local profiling.
+The function remains lazy; the container provides the local worker and exercises serialization and dispatch.
 
 ## Run the full example
 
@@ -60,7 +61,7 @@ uv run python guides/01_hello_skyward.py
 
 **What you learned:**
 
-- **`@sky.function`** transforms a function into a lazy `PendingFunction` — calling it captures the computation without executing it.
+- **`@sky.function`** transforms a function into a lazy `Pending` — calling it captures the computation without executing it.
 - **`Compute`** provisions cloud instances on enter and tears them down on exit — ephemeral, scoped infrastructure.
 - **`>>`** dispatches a computation to the pool: serialize, send, execute remotely, return the result.
 - **`.local`** bypasses remote execution for testing and debugging.

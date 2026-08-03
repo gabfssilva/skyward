@@ -10,9 +10,9 @@ Define a compute function that uses `shard()` to get its portion of the data:
 --8<-- "guides/03_broadcast.py:6:17"
 ```
 
-The function receives the *full* dataset as its argument, but `shard()` returns only the portion assigned to the current node. This means the serialization cost is paid once (the full dataset is sent to every node), but each node processes a different slice. The sharding is automatic — `shard()` reads the node's position from `instance_info()` and uses modulo striding (`indices[node::total_nodes]`) to divide the data evenly.
+The function receives the *full* dataset as its argument, but `shard()` returns only the portion assigned to the current node. Each node processes a different contiguous slice. With `shuffle=True`, Skyward applies the same deterministic permutation on every node before taking its slice.
 
-`instance_info()` returns an `InstanceInfo` with the node's index, the total cluster size, whether it's the head node, and the addresses of all peers. This is how the function knows where it sits in the cluster without any explicit configuration.
+`instance_info()` returns an `Info` with the node id, its `rank`, the number of `nodes`, whether it is the head node, and the addresses of all `peers`. This is how the function knows where it sits in the cluster without explicit configuration.
 
 ## Broadcasting with `@`
 
@@ -49,6 +49,6 @@ uv run python guides/03_broadcast.py
 **What you learned:**
 
 - **`@` operator** broadcasts a function to every node in the pool, returning `list[T]`.
-- **`shard()`** divides data for the current node — each node processes its own slice of the full dataset.
-- **`instance_info()`** provides the node's identity: index, total count, head status, peer addresses.
+- **`shard()`** takes a contiguous slice for the current node; `shuffle=True` permutes before splitting.
+- **`instance_info()`** provides the node identity: id, rank, `nodes`, head status, and peer addresses.
 - **Map-reduce pattern** — broadcast + shard inside + aggregate locally — is the foundation for distributed computation.

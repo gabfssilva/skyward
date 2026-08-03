@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from typing import Protocol, TextIO
+from typing import Literal, Protocol, TextIO, assert_never
 
 import msgspec
 
@@ -30,6 +30,8 @@ log renders neither, and it has to say so before it decodes rather than after â€
 a payload it cannot read is not a reason to stop reading the stream.
 """
 
+type ConsoleMode = Literal["rich", "log"]
+
 
 class Follower(Protocol):
     """Whatever is watching the pool: the line log, or the live panel above it."""
@@ -37,21 +39,28 @@ class Follower(Protocol):
     async def follow(self) -> None: ...
 
 
-def watcher(client: Client, compute: str, out: TextIO | None = None) -> Follower:
-    """The richest view the terminal can hold.
-
-    The panel needs a terminal to pin itself to and a keyboard's terminal to read
-    from, and it needs the extra installed. Missing any of the three, the pool
-    still says everything â€” one line at a time, which is what a pipe wanted anyway.
-    """
+def watcher(
+    client: Client,
+    compute: str,
+    out: TextIO | None = None,
+    *,
+    mode: ConsoleMode = "rich",
+) -> Follower:
+    """Select the Rich live view or the line log."""
     stream = out or sys.stderr
-    if stream.isatty() and sys.stdin.isatty():
-        try:
-            from skyward.core.live import Dashboard
-        except ImportError:
+    match mode:
+        case "log":
             return Console(client, compute, out)
-        return Dashboard(client, compute, out)
-    return Console(client, compute, out)
+        case "rich":
+            if stream.isatty():
+                try:
+                    from skyward.core.live import RichConsole
+                except ImportError:
+                    return Console(client, compute, out)
+                return RichConsole(client, compute, out)
+            return Console(client, compute, out)
+        case _ as unreachable:
+            assert_never(unreachable)
 
 RESET = "\033[0m"
 DIM = "\033[2m"

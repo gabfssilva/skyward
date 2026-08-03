@@ -59,6 +59,9 @@ from skyward.shared.schemas import (
     Options as OptionsRef,
 )
 from skyward.shared.schemas import (
+    Provider as ProviderView,
+)
+from skyward.shared.schemas import (
     Spec as SpecRef,
 )
 from skyward.shared.schemas import (
@@ -398,8 +401,14 @@ class Compute:
         ``Compute(provider=Container())`` enough on a store that has never seen one.
         """
         for provider in self._providers.values():
+            body = ProviderCreate(
+                name=provider.name,
+                kind=provider.kind,
+                credentials=dict(provider.credentials),
+                config=dict(provider.config),
+            )
             try:
-                await self.client.call("GET", f"/v1/providers/{provider.name}", dict[str, object])
+                existing = await self.client.call("GET", f"/v1/providers/{provider.name}", ProviderView)
             except SkywardError as error:
                 if error.code != "not_found":
                     raise
@@ -407,15 +416,17 @@ class Compute:
                     "POST",
                     "/v1/providers",
                     dict[str, object],
-                    body=msgspec.json.encode(
-                        ProviderCreate(
-                            name=provider.name,
-                            kind=provider.kind,
-                            credentials=dict(provider.credentials),
-                            config=dict(provider.config),
-                        ),
-                    ),
+                    body=msgspec.json.encode(body),
                 )
+            else:
+                config = msgspec.json.decode(msgspec.json.encode(provider.config), type=dict[str, object])
+                if existing.kind != provider.kind or existing.config != config:
+                    await self.client.call(
+                        "PUT",
+                        f"/v1/providers/{provider.name}",
+                        dict[str, object],
+                        body=msgspec.json.encode(body),
+                    )
 
     async def _upload_includes(self) -> None:
         """Pack the local code the image asks for, and store it where the node can reach it.

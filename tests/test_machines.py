@@ -18,20 +18,20 @@ from pathlib import Path
 import msgspec
 import pytest
 
-from skyward.server.application import machines as machines_module
-from skyward.shared.errors import CapabilityMismatchError
-from skyward.server.application.machines import Machines
-from skyward.shared.provider import Binding, Machine, Provider
-from skyward.server.persistence.computes import ComputeStore, Infrastructure
-from skyward.server.persistence.db import connect
-from skyward.server.persistence.nodes import NodeStore
-from skyward.shared.schemas import ComputeCreate, ComputeSpec, Market, NodeBounds, Offer, Options, Page, ProviderRef, Spec
 from skyward.providers.jarvislabs import JarvisLabsProvider
 from skyward.providers.massed_compute import MassedComputeProvider
 from skyward.providers.novita import NovitaProvider
 from skyward.providers.runpod import RunPodProvider
 from skyward.providers.tensordock import TensorDockProvider
 from skyward.providers.vastai import VastAIProvider
+from skyward.server.application import machines as machines_module
+from skyward.server.application.machines import Machines
+from skyward.server.persistence.computes import ComputeStore, Infrastructure
+from skyward.server.persistence.db import connect
+from skyward.server.persistence.nodes import NodeStore
+from skyward.shared.errors import CapabilityMismatchError
+from skyward.shared.provider import Binding, Machine, Provider
+from skyward.shared.schemas import ComputeCreate, ComputeSpec, Market, NodeBounds, Offer, Options, Page, ProviderRef, Spec
 
 SPEC = ComputeSpec(
     specs=(Spec(provider=ProviderRef(kind="fake"), cpus=1, memory_gb=1),),
@@ -80,12 +80,16 @@ def test_providers_without_a_shared_network_refuse_cluster_formation(adapter: Pr
 
 
 def test_runpod_cluster_formation_depends_on_global_networking() -> None:
-    offer = _offer("region", 1.0)
-    enabled = RunPodProvider("id", "runpod", "key", {})
+    secure = msgspec.structs.replace(_offer("region", 1.0), specific={"cloud_type": "SECURE"})
+    community = msgspec.structs.replace(_offer("region", 1.0), specific={"cloud_type": "COMMUNITY"})
+    default = RunPodProvider("id", "runpod", "key", {})
+    enabled = RunPodProvider("id", "runpod", "key", {"global_networking": True})
     disabled = RunPodProvider("id", "runpod", "key", {"global_networking": False})
 
-    assert enabled.allows_cluster_formation(SPEC, offer)
-    assert not disabled.allows_cluster_formation(SPEC, offer)
+    assert not default.allows_cluster_formation(SPEC, secure)
+    assert enabled.allows_cluster_formation(SPEC, secure)
+    assert not disabled.allows_cluster_formation(SPEC, secure)
+    assert not enabled.allows_cluster_formation(SPEC, community)
 
 
 class FakeProvider:

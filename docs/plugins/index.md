@@ -81,8 +81,8 @@ from typing import ClassVar
 
 from msgspec.structs import replace
 
-from skyward.plugins import PLUGINS, Plugin
-from skyward.protocol.schemas import Image
+from skyward.worker.plugins import PLUGINS, Plugin
+from skyward.shared.schemas import Image
 
 
 class MyFramework(Plugin, frozen=True):

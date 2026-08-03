@@ -21,7 +21,6 @@ to whoever was supposed to act on it. That is what buys the right to skip an out
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import Callable
 from datetime import timedelta
 from math import ceil
@@ -37,10 +36,11 @@ from skyward.server.persistence.store import now
 from skyward.server.persistence.tasks import TaskStore
 from skyward.shared import codec
 from skyward.shared.errors import NotFoundError, SkywardError
+from skyward.shared.observability import logger
 from skyward.shared.schemas import Compute, ComputeSpec, ComputeStatus, Error, Node, NodeState
 from skyward.worker import plugins
 
-logger = logging.getLogger(__name__)
+logger = logger.bind(component="reconciler")
 
 type Wake = Callable[..., None]
 
@@ -115,7 +115,7 @@ class Reconciler:
             except NotFoundError:
                 pass
             except Exception as exc:
-                logger.exception("reconcile failed for %s", compute_id)
+                logger.bind(compute_id=compute_id).exception("reconcile failed")
                 await self._degrade(compute_id, exc)
 
     async def observed(self, compute_id: str, node_id: str, state: NodeState, error: str) -> None:

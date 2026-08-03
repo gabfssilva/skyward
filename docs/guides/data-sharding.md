@@ -10,9 +10,9 @@ Pass the full dataset to the compute function. Inside, call `shard()` to get thi
 --8<-- "guides/05_data_sharding.py:8:22"
 ```
 
-The function receives the *full* dataset as arguments — `full_x` and `full_y` are the complete arrays. `shard()` divides them using modulo striding: with 4 nodes and 1000 samples, node 0 gets indices `[0, 4, 8, ...]`, node 1 gets `[1, 5, 9, ...]`, and so on. Each node ends up with ~250 samples, evenly distributed regardless of whether the total is divisible by the node count.
+The function receives the *full* dataset as arguments — `full_x` and `full_y` are the complete arrays. `shard()` divides them into contiguous rank-ordered slices: with 4 nodes and 1000 samples, node 0 gets the first quarter, node 1 the second, and so on. If the length is not divisible by the node count, the slice boundaries are calculated proportionally and sizes can differ by one.
 
-The `shuffle=True` parameter randomizes the order before sharding, with a fixed `seed` ensuring all nodes agree on the same permutation. This is important for training: without shuffling, each node would get a contiguous block of the original data order, which can introduce bias if the data is sorted.
+The `shuffle=True` parameter randomizes the order before sharding, with a fixed `seed` ensuring all nodes use the same permutation. Without shuffling, each node gets a contiguous block of the original data order.
 
 ## Sharding multiple arrays
 
@@ -36,13 +36,13 @@ This means you can shard a tensor and immediately pass it to a model without typ
 
 ## Equal-size shards with `drop_last`
 
-By default, striding can produce shards of slightly different sizes when the total isn't evenly divisible. If your training loop requires fixed batch dimensions (common with compiled models or certain padding strategies), use `drop_last=True`:
+By default, proportional splitting can produce shards of slightly different sizes when the total isn't evenly divisible. If your training loop requires equal shard sizes, use `drop_last=True`:
 
 ```python
 x, y = sky.shard(x_full, y_full, drop_last=True)
 ```
 
-This switches from striding to contiguous blocks and discards leftover elements, guaranteeing every node gets exactly the same number of samples.
+This discards the remainder before splitting, guaranteeing every node gets exactly the same number of samples.
 
 ## Run the full example
 
@@ -56,8 +56,8 @@ uv run python guides/05_data_sharding.py
 
 **What you learned:**
 
-- **`shard()`** automatically partitions data for the current node using modulo striding.
+- **`shard()`** automatically partitions data into a contiguous slice for the current node.
 - **Multiple arrays** sharded in a single call stay aligned — same indices selected from each.
 - **`shuffle=True` + `seed`** randomize the split deterministically, avoiding bias from data ordering.
 - **Type preservation** — lists, tuples, arrays, and tensors all stay their original type after sharding.
-- **`drop_last=True`** guarantees equal-size shards by discarding leftover elements.
+- **`drop_last=True`** guarantees equal-size shards by discarding the remainder.

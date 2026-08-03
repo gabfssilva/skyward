@@ -10,7 +10,6 @@ and will grow the pool, and the task will be offered again when it does.
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import AsyncIterator, Callable
 
 from skyward.server.application.runtimes import Runtime, Runtimes
@@ -22,10 +21,11 @@ from skyward.server.persistence.tasks import TaskStore
 from skyward.shared import codec
 from skyward.shared.errors import ComputeNotAcceptingError
 from skyward.shared.frames import Chunk, Done, End, Failed, Lookup, Outcome, Pending, Step, Unknown
+from skyward.shared.observability import logger
 from skyward.shared.schemas import Error, Execution, ExecutionState, Task
 from skyward.worker import worker
 
-logger = logging.getLogger(__name__)
+logger = logger.bind(component="dispatcher")
 
 type Wake = Callable[..., None]
 
@@ -300,7 +300,7 @@ class Dispatcher:
 
         match await _LOOKUPS.decode(await control.result(execution.id)):
             case Pending():
-                logger.info("execution %s is still running on %s", execution.id, execution.node_id)
+                logger.bind(node_id=execution.node_id).info("execution {} is still running", execution.id)
             case Unknown():
                 await self._lost(task, execution, RuntimeError("the worker no longer has it"))
             case Done() | Failed() as outcome:
@@ -328,7 +328,7 @@ class Dispatcher:
         ``failed`` — which is retryable without asking — would be the system deciding
         on the user's behalf that a duplicate side effect is acceptable.
         """
-        logger.warning("execution %s lost", execution.id, exc_info=exc)
+        logger.warning("execution {} lost", execution.id, exc_info=exc)
         await self._tasks.observe(
             execution.id,
             "indeterminate",

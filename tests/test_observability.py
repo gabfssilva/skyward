@@ -161,9 +161,9 @@ def test_the_logger_does_not_propagate():
     assert logging.getLogger(NAME).propagate is False
 
 
-def test_the_daemons_loggers_still_reach_the_root(caplog):
-    """The logger must not sit above ``skyward.*`` — the daemon logs there with the stdlib."""
+def test_the_logger_is_nobody_elses_ancestor(caplog):
+    """The logger must not sit above ``skyward.*``: whatever else logs there is not ours to swallow."""
     assert NAME.startswith("skyward.")
-    with caplog.at_level(logging.ERROR, logger="skyward.server.http.exceptions"):
-        logging.getLogger("skyward.server.http.exceptions").error("propagated")
+    with caplog.at_level(logging.ERROR, logger="skyward.someone.else"):
+        logging.getLogger("skyward.someone.else").error("propagated")
     assert "propagated" in caplog.text
