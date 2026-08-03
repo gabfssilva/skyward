@@ -46,9 +46,23 @@ server = [
     "litestar>=2.13",
     "piccolo[sqlite]>=1.0",
     "asyncssh>=2.22.0",
-    "aioboto3>=13.0.0",
-    "cryptography>=42",
     "uvicorn>=0.30",
+]
+# Three adapters need an sdk of their own; the other twelve speak plain HTTP
+# through httpx. An adapter whose sdk is absent is not registered, so `server`
+# buys the daemon and these buy the clouds it can reach.
+aws = [
+    "aioboto3>=13.0.0",
+]
+gcp = [
+    "cryptography>=42",
+]
+salad = [
+    "salad-cloud-sdk>=0.9.0a17",
+    "websockets>=13",
+]
+providers = [
+    "skyward[aws,gcp,salad]",
 ]
 # The `sky` command. A node installs skyward to run a function and has no
 # business acquiring an argument parser to do it.
@@ -67,6 +81,11 @@ notebook = [
 # imported lazily, so the dependency is only needed when a Storage is opened.
 storage = [
     "aioboto3>=13.0.0",
+]
+# Everything skyward ships, for the machine that is developing against it rather
+# than running one job.
+all = [
+    "skyward[client,server,cli,tui,notebook,storage,providers]",
 ]
 
 [project.scripts]
@@ -146,6 +165,7 @@ markers = [
 
 [dependency-groups]
 dev = [
+    "skyward[all]",
     "pytest>=8.0",
     "pytest-asyncio>=0.25",
     "pytest-cov>=7.0.0",
@@ -155,18 +175,13 @@ dev = [
     "pyright>=1.1",
     "ruff>=0.9",
     "import-linter>=2.0",
-    "litestar>=2.13",
-    "piccolo[sqlite]>=1.0",
-    "asyncssh>=2.22.0",
-    "aioboto3>=13.0.0",
-    "cryptography>=42",
-    "uvicorn>=0.30",
-    "cyclopts>=3.0",
-    "httpx>=0.28",
-    "rich>=13.7",
     "jax>=0.8.2",
     "keras>=3.13.0",
     "scikit-learn>=1.8.0",
+]
+docs = [
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.27",
 ]
 
 [tool.importlinter]

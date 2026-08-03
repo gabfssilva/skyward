@@ -351,6 +351,10 @@ def RTX_4070(count: int = 1) -> Accelerator:
     """RTX-4070, 12 GB VRAM."""
     ...
 
+def RTX_4070LAPTOP(count: int = 1) -> Accelerator:
+    """RTX-4070LAPTOP, 8 GB VRAM."""
+    ...
+
 def RTX_4070SUPER(count: int = 1) -> Accelerator:
     """RTX-4070SUPER, 12 GB VRAM."""
     ...
@@ -409,6 +413,10 @@ def RTX_5080(count: int = 1) -> Accelerator:
 
 def RTX_5090(count: int = 1) -> Accelerator:
     """RTX-5090, 32 GB VRAM."""
+    ...
+
+def RTX_5090LAPTOP(count: int = 1) -> Accelerator:
+    """RTX-5090LAPTOP, 24 GB VRAM."""
     ...
 
 def RTX_5880ADA(count: int = 1) -> Accelerator:
@@ -477,6 +485,26 @@ def RTX_PRO_6000WS(count: int = 1) -> Accelerator:
 
 def RTX_PRO_SERVER_6000(count: int = 1) -> Accelerator:
     """RTX-PRO-SERVER-6000, 96 GB VRAM."""
+    ...
+
+def RX_7800XT(count: int = 1) -> Accelerator:
+    """RX-7800XT, 16 GB VRAM."""
+    ...
+
+def RX_7900XT(count: int = 1) -> Accelerator:
+    """RX-7900XT, 20 GB VRAM."""
+    ...
+
+def RX_7900XTX(count: int = 1) -> Accelerator:
+    """RX-7900XTX, 24 GB VRAM."""
+    ...
+
+def RX_9060XT(count: int = 1) -> Accelerator:
+    """RX-9060XT, 16 GB VRAM."""
+    ...
+
+def RX_9070XT(count: int = 1) -> Accelerator:
+    """RX-9070XT, 16 GB VRAM."""
     ...
 
 def T4(count: int = 1) -> Accelerator:
