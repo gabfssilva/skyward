@@ -257,12 +257,26 @@ def _package_name(spec: str) -> str:
 def _apt(extra: Sequence[str]) -> str:
     """Install ``curl`` and ``git`` — the uv installer and git sources need them — plus extras.
 
-    Always present: a minimal base image (RunPod) ships without ``curl``, so the
+    Needed because a minimal base image (RunPod) ships without ``curl``, so the
     fallback that installs uv is ``curl: command not found`` and the machine never
     gets a venv.
+
+    Guarded because most images ship with both, and running it anyway is an
+    ``apt-get update`` against the distribution's mirrors on every node of every
+    pool — measured at 25.6s of a 26s bootstrap on a warm image, against 0.2s for
+    uv, the venv and installing skyward put together. An image the machine
+    already has is exactly the case that pays it for nothing.
+
+    The guard is on the two binaries because they are binaries. An ``apt`` the
+    user asked for may be a library with no command to look for, so a spec that
+    names extras installs unconditionally: they were asked for, and only the
+    caller knows what they are.
     """
     packages = " ".join(("curl", "git", *extra))
-    return f"phase apt 'apt-get update -qq && apt-get install -y -qq {packages}'"
+    install = f"apt-get update -qq && apt-get install -y -qq {packages}"
+    if extra:
+        return f"phase apt '{install}'"
+    return f"phase apt 'command -v curl >/dev/null 2>&1 && command -v git >/dev/null 2>&1 || {{ {install}; }}'"
 
 
 def _shell_vars(variables: dict[str, str]) -> str:
