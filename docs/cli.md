@@ -1,7 +1,6 @@
 # CLI
 
-`sky` is the command-line client for the Skyward control plane. It can talk to a
-remote daemon or use an embedded daemon in the current process.
+`sky` is the command-line client for the Skyward control plane. It can talk to a remote daemon or use an embedded daemon in the current process.
 
 ## Installation
 
@@ -17,9 +16,7 @@ To run a local daemon from the CLI, install both extras:
 pip install "skyward[cli,server]"
 ```
 
-The other optional extras are `tui` for the terminal UI, `notebook` for the
-Jupyter provisioner, `storage` for S3-compatible storage, and `client` for
-remote HTTP access from the SDK. Provider-specific extras are not required.
+The other optional extras are `tui` for the terminal UI, `notebook` for the Jupyter provisioner, `storage` for S3-compatible storage, and `client` for remote HTTP access from the SDK. Provider-specific extras are not required.
 
 ## Daemon resolution
 
@@ -27,14 +24,11 @@ Commands resolve the daemon in this order:
 
 1. `--url`;
 2. `SKYWARD_URL`;
-3. an embedded daemon using `--database`, or
-   `~/.skyward/skyward.sqlite` by default.
+3. an embedded daemon using `--database`, or `~/.skyward/skyward.sqlite` by default.
 
-When a URL resolves, `--database` is ignored. `sky config` shows the effective
-resolution.
+When a URL resolves, `--database` is ignored. `sky config` shows the effective resolution.
 
-Commands that render rows accept `--output table` or `--output json`. The default
-is `table`; use JSON for scripts.
+Commands that render rows accept `--output table` or `--output json`. The default is `table`; use JSON for scripts.
 
 ## `sky version`
 
@@ -44,8 +38,7 @@ sky version
 
 ## `sky server`
 
-`sky server` manages a local daemon process. The detached process writes its
-PID to `~/.skyward/server.pid` and its output to `~/.skyward/server.log`.
+`sky server` manages a local daemon process. The detached process writes its PID to `~/.skyward/server.pid` and its output to `~/.skyward/server.log`.
 
 ```bash
 sky server start
@@ -56,16 +49,13 @@ sky server status
 sky server status --url http://host:7590
 ```
 
-`start` waits for `/v1/health/live`. `--foreground` keeps the daemon attached to
-the terminal and does not create a PID file. `stop` only stops a process started
-by this CLI.
+`start` waits for `/v1/health/live`. `--foreground` keeps the daemon attached to the terminal and does not create a PID file. `stop` only stops a process started by this CLI.
 
 ## `sky compute`
 
 ### Create
 
-`create` registers the provider account from the current process and submits a
-compute. It returns without waiting for the compute to become ready.
+`create` registers the provider account from the current process and submits a compute. It returns without waiting for the compute to become ready.
 
 ```bash
 sky compute create --provider aws
@@ -75,14 +65,11 @@ sky compute create --provider runpod --accelerator RTX_4090 --name research
 
 The supported provider kinds are:
 
-`aws`, `container`, `gcp`, `hyperstack`, `jarvislabs`, `lambda`,
-`massed_compute`, `novita`, `runpod`, `scaleway`, `tensordock`, `vastai`,
-`verda`, and `vultr`.
+`aws`, `container`, `gcp`, `hyperstack`, `jarvislabs`, `lambda`, `massed_compute`, `novita`, `runpod`, `salad`, `scaleway`, `tensordock`, `vastai`, `verda`, and `vultr`.
 
-The available create flags are `--provider`, `--name`, `--accelerator`,
-`--nodes`, `--region`, `--cpus`, `--memory`, `--url`, `--database`, and
-`--output`. The provider account reads credentials from the current process.
-Credential values are not printed by the CLI.
+A kind whose SDK extra is not installed is not registered, so it will not appear. `sky providers list --kinds` shows what this installation can actually reach.
+
+The available create flags are `--provider`, `--name`, `--accelerator`, `--nodes`, `--region`, `--cpus`, `--memory`, `--url`, `--database`, and `--output`. The provider account reads credentials from the current process. Credential values are not printed by the CLI.
 
 `sky new` is an alias for `sky compute create`:
 
@@ -101,9 +88,7 @@ sky compute view research
 sky compute delete research
 ```
 
-`get` and `view` accept a compute id or name. `view` also prints the node rows.
-`delete` is an intent change: the returned state can remain `deleting` while
-the daemon reconciles the provider state.
+`get` and `view` accept a compute id or name. `view` also prints the node rows. `delete` is an intent change: the returned state can remain `deleting` while the daemon reconciles the provider state.
 
 ### Files and commands
 
@@ -119,15 +104,11 @@ sky compute run research train.py
 sky compute run research --all train.py
 ```
 
-`ls`, `rm`, and `upload` target every node by default where the command allows
-it. `download` reads one node and defaults to rank `0`. `exec` runs a shell
-command on the selected nodes. `run` sends a local Python script through the
-worker path; `--all` runs it on every node.
+`ls`, `rm`, and `upload` target every node by default where the command allows it. `download` reads one node and defaults to rank `0`. `exec` runs a shell command on the selected nodes. `run` sends a local Python script through the worker path; `--all` runs it on every node.
 
 ## `sky log`
 
-`sky log` replays a compute's recorded events. Without `--follow`, it stops
-after the replay is quiet.
+`sky log` replays a compute's recorded events. Without `--follow`, it stops after the replay is quiet.
 
 ```bash
 sky log research
@@ -142,8 +123,7 @@ sky log export research history.md
 
 ## `sky offers`
 
-Offers are served from the daemon's provider cache. `list` sorts by the
-cheapest available price and supports:
+Offers are served from the daemon's provider cache. `list` sorts by the cheapest available price and supports:
 
 ```bash
 sky offers list
@@ -152,10 +132,7 @@ sky offers list --provider runpod --max-price 2.5
 sky offers list --refresh --output json
 ```
 
-The filters are `--provider`, `--accelerator`, `--min-count`, `--min-vram`,
-`--max-price`, `--limit`, and `--refresh`. `--provider` accepts an account id or
-name. `--accelerator` accepts the provider's spelling; returned offers use the
-shared normalized accelerator vocabulary. `--limit 0` prints all rows.
+The filters are `--provider`, `--accelerator`, `--min-count`, `--min-vram`, `--max-price`, `--limit`, and `--refresh`. `--provider` accepts an account id or name. `--accelerator` accepts the provider's spelling; returned offers use the shared normalized accelerator vocabulary. `--limit 0` prints all rows.
 
 `fetch` forces a refresh and reports the number of cached rows per provider:
 
@@ -171,13 +148,11 @@ sky offers summary
 sky offers summary --accelerator A100 --refresh
 ```
 
-Each provider has its own freshness interval. If a refresh fails, the daemon
-keeps the provider's stale rows and records the error on the provider account.
+Each provider has its own freshness interval. If a refresh fails, the daemon keeps the provider's stale rows and records the error on the provider account.
 
 ## `sky providers`
 
-A provider is a registered account, not only a provider kind. The daemon uses
-the account credentials; list and check responses do not return them.
+A provider is a registered account, not only a provider kind. The daemon uses the account credentials; list and check responses do not return them.
 
 ```bash
 sky providers list
@@ -186,14 +161,11 @@ sky providers check
 sky providers check production
 ```
 
-`list` shows registered accounts. `list --kinds` shows supported kinds, required
-credential fields, and offer-cache TTLs. `check` reports the last recorded
-result; it does not perform a new credential probe.
+`list` shows registered accounts. `list --kinds` shows supported kinds, required credential fields, and offer-cache TTLs. `check` reports the last recorded result; it does not perform a new credential probe.
 
 ## `sky config`
 
-Skyward v2 has no TOML configuration file. These commands show the resolved
-daemon URL and embedded database:
+Skyward has no configuration file. These commands show the resolved daemon URL and embedded database:
 
 ```bash
 sky config path
@@ -201,8 +173,7 @@ sky config show
 sky config validate
 ```
 
-`validate` checks `/v1/health/ready` and exits non-zero when the daemon is not
-reachable or not ready.
+`validate` checks `/v1/health/ready` and exits non-zero when the daemon is not reachable or not ready.
 
 ## Top-level compute aliases
 
@@ -215,8 +186,7 @@ sky sessions
 sky stop research
 ```
 
-`status` lists all computes when no reference is supplied and reads one compute
-otherwise. `sessions` lists all computes. `stop` delegates to compute deletion.
+`status` lists all computes when no reference is supplied and reads one compute otherwise. `sessions` lists all computes. `stop` delegates to compute deletion.
 
 ## Interactive commands
 
@@ -227,16 +197,20 @@ sky console research --node 0 --command "nvidia-smi"
 sky repl research
 ```
 
-`console` opens a shell on one node. `repl` opens the Python interpreter
-bootstrapped on that node.
+`console` opens a shell on one node. `repl` opens the Python interpreter bootstrapped on that node.
 
-The current working tree also exposes `sky monitor research` with `--mode rich`
-or `--mode log`. The monitor/live implementation is under active uncommitted
-changes, so its display behavior is not specified here.
+`sky monitor` attaches to a running compute and follows it until you interrupt:
 
-## Related pages
+```bash
+sky monitor research
+sky monitor research --mode log
+```
 
-- [Getting started](getting-started.md)
-- [Providers](providers.md)
-- [Events](reference/events.md)
-- [Notebook kernels](notebook.md)
+`--mode rich` (the default) draws the live footer; `--mode log` prints plain lines, which is what you want in CI or when piping to a file. Monitoring creates nothing — the compute has to exist already.
+
+## Next steps
+
+- **[Getting started](getting-started.md)** — installation and credential setup
+- **[Providers](providers.md)** — the accounts `sky providers` lists
+- **[Events](reference/events.md)** — the stream `sky log export` reads
+- **[Notebook kernels](notebook.md)** — running a Jupyter kernel on a compute

@@ -88,10 +88,14 @@ nav:
           - Providers: providers.md
           - Accelerators: accelerators.md
           - Volumes: volumes.md
-          - Provision controllers: provision-controllers.md
+      - Control plane:
+          - Architecture: architecture.md
+          - HTTP API: http-api.md
+          - API explorer: api/index.html
+          - Persistence: persistence.md
+          - Reconciliation and provisioning: provision-controllers.md
           - Why asyncio: why-asyncio.md
       - Clustering:
-          - Architecture: architecture.md
           - Distributed training: distributed-training.md
           - Distributed collections: distributed-collections.md
       - Misc:

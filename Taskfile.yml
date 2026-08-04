@@ -154,9 +154,15 @@ tasks:
     cmds:
       - uv run mkdocs serve
 
+  docs:openapi:
+    desc: Regenerate docs/openapi.json from the Litestar app
+    cmds:
+      - uv run python scripts/gen_openapi.py
+
   docs:build:
     desc: Build static docs site
     cmds:
+      - task: docs:openapi
       - uv run mkdocs build
 
   docs:deploy:

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from litestar import Controller, Response, delete, get, patch, post, put
+from litestar.openapi.datastructures import ResponseSpec
 from litestar.params import Parameter
 
 from skyward.server.application import ports
 from skyward.server.application.reconciler import Wakeup
+from skyward.server.http.exceptions import failures
 from skyward.server.http.headers import etag, revision_of
 from skyward.shared.schemas import (
     Compute,
@@ -23,7 +25,15 @@ class ComputeController(Controller):
     path = "/computes"
     tags = ["computes"]
 
-    @get(summary="List computes")
+    @get(
+        summary="List computes",
+        description=(
+            "Every compute this daemon knows about, including the deleted ones — a compute's row outlives its "
+            "machines. `owned=false` lists the orphans: computes no live process is holding a lease on, which is what "
+            "a compute looks like between the script that made it exiting and the next one attaching."
+        ),
+        responses=failures(404),
+    )
     async def list(
         self,
         computes: ports.Computes,
@@ -44,6 +54,7 @@ class ComputeController(Controller):
             "event stream. There is no `operation` resource: `generation` vs `status.observed_generation` is the "
             "progress."
         ),
+        responses={**failures(409, 422), 200: ResponseSpec(Compute, description="The compute this key already created")},
     )
     async def create(
         self,
@@ -56,7 +67,12 @@ class ComputeController(Controller):
         wake("compute.changed", compute_id=compute.id)
         return Response(compute, status_code=201 if created else 200, headers=etag(compute.revision))
 
-    @get("/{compute_id:str}", summary="Read a compute", description="Accepts an id or a name. The response always carries both.")
+    @get(
+        "/{compute_id:str}",
+        summary="Read a compute",
+        description="Accepts an id or a name. The response always carries both.",
+        responses=failures(404),
+    )
     async def read(self, compute_id: str, computes: ports.Computes) -> Response[Compute]:
         compute = await computes.get(compute_id)
         return Response(compute, headers=etag(compute.revision))
@@ -70,6 +86,7 @@ class ComputeController(Controller):
             "`status.drift`, the applied definition is kept, and no infrastructure is replaced. Replacing requires "
             "`POST /computes/{id}/generations`."
         ),
+        responses=failures(404, 412),
     )
     async def update(
         self,
@@ -92,6 +109,7 @@ class ComputeController(Controller):
             "provider **confirms the resources are gone**, and only then does `status.state` become `deleted`.\n\n"
             "No process shutdown ever issues this command."
         ),
+        responses=failures(404, 409, 412),
     )
     async def destroy(
         self,
@@ -105,11 +123,21 @@ class ComputeController(Controller):
         wake("compute.changed", compute_id=compute.id)
         return Response(compute, status_code=202, headers=etag(compute.revision))
 
-    @get("/{compute_id:str}/generations", summary="List definition history")
+    @get(
+        "/{compute_id:str}/generations",
+        summary="List definition history",
+        description="Every definition this compute has had, newest last. A rollback is a generation too, so this grows.",
+        responses=failures(404),
+    )
     async def list_generations(self, compute_id: str, generations: ports.Generations) -> Page[Generation]:
         return await generations.list(compute_id)
 
-    @get("/{compute_id:str}/generations/{number:int}", summary="Read a generation")
+    @get(
+        "/{compute_id:str}/generations/{number:int}",
+        summary="Read a generation",
+        description="One definition as it was frozen, and whether the machines were ever built to match it.",
+        responses=failures(404),
+    )
     async def get_generation(self, compute_id: str, number: int, generations: ports.Generations) -> Generation:
         return await generations.get(compute_id, number)
 
@@ -125,6 +153,7 @@ class ComputeController(Controller):
             "`force: true` marks unresolved tasks as `indeterminate` before replacing; `force: false` refuses while "
             "executions are still active."
         ),
+        responses=failures(404, 409, 412, 422),
     )
     async def create_generation(
         self,
@@ -149,6 +178,7 @@ class ComputeController(Controller):
             "current owner. Losing renewals destroys nothing by itself: if `spec.delete_on_exit` is `true`, "
             "reconciliation tears the compute down; if `false`, it simply sits ownerless until something adopts it."
         ),
+        responses=failures(404, 409),
     )
     async def claim_lease(self, compute_id: str, data: LeaseClaim, computes: ports.Computes) -> Lease:
         return await computes.claim_lease(compute_id, data)
@@ -158,6 +188,7 @@ class ComputeController(Controller):
         status_code=204,
         summary="Release ownership",
         description="Orderly detach: drops the claim without touching `spec.desired`. Destroys nothing.",
+        responses=failures(404),
     )
     async def release_lease(self, compute_id: str, computes: ports.Computes) -> None:
         await computes.release_lease(compute_id)

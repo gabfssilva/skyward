@@ -4,6 +4,7 @@ from litestar import Controller, Response, delete, get
 from litestar.params import Parameter
 
 from skyward.server.application import ports
+from skyward.server.http.exceptions import failures
 from skyward.shared.schemas import Node, Page
 
 
@@ -17,6 +18,7 @@ class NodeController(Controller):
             "Includes tombstones by default. A node that died stays listed, with its `provider_binding` intact, until "
             "the provider confirms termination — that is what stops an instance from going missing with nobody knowing."
         ),
+        responses=failures(404),
     )
     async def list(
         self,
@@ -27,7 +29,12 @@ class NodeController(Controller):
     ) -> Page[Node]:
         return await nodes.list(compute_id, include_terminal, generation)
 
-    @get("/{node_id:str}", summary="Read a node")
+    @get(
+        "/{node_id:str}",
+        summary="Read a node",
+        description="One machine as the control plane knows it, including the `provider_binding` it was launched under.",
+        responses=failures(404),
+    )
     async def read(self, compute_id: str, node_id: str, nodes: ports.Nodes) -> Node:
         return await nodes.get(compute_id, node_id)
 
@@ -42,6 +49,7 @@ class NodeController(Controller):
             "If the compute still wants that capacity, the reconciler creates **another** node for the same `rank`, with "
             "a new `id`. The old node's tombstone remains."
         ),
+        responses=failures(404, 409),
     )
     async def drain(
         self,

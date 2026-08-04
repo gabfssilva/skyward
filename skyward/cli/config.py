@@ -13,6 +13,8 @@ from typing import Annotated
 
 from cyclopts import Parameter
 
+from skyward.shared.schemas import Readiness
+
 from . import config_app
 from ._client import call, resolve
 from ._output import EMPTY, Output, render
@@ -75,14 +77,14 @@ def config_validate(
 
     try:
         body = call(
-            lambda client: client.call("GET", "/v1/health/ready", dict[str, bool]),
+            lambda client: client.call("GET", "/v1/health/ready", Readiness),
             url=url,
             database=database,
         )
     except Exception as exc:
         status, detail = "fail", str(exc)[:120] or exc.__class__.__name__
     else:
-        status, detail = ("ok", "ready") if body.get("ready") else ("fail", "not ready")
+        status, detail = ("ok", "ready") if body.ready else ("fail", "not ready")
 
     render(["check", "status", "detail"], [[f"daemon ({source})", status, detail], ["url", "-", target]], output=output)
 

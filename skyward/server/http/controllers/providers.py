@@ -2,6 +2,7 @@ from litestar import Controller, delete, get, post, put
 
 from skyward.providers import registry
 from skyward.server.application import ports
+from skyward.server.http.exceptions import failures
 from skyward.shared.schemas import Page, Provider, ProviderCreate, ProviderKind
 
 
@@ -24,7 +25,10 @@ class ProviderController(Controller):
     path = "/providers"
     tags = ["providers"]
 
-    @get(summary="List registered providers")
+    @get(
+        summary="List registered providers",
+        description="The accounts this daemon can buy machines from. Credentials are not among the fields returned.",
+    )
     async def list(self, providers: ports.Providers) -> Page[Provider]:
         return await providers.list()
 
@@ -37,15 +41,29 @@ class ProviderController(Controller):
             "Credentials are validated against the kind's `credential_fields` before the row is written, and are never "
             "returned by any read path."
         ),
+        responses=failures(409, 422),
     )
     async def create(self, data: ProviderCreate, providers: ports.Providers) -> Provider:
         return await providers.create(data)
 
-    @get("/{provider_id:str}", summary="Read a provider", description="Accepts an id or a name. Credentials are never included.")
+    @get(
+        "/{provider_id:str}",
+        summary="Read a provider",
+        description="Accepts an id or a name. Credentials are never included.",
+        responses=failures(404),
+    )
     async def read(self, provider_id: str, providers: ports.Providers) -> Provider:
         return await providers.get(provider_id)
 
-    @put("/{provider_id:str}", summary="Update a provider account")
+    @put(
+        "/{provider_id:str}",
+        summary="Update a provider account",
+        description=(
+            "Replaces the account wholesale, credentials included — there is no partial update, because a half-written "
+            "credential set is one that fails at launch rather than here. The cached offers are dropped with it."
+        ),
+        responses=failures(404, 409, 422),
+    )
     async def update(self, provider_id: str, data: ProviderCreate, providers: ports.Providers) -> Provider:
         return await providers.update(provider_id, data)
 
@@ -54,6 +72,7 @@ class ProviderController(Controller):
         status_code=204,
         summary="Remove a provider",
         description="Drops the account and its cached offers. Computes already running on it are not touched.",
+        responses=failures(404),
     )
     async def destroy(self, provider_id: str, providers: ports.Providers) -> None:
         await providers.delete(provider_id)

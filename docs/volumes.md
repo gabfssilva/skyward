@@ -1,7 +1,6 @@
 # Volumes
 
-A `Volume` maps object storage or provider-native storage to a directory on
-each compute node. The compute and the stored data have independent lifecycles.
+A `Volume` maps object storage or provider-native storage to a directory on each compute node. The compute and the stored data have independent lifecycles.
 
 ## `Volume`
 
@@ -32,8 +31,7 @@ Fields:
 - `read_only`: defaults to `True`;
 - `storage`: optional explicit `sky.Storage` endpoint and credentials.
 
-The constructor rejects relative paths and protected system paths such as `/`,
-`/root`, `/tmp`, and `/opt`.
+The constructor rejects relative paths and protected system paths such as `/`, `/root`, `/tmp`, and `/opt`.
 
 ## Attach volumes to a compute
 
@@ -62,17 +60,13 @@ with sky.Compute(
     train("/data", "/checkpoints") >> compute
 ```
 
-The function sees ordinary filesystem paths. The provider adapter decides how
-the mount is prepared before the worker starts.
+The function sees ordinary filesystem paths. The provider adapter decides how the mount is prepared before the worker starts.
 
-If `storage` is omitted, the daemon asks the compute's provider to resolve the
-storage endpoint. Use `storage=` when the bucket belongs to a different storage
-account or endpoint.
+If `storage` is omitted, the daemon asks the compute's provider to resolve the storage endpoint. Use `storage=` when the bucket belongs to a different storage account or endpoint.
 
 ## S3-compatible storage
 
-`Storage` is a context manager for local CRUD operations and can also be passed
-to a `Volume`:
+`Storage` is a context manager for local CRUD operations and can also be passed to a `Volume`:
 
 ```python
 import skyward as sky
@@ -131,14 +125,13 @@ with storage:
     storage.rm("my-bucket", "old/data.csv")
 ```
 
-`upload`, `download`, `ls`, `exists`, and `rm` are synchronous methods on the
-context-managed object.
+`upload`, `download`, `ls`, `exists`, and `rm` are synchronous methods on the context-managed object.
 
 Credentials may be strings, synchronous callables, or asynchronous callables.
 
 ## Provider strategies
 
-The current tree has volume mount adapters for these providers:
+These providers have volume mount adapters:
 
 | Provider | Current strategy |
 |---|---|
@@ -147,12 +140,9 @@ The current tree has volume mount adapters for these providers:
 | Hyperstack | S3-compatible mount with a per-compute object-storage key |
 | RunPod | One provider network-volume attachment, projected through `prefix` |
 
-Providers without a mount adapter report a capability mismatch when a compute
-requests volumes. The provider adapter owns the bootstrap details; the public
-API remains `Volume(bucket=..., mount=...)`.
+Providers without a mount adapter report a capability mismatch when a compute requests volumes. The provider adapter owns the bootstrap details; the public API remains `Volume(bucket=..., mount=...)`.
 
-RunPod accepts one network volume per pod. Multiple `Volume` objects can share
-that `bucket` and use different prefixes:
+RunPod accepts one network volume per pod. Multiple `Volume` objects can share that `bucket` and use different prefixes:
 
 ```python
 with sky.Compute(
@@ -165,14 +155,9 @@ with sky.Compute(
     ...
 ```
 
-The current provider changes are still being finalized; this page does not
-specify uncommitted cluster-network behavior.
-
 ## Shared buckets
 
-Multiple volumes can reference the same bucket. The bootstrap deduplicates the
-underlying FUSE mount and creates one link per `mount`/`prefix` pair. If any
-volume for that bucket is writable, the shared mount is writable.
+Multiple volumes can reference the same bucket. The bootstrap deduplicates the underlying FUSE mount and creates one link per `mount`/`prefix` pair. If any volume for that bucket is writable, the shared mount is writable.
 
 ```python
 volumes = [
@@ -181,10 +166,10 @@ volumes = [
 ]
 ```
 
-There is no TOML volume configuration in v2. Declare volumes in `Compute`.
+There is no volume configuration file. Declare volumes in `Compute`.
 
-## Related pages
+## Next steps
 
-- [S3 volumes guide](guides/s3-volumes.md)
-- [Providers](providers.md)
-- [CLI](cli.md)
+- **[S3 volumes](guides/s3-volumes.md)** — a walkthrough with runnable code
+- **[Providers](providers.md)** — which providers mount buckets and which attach volumes
+- **[CLI](cli.md)** — inspecting a compute's mounts from the terminal

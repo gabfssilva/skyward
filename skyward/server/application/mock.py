@@ -11,6 +11,7 @@ from skyward.shared.schemas import (
     ComputeSpecPatch,
     ComputeState,
     ComputeStatus,
+    DependencyState,
     Execution,
     ExecutionCreate,
     Function,
@@ -335,5 +336,5 @@ class MockHealth:
     async def ready(self) -> bool:
         return True
 
-    async def dependencies(self) -> dict[str, str]:
+    async def dependencies(self) -> dict[str, DependencyState]:
         return {"store": "ok", "aws": "ok", "workers": "ok"}

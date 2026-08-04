@@ -45,36 +45,27 @@ from skyward.core.widgets import (
     _State,
 )
 from skyward.shared.observability import NAME as LOGGER_NAME
-from skyward.shared.schemas import Compute, Function, Node, Page, Task
+from skyward.shared.schemas import (
+    Compute,
+    ComputeAbandoned,
+    ComputeEvent,
+    ConsoleEvent,
+    CostEvent,
+    Event,
+    Function,
+    MetricEvent,
+    Node,
+    NodeEvent,
+    Page,
+    PhaseEvent,
+    Task,
+    TaskEvent,
+)
 
 POLL = 2.0
 HISTORY = 12
 TAIL = 40
 _METRICS = frozenset({"gpu_util", "gpu_mem_mb", "gpu_mem_total_mb", "cpu", "mem", "mem_used_mb", "mem_total_mb"})
-_NODE_STATES = frozenset({
-    "requested",
-    "provisioning",
-    "connecting",
-    "bootstrapping",
-    "ready",
-    "draining",
-    "lost",
-    "deleting",
-    "deleted",
-    "failed",
-    "degraded",
-})
-_COMPUTE_STATES = frozenset({"requested", "provisioning", "ready", "degraded", "deleting", "deleted", "failed"})
-
-
-class _Reading(msgspec.Struct, frozen=True):
-    node: str
-    name: str
-    value: float
-
-
-class _Accrued(msgspec.Struct, frozen=True):
-    cost: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,24 +130,21 @@ class View:
     progress: Mapping[int, str] = field(default_factory=lambda: MappingProxyType({}))
 
 
-def observe(view: View, event: str, payload: bytes) -> View:
-    if event == "node.metrics":
-        reading = msgspec.json.decode(payload, type=_Reading)
-        return _sample(view, reading.node, reading.name, reading.value)
-    if event == "compute.cost":
-        accrued = msgspec.json.decode(payload, type=_Accrued)
-        return replace(view, pool=replace(view.pool, cost=accrued.cost))
-    data = msgspec.json.decode(payload, type=dict[str, str])
-    match event.split(".", 1):
-        case ["node", "phase"]:
-            return _phased(view, data)
-        case ["node", "console"]:
-            return _spoken(view, data)
-        case ["node", state] if state in _NODE_STATES:
-            return _transition(view, data.get("node", ""), state, data.get("error"))
-        case ["compute", state] if state in _COMPUTE_STATES:
+def observe(view: View, event: Event) -> View:
+    match event:
+        case MetricEvent(node=node, name=name, value=value):
+            return _sample(view, node, name, value)
+        case CostEvent(cost=cost):
+            return replace(view, pool=replace(view.pool, cost=cost))
+        case PhaseEvent():
+            return _phased(view, event)
+        case ConsoleEvent(node=node, content=content):
+            return _spoken(view, node, content)
+        case NodeEvent(node=node, state=state, error=error):
+            return _transition(view, node, state, error)
+        case ComputeEvent(state=state):
             return replace(view, pool=replace(view.pool, state=state))
-        case _:
+        case ComputeAbandoned() | TaskEvent():
             return view
 
 
@@ -232,31 +220,28 @@ def _sample(view: View, node_id: str, name: str, value: float) -> View:
     return _amend(view, node_id, add)
 
 
-def _phased(view: View, data: dict[str, str]) -> View:
-    node_id = data.get("node", "")
-    name = data.get("phase", "")
-    if not node_id or not name or name == "bootstrap":
+def _phased(view: View, event: PhaseEvent) -> View:
+    name = event.phase
+    if not event.node or not name or name == "bootstrap":
         return view
 
     def mark(row: NodeRow) -> NodeRow:
         phases = {phase.name: phase for phase in row.phases}
-        match data.get("event"):
+        match event.event:
             case "started":
                 phases[name] = PhaseMark(name, started=True)
             case "completed":
                 phases[name] = replace(phases.get(name, PhaseMark(name)), finished=True)
             case "failed":
-                phases[name] = replace(phases.get(name, PhaseMark(name)), finished=True, error=data.get("error") or "failed")
+                phases[name] = replace(phases.get(name, PhaseMark(name)), finished=True, error=event.error or "failed")
         return replace(row, phases=tuple(phases.values()))
 
-    return _amend(view, node_id, mark)
+    return _amend(view, event.node, mark)
 
 
-def _spoken(view: View, data: dict[str, str]) -> View:
-    node_id = data.get("node", "")
+def _spoken(view: View, node_id: str, content: str) -> View:
     if not node_id:
         return view
-    content = data.get("content", "")
     return _amend(view, node_id, lambda row: replace(row, tail=(*row.tail, content)[-TAIL:]))
 
 
@@ -505,12 +490,14 @@ class RichConsole:
             poll = asyncio.create_task(self._poll())
             try:
                 async with aclosing(self._client.events(self._compute)) as stream:
-                    async for event, payload in stream:
-                        self._view = observe(self._view, event, payload)
+                    async for _, payload in stream:
+                        if (event := _safe(payload)) is None:
+                            continue
+                        self._view = observe(self._view, event)
                         self._footer.state = _state(self._view)
-                        self._print_event(event, _safe(payload))
+                        self._print_event(event)
                         live.update(self._footer)
-                        if event in {"compute.deleted", "compute.failed"}:
+                        if isinstance(event, ComputeEvent) and event.state in {"deleted", "failed"}:
                             live.stop()
                             _emit(self._console, "skyward", "Shutting down...", WARNING_STYLE)
                             self._console.print(_render_summary(self._footer.state))
@@ -538,31 +525,25 @@ class RichConsole:
         self._console.print(banner)
         self._console.print()
 
-    def _print_event(self, event: str, data: dict[str, str]) -> None:
+    def _print_event(self, event: Event) -> None:
         state = _state(self._view)
-        row = next((row for row in self._view.nodes if row.id == data.get("node")), None)
+        node = getattr(event, "node", None)
+        row = next((row for row in self._view.nodes if row.id == node), None)
         node_id = row.rank if row else 0
         match event:
-            case "node.console":
+            case ConsoleEvent(content=content):
                 if row is None or row.state not in {"connecting", "bootstrapping"}:
-                    _emit(
-                        self._console,
-                        _node_label(state, node_id),
-                        data.get("content", ""),
-                        link=_ssh_url(state, node_id),
-                    )
-            case "node.ready":
+                    _emit(self._console, _node_label(state, node_id), content, link=_ssh_url(state, node_id))
+            case NodeEvent(state="ready"):
                 _emit(self._console, _node_label(state, node_id), "✓ Joined", "green bold", link=_ssh_url(state, node_id))
-            case "node.failed" | "node.lost":
-                _emit(self._console, "error", data.get("error") or event.removeprefix("node."), "red")
-            case "task.queued":
-                _emit_task(self._console, "skyward", "queued", data.get("task", ""))
-            case "task.succeeded":
+            case NodeEvent(state="failed" | "lost" as failure, error=error):
+                _emit(self._console, "error", error or failure, "red")
+            case TaskEvent(state="succeeded"):
                 _emit_task(self._console, _node_label(state, node_id), "done", "")
-            case "task.failed":
+            case TaskEvent(state="failed"):
                 _emit_task(self._console, _node_label(state, node_id), "failed", "")
-            case "compute.failed" | "compute.degraded":
-                _emit(self._console, "error", data.get("error") or event.removeprefix("compute."), "red")
+            case ComputeEvent(state="failed" | "degraded" as failure, error=error):
+                _emit(self._console, "error", error or failure, "red")
             case _:
                 pass
 
@@ -616,11 +597,16 @@ def _event_line(view: View, event: str, data: dict[str, str]) -> Text:
     return Text(data.get("content") or event)
 
 
-def _safe(payload: bytes) -> dict[str, str]:
+def _safe(payload: bytes) -> Event | None:
+    """Decode one event, or nothing at all if this build does not know it.
+
+    A daemon may be newer than the client watching it, and an event it has learnt
+    to send is not a reason to stop rendering the ones it has always sent.
+    """
     try:
-        return msgspec.json.decode(payload, type=dict[str, str])
+        return msgspec.json.decode(payload, type=Event)
     except msgspec.ValidationError:
-        return {}
+        return None
 
 
 class _LogSink(logging.Handler):

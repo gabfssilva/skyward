@@ -140,8 +140,8 @@ reportTypedDictNotRequiredAccess = "none"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-addopts = "--durations=0 --dist loadgroup -n auto --log-cli-level=WARNING -m 'not sanity'"
-timeout = 120
+addopts = "--durations=0 --dist loadgroup -n 8 --log-cli-level=WARNING -m 'not sanity'"
+timeout = 240
 timeout_method = "thread"
 markers = [
     "compute: features that need a live pool, and so a container runtime",

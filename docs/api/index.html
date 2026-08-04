@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Skyward Control Plane API</title>
+    <link rel="icon" href="../logo_sky.png" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Space+Mono:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+      }
+
+      #back {
+        position: fixed;
+        top: 12px;
+        right: 16px;
+        z-index: 100;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 7px 13px;
+        border: 1px solid rgba(99, 166, 255, 0.4);
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.92);
+        backdrop-filter: blur(6px);
+        color: #2563a6;
+        font: 500 13px/1 "Space Grotesk", system-ui, sans-serif;
+        text-decoration: none;
+      }
+
+      #back:hover {
+        border-color: #63a6ff;
+        background: #fff;
+      }
+
+      redoc {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <a id="back" href="../http-api/">&larr; Back to the docs</a>
+    <div id="redoc-container"></div>
+
+    <script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"></script>
+    <script>
+      Redoc.init(
+        "../openapi.json",
+        {
+          hideDownloadButton: false,
+          expandResponses: "200,201",
+          nativeScrollbars: true,
+          theme: {
+            colors: { primary: { main: "#2563a6" } },
+            typography: {
+              fontSize: "15px",
+              fontFamily: '"Space Grotesk", system-ui, sans-serif',
+              headings: { fontFamily: '"Space Grotesk", system-ui, sans-serif' },
+              code: { fontFamily: '"Space Mono", monospace' },
+            },
+            sidebar: { width: "280px" },
+          },
+        },
+        document.getElementById("redoc-container")
+      );
+    </script>
+  </body>
+</html>

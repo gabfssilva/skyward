@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from litestar import Controller, Request, delete, get, post, put
+from litestar.openapi.datastructures import ResponseSpec
 from litestar.params import Parameter
 from litestar.response import Stream
 
 from skyward.server.application import ports
 from skyward.server.application.ssh import Result
+from skyward.server.http.exceptions import failures
 from skyward.shared.errors import CapabilityMismatchError
 
 BYTES = "application/octet-stream"
@@ -35,6 +37,7 @@ class FileController(Controller):
         "/files",
         summary="List a path on the compute",
         description="`ls -la` of `path`, per node. Defaults to rank 0 — one listing is usually the question.",
+        responses=failures(404, 422),
     )
     async def ls(
         self,
@@ -53,6 +56,7 @@ class FileController(Controller):
             "`rm -rf` of `path`, per node. Defaults to every node, because a file left on one machine of four is "
             "the state a later broadcast reads and disagrees about."
         ),
+        responses=failures(404, 422),
     )
     async def rm(
         self,
@@ -72,6 +76,7 @@ class FileController(Controller):
             "be wherever the task lands, and which node that is belongs to the dispatcher.\n\n"
             "The answer is per node — a machine that refused the write is a line of it, not the end of it."
         ),
+        responses=failures(404, 422),
     )
     async def upload(
         self,
@@ -91,6 +96,15 @@ class FileController(Controller):
             "`path` from one node, as a raw byte stream. `node=all` is refused rather than picked between: four "
             "machines hold four files, and concatenating them would answer a question nobody asked."
         ),
+        responses={
+            200: ResponseSpec(
+                bytes,
+                media_type=BYTES,
+                description="The file's bytes, as the node reads them off disk",
+                generate_examples=False,
+            ),
+            **failures(404, 422),
+        },
     )
     async def download(
         self,
@@ -113,6 +127,7 @@ class FileController(Controller):
             "than about the code running on it.\n\n"
             "A task is the other thing, and `POST /tasks` is where it goes."
         ),
+        responses=failures(404, 422),
     )
     async def run(
         self,

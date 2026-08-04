@@ -29,6 +29,7 @@ from skyward.cli import server_app
 from skyward.cli._client import call, resolve
 from skyward.cli._output import Output, render
 from skyward.core.client import Client
+from skyward.shared.schemas import Liveness
 
 RUNTIME_DIR = Path.home() / ".skyward"
 PID_FILE = RUNTIME_DIR / "server.pid"
@@ -65,7 +66,7 @@ def alive(process: int) -> bool:
 async def probe(client: Client) -> bool:
     """Return whether ``/v1/health/live`` answers affirmatively."""
     try:
-        return (await client.call("GET", "/v1/health/live", dict[str, bool])).get("live", False)
+        return (await client.call("GET", "/v1/health/live", Liveness)).live
     except (httpx.TransportError, OSError):
         return False
 

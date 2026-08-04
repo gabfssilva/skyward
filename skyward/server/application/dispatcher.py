@@ -22,7 +22,7 @@ from skyward.shared import codec
 from skyward.shared.errors import ComputeNotAcceptingError
 from skyward.shared.frames import Chunk, Done, End, Failed, Lookup, Outcome, Pending, Step, Unknown
 from skyward.shared.observability import logger
-from skyward.shared.schemas import Error, Execution, ExecutionState, Task
+from skyward.shared.schemas import Error, Event, Execution, ExecutionState, Task, TaskEvent
 from skyward.worker import worker
 
 logger = logger.bind(component="dispatcher")
@@ -170,7 +170,7 @@ class Dispatcher:
 
         runtime.dispatched.add(execution.id)
         await self._tasks.observe(execution.id, "started", node_id=node_id)
-        await self._record("task.started", task.compute_id, task=task.id)
+        await self._record("task.started", TaskEvent(compute=task.compute_id, task=task.id, state="started"))
 
         failure: Error | None = None
         try:
@@ -195,10 +195,10 @@ class Dispatcher:
 
         if failure:
             await self._tasks.observe(execution.id, "failed", error=failure)
-            await self._record("task.failed", task.compute_id, task=task.id)
+            await self._record("task.failed", TaskEvent(compute=task.compute_id, task=task.id, state="failed"))
         else:
             await self._tasks.observe(execution.id, "succeeded")
-            await self._record("task.succeeded", task.compute_id, task=task.id)
+            await self._record("task.succeeded", TaskEvent(compute=task.compute_id, task=task.id, state="succeeded"))
 
     async def _free(self, compute_id: str, runtime: Runtime) -> tuple[str, ...]:
         """Nodes with a slot going spare, in rank order.
@@ -264,7 +264,7 @@ class Dispatcher:
             node = await self._worker(runtime, node_id)
 
             await self._tasks.observe(execution.id, "started", node_id=node_id)
-            await self._record("task.started", task.compute_id, task=task.id)
+            await self._record("task.started", TaskEvent(compute=task.compute_id, task=task.id, state="started"))
 
             await self._settle(task, execution, await _OUTCOMES.decode(await node.run(execution.id, code, args)))
         except Exception as exc:
@@ -311,14 +311,14 @@ class Dispatcher:
         match outcome:
             case Done(value=value):
                 await self._tasks.observe(execution.id, "succeeded", result_sha256=await self._blobs.store(value))
-                await self._record("task.succeeded", task.compute_id, task=task.id)
+                await self._record("task.succeeded", TaskEvent(compute=task.compute_id, task=task.id, state="succeeded"))
             case Failed(error=error, traceback=trace):
                 await self._tasks.observe(
                     execution.id,
                     "failed",
                     error=Error(code="task_failed", message=error, retryable=False, details={"traceback": trace}),
                 )
-                await self._record("task.failed", task.compute_id, task=task.id)
+                await self._record("task.failed", TaskEvent(compute=task.compute_id, task=task.id, state="failed"))
 
     async def _lost(self, task: Task, execution: Execution, exc: Exception) -> None:
         """The call died, and we do not know whether the function did.
@@ -334,7 +334,7 @@ class Dispatcher:
             "indeterminate",
             error=Error(code="task_indeterminate", message=f"{type(exc).__name__}: {exc}", retryable=False),
         )
-        await self._record("task.indeterminate", task.compute_id, task=task.id)
+        await self._record("task.indeterminate", TaskEvent(compute=task.compute_id, task=task.id, state="indeterminate"))
 
     async def _worker(self, runtime: Runtime, node_id: str) -> worker.Worker:
         system = await runtime.system(node_id)
@@ -349,10 +349,10 @@ class Dispatcher:
         """
         return self._locks.setdefault(compute_id, asyncio.Lock())
 
-    async def _record(self, event: str, compute: str, **payload: str) -> None:
+    async def _record(self, name: str, payload: TaskEvent) -> None:
         await self._events.record(
-            event,
-            await codec.json(dict[str, str]).encode({"compute": compute, **payload}),
-            compute=compute,
-            task=payload.get("task"),
+            name,
+            await codec.json(Event).encode(payload),
+            compute=payload.compute,
+            task=payload.task,
         )

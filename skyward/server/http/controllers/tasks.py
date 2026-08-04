@@ -3,11 +3,13 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 
 from litestar import Controller, MediaType, Response, delete, get, post
+from litestar.openapi.datastructures import ResponseSpec
 from litestar.params import Parameter
 from litestar.response import Stream
 
 from skyward.server.application import ports
 from skyward.server.application.reconciler import Wakeup
+from skyward.server.http.exceptions import failures
 from skyward.shared.schemas import (
     Execution,
     ExecutionCreate,
@@ -36,7 +38,13 @@ class TaskController(Controller):
     path = "/tasks"
     tags = ["tasks"]
 
-    @get(summary="List tasks")
+    @get(
+        summary="List tasks",
+        description=(
+            "Every call this daemon has been asked to make, newest last. `correlation_id` is how the tasks of one "
+            "`&`, `gather` or `map` are found together — it is a field on each of them, not a resource of its own."
+        ),
+    )
     async def list(
         self,
         tasks: ports.Tasks,
@@ -60,6 +68,10 @@ class TaskController(Controller):
             "The task and its first execution are persisted **before** any dispatch to a worker. The worker dedupes on "
             "`(task_id, execution_id, args_hash)`."
         ),
+        responses={
+            **failures(404, 409, 422),
+            200: ResponseSpec(Task, description="The task this `Idempotency-Key` already created"),
+        },
     )
     async def submit(
         self,
@@ -77,6 +89,7 @@ class TaskController(Controller):
         "/{task_id:str}",
         summary="Read a task",
         description="`state` is **derived** from the executions — never written alongside them.",
+        responses=failures(404),
     )
     async def read(self, task_id: str, tasks: ports.Tasks) -> Task:
         return await tasks.get(task_id)
@@ -91,6 +104,7 @@ class TaskController(Controller):
             "Without that confirmation the outcome is `indeterminate` — Python code that may still be running is never "
             "declared cancelled."
         ),
+        responses=failures(404, 409),
     )
     async def cancel(
         self,
@@ -113,8 +127,18 @@ class TaskController(Controller):
             "`204` means there is no terminal outcome yet. A non-successful terminal outcome answers `409` with the "
             "error code (`task_failed`, `task_indeterminate`, ...)."
         ),
+        responses={
+            200: ResponseSpec(
+                bytes,
+                media_type=BLOB,
+                description="The return value, in the codec the function was written with",
+                generate_examples=False,
+            ),
+            **failures(404, 409),
+            204: ResponseSpec(None, description="No terminal outcome yet — ask again"),
+        },
     )
-    async def result(self, task_id: str, tasks: ports.Tasks, wait: int = 0) -> Response[bytes | None]:
+    async def result(self, task_id: str, tasks: ports.Tasks, wait: int = 0) -> Response[bytes]:
         """A body, or nothing at all.
 
         The empty answer carries no media type, because there is no media: a 204 with
@@ -138,17 +162,38 @@ class TaskController(Controller):
             "Length-prefixed msgpack frames: 4 bytes big-endian, then the frame. A frame is an item or a failure, and "
             "a failure is the last one — by the time a generator raises, the caller already has the items before it, "
             "and there is no status code left to fail with.\n\n"
+            "The body is that framing, so it has no JSON schema: OpenAPI can describe a stream's bytes and not the "
+            "boundaries a reader has to cut them on.\n\n"
             "Not resumable. A dropped stream is a dead stream; submit another task."
         ),
+        responses={
+            200: ResponseSpec(
+                bytes,
+                media_type=FRAMES,
+                description="Length-prefixed msgpack frames, one per item, until the generator ends or fails",
+                generate_examples=False,
+            ),
+            **failures(404, 422),
+        },
     )
     async def stream(self, task_id: str, dispatcher: ports.Dispatcher) -> Stream:
         return Stream(framed(dispatcher.stream(task_id)), media_type=FRAMES)
 
-    @get("/{task_id:str}/executions", summary="List the physical attempts")
+    @get(
+        "/{task_id:str}/executions",
+        summary="List the physical attempts",
+        description="One row per attempt, `ordinal`-counted. A retry appears here; it never appears as another task.",
+        responses=failures(404),
+    )
     async def list_executions(self, task_id: str, executions: ports.Executions) -> Page[Execution]:
         return await executions.list(task_id)
 
-    @get("/{task_id:str}/executions/{ordinal:int}", summary="Read one attempt")
+    @get(
+        "/{task_id:str}/executions/{ordinal:int}",
+        summary="Read one attempt",
+        description="One attempt by its ordinal, including which node took it and what it ended as.",
+        responses=failures(404),
+    )
     async def get_execution(self, task_id: str, ordinal: int, executions: ports.Executions) -> Execution:
         return await executions.get(task_id, ordinal)
 
@@ -162,6 +207,7 @@ class TaskController(Controller):
             "Retrying an `indeterminate` outcome requires `acknowledge_duplication: true`: the system does not know "
             "whether the previous execution had side effects, and will not pretend it does."
         ),
+        responses=failures(404, 409),
     )
     async def create_execution(
         self,

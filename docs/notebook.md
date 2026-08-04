@@ -1,8 +1,6 @@
 # Jupyter notebooks
 
-Skyward can run a Jupyter kernel on an existing compute while Jupyter stays on
-the local machine. Notebook cells execute remotely; the notebook file, outputs,
-and local Jupyter extensions remain local.
+Skyward can run a Jupyter kernel on an existing compute while Jupyter stays on the local machine. Notebook cells execute remotely; the notebook file, outputs, and local Jupyter extensions remain local.
 
 ## Installation
 
@@ -27,8 +25,7 @@ with sky.Compute(
     ...
 ```
 
-The provisioner attaches to the named compute. It does not create or resize
-one. The compute must be ready before the kernel starts.
+The provisioner attaches to the named compute. It does not create or resize one. The compute must be ready before the kernel starts.
 
 ## Install a kernel
 
@@ -39,14 +36,9 @@ sky notebook install research
 sky notebook install research --url http://127.0.0.1:7590
 ```
 
-The installed kernel is named `skyward-research` and appears in Jupyter as
-**Skyward (research)**. The compute argument is a name or id. With no `--url`,
-the CLI records `SKYWARD_URL` when it is set during installation. If no URL is
-recorded, the provisioner resolves `SKYWARD_URL` when Jupyter starts and
-otherwise uses the embedded daemon.
+The installed kernel is named `skyward-research` and appears in Jupyter as **Skyward (research)**. The compute argument is a name or id. With no `--url`, the CLI records `SKYWARD_URL` when it is set during installation. If no URL is recorded, the provisioner resolves `SKYWARD_URL` when Jupyter starts and otherwise uses the embedded daemon.
 
-To write the kernelspec into a specific directory instead of the user-level
-Jupyter location:
+To write the kernelspec into a specific directory instead of the user-level Jupyter location:
 
 ```bash
 sky notebook install research --directory ./kernels --output json
@@ -63,12 +55,9 @@ sky notebook remove research --directory ./kernels
 
 ## Kernel lifecycle
 
-The provisioner starts a streaming task on the compute. That task launches
-`ipykernel`, waits for its connection channels, and forwards the five Jupyter
-channels through the daemon. No local SSH connection is opened.
+The provisioner starts a streaming task on the compute. That task launches `ipykernel`, waits for its connection channels, and forwards the five Jupyter channels through the daemon. No local SSH connection is opened.
 
-The current provisioner requires exactly one ready node. Use the distributed
-function API for multi-node execution.
+The current provisioner requires exactly one ready node. Use the distributed function API for multi-node execution.
 
 - Interrupt uses Jupyter's message-based interrupt mode.
 - Restart ends the remote kernel stream and starts a new one.
@@ -90,8 +79,8 @@ If the kernel cannot start, check these conditions:
 - the compute exists and is ready;
 - the kernelspec points to the correct daemon with `--url` or `SKYWARD_URL`.
 
-## Related pages
+## Next steps
 
-- [CLI](cli.md)
-- [Getting started](getting-started.md)
-- [Providers](providers.md)
+- **[CLI](cli.md)** — managing the compute behind the kernel
+- **[Getting started](getting-started.md)** — installation and credential setup
+- **[Providers](providers.md)** — choosing what the kernel runs on

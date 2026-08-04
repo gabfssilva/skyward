@@ -11,7 +11,7 @@ from skyward.server.application.source import Source
 from skyward.server.application.ssh import SshChannel
 from skyward.shared.observability import logger
 from skyward.shared.provider import Machine
-from skyward.shared.schemas import Executor, Image, NodeState, Options, PluginRef
+from skyward.shared.schemas import Executor, Image, NodeState, Options, PhaseMark, PluginRef
 from skyward.worker import bootstrap, plugins, worker
 from skyward.worker.journal import SKYWARD_DIR, Console, Health, Metric, NodeEvent, Phase
 
@@ -23,7 +23,7 @@ DEFAULT_OPTIONS = Options()
 type Listener = Callable[[NodeState, str | None], None]
 type Output = Callable[[str, str | None], None]
 type Sample = Callable[[str, float], None]
-type Phased = Callable[[str, str, str | None], None]
+type Phased = Callable[[PhaseMark, str, str | None], None]
 
 
 class BootstrapFailedError(RuntimeError):

@@ -1,6 +1,6 @@
 # Compute and task dispatch
 
-The v2 client uses `Compute` for both an embedded control plane and a remote daemon. A `Compute` can receive one provider descriptor or several `Spec` alternatives. The alternatives are evaluated against the daemon's cached provider offers.
+The client uses `Compute` for both an embedded control plane and a remote daemon. A `Compute` can receive one provider descriptor or several `Spec` alternatives. The alternatives are evaluated against the daemon's cached provider offers.
 
 ```python
 import skyward as sky

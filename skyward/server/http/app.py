@@ -6,7 +6,6 @@ from collections.abc import Coroutine
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-import msgspec
 from litestar import Litestar
 from litestar.di import Provide
 from litestar.openapi import OpenAPIConfig
@@ -36,6 +35,7 @@ from skyward.server.http.controllers.tasks import TaskController
 from skyward.server.http.emitter import ReconcilingEventEmitter
 from skyward.server.http.exceptions import skyward_error_handler, unhandled_error_handler
 from skyward.server.http.listeners import build_listeners
+from skyward.server.http.openapi import TAGS, describe
 from skyward.server.persistence.computes import ComputeStore, GenerationStore
 from skyward.server.persistence.db import DEFAULT_PATH, connect
 from skyward.server.persistence.events import EventStore
@@ -48,6 +48,7 @@ from skyward.server.persistence.tasks import ExecutionStore, TaskStore
 from skyward.shared import codec
 from skyward.shared.errors import SkywardError
 from skyward.shared.observability import LogConfig, setup_logging
+from skyward.shared.schemas import ConsoleEvent, Event, MetricEvent, PhaseEvent, PhaseMark
 
 TICK_SECONDS = 5
 METER_SECONDS = 10
@@ -119,20 +120,18 @@ def services() -> Services:
     tasks = TaskStore(computes, nodes, blobs)
 
     async def console(compute: str, node: str, content: str, task: str | None) -> None:
-        line = {"compute": compute, "node": node, "content": content, **({"task": task} if task else {})}
-        payload = await codec.json(dict[str, str]).encode(line)
-        await events.record("node.console", payload, compute=compute, task=task)
+        line = ConsoleEvent(compute=compute, node=node, content=content, task=task)
+        await events.record("node.console", await codec.json(Event).encode(line), compute=compute, task=task)
 
-    async def phased(compute: str, node: str, event: str, phase: str, error: str | None) -> None:
+    async def phased(compute: str, node: str, event: PhaseMark, phase: str, error: str | None) -> None:
         """A bootstrap phase turning over is recorded, so a late subscriber replays the checklist."""
-        mark = {"compute": compute, "node": node, "event": event, "phase": phase, "at": now().isoformat(), **({"error": error} if error else {})}
-        payload = await codec.json(dict[str, str]).encode(mark)
-        await events.record("node.phase", payload, compute=compute)
+        mark = PhaseEvent(compute=compute, node=node, event=event, phase=phase, at=now(), error=error)
+        await events.record("node.phase", await codec.json(Event).encode(mark), compute=compute)
 
     async def sampled(compute: str, node: str, name: str, value: float) -> None:
         """A gauge reading goes out to whoever is watching, and is not written down."""
-        payload = msgspec.json.encode({"compute": compute, "node": node, "name": name, "value": value})
-        await events.publish("node.metrics", payload, compute=compute)
+        reading = MetricEvent(compute=compute, node=node, name=name, value=value)
+        await events.publish("node.metrics", await codec.json(Event).encode(reading), compute=compute)
 
     def spoken(recording: Coroutine[None, None, None]) -> None:
         """A node's output goes straight to the log, not through the wakeup bus.
@@ -308,9 +307,11 @@ def create_app(svc: Services | None = None, database: Path | None = None, loggin
             ),
             path="/schema",
             render_plugins=[ScalarRenderPlugin()],
+            tags=list(TAGS),
         ),
     )
 
+    describe(app)
     svc.wake.bind(app.emit)
     return app
 

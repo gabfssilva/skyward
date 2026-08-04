@@ -11,13 +11,12 @@ from __future__ import annotations
 from datetime import datetime
 from math import ceil
 
-import msgspec
-
 from skyward.server.persistence.computes import ComputeStore
 from skyward.server.persistence.events import EventStore
 from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.store import now
-from skyward.shared.schemas import BillingUnit, Node
+from skyward.shared import codec
+from skyward.shared.schemas import BillingUnit, CostEvent, Event, Node
 
 UNIT_SECONDS: dict[BillingUnit, int] = {"second": 1, "minute": 60, "hour": 3600}
 
@@ -59,10 +58,12 @@ class Meter:
         for compute_id in await self._computes.live():
             nodes = await self._nodes.of(compute_id)
             metered = [node for node in nodes if node.launched_at is not None]
-            payload = msgspec.json.encode({
-                "compute": compute_id,
-                "cost": round(sum(accrued(node, at) for node in metered), 6),
-                "nodes": sum(1 for node in metered if node.terminated_at is None),
-                "at": at.isoformat(),
-            })
+            payload = await codec.json(Event).encode(
+                CostEvent(
+                    compute=compute_id,
+                    cost=round(sum(accrued(node, at) for node in metered), 6),
+                    nodes=sum(1 for node in metered if node.terminated_at is None),
+                    at=at,
+                )
+            )
             await self._events.publish("compute.cost", payload, compute=compute_id)

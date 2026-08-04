@@ -1,6 +1,6 @@
 # Configuration
 
-Skyward v2 does not read a configuration file. The control plane target is resolved for each client or CLI call.
+Skyward does not read a configuration file. The control plane target is resolved for each client or CLI call.
 
 ## Control plane resolution
 

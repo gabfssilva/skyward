@@ -21,14 +21,7 @@ from typing import Literal, Protocol, TextIO, assert_never
 import msgspec
 
 from skyward.core.client import Client
-
-GAUGES = frozenset({"node.metrics", "compute.cost"})
-"""The readings, which the log has no line for and could not read anyway.
-
-Every other event's payload is strings; a gauge's is the number it carries. The
-log renders neither, and it has to say so before it decodes rather than after —
-a payload it cannot read is not a reason to stop reading the stream.
-"""
+from skyward.shared.schemas import ComputeEvent, ConsoleEvent, Event, NodeEvent
 
 type ConsoleMode = Literal["rich", "log"]
 
@@ -106,10 +99,8 @@ class Console:
     async def follow(self) -> None:
         color = self.out.isatty()
         try:
-            async for event, payload in self._client.events(self._compute):
-                if event in GAUGES:
-                    continue
-                if line := render(event, msgspec.json.decode(payload, type=dict[str, str]), color):
+            async for _, payload in self._client.events(self._compute):
+                if line := render(msgspec.json.decode(payload, type=Event), color):
                     await asyncio.to_thread(print, line, file=self.out, flush=True)
         except asyncio.CancelledError:
             raise
@@ -117,28 +108,25 @@ class Console:
             print(f"skyward: the event stream stopped ({exc})", file=self.out, flush=True)
 
 
-def render(event: str, payload: dict[str, str], color: bool = False) -> str | None:
+def render(event: Event, color: bool = False) -> str | None:
     """One event, as a line, or nothing if it is not worth a line.
 
     A task's outcome gets no line: the caller is holding the result or the exception
     and has a better account of it than a log line could give. What the machines are
-    doing is a different matter — nobody else is going to say it.
+    doing is a different matter — nobody else is going to say it. The gauges get
+    none either: a reading every couple of seconds is a graph, not a log.
     """
-    node = payload.get("node", "")
     match event:
-        case "node.console":
-            return f"{_who(node, color)} {_sep(color)} {payload.get('content', '')}"
-        case "node.failed" | "compute.degraded":
-            who = node or payload.get("compute", "")
-            detail = payload.get("error") or "failed"
-            return f"{_who(who, color)} {_sep(color)} {_badge(event.split('.')[-1], color)} {_dim(detail, color)}"
-        case "compute.provisioning" | "compute.ready" | "compute.deleted":
-            who = payload.get("compute", "")
-            return f"{_who(who, color)} {_sep(color)} {_badge(event.removeprefix('compute.'), color)}"
-        case "node.metrics" | "node.phase":
-            return None
-        case _ if event.startswith("node."):
-            return f"{_who(node, color)} {_sep(color)} {_badge(event.removeprefix('node.'), color)}"
+        case ConsoleEvent(node=node, content=content):
+            return f"{_who(node, color)} {_sep(color)} {content}"
+        case NodeEvent(node=node, state="failed" as state, error=error):
+            return f"{_who(node, color)} {_sep(color)} {_badge(state, color)} {_dim(error or 'failed', color)}"
+        case NodeEvent(node=node, state=state):
+            return f"{_who(node, color)} {_sep(color)} {_badge(state, color)}"
+        case ComputeEvent(compute=compute, state="degraded" as state, error=error):
+            return f"{_who(compute, color)} {_sep(color)} {_badge(state, color)} {_dim(error or 'failed', color)}"
+        case ComputeEvent(compute=compute, state="provisioning" | "ready" | "deleted" as state):
+            return f"{_who(compute, color)} {_sep(color)} {_badge(state, color)}"
         case _:
             return None
 

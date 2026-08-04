@@ -9,6 +9,7 @@ from skyward.shared.schemas import (
     ComputeCreate,
     ComputeSpecPatch,
     ComputeState,
+    DependencyState,
     Execution,
     ExecutionCreate,
     Function,
@@ -311,4 +312,4 @@ class Health(Protocol):
 
     async def ready(self) -> bool: ...
 
-    async def dependencies(self) -> dict[str, str]: ...
+    async def dependencies(self) -> dict[str, DependencyState]: ...

@@ -40,9 +40,18 @@ class Json[T]:
 
     Structs, specs, statuses — small, frequent, and cheap. The decoder is built
     once per type because building one is not.
+
+    The overloads are msgspec's own: a union alias is not a ``type[T]``, so a
+    decoder for one is typed by the caller's annotation rather than inferred.
     """
 
-    def __init__(self, kind: type[T]) -> None:
+    @overload
+    def __init__(self, kind: type[T]) -> None: ...
+
+    @overload
+    def __init__(self: Json[Any], kind: Any) -> None: ...
+
+    def __init__(self, kind: Any) -> None:
         self._encoder = msgspec.json.Encoder()
         self._decoder = msgspec.json.Decoder(kind)
 
@@ -112,8 +121,16 @@ def loads[T](raw: bytes) -> T:
     return cloudpickle.loads(lz4.frame.decompress(raw))
 
 
+@overload
+def json[T](kind: type[T]) -> Json[T]: ...
+
+
+@overload
+def json(kind: Any) -> Json[Any]: ...
+
+
 @cache
-def json[T](kind: type[T]) -> Json[T]:
+def json(kind: Any) -> Json[Any]:
     return Json(kind)
 
 

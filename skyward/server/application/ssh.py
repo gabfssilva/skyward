@@ -21,6 +21,8 @@ type Channel = tuple[asyncssh.SSHReader[bytes], asyncssh.SSHWriter[bytes]]
 
 
 class Result(Struct, frozen=True):
+    """What one command said on one machine: its exit code and both its streams."""
+
     exit_code: int
     stdout: str
     stderr: str

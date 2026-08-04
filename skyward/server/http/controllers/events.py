@@ -3,10 +3,12 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 
 from litestar import Controller, get
+from litestar.openapi.datastructures import ResponseSpec
 from litestar.params import Parameter
 from litestar.response import ServerSentEvent, ServerSentEventMessage
 
 from skyward.server.application import ports
+from skyward.shared.schemas import Event
 
 
 class EventController(Controller):
@@ -23,8 +25,30 @@ class EventController(Controller):
             "A slow consumer never blocks a commit: the adapter closes the connection when its local queue overflows and "
             "the client reconnects from its last id.\n\n"
             "Task stdout/stderr and node bootstrap output are events here. There is no `logs` resource with a second "
-            "source of truth."
+            "source of truth.\n\n"
+            "The schema below is one message's `data:`, not the stream. Its `type` tag discriminates the union; the "
+            "frame's `event:` field is finer than that tag and is what `types` filters on:\n\n"
+            "| `event:` | `data.type` |\n"
+            "|---|---|\n"
+            "| `compute.ready`, `compute.degraded`, `compute.deleted` | `compute.state` |\n"
+            "| `compute.abandoned` | `compute.abandoned` |\n"
+            "| `compute.cost` | `compute.cost` |\n"
+            "| `node.{state}` — ten of them | `node.state` |\n"
+            "| `node.console` | `node.console` |\n"
+            "| `node.phase` | `node.phase` |\n"
+            "| `node.metrics` | `node.metrics` |\n"
+            "| `task.started`, `task.succeeded`, `task.failed`, `task.indeterminate` | `task.state` |\n\n"
+            "`compute.cost` and `node.metrics` are published rather than recorded: they ride the live feed, carry the "
+            "last sequence seen rather than one of their own, and never replay."
         ),
+        responses={
+            200: ResponseSpec(
+                Event,
+                media_type="text/event-stream",
+                description="One `data:` payload per message, framed as Server-Sent Events",
+                generate_examples=False,
+            )
+        },
     )
     async def stream(
         self,

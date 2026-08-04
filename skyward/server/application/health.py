@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.tables import ComputeRow
+from skyward.shared.schemas import DependencyState
 
 
 class Health:
@@ -21,7 +22,7 @@ class Health:
     async def ready(self) -> bool:
         return await self._store()
 
-    async def dependencies(self) -> dict[str, str]:
+    async def dependencies(self) -> dict[str, DependencyState]:
         return {"store": "ok" if await self._store() else "unreachable"}
 
     async def _store(self) -> bool:

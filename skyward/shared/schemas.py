@@ -105,6 +105,14 @@ type ErrorCode = Literal[
 
 
 class Error(Struct, frozen=True):
+    """Every failure, in one shape, whatever produced it.
+
+    ``code`` is the closed set a client matches on, so nobody parses prose.
+    ``retryable`` is a property of the failure rather than a guess left to the
+    caller: a revision conflict is worth re-reading and re-sending, and a spec no
+    provider can satisfy is not.
+    """
+
     code: ErrorCode
     message: str
     retryable: bool
@@ -113,11 +121,20 @@ class Error(Struct, frozen=True):
 
 
 class ProviderRef(Struct, frozen=True):
+    """Which account a spec wants to buy from, and how that account is configured."""
+
     kind: str
     config: dict[str, Any] = field(default_factory=dict)
 
 
 class PluginRef(Struct, frozen=True):
+    """A plugin as it travels: a name and its parameters, never an object.
+
+    A plugin is rebuilt on the node from exactly this, which is why it cannot hold
+    a closure or a live handle. Its behaviour is its class's methods; its identity
+    is ``kind``.
+    """
+
     kind: str
     params: dict[str, Any] = field(default_factory=dict)
 
@@ -150,6 +167,14 @@ class MetricSpec(Struct, frozen=True):
 
 
 class Image(Struct, frozen=True):
+    """The environment a node builds before it runs anything.
+
+    The base, the interpreter, the packages and where they resolve from. What the
+    user shipped from their own machine is not here — ``includes`` is packed into
+    a blob client-side and only its hash travels, because a spec is written to the
+    compute row and served back by the API.
+    """
+
     base: str | None = None
     python: str | None = None
     pip: Sequence[str] = ()
@@ -253,6 +278,13 @@ class Endpoint(Struct, frozen=True):
 
 
 class Worker(Struct, frozen=True):
+    """How much work a node takes at once, and what runs it.
+
+    ``concurrency`` unset lets the node decide from what it has. The executor is
+    the backend the tasks run on: threads by default, processes or loky when the
+    work holds the GIL.
+    """
+
     concurrency: int | None = None
     executor: Executor = "thread"
     reuse: bool = True
@@ -269,6 +301,14 @@ class Worker(Struct, frozen=True):
 
 
 class Spec(Struct, frozen=True):
+    """One shape of machine that would do, from one account.
+
+    A compute carries several of these as a preference list and buys exactly one:
+    everything here is what the market filters offers on, and everything that must
+    be true of the whole fleet — volumes, plugins, node counts — is on the compute
+    instead.
+    """
+
     provider: ProviderRef
     accelerator: str | None = None
     accelerator_count: int = 1
@@ -289,12 +329,26 @@ class Spec(Struct, frozen=True):
 
 
 class NodeBounds(Struct, frozen=True):
+    """How many machines, and how much of that is negotiable.
+
+    ``desired`` is the target. ``min`` is the count at which work may start, which
+    is what lets a job of eight begin on four. ``max`` is the ceiling autoscaling
+    may reach. Both unset means the target is also the floor and the ceiling.
+    """
+
     desired: int
     min: int | None = None
     max: int | None = None
 
 
 class RetryPolicy(Struct, frozen=True):
+    """How many times to try again, split by whether trying again is safe.
+
+    A task that never started can be re-run freely. A task whose node went silent
+    after it may have run is a different question, and it defaults to zero because
+    the system does not know whether it had side effects and will not pretend to.
+    """
+
     safe_retries: int = 3
     ambiguous_retries: int = 0
 
@@ -335,6 +389,14 @@ class Options(Struct, frozen=True):
 
 
 class ComputeSpec(Struct, frozen=True):
+    """Everything a compute was asked to be. Intent, never observation.
+
+    Only a client writes it, and only through ``PATCH``. Of its fields exactly one
+    is mutable in place — ``nodes``, which resizes — and changing any other is
+    drift: it is recorded, the applied definition is kept, and replacing the
+    machines takes a new generation.
+    """
+
     specs: tuple[Spec, ...]
     nodes: NodeBounds
     selection: Selection = "cheapest"
@@ -363,15 +425,26 @@ class ComputeSpec(Struct, frozen=True):
 
 
 class ComputeSpecPatch(Struct, frozen=True):
+    """The one field of a spec that can change without replacing machines."""
+
     nodes: NodeBounds
 
 
 class ComputeCreate(Struct, frozen=True):
+    """What it takes to ask for a compute: a definition, and optionally a name to find it by."""
+
     spec: ComputeSpec
     name: str | None = None
 
 
 class ComputeStatus(Struct, frozen=True):
+    """What the reconciler has observed. Never written by a client.
+
+    ``observed_generation`` against the compute's ``generation`` is the progress:
+    the gap between them *is* the pending work, which is why there is no operation
+    resource to poll.
+    """
+
     state: ComputeState
     observed_generation: int
     nodes_ready: int
@@ -381,11 +454,27 @@ class ComputeStatus(Struct, frozen=True):
 
 
 class Lease(Struct, frozen=True):
+    """Who currently owns the compute, and until when.
+
+    A liveness signal the owning process renews, not a lock on the resource. Zero
+    owners is legitimate and temporary — a daemon restarting, a script killed —
+    and only the holder opens SSH connections to the machines. Losing it destroys
+    nothing by itself.
+    """
+
     owner: str | None = None
     expires_at: datetime | None = None
 
 
 class Compute(Struct, frozen=True):
+    """A set of machines held under one intention, as the API serves it.
+
+    ``spec`` is what was asked for and ``status`` is what was observed, written by
+    different actors and kept in one resource so that reading both is one call.
+    ``revision`` is the concurrency token behind ``ETag`` and ``If-Match``;
+    ``generation`` counts definitions, not writes.
+    """
+
     id: str
     name: str | None
     revision: int
@@ -397,11 +486,21 @@ class Compute(Struct, frozen=True):
 
 
 class LeaseClaim(Struct, frozen=True):
+    """A bid for ownership: who is claiming, and for how long before it lapses."""
+
     owner: str
     ttl_seconds: int
 
 
 class Node(Struct, frozen=True):
+    """One machine, ranked, as the control plane knows it.
+
+    The row exists before the provider is asked for a machine, which is what makes
+    provisioning idempotent — ``machine`` is null until there is one to name. A
+    node that died keeps its row and its ``provider_binding`` until the provider
+    confirms the instance is gone, so nothing goes missing unnoticed.
+    """
+
     id: str
     compute_id: str
     generation: int
@@ -424,6 +523,12 @@ class Node(Struct, frozen=True):
 
 
 class Function(Struct, frozen=True):
+    """A registered piece of code, named by the hash of its serialized bytes.
+
+    The metadata only. The code is a blob, fetched as one — which is what lets a
+    task name its function without carrying it.
+    """
+
     sha256: str
     size_bytes: int
     codec: str
@@ -432,6 +537,13 @@ class Function(Struct, frozen=True):
 
 
 class Execution(Struct, frozen=True):
+    """One physical attempt at a task.
+
+    ``ordinal`` counts the attempts and ``rank`` says which node took it. A retry
+    is another execution pointing ``retry_of`` at the last one — never another
+    task, because the task id is the handle the caller is holding.
+    """
+
     id: str
     rank: int
     ordinal: int
@@ -445,6 +557,12 @@ class Execution(Struct, frozen=True):
 
 
 class TaskCreate(Struct, frozen=True):
+    """One call to place: the code, its arguments, and how widely to run it.
+
+    Arguments travel inline below a size threshold and as a blob above it, which
+    is why there are two fields for them and exactly one is set.
+    """
+
     compute: str
     function: str
     dispatch: Dispatch
@@ -457,6 +575,14 @@ class TaskCreate(Struct, frozen=True):
 
 
 class Task(Struct, frozen=True):
+    """One call — function plus arguments — and its one terminal outcome.
+
+    Append-only. ``state`` is derived from the executions rather than written
+    beside them, and is stored only so that listing by state is a query instead of
+    a scan. ``correlation_id`` is how the tasks of one ``&``, ``gather`` or ``map``
+    are found together: a field on each of them, not a resource of their own.
+    """
+
     id: str
     compute_id: str
     generation: int
@@ -474,11 +600,25 @@ class Task(Struct, frozen=True):
 
 
 class ExecutionCreate(Struct, frozen=True):
+    """A retry, and the admission that it may be a second run.
+
+    ``acknowledge_duplication`` is required to retry an indeterminate outcome: the
+    system does not know whether the previous attempt had side effects, and the
+    caller is the only one in a position to say that running twice is acceptable.
+    """
+
     acknowledge_duplication: bool = False
     ranks: tuple[int, ...] | None = None
 
 
 class Generation(Struct, frozen=True):
+    """One frozen definition of a compute, and whether the machines match it yet.
+
+    History is kept rather than overwritten, because a rollback is a generation
+    too — it is a new number carrying an old spec, not an erasure of what happened
+    in between.
+    """
+
     number: int
     spec: ComputeSpec
     hash: str
@@ -487,22 +627,47 @@ class Generation(Struct, frozen=True):
 
 
 class GenerationCreate(Struct, frozen=True):
+    """Replace the machines: with the pending drift, or with an older definition.
+
+    Without ``source`` this applies whatever drift the status is carrying. With
+    one, it rolls back to that generation. ``force`` marks unresolved tasks
+    indeterminate rather than refusing while executions are still live.
+    """
+
     source: int | None = None
     force: bool = False
 
 
 class Page[T](Struct, frozen=True):
+    """A slice of a listing, and the cursor that continues it.
+
+    ``next_cursor`` is null on the last page. Cursors are opaque and are not
+    offsets — a row inserted mid-walk does not shift what a held cursor returns.
+    """
+
     items: tuple[T, ...]
     next_cursor: str | None = None
 
 
 class ProviderKind(Struct, frozen=True):
+    """A kind of cloud this build can talk to, and what registering one needs.
+
+    Capability negotiation, before anything is created: a kind absent from this
+    list cannot be registered, usually because its SDK is not installed.
+    """
+
     kind: str
     credential_fields: tuple[str, ...]
     offers_ttl_seconds: int
 
 
 class ProviderCreate(Struct, frozen=True):
+    """An account to register: what to call it, which cloud it is, and what opens it.
+
+    ``credentials`` are validated against the kind's declared fields before the
+    row is written, and no read path returns them afterwards.
+    """
+
     name: str
     kind: str
     credentials: dict[str, str] = field(default_factory=dict)
@@ -510,6 +675,13 @@ class ProviderCreate(Struct, frozen=True):
 
 
 class Provider(Struct, frozen=True):
+    """A registered account, as the API serves it — which is to say, without its secrets.
+
+    ``offers_fetched_at`` and ``offers_count`` describe the cached catalog behind
+    it, and ``last_error`` is why the last refresh failed. A failed refresh leaves
+    the stale offers in place: stale offers beat no offers.
+    """
+
     id: str
     name: str
     kind: str
@@ -522,6 +694,15 @@ class Provider(Struct, frozen=True):
 
 
 class Offer(Struct, frozen=True):
+    """One buyable machine shape from one account, normalized.
+
+    The accelerator name and its VRAM are parsed into the shared vocabulary here
+    rather than in each adapter, which is what stops the same GPU from being two
+    different accelerators depending on who is selling it. ``price`` is the
+    cheapest the offer can be had for, and it is what ordering and budget filters
+    compare on.
+    """
+
     id: str
     provider_id: str
     provider_name: str
@@ -572,3 +753,138 @@ class Offer(Struct, frozen=True):
 
         prices = [price for price in (self.spot_price, self.on_demand_price) if price is not None]
         force_setattr(self, "price", min(prices) if prices else None)
+
+
+type DependencyState = Literal["ok", "unreachable"]
+
+
+class Liveness(Struct, frozen=True):
+    """Whether the process answers. Says nothing about the store or the providers."""
+
+    live: bool
+
+
+class Readiness(Struct, frozen=True):
+    """Whether the daemon can serve: schema in place, recovery done."""
+
+    ready: bool
+
+
+type PhaseMark = Literal["started", "completed", "failed"]
+"""Whether a bootstrap phase opened, closed, or broke."""
+
+type TaskEventState = Literal["started", "succeeded", "failed", "indeterminate"]
+"""What the stream says about a task: that it began, or how it ended.
+
+Narrower than :data:`TaskState`, which is the task resource's own vocabulary. A
+task that was never placed has a state and no event, and ``started`` is a moment
+rather than a state — the two are not the same alphabet and are not merged.
+"""
+
+
+class ComputeEvent(Struct, frozen=True, tag_field="type", tag="compute.state"):
+    """A compute reached a state worth saying out loud.
+
+    Carried by ``compute.ready``, ``compute.degraded`` and ``compute.deleted``.
+    Not every state gets one: the stream reports the transitions a watcher acts
+    on, not every pass the reconciler makes.
+    """
+
+    compute: str
+    state: ComputeState
+    error: str | None = None
+
+
+class ComputeAbandoned(Struct, frozen=True, tag_field="type", tag="compute.abandoned"):
+    """Nothing renewed the lease and ``delete_on_exit`` was set, so it is going away.
+
+    Its own fact rather than a compute state, because a lapsed lease is not a
+    failure — it is what a client exiting looks like from in here.
+    """
+
+    compute: str
+
+
+class CostEvent(Struct, frozen=True, tag_field="type", tag="compute.cost"):
+    """What the compute has accrued so far, and over how many live machines.
+
+    Published rather than recorded: a gauge sampled every few seconds has no
+    replay value, and the event log has no GC to save it from one.
+    """
+
+    compute: str
+    cost: float
+    nodes: int
+    at: datetime
+
+
+class NodeEvent(Struct, frozen=True, tag_field="type", tag="node.state"):
+    """One machine's lifecycle moved, carried by every ``node.{state}``.
+
+    ``state`` repeats the event name because a payload that has been written
+    down, exported, or replayed out of the stream has to say what it is without
+    the frame that carried it.
+    """
+
+    compute: str
+    node: str
+    state: NodeState
+    error: str | None = None
+
+
+class ConsoleEvent(Struct, frozen=True, tag_field="type", tag="node.console"):
+    """A line a node printed, and the task it belongs to when it belongs to one.
+
+    Recorded, because output that only existed live would be output a client that
+    reconnected could never see.
+    """
+
+    compute: str
+    node: str
+    content: str
+    task: str | None = None
+
+
+class PhaseEvent(Struct, frozen=True, tag_field="type", tag="node.phase"):
+    """A bootstrap phase turning over, so a late subscriber replays the checklist.
+
+    ``phase`` names the step; ``event`` says whether it opened, closed, or broke.
+    """
+
+    compute: str
+    node: str
+    event: PhaseMark
+    phase: str
+    at: datetime
+    error: str | None = None
+
+
+class MetricEvent(Struct, frozen=True, tag_field="type", tag="node.metrics"):
+    """One gauge reading off one node. Published rather than recorded, like ``compute.cost``."""
+
+    compute: str
+    node: str
+    name: str
+    value: float
+
+
+class TaskEvent(Struct, frozen=True, tag_field="type", tag="task.state"):
+    """A task began, or reached the one terminal outcome it is allowed."""
+
+    compute: str
+    task: str
+    state: TaskEventState
+
+
+type Event = (
+    ComputeEvent | ComputeAbandoned | CostEvent | NodeEvent | ConsoleEvent | PhaseEvent | MetricEvent | TaskEvent
+)
+"""Everything the SSE stream carries, as one tagged union.
+
+The SSE frame's ``event:`` field is the name a subscriber filters on, and it is
+finer than this: ten node states and four task outcomes share a struct each. The
+``type`` tag inside the payload is the coarser of the two, and it is what makes
+the payload decodable on its own — by a client that matches on the struct instead
+of on a string, and by a reader of the OpenAPI document, which has no way to
+express a discriminator that lives outside the body.
+"""

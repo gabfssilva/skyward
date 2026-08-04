@@ -1,7 +1,8 @@
-# Skyward v2
+# Skyward
 
-This file is the compact, single-file reference for the current v2 surface. The
-canonical pages linked below contain the longer explanations and runnable guides.
+This file is the compact, single-file reference for the current public surface.
+The canonical pages linked below contain the longer explanations and runnable
+guides.
 
 ## Mental model
 
@@ -246,8 +247,10 @@ executions, task results, and task streams have dedicated endpoints.
 filters for Compute or task resources. Events are persisted in the daemon; live
 metrics are not an event-history substitute.
 
-The checked-in `openapi.json` document is generated from
-`skyward.server.http.app.create_app()`.
+The full OpenAPI document is published at
+https://gabfssilva.github.io/skyward/openapi.json and rendered at
+https://gabfssilva.github.io/skyward/http-api/. It is generated from
+`skyward.server.http.app.create_app()` by `scripts/gen_openapi.py`.
 
 ## Constraints
 

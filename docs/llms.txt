@@ -6,7 +6,7 @@ Skyward turns ordinary functions into remote compute tasks: define lazily with `
 
 ## Complete reference
 
-- [Skyward for LLMs (full, single file)](https://gabfssilva.github.io/skyward/llms-full.txt): the complete v2 usage surface — Computes, tasks, providers, accelerators, runtime API, distributed collections, plugins, storage, events, CLI, recipes, and constraints. Start here.
+- [Skyward for LLMs (full, single file)](https://gabfssilva.github.io/skyward/llms-full.txt): the complete usage surface — Computes, tasks, providers, accelerators, runtime API, distributed collections, plugins, storage, events, CLI, recipes, and constraints. Start here.
 
 ## Docs
 

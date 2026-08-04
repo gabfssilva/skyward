@@ -40,7 +40,22 @@ Two kinds of event ride the same feed.
 
 ## The events
 
-Every payload is a flat JSON object. All of them carry `compute`; the ones about a node carry `node`, and the ones about a task carry `task`.
+Every payload is a flat JSON object carrying a `type` tag. All of them carry `compute`; the ones about a node carry `node`, and the ones about a task carry `task`.
+
+The tag is coarser than the `event:` name — ten node states share one payload shape, and so do four task outcomes:
+
+| `event:` | `type` |
+|---|---|
+| `compute.ready`, `compute.degraded`, `compute.deleted` | `compute.state` |
+| `compute.abandoned` | `compute.abandoned` |
+| `compute.cost` | `compute.cost` |
+| `node.{state}` | `node.state` |
+| `node.console` | `node.console` |
+| `node.phase` | `node.phase` |
+| `node.metrics` | `node.metrics` |
+| `task.started`, `task.succeeded`, `task.failed`, `task.indeterminate` | `task.state` |
+
+Filter on the name; decode on the tag. The name is what `types` matches, and the tag is what makes a payload readable once it is out of the frame that carried it — written to a file, replayed by `sky log export`, or handed to a client that never saw the SSE envelope.
 
 ### Compute
 
@@ -54,7 +69,7 @@ Every payload is a flat JSON object. All of them carry `compute`; the ones about
 
 ### Node
 
-`node.{state}` is recorded whenever a node's lifecycle reports a new state, where `state` is one of the node states: `requested`, `provisioning`, `connecting`, `bootstrapping`, `ready`, `draining`, `lost`, `deleting`, `deleted`, `failed`. The payload carries `node`, and `error` when the transition came with one.
+`node.{state}` is recorded whenever a node's lifecycle reports a new state, where `state` is one of the node states: `requested`, `provisioning`, `connecting`, `bootstrapping`, `ready`, `draining`, `lost`, `deleting`, `deleted`, `failed`. The payload carries `node` and `state`, and `error` when the transition came with one. `state` repeats what the event name already said, which is the point: a payload that has been written down or exported has to say what it is without the frame that carried it.
 
 Three more come from the node itself rather than from the reconciler:
 
@@ -75,7 +90,7 @@ Console output goes straight to the log rather than through the daemon's interna
 | `task.failed` | It raised, timed out, or its node went away |
 | `task.indeterminate` | Its outcome cannot be established — the node is gone and the result never arrived |
 
-Each carries `compute` and `task`.
+Each carries `compute`, `task`, and the `state` its name says.
 
 ## Reading it
 

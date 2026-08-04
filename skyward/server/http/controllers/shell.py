@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from litestar import Controller, Request, get, post
+from litestar.openapi.datastructures import ResponseSpec
 from litestar.params import Parameter
 from litestar.response import Stream
 
 from skyward.server.application import ports
+from skyward.server.http.exceptions import failures
 
 BYTES = "application/octet-stream"
 
@@ -25,6 +27,7 @@ class ShellController(Controller):
             "Paired with `GET .../down` by the `cid` the caller mints — the two are one session, and HTTP/1.1 will not "
             "carry both directions on a single request."
         ),
+        responses=failures(404, 422),
     )
     async def up(
         self,
@@ -50,6 +53,15 @@ class ShellController(Controller):
             "then follows it until the shell exits.\n\n"
             "Not resumable. A dropped stream is a dead session; open another."
         ),
+        responses={
+            200: ResponseSpec(
+                bytes,
+                media_type=BYTES,
+                description="Whatever the terminal paints, unframed, until the shell exits",
+                generate_examples=False,
+            ),
+            **failures(404, 422),
+        },
     )
     async def down(
         self,

@@ -26,7 +26,7 @@ from skyward.server.application.source import Source
 from skyward.server.application.ssh import Channel, Result
 from skyward.shared.observability import logger
 from skyward.shared.provider import Machine
-from skyward.shared.schemas import Executor, Image, NodeState, Options, PluginRef
+from skyward.shared.schemas import Executor, Image, NodeState, Options, PhaseMark, PluginRef
 
 logger = logger.bind(component="runtimes")
 
@@ -39,7 +39,7 @@ type Output = Callable[[str, str, str, str | None], None]
 type Sample = Callable[[str, str, str, float], None]
 """(compute, node, name, value)"""
 
-type Phased = Callable[[str, str, str, str, str | None], None]
+type Phased = Callable[[str, str, PhaseMark, str, str | None], None]
 """(compute, node, event, phase, error)"""
 
 CALL_TIMEOUT = 86_400.0

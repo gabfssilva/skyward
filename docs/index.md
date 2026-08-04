@@ -17,7 +17,7 @@
   <img src="demo.gif" alt="Skyward Demo" width="800">
 </p>
 
-Skyward is a Python control plane for accelerator compute. Describe the machines, image, providers, and runtime in Python; submit ordinary functions as tasks; and let the daemon reconcile the requested state with the machines that exist. The same SDK can use an embedded daemon or a remote one.
+Skyward is a Python library for ephemeral accelerator compute. Spin up cloud accelerators (GPUs, TPUs, Trainium, and more), run your ML training code, and tear them down automatically. No infrastructure to manage.
 
 ---
 
@@ -26,8 +26,24 @@ import skyward as sky
 
 
 @sky.function
-def train(batch: list[float]) -> float:
-    return sum(batch) / len(batch)
+def train(data):
+    import torch
+    import torch.nn as nn
+
+    model = nn.Sequential(
+        nn.Linear(784, 128),
+        nn.ReLU(),
+        nn.Linear(128, 10),
+    ).cuda()
+
+    optimizer = torch.optim.Adam(model.parameters())
+
+    for batch, targets in data:
+        loss = nn.functional.cross_entropy(model(batch.cuda()), targets.cuda())
+        loss.backward()
+        optimizer.step()
+
+    return model.state_dict()
 
 
 with sky.Compute(
@@ -36,10 +52,10 @@ with sky.Compute(
     nodes=4,
     plugins=[sky.plugins.Torch()],
 ) as compute:
-    result = train([1.0, 2.0, 3.0]) >> compute
+    result = train(my_data) @ compute  # broadcast to all 4 nodes
 ```
 
-`@sky.function` creates a lazy `Pending` value. The `>>` operator submits it to one node and waits for its result. The context manager creates a Compute resource, waits for it to become ready, and releases it on exit by default.
+`torch` is imported *inside* the function: it needs to exist on the H100, not on your laptop. `@sky.function` makes the call lazy — nothing runs until an operator gives it a target. The `with` block provisions the machines, waits for them to be ready, and tears them down on exit.
 
 ---
 
@@ -164,34 +180,92 @@ with sky.Compute(
     score = pending_score.result()
 ```
 
-All calls are persisted as tasks by the daemon. A task keeps its identity across physical execution retries; the SDK's `Future` points to that stable task.
+A task keeps its identity across execution retries, so the `Future` you hold stays valid even when the node under it is replaced.
 
 ---
 
-## Declarative Compute.
+## Spot instances without the headache.
 
-`Compute` combines one or more placement `Spec` values with the desired node bounds, image, plugins, executor, options, ports, volumes, and lifecycle policy.
+Save 50–90% on compute. Skyward handles spot allocation, preemption detection, and automatic node replacement. You pick a strategy.
+
+```python
+with sky.Compute(
+    provider=sky.AWS(),
+    accelerator=sky.accelerators.H100(),
+    nodes=4,
+    allocation="spot",  # or "on_demand", "spot_if_available", "cheapest"
+) as compute:
+    result = train(data) @ compute
+    # node preempted? already replaced. your code doesn't change.
+```
+
+---
+
+## The cheapest GPU across clouds.
+
+Define multiple specs across providers. Skyward ranks every matching offer by price and takes the cheapest one that's actually available — if provisioning fails, it falls through to the next.
 
 ```python
 with sky.Compute(
     sky.Spec(provider=sky.VastAI(), accelerator=sky.accelerators.H100()),
     sky.Spec(provider=sky.AWS(), accelerator=sky.accelerators.H100()),
+    sky.Spec(provider=sky.RunPod(), accelerator=sky.accelerators.H100()),
     selection="cheapest",
-    nodes=sky.Nodes(desired=2, max=8),
-    delete_on_exit=False,
-    name="training",
 ) as compute:
-    train(data) >> compute
+    result = train(data) @ compute
 ```
 
-The definition is the desired state. The daemon stores it, gives it a generation, and reports observed state separately. A process can leave a Compute running and another process can attach to it:
+---
+
+## Compute that outlives your process.
+
+The machines belong to a daemon, not to the object in your script. Leave one running and attach to it later — from another process, another day.
 
 ```python
+with sky.Compute(
+    provider=sky.AWS(),
+    accelerator=sky.accelerators.H100(),
+    nodes=sky.Nodes(desired=2, max=8),
+    name="training",
+    delete_on_exit=False,
+) as compute:
+    train(data) >> compute
+
 with sky.Compute.attached("training") as compute:
     evaluate(weights) >> compute
 ```
 
-With no `url`, the SDK runs the control plane in the current process against the default SQLite database. With `url` or `SKYWARD_URL`, it uses the same HTTP API against a remote daemon.
+With no `url`, that daemon runs inside your own process against a local SQLite database. With `url` or `SKYWARD_URL`, it's one you started with `sky server start`. Nothing in your code changes.
+
+---
+
+## Batteries included.
+
+Plugins configure distributed runtimes, install dependencies, and handle framework-specific setup. You pass them in.
+
+```python
+with sky.Compute(
+    provider=sky.AWS(),
+    accelerator=sky.accelerators.H100(),
+    nodes=4,
+    plugins=[
+        sky.plugins.Torch(),
+        sky.plugins.Accelerate(config={"fsdp": {"sharding_strategy": "FULL_SHARD"}}),
+    ],
+) as compute:
+    result = finetune(model, dataset) @ compute
+```
+
+<div class="grid cards" markdown>
+
+- **PyTorch** — DDP, FSDP, NCCL backend
+- **Accelerate** — HuggingFace Trainer, DeepSpeed, FSDP
+- **JAX** — multi-host distributed initialization
+- **Keras 3** — backend-agnostic data parallelism
+- **Joblib** — drop-in parallel backend for scikit-learn
+- **cuML** — GPU-accelerated scikit-learn estimators
+
+</div>
 
 ---
 

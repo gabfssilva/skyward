@@ -2,6 +2,7 @@ from litestar import Controller, get
 from litestar.params import Parameter
 
 from skyward.server.application import ports
+from skyward.server.http.exceptions import failures
 from skyward.shared.schemas import Offer, Page
 
 
@@ -17,6 +18,7 @@ class OfferController(Controller):
             "A refresh that fails does not empty the catalog: the stale rows are still served and the failure shows up "
             "as `last_error` on the provider. A provider being down degrades the answer; it does not erase it."
         ),
+        responses=failures(422),
     )
     async def list(
         self,

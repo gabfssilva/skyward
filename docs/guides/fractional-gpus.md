@@ -1,6 +1,6 @@
 # Fractional GPUs
 
-The v2 public accelerator API represents the requested accelerator count as an integer. `sky.accelerators.L4(count=0.5)` is not a valid v2 request, and `Info` does not expose an accelerator count at runtime.
+The public accelerator API represents the requested accelerator count as an integer. `sky.accelerators.L4(count=0.5)` is not a valid request, and `Info` does not expose an accelerator count at runtime.
 
 Provider-specific fractional plans are not represented by a general fractional-count field. Request a catalog accelerator with an integer count and inspect the actual device inside the function:
 
@@ -43,7 +43,7 @@ uv run python guides/20_fractional_gpus.py
 
 **What you learned:**
 
-- **Accelerator counts are integers** in the v2 public API.
+- **Accelerator counts are integers** in the public API.
 - **`Info` describes topology**, not accelerator inventory.
 - **Runtime VRAM** can be read through the framework, such as `torch.cuda`.
 - **MIG** is the current documented way to divide a full GPU across process workers.

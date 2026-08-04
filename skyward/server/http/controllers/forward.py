@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from litestar import Controller, Request, get, post
+from litestar.openapi.datastructures import ResponseSpec
 from litestar.params import Parameter
 from litestar.response import Stream
 
 from skyward.server.application import ports
+from skyward.server.http.exceptions import failures
 
 BYTES = "application/octet-stream"
 
@@ -26,6 +28,7 @@ class ForwardController(Controller):
             "Paired with `GET .../down` by the `cid` the caller mints — the two are one connection, and HTTP/1.1 will not "
             "carry both directions on a single request."
         ),
+        responses=failures(404, 422),
     )
     async def up(
         self,
@@ -47,6 +50,15 @@ class ForwardController(Controller):
             "Waits for the matching `up` to open the channel, then follows it until the node closes its side.\n\n"
             "Not resumable. A dropped stream is a dead connection; open another."
         ),
+        responses={
+            200: ResponseSpec(
+                bytes,
+                media_type=BYTES,
+                description="Whatever the node sends back, unframed, until it closes its side",
+                generate_examples=False,
+            ),
+            **failures(404, 422),
+        },
     )
     async def down(
         self,

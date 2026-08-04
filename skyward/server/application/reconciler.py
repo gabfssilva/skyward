@@ -37,7 +37,18 @@ from skyward.server.persistence.tasks import TaskStore
 from skyward.shared import codec
 from skyward.shared.errors import NotFoundError, SkywardError
 from skyward.shared.observability import logger
-from skyward.shared.schemas import Compute, ComputeSpec, ComputeStatus, Error, Node, NodeState
+from skyward.shared.schemas import (
+    Compute,
+    ComputeAbandoned,
+    ComputeEvent,
+    ComputeSpec,
+    ComputeStatus,
+    Error,
+    Event,
+    Node,
+    NodeEvent,
+    NodeState,
+)
 from skyward.worker import plugins
 
 logger = logger.bind(component="reconciler")
@@ -135,7 +146,7 @@ class Reconciler:
             state,
             Error(code="not_found", message=error, retryable=True) if error else None,
         )
-        await self._record(f"node.{state}", compute_id, node=node_id, error=error)
+        await self._record(f"node.{state}", NodeEvent(compute=compute_id, node=node_id, state=state, error=error))
         await self.compute(compute_id)
 
         if state == "ready":
@@ -153,7 +164,7 @@ class Reconciler:
             if not compute.spec.delete_on_exit:
                 return
             await self._computes.delete(compute.id, compute.revision, f"abandoned:{compute.id}")
-            await self._record("compute.abandoned", compute.id)
+            await self._record("compute.abandoned", ComputeAbandoned(compute=compute.id))
             compute = await self._computes.get(compute.id)
 
         await self._machines.resolve(compute, await self._nodes.of(compute.id))
@@ -297,7 +308,7 @@ class Reconciler:
                 compute.id,
                 ComputeStatus(state="deleted", observed_generation=compute.generation, nodes_ready=0, nodes_total=0),
             )
-            await self._record("compute.deleted", compute.id)
+            await self._record("compute.deleted", ComputeEvent(compute=compute.id, state="deleted"))
             return
 
         lower, _ = bounds(compute.spec)
@@ -318,13 +329,13 @@ class Reconciler:
 
         if state == "ready" and was != "ready":
             await self._generations.apply(compute.id, compute.generation)
-            await self._record("compute.ready", compute.id)
+            await self._record("compute.ready", ComputeEvent(compute=compute.id, state="ready"))
             self._wake("compute.dispatch", compute_id=compute.id)
 
-    async def _announce(self, state: str, compute_id: str, node_id: str, record: bool = True) -> None:
+    async def _announce(self, state: NodeState, compute_id: str, node_id: str, record: bool = True) -> None:
         self._wake(f"node.{state}", compute_id=compute_id, node_id=node_id)
         if record:
-            await self._record(f"node.{state}", compute_id, node=node_id)
+            await self._record(f"node.{state}", NodeEvent(compute=compute_id, node=node_id, state=state))
 
     async def _degrade(self, compute_id: str, exc: Exception) -> None:
         compute = await self._computes.get(compute_id)
@@ -336,15 +347,10 @@ class Reconciler:
                 last_error=Error(code="capability_mismatch", message=str(exc), retryable=True),
             ),
         )
-        await self._record("compute.degraded", compute_id, error=str(exc))
+        await self._record("compute.degraded", ComputeEvent(compute=compute_id, state="degraded", error=str(exc)))
 
-    async def _record(self, event: str, compute: str, **payload: str) -> None:
-        await self._events.record(
-            event,
-            await codec.json(dict[str, str]).encode({"compute": compute, **payload}),
-            compute=compute,
-            task=payload.get("task"),
-        )
+    async def _record(self, name: str, payload: Event) -> None:
+        await self._events.record(name, await codec.json(Event).encode(payload), compute=payload.compute)
 
     def _lock(self, compute_id: str) -> asyncio.Lock:
         """One pass per compute at a time.
