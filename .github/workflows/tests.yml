@@ -20,6 +20,8 @@ jobs:
       uses: Wandalen/wretry.action@v3
       with:
         action: arduino/setup-task@v2
+        with: |
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
         attempt_limit: 3
         attempt_delay: 10000
     - name: Install uv
@@ -55,6 +57,8 @@ jobs:
       uses: Wandalen/wretry.action@v3
       with:
         action: arduino/setup-task@v2
+        with: |
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
         attempt_limit: 3
         attempt_delay: 10000
     - name: Login to GHCR
@@ -95,6 +99,8 @@ jobs:
       uses: Wandalen/wretry.action@v3
       with:
         action: arduino/setup-task@v2
+        with: |
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
         attempt_limit: 3
         attempt_delay: 10000
     - name: Login to GHCR
