@@ -4,6 +4,7 @@ import asyncio
 from collections import defaultdict
 from datetime import UTC, datetime
 from itertools import batched
+from typing import Any
 
 import msgspec
 from piccolo.engine.sqlite import TransactionType
@@ -145,7 +146,7 @@ def _to_offer(row: OfferRow) -> Offer:
         on_demand_price=row.on_demand_price,
         billing_unit=msgspec.convert(row.billing_unit, BillingUnit),
         available=row.available,
-        specific=row.specific,
+        specific=msgspec.convert(row.specific, dict[str, Any]),
         fetched_at=row.fetched_at,
         expires_at=row.expires_at,
     )
