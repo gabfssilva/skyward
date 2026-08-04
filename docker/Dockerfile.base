@@ -14,4 +14,11 @@ ARG PYTHON_VERSION=3.13
 
 RUN uv venv /opt/skyward/.venv --python $PYTHON_VERSION
 
+# The `[project].dependencies` of pyproject.toml — what a bare node needs. Baked
+# here so bootstrap installs the wheel against a venv that already satisfies it
+# and reaches PyPI for nothing. A name added there and forgotten here is not a
+# break: the node downloads it, the way it downloads all of them today.
+RUN uv pip install --python /opt/skyward/.venv \
+    "casty>=0.22.1" "cloudpickle>=3.1" "loky>=3.5" "lz4>=4.3" "msgspec>=0.19"
+
 EXPOSE 22
