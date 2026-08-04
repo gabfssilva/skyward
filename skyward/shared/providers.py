@@ -274,7 +274,7 @@ class RunPod(Provider, frozen=True, kw_only=True):
     api_key: Annotated[str | None, Credential, Env("RUNPOD_API_KEY")] = None
     cluster_mode: Literal["individual", "cluster"] = "individual"
     cloud_type: Literal["secure", "community"] = "secure"
-    base_image: Literal["nvidia", "runpod-base", "runpod-pytorch"] = "nvidia"
+    base_image: Literal["nvidia", "runpod_base", "runpod_pytorch"] = "nvidia"
     container_image: str | None = None
     ubuntu: str = "newest"
     container_disk_gb: int = 50
@@ -382,7 +382,7 @@ class Vultr(Provider, frozen=True, kw_only=True):
     kind: ClassVar[str] = "vultr"
 
     api_key: Annotated[str | None, Credential, Env("VULTR_API_KEY")] = None
-    mode: Literal["cloud", "bare-metal"] = "cloud"
+    mode: Literal["cloud", "bare_metal"] = "cloud"
     region: str | None = None
     os_id: int = 2284
     instance_timeout: int = 300

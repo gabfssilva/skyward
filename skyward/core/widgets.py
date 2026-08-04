@@ -303,6 +303,10 @@ def _ssh_url(state: _State, node_id: int) -> str:
     return f"ssh://{state.ssh_user}@{instance.ip}{port}"
 
 
+def _accelerator_label(name: str) -> str:
+    return name.upper().replace("-", " ")
+
+
 def _inline_badge(label: str) -> Text:
     text = Text()
     text.append(f" {label} ", style=_badge_style(label))
@@ -434,7 +438,7 @@ def _collect_badges(state: _State) -> tuple[list[Text], list[Text], list[Text]]:
                     per_gpu = sum(totals) / len(totals)
                     memory = f"{per_gpu / 1024:.0f}GB" if per_gpu >= 1024 else f"{per_gpu:.0f}MB"
             memory_text = f" {memory}" if memory else ""
-            infra.append(_inline_badge(f"⚡ {total_text}× {accelerator.name}{memory_text}"))
+            infra.append(_inline_badge(f"⚡ {total_text}× {_accelerator_label(accelerator.name)}{memory_text}"))
 
     if state.phase == _Phase.STOPPED:
         status.append(_inline_badge("shutting down"))
@@ -587,7 +591,7 @@ def _render_summary(state: _State, now: float | None = None) -> RenderableType:
             total = accelerator.count * len(state.instances)
             total_text = str(int(total)) if total == int(total) else f"{total:.1f}"
             memory = f" {accelerator.memory}" if accelerator.memory else ""
-            overview.add_row("Accelerator", Text(f"{total_text}× {accelerator.name}{memory}"))
+            overview.add_row("Accelerator", Text(f"{total_text}× {_accelerator_label(accelerator.name)}{memory}"))
     overview.add_row("Duration", Text(_format_duration(duration)))
     hourly = sum(
         (instance.offer.spot_price if instance.spot else instance.offer.on_demand_price) or 0.0

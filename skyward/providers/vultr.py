@@ -82,7 +82,7 @@ class VultrProvider:
                 async for plan in self._pages(client, PLANS_PATH, "plans"):
                     for offer in self._offers(plan, cpus=int(plan.get("vcpu_count") or 0), bare_metal=False, now=now, expires_at=expires_at):
                         yield offer
-            if mode == "bare-metal":
+            if mode == "bare_metal":
                 async for plan in self._pages(client, METAL_PLANS_PATH, "plans_metal"):
                     for offer in self._offers(plan, cpus=int(plan.get("cpu_count") or 0), bare_metal=True, now=now, expires_at=expires_at):
                         yield offer

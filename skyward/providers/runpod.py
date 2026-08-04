@@ -23,14 +23,14 @@ DEFAULT_PORTS: tuple[str, ...] = ("22/tcp",)
 
 BASE_IMAGE_FALLBACKS: dict[str, str] = {
     "nvidia": "nvidia/cuda:12.8.0-cudnn-runtime-ubuntu24.04",
-    "runpod-base": "runpod/base:1.0.3-cuda1290-ubuntu2204",
-    "runpod-pytorch": "runpod/pytorch:2.8.0-py3.13-cuda12.8.1-devel-ubuntu24.04",
+    "runpod_base": "runpod/base:1.0.3-cuda1290-ubuntu2204",
+    "runpod_pytorch": "runpod/pytorch:2.8.0-py3.13-cuda12.8.1-devel-ubuntu24.04",
 }
 
 BASE_IMAGE_REPOS: dict[str, str] = {
     "nvidia": "nvidia/cuda",
-    "runpod-base": "runpod/base",
-    "runpod-pytorch": "runpod/pytorch",
+    "runpod_base": "runpod/base",
+    "runpod_pytorch": "runpod/pytorch",
 }
 
 DOCKER_HUB_URL = "https://hub.docker.com"
