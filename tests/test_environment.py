@@ -13,7 +13,7 @@ import cloudpickle
 import pytest
 
 import skyward as sky
-from tests.conftest import Build
+from tests.conftest import PYTHON, Build
 
 pytestmark = [pytest.mark.compute, pytest.mark.xdist_group("environment")]
 
@@ -49,7 +49,7 @@ def describe_the_environment_a_pool_boots() -> None:
         """The env, the package and the local module come from the image; the token
         and huggingface_hub from a plugin rebuilt on the node from its fields."""
         image = sky.Image(
-            python="3.13",
+            python=PYTHON,
             skyward="local",
             pip=("toml",),
             env={"GREETING": "hello"},

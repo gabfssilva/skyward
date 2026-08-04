@@ -1,5 +1,8 @@
 import uuid
 from datetime import UTC, datetime
+from typing import Any
+
+import msgspec
 
 from skyward.providers.registry import adapter_for
 from skyward.server.persistence.tables import OfferRow, ProviderRow
@@ -81,7 +84,9 @@ class ProviderStore:
         row = await ProviderRow.objects().output(load_json=True).where((ProviderRow.id == ref) | (ProviderRow.name == ref)).first()
         if row is None:
             raise NotFoundError(f"no such provider: {ref}")
-        return adapter_for(row.kind).create(row.id, row.name, row.credentials, row.config)
+        credentials = msgspec.convert(row.credentials, dict[str, str])
+        config = msgspec.convert(row.config, dict[str, Any])
+        return adapter_for(row.kind).create(row.id, row.name, credentials, config)
 
 
 async def _to_provider(row: ProviderRow) -> Provider:
@@ -91,7 +96,7 @@ async def _to_provider(row: ProviderRow) -> Provider:
         id=row.id,
         name=row.name,
         kind=row.kind,
-        config=row.config,
+        config=msgspec.convert(row.config, dict[str, Any]),
         offers_ttl_seconds=int(adapter.offers_ttl.total_seconds()),
         created_at=row.created_at,
         offers_fetched_at=row.offers_fetched_at,

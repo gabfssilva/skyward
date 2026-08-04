@@ -20,6 +20,8 @@ jobs:
       uses: Wandalen/wretry.action@v3
       with:
         action: arduino/setup-task@v2
+        with: |
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
         attempt_limit: 3
         attempt_delay: 10000
     - name: Install uv
@@ -32,8 +34,10 @@ jobs:
       run: task lint
     - name: Type check
       run: task typecheck
-    - name: Unit tests
-      run: task test:unit
+    - name: Layer contracts
+      run: task lint:imports
+    - name: Local tests
+      run: task test:local
 
   build-image:
     needs: [check]
@@ -53,6 +57,8 @@ jobs:
       uses: Wandalen/wretry.action@v3
       with:
         action: arduino/setup-task@v2
+        with: |
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
         attempt_limit: 3
         attempt_delay: 10000
     - name: Login to GHCR
@@ -74,7 +80,7 @@ jobs:
         attempt_limit: 3
         attempt_delay: 10000
 
-  e2e:
+  compute:
     needs: [build-image]
     runs-on: ubuntu-latest
     permissions:
@@ -83,9 +89,9 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
-        test-group: [pool, distributed, image, torch, jax, keras, joblib]
+        feature: [access, dispatch, environment, lifecycle, output, shared_state, streaming, topology]
 
-    name: e2e / ${{ matrix.test-group }} / ${{ matrix.python-version }}
+    name: compute / ${{ matrix.feature }} / ${{ matrix.python-version }}
 
     steps:
     - uses: actions/checkout@v4
@@ -93,6 +99,8 @@ jobs:
       uses: Wandalen/wretry.action@v3
       with:
         action: arduino/setup-task@v2
+        with: |
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
         attempt_limit: 3
         attempt_delay: 10000
     - name: Login to GHCR
@@ -113,5 +121,5 @@ jobs:
       run: task setup
     - name: Generate SSH key
       run: ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
-    - name: Run ${{ matrix.test-group }} tests
-      run: task test:e2e:${{ matrix.test-group }}
+    - name: Run ${{ matrix.feature }} tests
+      run: task test:compute -- tests/test_${{ matrix.feature }}.py

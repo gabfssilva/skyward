@@ -222,9 +222,9 @@ class GCPProvider:
         async with httpx.AsyncClient(base_url=COMPUTE_URL, timeout=60, headers={"Accept": "application/json"}) as client:
             token = await self._token(client)
             zones = self._zones
-            catalog, *per_zone = await asyncio.gather(
+            catalog, per_zone = await asyncio.gather(
                 _fetch_prices(client),
-                *(self._fetch_zone(client, zone, token) for zone in zones),
+                asyncio.gather(*(self._fetch_zone(client, zone, token) for zone in zones)),
             )
 
         now = datetime.now(UTC)

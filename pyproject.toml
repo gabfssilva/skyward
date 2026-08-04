@@ -134,6 +134,7 @@ typeCheckingMode = "standard"
 include = ["skyward", "tests"]
 exclude = ["tests/.old"]
 reportMissingImports = "warning"
+reportTypedDictNotRequiredAccess = "none"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -184,6 +185,7 @@ dev = [
     "jax>=0.8.2",
     "keras>=3.13.0",
     "scikit-learn>=1.8.0",
+    "types-aioboto3[ec2,pricing]>=15.5.0",
 ]
 docs = [
     "mkdocs-material>=9.5",

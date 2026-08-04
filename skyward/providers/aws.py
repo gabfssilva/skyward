@@ -1,16 +1,23 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, ClassVar, NamedTuple, Self
+from typing import TYPE_CHECKING, Any, ClassVar, Self
 
 import aioboto3
 import msgspec
-from aiobotocore.client import AioBaseClient
 from aiobotocore.config import AioConfig
 from botocore.exceptions import ClientError
+
+if TYPE_CHECKING:
+    from types_aiobotocore_ec2.client import EC2Client
+    from types_aiobotocore_ec2.type_defs import RequestLaunchTemplateDataTypeDef, TagTypeDef
+    from types_aiobotocore_pricing.type_defs import FilterTypeDef as PricingFilterTypeDef
 
 from skyward.shared.architectures import architecture
 from skyward.shared.errors import CapabilityMismatchError
@@ -95,7 +102,7 @@ class AWSProvider:
         return AioConfig(connect_timeout=timeout, read_timeout=timeout)
 
     @asynccontextmanager
-    async def _ec2(self, region: str):  # noqa: ANN202 — aioboto3's client type is unexpressible; let it infer
+    async def _ec2(self, region: str) -> AsyncIterator[EC2Client]:
         async with self._session().client(
             "ec2",
             region_name=region,
@@ -118,6 +125,7 @@ class AWSProvider:
                 gpu = _gpu(raw)
                 network = raw.get("NetworkInfo") or {}
                 storage = raw.get("InstanceStorageInfo") or {}
+                disk_gb = storage.get("TotalSizeInGB")
 
                 yield Offer(
                     id=f"aws-{region}-{instance_type}",
@@ -132,7 +140,7 @@ class AWSProvider:
                     cpus=int((raw.get("VCpuInfo") or {}).get("DefaultVCpus") or 0),
                     memory_gb=float((raw.get("MemoryInfo") or {}).get("SizeInMiB") or 0) / MIB,
                     region=region,
-                    disk_gb=float(storage.get("TotalSizeInGB")) if storage.get("TotalSizeInGB") else None,
+                    disk_gb=float(disk_gb) if disk_gb else None,
                     architecture=_architecture(raw),
                     spot_price=spot.get(instance_type),
                     on_demand_price=on_demand.get(instance_type),
@@ -158,7 +166,7 @@ class AWSProvider:
                     },
                 )
 
-    async def _fetch_region(self, region: str) -> tuple[list[dict[str, Any]], dict[str, float], dict[str, float]]:
+    async def _fetch_region(self, region: str) -> tuple[list[Mapping[str, Any]], dict[str, float], dict[str, float]]:
         session = self._session()
         instance_types, spot, on_demand = await asyncio.gather(
             self._instance_types(session, region),
@@ -167,8 +175,8 @@ class AWSProvider:
         )
         return instance_types, spot, on_demand
 
-    async def _instance_types(self, session: aioboto3.Session, region: str) -> list[dict[str, Any]]:
-        types: list[dict[str, Any]] = []
+    async def _instance_types(self, session: aioboto3.Session, region: str) -> list[Mapping[str, Any]]:
+        types: list[Mapping[str, Any]] = []
         async with session.client("ec2", region_name=region, config=self._client_config()) as ec2:
             paginator = ec2.get_paginator("describe_instance_types")
             async for page in paginator.paginate():
@@ -203,7 +211,7 @@ class AWSProvider:
         the whole rate card is the same data in a couple of dozen.
         """
         prices: dict[str, float] = {}
-        filters = [
+        filters: list[PricingFilterTypeDef] = [
             {"Type": "TERM_MATCH", "Field": "regionCode", "Value": region},
             {"Type": "TERM_MATCH", "Field": "operatingSystem", "Value": "Linux"},
             {"Type": "TERM_MATCH", "Field": "tenancy", "Value": "Shared"},
@@ -321,7 +329,7 @@ class AWSProvider:
                 with suppress(ClientError):
                     await ec2.delete_launch_template(LaunchTemplateId=template_id)
 
-    async def _describe(self, ec2: AioBaseClient, ids: list[str]) -> list[dict[str, Any]]:
+    async def _describe(self, ec2: EC2Client, ids: list[str]) -> Sequence[Mapping[str, Any]]:
         """Read the fleet's instances back, past the window where a fresh id is not yet describable.
 
         A ``create_fleet`` that has just returned an id is ahead of the eventual
@@ -406,7 +414,7 @@ class AWSProvider:
         them. Nothing here ever deregisters one.
         """
         name = WARM_NAME.format(tag=tag)
-        tags = [*_tags(name), {"Key": IMAGE_TAG, "Value": tag}]
+        tags: list[TagTypeDef] = [*_tags(name), {"Key": IMAGE_TAG, "Value": tag}]
 
         async with self._ec2(binding["region"]) as ec2:
             created = await ec2.create_image(
@@ -488,14 +496,14 @@ class AWSProvider:
         async with self._ec2(binding["region"]) as ec2:
             await _ignoring(ec2.delete_key_pair(KeyName=binding["key_name"]), "InvalidKeyPair.NotFound")
 
-    async def _vpc(self, ec2: AioBaseClient) -> str:
+    async def _vpc(self, ec2: EC2Client) -> str:
         response = await ec2.describe_vpcs(Filters=[{"Name": "is-default", "Values": ["true"]}])
         vpcs = response["Vpcs"]
         if not vpcs:
             raise CapabilityMismatchError("the account has no default vpc to launch into", provider=self._name)
         return str(vpcs[0]["VpcId"])
 
-    async def _key_pair(self, ec2: AioBaseClient, name: str, public_key: str) -> str:
+    async def _key_pair(self, ec2: EC2Client, name: str, public_key: str) -> str:
         """Import over a duplicate rather than accept it.
 
         A second ``initialize`` is a first one whose binding was lost, and with it
@@ -518,7 +526,7 @@ class AWSProvider:
             await ec2.import_key_pair(**request)
         return name
 
-    async def _security_group(self, ec2: AioBaseClient, name: str, vpc: str) -> str:
+    async def _security_group(self, ec2: EC2Client, name: str, vpc: str) -> str:
         """Create the group, and authorize it whether or not this call is the one that created it.
 
         A crash between the create and the authorize leaves a group that exists and
@@ -564,7 +572,7 @@ class AWSProvider:
         )
         return group_id
 
-    async def _subnets(self, ec2: AioBaseClient, vpc: str, instance_type: str) -> dict[str, str]:
+    async def _subnets(self, ec2: EC2Client, vpc: str, instance_type: str) -> dict[str, str]:
         """One subnet per availability zone that actually offers the instance type.
 
         An instance type is not sold in every zone of its region, and a subnet in a
@@ -628,14 +636,14 @@ class AWSProvider:
             return str(response["Parameter"]["Value"])
 
 
-def _template(binding: Binding) -> dict[str, Any]:
+def _template(binding: Binding) -> RequestLaunchTemplateDataTypeDef:
     """The instance shape, minus what Fleet varies per subnet.
 
     ``ImageId`` and ``InstanceType`` live in the fleet overrides, not here, because
     Fleet is the thing choosing the subnet and needs the pair alongside each one.
     Everything a machine of this compute shares is what remains.
     """
-    template: dict[str, Any] = {
+    template: RequestLaunchTemplateDataTypeDef = {
         "KeyName": binding["key_name"],
         "NetworkInterfaces": [{
             "DeviceIndex": 0,
@@ -702,14 +710,14 @@ def _fleet(binding: Binding, market: Market, template_id: str, subnets: Mapping[
     }
 
 
-def _tags(name: str, compute_id: str | None = None) -> list[dict[str, str]]:
-    tags = [{"Key": "Name", "Value": name}, {"Key": MANAGED_TAG, "Value": "true"}]
+def _tags(name: str, compute_id: str | None = None) -> list[TagTypeDef]:
+    tags: list[TagTypeDef] = [{"Key": "Name", "Value": name}, {"Key": MANAGED_TAG, "Value": "true"}]
     if compute_id:
         tags.append({"Key": COMPUTE_TAG, "Value": compute_id})
     return tags
 
 
-def _machine(raw: dict[str, Any], user: str) -> Machine:
+def _machine(raw: Mapping[str, Any], user: str) -> Machine:
     return Machine(
         id=str(raw["InstanceId"]),
         state="running" if raw["State"]["Name"] == "running" else "pending",
@@ -747,14 +755,15 @@ def _reclaimed(code: str) -> bool:
     return code.startswith("marked-for-") or "terminated" in code or "stopped" in code
 
 
-class _Gpu(NamedTuple):
+@dataclass(frozen=True, slots=True)
+class _Gpu:
     name: str | None
     count: int
     vram: float | None
     manufacturer: str | None
 
 
-def _gpu(raw: dict[str, Any]) -> _Gpu:
+def _gpu(raw: Mapping[str, Any]) -> _Gpu:
     """The instance's accelerators, as AWS spells them.
 
     ``GpuInfo.Gpus`` is a list because an instance could in principle mix models;
@@ -772,7 +781,7 @@ def _gpu(raw: dict[str, Any]) -> _Gpu:
     return _Gpu(first.get("Name") or None, count, vram, first.get("Manufacturer") or None)
 
 
-def _architecture(raw: dict[str, Any]) -> str | None:
+def _architecture(raw: Mapping[str, Any]) -> str | None:
     """The first architecture AWS reports that the vocabulary has a name for.
 
     ``SupportedArchitectures`` is a list because the older x86 families still
