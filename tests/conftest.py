@@ -31,7 +31,16 @@ import pytest
 
 import skyward as sky
 
-IMAGE = sky.Image(python="3.13", skyward="local")
+PYTHON = f"{sys.version_info.major}.{sys.version_info.minor}"
+"""The node's interpreter is the one running the tests.
+
+A task crosses the wire as cloudpickle, which is bytecode, and bytecode does not
+survive a change of minor version. A 3.12 client against a 3.13 node does not
+fail on the payload — the worker dies unpickling it, and the client sees the
+connection drop. Any test that builds an image of its own pins this too.
+"""
+
+IMAGE = sky.Image(python=PYTHON, skyward="local")
 """The wheel comes from this checkout, so a test runs against the code under it."""
 
 DEFAULT_EXECUTOR = sky.Executor()

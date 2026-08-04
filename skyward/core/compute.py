@@ -80,6 +80,7 @@ INLINE = 256 * 1024
 POLL = 30
 READY_TIMEOUT = 900
 DELETE_TIMEOUT = 300
+DELETE_ATTEMPTS = 5
 LEASE_SECONDS = 60
 """How long the compute stays owned after the last renewal.
 
@@ -500,13 +501,31 @@ class Compute:
             await self._claim()
 
     async def _destroy(self) -> None:
-        current = await self.client.call("GET", f"/v1/computes/{self._id}", ComputeView)
-        await self.client.call(
-            "DELETE",
-            f"/v1/computes/{self._id}",
-            ComputeView,
-            headers={"If-Match": f'"{current.revision}"', "Idempotency-Key": uuid.uuid4().hex},
-        )
+        """Delete the compute, re-reading the revision the daemon moved under us.
+
+        ``If-Match`` guards against deleting a compute somebody else reshaped, but
+        the revision also moves on bookkeeping this caller causes and cannot avoid:
+        the reconciler writes what it observed on every tick, and the lease renews
+        itself on a timer. Either landing between the read and the delete refuses a
+        teardown nothing was actually racing, so the precondition is refreshed
+        rather than abandoned. The idempotency key is the same across attempts — a
+        rejected precondition created nothing.
+        """
+        key = uuid.uuid4().hex
+        for attempt in range(DELETE_ATTEMPTS):
+            current = await self.client.call("GET", f"/v1/computes/{self._id}", ComputeView)
+            try:
+                await self.client.call(
+                    "DELETE",
+                    f"/v1/computes/{self._id}",
+                    ComputeView,
+                    headers={"If-Match": f'"{current.revision}"', "Idempotency-Key": key},
+                )
+            except SkywardError as error:
+                if error.code != "revision_conflict" or attempt == DELETE_ATTEMPTS - 1:
+                    raise
+                continue
+            break
 
         async with asyncio.timeout(self._shutdown_timeout):
             await self._reach("deleted")
