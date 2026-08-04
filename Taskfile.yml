@@ -175,7 +175,7 @@ tasks:
   docker:build:
     desc: Build base image for one Python version (default 3.13)
     cmds:
-      - docker build -f docker/Dockerfile.base {{if .PLATFORM}}--platform {{.PLATFORM}}{{end}} --build-arg PYTHON_VERSION={{.PYTHON_VERSION}} -t {{.BASE_IMAGE}}:py{{.PYTHON_VERSION}} docker/
+      - docker buildx build -f docker/Dockerfile.base {{if .PLATFORM}}--platform {{.PLATFORM}}{{end}} --build-arg PYTHON_VERSION={{.PYTHON_VERSION}} {{if .CACHE}}--cache-from type=registry,ref={{.BASE_IMAGE}}:cache-py{{.PYTHON_VERSION}} --cache-to type=registry,mode=max,ref={{.BASE_IMAGE}}:cache-py{{.PYTHON_VERSION}}{{end}} --load -t {{.BASE_IMAGE}}:py{{.PYTHON_VERSION}} docker/
 
   docker:build:all:
     desc: Build base images for Python 3.12, 3.13, and 3.14

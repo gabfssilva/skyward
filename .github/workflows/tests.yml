@@ -71,8 +71,18 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
         attempt_limit: 3
         attempt_delay: 10000
+    - name: Set up Buildx
+      uses: Wandalen/wretry.action@v3
+      with:
+        action: docker/setup-buildx-action@v3
+        attempt_limit: 3
+        attempt_delay: 10000
     - name: Build base image
-      run: task docker:build PYTHON_VERSION=${{ matrix.python-version }}
+      uses: Wandalen/wretry.action@v3
+      with:
+        command: task docker:build PYTHON_VERSION=${{ matrix.python-version }} CACHE=1
+        attempt_limit: 3
+        attempt_delay: 10000
     - name: Push base image
       uses: Wandalen/wretry.action@v3
       with:
@@ -121,5 +131,11 @@ jobs:
       run: task setup
     - name: Generate SSH key
       run: ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
+    - name: Pull base image
+      uses: Wandalen/wretry.action@v3
+      with:
+        command: task docker:pull PYTHON_VERSION=${{ matrix.python-version }}
+        attempt_limit: 3
+        attempt_delay: 10000
     - name: Run ${{ matrix.feature }} tests
       run: task test:compute -- tests/test_${{ matrix.feature }}.py
