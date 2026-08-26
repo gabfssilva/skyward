@@ -7,12 +7,14 @@ back together on the other side of the wire. These are the two halves agreeing.
 
 from pathlib import Path
 
+import httpx
 import msgspec
 import pytest
 
 import skyward as sky
 from skyward.core.provider import resolve
 from skyward.providers.registry import REGISTRY
+from skyward.providers.runpod import RunPodProvider, _deploy_input, _machine
 from skyward.shared import providers
 from skyward.shared.providers import Provider
 
@@ -83,3 +85,97 @@ def describe_the_adapters() -> None:
         kinds = {account.kind for account in ACCOUNTS}
 
         assert set(REGISTRY) <= kinds, "an adapter with no account is one nobody can configure"
+
+
+def describe_a_pod_the_cloud_refuses_to_deploy() -> None:
+    """RunPod answers problem+json, and the two refusals that matter read alike without it."""
+
+    binding = {
+        "prefix": "skyward-cmp_1-",
+        "image": "runpod/base:1.0.0",
+        "gpu_type_id": "NVIDIA GeForce RTX 4090",
+        "gpu_count": 1,
+        "cloud_type": "SECURE",
+        "container_disk_gb": 50,
+        "public_key": "ssh-ed25519 AAAA",
+    }
+
+    async def _refused(status: int, body: object) -> Exception:
+        provider = RunPodProvider.create("prv_runpod", "runpod", {"api_key": "not-a-key"}, {})
+        transport = httpx.MockTransport(lambda _: httpx.Response(status, json=body))
+
+        async with httpx.AsyncClient(transport=transport) as client:
+            answer = await provider._deploy(client, binding, "on_demand")
+
+        assert isinstance(answer, Exception), "a refusal is what a deploy hands back, not a machine"
+        return answer
+
+    async def it_says_which_of_the_two_refusals_it_was() -> None:
+        out_of_stock = await _refused(400, {"detail": "There are no longer any instances available with the requested specifications.", "status": 400})
+        nonsense = await _refused(422, {"detail": "Unknown GPU type: NVIDIA GeForce RTX 9090", "status": 422})
+
+        assert "no longer any instances available" in str(out_of_stock), "the one worth trying again"
+        assert "Unknown GPU type" in str(nonsense), "the one that never will be"
+
+    async def it_falls_back_to_what_was_written_when_it_is_not_problem_json() -> None:
+        answer = await _refused(502, "upstream is down")
+
+        assert "upstream is down" in str(answer)
+
+
+def describe_a_pod_as_runpod_reports_it() -> None:
+    """The pods listing is the only thing the daemon has to decide a machine is reachable."""
+
+    def it_is_reachable_once_a_public_port_is_published_for_its_ssh() -> None:
+        machine = _machine({
+            "id": "4vkil6xz1jd8tr",
+            "name": "skyward-cmp_a275b416888f-5ac8247f",
+            "status": "RUNNING",
+            "runtime": None,
+            "publicIp": None,
+            "portMappings": None,
+            "globalNetworking": {"enabled": False},
+            "ssh": {
+                "proxy": {"host": "ssh.runpod.io", "port": 22, "username": "4vkil6xz1jd8tr-64411c41", "command": "ssh ..."},
+                "direct": {"host": "69.30.119.250", "port": 10465, "username": "root", "command": "ssh ..."},
+            },
+        })
+
+        assert machine is not None
+        assert machine.state == "running"
+        assert (machine.host, machine.port) == ("69.30.119.250", 10465)
+
+    def it_is_asked_for_with_the_flag_that_publishes_the_port() -> None:
+        deploy = _deploy_input(
+            {
+                "prefix": "skyward-cmp_1-",
+                "image": "runpod/base:1.0.0",
+                "gpu_type_id": "NVIDIA GeForce RTX 4090",
+                "gpu_count": 1,
+                "cloud_type": "SECURE",
+                "container_disk_gb": 50,
+                "public_key": "ssh-ed25519 AAAA",
+            },
+            "on_demand",
+        )
+
+        assert deploy["startSsh"] is True, "without it runpod publishes no port and the node is unreachable"
+        assert "22/tcp" in deploy["ports"], "and the flag alone is not enough"
+        assert deploy["env"]["PUBLIC_KEY"] == "ssh-ed25519 AAAA", "the key stays the compute's, not the account's"
+
+    def it_is_still_pending_while_the_running_pod_has_none() -> None:
+        machine = _machine({
+            "id": "jj4obfs25b0xig",
+            "status": "RUNNING",
+            "runtime": None,
+            "globalNetworking": {"enabled": False},
+            "ssh": {"proxy": {"host": "ssh.runpod.io", "port": 22, "username": "x", "command": "ssh ..."}, "direct": None},
+        })
+
+        assert machine is not None
+        assert machine.state == "pending", "the proxy is an interactive shell, not somewhere a node can be bootstrapped"
+        assert machine.host is None
+
+    @pytest.mark.parametrize("status", ["EXITED", "ERROR", "TERMINATED"])
+    def it_is_reported_gone_once_it_has_stopped(status: str) -> None:
+        assert _machine({"id": "jj4obfs25b0xig", "status": status}) is None

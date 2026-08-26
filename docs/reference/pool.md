@@ -43,7 +43,7 @@ With no `url`, the client uses an embedded daemon. With `url` or `SKYWARD_URL`, 
 
 Inside a `with Compute(...)` block, `>> sky` uses the active compute. The explicit `compute` target is required outside that context.
 
-`Compute.map(fn, items)` submits one pending call per item and returns results in input order. `Compute.current_nodes()` reports the number of ready nodes.
+`Compute.map(fn, items)` submits one pending call per item and returns results in input order. `Compute.current_nodes()` reports the number of ready nodes. `Compute.resize(nodes)` asks for a different size — `4`, `(2, 8)`, or a `Nodes` — and returns as soon as the intent is recorded, so `current_nodes()` is what says how much of it is real. A compute running a collective plugin cannot be resized.
 
 ## Specifications and runtime options
 

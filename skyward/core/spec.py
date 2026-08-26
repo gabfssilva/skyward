@@ -25,6 +25,22 @@ type ExecutorType = Literal["thread", "process", "loky"]
 type Route = Literal["round_robin"]
 
 
+def bounds(nodes: NodeSpec) -> Nodes:
+    """How many machines, in the one shape the wire has for it.
+
+    A range is written ``(2, 8)`` and read as eight machines the pool may fall back
+    to two of, which is why the pair sets ``desired`` to its ceiling: what is asked
+    for is the top of the range, and the floor is how far autoscaling may give back.
+    """
+    match nodes:
+        case int(desired):
+            return Nodes(desired=desired)
+        case (minimum, maximum):
+            return Nodes(desired=maximum, min=minimum, max=maximum)
+        case Nodes():
+            return nodes
+
+
 @dataclass(frozen=True, slots=True)
 class HealthChecker:
     fn: Callable[[Info], bool | str]
@@ -146,6 +162,9 @@ class Options:
         Seconds between connection attempts to a machine still coming up.
     max_provision_attempts : int
         How many times a dropped connection is redialed before the node is lost.
+    provision_timeout : float
+        Seconds a bought machine has to publish an address before it is given up
+        on and replaced. ``0`` waits forever.
     worker_timeout : float
         Seconds to wait for the worker to come up once bootstrap has finished.
     autoscale_idle_timeout : float
@@ -172,9 +191,10 @@ class Options:
     ...     train(data) >> pool
     """
 
-    ssh_timeout: float = 300.0
+    ssh_timeout: float = 240.0
     provision_retry_delay: float = 2.0
     max_provision_attempts: int = 30
+    provision_timeout: float = 300.0
     worker_timeout: float = 180.0
     autoscale_idle_timeout: float = 30.0
     autoscale_cooldown: float = 0.0
@@ -184,8 +204,8 @@ class Options:
     health_failures: int = 3
     health_checker: HealthChecker | None = None
     cluster: bool | None = None
-    ready_timeout: float = 900.0
-    shutdown_timeout: float = 300.0
+    ready_timeout: float = 300.0
+    shutdown_timeout: float = 60.0
 
 
 SYSTEM_PATHS = frozenset({"/", "/opt", "/opt/skyward", "/root", "/tmp"})
@@ -251,4 +271,4 @@ class Volume:
             raise ValueError(f"{self.mount!r} is the machine's own, and mounting over it would take the node down")
 
 
-__all__ = ["Accelerator", "Architecture", "Executor", "ExecutorType", "NodeSpec", "Nodes", "Options", "Port", "Route", "Spec", "Volume"]
+__all__ = ["Accelerator", "Architecture", "Executor", "ExecutorType", "NodeSpec", "Nodes", "Options", "Port", "Route", "Spec", "Volume", "bounds"]

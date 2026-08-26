@@ -31,11 +31,13 @@ from skyward.core.client import Client
 from skyward.core.errors import SkywardError
 from skyward.core.provider import Provider
 from skyward.core.provider import resolve as resolve_provider
+from skyward.core.spec import bounds
 from skyward.shared import codec
 from skyward.shared.schemas import (
     Compute,
     ComputeCreate,
     ComputeSpec,
+    ComputeSpecPatch,
     Dispatch,
     Node,
     NodeBounds,
@@ -56,6 +58,12 @@ BYTES = "application/octet-stream"
 NODE_HELP = "Which nodes to reach: all, or a rank"
 WAIT = 30
 """Seconds the daemon holds a result request open before answering nothing yet."""
+IDLE = 1.0
+"""Seconds of quiet that mean a settled task has no more output coming."""
+DRAIN = 5.0
+"""Longest a settled task waits on its own output before giving up on the rest."""
+WRITE_ATTEMPTS = 5
+"""How many times a conditional write is re-read and re-sent before it is a real conflict."""
 
 
 class Result(msgspec.Struct, frozen=True):
@@ -126,11 +134,19 @@ def create_compute(
     region: Annotated[str | None, Parameter(help="Where to buy them")] = None,
     cpus: Annotated[int | None, Parameter(help="Least vCPUs per machine")] = None,
     memory: Annotated[int | None, Parameter(help="Least memory per machine, in GB")] = None,
+    ttl: Annotated[int | None, Parameter(help="Seconds a machine may sit with nobody connected before it removes itself. 0 never does")] = None,
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
     database: Annotated[Path | None, Parameter(help="Embedded daemon database")] = None,
     output: Annotated[Output, Parameter(help="table or json")] = "table",
 ) -> None:
-    """Create a compute and return without waiting for it to be ready."""
+    """Create a compute and return without waiting for it to be ready.
+
+    ``--ttl`` is the dead-man switch the providers that support one arm on each
+    machine: with nobody connected for that long, the machine takes itself away
+    rather than billing for a daemon that is never coming back. The default is the
+    spec's, and it is short — a compute whose machines are slow to become
+    reachable is a compute whose machines can reach it first.
+    """
     from skyward.shared.accelerators import resolve
 
     if provider not in FACTORIES:
@@ -140,7 +156,7 @@ def create_compute(
     spec = ComputeSpec(
         specs=(
             Spec(
-                provider=ProviderRef(kind=account.kind, config=resolve_provider(account)[1]),
+                provider=ProviderRef(kind=account.kind),
                 accelerator=resolve(accelerator, None)[0],
                 cpus=cpus,
                 memory_gb=memory,
@@ -149,6 +165,8 @@ def create_compute(
         ),
         nodes=NodeBounds(desired=nodes),
     )
+    if ttl is not None:
+        spec = msgspec.structs.replace(spec, ttl=ttl)
 
     async def work(client: Client) -> Compute:
         await _register(client, account)
@@ -161,6 +179,31 @@ def create_compute(
         )
 
     render(COMPUTE_COLUMNS, [_compute_row(_call(work, url=url, database=database))], output=output)
+
+
+@compute_app.command(name="scale")
+def scale_compute(
+    ref: str,
+    *,
+    nodes: Annotated[str, Parameter(help="How many machines: N, or MIN:MAX for an elastic range")],
+    url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
+    database: Annotated[Path | None, Parameter(help="Embedded daemon database")] = None,
+    output: Annotated[Output, Parameter(help="table or json")] = "table",
+) -> None:
+    """Change how many machines a compute stands on.
+
+    A size is the one part of a definition that changes without replacing anything:
+    what is up is kept, and the difference is bought or drained by reconciliation.
+    So this returns a new ``generation`` rather than a finished resize — the machines
+    arrive, or leave, afterwards.
+    """
+    wanted = _nodes(nodes)
+    scaled = _call(
+        lambda client: _conditional(client, ref, "PATCH", msgspec.json.encode(ComputeSpecPatch(nodes=wanted))),
+        url=url,
+        database=database,
+    )
+    render(COMPUTE_COLUMNS, [_compute_row(scaled)], output=output)
 
 
 @compute_app.command(name="delete")
@@ -176,17 +219,9 @@ def delete_compute(
     The delete is accepted, not done: reconciliation runs until the provider
     confirms the machines are gone, so what comes back is still ``deleting``.
     """
-
-    async def work(client: Client) -> Compute:
-        current = await client.call("GET", f"/v1/computes/{ref}", Compute)
-        return await client.call(
-            "DELETE",
-            f"/v1/computes/{current.id}",
-            Compute,
-            headers={"If-Match": f'"{current.revision}"', "Idempotency-Key": uuid.uuid4().hex},
-        )
-
-    render(COMPUTE_COLUMNS, [_compute_row(_call(work, url=url, database=database))], output=output)
+    key = uuid.uuid4().hex
+    deleted = _call(lambda client: _conditional(client, ref, "DELETE", headers={"Idempotency-Key": key}), url=url, database=database)
+    render(COMPUTE_COLUMNS, [_compute_row(deleted)], output=output)
 
 
 @compute_app.command(name="view")
@@ -377,6 +412,48 @@ def _node(node: str) -> str:
     raise SystemExit(f"--node takes 'all' or a rank, not {node!r}")
 
 
+def _nodes(value: str) -> NodeBounds:
+    """``N`` for a fixed size, ``MIN:MAX`` for an elastic range — ``nodes=`` as a flag.
+
+    The bounds are written whole rather than field by field, because a size is only
+    coherent as a set: on an elastic compute the reconciler sizes between ``min`` and
+    ``max``, and a ``desired`` moved on its own would be a write that changes nothing.
+    """
+    match value.split(":"):
+        case [count] if count.isdigit() and int(count) > 0:
+            return bounds(int(count))
+        case [minimum, maximum] if minimum.isdigit() and maximum.isdigit() and 0 < int(minimum) <= int(maximum):
+            return bounds((int(minimum), int(maximum)))
+        case _:
+            raise SystemExit(f"--nodes takes N, or MIN:MAX with 1 <= MIN <= MAX, not {value!r}")
+
+
+async def _conditional(client: Client, ref: str, method: str, body: bytes | None = None, headers: dict[str, str] | None = None) -> Compute:
+    """A write against a compute, guarded by the revision it was read at.
+
+    ``If-Match`` is what keeps two terminals from overwriting each other's intent,
+    but the revision also moves on bookkeeping nobody asked for: the reconciler
+    writes what it observed on every tick, and a lease renews itself on a timer.
+    Either landing between the read and the write refuses a change nothing was
+    racing, so the precondition is refreshed rather than handed back as a failure.
+    """
+    attempts = WRITE_ATTEMPTS
+    while True:
+        current = await client.call("GET", f"/v1/computes/{ref}", Compute)
+        try:
+            return await client.call(
+                method,
+                f"/v1/computes/{current.id}",
+                Compute,
+                body=body,
+                headers={"If-Match": f'"{current.revision}"', **(headers or {})},
+            )
+        except SkywardError as error:
+            attempts -= 1
+            if error.code != "revision_conflict" or not attempts:
+                raise
+
+
 def _rank(node: str) -> str:
     if node.lstrip("-").isdigit():
         return node
@@ -399,15 +476,25 @@ async def _remotely(client: Client, ref: str, source: str, argv: tuple[str, ...]
     The compute is read first for its id: a task takes a reference, and the event
     log is per id — following the wrong one would print nothing and look like a
     script that said nothing.
+
+    A result arriving does not mean the output has: the value comes back over one
+    request and the lines over another, and cancelling the follower the moment the
+    task settles drops whatever the stream had not delivered yet. So the follower
+    is told the task is done and left to drain until the log goes quiet.
     """
     compute = await client.call("GET", f"/v1/computes/{ref}", Compute)
     task = await _submit(client, compute.id, source, argv, dispatch)
 
-    printing = asyncio.get_running_loop().create_task(_console(client, compute.id, task.id))
+    settled = asyncio.Event()
+    printing = asyncio.get_running_loop().create_task(_console(client, compute.id, task.id, settled))
     try:
         while await client.blob(f"/v1/tasks/{task.id}/result", wait=WAIT) is None:
             continue
     finally:
+        settled.set()
+        with suppress(TimeoutError):
+            async with asyncio.timeout(DRAIN):
+                await printing
         printing.cancel()
         with suppress(asyncio.CancelledError):
             await printing
@@ -436,18 +523,47 @@ async def _submit(client: Client, compute: str, source: str, argv: tuple[str, ..
     )
 
 
-async def _console(client: Client, compute: str, task: str) -> None:
+async def _console(client: Client, compute: str, task: str, settled: asyncio.Event) -> None:
     """The lines this task's nodes wrote, as they write them.
 
     The log replays from its start, so subscribing after the task was submitted
     loses nothing — the first thing the script printed is still in it.
+
+    A line names the *execution* that produced it, not the task: a task is one
+    call, and a broadcast of it is one execution per node. So the task is read
+    back for the executions it has, and only when a line names one that has not
+    been decided yet — which is once per node, not once per line.
     """
+    mine: set[str] = set()
+    foreign: set[str] = set()
+
+    async def belongs(execution: str) -> bool:
+        nonlocal mine
+        if execution in mine:
+            return True
+        if execution in foreign:
+            return False
+
+        mine = {run.id for run in (await client.call("GET", f"/v1/tasks/{task}", Task)).executions}
+        if execution in mine:
+            return True
+
+        foreign.add(execution)
+        return False
+
     async with aclosing(client.events(compute)) as stream:
-        async for name, payload in stream:
+        feed = stream.__aiter__()
+        while True:
+            try:
+                async with asyncio.timeout(IDLE if settled.is_set() else None):
+                    name, payload = await anext(feed)
+            except (TimeoutError, StopAsyncIteration):
+                return
+
             if name != "node.console":
                 continue
             line = json.loads(payload)
-            if line.get("task") == task:
+            if (execution := line.get("task")) and await belongs(execution):
                 sys.stdout.write(line.get("content", "") + "\n")
                 sys.stdout.flush()
 

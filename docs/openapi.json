@@ -279,7 +279,7 @@
         "type": "object"
       },
       "ConsoleEvent": {
-        "description": "A line a node printed, and the task it belongs to when it belongs to one.\n\nRecorded, because output that only existed live would be output a client that\nreconnected could never see.",
+        "description": "A line a node printed, and the work it belongs to when it belongs to some.\n\nRecorded, because output that only existed live would be output a client that\nreconnected could never see.\n\n``task`` carries the *execution* \u2014 the attempt on this node \u2014 because that is\nwhat the machine that wrote the line was handed. A reader after a whole task's\noutput wants every execution of it, not a string equal to the task's id.",
         "properties": {
           "compute": {
             "type": "string"
@@ -354,7 +354,10 @@
               "revision_conflict",
               "idempotency_conflict",
               "lease_held",
+              "name_taken",
+              "compute_not_connected",
               "compute_not_accepting",
+              "compute_not_resizable",
               "unsupported_provider",
               "unsupported_plugin",
               "secret_in_definition",
@@ -1253,10 +1256,11 @@
           "health_initial_delay": 0.0,
           "health_interval": 30.0,
           "health_timeout": 15.0,
-          "ssh_connect_timeout": 300.0,
+          "provision_timeout": 300.0,
+          "ssh_connect_timeout": 240.0,
           "ssh_reconnect_attempts": 30,
           "ssh_retry_delay": 2.0,
-          "worker_timeout": 180.0
+          "worker_timeout": 60.0
         },
         "description": "Operational knobs the daemon reads off the spec.\n\nEach defaults to the value the runtime hard-coded before the knob existed, so a\nspec built without options behaves exactly as one built with ``Options()``. The\nclient-side timeouts are not here: they govern how long the owning process waits\nfor its own pool, never leave it, and so ride the SDK's ``Options`` rather than\nthe wire.",
         "properties": {
@@ -1318,8 +1322,12 @@
             "default": 15.0,
             "type": "number"
           },
-          "ssh_connect_timeout": {
+          "provision_timeout": {
             "default": 300.0,
+            "type": "number"
+          },
+          "ssh_connect_timeout": {
+            "default": 240.0,
             "type": "number"
           },
           "ssh_reconnect_attempts": {
@@ -1331,7 +1339,7 @@
             "type": "number"
           },
           "worker_timeout": {
-            "default": 180.0,
+            "default": 60.0,
             "type": "number"
           }
         },
@@ -1746,12 +1754,8 @@
         "type": "object"
       },
       "ProviderRef": {
-        "description": "Which account a spec wants to buy from, and how that account is configured.",
+        "description": "Which account a spec wants to buy from.\n\nA kind and nothing else: how the account is configured belongs to the provider\nrow, which is what the daemon builds its adapter from. A copy of the settings\nriding on the spec would be a second answer to the same question, and the one\nnobody reads \u2014 so a spec names the kind, and ``sky providers set`` or the SDK's\nown account object is what says what that kind means here.",
         "properties": {
-          "config": {
-            "additionalProperties": {},
-            "type": "object"
-          },
           "kind": {
             "type": "string"
           }
@@ -2675,7 +2679,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           },
           "422": {
             "content": {
@@ -2685,7 +2689,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
           }
         },
         "summary": "Create a compute",
@@ -2796,7 +2800,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           },
           "412": {
             "content": {
@@ -2897,7 +2901,7 @@
       },
       "patch": {
         "deprecated": false,
-        "description": "Only `spec.nodes` is mutable in place: it bumps `generation` and the reconciler resizes with drain.\n\nChanging immutable fields (provider, image, worker, plugins, volumes, ports) is **drift**: it is recorded in `status.drift`, the applied definition is kept, and no infrastructure is replaced. Replacing requires `POST /computes/{id}/generations`.",
+        "description": "Only `spec.nodes` is mutable in place: it bumps `generation` and the reconciler resizes with drain.\n\nA compute running a collective plugin (`torch`, `jax`, `accelerate`) is refused with `422 compute_not_resizable`: its process group is formed on the first task and never formed again, so a rank added afterwards blocks in it.\n\nChanging immutable fields (provider, image, worker, plugins, volumes, ports) is **drift**: it is recorded in `status.drift`, the applied definition is kept, and no infrastructure is replaced. Replacing requires `POST /computes/{id}/generations`.",
         "operationId": "V1ComputesComputeIdUpdate",
         "parameters": [
           {
@@ -2998,6 +3002,16 @@
               }
             },
             "description": "`If-Match` did not name the stored revision \u2014 `revision_conflict`. Retryable: re-read, re-apply, re-send"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
           }
         },
         "summary": "Change a compute's spec",
@@ -3112,6 +3126,16 @@
             },
             "description": "No such resource \u2014 `not_found`"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -3120,7 +3144,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
           }
         },
         "summary": "Run a shell command on the compute",
@@ -3235,6 +3259,16 @@
             },
             "description": "No such resource \u2014 `not_found`"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -3243,7 +3277,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
           }
         },
         "summary": "Remove a path on the compute",
@@ -3356,6 +3390,16 @@
             },
             "description": "No such resource \u2014 `not_found`"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -3364,7 +3408,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
           }
         },
         "summary": "List a path on the compute",
@@ -3484,6 +3528,16 @@
             },
             "description": "No such resource \u2014 `not_found`"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -3492,7 +3546,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
           }
         },
         "summary": "Write a file onto the compute",
@@ -3603,6 +3657,16 @@
             },
             "description": "No such resource \u2014 `not_found`"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -3611,7 +3675,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
           }
         },
         "summary": "Read a file off the compute",
@@ -3716,7 +3780,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
           }
         },
         "summary": "The down half of a forwarded connection",
@@ -3841,7 +3905,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
           }
         },
         "summary": "The up half of a forwarded connection",
@@ -4043,7 +4107,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           },
           "412": {
             "content": {
@@ -4063,7 +4127,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
           }
         },
         "summary": "Create a generation (apply drift, or roll back)",
@@ -4332,7 +4396,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           }
         },
         "summary": "Claim or renew ownership",
@@ -4556,7 +4620,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           }
         },
         "summary": "Drain and replace a node",
@@ -4751,7 +4815,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
           }
         },
         "summary": "The down half of an interactive session",
@@ -4932,7 +4996,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
           }
         },
         "summary": "The up half of an interactive session",
@@ -5714,7 +5778,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
           }
         },
         "summary": "Query instance offers",
@@ -5845,7 +5909,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           },
           "422": {
             "content": {
@@ -5855,7 +5919,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
           }
         },
         "summary": "Register a provider account",
@@ -6113,7 +6177,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           },
           "422": {
             "content": {
@@ -6123,7 +6187,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
           }
         },
         "summary": "Update a provider account",
@@ -6393,7 +6457,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           },
           "422": {
             "content": {
@@ -6403,7 +6467,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
           }
         },
         "summary": "Submit a task",
@@ -6505,7 +6569,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           }
         },
         "summary": "Cancel a task",
@@ -6779,7 +6843,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           }
         },
         "summary": "Create an execution (retry)",
@@ -6978,7 +7042,7 @@
                 }
               }
             },
-            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
+            "description": "The write conflicts with what is already here \u2014 `idempotency_conflict`, `lease_held`, `name_taken`, `compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
           }
         },
         "summary": "Download the result",
@@ -7070,7 +7134,7 @@
                 }
               }
             },
-            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
+            "description": "Well-formed and unsatisfiable \u2014 `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, `unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
           }
         },
         "summary": "Read a streaming task",

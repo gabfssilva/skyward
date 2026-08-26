@@ -466,7 +466,7 @@ class RunPodProvider:
                 response.raise_for_status()
                 data = response.json()
             except httpx.HTTPError as exc:
-                error = exc
+                error = _refusal(exc)
                 continue
 
             match data:
@@ -483,6 +483,34 @@ class RunPodProvider:
             response.raise_for_status()
 
 
+def _refusal(error: httpx.HTTPError) -> Exception:
+    """RunPod's reason for saying no, which is never in the status line.
+
+    An unread response reads ``Client error '400 Bad Request' for url ...``, and that
+    same line covers a request that can never work and hardware that merely is not for
+    sale this minute. RunPod answers ``application/problem+json``, whose ``detail``
+    says which — and so whether trying again is worth anything.
+    """
+    match error:
+        case httpx.HTTPStatusError(response=response):
+            return RuntimeError(f"{error}: {_detail(response)}")
+        case _:
+            return error
+
+
+def _detail(response: httpx.Response) -> str:
+    try:
+        body = response.json()
+    except ValueError:
+        return response.text.strip()
+
+    match body:
+        case {"detail": str(detail)}:
+            return detail
+        case _:
+            return response.text.strip()
+
+
 def _deploy_input(binding: Binding, market: Market, image: str | None = None) -> dict[str, Any]:
     """Build a PodCreateInput from RunPod's official REST OpenAPI.
 
@@ -492,6 +520,12 @@ def _deploy_input(binding: Binding, market: Market, image: str | None = None) ->
 
     A binding from before country lists existed falls back to its lone
     ``country_code``.
+
+    ``startSsh`` is what makes the pod reachable at all: RunPod publishes the public
+    port behind ``ssh.direct`` only for a pod created with it, and a pod without one
+    can be talked to through the interactive proxy and nowhere else. The key it would
+    inject is the account's, not the compute's — it is skipped because this request
+    carries a ``PUBLIC_KEY`` of its own, which is the one the node will trust.
     """
     if market == "spot":
         raise CapabilityMismatchError(
@@ -509,6 +543,7 @@ def _deploy_input(binding: Binding, market: Market, image: str | None = None) ->
         "cloud": binding["cloud_type"],
         "disk": binding["container_disk_gb"],
         "ports": normalized_ports,
+        "startSsh": True,
         "env": {
             "PUBLIC_KEY": binding["public_key"],
             "INSTANCE_TIMEOUT": str(binding.get("ttl", 0)),
@@ -629,20 +664,24 @@ def _machine(pod: Mapping[str, Any]) -> Machine | None:
     A stopped pod cannot be made to run again by anything the control plane does,
     and it keeps billing its disk for as long as it exists. Reporting it absent is
     what turns it into a lost node, and a lost node is terminated.
+
+    The address is read from ``ssh.direct``, which REST v2 fills once the running
+    pod has been assigned a public port for its ``22/tcp`` — the same moment the
+    machine becomes something SSH can reach, and null until then. ``runtime`` is
+    not that: it carries live utilization, is absent from the pods listing, and a
+    machine read from it is a machine that never arrives.
     """
     match pod.get("status"):
         case "EXITED" | "ERROR" | "TERMINATED":
             return None
         case _:
-            runtime = pod.get("runtime") or {}
-            ports = runtime.get("ports") or []
-            ssh = next((port for port in ports if port.get("private") == 22), {})
-            host = ssh.get("ip") or None
+            direct = (pod.get("ssh") or {}).get("direct") or {}
+            host = direct.get("host") or None
             networking = pod.get("globalNetworking") or {}
             return Machine(
                 id=pod["id"],
                 state="running" if host else "pending",
                 host=host,
-                port=int(ssh.get("public") or 22),
+                port=int(direct.get("port") or 22),
                 private_host=networking.get("internalDns") or networking.get("ip") or None,
             )

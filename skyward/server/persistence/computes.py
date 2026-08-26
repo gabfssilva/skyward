@@ -8,7 +8,7 @@ from msgspec import Struct, field
 
 from skyward.server.persistence.store import after, digest, ident, now, once, packed, unpacked
 from skyward.server.persistence.tables import ComputeRow, GenerationRow
-from skyward.shared.errors import LeaseHeldError, NotFoundError, RevisionConflictError
+from skyward.shared.errors import ComputeNotResizableError, LeaseHeldError, NameTakenError, NotFoundError, RevisionConflictError
 from skyward.shared.provider import Binding
 from skyward.shared.schemas import (
     Compute,
@@ -26,6 +26,8 @@ from skyward.shared.schemas import (
     Offer,
     Page,
 )
+from skyward.shared.tls import Authority
+from skyward.worker import plugins
 
 LIVE: tuple[ComputeState, ...] = ("requested", "provisioning", "recovering", "ready", "degraded", "deleting")
 """The states in which a compute still has something owed to it."""
@@ -51,6 +53,13 @@ class Infrastructure(Struct, frozen=True):
     """
     binding: Binding = field(default_factory=dict)
     private_key: str | None = None
+    authority: Authority | None = None
+    """The certificate authority of this compute's cluster.
+
+    Minted with the key, and null on a compute bound before there was one: the
+    material a running worker was given cannot be changed under it, so a fleet
+    that came up without an authority stays without one until it is replaced.
+    """
     markets: tuple[Market, ...] = ()
     volumes: tuple[str, ...] = ()
     """The bootstrap phases that mount the compute's buckets, as rendered at bind time.
@@ -62,7 +71,21 @@ class Infrastructure(Struct, frozen=True):
 
 class ComputeStore:
     async def create(self, body: ComputeCreate, idempotency_key: str) -> tuple[Compute, bool]:
+        """Write the definition down, and say plainly when the name is not free.
+
+        The name is unique across every compute the store has ever held, deleted
+        ones included, and the caller chose it. Left to the database that is an
+        integrity error on the way out — a 500 for something the caller could have
+        been told, and could fix by picking another name.
+        """
         async def insert() -> str:
+            if body.name and (taken := await ComputeRow.objects().where(ComputeRow.name == body.name).first()):
+                raise NameTakenError(
+                    f"the name {body.name!r} is compute {taken.id}'s, which is {taken.status_state}",
+                    name=body.name,
+                    compute=taken.id,
+                )
+
             compute = ident("cmp")
             await ComputeRow(
                 id=compute,
@@ -103,9 +126,24 @@ class ComputeStore:
         infrastructure is not replaced, it is grown or drained. That is the whole
         reason ``nodes`` is the only field the API lets through here: everything
         else would mean throwing the machines away, and that has to be asked for.
+
+        A compute running a collective is refused, because growing it is not
+        something the machines can be told: the process group is formed on the first
+        task and never formed again, so a rank arriving later blocks in a rendezvous
+        the others have already left. Writing the same size back is not a resize and
+        is left alone, so a retry of a request that landed still answers.
         """
         row = await self.checked(ref, expected_revision)
-        spec = msgspec.structs.replace(await unpacked(row.spec, ComputeSpec), nodes=body.nodes)
+        current = await unpacked(row.spec, ComputeSpec)
+
+        if body.nodes != current.nodes and (freezes := plugins.collective(current.plugins)):
+            raise ComputeNotResizableError(
+                f"compute {row.id} runs {freezes}, a collective: its process group was formed with the ranks it "
+                f"started with, and a machine added now would block in it",
+                plugin=freezes,
+            )
+
+        spec = msgspec.structs.replace(current, nodes=body.nodes)
 
         row.spec = await packed(spec)
         row.revision += 1
@@ -174,6 +212,7 @@ class ComputeStore:
             offer=await unpacked(row.offer, Offer) if row.offer else None,
             binding=await unpacked(row.binding, dict[str, Any]),
             private_key=row.private_key,
+            authority=await unpacked(row.authority, Authority) if row.authority else None,
             markets=await unpacked(row.markets, tuple[Market, ...]),
             volumes=await unpacked(row.volumes, tuple[str, ...]),
         )
@@ -192,6 +231,7 @@ class ComputeStore:
             ComputeRow.offer: await packed(infrastructure.offer) if infrastructure.offer else None,
             ComputeRow.binding: await packed(infrastructure.binding),
             ComputeRow.private_key: infrastructure.private_key,
+            ComputeRow.authority: await packed(infrastructure.authority) if infrastructure.authority else None,
             ComputeRow.markets: await packed(infrastructure.markets),
             ComputeRow.volumes: await packed(infrastructure.volumes),
             ComputeRow.revision: ComputeRow.revision + 1,

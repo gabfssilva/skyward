@@ -77,6 +77,19 @@ The available create flags are `--provider`, `--name`, `--accelerator`, `--nodes
 sky new --provider container --name local
 ```
 
+### Scale
+
+`scale` changes how many machines a compute stands on, without replacing the ones already up:
+
+```bash
+sky compute scale research --nodes 8
+sky compute scale research --nodes 2:8
+```
+
+`--nodes N` is a fixed size; `--nodes MIN:MAX` is an elastic range, the same thing `nodes=(2, 8)` means in the SDK. The bounds are written whole, so the flag is the compute's new size and not a patch on the old one.
+
+Like `create`, it returns without waiting: what comes back is a new `generation`, and the machines are bought or drained by reconciliation afterwards. A compute running a collective plugin (`torch`, `jax`, `accelerate`) is refused — its process group was formed with the ranks it started with, and one added now would block in it.
+
 ### Read and delete
 
 ```bash
@@ -157,11 +170,15 @@ A provider is a registered account, not only a provider kind. The daemon uses th
 ```bash
 sky providers list
 sky providers list --kinds
+sky providers set runpod --config cloud_type=community
+sky providers set aws --name production --config region=eu-west-1
 sky providers check
 sky providers check production
 ```
 
 `list` shows registered accounts. `list --kinds` shows supported kinds, required credential fields, and offer-cache TTLs. `check` reports the last recorded result; it does not perform a new credential probe.
+
+`set` registers an account, or rewrites the settings of one already registered. `--config` takes the account's own fields as `key=value`, repeatable, and they are validated against the account before anything is sent. Credentials are never written here: they are read from the environment, the same way a pool reads them. The row is what the daemon builds its adapter from, so a compute created with `--provider runpod` provisions with whatever `set` last wrote.
 
 ## `sky config`
 

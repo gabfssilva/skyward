@@ -168,6 +168,20 @@ def topology() -> dict[str, object]:
 
 `Info.peers` is rank ordered. `Info.head_addr` and `Info.head_port` provide the rank-zero rendezvous convention expected by distributed libraries. `sky.shard()` uses the same rank and node count to produce aligned data slices.
 
+## Cluster authentication
+
+A worker's casty port executes the payloads it is handed, so whoever opens a TCP connection to it runs code on a machine you are paying for. Placement is the first line of defence — the AWS security group opens 22 and peer traffic inside the group, the GCP firewall opens 22, RunPod maps only 22 — but it is the provider's line, and it says nothing about whatever else shares the private network your nodes were placed on.
+
+So every compute is its own certificate authority. It is minted when the compute is bound, in the same commit as the SSH key, and it lives in `computes.authority` for the same reason the key does: the daemon that reconnects to a fleet is not necessarily the daemon that provisioned it.
+
+From that authority the daemon issues one identity per member. A node gets `node.crt`, `node.key` and `ca.crt` under `/opt/skyward/tls`, written over SSH at launch with the key at mode `600`, and the three paths reach the worker as `SKYWARD_TLS_CERT`, `SKYWARD_TLS_KEY` and `SKYWARD_TLS_CA`. The daemon issues its own into a private directory it deletes when it lets the compute go. Both ends hand the material to casty — `casty.start(tls=...)` on the node, `casty.connect(tls=...)` on the daemon — which verifies in both directions and demands a client certificate, so a node authenticates the daemon exactly as the daemon authenticates the node.
+
+The certificates carry no subject alternative name. Casty checks the authority that signed a member, not the address it answers on, which is what lets the daemon reach a worker through an SSH tunnel on loopback while its peers reach the same worker on the private network.
+
+The scope is deliberate, and it is not a key-rotation story. One authority per compute means a leaked key is one compute's problem and dies with it; a caller signed by any other authority is refused during the handshake, and a member's certificate is good for 90 days and is replaced by replacing the node. Minting costs the daemon a dependency on `cryptography`, which ships with the `server` extra — a node reads three files and gives their paths to the standard library, so nothing was added to what a machine installs.
+
+A compute bound before any of this existed has no authority in its row and its nodes keep speaking plaintext: material a running worker was given cannot be changed underneath it. Recreating the compute is what moves it over.
+
 ## Task dispatch
 
 The dispatcher works only with nodes that are ready and have free executor slots. A queued task is not considered accepted by a busy worker: keeping it queued gives reconciliation a visible load signal.

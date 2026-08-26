@@ -38,8 +38,24 @@ class LeaseHeldError(SkywardError):
     retryable = True
 
 
+class NameTakenError(SkywardError):
+    code = "name_taken"
+    status = 409
+
+
+class ComputeNotConnectedError(SkywardError):
+    code = "compute_not_connected"
+    status = 409
+    retryable = True
+
+
 class ComputeNotAcceptingError(SkywardError):
     code = "compute_not_accepting"
+    status = 422
+
+
+class ComputeNotResizableError(SkywardError):
+    code = "compute_not_resizable"
     status = 422
 
 

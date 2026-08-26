@@ -71,7 +71,10 @@ class ComputeRow(Table, tablename="computes"):
     compute outlives by days the process that started it. The same goes for
     ``private_key``: the daemon that reconnects to these machines after a restart
     is not the daemon that provisioned them, and a key held in memory would strand
-    every machine it paid for.
+    every machine it paid for. ``authority`` is the certificate authority of the
+    compute's own cluster, and is here for that reason twice over: the workers only
+    admit what it signed, so a daemon that lost it can log into the machines and
+    still not be allowed to speak to them.
 
     ``revision`` is the optimistic-concurrency token behind ``If-Match``. Every
     write bumps it; a write that expected an older one is refused.
@@ -88,6 +91,7 @@ class ComputeRow(Table, tablename="computes"):
     offer = JSONB(null=True, default=None)
     binding = JSONB(default="{}")
     private_key = Text(null=True, default=None)
+    authority = JSONB(null=True, default=None)
     markets = JSONB(default="[]")
     volumes = JSONB(default="[]")
 

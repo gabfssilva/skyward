@@ -37,6 +37,8 @@ A write that changes one must say which revision it expected:
 $ http PATCH :7590/v1/computes/cmp_7f3a1c If-Match:'"7"' nodes:='{"desired": 8}'
 ```
 
+`nodes` is the only field this accepts, and a compute running a collective plugin is refused with `422 compute_not_resizable`: its process group was formed with the ranks it started with.
+
 If the stored revision has moved on, the write is refused with `412` and `revision_conflict`. That error is retryable: re-read, re-apply, re-send. Every successful write bumps the revision.
 
 This is what keeps two clients — your script and a `sky compute delete` in another terminal — from silently overwriting each other's intent.
@@ -76,6 +78,7 @@ Every failure is the same JSON object, whatever produced it:
 | `idempotency_conflict` | 409 | no | Key reused with a different request |
 | `lease_held` | 409 | yes | Another process owns this compute |
 | `compute_not_accepting` | 422 | no | The compute is deleting or failed |
+| `compute_not_resizable` | 422 | no | The compute runs a collective, and its ranks are frozen |
 | `unsupported_provider` | 422 | no | No adapter registered for that kind |
 | `unsupported_plugin` | 422 | no | No plugin registered under that kind |
 | `secret_in_definition` | 422 | no | A credential was put where the API serves it back |

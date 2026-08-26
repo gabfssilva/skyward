@@ -128,16 +128,29 @@ class NodeStore:
         return tuple([await _to_node(row) for row in rows])
 
     async def observe(self, node_id: str, state: NodeState, error: Error | None = None) -> None:
-        """What the node's own lifecycle reported. Written by nobody else."""
+        """What the node's own lifecycle reported. Written by nobody else.
+
+        A transition that carries no error leaves the last one where it is. The
+        reason a node was given up on is written once, by the transition that gave
+        up on it, and everything that follows — ``deleting``, then ``deleted`` — is
+        bookkeeping that knows nothing about why. Nulling the field on those would
+        erase the only answer to why the machine was replaced, two ticks after it
+        was written. A node that reports itself ``ready`` is the one thing that
+        makes an old error stale, so that is where it is dropped.
+        """
         row = await NodeRow.objects().where(NodeRow.id == node_id).first()
         if row is None:
             raise NotFoundError(f"no such node: {node_id}")
 
         changes: dict[Column | str, Any] = {
             NodeRow.state: state,
-            NodeRow.last_error: await packed(error) if error else None,
             NodeRow.revision: NodeRow.revision + 1,
         }
+        if error:
+            changes[NodeRow.last_error] = await packed(error)
+        elif state == "ready":
+            changes[NodeRow.last_error] = None
+
         if state in TERMINAL and row.terminated_at is None:
             changes[NodeRow.terminated_at] = now()
 

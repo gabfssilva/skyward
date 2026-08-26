@@ -30,7 +30,7 @@ from skyward.core.forward import TcpProxy
 from skyward.core.function import Group, Pending, Streaming
 from skyward.core.provider import Provider
 from skyward.core.provider import resolve as resolve_provider
-from skyward.core.spec import Executor, Nodes, NodeSpec, Options, Port, Spec, Volume
+from skyward.core.spec import Executor, NodeSpec, Options, Port, Spec, Volume, bounds
 from skyward.server.persistence.db import DEFAULT_PATH
 from skyward.shared import codec
 from skyward.shared.accelerators import resolve
@@ -39,13 +39,13 @@ from skyward.shared.schemas import (
     Allocation,
     ComputeCreate,
     ComputeSpec,
+    ComputeSpecPatch,
     Dispatch,
     Endpoint,
     Error,
     Image,
     Lease,
     LeaseClaim,
-    NodeBounds,
     ProviderCreate,
     ProviderRef,
     Selection,
@@ -78,9 +78,7 @@ DEFAULT_EXECUTOR = Executor()
 DEFAULT_OPTIONS = Options()
 INLINE = 256 * 1024
 POLL = 30
-READY_TIMEOUT = 900
-DELETE_TIMEOUT = 300
-DELETE_ATTEMPTS = 5
+WRITE_ATTEMPTS = 5
 LEASE_SECONDS = 60
 """How long the compute stays owned after the last renewal.
 
@@ -157,7 +155,7 @@ class Compute:
         self._providers = {spec.provider.name or spec.provider.kind: spec.provider for spec in specs}
         self._spec = ComputeSpec(
             specs=tuple(_wire(spec) for spec in specs),
-            nodes=_bounds(nodes),
+            nodes=bounds(nodes),
             allocation=allocation,
             selection=selection,
             image=image,
@@ -171,6 +169,7 @@ class Compute:
                 ssh_connect_timeout=options.ssh_timeout,
                 ssh_reconnect_attempts=options.max_provision_attempts,
                 ssh_retry_delay=options.provision_retry_delay,
+                provision_timeout=options.provision_timeout,
                 worker_timeout=options.worker_timeout,
                 autoscale_idle_timeout=options.autoscale_idle_timeout,
                 autoscale_cooldown=options.autoscale_cooldown,
@@ -240,54 +239,38 @@ class Compute:
         return self._id
 
     def __enter__(self) -> Self:
+        """Buy the machines and hand back the pool, or leave nothing behind trying.
+
+        An entry that raises never runs the matching exit, and by then the compute
+        exists and its machines are billing. So a failure here tears down what it
+        was in the middle of building, on the same terms the exit would — the
+        ``delete_on_exit`` the caller asked for — and the error that caused it is
+        what the caller sees, not whatever the teardown ran into.
+        """
         self._loop = Loop()
         self._client = self.loop.run(
             Client.remote(self._url) if self._url else Client.embedded(self._database),
         )
-        self.loop.run(self._provision())
-        for plugin in self._plugins:
-            self._client_stack.enter_context(plugin.client(self))
-        for port in self._ports:
-            proxy = TcpProxy(self.client, self._id, port)
-            self.loop.run(proxy.start())
-            self._proxies.append(proxy)
+        try:
+            self.loop.run(self._provision())
+            for plugin in self._plugins:
+                self._client_stack.enter_context(plugin.client(self))
+            for port in self._ports:
+                proxy = TcpProxy(self.client, self._id, port)
+                self.loop.run(proxy.start())
+                self._proxies.append(proxy)
+        except BaseException:
+            with suppress(Exception):
+                self._teardown()
+            raise
         self._active_token = context.enter(self)
         return self
 
     def __exit__(self, *_: object) -> None:
-        """Tear down, and stay torn down even when a ``Ctrl-C`` lands mid-teardown.
-
-        The interrupt arrives on this thread, blocked on a result from the loop's;
-        left to propagate it would skip closing the loop, and the daemon thread would
-        go on running the destroy nobody is waiting for. The event loop is what has to
-        be stopped last and unconditionally, because it is the thread that keeps the
-        process alive.
-        """
         if self._active_token is not None:
             context.reset(self._active_token)
             self._active_token = None
-        for proxy in self._proxies:
-            with suppress(Exception):
-                self.loop.run(proxy.stop())
-        self._proxies = []
-        try:
-            self._client_stack.close()
-            if self._delete_on_exit:
-                self.loop.run(self._destroy())
-        finally:
-            if self._leasing:
-                self._leasing.cancel()
-            if self._watching:
-                self._watching.cancel()
-            try:
-                if self._id:
-                    self.loop.run(self.client.delete(f"/v1/computes/{self._id}/lease"))
-            finally:
-                try:
-                    self.loop.run(self.client.close())
-                finally:
-                    self.loop.close()
-                    self._loop, self._client, self._watching, self._leasing = None, None, None, None
+        self._teardown()
 
     @property
     def loop(self) -> Loop:
@@ -362,6 +345,28 @@ class Compute:
     def current_nodes(self) -> int:
         compute = self.loop.run(self.client.call("GET", f"/v1/computes/{self._id}", ComputeView))
         return compute.status.nodes_ready
+
+    def resize(self, nodes: NodeSpec) -> None:
+        """Ask for a different number of machines, in the spelling ``nodes=`` takes.
+
+        A size is the one part of a definition that changes without replacing
+        anything: the machines already up are kept, and the difference is bought or
+        drained. Like every other write to the compute this records an intent and
+        returns — :meth:`current_nodes` is what says how much of it is real.
+
+        A compute running a collective is refused, because a resize cannot reach it:
+        the process group is formed on the first task and never formed again, so a
+        rank that arrives afterwards blocks in a rendezvous nobody else will attend.
+
+        Parameters
+        ----------
+        nodes
+            ``4`` for a fixed size, ``(2, 8)`` for an elastic range, or a
+            :class:`~skyward.Nodes` for a floor that differs from the target.
+        """
+        wanted = bounds(nodes)
+        self.loop.run(self._conditional("PATCH", body=msgspec.json.encode(ComputeSpecPatch(nodes=wanted))))
+        self._spec = msgspec.structs.replace(self._spec, nodes=wanted)
 
     async def _provision(self) -> None:
         if self._attach:
@@ -500,35 +505,74 @@ class Compute:
             await asyncio.sleep(LEASE_SECONDS / 3)
             await self._claim()
 
-    async def _destroy(self) -> None:
-        """Delete the compute, re-reading the revision the daemon moved under us.
+    def _teardown(self) -> None:
+        """Tear down, and stay torn down even when a ``Ctrl-C`` lands mid-teardown.
 
-        ``If-Match`` guards against deleting a compute somebody else reshaped, but
-        the revision also moves on bookkeeping this caller causes and cannot avoid:
-        the reconciler writes what it observed on every tick, and the lease renews
-        itself on a timer. Either landing between the read and the delete refuses a
-        teardown nothing was actually racing, so the precondition is refreshed
-        rather than abandoned. The idempotency key is the same across attempts — a
-        rejected precondition created nothing.
+        The interrupt arrives on this thread, blocked on a result from the loop's;
+        left to propagate it would skip closing the loop, and the daemon thread would
+        go on running the destroy nobody is waiting for. The event loop is what has to
+        be stopped last and unconditionally, because it is the thread that keeps the
+        process alive.
         """
-        key = uuid.uuid4().hex
-        for attempt in range(DELETE_ATTEMPTS):
-            current = await self.client.call("GET", f"/v1/computes/{self._id}", ComputeView)
+        for proxy in self._proxies:
+            with suppress(Exception):
+                self.loop.run(proxy.stop())
+        self._proxies = []
+        try:
+            self._client_stack.close()
+            if self._delete_on_exit and self._id:
+                self.loop.run(self._destroy())
+        finally:
+            if self._leasing:
+                self._leasing.cancel()
+            if self._watching:
+                self._watching.cancel()
             try:
-                await self.client.call(
-                    "DELETE",
-                    f"/v1/computes/{self._id}",
-                    ComputeView,
-                    headers={"If-Match": f'"{current.revision}"', "Idempotency-Key": key},
-                )
-            except SkywardError as error:
-                if error.code != "revision_conflict" or attempt == DELETE_ATTEMPTS - 1:
-                    raise
-                continue
-            break
+                if self._id:
+                    self.loop.run(self.client.delete(f"/v1/computes/{self._id}/lease"))
+            finally:
+                try:
+                    self.loop.run(self.client.close())
+                finally:
+                    self.loop.close()
+                    self._loop, self._client, self._watching, self._leasing = None, None, None, None
+
+    async def _destroy(self) -> None:
+        """Delete the compute, and wait until the provider says the machines are gone.
+
+        The idempotency key is the same across attempts — a rejected precondition
+        created nothing.
+        """
+        await self._conditional("DELETE", headers={"Idempotency-Key": uuid.uuid4().hex})
 
         async with asyncio.timeout(self._shutdown_timeout):
             await self._reach("deleted")
+
+    async def _conditional(self, method: str, body: bytes | None = None, headers: dict[str, str] | None = None) -> ComputeView:
+        """A write against the compute, guarded by the revision it was read at.
+
+        ``If-Match`` guards against reshaping a compute somebody else reshaped, but
+        the revision also moves on bookkeeping this caller causes and cannot avoid:
+        the reconciler writes what it observed on every tick, and the lease renews
+        itself on a timer. Either landing between the read and the write refuses a
+        change nothing was actually racing, so the precondition is refreshed rather
+        than abandoned.
+        """
+        attempts = WRITE_ATTEMPTS
+        while True:
+            current = await self.client.call("GET", f"/v1/computes/{self._id}", ComputeView)
+            try:
+                return await self.client.call(
+                    method,
+                    f"/v1/computes/{self._id}",
+                    ComputeView,
+                    body=body,
+                    headers={"If-Match": f'"{current.revision}"', **(headers or {})},
+                )
+            except SkywardError as error:
+                attempts -= 1
+                if error.code != "revision_conflict" or not attempts:
+                    raise
 
     async def _reach(self, *states: str) -> ComputeView:
         """Follow the compute's events; answer with its view once it reaches one of ``states``.
@@ -628,7 +672,7 @@ async def _next(frames: AsyncIterator[bytes]) -> bytes | None:
 def _wire(spec: Spec) -> SpecRef:
     accelerator, count = _accelerator(spec.accelerator)
     return SpecRef(
-        provider=ProviderRef(kind=spec.provider.kind, config=resolve_provider(spec.provider)[1]),
+        provider=ProviderRef(kind=spec.provider.kind),
         accelerator=accelerator,
         accelerator_count=count,
         cpus=spec.cpus,
@@ -659,12 +703,3 @@ def _accelerator(wanted: str | Accelerator | None) -> tuple[str | None, int]:
         case None:
             return None, 1
 
-
-def _bounds(nodes: NodeSpec) -> NodeBounds:
-    match nodes:
-        case int(desired):
-            return NodeBounds(desired=desired)
-        case (minimum, maximum):
-            return NodeBounds(desired=maximum, min=minimum, max=maximum)
-        case Nodes():
-            return nodes

@@ -2876,6 +2876,7 @@ salad = [
 ]
 server = [
     { name = "asyncssh" },
+    { name = "cryptography" },
     { name = "httpx" },
     { name = "litestar" },
     { name = "piccolo", extra = ["sqlite"] },
@@ -2924,6 +2925,7 @@ requires-dist = [
     { name = "cryptography", marker = "extra == 'all'", specifier = ">=42" },
     { name = "cryptography", marker = "extra == 'gcp'", specifier = ">=42" },
     { name = "cryptography", marker = "extra == 'providers'", specifier = ">=42" },
+    { name = "cryptography", marker = "extra == 'server'", specifier = ">=42" },
     { name = "cyclopts", marker = "extra == 'all'", specifier = ">=3.0" },
     { name = "cyclopts", marker = "extra == 'cli'", specifier = ">=3.0" },
     { name = "httpx", marker = "extra == 'all'", specifier = ">=0.28" },

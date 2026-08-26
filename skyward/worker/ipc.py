@@ -31,6 +31,9 @@ from skyward.worker import distributed, slot
 type Registrations = Queue[Connection]
 type Slots = Queue[int]
 
+SLOT_TIMEOUT = 2.0
+"""Seconds a child waits for its index before starting without a distinct one."""
+
 
 @dataclass(frozen=True, slots=True)
 class Call:
@@ -53,12 +56,20 @@ def _install(registrations: Registrations, slots: Slots | None = None) -> None:
     is only handed over by the reused pools: there each child is one of a fixed
     ``workers`` set and takes a distinct index that outlives its every task. Under
     ``reuse=False`` the children are transient and unbounded — a fixed range would
-    drain — so ``slots`` is ``None`` and the index stays at its default zero. The
-    read is non-blocking for the same reason: a child must never wait on the queue.
+    drain — so ``slots`` is ``None`` and the index stays at its default zero.
+
+    The read waits, briefly. The queue is filled by the parent before the pool is
+    built, but a multiprocessing queue is written by a feeder thread, so a child
+    that spawns quickly can reach an empty queue that is about to have its index in
+    it. Not waiting meant that child silently keeping index zero — two workers on
+    the same share of the machine, which is the one thing the index exists to
+    prevent. What must not happen is waiting forever: a child the pool replaces
+    later has no index left to take, and falls back to zero rather than never
+    starting.
     """
     if slots is not None:
         with suppress(queue.Empty):
-            slot.set(slots.get_nowait())
+            slot.set(slots.get(timeout=SLOT_TIMEOUT))
 
     parent, child = multiprocessing.get_context("spawn").Pipe()
     registrations.put(parent)

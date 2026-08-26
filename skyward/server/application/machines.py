@@ -24,15 +24,18 @@ from skyward.server.application import market
 from skyward.server.application.runtimes import keypair, public_key
 from skyward.server.application.source import detect, resolve
 from skyward.server.persistence.computes import ComputeStore, Infrastructure
+from skyward.server.persistence.events import EventStore
 from skyward.server.persistence.functions import BlobStore
 from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.offers import OfferCache
 from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.store import now
+from skyward.shared import codec
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.observability import logger
 from skyward.shared.provider import Bakeable, Binding, Machine, Mount, Mountable, Preemptible, Provider
-from skyward.shared.schemas import Compute, ComputeSpec, Endpoint, Error, Image, Market, Node, Offer, Volume
+from skyward.shared.schemas import Compute, ComputeSpec, Endpoint, Error, Event, Image, Market, Node, NodeEvent, Offer, Volume
+from skyward.shared.tls import authority
 from skyward.worker import bootstrap
 
 logger = logger.bind(component="machines")
@@ -81,12 +84,14 @@ class Machines:
         providers: ProviderStore,
         offers: OfferCache,
         blobs: BlobStore,
+        events: EventStore,
     ) -> None:
         self._computes = computes
         self._nodes = nodes
         self._providers = providers
         self._offers = offers
         self._blobs = blobs
+        self._events = events
         self._binding = asyncio.Lock()
         self._fleet: dict[str, asyncio.Lock] = {}
         self._baked: set[tuple[str, str]] = set()
@@ -231,6 +236,7 @@ class Machines:
             spec = _effective_spec(adapter, compute.spec, offer)
 
             private, public = await asyncio.to_thread(keypair)
+            signing = await asyncio.to_thread(authority)
             binding = await adapter.initialize(compute.id, spec, offer, chosen, public)
             binding = await self._reuse(adapter, spec.image, binding)
 
@@ -246,6 +252,7 @@ class Machines:
                     "skyward_cluster": spec.options.cluster,
                 },
                 private_key=private,
+                authority=signing,
                 markets=market.order(offer, compute.spec.allocation),
                 volumes=mount.phases,
             )
@@ -425,11 +432,15 @@ class Machines:
                     logger.bind(node_id=node.id).warning("adopted a machine nobody had written down")
                     continue
 
+                deadline = compute.spec.options.provision_timeout
+
                 match observed.get(node.machine or ""):
                     case Machine(state="running") as machine if machine.host or machine.private_host:
                         await self._nodes.reachable(node.id, machine)
                     case None if node.machine and _settled(node):
                         await self._lost(node, "the provider no longer has it")
+                    case Machine() if _stalled(node, deadline):
+                        await self._lost(node, f"the machine never published an address in {deadline:.0f}s")
                     case _:
                         pass
 
@@ -476,8 +487,28 @@ class Machines:
         return self._fleet.setdefault(compute_id, asyncio.Lock())
 
     async def _lost(self, node: Node, why: str) -> None:
+        """Give up on a machine, and say so where anybody can read it.
+
+        A node given up on is replaced, and the replacement is all the event log
+        would otherwise show. The loss is announced here because here is where it
+        is discovered — the reconciler learns of it as a row already in ``lost``,
+        with nothing left to say about which machine went missing or why.
+        """
         await self._nodes.observe(node.id, "lost", Error(code="not_found", message=why, retryable=True))
+        payload = NodeEvent(compute=node.compute_id, node=node.id, state="lost", error=why)
+        await self._events.record("node.lost", await codec.json(Event).encode(payload), compute=node.compute_id)
 
 
 def _settled(node: Node) -> bool:
     return (now() - node.created_at).total_seconds() > DOUBT_SECONDS
+
+
+def _stalled(node: Node, deadline: float) -> bool:
+    """A machine that was bought, is there, and has never said where it is.
+
+    Every other timeout in the system starts once there is an address to dial. This
+    is the window before that one, and it is the window in which a machine bills for
+    nothing: the provider has it running, the compute is paying for it, and no node
+    can be made out of it.
+    """
+    return bool(deadline) and node.launched_at is not None and (now() - node.launched_at).total_seconds() > deadline

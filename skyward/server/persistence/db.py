@@ -129,5 +129,22 @@ async def connect(path: Path | None = None) -> SQLiteEngine:
 
     for table in TABLES:
         await table.create_table(if_not_exists=True).run()
+        await _widen(table)
 
     return engine
+
+
+async def _widen(table: type[Table]) -> None:
+    """Add the columns the model has and the file does not.
+
+    ``if_not_exists`` is the right thing on every start after the first and no help
+    at all when a release adds a column: the file keeps the shape it was created
+    with, and the first read of the new model fails on a column that is not there.
+    Adding the missing ones is the whole of what a migration would do here, because
+    a column added to a table that already has rows can only ever be nullable — a
+    row written before the column exists has nothing to say about it.
+    """
+    present = {column["name"] for column in await table.raw(f"PRAGMA table_info({table._meta.tablename})").run()}
+    for column in table._meta.columns:
+        if column._meta.db_column_name not in present:
+            await table.raw(f"ALTER TABLE {table._meta.tablename} ADD COLUMN {column.ddl}").run()

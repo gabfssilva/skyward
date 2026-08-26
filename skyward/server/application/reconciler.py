@@ -160,9 +160,7 @@ class Reconciler:
         if compute.status.state == "deleted":
             return
 
-        if abandoned(compute):
-            if not compute.spec.delete_on_exit:
-                return
+        if abandoned(compute) and compute.spec.delete_on_exit:
             await self._computes.delete(compute.id, compute.revision, f"abandoned:{compute.id}")
             await self._record("compute.abandoned", ComputeAbandoned(compute=compute.id))
             compute = await self._computes.get(compute.id)
@@ -371,8 +369,11 @@ def abandoned(compute: Compute) -> bool:
     gone — a ``Ctrl-C``, a crash, a laptop closed.
 
     What follows is spelled out on the lease endpoint: ``delete_on_exit`` tears it
-    down, anything else sits ownerless until something attaches. A compute already
-    being deleted is never abandoned — teardown must finish no matter who asked.
+    down, anything else sits ownerless until something attaches. Sitting ownerless
+    is not being ignored: the machines are still reconciled, because the compute a
+    shell created is never leased by anybody and would otherwise stop being brought
+    up sixty seconds into its own provisioning. A compute already being deleted is
+    never abandoned — teardown must finish no matter who asked.
     """
     if compute.spec.desired == "deleted":
         return False
@@ -392,7 +393,7 @@ def bounds(spec: ComputeSpec) -> tuple[int, int]:
     rank away afterwards does not shrink the job — it hangs it, at the next
     all-reduce, on a peer that is never going to answer.
     """
-    if any(plugin.collective for plugin in plugins.resolve(spec.plugins)):
+    if plugins.collective(spec.plugins):
         return spec.nodes.desired, spec.nodes.desired
 
     lower = spec.nodes.min if spec.nodes.min is not None else spec.nodes.desired

@@ -82,11 +82,14 @@ class ComputeController(Controller):
         summary="Change a compute's spec",
         description=(
             "Only `spec.nodes` is mutable in place: it bumps `generation` and the reconciler resizes with drain.\n\n"
+            "A compute running a collective plugin (`torch`, `jax`, `accelerate`) is refused with `422 "
+            "compute_not_resizable`: its process group is formed on the first task and never formed again, so a rank "
+            "added afterwards blocks in it.\n\n"
             "Changing immutable fields (provider, image, worker, plugins, volumes, ports) is **drift**: it is recorded in "
             "`status.drift`, the applied definition is kept, and no infrastructure is replaced. Replacing requires "
             "`POST /computes/{id}/generations`."
         ),
-        responses=failures(404, 412),
+        responses=failures(404, 412, 422),
     )
     async def update(
         self,

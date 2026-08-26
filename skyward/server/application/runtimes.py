@@ -16,6 +16,9 @@ import asyncio
 import shlex
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
+from pathlib import Path
+from shutil import rmtree
+from tempfile import mkdtemp
 
 import asyncssh
 import casty
@@ -24,9 +27,12 @@ from skyward.server.application.node import DEFAULT_OPTIONS, Node
 from skyward.server.application.ports import Route, Target
 from skyward.server.application.source import Source
 from skyward.server.application.ssh import Channel, Result
+from skyward.shared.errors import ComputeNotConnectedError
 from skyward.shared.observability import logger
 from skyward.shared.provider import Machine
 from skyward.shared.schemas import Executor, Image, NodeState, Options, PhaseMark, PluginRef
+from skyward.shared.tls import Authority, identity
+from skyward.worker import worker
 
 logger = logger.bind(component="runtimes")
 
@@ -82,17 +88,25 @@ class Runtime:
     nothing to connect to until a node says it is ready.
     """
 
-    def __init__(self, compute: str, source: Source, private_key: str, cluster: bool = True) -> None:
+    def __init__(self, compute: str, source: Source, private_key: str, cluster: bool = True, authority: Authority | None = None) -> None:
         self.compute = compute
         self.source = source
         self.private_key = private_key
         self.cluster = cluster
+        self.authority = authority
+        """What signed every member of this compute, and refuses everybody else.
+
+        Null on a compute bound before there was one. The workers on it were started
+        without material and would not understand a client that presented any.
+        """
         self.nodes: dict[str, Node] = {}
         self.dispatched: set[str] = set()
         """Executions already in flight. Two coalesced reconciles must not both send one."""
 
         self._systems: dict[str | None, casty.Client] = {}
         self._tunnels: dict[str, str] = {}
+        self._tls: casty.TLS | None = None
+        self._directory: Path | None = None
         self._connecting = asyncio.Lock()
         self._cursor = 0
         """Where the next forwarded connection lands in the round-robin."""
@@ -162,6 +176,7 @@ class Runtime:
                 self._refresh()
                 self._systems[key] = await casty.connect(
                     seeds,
+                    tls=self._material(),
                     config=casty.Config(call_timeout=CALL_TIMEOUT),
                     address_map=lambda addr: self._tunnels.get(addr, addr),
                     cluster_name=self.compute,
@@ -169,6 +184,22 @@ class Runtime:
 
         self._refresh()
         return self._systems[key]
+
+    async def retopology(self, node_id: str, peers: tuple[str, ...]) -> None:
+        """Tell one running worker that the compute is a different size than it was.
+
+        The worker's environment was written when it started, and a resize does not
+        restart anybody — that is the point of a resize. So the new world is pushed
+        to the nodes that were already here, and only when it actually changed: a
+        node that has just come up was started with it.
+        """
+        node = self.nodes.get(node_id)
+        if node is None or node.peers == peers or node_id not in self.ready:
+            return
+
+        system = await self.system(node_id)
+        await system.service(worker.Control, at=await self.member(node_id)).topology(peers)
+        node.peers = peers
 
     async def member(self, node_id: str) -> casty.Member:
         system = await self.system(node_id)
@@ -291,6 +322,35 @@ class Runtime:
             await node.close()
         self.nodes.clear()
 
+        if self._directory is not None:
+            rmtree(self._directory, ignore_errors=True)
+            self._directory, self._tls = None, None
+
+    def _material(self) -> casty.TLS | None:
+        """This daemon's own way into the compute, written where casty can read it.
+
+        Once, and lazily: casty is given paths rather than bytes, so the material has
+        to live in a directory for as long as this process holds the compute — and a
+        compute nobody has dialled has no reason to have one on disk at all. Signed by
+        the compute's authority like every node is, because to a worker the daemon is
+        one more member: there is no second kind of credential and nothing that skips
+        the check.
+        """
+        if self.authority is None:
+            return None
+
+        if self._tls is None:
+            self._directory = Path(mkdtemp(prefix=f"skyward-{self.compute}-"))
+            member = identity(self.authority, self.compute)
+            certificate, key, authority = self._directory / "daemon.crt", self._directory / "daemon.key", self._directory / "ca.crt"
+            certificate.write_text(member.certificate)
+            key.write_text(member.key)
+            key.chmod(0o600)
+            authority.write_text(member.authority)
+            self._tls = casty.TLS(cert=str(certificate), key=str(key), ca=str(authority))
+
+        return self._tls
+
     def _refresh(self) -> None:
         self._tunnels = {
             node.seed: f"127.0.0.1:{node.tunnel}"
@@ -312,8 +372,15 @@ class Runtimes:
     def of(self, compute: str) -> Runtime | None:
         return self._runtimes.get(compute)
 
-    def open(self, compute: str, source: Source, private_key: str, cluster: bool = True) -> Runtime:
-        return self._runtimes.setdefault(compute, Runtime(compute, source, private_key, cluster))
+    def open(
+        self,
+        compute: str,
+        source: Source,
+        private_key: str,
+        cluster: bool = True,
+        authority: Authority | None = None,
+    ) -> Runtime:
+        return self._runtimes.setdefault(compute, Runtime(compute, source, private_key, cluster, authority))
 
     async def start(
         self,
@@ -358,6 +425,7 @@ class Runtimes:
             user_code=user_code,
             volumes=volumes,
             instance_timeout=instance_timeout,
+            tls=identity(runtime.authority, node_id) if runtime.authority else None,
             listener=lambda state, error: self._listener(runtime.compute, node_id, state, error),
             output=lambda content, task: self._output(runtime.compute, node_id, content, task),
             sample=lambda name, value: self._sample(runtime.compute, node_id, name, value),
@@ -483,9 +551,16 @@ class Files:
         return await self._live(compute_id).run(target, command)
 
     def _live(self, compute_id: str) -> Runtime:
+        """The connections this daemon is holding for a compute, if it is holding any.
+
+        A compute is a row anybody can read and a set of SSH links exactly one
+        process holds. Asking a daemon that is not the one holding them is not a
+        malformed request and not a missing compute — it is the wrong daemon, and
+        the answer is worth saying rather than raising through as a 500.
+        """
         runtime = self._runtimes.of(compute_id)
         if runtime is None:
-            raise RuntimeError(f"compute {compute_id} is not live on this daemon")
+            raise ComputeNotConnectedError(f"compute {compute_id} is not connected to this daemon", compute=compute_id)
         return runtime
 
 

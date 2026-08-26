@@ -58,6 +58,22 @@ def _mode() -> ExecutorKind:
 MODE = _mode()
 
 
+def material() -> casty.TLS | None:
+    """What this machine shows the rest of the compute, and what it checks them against.
+
+    The three files were written by the daemon over SSH, from the authority that
+    belongs to this compute alone. Without them the port this process is about to
+    open runs whatever anybody who can route to it sends — which is why the only
+    compute that gets here empty-handed is one bound before there were certificates,
+    whose daemon has no material to present either.
+    """
+    match os.environ.get("SKYWARD_TLS_CERT"), os.environ.get("SKYWARD_TLS_KEY"), os.environ.get("SKYWARD_TLS_CA"):
+        case (str() as certificate, str() as key, str() as authority):
+            return casty.TLS(cert=certificate, key=key, ca=authority, require_client_cert=True)
+        case _:
+            return None
+
+
 type Arguments = tuple[tuple[object, ...], dict[str, object]]
 type HealthCheck = Callable[[Info], bool | str]
 type HealthChecks = tuple[AsyncIterator[tuple[bool, str | None]], int]
@@ -228,6 +244,21 @@ class Control:
     async def ping(self) -> str:
         return os.environ["SKYWARD_NODE"]
 
+    async def topology(self, peers: tuple[str, ...]) -> None:
+        """Where the other nodes are, when that changes under a running worker.
+
+        A worker is started with the world as it was, and a compute that grows or
+        drains changes it afterwards. Nothing on the machine can discover that —
+        what a node is among the others is the one fact it is told rather than
+        reads — so it is pushed here, on the channel that does not queue behind
+        the work, and lands where :func:`skyward.instance_info` looks for it.
+
+        Without it a node that was here before the resize goes on sharding data
+        into the number of ways there used to be, which is not an error anywhere:
+        it is rows processed twice and rows processed never.
+        """
+        os.environ["SKYWARD_PEERS"] = ",".join(peers)
+
     async def result(self, id: str) -> bytes:
         """What the daemon asks after coming back up and finding a task in flight."""
         lookup: Lookup
@@ -286,7 +317,7 @@ async def execute(id: str, code: bytes, args: bytes) -> Outcome:
             value = await loop.run_in_executor(thread_pool, contextvars.copy_context().run, wrapped)
             return Done(value=await codec.payload.encode(value))
 
-        ok, payload = await loop.run_in_executor(task_pool, _run_in_process, code, args)
+        ok, payload = await loop.run_in_executor(task_pool, _run_in_process, code, args, os.environ["SKYWARD_PEERS"])
         if ok:
             assert isinstance(payload, bytes)
             return Done(value=payload)
@@ -352,7 +383,7 @@ def _installed() -> tuple[Plugin, ...]:
     return child_plugins
 
 
-def _run_in_process(code: bytes, args: bytes) -> tuple[Literal[True], bytes] | tuple[Literal[False], tuple[str, str]]:
+def _run_in_process(code: bytes, args: bytes, peers: str) -> tuple[Literal[True], bytes] | tuple[Literal[False], tuple[str, str]]:
     """Run one task in a subprocess, and bring back an answer that survives the trip.
 
     The code and the arguments are unpickled here, where the user's libraries are,
@@ -360,7 +391,13 @@ def _run_in_process(code: bytes, args: bytes) -> tuple[Literal[True], bytes] | t
     initializer left behind. The exception does not survive the trip: a user's error
     class may not exist here in a form the worker can unpickle, so a failure comes back
     as its message and traceback, already text, and the worker turns those into Failed.
+
+    The peers travel with the task rather than being read off this process's own
+    environment: a reused child was forked with the world as it was when the pool
+    was built, and a compute that has grown since would be sharded here into the
+    number of ways there used to be.
     """
+    os.environ["SKYWARD_PEERS"] = peers
     try:
         fn: Callable[..., object] = codec.loads(code)
         decoded: Arguments = codec.loads(args)
@@ -421,6 +458,7 @@ async def main() -> None:
         advertise=f"{os.environ['SKYWARD_PEER']}:{PORT}",
         seeds=seeds,
         cluster_name=os.environ["SKYWARD_COMPUTE"],
+        tls=material(),
     )
     stack = ExitStack()
     try:

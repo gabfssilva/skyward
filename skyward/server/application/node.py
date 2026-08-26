@@ -12,12 +12,12 @@ from skyward.server.application.ssh import SshChannel
 from skyward.shared.observability import logger
 from skyward.shared.provider import Machine
 from skyward.shared.schemas import Executor, Image, NodeState, Options, PhaseMark, PluginRef
+from skyward.shared.tls import Identity
 from skyward.worker import bootstrap, plugins, worker
 from skyward.worker.journal import SKYWARD_DIR, Console, Health, Metric, NodeEvent, Phase
 
 logger = logger.bind(component="node")
 
-WORKER_TIMEOUT = 180.0
 DEFAULT_OPTIONS = Options()
 
 type Listener = Callable[[NodeState, str | None], None]
@@ -68,6 +68,7 @@ class Node:
         user_code: bytes | None = None,
         volumes: tuple[str, ...] = (),
         instance_timeout: int | None = None,
+        tls: Identity | None = None,
     ) -> None:
         if machine.host is None:
             raise ValueError(f"machine {machine.id} has no address to connect to")
@@ -81,7 +82,7 @@ class Node:
         self._sample = sample
         self._phase = phase
         self._rank = rank
-        self._peers = peers
+        self.peers = peers
         self._seeds = seeds
         self._concurrency = concurrency
         self._buffer = buffer
@@ -91,6 +92,7 @@ class Node:
         self._user_code = user_code
         self._volumes = volumes
         self._instance_timeout = instance_timeout
+        self._tls = tls
         self._worker_timeout = options.worker_timeout
         self._health_command = options.health_command
         self._health_interval = options.health_interval
@@ -244,6 +246,7 @@ class Node:
         here a node cannot know about itself, and is not asked to.
         """
         health = await self._health_environment()
+        material = await self._tls_environment()
         environment = " ".join(
             f"{name}={shlex.quote(value)}"
             for name, value in (
@@ -251,7 +254,7 @@ class Node:
                 ("SKYWARD_COMPUTE", self._compute),
                 ("SKYWARD_PEER", self.peer),
                 ("SKYWARD_RANK", str(self._rank)),
-                ("SKYWARD_PEERS", ",".join(self._peers)),
+                ("SKYWARD_PEERS", ",".join(self.peers)),
                 ("SKYWARD_SEEDS", ",".join(self._seeds)),
                 ("SKYWARD_SLOTS", str(self._concurrency)),
                 ("SKYWARD_BUFFER", str(self._buffer)),
@@ -259,6 +262,7 @@ class Node:
                 ("SKYWARD_REUSE", "1" if self._reuse else "0"),
                 ("SKYWARD_CLUSTER", "1" if self._cluster else "0"),
                 ("SKYWARD_PLUGINS", msgspec.json.encode(self._plugins).decode()),
+                *material.items(),
                 *health.items(),
             )
         )
@@ -270,6 +274,33 @@ class Node:
 
         await self._reach("worker", self._worker_timeout)
         self.tunnel = await self._ssh.forward(worker.PORT)
+
+    async def _tls_environment(self) -> dict[str, str]:
+        """Put this node's certificate on the machine, and say where it left it.
+
+        Without it the worker opens its port to anyone who can route to it, and what
+        that port does is run code. With it, the only callers it will speak to are the
+        ones this compute's authority signed: its peers, and the daemon.
+
+        Written here rather than in the bootstrap because it is per node — the
+        bootstrap script is the same for every machine in the compute, and a private
+        key that is the same for every machine is one machine's compromise becoming
+        the fleet's.
+        """
+        if self._tls is None:
+            return {}
+
+        directory = f"{SKYWARD_DIR}/tls"
+        await self._ssh.run(f"mkdir -p {directory}")
+        for name, content in (("node.crt", self._tls.certificate), ("node.key", self._tls.key), ("ca.crt", self._tls.authority)):
+            await self._ssh.put(f"{directory}/{name}", content.encode())
+        await self._ssh.run(f"chmod 600 {directory}/node.key")
+
+        return {
+            "SKYWARD_TLS_CERT": f"{directory}/node.crt",
+            "SKYWARD_TLS_KEY": f"{directory}/node.key",
+            "SKYWARD_TLS_CA": f"{directory}/ca.crt",
+        }
 
     async def _health_environment(self) -> dict[str, str]:
         if self._health_function is None:
@@ -285,9 +316,18 @@ class Node:
         }
 
     async def _reach(self, phase: str, timeout: float) -> None:
-        async with asyncio.timeout(timeout):
-            if error := await self._waiter(phase):
-                raise BootstrapFailedError(error)
+        """Wait for the machine to say a phase is over, and name the phase if it never does.
+
+        A ``TimeoutError`` carries no message — ``str()`` of one is empty — and the
+        node's failure is recorded from that string. Left alone, a machine that ran
+        out of time is a row that says it failed and will not say at what.
+        """
+        try:
+            async with asyncio.timeout(timeout):
+                if error := await self._waiter(phase):
+                    raise BootstrapFailedError(error)
+        except TimeoutError:
+            raise BootstrapFailedError(f"{phase} did not finish within {timeout:.0f}s") from None
 
     def _waiter(self, phase: str) -> asyncio.Future[str | None]:
         if phase not in self._reached:

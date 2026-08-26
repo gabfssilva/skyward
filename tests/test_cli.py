@@ -49,6 +49,45 @@ def describe_looking_at_offers() -> None:
         def there_are_no_offers_to_show(database: Path) -> None:
             assert rows("offers", "list", "--database", str(database)) == []
 
+        def it_says_why_rather_than_leaving_an_empty_table(database: Path) -> None:
+            ran = cli("offers", "list", "--database", str(database))
+
+            assert ran.code == 0, "nothing to quote is an answer, not a failure"
+            assert "sky providers set" in ran.err, "an empty catalog reads like a filter that matched nothing"
+
+
+def describe_registering_an_account() -> None:
+    def it_is_written_with_the_settings_it_was_given(database: Path) -> None:
+        written = rows("providers", "set", "container", "--config", "binary=podman", "--database", str(database))[0]
+        listed = rows("providers", "list", "--database", str(database))
+
+        assert written["name"] == "container"
+        assert [row["name"] for row in listed] == ["container"], "the account the daemon will provision on"
+
+    def it_changes_the_settings_of_one_already_registered(database: Path) -> None:
+        rows("providers", "set", "container", "--config", "binary=podman", "--database", str(database))
+        rows("providers", "set", "container", "--config", "binary=docker", "--database", str(database))
+
+        assert len(rows("providers", "list", "--database", str(database))) == 1, "the same account, written twice"
+
+    def it_refuses_a_setting_the_provider_has_no_name_for(database: Path) -> None:
+        ran = cli("providers", "set", "runpod", "--config", "cloud_type=nowhere", "--database", str(database))
+
+        assert ran.code != 0
+        assert "Traceback" not in ran.err, "a refusal is an answer, not a crash"
+
+    def it_refuses_a_flag_that_is_not_a_pair(database: Path) -> None:
+        ran = cli("providers", "set", "runpod", "--config", "cloud_type", "--database", str(database))
+
+        assert ran.code != 0
+        assert "key=value" in ran.err
+
+    def it_refuses_a_kind_nobody_ships(database: Path) -> None:
+        ran = cli("providers", "set", "nowhere", "--database", str(database))
+
+        assert ran.code != 0
+        assert "unknown provider" in ran.err
+
 
 def describe_asking_where_a_command_would_go() -> None:
     def it_reports_the_database_it_resolved(database: Path) -> None:

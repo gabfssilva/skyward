@@ -218,11 +218,13 @@ sky server start
 sky compute create --provider aws --accelerator A100 --nodes 4
 sky compute list
 sky compute view <id-or-name>
+sky compute scale <id-or-name> --nodes 8
 sky compute upload <id-or-name> ./train.py /workspace/train.py
 sky compute exec <id-or-name> --node 0 nvidia-smi
 sky compute run <id-or-name> train.py
 sky offers list --accelerator H100
 sky providers list
+sky providers set runpod --config cloud_type=community
 sky config show
 ```
 

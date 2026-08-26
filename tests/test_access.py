@@ -52,6 +52,25 @@ def describe_running_a_command_on_the_machines() -> None:
         assert all("alive" in str(row) for row in ran)
 
 
+    def it_answers_the_same_asked_by_name(pool: sky.Compute, daemon: str) -> None:
+        by_name = rows("compute", "exec", "shared", "echo", "alive", "--url", daemon)
+        by_id = rows("compute", "exec", pool.id, "echo", "alive", "--url", daemon)
+
+        assert by_name == by_id, "a name and an id name the same compute everywhere else"
+
+
+def describe_running_a_script_on_the_machines() -> None:
+    def it_prints_what_the_script_printed(pool: sky.Compute, daemon: str, tmp_path: Path) -> None:
+        script = tmp_path / "speak.py"
+        script.write_text("import skyward as sky\nprint(f'spoke from rank {sky.instance_info().rank}')\n")
+
+        ran = cli("compute", "run", pool.id, str(script), "--all", "--url", daemon)
+
+        assert ran.code == 0, ran.err
+        assert "spoke from rank 0" in ran.out, "the lines come back over the event log, and this is where they land"
+        assert "spoke from rank 1" in ran.out
+
+
 def describe_putting_a_file_on_the_machines() -> None:
     def it_lands_on_every_node_and_comes_back_off_one(pool: sky.Compute, daemon: str, tmp_path: Path) -> None:
         source = tmp_path / "payload.txt"

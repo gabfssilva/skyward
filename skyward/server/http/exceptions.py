@@ -15,13 +15,13 @@ FAILURES: dict[int, str] = {
     400: "Content does not hash to the name it was given — `hash_mismatch`",
     404: "No such resource — `not_found`",
     409: (
-        "The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `task_failed`, "
-        "`task_indeterminate`, `duplication_not_acknowledged`"
+        "The write conflicts with what is already here — `idempotency_conflict`, `lease_held`, `name_taken`, "
+        "`compute_not_connected`, `task_failed`, `task_indeterminate`, `duplication_not_acknowledged`"
     ),
     412: "`If-Match` did not name the stored revision — `revision_conflict`. Retryable: re-read, re-apply, re-send",
     422: (
-        "Well-formed and unsatisfiable — `compute_not_accepting`, `capability_mismatch`, `unsupported_provider`, "
-        "`unsupported_plugin`, `secret_in_definition`"
+        "Well-formed and unsatisfiable — `compute_not_accepting`, `compute_not_resizable`, `capability_mismatch`, "
+        "`unsupported_provider`, `unsupported_plugin`, `secret_in_definition`"
     ),
 }
 """What each status means when the body is an :class:`Error`.

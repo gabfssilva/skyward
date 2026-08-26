@@ -153,7 +153,7 @@ def services() -> Services:
 
     offers = OfferCache(providers)
     generations = GenerationStore(computes)
-    machines = Machines(computes=computes, nodes=nodes, providers=providers, offers=offers, blobs=blobs)
+    machines = Machines(computes=computes, nodes=nodes, providers=providers, offers=offers, blobs=blobs, events=events)
 
     return Services(
         computes=computes,

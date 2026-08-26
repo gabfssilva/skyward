@@ -28,7 +28,24 @@ from skyward.worker.plugins.plugin import Plugin
 from skyward.worker.plugins.sklearn import Sklearn
 from skyward.worker.plugins.torch import Torch
 
-__all__ = ["PLUGINS", "Accelerate", "Cuml", "HuggingFace", "Jax", "Joblib", "Keras", "Mig", "Mps", "Plugin", "Sklearn", "Torch", "chain", "image", "resolve"]
+__all__ = [
+    "PLUGINS",
+    "Accelerate",
+    "Cuml",
+    "HuggingFace",
+    "Jax",
+    "Joblib",
+    "Keras",
+    "Mig",
+    "Mps",
+    "Plugin",
+    "Sklearn",
+    "Torch",
+    "chain",
+    "collective",
+    "image",
+    "resolve",
+]
 
 PLUGINS: dict[str, type[Plugin]] = {
     Torch.kind: Torch,
@@ -63,6 +80,17 @@ def resolve(refs: Sequence[PluginRef]) -> tuple[Plugin, ...]:
             raise UnsupportedPluginError(f"{ref.kind}: {invalid}", kind=ref.kind) from invalid
 
     return tuple(one(ref) for ref in refs)
+
+
+def collective(refs: Sequence[PluginRef]) -> str | None:
+    """The name of the plugin that freezes the world, if the spec carries one.
+
+    A collective makes the nodes depend on each other: the group is formed once, on
+    the first task, and every member blocks until the last one arrives. So the size
+    of a compute running one is not a number anybody may still change — which is
+    both why it is kept out of autoscaling and why a resize is refused.
+    """
+    return next((plugin.kind for plugin in resolve(refs) if plugin.collective), None)
 
 
 def image(base: Image, plugins: Sequence[Plugin]) -> Image:

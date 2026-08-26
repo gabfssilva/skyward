@@ -14,7 +14,7 @@ The directory is created with mode `0700`. Override it with `database=` on `Comp
 
 The file is opened in **WAL** mode, which is what lets a `sky.Compute` in one script and a daemon in another write to the same database without an exclusive lock. WAL is a journal mode, not a change feed — nothing reads the WAL itself. Statements wait up to 30 seconds for a write lock before reporting `database is locked`; that ceiling is the longest write the store ever holds, an offers refresh rewriting a provider's whole catalog.
 
-Tables are created on connect if absent. There is no migration step and no schema version: the tables are additive, and a database from an older build opens against a newer one.
+Tables are created on connect if absent, and a table that has gained a column since the file was written gains it on open: each model is compared against `PRAGMA table_info` and what is missing is added. There is no migration step and no schema version, which holds because a column added to a table that already has rows is always nullable — a row written before the column existed has nothing to say about it.
 
 ## Intent and observation
 
@@ -36,11 +36,13 @@ On `computes`, `spec` is intent, and only a client writes it through `PATCH`. Th
 
 ## What only exists because the daemon can die
 
-Three columns are the whole reason this is a database and not a cache.
+Four columns are the whole reason this is a database and not a cache.
 
 `computes.binding` is the provider's per-compute state: the network it created, the availability zone it pinned, the security group it owns. It is not part of the API's `Compute` — it is infrastructure bookkeeping — and it is on disk because the compute outlives by days the process that started it.
 
 `computes.private_key` is the SSH key for the machines. The daemon that reconnects after a restart is not the daemon that provisioned them; a key held in memory would strand every machine it paid for.
+
+`computes.authority` is the certificate authority of the compute's own cluster. Its workers admit what it signed and refuse everything else, so a daemon that lost it could still log into the machines over SSH and not be allowed to speak to them. It is null on a compute bound before certificates existed, and those computes keep speaking plaintext: the material a running worker was handed cannot be changed underneath it.
 
 `nodes.machine_id` is nullable and indexed, and that is a deliberate pair. A node row is written in `requested` **before** the provider is asked for a machine, which is what makes the provisioning loop idempotent: a machine being bought right now is already a row that counts, so the next pass does not buy a second one.
 
@@ -52,7 +54,7 @@ That leaves exactly one gap, and it is the one every payment gateway has — a c
 |---|---|---|
 | `providers` | one registered account | `credentials` is stored here and nowhere else; no read path selects it |
 | `offers` | the cached hardware catalog | a cache, not a ledger |
-| `computes` | intent, observation, binding, lease | one row per compute |
+| `computes` | intent, observation, binding, lease | one row per compute; also the SSH key and the cluster's authority |
 | `generations` | one frozen definition each | history kept, because a rollback is a generation too |
 | `nodes` | one machine as the control plane knows it | `requested` → `provisioning` → `connecting` → `bootstrapping` → `ready` |
 | `blobs` | content addressed by SHA-256 | code, arguments, results |

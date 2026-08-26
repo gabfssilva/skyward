@@ -135,6 +135,7 @@ def pool(daemon: str) -> Iterator[sky.Compute]:
         cpus=1,
         memory_gb=1,
         image=IMAGE,
+        name="shared",
         url=daemon,
     ) as pool:
         yield pool

@@ -11,6 +11,7 @@ same query, which is why a fetch can also filter.
 
 from __future__ import annotations
 
+import sys
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from math import inf
@@ -19,7 +20,7 @@ from pathlib import Path
 from skyward.cli import offers_app
 from skyward.cli._client import call
 from skyward.cli._output import EMPTY, Output, render
-from skyward.shared.schemas import Offer, Page
+from skyward.shared.schemas import Offer, Page, Provider
 
 LIST_COLUMNS = ("PROVIDER", "KIND", "INSTANCE", "ACCELERATOR", "VRAM", "CPUS", "MEMORY", "REGION", "SPOT", "ON-DEMAND", "UNIT")
 SUMMARY_COLUMNS = ("ACCELERATOR", "PROVIDER", "OFFERS", "CHEAPEST", "AVERAGE", "DEAREST")
@@ -67,6 +68,9 @@ def list_offers(
     page = _query(provider, accelerator, min_count, min_vram, max_price, refresh, url, database)
     offers = page.items if limit <= 0 else page.items[:limit]
     render(LIST_COLUMNS, [_row(offer) for offer in offers], output=output)
+
+    if not offers and output == "table":
+        _why_empty(url, database)
 
 
 @offers_app.command(name="fetch")
@@ -221,6 +225,18 @@ def _amount(value: float | None, unit: str) -> str | None:
 
 def _price(value: float | None) -> str | None:
     return None if value is None else f"{value:.4f}".rstrip("0").rstrip(".")
+
+
+def _why_empty(url: str | None, database: Path | None) -> None:
+    """An empty catalog on a daemon with no accounts is not an answer about hardware.
+
+    The prices come from the providers the daemon can log into, so a daemon that
+    has been given none quotes nothing — which reads exactly like a filter that
+    excluded everything, and is a different problem with a different fix.
+    """
+    registered = call(lambda client: client.call("GET", "/v1/providers", Page[Provider]), url=url, database=database)
+    if not registered.items:
+        print("no accounts are registered, so there is nothing to quote: sky providers set <kind>", file=sys.stderr)
 
 
 __all__ = ["fetch_offers", "list_offers", "summary_offers"]

@@ -64,8 +64,9 @@ class Connector:
 
         source = await resolve(compute.spec.image.skyward)
         cluster = bool(infrastructure.binding.get("skyward_cluster", True))
-        runtime = self._runtimes.open(compute_id, source, infrastructure.private_key, cluster)
+        runtime = self._runtimes.open(compute_id, source, infrastructure.private_key, cluster, infrastructure.authority)
         if node_id in runtime.nodes:
+            await runtime.retopology(node_id, _peers(nodes))
             return
 
         includes = compute.spec.image.includes_sha256

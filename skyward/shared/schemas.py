@@ -91,7 +91,10 @@ type ErrorCode = Literal[
     "revision_conflict",
     "idempotency_conflict",
     "lease_held",
+    "name_taken",
+    "compute_not_connected",
     "compute_not_accepting",
+    "compute_not_resizable",
     "unsupported_provider",
     "unsupported_plugin",
     "secret_in_definition",
@@ -121,10 +124,16 @@ class Error(Struct, frozen=True):
 
 
 class ProviderRef(Struct, frozen=True):
-    """Which account a spec wants to buy from, and how that account is configured."""
+    """Which account a spec wants to buy from.
+
+    A kind and nothing else: how the account is configured belongs to the provider
+    row, which is what the daemon builds its adapter from. A copy of the settings
+    riding on the spec would be a second answer to the same question, and the one
+    nobody reads — so a spec names the kind, and ``sky providers set`` or the SDK's
+    own account object is what says what that kind means here.
+    """
 
     kind: str
-    config: dict[str, Any] = field(default_factory=dict)
 
 
 class PluginRef(Struct, frozen=True):
@@ -363,10 +372,25 @@ class Options(Struct, frozen=True):
     the wire.
     """
 
-    ssh_connect_timeout: float = 300.0
+    ssh_connect_timeout: float = 240.0
     ssh_reconnect_attempts: int = 30
     ssh_retry_delay: float = 2.0
     worker_timeout: float = 180.0
+    """Seconds the worker has to answer once it has been started.
+
+    Measured on RunPod: the two nodes that *formed* a cluster answered ~25s after
+    bootstrap; a third node *joining* the formed cluster took over 68s, every time.
+    Founding is cheap and joining is not, so this covers the slower of the two.
+    """
+    provision_timeout: float = 300.0
+    """Seconds a bought machine has to publish an address before it is given up on.
+
+    The SSH timeouts start when there is somewhere to dial; this is the window
+    before that, and nothing else measures it. A machine the provider reports as
+    running and never gives an address to is a machine that bills for as long as
+    the compute lives — so it becomes ``lost``, is terminated, and the deficit is
+    closed with another one. ``0`` waits forever.
+    """
     autoscale_idle_timeout: float = 30.0
     autoscale_cooldown: float = 0.0
     """Seconds between autoscaling decisions. ``0`` is no cooldown — today's behavior."""
@@ -833,10 +857,14 @@ class NodeEvent(Struct, frozen=True, tag_field="type", tag="node.state"):
 
 
 class ConsoleEvent(Struct, frozen=True, tag_field="type", tag="node.console"):
-    """A line a node printed, and the task it belongs to when it belongs to one.
+    """A line a node printed, and the work it belongs to when it belongs to some.
 
     Recorded, because output that only existed live would be output a client that
     reconnected could never see.
+
+    ``task`` carries the *execution* — the attempt on this node — because that is
+    what the machine that wrote the line was handed. A reader after a whole task's
+    output wants every execution of it, not a string equal to the task's id.
     """
 
     compute: str
