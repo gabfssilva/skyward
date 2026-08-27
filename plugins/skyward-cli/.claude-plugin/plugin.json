@@ -1,0 +1,12 @@
+{
+  "name": "skyward-cli",
+  "version": "0.1.0",
+  "description": "Drive the `sky` CLI: provision GPU computes, browse offers, register providers, run code on nodes, and read a compute's event log.",
+  "author": {
+    "name": "Gabriel Francisco",
+    "email": "gabfssilva@gmail.com"
+  },
+  "homepage": "https://github.com/gabfssilva/skyward",
+  "repository": "https://github.com/gabfssilva/skyward",
+  "license": "MIT"
+}
