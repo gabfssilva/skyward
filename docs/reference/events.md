@@ -110,7 +110,7 @@ async for name, payload in client.events(compute_id):
 Or directly, with any SSE client:
 
 ```bash
-http --stream GET localhost:7590/v1/events compute==<id> types==task.failed
+http --stream GET localhost:17590/v1/events compute==<id> types==task.failed
 ```
 
 ## What is not here

@@ -27,14 +27,14 @@ function ── blob              code, arguments and results, addressed by hash
 Every declarative resource carries a `revision`, served as an `ETag`:
 
 ```console
-$ http GET :7590/v1/computes/cmp_7f3a1c
+$ http GET :17590/v1/computes/cmp_7f3a1c
 ETag: "7"
 ```
 
 A write that changes one must say which revision it expected:
 
 ```console
-$ http PATCH :7590/v1/computes/cmp_7f3a1c If-Match:'"7"' nodes:='{"desired": 8}'
+$ http PATCH :17590/v1/computes/cmp_7f3a1c If-Match:'"7"' nodes:='{"desired": 8}'
 ```
 
 `nodes` is the only field this accepts, and a compute running a collective plugin is refused with `422 compute_not_resizable`: its process group was formed with the ranks it started with.
@@ -48,7 +48,7 @@ This is what keeps two clients — your script and a `sky compute delete` in ano
 Any request that creates something takes an `Idempotency-Key`:
 
 ```console
-$ http POST :7590/v1/computes Idempotency-Key:k-1 spec:=@spec.json
+$ http POST :17590/v1/computes Idempotency-Key:k-1 spec:=@spec.json
 ```
 
 The daemon stores the key alongside a fingerprint of the request. The same key with the same request is a retry, and returns the original resource rather than creating a second. The same key with a *different* request is a bug on the caller's side, and gets `409 idempotency_conflict` instead of a resource nobody asked for.
@@ -95,9 +95,9 @@ Every failure is the same JSON object, whatever produced it:
 Code, arguments, and results never travel in a task body. They are uploaded as blobs named by their SHA-256 and referenced by that name:
 
 ```console
-$ http PUT :7590/v1/blobs/<sha256> < payload.bin
-$ http PUT :7590/v1/functions/<sha256> codec=cloudpickle-lz4
-$ http POST :7590/v1/tasks function=<sha256> args_sha256=<sha256> compute=cmp_7f3a1c
+$ http PUT :17590/v1/blobs/<sha256> < payload.bin
+$ http PUT :17590/v1/functions/<sha256> codec=cloudpickle-lz4
+$ http POST :17590/v1/tasks function=<sha256> args_sha256=<sha256> compute=cmp_7f3a1c
 ```
 
 The same argument broadcast to a hundred nodes is stored once. A `PUT` of content already present is a no-op, so a client can skip the upload entirely by trying the task first. Results come back the same way, which is why reading one twice does not consume it.
@@ -119,9 +119,9 @@ See [Events](reference/events.md) for the stream's filters, replay semantics, an
 ## Health
 
 ```console
-$ http GET :7590/v1/health/live          # the process is up
-$ http GET :7590/v1/health/ready         # it can serve
-$ http GET :7590/v1/health/dependencies  # what it depends on, and their state
+$ http GET :17590/v1/health/live          # the process is up
+$ http GET :17590/v1/health/ready         # it can serve
+$ http GET :17590/v1/health/dependencies  # what it depends on, and their state
 ```
 
 `sky server start` waits on `live`; `sky config validate` checks `ready`.

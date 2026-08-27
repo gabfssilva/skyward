@@ -1,6 +1,6 @@
 # CLI
 
-`sky` is the command-line client for the Skyward control plane. It can talk to a remote daemon or use an embedded daemon in the current process.
+`sky` is the command-line client for the Skyward control plane. Every command talks to a daemon: the CLI owns no state and hosts no control plane of its own.
 
 ## Installation
 
@@ -10,7 +10,7 @@ Install the CLI separately from the SDK:
 pip install "skyward[cli]"
 ```
 
-To run a local daemon from the CLI, install both extras:
+The CLI needs a daemon to talk to. To run one on this machine, install both extras:
 
 ```bash
 pip install "skyward[cli,server]"
@@ -24,9 +24,16 @@ Commands resolve the daemon in this order:
 
 1. `--url`;
 2. `SKYWARD_URL`;
-3. an embedded daemon using `--database`, or `~/.skyward/skyward.sqlite` by default.
+3. `http://127.0.0.1:17590`, where `sky server start` binds.
 
-When a URL resolves, `--database` is ignored. `sky config` shows the effective resolution.
+So the usual local session is `sky server start` once, then every command as it comes — no flag, no environment variable. A command that reaches nothing says so and exits non-zero rather than starting a control plane of its own:
+
+```
+$ sky compute list
+no daemon at http://127.0.0.1:17590 — run: sky server start
+```
+
+`sky config show` shows the effective resolution and where it came from.
 
 Commands that render rows accept `--output table` or `--output json`. The default is `table`; use JSON for scripts.
 
@@ -46,7 +53,7 @@ sky server start --host 0.0.0.0 --port 8080
 sky server start --foreground
 sky server stop
 sky server status
-sky server status --url http://host:7590
+sky server status --url http://host:17590
 ```
 
 `start` waits for `/v1/health/live`. `--foreground` keeps the daemon attached to the terminal and does not create a PID file. `stop` only stops a process started by this CLI.
@@ -69,7 +76,7 @@ The supported provider kinds are:
 
 A kind whose SDK extra is not installed is not registered, so it will not appear. `sky providers list --kinds` shows what this installation can actually reach.
 
-The available create flags are `--provider`, `--name`, `--accelerator`, `--nodes`, `--region`, `--cpus`, `--memory`, `--url`, `--database`, and `--output`. The provider account reads credentials from the current process. Credential values are not printed by the CLI.
+The available create flags are `--provider`, `--name`, `--accelerator`, `--nodes`, `--region`, `--cpus`, `--memory`, `--ttl`, `--url`, and `--output`. The provider account reads credentials from the current process. Credential values are not printed by the CLI.
 
 `sky new` is an alias for `sky compute create`:
 
@@ -182,7 +189,7 @@ sky providers check production
 
 ## `sky config`
 
-Skyward has no configuration file. These commands show the resolved daemon URL and embedded database:
+Skyward has no configuration file. These commands show the resolved daemon URL, and the database a daemon started here would use:
 
 ```bash
 sky config path

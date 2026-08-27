@@ -21,7 +21,6 @@ import tty
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager, suppress
-from pathlib import Path
 from typing import Annotated
 
 from cyclopts import Parameter
@@ -41,14 +40,13 @@ def console(
     node: Annotated[str | None, Parameter(help="The node to open the terminal on; omit for the first ready one")] = None,
     command: Annotated[str | None, Parameter(help="What to run; omit for the login shell")] = None,
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(help="Embedded daemon database")] = None,
 ) -> None:
     """Open an interactive shell on one of a compute's machines.
 
     The same machine for the whole session, and the same one again if you name it:
     a terminal is somebody sitting at a computer, not a load-balanced request.
     """
-    call(lambda client: _attach(client, ref, node, command), url=url, database=database)
+    call(lambda client: _attach(client, ref, node, command), url=url)
 
 
 @app.command(name="repl")
@@ -57,7 +55,6 @@ def repl(
     *,
     node: Annotated[str | None, Parameter(help="The node to open the REPL on; omit for the first ready one")] = None,
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(help="Embedded daemon database")] = None,
 ) -> None:
     """Open a Python REPL on one of a compute's machines.
 
@@ -65,7 +62,7 @@ def repl(
     one holding the compute's dependencies — not whatever ``python`` resolves to on
     a machine that was never meant to be logged into.
     """
-    console(ref, node=node, command=PYTHON, url=url, database=database)
+    console(ref, node=node, command=PYTHON, url=url)
 
 
 @contextmanager

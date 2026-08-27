@@ -15,7 +15,6 @@ import sys
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from math import inf
-from pathlib import Path
 
 from skyward.cli import offers_app
 from skyward.cli._client import call
@@ -38,7 +37,6 @@ def list_offers(
     refresh: bool = False,
     output: Output = "table",
     url: str | None = None,
-    database: Path | None = None,
 ) -> None:
     """List offers, cheapest first.
 
@@ -61,16 +59,14 @@ def list_offers(
     output
         ``table`` for a person, ``json`` for a program.
     url
-        The daemon to ask. Defaults to ``SKYWARD_URL``, else an embedded one.
-    database
-        Where the embedded daemon keeps its state.
+        The daemon to ask. Defaults to ``SKYWARD_URL``, else the local one.
     """
-    page = _query(provider, accelerator, min_count, min_vram, max_price, refresh, url, database)
+    page = _query(provider, accelerator, min_count, min_vram, max_price, refresh, url)
     offers = page.items if limit <= 0 else page.items[:limit]
     render(LIST_COLUMNS, [_row(offer) for offer in offers], output=output)
 
     if not offers and output == "table":
-        _why_empty(url, database)
+        _why_empty(url)
 
 
 @offers_app.command(name="fetch")
@@ -79,7 +75,6 @@ def fetch_offers(
     provider: str | None = None,
     output: Output = "table",
     url: str | None = None,
-    database: Path | None = None,
 ) -> None:
     """Refetch the catalog and report how many offers each provider returned.
 
@@ -93,11 +88,9 @@ def fetch_offers(
     output
         ``table`` for a person, ``json`` for a program.
     url
-        The daemon to ask. Defaults to ``SKYWARD_URL``, else an embedded one.
-    database
-        Where the embedded daemon keeps its state.
+        The daemon to ask. Defaults to ``SKYWARD_URL``, else the local one.
     """
-    page = _query(provider, None, None, None, None, True, url, database)
+    page = _query(provider, None, None, None, None, True, url)
     counts = Counter(offer.provider_name for offer in page.items)
     render(("PROVIDER", "OFFERS"), sorted(counts.items()), output=output)
 
@@ -113,7 +106,6 @@ def summary_offers(
     refresh: bool = False,
     output: Output = "table",
     url: str | None = None,
-    database: Path | None = None,
 ) -> None:
     """Aggregate the catalog by accelerator and provider.
 
@@ -134,11 +126,9 @@ def summary_offers(
     output
         ``table`` for a person, ``json`` for a program.
     url
-        The daemon to ask. Defaults to ``SKYWARD_URL``, else an embedded one.
-    database
-        Where the embedded daemon keeps its state.
+        The daemon to ask. Defaults to ``SKYWARD_URL``, else the local one.
     """
-    page = _query(provider, accelerator, min_count, min_vram, max_price, refresh, url, database)
+    page = _query(provider, accelerator, min_count, min_vram, max_price, refresh, url)
 
     groups: defaultdict[tuple[str, str], list[Offer]] = defaultdict(list)
     for offer in page.items:
@@ -156,8 +146,7 @@ def _query(
     max_price: float | None,
     refresh: bool,
     url: str | None,
-    database: Path | None,
-) -> Page[Offer]:
+    ) -> Page[Offer]:
     return call(
         lambda client: client.call(
             "GET",
@@ -171,7 +160,6 @@ def _query(
             refresh=refresh or None,
         ),
         url=url,
-        database=database,
     )
 
 
@@ -227,14 +215,14 @@ def _price(value: float | None) -> str | None:
     return None if value is None else f"{value:.4f}".rstrip("0").rstrip(".")
 
 
-def _why_empty(url: str | None, database: Path | None) -> None:
+def _why_empty(url: str | None) -> None:
     """An empty catalog on a daemon with no accounts is not an answer about hardware.
 
     The prices come from the providers the daemon can log into, so a daemon that
     has been given none quotes nothing — which reads exactly like a filter that
     excluded everything, and is a different problem with a different fix.
     """
-    registered = call(lambda client: client.call("GET", "/v1/providers", Page[Provider]), url=url, database=database)
+    registered = call(lambda client: client.call("GET", "/v1/providers", Page[Provider]), url=url)
     if not registered.items:
         print("no accounts are registered, so there is nothing to quote: sky providers set <kind>", file=sys.stderr)
 

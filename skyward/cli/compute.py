@@ -103,11 +103,10 @@ def list_computes(
     *,
     state: Annotated[str | None, Parameter(help="Only computes in this state")] = None,
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(help="Embedded daemon database")] = None,
     output: Annotated[Output, Parameter(help="table or json")] = "table",
 ) -> None:
     """List the computes the daemon knows about."""
-    page = _call(lambda client: client.call("GET", "/v1/computes", Page[Compute], state=state), url=url, database=database)
+    page = _call(lambda client: client.call("GET", "/v1/computes", Page[Compute], state=state), url=url)
     render(COMPUTE_COLUMNS, [_compute_row(compute) for compute in page.items], output=output)
 
 
@@ -116,11 +115,10 @@ def get_compute(
     ref: str,
     *,
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(help="Embedded daemon database")] = None,
     output: Annotated[Output, Parameter(help="table or json")] = "table",
 ) -> None:
     """Read one compute, by id or by name."""
-    compute = _call(lambda client: client.call("GET", f"/v1/computes/{ref}", Compute), url=url, database=database)
+    compute = _call(lambda client: client.call("GET", f"/v1/computes/{ref}", Compute), url=url)
     render(COMPUTE_COLUMNS, [_compute_row(compute)], output=output)
 
 
@@ -136,7 +134,6 @@ def create_compute(
     memory: Annotated[int | None, Parameter(help="Least memory per machine, in GB")] = None,
     ttl: Annotated[int | None, Parameter(help="Seconds a machine may sit with nobody connected before it removes itself. 0 never does")] = None,
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(help="Embedded daemon database")] = None,
     output: Annotated[Output, Parameter(help="table or json")] = "table",
 ) -> None:
     """Create a compute and return without waiting for it to be ready.
@@ -178,7 +175,7 @@ def create_compute(
             headers={"Idempotency-Key": uuid.uuid4().hex},
         )
 
-    render(COMPUTE_COLUMNS, [_compute_row(_call(work, url=url, database=database))], output=output)
+    render(COMPUTE_COLUMNS, [_compute_row(_call(work, url=url))], output=output)
 
 
 @compute_app.command(name="scale")
@@ -187,7 +184,6 @@ def scale_compute(
     *,
     nodes: Annotated[str, Parameter(help="How many machines: N, or MIN:MAX for an elastic range")],
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(help="Embedded daemon database")] = None,
     output: Annotated[Output, Parameter(help="table or json")] = "table",
 ) -> None:
     """Change how many machines a compute stands on.
@@ -201,7 +197,6 @@ def scale_compute(
     scaled = _call(
         lambda client: _conditional(client, ref, "PATCH", msgspec.json.encode(ComputeSpecPatch(nodes=wanted))),
         url=url,
-        database=database,
     )
     render(COMPUTE_COLUMNS, [_compute_row(scaled)], output=output)
 
@@ -211,7 +206,6 @@ def delete_compute(
     ref: str,
     *,
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(help="Embedded daemon database")] = None,
     output: Annotated[Output, Parameter(help="table or json")] = "table",
 ) -> None:
     """Mark a compute for destruction.
@@ -220,7 +214,7 @@ def delete_compute(
     confirms the machines are gone, so what comes back is still ``deleting``.
     """
     key = uuid.uuid4().hex
-    deleted = _call(lambda client: _conditional(client, ref, "DELETE", headers={"Idempotency-Key": key}), url=url, database=database)
+    deleted = _call(lambda client: _conditional(client, ref, "DELETE", headers={"Idempotency-Key": key}), url=url)
     render(COMPUTE_COLUMNS, [_compute_row(deleted)], output=output)
 
 
@@ -229,7 +223,6 @@ def view_compute(
     ref: str,
     *,
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(help="Embedded daemon database")] = None,
     output: Annotated[Output, Parameter(help="table or json")] = "table",
 ) -> None:
     """Read a compute together with the machines it is standing on."""
@@ -238,7 +231,7 @@ def view_compute(
         compute = await client.call("GET", f"/v1/computes/{ref}", Compute)
         return compute, await client.call("GET", f"/v1/computes/{compute.id}/nodes", Page[Node])
 
-    compute, nodes = _call(work, url=url, database=database)
+    compute, nodes = _call(work, url=url)
     render(COMPUTE_COLUMNS, [_compute_row(compute)], output=output)
     render(NODE_COLUMNS, [_node_row(node) for node in nodes.items], output=output)
 
@@ -250,7 +243,6 @@ def list_path(
     *,
     node: Annotated[str, Parameter(name="--node", help=NODE_HELP)] = "0",
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(help="Embedded daemon database")] = None,
     output: Annotated[Output, Parameter(help="table or json")] = "table",
 ) -> None:
     """List a path on the compute's nodes."""
@@ -258,7 +250,6 @@ def list_path(
     ran = _call(
         lambda client: client.call("GET", f"/v1/computes/{ref}/files", dict[str, Result], path=path, node=target),
         url=url,
-        database=database,
     )
     _spoke(ran, output)
 
@@ -270,7 +261,6 @@ def remove_path(
     *,
     node: Annotated[str, Parameter(name="--node", help=NODE_HELP)] = "all",
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(help="Embedded daemon database")] = None,
     output: Annotated[Output, Parameter(help="table or json")] = "table",
 ) -> None:
     """Remove a path on the compute's nodes, recursively."""
@@ -278,7 +268,6 @@ def remove_path(
     ran = _call(
         lambda client: client.call("DELETE", f"/v1/computes/{ref}/files", dict[str, Result], path=path, node=target),
         url=url,
-        database=database,
     )
     render(RAN_COLUMNS, [(name, result.exit_code, result.stderr.strip() or None) for name, result in ran.items()], output=output)
 
@@ -291,7 +280,6 @@ def upload_path(
     *,
     node: Annotated[str, Parameter(name="--node", help=NODE_HELP)] = "all",
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(help="Embedded daemon database")] = None,
     output: Annotated[Output, Parameter(help="table or json")] = "table",
 ) -> None:
     """Write a local file onto the compute's nodes.
@@ -315,7 +303,6 @@ def upload_path(
             node=target,
         ),
         url=url,
-        database=database,
     )
     render(WRITTEN_COLUMNS, list(written.items()), output=output)
 
@@ -328,7 +315,6 @@ def download_path(
     *,
     node: Annotated[str, Parameter(name="--node", help="Which node to read from: a rank")] = "0",
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(help="Embedded daemon database")] = None,
 ) -> None:
     """Read a file off one of the compute's nodes.
 
@@ -345,7 +331,7 @@ def download_path(
                 size += len(chunk)
         return size
 
-    sys.stdout.write(f"{local}  {_call(work, url=url, database=database)} bytes\n")
+    sys.stdout.write(f"{local}  {_call(work, url=url)} bytes\n")
 
 
 @compute_app.command(name="exec")
@@ -355,7 +341,6 @@ def exec_command(
     *,
     node: Annotated[str, Parameter(name="--node", help=NODE_HELP)] = "all",
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(help="Embedded daemon database")] = None,
     output: Annotated[Output, Parameter(help="table or json")] = "table",
 ) -> None:
     """Run a shell command on the compute's nodes.
@@ -370,7 +355,6 @@ def exec_command(
     ran = _call(
         lambda client: client.call("POST", f"/v1/computes/{ref}/exec", dict[str, Result], command=" ".join(command), node=target),
         url=url,
-        database=database,
     )
     _spoke(ran, output)
     if worst := max((result.exit_code for result in ran.values()), default=0):
@@ -385,7 +369,6 @@ def run_script(
     *,
     every: Annotated[bool, Parameter(name="--all", help="Run it on every node rather than one")] = False,
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(help="Embedded daemon database")] = None,
 ) -> None:
     """Run a local Python script on the compute.
 
@@ -401,7 +384,7 @@ def run_script(
 
     source = script.read_text()
     argv = (str(script), *(args or ()))
-    if status := _call(lambda client: _remotely(client, ref, source, argv, "all" if every else "one"), url=url, database=database):
+    if status := _call(lambda client: _remotely(client, ref, source, argv, "all" if every else "one"), url=url):
         raise SystemExit(status)
 
 
@@ -640,10 +623,10 @@ async def _register(client: Client, account: Provider) -> None:
         )
 
 
-def _call[T](work: Work[T], *, url: str | None = None, database: Path | None = None) -> T:
+def _call[T](work: Work[T], *, url: str | None = None) -> T:
     """Run the work, and turn a refusal into a message rather than a traceback."""
     try:
-        return call(work, url=url, database=database)
+        return call(work, url=url)
     except SkywardError as error:
         raise SystemExit(f"{error.code}: {error.message}") from None
 

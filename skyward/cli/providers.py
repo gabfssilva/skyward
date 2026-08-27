@@ -9,7 +9,6 @@ gone looking for.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 import msgspec
@@ -38,7 +37,6 @@ def list_providers(
     kinds: Annotated[bool, Parameter(help="List the kinds this build supports instead of the registered accounts.")] = False,
     output: Output = "table",
     url: str | None = None,
-    database: Path | None = None,
 ) -> None:
     """List the registered provider accounts.
 
@@ -50,16 +48,14 @@ def list_providers(
     output
         ``table`` for a person, ``json`` for a program.
     url
-        The daemon to ask. Defaults to ``SKYWARD_URL``, else an embedded one.
-    database
-        Where the embedded daemon keeps its state.
+        The daemon to ask. Defaults to ``SKYWARD_URL``, else the local one.
     """
     if kinds:
-        supported = call(lambda client: client.call("GET", "/v1/provider-kinds", tuple[ProviderKind, ...]), url=url, database=database)
+        supported = call(lambda client: client.call("GET", "/v1/provider-kinds", tuple[ProviderKind, ...]), url=url)
         render(KINDS, [(kind.kind, ", ".join(kind.credential_fields), kind.offers_ttl_seconds) for kind in supported], output=output)
         return
 
-    page = call(lambda client: client.call("GET", "/v1/providers", Page[Provider]), url=url, database=database)
+    page = call(lambda client: client.call("GET", "/v1/providers", Page[Provider]), url=url)
     render(REGISTERED, [(p.name, p.kind, p.id, p.offers_count, p.offers_fetched_at) for p in page.items], output=output)
 
 
@@ -69,7 +65,6 @@ def check_providers(
     *,
     output: Output = "table",
     url: str | None = None,
-    database: Path | None = None,
 ) -> None:
     """Report whether the daemon's last use of each account worked.
 
@@ -80,11 +75,9 @@ def check_providers(
     output
         ``table`` for a person, ``json`` for a program.
     url
-        The daemon to ask. Defaults to ``SKYWARD_URL``, else an embedded one.
-    database
-        Where the embedded daemon keeps its state.
+        The daemon to ask. Defaults to ``SKYWARD_URL``, else the local one.
     """
-    providers = call(lambda client: _read(client, name), url=url, database=database)
+    providers = call(lambda client: _read(client, name), url=url)
     render(CHECKS, [_check(provider) for provider in providers], output=output)
 
 
@@ -117,7 +110,6 @@ def set_provider(
     name: Annotated[str | None, Parameter(help="Register it under this name. Defaults to the kind.")] = None,
     output: Output = "table",
     url: str | None = None,
-    database: Path | None = None,
 ) -> None:
     """Register an account, or change the settings of the one already registered.
 
@@ -143,9 +135,7 @@ def set_provider(
     output
         ``table`` for a person, ``json`` for a program.
     url
-        The daemon to ask. Defaults to ``SKYWARD_URL``, else an embedded one.
-    database
-        Where the embedded daemon keeps its state.
+        The daemon to ask. Defaults to ``SKYWARD_URL``, else the local one.
     """
     if kind not in FACTORIES:
         raise SystemExit(f"unknown provider '{kind}'; known: {', '.join(sorted(FACTORIES))}")
@@ -157,7 +147,7 @@ def set_provider(
 
     credentials, settings = resolve(written)
     body = ProviderCreate(name=name or kind, kind=kind, credentials=credentials, config=settings)
-    registered = call(lambda client: _upsert(client, body), url=url, database=database)
+    registered = call(lambda client: _upsert(client, body), url=url)
 
     render(REGISTERED, [(registered.name, registered.kind, registered.id, registered.offers_count, registered.offers_fetched_at)], output=output)
 

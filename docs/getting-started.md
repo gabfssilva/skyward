@@ -247,7 +247,7 @@ By default, the SDK runs an embedded daemon against `~/.skyward/skyward.sqlite`.
 with sky.Compute(
     provider=sky.AWS(),
     nodes=4,
-    url="http://127.0.0.1:7590",
+    url="http://127.0.0.1:17590",
     name="training",
     delete_on_exit=False,
 ) as compute:
@@ -257,7 +257,7 @@ with sky.Compute(
 The daemon keeps the Compute after the process exits. A later process can attach by name or id without restating its definition:
 
 ```python
-with sky.Compute.attached("training", url="http://127.0.0.1:7590") as compute:
+with sky.Compute.attached("training", url="http://127.0.0.1:17590") as compute:
     evaluate() >> compute
 ```
 

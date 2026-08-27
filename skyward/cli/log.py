@@ -119,12 +119,11 @@ def show_log(
     limit: Annotated[int | None, Parameter(name=("-n", "--limit"), help="Last N events only")] = None,
     idle: Annotated[float, Parameter(name="--idle", help="Seconds of quiet that end a replay")] = IDLE,
     url: Annotated[str | None, Parameter(name="--url", help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(name="--database", help="Embedded daemon database")] = None,
     output: Annotated[Output, Parameter(name="--output", help="table or json")] = "table",
 ) -> None:
     """Print a compute's event log, replayed from the start."""
     echo = _echo(output) if follow else None
-    events = call(lambda client: _read(client, compute, None if follow else idle, echo), url=url, database=database)
+    events = call(lambda client: _read(client, compute, None if follow else idle, echo), url=url)
 
     if follow:
         return
@@ -145,10 +144,9 @@ def export_log(
     limit: Annotated[int | None, Parameter(name=("-n", "--limit"), help="Last N events only")] = None,
     idle: Annotated[float, Parameter(name="--idle", help="Seconds of quiet that end a replay")] = IDLE,
     url: Annotated[str | None, Parameter(name="--url", help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(name="--database", help="Embedded daemon database")] = None,
 ) -> None:
     """Write a compute's event log to a file, as JSONL or Markdown."""
-    events = call(lambda client: _read(client, compute, idle, None), url=url, database=database)
+    events = call(lambda client: _read(client, compute, idle, None), url=url)
     tail = events[-limit:] if limit else events
 
     file.write_text(_serialize(tail, file.suffix.lower()))

@@ -77,8 +77,8 @@ def describe_spelling_a_size_on_the_command_line() -> None:
         assert "--nodes takes" in ran.err
         assert "Traceback" not in ran.err, "a refusal is an answer, not a crash"
 
-    def it_reaches_the_daemon_once_the_size_makes_sense(database: Path) -> None:
-        ran = cli("compute", "scale", "absent", "--nodes", "2:8", "--database", str(database))
+    def it_reaches_the_daemon_once_the_size_makes_sense(alone: str) -> None:
+        ran = cli("compute", "scale", "absent", "--nodes", "2:8", "--url", alone)
 
         assert ran.code != 0
         assert "not_found" in ran.err, "the size parsed, and the compute is what was missing"

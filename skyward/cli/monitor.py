@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Annotated
 
 from cyclopts import Parameter
@@ -22,7 +21,6 @@ def monitor(
     *,
     mode: Annotated[ConsoleMode, Parameter(help="rich or log")] = "rich",
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(help="Embedded daemon database")] = None,
 ) -> None:
     """Watch a live compute until interrupted.
 
@@ -35,8 +33,6 @@ def monitor(
         ``rich`` for the live footer or ``log`` for plain lines.
     url
         Overrides ``SKYWARD_URL``.
-    database
-        Where the embedded daemon keeps its state. Ignored when a URL resolves.
     """
 
     async def work(client: Client) -> None:
@@ -45,7 +41,7 @@ def monitor(
         await follower.follow()
 
     try:
-        call(work, url=url, database=database)
+        call(work, url=url)
     except SkywardError as error:
         raise SystemExit(f"{error.code}: {error.message}") from None
     except KeyboardInterrupt:

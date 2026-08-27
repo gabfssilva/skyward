@@ -1,13 +1,14 @@
 """sky config — what a command resolved before it dialled anything.
 
-There is no configuration file. A command is a daemon URL and a database path,
-both resolved from the environment at the moment of the call, so configuration
-here is that resolution made visible: which daemon a call would reach, where an
-embedded one would keep its state, and whether the daemon answers.
+There is no configuration file. A command is a daemon URL, resolved from the
+environment at the moment of the call, so configuration here is that resolution
+made visible: which daemon a call would reach, where one started here would keep
+its state, and whether it answers.
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Annotated
 
@@ -17,28 +18,27 @@ from skyward.shared.schemas import Readiness
 
 from . import config_app
 from ._client import call, resolve
-from ._output import EMPTY, Output, render
+from ._output import Output, render
 
 type Setting = tuple[str, str, str]
 
 
-def _settings(url: str | None, database: Path | None) -> Setting:
+def _settings(url: str | None) -> Setting:
     from skyward.server.persistence.db import DEFAULT_PATH
 
     target = resolve(url)
-    source = "flag" if url else "environment" if target else "embedded"
-    return target or EMPTY, source, str(database or DEFAULT_PATH)
+    source = "flag" if url else "environment" if os.environ.get("SKYWARD_URL") else "default"
+    return target, source, str(DEFAULT_PATH)
 
 
 @config_app.command(name="path")
 def config_path(
     *,
     url: Annotated[str | None, Parameter(name="--url", help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(name="--database", help="Embedded daemon database")] = None,
     output: Annotated[Output, Parameter(name="--output", help="table or json")] = "table",
 ) -> None:
-    """Show the daemon database path and the resolved daemon URL."""
-    target, _, path = _settings(url, database)
+    """Show the resolved daemon URL, and the database a daemon started here would use."""
+    target, _, path = _settings(url)
 
     render(["setting", "value"], [["database", path], ["url", target]], output=output)
 
@@ -47,11 +47,10 @@ def config_path(
 def config_show(
     *,
     url: Annotated[str | None, Parameter(name="--url", help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(name="--database", help="Embedded daemon database")] = None,
     output: Annotated[Output, Parameter(name="--output", help="table or json")] = "table",
 ) -> None:
     """Show the effective settings a command would run with."""
-    target, source, path = _settings(url, database)
+    target, source, path = _settings(url)
 
     render(
         ["setting", "value"],
@@ -69,18 +68,15 @@ def config_show(
 def config_validate(
     *,
     url: Annotated[str | None, Parameter(name="--url", help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(name="--database", help="Embedded daemon database")] = None,
     output: Annotated[Output, Parameter(name="--output", help="table or json")] = "table",
 ) -> None:
     """Check that the resolved daemon is reachable and ready."""
-    target, source, _ = _settings(url, database)
+    target, source, _ = _settings(url)
 
     try:
-        body = call(
-            lambda client: client.call("GET", "/v1/health/ready", Readiness),
-            url=url,
-            database=database,
-        )
+        body = call(lambda client: client.call("GET", "/v1/health/ready", Readiness), url=url)
+    except SystemExit as unreachable:
+        status, detail = "fail", str(unreachable)
     except Exception as exc:
         status, detail = "fail", str(exc)[:120] or exc.__class__.__name__
     else:

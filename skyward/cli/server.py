@@ -26,7 +26,7 @@ import httpx
 from cyclopts import Parameter
 
 from skyward.cli import server_app
-from skyward.cli._client import call, resolve
+from skyward.cli._client import HOST, PORT, call, resolve
 from skyward.cli._output import Output, render
 from skyward.core.client import Client
 from skyward.shared.schemas import Liveness
@@ -40,8 +40,15 @@ POLL_SECONDS = 0.2
 
 
 def endpoint(url: str | None, host: str, port: int) -> str:
-    """Return the URL to probe: an explicit one, else where ``start`` would bind."""
-    return resolve(url) or f"http://{host}:{port}"
+    """Return the URL to probe: an explicit one, else the address given to probe.
+
+    ``resolve`` already falls back to where ``start`` binds, but ``status`` is the
+    one command that can be pointed at a *different* bind, so the flags win over
+    that default and only an explicit URL — flag or environment — wins over them.
+    """
+    if url or os.environ.get("SKYWARD_URL"):
+        return resolve(url)
+    return f"http://{host}:{port}"
 
 
 def pid() -> int | None:
@@ -131,8 +138,8 @@ def _spawn(host: str, port: int, database: Path | None) -> int:
 @server_app.command(name="start")
 def start(
     *,
-    host: Annotated[str, Parameter(help="Bind address")] = "127.0.0.1",
-    port: Annotated[int, Parameter(help="Bind port")] = 7590,
+    host: Annotated[str, Parameter(help="Bind address")] = HOST,
+    port: Annotated[int, Parameter(help="Bind port")] = PORT,
     foreground: Annotated[bool, Parameter(help="Stay attached to the terminal")] = False,
     timeout: Annotated[float, Parameter(help="Seconds to wait for the daemon to answer")] = 30.0,
     database: Annotated[Path | None, Parameter(help="SQLite path (default: ~/.skyward/skyward.sqlite)")] = None,
@@ -204,8 +211,8 @@ def stop(
 def status(
     *,
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
-    host: Annotated[str, Parameter(help="Bind address to probe when no URL resolves")] = "127.0.0.1",
-    port: Annotated[int, Parameter(help="Bind port to probe when no URL resolves")] = 7590,
+    host: Annotated[str, Parameter(help="Bind address to probe when no URL resolves")] = HOST,
+    port: Annotated[int, Parameter(help="Bind port to probe when no URL resolves")] = PORT,
     output: Annotated[Output, Parameter(name=["--output", "-o"], help="Rendering")] = "table",
 ) -> None:
     """Report the recorded pid and whether a daemon answers.

@@ -8,9 +8,9 @@ The resolution order is:
 
 1. an explicit `url` or `--url`;
 2. `SKYWARD_URL`;
-3. an embedded daemon in the current process.
+3. an embedded daemon in the current process (`Compute` only — the CLI falls back to `http://127.0.0.1:17590` instead).
 
-The embedded daemon stores its SQLite database at `~/.skyward/skyward.sqlite` by default. Pass `database=` to `Compute` or `--database` to the CLI to select another path. A database path is ignored when a remote URL is selected.
+The embedded daemon stores its SQLite database at `~/.skyward/skyward.sqlite` by default. Pass `database=` to `Compute` to select another path, or `--database` to `sky server start`. A database path is ignored when a remote URL is selected.
 
 ```python
 import skyward as sky
@@ -20,7 +20,7 @@ with sky.Compute(provider=sky.Container()) as compute:
     result = train(data) >> compute
 
 # Remote daemon.
-with sky.Compute(provider=sky.AWS(), url="http://127.0.0.1:7590") as compute:
+with sky.Compute(provider=sky.AWS(), url="http://127.0.0.1:17590") as compute:
     result = train(data) >> compute
 ```
 

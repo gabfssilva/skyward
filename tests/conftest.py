@@ -22,6 +22,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -95,19 +96,23 @@ def shared_database(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return tmp_path_factory.mktemp("shared") / "skyward.sqlite"
 
 
-@pytest.fixture(scope="session")
-def daemon(shared_database: Path, tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
-    """A real daemon on a port of its own, serving this worker's computes."""
+@contextmanager
+def serving(database: Path, log: Path) -> Iterator[str]:
+    """A daemon on a free port, for as long as the block lasts.
+
+    The CLI has no embedded transport, so every command in a test needs one of
+    these — there is no database a test can hand ``sky`` instead of a daemon.
+    """
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
 
     url = f"http://127.0.0.1:{port}"
-    log = (tmp_path_factory.mktemp("daemon") / "daemon.log").open("wb")
+    sink = log.open("wb")
     process = subprocess.Popen(
-        [str(SKY), "server", "start", "--foreground", "--port", str(port), "--database", str(shared_database)],
-        stdout=log,
-        stderr=log,
+        [str(SKY), "server", "start", "--foreground", "--port", str(port), "--database", str(database)],
+        stdout=sink,
+        stderr=sink,
     )
 
     deadline = time.monotonic() + 30
@@ -121,10 +126,18 @@ def daemon(shared_database: Path, tmp_path_factory: pytest.TempPathFactory) -> I
         process.terminate()
         raise RuntimeError("the daemon never answered /health")
 
-    yield url
+    try:
+        yield url
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
 
-    process.terminate()
-    process.wait(timeout=10)
+
+@pytest.fixture(scope="session")
+def daemon(shared_database: Path, tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
+    """A real daemon on a port of its own, serving this worker's computes."""
+    with serving(shared_database, tmp_path_factory.mktemp("daemon") / "daemon.log") as url:
+        yield url
 
 
 @pytest.fixture(scope="session")
@@ -142,10 +155,11 @@ def pool(daemon: str) -> Iterator[sky.Compute]:
 
 
 @pytest.fixture
-def database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """An embedded daemon of this test's own, never a daemon somebody else started."""
+def alone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+    """A daemon of this test's own, never one somebody else started."""
     monkeypatch.delenv("SKYWARD_URL", raising=False)
-    return tmp_path / "skyward.sqlite"
+    with serving(tmp_path / "skyward.sqlite", tmp_path / "daemon.log") as url:
+        yield url
 
 
 @pytest.fixture

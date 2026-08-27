@@ -13,7 +13,6 @@ repeating the request it would make.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Annotated
 
 from cyclopts import Parameter
@@ -28,25 +27,23 @@ def status(
     ref: Annotated[str | None, Parameter(help="A compute id or name; omit for all of them")] = None,
     *,
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(help="Embedded daemon database")] = None,
     output: Annotated[Output, Parameter(help="table or json")] = "table",
 ) -> None:
     """Show one compute, or every compute the daemon knows about."""
     if ref is None:
-        list_computes(url=url, database=database, output=output)
+        list_computes(url=url, output=output)
         return
-    get_compute(ref, url=url, database=database, output=output)
+    get_compute(ref, url=url, output=output)
 
 
 @app.command(name="sessions")
 def sessions(
     *,
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(help="Embedded daemon database")] = None,
     output: Annotated[Output, Parameter(help="table or json")] = "table",
 ) -> None:
     """List every compute — ``status`` with no argument, under the older name."""
-    list_computes(url=url, database=database, output=output)
+    list_computes(url=url, output=output)
 
 
 @app.command(name="stop")
@@ -54,7 +51,6 @@ def stop(
     ref: Annotated[str, Parameter(help="A compute id or name")],
     *,
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
-    database: Annotated[Path | None, Parameter(help="Embedded daemon database")] = None,
     output: Annotated[Output, Parameter(help="table or json")] = "table",
 ) -> None:
     """Tear a compute down.
@@ -62,7 +58,7 @@ def stop(
     Accepted, not done: what comes back is still ``deleting``, and stays that
     way until the provider confirms the machines are gone.
     """
-    delete_compute(ref, url=url, database=database, output=output)
+    delete_compute(ref, url=url, output=output)
 
 
 __all__ = ["sessions", "status", "stop"]

@@ -88,7 +88,7 @@ You never have to touch any of this to use Skyward. When you do want to look, th
 
 ```console
 $ sqlite3 ~/.skyward/skyward.sqlite 'select id, name, status_state from computes'
-$ http GET :7590/v1/computes
+$ http GET :17590/v1/computes
 ```
 
 See [Persistence](persistence.md) for the tables and [HTTP API](http-api.md) for the routes.

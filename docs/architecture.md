@@ -58,7 +58,7 @@ with sky.Compute(provider=sky.AWS()) as embedded:
 
 with sky.Compute(
     provider=sky.AWS(),
-    url="http://127.0.0.1:7590",
+    url="http://127.0.0.1:17590",
 ) as remote:
     train(data) >> remote
 ```
