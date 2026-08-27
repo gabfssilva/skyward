@@ -16,3 +16,7 @@ demo/
 paper/
 .DS_Store
 tests/.sanity/
+
+.coverage
+.tasks/
+*.sqlite
