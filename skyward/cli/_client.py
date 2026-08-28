@@ -18,14 +18,9 @@ from collections.abc import Awaitable, Callable
 
 import httpx
 
-from skyward.core.client import Client
+from skyward.core.client import DEFAULT_URL, HOST, PORT, Client
 
 type Work[T] = Callable[[Client], Awaitable[T]]
-
-HOST = "127.0.0.1"
-PORT = 17590
-DEFAULT_URL = f"http://{HOST}:{PORT}"
-"""Where ``sky server start`` binds, and so where a command looks by default."""
 
 
 def resolve(url: str | None) -> str:

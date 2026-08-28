@@ -8,15 +8,23 @@ The resolution order is:
 
 1. an explicit `url` or `--url`;
 2. `SKYWARD_URL`;
-3. an embedded daemon in the current process (`Compute` only — the CLI falls back to `http://127.0.0.1:17590` instead).
+3. the daemon at `http://127.0.0.1:17590`.
 
-The embedded daemon stores its SQLite database at `~/.skyward/skyward.sqlite` by default. Pass `database=` to `Compute` to select another path, or `--database` to `sky server start`. A database path is ignored when a remote URL is selected.
+`Compute` starts a daemon at that address when none answers, printing `no server is running, starting it now`. The daemon detaches, so it outlives the process that started it and goes on reconciling the machines it bought. Stop it with `sky server stop`. The CLI never starts one: it reports that nothing answers.
+
+A daemon is refused when it runs a different version of Skyward than the client, because the same routes carry other wire types. Stop it and let the client start one, or point the client at a daemon on its version.
+
+Passing `database=` to `Compute` runs the control plane inside the current process over that file instead of reaching a daemon. `sky server start --database` gives a daemon its own. Either way the default is `~/.skyward/skyward.sqlite`, and a database is ignored when a URL is given.
 
 ```python
 import skyward as sky
 
-# Embedded daemon, using ~/.skyward/skyward.sqlite.
+# The daemon at 127.0.0.1:17590, started here if nobody has.
 with sky.Compute(provider=sky.Container()) as compute:
+    result = train(data) >> compute
+
+# The control plane in this process, over a database of its own.
+with sky.Compute(provider=sky.Container(), database="/tmp/experiment.sqlite") as compute:
     result = train(data) >> compute
 
 # Remote daemon.

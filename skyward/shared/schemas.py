@@ -783,9 +783,18 @@ type DependencyState = Literal["ok", "unreachable"]
 
 
 class Liveness(Struct, frozen=True):
-    """Whether the process answers. Says nothing about the store or the providers."""
+    """Whether the process answers, and what it is running.
+
+    Says nothing about the store or the providers. The version rides along because
+    it answers the second half of the only question a client asks before trusting a
+    daemon it did not start: something is there, and it speaks this wire.
+
+    The default is for decoding, not for answering — a daemon always says which
+    skyward it is, and one that says nothing is one from before it could.
+    """
 
     live: bool
+    version: str = ""
 
 
 class Readiness(Struct, frozen=True):

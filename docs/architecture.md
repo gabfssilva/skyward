@@ -43,27 +43,33 @@ flowchart TB
     Dispatcher --> Nodes
 ```
 
-## Embedded and remote mode
+## Daemon and embedded mode
 
-With no URL, the SDK builds the Litestar application in the current process, opens the configured SQLite database, and reaches it through an in-process ASGI transport. No listening socket is required.
+With no URL, the SDK talks to the daemon at `http://127.0.0.1:17590` over HTTP, and starts one there when nothing answers. A started daemon is detached and stays: it owns the Computes created through it, and the machines they hold are still being reconciled after the script ends. `sky server stop` ends it.
 
-With `url` or `SKYWARD_URL`, the SDK uses the same routes over HTTP. Nothing above the client transport needs to know which mode is active:
+With `url` or `SKYWARD_URL`, the SDK uses the daemon it was named and starts none. With `database=`, it builds the Litestar application in the current process, opens that SQLite file, and reaches it through an in-process ASGI transport — no listening socket, and no daemon to share it with. Nothing above the client transport needs to know which mode is active:
 
 ```python
 import skyward as sky
 
 
-with sky.Compute(provider=sky.AWS()) as embedded:
-    train(data) >> embedded
+with sky.Compute(provider=sky.AWS()) as daemon:
+    train(data) >> daemon
 
 with sky.Compute(
     provider=sky.AWS(),
     url="http://127.0.0.1:17590",
 ) as remote:
     train(data) >> remote
+
+with sky.Compute(
+    provider=sky.AWS(),
+    database="/tmp/experiment.sqlite",
+) as embedded:
+    train(data) >> embedded
 ```
 
-The default embedded database is `~/.skyward/skyward.sqlite`. A remote daemon has its own database and owns the resources created through it.
+The default database is `~/.skyward/skyward.sqlite`, and the daemon that owns it owns the resources created through it. A client whose version differs from the daemon's is refused at connection time rather than halfway through a provision.
 
 ## Resource model
 
@@ -234,7 +240,7 @@ The Litestar application mounts these resource families below `/v1`:
 | Observation | `/events` and `/health` |
 | Node access | files, shell, command execution, and port forwarding |
 
-The Python SDK and CLI are clients of this surface. The embedded transport uses the same controllers and persistence services as a standalone daemon.
+The Python SDK and CLI are clients of this surface. The embedded transport uses the same controllers and persistence services as a daemon.
 
 ## Further reading
 

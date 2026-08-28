@@ -9,8 +9,8 @@ guides.
 `@sky.function` turns a Python call into a frozen `Pending` value. It does not run
 the function locally. `Compute` describes the resources that may run it. The
 control plane stores the Compute, reconciles its desired state with provider
-machines, dispatches tasks, records events, and serves the same resources through
-an embedded or remote daemon.
+machines, dispatches tasks, records events, and serves the same resources from a
+daemon or, when asked for a database of its own, from the client's process.
 
 ```python
 import skyward as sky
@@ -23,10 +23,12 @@ with sky.Compute(provider=sky.Container()) as compute:
     result = square(4) >> compute
 ```
 
-With no `url`, the SDK starts an embedded daemon and uses
-`~/.skyward/skyward.sqlite` by default. With `url` or `SKYWARD_URL`, it uses a
-remote daemon. `Compute.attached(ref)` attaches to an existing resource without
-restating its definition and does not delete it on exit by default.
+With no `url`, the SDK uses the daemon at `http://127.0.0.1:17590`, over
+`~/.skyward/skyward.sqlite` by default, and starts one there when none is
+running — it stays up afterwards, and `sky server stop` ends it. With `url` or
+`SKYWARD_URL`, it uses that daemon and starts none; with `database=`, it runs the
+control plane in its own process. `Compute.attached(ref)` attaches to an existing
+resource without restating its definition and does not delete it on exit by default.
 
 See [Core concepts](concepts.md), [Getting started](getting-started.md), and
 [Architecture](architecture.md).

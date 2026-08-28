@@ -2,11 +2,11 @@
 
 This page covers installation, a local first run, provider credentials, and a first cloud task. Skyward's Python API is synchronous; the control plane underneath persists Computes, tasks, nodes, and events.
 
-Skyward requires Python 3.12 or higher. A client that creates an embedded Compute needs the `client` and `server` extras. The `Container` provider also needs Docker or Podman-compatible container tooling.
+Skyward requires Python 3.12 or higher. A client that starts its own daemon needs the `client` and `server` extras. The `Container` provider also needs Docker or Podman-compatible container tooling.
 
 ## Installation
 
-Install the SDK and the embedded control plane with `uv`:
+Install the SDK and the control plane with `uv`:
 
 ```bash
 uv add "skyward[client,server]"
@@ -22,7 +22,7 @@ The optional extras are split by role:
 
 ```bash
 uv add "skyward[client]"    # SDK for a remote daemon
-uv add "skyward[server]"    # embedded or standalone daemon
+uv add "skyward[server]"    # the daemon, standalone or embedded
 uv add "skyward[cli]"       # sky command
 uv add "skyward[notebook]"  # Jupyter kernel provisioning
 uv add "skyward[tui]"       # terminal rendering
@@ -241,7 +241,7 @@ The lower bound controls readiness. The reconciler can add capacity up to the up
 
 ## Persistent Computes and remote daemons
 
-By default, the SDK runs an embedded daemon against `~/.skyward/skyward.sqlite`. Set `url` or `SKYWARD_URL` to use a daemon running elsewhere:
+By default, the SDK uses the daemon at `http://127.0.0.1:17590`, against `~/.skyward/skyward.sqlite`. When none is running it starts one and leaves it running, so the Computes it created survive the script that created them. Set `url` or `SKYWARD_URL` to use a daemon running elsewhere:
 
 ```python
 with sky.Compute(

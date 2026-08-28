@@ -36,7 +36,7 @@ sky notebook install research
 sky notebook install research --url http://127.0.0.1:17590
 ```
 
-The installed kernel is named `skyward-research` and appears in Jupyter as **Skyward (research)**. The compute argument is a name or id. With no `--url`, the CLI records `SKYWARD_URL` when it is set during installation. If no URL is recorded, the provisioner resolves `SKYWARD_URL` when Jupyter starts and otherwise uses the embedded daemon.
+The installed kernel is named `skyward-research` and appears in Jupyter as **Skyward (research)**. The compute argument is a name or id. With no `--url`, the CLI records `SKYWARD_URL` when it is set during installation. If no URL is recorded, the provisioner resolves `SKYWARD_URL` when Jupyter starts and otherwise uses the daemon at `http://127.0.0.1:17590`.
 
 To write the kernelspec into a specific directory instead of the user-level Jupyter location:
 

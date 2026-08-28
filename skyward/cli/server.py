@@ -1,23 +1,24 @@
 """``sky server`` — run the daemon, or find out whether one is running.
 
-The daemon is the Litestar app at :mod:`skyward.server.http.app`; this only starts a
-process around it. ``start`` detaches by default and records the pid, because a
-control plane that dies with the terminal that launched it is not a control
-plane. ``--foreground`` keeps it attached, which is what a dev loop wants.
+The daemon is the Litestar app at :mod:`skyward.server.http.app` and the process
+around it is :mod:`skyward.server.daemon`; this is the command that drives them.
+``start`` detaches by default and records the pid, because a control plane that
+dies with the terminal that launched it is not a control plane. ``--foreground``
+keeps it attached, which is what a dev loop wants.
 
 ``stop`` signals the pid rather than asking the daemon to end itself: there is
 no shutdown endpoint, and a control plane should not offer one — anything that
 can reach the API could then take the whole plane down.
+
+A pool starts a daemon the same way when it finds none (:func:`skyward.core.client.connect`),
+so what ``stop`` stops is not only what ``start`` started.
 """
 
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import os
 import signal
-import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Annotated
@@ -29,13 +30,9 @@ from skyward.cli import server_app
 from skyward.cli._client import HOST, PORT, call, resolve
 from skyward.cli._output import Output, render
 from skyward.core.client import Client
+from skyward.server import daemon
 from skyward.shared.schemas import Liveness
 
-RUNTIME_DIR = Path.home() / ".skyward"
-PID_FILE = RUNTIME_DIR / "server.pid"
-LOG_FILE = RUNTIME_DIR / "server.log"
-
-TARGET = "skyward.server.http.app:daemon"
 POLL_SECONDS = 0.2
 
 
@@ -49,25 +46,6 @@ def endpoint(url: str | None, host: str, port: int) -> str:
     if url or os.environ.get("SKYWARD_URL"):
         return resolve(url)
     return f"http://{host}:{port}"
-
-
-def pid() -> int | None:
-    """Return the recorded pid, or None when there is no readable pidfile."""
-    try:
-        return int(PID_FILE.read_text().strip())
-    except (OSError, ValueError):
-        return None
-
-
-def alive(process: int) -> bool:
-    """Return whether the process exists, signalling nothing to find out."""
-    try:
-        os.kill(process, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
 
 
 async def probe(client: Client) -> bool:
@@ -98,41 +76,11 @@ def _wait_live(target: str, timeout: float) -> bool:
 
 def _wait_exit(process: int, timeout: float) -> bool:
     deadline = time.monotonic() + timeout
-    while alive(process):
+    while daemon.alive(process):
         if time.monotonic() >= deadline:
             return False
         time.sleep(POLL_SECONDS)
     return True
-
-
-def _require_uvicorn() -> None:
-    if importlib.util.find_spec("uvicorn") is None:
-        raise SystemExit("the daemon needs an ASGI server: pip install uvicorn")
-
-
-def _environment(database: Path | None) -> dict[str, str]:
-    if database is None:
-        return dict(os.environ)
-    return {**os.environ, "SKYWARD_DATABASE": str(database)}
-
-
-def _foreground(host: str, port: int, database: Path | None) -> None:
-    import uvicorn
-
-    if database is not None:
-        os.environ["SKYWARD_DATABASE"] = str(database)
-    uvicorn.run(TARGET, host=host, port=port, factory=True)
-
-
-def _spawn(host: str, port: int, database: Path | None) -> int:
-    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-    log = LOG_FILE.open("ab")  # noqa: SIM115
-    command = [sys.executable, "-m", "uvicorn", TARGET, "--factory", "--host", host, "--port", str(port)]
-    process = subprocess.Popen(
-        command, stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True, close_fds=True, env=_environment(database)
-    )
-    PID_FILE.write_text(str(process.pid))
-    return process.pid
 
 
 @server_app.command(name="start")
@@ -159,26 +107,27 @@ def start(
     database
         The SQLite file the daemon keeps its state in.
     """
-    _require_uvicorn()
+    if not daemon.installed():
+        raise SystemExit(daemon.MISSING)
 
     if foreground:
-        _foreground(host, port, database)
+        daemon.serve(host, port, database)
         return
 
-    if (running := pid()) and alive(running):
+    if (running := daemon.pid()) and daemon.alive(running):
         raise SystemExit(f"already running (pid {running}) — sky server stop")
 
-    PID_FILE.unlink(missing_ok=True)
-    process = _spawn(host, port, database)
+    daemon.forget()
+    process = daemon.spawn(host, port, database)
 
     if not _wait_live(f"http://{host}:{port}", timeout):
-        if alive(process):
+        if daemon.alive(process):
             os.kill(process, signal.SIGTERM)
-        PID_FILE.unlink(missing_ok=True)
-        raise SystemExit(f"no answer within {timeout:.0f}s — see {LOG_FILE}")
+        raise SystemExit(f"no answer within {timeout:.0f}s — see {daemon.LOG_FILE}")
 
+    daemon.record(process)
     print(f"http://{host}:{port} (pid {process})")
-    print(f"logs: {LOG_FILE}")
+    print(f"logs: {daemon.LOG_FILE}")
 
 
 @server_app.command(name="stop")
@@ -193,17 +142,17 @@ def stop(
     timeout
         How long to wait for the process to leave before reporting it stayed.
     """
-    match pid():
+    match daemon.pid():
         case None:
             raise SystemExit("no pidfile — nothing to stop")
-        case int(process) if not alive(process):
-            PID_FILE.unlink(missing_ok=True)
+        case int(process) if not daemon.alive(process):
+            daemon.forget()
             print(f"not running (cleared stale pid {process})")
         case int(process):
             os.kill(process, signal.SIGTERM)
             if not _wait_exit(process, timeout):
                 raise SystemExit(f"pid {process} still alive after {timeout:.0f}s")
-            PID_FILE.unlink(missing_ok=True)
+            daemon.forget()
             print(f"stopped (pid {process})")
 
 
@@ -229,12 +178,12 @@ def status(
         ``table`` for a person, ``json`` for a program.
     """
     target = endpoint(url, host, port)
-    process = pid()
+    process = daemon.pid()
     render(
         ["url", "pid", "live"],
-        [[target, process if process and alive(process) else None, live(target)]],
+        [[target, process if process and daemon.alive(process) else None, live(target)]],
         output=output,
     )
 
 
-__all__ = ["alive", "endpoint", "live", "pid", "probe", "start", "status", "stop"]
+__all__ = ["endpoint", "live", "probe", "start", "status", "stop"]

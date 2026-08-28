@@ -1,9 +1,9 @@
 """The ``sky`` command — a thin client over the daemon's HTTP API.
 
 Nothing here decides anything. Every command turns a few flags into one HTTP
-call and prints what came back, which is why the CLI holds no state and needs
-no daemon of its own: :mod:`skyward.cli._client` opens a remote one or runs an
-embedded one, and the command cannot tell which it got.
+call and prints what came back, which is why the CLI holds no state and runs no
+daemon of its own: :mod:`skyward.cli._client` dials one, and a command that finds
+none says so rather than becoming one.
 
 The CLI library is an extra. A node installs ``skyward`` to run somebody's
 training loop and has no business acquiring an argument parser to do it.

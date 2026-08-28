@@ -9,7 +9,6 @@ real overlap rather than two round trips in a row.
 from __future__ import annotations
 
 import asyncio
-import os
 import threading
 import uuid
 from collections.abc import AsyncIterator, Callable, Coroutine, Iterable, Iterator, Sequence
@@ -23,7 +22,7 @@ import msgspec
 
 from skyward.core import context, usercode
 from skyward.core.accelerators import Accelerator
-from skyward.core.client import Client
+from skyward.core.client import Client, connect
 from skyward.core.console import watcher
 from skyward.core.errors import SkywardError, TaskFailedError
 from skyward.core.forward import TcpProxy
@@ -31,7 +30,6 @@ from skyward.core.function import Group, Pending, Streaming
 from skyward.core.provider import Provider
 from skyward.core.provider import resolve as resolve_provider
 from skyward.core.spec import Executor, NodeSpec, Options, Port, Spec, Volume, bounds
-from skyward.server.persistence.db import DEFAULT_PATH
 from skyward.shared import codec
 from skyward.shared.accelerators import resolve
 from skyward.shared.frames import Chunk, Failed, Frame
@@ -113,8 +111,11 @@ class Compute:
     """A pool of machines, for as long as the ``with`` block lasts.
 
     ``url`` decides where the control plane is, and nothing else changes: given
-    one, the pool talks to a daemon; given none, it runs the daemon in this
-    process. Both go through the same client.
+    one, the pool talks to that daemon; given none, it talks to the one at the
+    default address, starting it if nobody has. A daemon it started is left
+    running — the machines it bought outlive this block, and something has to be
+    reconciling them. ``database`` is the exception: it runs the control plane in
+    this process, over that file.
     """
 
     def __init__(
@@ -137,7 +138,7 @@ class Compute:
         ttl: int = 600,
         name: str | None = None,
         url: str | None = None,
-        database: Path = DEFAULT_PATH,
+        database: Path | None = None,
         delete_on_exit: bool = True,
         console: bool = True,
         attach: str | None = None,
@@ -192,7 +193,7 @@ class Compute:
         self._volumes = tuple(volumes)
         self._proxies: list[TcpProxy] = []
         self._client_stack = ExitStack()
-        self._url = url or os.environ.get("SKYWARD_URL")
+        self._url = url
         self._database = database
         self._delete_on_exit = delete_on_exit
         self._console = console
@@ -212,7 +213,7 @@ class Compute:
         cls,
         ref: str,
         url: str | None = None,
-        database: Path = DEFAULT_PATH,
+        database: Path | None = None,
         console: bool = True,
         delete_on_exit: bool = False,
     ) -> Compute:
@@ -248,9 +249,7 @@ class Compute:
         what the caller sees, not whatever the teardown ran into.
         """
         self._loop = Loop()
-        self._client = self.loop.run(
-            Client.remote(self._url) if self._url else Client.embedded(self._database),
-        )
+        self._client = self.loop.run(connect(self._url, self._database))
         try:
             self.loop.run(self._provision())
             for plugin in self._plugins:

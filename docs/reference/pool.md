@@ -1,6 +1,6 @@
 # Compute and task dispatch
 
-The client uses `Compute` for both an embedded control plane and a remote daemon. A `Compute` can receive one provider descriptor or several `Spec` alternatives. The alternatives are evaluated against the daemon's cached provider offers.
+The client uses `Compute` for both a daemon and an embedded control plane. A `Compute` can receive one provider descriptor or several `Spec` alternatives. The alternatives are evaluated against the daemon's cached provider offers.
 
 ```python
 import skyward as sky
@@ -26,7 +26,7 @@ with sky.Compute(
 
 Entering a `with Compute(...)` block registers provider accounts, creates or attaches the compute resource, waits for readiness, and starts the client-side lease. Leaving the block deletes the compute by default. Set `delete_on_exit=False` to keep it alive, then reconnect with `Compute.attached(ref)`.
 
-With no `url`, the client uses an embedded daemon. With `url` or `SKYWARD_URL`, it uses the remote daemon. Both paths use the same control-plane API.
+With no `url`, the client uses the daemon at `http://127.0.0.1:17590` and starts one there if none is running; that daemon stays up after the block ends. With `url` or `SKYWARD_URL`, it uses the daemon it was given and never starts one. With `database=`, it runs the control plane in this process over that file. Every path uses the same control-plane API.
 
 ## Dispatch
 

@@ -5,21 +5,32 @@ process: ``embedded`` runs the daemon here and reaches it through ASGI — no
 socket, no port, no server — while ``remote`` dials one. Nothing above this
 module can tell the difference, which is the point: there is a single client,
 and running locally is a transport, not a second product.
+
+:func:`connect` is what a pool actually calls, and what it usually ends up with is
+``remote``: a daemon at the default address, started here if there was none. The
+embedded transport is for the caller who named a database, which is the one thing
+a daemon on that address cannot serve.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
+import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine, MutableMapping
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, cast
+from urllib.parse import urlsplit
 
 import httpx
 import msgspec
 
-from skyward.core.errors import refused
+from skyward.core.errors import DaemonError, SkywardError, UnexpectedResponseError, refused
 from skyward.shared.observability import logger
+from skyward.shared.schemas import Liveness
+from skyward.shared.version import current
 
 if TYPE_CHECKING:
     from litestar import Litestar
@@ -28,6 +39,22 @@ logger = logger.bind(component="client")
 
 BLOB = "application/vnd.skyward.blob"
 JSON = "application/json"
+
+HOST = "127.0.0.1"
+PORT = 17590
+DEFAULT_URL = f"http://{HOST}:{PORT}"
+"""Where ``sky server start`` binds, and so where a pool looks for one already up."""
+
+START_TIMEOUT = 30.0
+POLL_SECONDS = 0.2
+
+NOT_A_DAEMON = (httpx.HTTPError, OSError, msgspec.DecodeError, SkywardError, UnexpectedResponseError)
+"""What asking an address whether it holds a daemon can fail with.
+
+None of it is a bug here. A closed port, a hung connection, something else
+listening and answering in a shape of its own — each one means the same thing,
+which is that there is no daemon of ours there to talk to.
+"""
 
 type Message = MutableMapping[str, Any]
 type Asgi = Callable[
@@ -69,6 +96,13 @@ class Client:
         stack = AsyncExitStack()
         http = httpx.AsyncClient(base_url=url, timeout=None)
         return cls(await stack.enter_async_context(http), stack)
+
+    async def liveness(self) -> Liveness | None:
+        """What the daemon says about itself, or nothing when none answers."""
+        try:
+            return await self.call("GET", "/v1/health/live", Liveness)
+        except NOT_A_DAEMON:
+            return None
 
     async def close(self) -> None:
         await self._stack.aclose()
@@ -398,3 +432,91 @@ def asgi(app: Litestar) -> Asgi:
     app is an ASGI app. The two vocabularies meet here and nowhere else.
     """
     return cast(Asgi, app)
+
+
+async def connect(url: str | None, database: Path | None) -> Client:
+    """The daemon a pool speaks to: one it was named, one already up, or one it starts.
+
+    A pool that names no daemon looks where ``sky server start`` binds, and starts
+    a daemon there when nothing answers. It does not embed one: an embedded plane
+    would open the database that daemon owns the moment somebody starts one, and
+    two control planes over one database are two reconcilers buying the same
+    machine. The daemon it starts outlives it, which is the point of a daemon — the
+    machines it bought are still running when the script ends.
+
+    Naming a database is the one way to be the plane instead of reaching one. That
+    argument says which file to serve, and a daemon holding a different one has no
+    answer to it.
+    """
+    if target := url or os.environ.get("SKYWARD_URL"):
+        return await dial(target, start=False)
+
+    if database is not None:
+        return await Client.embedded(database)
+
+    return await dial(DEFAULT_URL, start=True)
+
+
+async def dial(url: str, *, start: bool) -> Client:
+    """A client on the daemon at ``url``, once it has answered for itself.
+
+    The handshake is the liveness call, and what it is really asking is the version:
+    a daemon of another skyward serves other wire types behind the same routes, and
+    what that becomes is a decode error somewhere in the middle of a provision, long
+    after machines are billing. Refused here, it costs a round trip.
+
+    ``start`` is for the address nobody named — a daemon may be started there
+    because that is where one belongs. A named url is somewhere the caller says a
+    daemon already is, and binding a port over that answer would be inventing one.
+    """
+    client = await Client.remote(url)
+    try:
+        if (live := await client.liveness()) is None:
+            if not start:
+                raise DaemonError(f"no daemon answers at {url}")
+            print("skyward: no server is running, starting it now", file=sys.stderr, flush=True)
+            live = await started(client, url)
+            print(f"skyward: the daemon at {url} stays up after this run — `sky server stop` ends it", file=sys.stderr, flush=True)
+
+        if live.version != (here := current()):
+            theirs = f"skyward {live.version}" if live.version else "a skyward too old to say which"
+            raise DaemonError(
+                f"the daemon at {url} runs {theirs}, this process runs skyward {here} — "
+                "stop it with `sky server stop` and run again, or point at a daemon on this version"
+            )
+    except BaseException:
+        await client.close()
+        raise
+    return client
+
+
+async def started(client: Client, url: str) -> Liveness:
+    """Start a daemon at ``url`` and wait for it to answer.
+
+    The pid is written down only once something has answered, and only if the
+    process that was started is the one still there: two pools starting at the same
+    instant both spawn, one takes the port and the other dies of it, and a pidfile
+    naming the loser is a ``sky server stop`` that stops nothing.
+    """
+    from skyward.server import daemon
+
+    host, port = address(url)
+    process = daemon.spawn(host, port)
+    deadline = time.monotonic() + START_TIMEOUT
+
+    while True:
+        if (live := await client.liveness()) is not None:
+            if daemon.alive(process):
+                daemon.record(process)
+            return live
+        if not daemon.alive(process):
+            raise DaemonError(f"the daemon exited without answering — see {daemon.LOG_FILE}")
+        if time.monotonic() >= deadline:
+            raise DaemonError(f"no answer from {url} within {START_TIMEOUT:.0f}s — see {daemon.LOG_FILE}")
+        await asyncio.sleep(POLL_SECONDS)
+
+
+def address(url: str) -> tuple[str, int]:
+    """Where a daemon has to bind for ``url`` to reach it."""
+    parsed = urlsplit(url)
+    return parsed.hostname or HOST, parsed.port or PORT

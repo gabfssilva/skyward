@@ -35,6 +35,16 @@ class TaskIndeterminateError(SkywardError):
     """
 
 
+class DaemonError(Exception):
+    """The control plane a pool needs is not there, or is not one it can speak to.
+
+    Deliberately not a :class:`SkywardError`: no control plane refused anything,
+    because the client never got as far as asking one. Raised before a single
+    resource exists, which is the only moment where being wrong about which daemon
+    is at the other end costs nothing.
+    """
+
+
 class UnexpectedResponseError(Exception):
     """A refusal the control plane did not write.
 

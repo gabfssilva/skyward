@@ -4,15 +4,24 @@ from litestar import Controller, get
 
 from skyward.server.application import ports
 from skyward.shared.schemas import DependencyState, Liveness, Readiness
+from skyward.shared.version import current
 
 
 class HealthController(Controller):
     path = "/health"
     tags = ["health"]
 
-    @get("/live", summary="Liveness", description="The process answers. Says nothing about the store or about providers.")
+    @get(
+        "/live",
+        summary="Liveness",
+        description=(
+            "The process answers, and the skyward it runs. Says nothing about the store or about providers. The "
+            "version is here because a client that finds a daemon it did not start has to know whether it speaks "
+            "this wire before it sends anything over it."
+        ),
+    )
     async def live(self, health: ports.Health) -> Liveness:
-        return Liveness(live=await health.live())
+        return Liveness(live=await health.live(), version=current())
 
     @get(
         "/ready",
