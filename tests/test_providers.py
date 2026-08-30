@@ -6,6 +6,8 @@ back together on the other side of the wire. These are the two halves agreeing.
 """
 
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import httpx
 import msgspec
@@ -15,6 +17,7 @@ import skyward as sky
 from skyward.core.provider import resolve
 from skyward.providers.registry import REGISTRY
 from skyward.providers.runpod import RunPodProvider, _deploy_input, _machine
+from skyward.providers.salad import SaladProvider
 from skyward.shared import providers
 from skyward.shared.providers import Provider
 
@@ -85,6 +88,71 @@ def describe_the_adapters() -> None:
         kinds = {account.kind for account in ACCOUNTS}
 
         assert set(REGISTRY) <= kinds, "an adapter with no account is one nobody can configure"
+
+
+def describe_a_salad_container_group_nobody_wrote_down() -> None:
+    """Salad has no tags, and a launch records nothing: the name is the whole record.
+
+    The window between a group existing and the daemon writing it down is a launch
+    long — minutes, on a provider that is asked to wait for an allocation — so a
+    group has to be findable without the binding, or it is a container that bills
+    until somebody notices it in the portal.
+    """
+
+    class _Salad:
+        """The project as Salad has it: some of this compute's groups, and another's."""
+
+        def __init__(self, instances: dict[str, str]) -> None:
+            self._instances = instances
+            self.deleted: list[str] = []
+
+        async def list_container_groups(self, organization: str, project: str) -> Any:
+            mine = [SimpleNamespace(name=name, networking=SimpleNamespace(dns=f"{name}.salad.cloud")) for name in self._instances]
+            return SimpleNamespace(items=[*mine, SimpleNamespace(name="skyward-cmp-2-bbbb", networking=None)])
+
+        async def list_container_group_instances(self, organization: str, project: str, name: str) -> Any:
+            state = self._instances[name]
+            return SimpleNamespace(instances=[SimpleNamespace(state=state, ready=False, pulling_progress=0.43)] if state else [])
+
+        async def delete_container_group(self, organization: str, project: str, name: str) -> None:
+            self.deleted.append(name)
+
+    def _salad(instances: dict[str, str]) -> tuple[SaladProvider, _Salad]:
+        provider = SaladProvider.create("prv_salad", "salad", {"api_key": "not-a-key"}, {"organization": "org", "project": "proj"})
+        groups = _Salad(instances)
+        provider._sdk = SimpleNamespace(container_groups=groups)
+        return provider, groups
+
+    async def it_is_still_one_of_the_computes_machines() -> None:
+        provider, _ = _salad({"skyward-cmp-1-aaaa": "downloading"})
+
+        observed = await provider.machines({"compute_id": "cmp_1"})
+
+        assert set(observed) == {"skyward-cmp-1-aaaa"}, "found by the compute in its name, not by the binding"
+        assert observed["skyward-cmp-1-aaaa"].state == "pending"
+        assert observed["skyward-cmp-1-aaaa"].progress == "downloading (43%)", "a pull is progress, and the deadline is measured against it"
+
+    async def it_says_it_is_waiting_when_salad_has_allocated_nothing() -> None:
+        provider, _ = _salad({"skyward-cmp-1-aaaa": ""})
+
+        observed = await provider.machines({"compute_id": "cmp_1"})
+
+        assert observed["skyward-cmp-1-aaaa"].progress == "waiting for salad to allocate a machine", "one answer, so the deadline runs"
+
+    async def it_reports_the_pull_as_a_percentage_whichever_way_salad_says_it() -> None:
+        """Salad sends a fraction where its own sdk promises a percentage."""
+        provider, _ = _salad({"skyward-cmp-1-aaaa": "downloading"})
+
+        observed = await provider.machines({"compute_id": "cmp_1"})
+
+        assert observed["skyward-cmp-1-aaaa"].progress == "downloading (43%)", "0.43 of the image is 43%, not 0%"
+
+    async def it_is_taken_down_with_the_compute() -> None:
+        provider, groups = _salad({"skyward-cmp-1-aaaa": "downloading"})
+
+        await provider.release({"compute_id": "cmp_1"})
+
+        assert groups.deleted == ["skyward-cmp-1-aaaa"], "everything of this compute's, and nothing of anybody else's"
 
 
 def describe_a_pod_the_cloud_refuses_to_deploy() -> None:

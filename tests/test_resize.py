@@ -35,19 +35,19 @@ def describe_asking_a_compute_for_a_different_size() -> None:
     async def it_is_a_new_definition_and_leaves_the_rest_of_the_spec_alone(tmp_path: Path) -> None:
         store, compute = await given(tmp_path / "skyward.sqlite")
 
-        resized = await store.patch(compute.id, ComputeSpecPatch(nodes=NodeBounds(desired=16)), compute.revision)
+        resized = await store.patch(compute.id, ComputeSpecPatch(nodes=NodeBounds(initial=16)), compute.revision)
 
-        assert resized.spec.nodes == NodeBounds(desired=16)
+        assert resized.spec.nodes == NodeBounds(initial=16)
         assert resized.generation == compute.generation + 1, "a size is a definition, so it is a generation"
         assert msgspec.structs.replace(resized.spec, nodes=SPEC.nodes) == SPEC, "and nothing else moved with it"
 
     async def it_is_recorded_as_a_generation_of_its_own(tmp_path: Path) -> None:
         store, compute = await given(tmp_path / "skyward.sqlite")
 
-        resized = await store.patch(compute.id, ComputeSpecPatch(nodes=NodeBounds(desired=2)), compute.revision)
+        resized = await store.patch(compute.id, ComputeSpecPatch(nodes=NodeBounds(initial=2)), compute.revision)
         frozen = await GenerationStore(store).get(compute.id, resized.generation)
 
-        assert frozen.spec.nodes == NodeBounds(desired=2)
+        assert frozen.spec.nodes == NodeBounds(initial=2)
 
 
 def describe_a_compute_running_a_collective() -> None:
@@ -55,7 +55,7 @@ def describe_a_compute_running_a_collective() -> None:
         store, compute = await given(tmp_path / "skyward.sqlite", "torch")
 
         with pytest.raises(ComputeNotResizableError) as refused:
-            await store.patch(compute.id, ComputeSpecPatch(nodes=NodeBounds(desired=16)), compute.revision)
+            await store.patch(compute.id, ComputeSpecPatch(nodes=NodeBounds(initial=16)), compute.revision)
 
         assert refused.value.details["plugin"] == "torch"
         assert (await store.get(compute.id)).spec.nodes == SPEC.nodes, "and the definition it had is still the one it has"

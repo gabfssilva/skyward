@@ -6,9 +6,16 @@ so a command with no daemon to reach is a command with nothing to say.
 Nothing is patched — what is asserted is what would have been printed.
 """
 
+import asyncio
+from pathlib import Path
+
 import pytest
 
-from tests.conftest import cli, rows
+from skyward.server.application.mock import SPEC
+from skyward.server.persistence.computes import ComputeStore
+from skyward.server.persistence.db import connect
+from skyward.shared.schemas import ComputeCreate, ComputeStatus
+from tests.conftest import cli, rows, serving
 
 pytestmark = pytest.mark.local
 
@@ -35,6 +42,18 @@ def describe_looking_at_computes() -> None:
     def describe_when_the_daemon_has_none() -> None:
         def listing_them_is_an_empty_answer_not_a_failure(alone: str) -> None:
             assert rows("compute", "list", "--url", alone) == []
+
+    def describe_when_it_has_more_history_than_anybody_reads() -> None:
+        def the_finished_ones_are_a_short_tail_of_the_newest(tmp_path: Path) -> None:
+            database = tmp_path / "skyward.sqlite"
+            asyncio.run(_history(database, 8))
+
+            with serving(database, tmp_path / "daemon.log") as url:
+                listed = rows("compute", "list", "--history", "3", "--url", url)
+                nothing_live = rows("compute", "list", "--history", "0", "--url", url)
+
+            assert [row["name"] for row in listed] == ["c7", "c6", "c5"], "newest first, and only as many as were asked for"
+            assert nothing_live == [], "a daemon whose computes are all gone has nothing running to show"
 
     def describe_when_the_one_named_is_not_there() -> None:
         @pytest.mark.parametrize("verb", ["get", "delete", "view"])
@@ -120,3 +139,18 @@ def describe_asking_where_a_command_would_go() -> None:
 
         assert ran.code != 0
         assert "fail" in ran.out
+
+
+async def _history(database: Path, count: int) -> None:
+    """What a daemon accumulates: computes whose machines are long gone.
+
+    Written to the database the daemon is about to open, because there is no way
+    to reach this state through the CLI — a compute is only finished once a
+    provider confirmed its machines are gone.
+    """
+    await connect(database)
+    store = ComputeStore()
+
+    for index in range(count):
+        compute, _ = await store.create(ComputeCreate(spec=SPEC, name=f"c{index}"), idempotency_key=f"k{index}")
+        await store.observe(compute.id, ComputeStatus(state="deleted", observed_generation=1, nodes_ready=0, nodes_total=0))

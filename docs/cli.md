@@ -101,12 +101,15 @@ Like `create`, it returns without waiting: what comes back is a new `generation`
 
 ```bash
 sky compute list
+sky compute list --history 20
 sky compute list --state ready
 sky compute get research
 sky compute get research --output json
 sky compute view research
 sky compute delete research
 ```
+
+`list` is newest first, and it is two questions rather than one: every compute that is still live, then the newest `--history` finished ones (5 by default, `0` for none). A compute's row outlives its machines, so without that bound the deleted ones are all the list would eventually be. `--state` asks for one state instead, and is then the whole filtered list.
 
 `get` and `view` accept a compute id or name. `view` also prints the node rows. `delete` is an intent change: the returned state can remain `deleting` while the daemon reconciles the provider state.
 

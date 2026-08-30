@@ -86,7 +86,7 @@ def _backend_class() -> type:
             if n_jobs == 0:
                 return 0
             spec = self._compute._spec
-            nodes = spec.nodes.max or spec.nodes.desired
+            nodes = spec.nodes.max or spec.nodes.initial
             return nodes * (spec.worker.concurrency or 1)
 
         def configure(self, n_jobs: int = 1, parallel: object = None, **kwargs: object) -> int:  # pyright: ignore[reportIncompatibleMethodOverride]

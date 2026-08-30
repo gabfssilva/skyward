@@ -666,8 +666,9 @@ def _machine(pod: Mapping[str, Any]) -> Machine | None:
     what turns it into a lost node, and a lost node is terminated.
 
     The address is read from ``ssh.direct``, which REST v2 fills once the running
-    pod has been assigned a public port for its ``22/tcp`` — the same moment the
-    machine becomes something SSH can reach, and null until then. ``runtime`` is
+    pod's container has started and its ``22/tcp`` has a public port — null through
+    the image pull, and sshd itself answers a little later still, a gap the SSH
+    channel's retries absorb. ``runtime`` is
     not that: it carries live utilization, is absent from the pods listing, and a
     machine read from it is a machine that never arrives.
     """

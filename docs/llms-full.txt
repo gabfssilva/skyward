@@ -97,9 +97,11 @@ sky.Compute(
 `nodes`, `allocation`, `selection`, `image`, `plugins`, `executor`, `options`,
 `ports`, and `volumes` belong to `Compute`.
 
-`nodes` accepts an integer, a `(min, max)` tuple, or `Nodes(desired, min=None,
-max=None)`. `allocation` is one of `spot`, `on_demand`,
-`spot_if_available`, or `cheapest`. `selection` is `cheapest` or `first`.
+`nodes` accepts an integer, a `(min, max)` tuple, or `Nodes(initial, min=None,
+max=None)`, where `initial` is the size the pool opens at, `min` the floor it
+is held to afterwards, and `max` the ceiling that makes it elastic.
+`allocation` is one of `spot`, `on_demand`, `spot_if_available`, or
+`cheapest`. `selection` is `cheapest` or `first`.
 Operational timeouts, retries, health checks, and autoscaling settings belong in
 `Options`.
 

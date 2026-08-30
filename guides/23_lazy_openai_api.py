@@ -45,7 +45,7 @@ if __name__ == "__main__":
         provider=sky.RunPod(),
         accelerator=sky.accelerators.A40(),
         allocation="on_demand",
-        nodes=sky.Nodes(min=0, desired=1, max=1),
+        nodes=sky.Nodes(min=0, initial=1, max=1),
         image=sky.Image(
             pip=["vllm"],
             apt=["gcc"],

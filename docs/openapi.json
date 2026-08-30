@@ -782,10 +782,14 @@
         "type": "object"
       },
       "Liveness": {
-        "description": "Whether the process answers. Says nothing about the store or the providers.",
+        "description": "Whether the process answers, and what it is running.\n\nSays nothing about the store or the providers. The version rides along because\nit answers the second half of the only question a client asks before trusting a\ndaemon it did not start: something is there, and it speaks this wire.\n\nThe default is for decoding, not for answering \u2014 a daemon always says which\nskyward it is, and one that says nothing is one from before it could.",
         "properties": {
           "live": {
             "type": "boolean"
+          },
+          "version": {
+            "default": "",
+            "type": "string"
           }
         },
         "required": [
@@ -1010,9 +1014,9 @@
         "type": "object"
       },
       "NodeBounds": {
-        "description": "How many machines, and how much of that is negotiable.\n\n``desired`` is the target. ``min`` is the count at which work may start, which\nis what lets a job of eight begin on four. ``max`` is the ceiling autoscaling\nmay reach. Both unset means the target is also the floor and the ceiling.",
+        "description": "How many machines to open with, and how much of that is negotiable.\n\n``initial`` is the size the pool asks for once, when it starts. ``min`` is the\ncount it is willing to live at: what lets a job of eight begin on four, and the\nonly floor the pool is held to afterwards \u2014 a machine the opening request never\ngot is not asked for again. ``max`` is the ceiling autoscaling may reach, and\nsetting it is what makes the pool elastic at all. Both unset means the pool\nopens at ``initial`` and stays there.",
         "properties": {
-          "desired": {
+          "initial": {
             "type": "integer"
           },
           "max": {
@@ -1037,7 +1041,7 @@
           }
         },
         "required": [
-          "desired"
+          "initial"
         ],
         "title": "NodeBounds",
         "type": "object"
@@ -1260,7 +1264,7 @@
           "ssh_connect_timeout": 240.0,
           "ssh_reconnect_attempts": 30,
           "ssh_retry_delay": 2.0,
-          "worker_timeout": 60.0
+          "worker_timeout": 180.0
         },
         "description": "Operational knobs the daemon reads off the spec.\n\nEach defaults to the value the runtime hard-coded before the knob existed, so a\nspec built without options behaves exactly as one built with ``Options()``. The\nclient-side timeouts are not here: they govern how long the owning process waits\nfor its own pool, never leave it, and so ride the SDK's ``Options`` rather than\nthe wire.",
         "properties": {
@@ -1339,7 +1343,7 @@
             "type": "number"
           },
           "worker_timeout": {
-            "default": 60.0,
+            "default": 180.0,
             "type": "number"
           }
         },
@@ -1640,6 +1644,32 @@
           "kind"
         ],
         "title": "PluginRef",
+        "type": "object"
+      },
+      "ProgressEvent": {
+        "description": "What a machine short of an address is doing, while it is still doing it.\n\nPublished rather than recorded, like a gauge: a percentage is true for the\nmoment it is sent, and a late subscriber wants where the machine got to, not\nthe hundred readings it passed through while nobody was watching. What outlives\nthe wait is the node's state and, if it never arrives, the reason it was given\nup on.",
+        "properties": {
+          "compute": {
+            "type": "string"
+          },
+          "node": {
+            "type": "string"
+          },
+          "progress": {
+            "type": "string"
+          },
+          "type": {
+            "const": "node.progress",
+            "type": "string"
+          }
+        },
+        "required": [
+          "compute",
+          "node",
+          "progress",
+          "type"
+        ],
+        "title": "ProgressEvent",
         "type": "object"
       },
       "Provider": {
@@ -2438,7 +2468,7 @@
     "/v1/computes": {
       "get": {
         "deprecated": false,
-        "description": "Every compute this daemon knows about, including the deleted ones \u2014 a compute's row outlives its machines. `owned=false` lists the orphans: computes no live process is holding a lease on, which is what a compute looks like between the script that made it exiting and the next one attaching.",
+        "description": "Every compute this daemon knows about, newest first, including the deleted ones \u2014 a compute's row outlives its machines. `live=true` lists only the computes that still owe something (`requested` through `deleting`), and `live=false` the finished ones. `owned=false` lists the orphans: computes no live process is holding a lease on, which is what a compute looks like between the script that made it exiting and the next one attaching.",
         "operationId": "V1ComputesList",
         "parameters": [
           {
@@ -2509,6 +2539,26 @@
             "required": false,
             "schema": {
               "description": "`false` lists orphans \u2014 computes with no live owner.",
+              "oneOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          {
+            "allowEmptyValue": false,
+            "allowReserved": false,
+            "deprecated": false,
+            "description": "`true` lists what is still running, `false` what is finished.",
+            "in": "query",
+            "name": "live",
+            "required": false,
+            "schema": {
+              "description": "`true` lists what is still running, `false` what is finished.",
               "oneOf": [
                 {
                   "type": "boolean"
@@ -5008,7 +5058,7 @@
     "/v1/events": {
       "get": {
         "deprecated": false,
-        "description": "Each event's `id:` is the **global sequence**, monotonic. `Last-Event-ID` replays from the event log; the snapshot and the cursor are captured in the same logical order, so there is no gap between reading state and subscribing.\n\nThere is no automatic event GC, so any valid cursor stays resumable.\n\nA slow consumer never blocks a commit: the adapter closes the connection when its local queue overflows and the client reconnects from its last id.\n\nTask stdout/stderr and node bootstrap output are events here. There is no `logs` resource with a second source of truth.\n\nThe schema below is one message's `data:`, not the stream. Its `type` tag discriminates the union; the frame's `event:` field is finer than that tag and is what `types` filters on:\n\n| `event:` | `data.type` |\n|---|---|\n| `compute.ready`, `compute.degraded`, `compute.deleted` | `compute.state` |\n| `compute.abandoned` | `compute.abandoned` |\n| `compute.cost` | `compute.cost` |\n| `node.{state}` \u2014 ten of them | `node.state` |\n| `node.console` | `node.console` |\n| `node.phase` | `node.phase` |\n| `node.metrics` | `node.metrics` |\n| `task.started`, `task.succeeded`, `task.failed`, `task.indeterminate` | `task.state` |\n\n`compute.cost` and `node.metrics` are published rather than recorded: they ride the live feed, carry the last sequence seen rather than one of their own, and never replay.",
+        "description": "Each event's `id:` is the **global sequence**, monotonic. `Last-Event-ID` replays from the event log; the snapshot and the cursor are captured in the same logical order, so there is no gap between reading state and subscribing.\n\nThere is no automatic event GC, so any valid cursor stays resumable.\n\nA slow consumer never blocks a commit: the adapter closes the connection when its local queue overflows and the client reconnects from its last id.\n\nTask stdout/stderr and node bootstrap output are events here. There is no `logs` resource with a second source of truth.\n\nThe schema below is one message's `data:`, not the stream. Its `type` tag discriminates the union; the frame's `event:` field is finer than that tag and is what `types` filters on:\n\n| `event:` | `data.type` |\n|---|---|\n| `compute.ready`, `compute.degraded`, `compute.deleted` | `compute.state` |\n| `compute.abandoned` | `compute.abandoned` |\n| `compute.cost` | `compute.cost` |\n| `node.{state}` \u2014 ten of them | `node.state` |\n| `node.progress` | `node.progress` |\n| `node.console` | `node.console` |\n| `node.phase` | `node.phase` |\n| `node.metrics` | `node.metrics` |\n| `task.started`, `task.succeeded`, `task.failed`, `task.indeterminate` | `task.state` |\n\n`compute.cost`, `node.metrics` and `node.progress` are published rather than recorded: they ride the live feed, carry the last sequence seen rather than one of their own, and never replay.",
         "operationId": "V1EventsStream",
         "parameters": [
           {
@@ -5098,6 +5148,7 @@
                       "node.console": "#/components/schemas/ConsoleEvent",
                       "node.metrics": "#/components/schemas/MetricEvent",
                       "node.phase": "#/components/schemas/PhaseEvent",
+                      "node.progress": "#/components/schemas/ProgressEvent",
                       "node.state": "#/components/schemas/NodeEvent",
                       "task.state": "#/components/schemas/TaskEvent"
                     },
@@ -5115,6 +5166,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/NodeEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProgressEvent"
                     },
                     {
                       "$ref": "#/components/schemas/ConsoleEvent"
@@ -5546,7 +5600,7 @@
     "/v1/health/live": {
       "get": {
         "deprecated": false,
-        "description": "The process answers. Says nothing about the store or about providers.",
+        "description": "The process answers, and the skyward it runs. Says nothing about the store or about providers. The version is here because a client that finds a daemon it did not start has to know whether it speaks this wire before it sends anything over it.",
         "operationId": "V1HealthLiveLive",
         "responses": {
           "200": {

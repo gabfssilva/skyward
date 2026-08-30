@@ -34,7 +34,7 @@ ETag: "7"
 A write that changes one must say which revision it expected:
 
 ```console
-$ http PATCH :17590/v1/computes/cmp_7f3a1c If-Match:'"7"' nodes:='{"desired": 8}'
+$ http PATCH :17590/v1/computes/cmp_7f3a1c If-Match:'"7"' nodes:='{"initial": 8}'
 ```
 
 `nodes` is the only field this accepts, and a compute running a collective plugin is refused with `422 compute_not_resizable`: its process group was formed with the ranks it started with.

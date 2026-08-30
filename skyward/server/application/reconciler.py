@@ -21,7 +21,7 @@ to whoever was supposed to act on it. That is what buys the right to skip an out
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import timedelta
 from math import ceil
 from time import monotonic
@@ -168,14 +168,14 @@ class Reconciler:
         await self._machines.resolve(compute, await self._nodes.of(compute.id))
 
         nodes = await self._nodes.of(compute.id)
-        desired = await self._desired(compute)
         alive = [node for node in nodes if node.state in LIVE]
+        buy, spare = demand(compute, nodes, await self._tasks.load(compute.id))
 
-        for _ in range(desired - len(alive)):
+        for _ in range(buy):
             node = await self._nodes.request(compute.id, compute.generation)
             await self._announce("requested", compute.id, node.id)
 
-        for node in await self._surplus(compute, alive, len(alive) - desired):
+        for node in await self._surplus(compute, alive, spare):
             await self._nodes.observe(node.id, "draining")
             await self._announce("draining", compute.id, node.id)
 
@@ -222,28 +222,6 @@ class Reconciler:
                     await self._announce("deleting", compute.id, node.id, record=False)
                 case _:
                     pass
-
-    async def _desired(self, compute: Compute) -> int:
-        """How many machines the compute should have right now.
-
-        The load is what has been asked for and not yet answered — queued and
-        running together, because they are the same demand seen a moment apart.
-        Sizing to what is running would size the pool to what the pool can already
-        do, and a queue would never be a reason to grow.
-
-        Without a ``max`` the compute is not elastic, and ``min`` is a readiness
-        floor rather than a size: the machines asked for are all launched, the
-        caller is simply released before the last of them is up.
-        """
-        if compute.spec.desired == "deleted":
-            return 0
-
-        lower, upper = bounds(compute.spec)
-        slots = compute.spec.worker.concurrency or 1
-        load = await self._tasks.load(compute.id)
-
-        floor = compute.spec.nodes.desired if compute.spec.nodes.max is None else lower
-        return max(floor, min(upper, ceil(load / slots)))
 
     async def _surplus(self, compute: Compute, alive: list[Node], surplus: int) -> list[Node]:
         """Which machines to give back, if any.
@@ -382,6 +360,43 @@ def abandoned(compute: Compute) -> bool:
     return now() - compute.created_at > timedelta(seconds=ABANDON_SECONDS)
 
 
+def demand(compute: Compute, nodes: Sequence[Node], load: int) -> tuple[int, int]:
+    """How many machines to buy, and how many to give back.
+
+    ``initial`` is a size the pool is asked for once rather than a target it is held
+    to, so it is counted against the rows the request created: a machine that never
+    came up is not bought again, because the pool is standing on what it does have
+    and ``min`` is what says whether that is enough. Once per generation, and a
+    generation is a resize — a pool grown from three to eight asks for five, and
+    what is already up counts whichever definition bought it.
+
+    What holds the size afterwards is the floor. Without a ``max`` the compute is
+    not elastic and the load says nothing: it is held at ``min`` and tolerated up to
+    the size it opened at. Those are the same number for a ``nodes=4`` and they are
+    not for a pool that asked for eight and is willing to live on four, which is the
+    whole point of the two being different fields — nothing is bought to close that
+    gap, and nothing is drained to close it either.
+
+    With a ``max`` the load is what sizes it, between the two. The load is what has
+    been asked for and not yet answered — queued and running together, because they
+    are the same demand seen a moment apart. Sizing to what is running would size the
+    pool to what the pool can already do, and a queue would never be a reason to grow.
+    """
+    alive = sum(1 for node in nodes if node.state in LIVE)
+
+    if compute.spec.desired == "deleted":
+        return 0, alive
+
+    hold, ceiling = bounds(compute.spec)
+    if compute.spec.nodes.max is not None:
+        slots = compute.spec.worker.concurrency or 1
+        hold = ceiling = max(hold, min(ceiling, ceil(load / slots)))
+
+    spent = sum(1 for node in nodes if node.generation == compute.generation or node.state in LIVE)
+
+    return max(hold - alive, compute.spec.nodes.initial - spent, 0), alive - ceiling
+
+
 def bounds(spec: ComputeSpec) -> tuple[int, int]:
     """The range the pool may size itself within.
 
@@ -391,12 +406,14 @@ def bounds(spec: ComputeSpec) -> tuple[int, int]:
     A compute running a collective is not elastic either, whatever it asked for.
     ``init_process_group`` freezes the world when the last rank joins, and taking a
     rank away afterwards does not shrink the job — it hangs it, at the next
-    all-reduce, on a peer that is never going to answer.
+    all-reduce, on a peer that is never going to answer. It is also the one pool
+    that is held to ``initial`` rather than to ``min``: a world of eight that opened
+    on six is not a smaller job, it is a rendezvous two ranks short.
     """
     if plugins.collective(spec.plugins):
-        return spec.nodes.desired, spec.nodes.desired
+        return spec.nodes.initial, spec.nodes.initial
 
-    lower = spec.nodes.min if spec.nodes.min is not None else spec.nodes.desired
-    upper = spec.nodes.max if spec.nodes.max is not None else spec.nodes.desired
+    lower = spec.nodes.min if spec.nodes.min is not None else spec.nodes.initial
+    upper = spec.nodes.max if spec.nodes.max is not None else spec.nodes.initial
 
     return min(lower, upper), max(lower, upper)

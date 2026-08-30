@@ -103,6 +103,9 @@ class Runtime:
         self.dispatched: set[str] = set()
         """Executions already in flight. Two coalesced reconciles must not both send one."""
 
+        self._claims: set[str] = set()
+        """Machines a connect is mid-flight for, before there is a node to hold."""
+
         self._systems: dict[str | None, casty.Client] = {}
         self._tunnels: dict[str, str] = {}
         self._tls: casty.TLS | None = None
@@ -116,6 +119,29 @@ class Runtime:
 
     def forget(self, node_id: str) -> None:
         self.nodes.pop(node_id, None)
+
+    def claim(self, node_id: str) -> bool:
+        """Reserve one machine for the connect that is about to build its node.
+
+        The reconciler re-offers ``node.connect`` on every tick, and membership in
+        :attr:`nodes` only exists once the node is built — several awaits after the
+        connector checked for it. Two offers a tick apart would both pass that
+        check and hold two SSH channels, and two connect deadlines, to the same
+        machine. The claim is synchronous, so the second offer stops here.
+        """
+        if node_id in self._claims or node_id in self.nodes:
+            return False
+        self._claims.add(node_id)
+        return True
+
+    def release(self, node_id: str) -> None:
+        """Let a claim go, whether the node was built or the connect died trying.
+
+        Harmless after :meth:`track` — a tracked node refuses the next claim by
+        membership — and necessary after a failure, or the machine could never be
+        picked up again.
+        """
+        self._claims.discard(node_id)
 
     async def detach(self, node_id: str) -> None:
         """Let go of one machine on purpose, before it is terminated.

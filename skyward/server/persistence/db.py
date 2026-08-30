@@ -28,6 +28,23 @@ POOL_SIZE = 8
 """Connections kept, total. WAL admits one writer at a time, so more connections
 buy read concurrency only, and eight of those outrun the loop that feeds them."""
 
+MENDS = (
+    "UPDATE computes SET spec = json_remove(json_set(spec, '$.nodes.initial', "
+    "json_extract(spec, '$.nodes.desired')), '$.nodes.desired') "
+    "WHERE json_extract(spec, '$.nodes.desired') IS NOT NULL",
+    "UPDATE generations SET spec = json_remove(json_set(spec, '$.nodes.initial', "
+    "json_extract(spec, '$.nodes.desired')), '$.nodes.desired') "
+    "WHERE json_extract(spec, '$.nodes.desired') IS NOT NULL",
+)
+"""Rewrites for rows written under an older vocabulary.
+
+``_widen`` adds the columns a release added; this rewrites the JSON already inside
+them. A spec written before ``NodeBounds.desired`` became ``initial`` fails to
+decode, and the reconciler decodes every compute on every tick — one old row and
+the whole plane stalls on it. Each statement matches only rows still carrying the
+old shape, so running the list on every start is a no-op after the first.
+"""
+
 
 class PooledSQLiteEngine(SQLiteEngine):
     """Piccolo's SQLite engine, reusing a fixed pool instead of a connection per query.
@@ -130,6 +147,9 @@ async def connect(path: Path | None = None) -> SQLiteEngine:
     for table in TABLES:
         await table.create_table(if_not_exists=True).run()
         await _widen(table)
+
+    for statement in MENDS:
+        await TABLES[0].raw(statement).run()
 
     return engine
 

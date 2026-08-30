@@ -43,7 +43,7 @@ def describe_a_compute_that_outlives_the_process_that_made_it() -> None:
 def describe_a_pool_that_may_start_before_it_is_whole() -> None:
     @pytest.mark.timeout(600)
     def it_takes_work_at_its_floor_and_grows_to_what_was_asked(compute: Build) -> None:
-        with compute(nodes=sky.Nodes(desired=2, min=1)) as pool:
+        with compute(nodes=sky.Nodes(initial=2, min=1)) as pool:
             assert pool.current_nodes() >= 1, "the block returned as soon as the floor was ready"
             assert double(4) >> pool == 8
 

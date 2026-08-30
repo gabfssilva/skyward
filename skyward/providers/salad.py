@@ -24,6 +24,13 @@ which is also what makes a node individually terminable.
 Nodes still cannot reach each other — the gateway is the only inbound and it is
 the daemon's — so :meth:`allows_cluster_formation` stays false and a compute
 here is a fleet of independent nodes.
+
+A group is found by listing the project and matching the compute's prefix, never
+by reading the binding back. The binding is written after the group is created,
+and a launch waits on Salad to allocate before it returns, so the window between
+a group existing and the daemon having written it down is minutes wide — and a
+group nobody wrote down is a container nothing can name and nothing will ever
+stop. The name carries the compute, and the listing is the record.
 """
 
 import asyncio
@@ -140,6 +147,8 @@ class _Bridge:
 
 
 _BRIDGES: dict[str, _Bridge] = {}
+"""One live listener per container group, keyed by the group it dials."""
+
 _BRIDGE_LOCK = asyncio.Lock()
 
 
@@ -155,21 +164,19 @@ async def _downstream(socket: ClientConnection, writer: asyncio.StreamWriter) ->
         await writer.drain()
 
 
-async def _bridge(dns: str) -> _Bridge:
+async def _bridge(group_name: str, dns: str) -> _Bridge:
     async with _BRIDGE_LOCK:
-        if (running := _BRIDGES.get(dns)) is not None:
+        if (running := _BRIDGES.get(group_name)) is not None:
             return running
         bridge = _Bridge(f"wss://{dns}/")
         await bridge.start()
-        _BRIDGES[dns] = bridge
+        _BRIDGES[group_name] = bridge
         return bridge
 
 
-async def _release_bridge(dns: str | None) -> None:
-    if not dns:
-        return
+async def _release_bridge(group_name: str) -> None:
     async with _BRIDGE_LOCK:
-        bridge = _BRIDGES.pop(dns, None)
+        bridge = _BRIDGES.pop(group_name, None)
     if bridge is not None:
         await bridge.close()
 
@@ -260,44 +267,53 @@ class SaladProvider:
             "cpu": max(1, offer.cpus),
             "memory": max(1024, int(offer.memory_gb * 1024)),
             "storage": max(1024**3, self._config.storage_gb * 1024**3),
-            "groups": {},
         }
 
     async def launch(self, binding: Binding, market: Market, count: int, min_count: int) -> tuple[Binding, Sequence[Machine]]:
+        """Create one container group per machine, and wait for Salad to place them.
+
+        The wait is what lets a GPU class that has nothing to sell be answered with
+        another one: a group Salad never allocates is a launch that failed, and the
+        caller tries the next offer. Nothing is written into the binding — the group
+        carries the compute in its name, which is what the listing matches on.
+        """
         compute_id = _binding_text(binding, "compute_id")
-        minted: dict[str, str] = {}
+        minted: list[str] = []
         try:
             for _ in range(count):
                 group_name = _group_name(compute_id)
-                created = await self._sdk.container_groups.create_container_group(
+                await self._sdk.container_groups.create_container_group(
                     self._group_body(group_name, binding),
                     self._organization,
                     self._project,
                 )
-                minted[group_name] = _dns(created) or ""
+                minted.append(group_name)
             await self._allocated(tuple(minted), min_count)
-        except Exception:
-            for group_name in minted:
-                await self._discard(group_name)
+        except BaseException:
+            await self._discard_all(minted)
             raise
 
-        updated = {**binding, "groups": {**_binding_groups(binding), **minted}}
-        return updated, tuple(Machine(id=group_name, state="pending", user=SSH_USER) for group_name in minted)
+        return binding, tuple(Machine(id=group_name, state="pending", user=SSH_USER) for group_name in minted)
 
     async def machines(self, binding: Binding) -> Mapping[str, Machine]:
+        """What Salad has under this compute's prefix, and how far along each of it is.
+
+        A group short of a running instance reports what it is doing rather than only
+        that it is pending: pulling an image is minutes of honest work, and a control
+        plane told only ``pending`` cannot tell it from a group that will never come
+        up — so it gives up at its deadline and the replacement pulls the same image
+        again.
+        """
         machines: dict[str, Machine] = {}
-        for group_name, dns in _binding_groups(binding).items():
+        for group_name, dns in await self._groups(binding):
             instances = await self._instances(group_name)
             if instances is None:
                 continue
-            if _state(next(iter(instances), None)) != "running":
-                machines[group_name] = Machine(id=group_name, state="pending", user=SSH_USER)
+            instance = next(iter(instances), None)
+            if _state(instance) != "running" or not dns:
+                machines[group_name] = Machine(id=group_name, state="pending", user=SSH_USER, progress=_progress(instance))
                 continue
-            address = dns or await self._dns(group_name)
-            if not address:
-                machines[group_name] = Machine(id=group_name, state="pending", user=SSH_USER)
-                continue
-            bridge = await _bridge(address)
+            bridge = await _bridge(group_name, dns)
             machines[group_name] = Machine(
                 id=group_name,
                 state="running",
@@ -308,15 +324,25 @@ class SaladProvider:
         return machines
 
     async def terminate(self, binding: Binding, machine_ids: tuple[str, ...]) -> None:
-        groups = _binding_groups(binding)
         for group_name in machine_ids:
             await self._discard(group_name)
-            await _release_bridge(groups.get(group_name))
+            await _release_bridge(group_name)
 
     async def release(self, binding: Binding) -> None:
-        for group_name, dns in _binding_groups(binding).items():
+        """Take down everything the compute still has, including what nobody recorded."""
+        for group_name, _ in await self._groups(binding):
             await self._discard(group_name)
-            await _release_bridge(dns)
+            await _release_bridge(group_name)
+
+    async def _groups(self, binding: Binding) -> tuple[tuple[str, str], ...]:
+        """Every container group of this compute, by name and gateway, as Salad has them."""
+        prefix = _prefix(_binding_text(binding, "compute_id"))
+        collection = await self._sdk.container_groups.list_container_groups(self._organization, self._project)
+        return tuple(
+            (name, _dns(group) or "")
+            for group in collection.items or ()
+            if (name := _text(getattr(group, "name", None)) or "").startswith(prefix)
+        )
 
     async def _allocated(self, group_names: tuple[str, ...], min_count: int) -> None:
         loop = asyncio.get_running_loop()
@@ -342,14 +368,15 @@ class SaladProvider:
             if error.status != 404:
                 raise
 
-    async def _dns(self, group_name: str) -> str:
-        try:
-            group = await self._sdk.container_groups.get_container_group(self._organization, self._project, group_name)
-        except ApiError as error:
-            if error.status == 404:
-                return ""
-            raise
-        return _dns(group) or ""
+    async def _discard_all(self, group_names: Sequence[str]) -> None:
+        """Take back what a failed launch created, without burying why it failed.
+
+        Best effort on purpose: the reason the launch failed is what the caller has
+        to act on, and a group this could not delete is still one the listing finds.
+        """
+        for group_name in group_names:
+            with contextlib.suppress(Exception):
+                await self._discard(group_name)
 
     def _group_body(self, group_name: str, binding: Binding) -> ContainerGroupCreationRequest:
         resources = CreateContainerResourceRequirements(
@@ -463,9 +490,43 @@ def _dns(group: object) -> str | None:
     return _text(getattr(getattr(group, "networking", None), "dns", None))
 
 
+def _prefix(compute_id: str) -> str:
+    """What every one of a compute's container groups is called before its suffix.
+
+    Salad has no tags, so the name is the only thing an adapter controls and can
+    match an account-wide listing on. It is how a compute recognises its own.
+    """
+    return re.sub(r"[^a-z0-9-]", "-", f"skyward-{compute_id.lower()}").strip("-")[:54].rstrip("-")
+
+
 def _group_name(compute_id: str) -> str:
-    stem = re.sub(r"[^a-z0-9-]", "-", f"skyward-{compute_id.lower()}").strip("-")[:54].rstrip("-")
-    return f"{stem}-{secrets.token_hex(4)}"
+    return f"{_prefix(compute_id)}-{secrets.token_hex(4)}"
+
+
+def _progress(instance: object) -> str:
+    """What Salad is doing with a group that has no address yet.
+
+    Written to change while the machine is getting closer and to hold still when it
+    is not: the pull reports the percentage it has reached, and everything else is
+    the state's own name.
+
+    Whole percent, because every change is a line on somebody's console: a pull is
+    polled every couple of seconds and a tenth of a percent is not news. It is still
+    a hundred times finer than the deadline needs.
+
+    ``pulling_progress`` arrives as a fraction — ``0.43`` is 43% of the image — while
+    the sdk's own model says it is a percentage and validates it to 100. Only one
+    reading of ``0.43`` is sane, and a value above one can only be the other, so both
+    are accepted and the answer is a percentage either way.
+    """
+    if instance is None:
+        return "waiting for salad to allocate a machine"
+
+    state = _enum_value(getattr(instance, "state", None)) or "pending"
+    pulled = _number(getattr(instance, "pulling_progress", None))
+    if state != "downloading" or pulled is None:
+        return state
+    return f"{state} ({int(pulled * 100 if pulled <= 1 else pulled)}%)"
 
 
 def _required(value: str | None, key: str, provider: str) -> str:
@@ -484,13 +545,6 @@ def _binding_text(binding: Binding, key: str) -> str:
 def _binding_integer(binding: Binding, key: str, default: int) -> int:
     value = binding.get(key)
     return int(value) if isinstance(value, int | float) else default
-
-
-def _binding_groups(binding: Binding) -> dict[str, str]:
-    value = binding.get("groups")
-    if not isinstance(value, Mapping):
-        return {}
-    return {name: dns for name, dns in value.items() if isinstance(name, str) and isinstance(dns, str)}
 
 
 def _enum_value(value: object) -> str | None:

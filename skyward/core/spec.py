@@ -28,15 +28,16 @@ type Route = Literal["round_robin"]
 def bounds(nodes: NodeSpec) -> Nodes:
     """How many machines, in the one shape the wire has for it.
 
-    A range is written ``(2, 8)`` and read as eight machines the pool may fall back
-    to two of, which is why the pair sets ``desired`` to its ceiling: what is asked
-    for is the top of the range, and the floor is how far autoscaling may give back.
+    A range is written ``(2, 8)`` and read as a pool that opens at two and grows to
+    eight when there is work for it, which is why the pair sets ``initial`` to its
+    floor: an elastic pool is sized by its load, and the opening size is the least
+    it can be sized at.
     """
     match nodes:
-        case int(desired):
-            return Nodes(desired=desired)
+        case int(initial):
+            return Nodes(initial=initial)
         case (minimum, maximum):
-            return Nodes(desired=maximum, min=minimum, max=maximum)
+            return Nodes(initial=minimum, min=minimum, max=maximum)
         case Nodes():
             return nodes
 
@@ -163,8 +164,10 @@ class Options:
     max_provision_attempts : int
         How many times a dropped connection is redialed before the node is lost.
     provision_timeout : float
-        Seconds a bought machine has to publish an address before it is given up
-        on and replaced. ``0`` waits forever.
+        Seconds a bought machine has to get closer to an address before it is
+        given up on and replaced. Counted from the last progress the provider
+        reported, so a machine still pulling its image is waited for. ``0`` waits
+        forever.
     worker_timeout : float
         Seconds to wait for the worker to come up once bootstrap has finished.
     autoscale_idle_timeout : float

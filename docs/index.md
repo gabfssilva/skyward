@@ -225,7 +225,7 @@ The machines belong to a daemon, not to the object in your script. Leave one run
 with sky.Compute(
     provider=sky.AWS(),
     accelerator=sky.accelerators.H100(),
-    nodes=sky.Nodes(desired=2, max=8),
+    nodes=sky.Nodes(initial=2, max=8),
     name="training",
     delete_on_exit=False,
 ) as compute:

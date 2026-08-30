@@ -133,15 +133,15 @@ An attached client takes the stored definition as truth. It does not create a se
 
 The reconciler is the only component that decides how many nodes a Compute should have. It reads the stored Compute and node rows on every pass. A row created before a provider call counts as pending work, so a second pass does not launch a duplicate machine while the first launch is in progress.
 
-For a non-collective Compute, the desired node count is derived from the lower and upper bounds and the outstanding task load:
+A pass decides two numbers: how many machines to buy, and how many to give back. `nodes.initial` is requested once per generation — counted against the node rows the request created, so a launch that failed is not retried — and the bounds hold the Compute afterwards. For a non-collective elastic Compute, the target between them comes from the outstanding task load:
 
 ```text
-desired = clamp(ceil(queued_and_running_tasks / slots_per_node), lower, upper)
+target = clamp(ceil(queued_and_running_tasks / slots_per_node), lower, upper)
 ```
 
-The lower bound is retained when there is no pending work. Nodes that have been idle longer than `Options.autoscale_idle_timeout` can be drained down to that bound. A fixed `nodes=4` definition has equal lower and upper bounds and therefore does not resize.
+The lower bound is retained when there is no pending work. Nodes that have been idle longer than `Options.autoscale_idle_timeout` can be drained down to that bound. A Compute with no `max` is not elastic: it is held at its lower bound and tolerated up to the size it opened at, which for `nodes=4` is the same number.
 
-Collective plugins fix the world size at the requested node count. The reconciler does not shrink or grow a Compute whose runtime depends on every rank remaining present.
+Collective plugins fix the world size at the requested node count. The reconciler does not shrink or grow a Compute whose runtime depends on every rank remaining present, and it holds such a Compute to `initial` rather than to `min` — a world short of a rank is a rendezvous nobody completes.
 
 The provider adapter is responsible for provider state, not Compute state. `Machines` asks it for offers, initializes shared infrastructure, launches machines, observes machine addresses, and terminates or releases resources. A provider machine that disappears becomes a lost node; the reconciler sees the resulting deficit and requests a replacement when the desired state still requires it.
 

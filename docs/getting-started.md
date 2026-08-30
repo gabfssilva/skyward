@@ -232,7 +232,7 @@ For a fixed Compute that can start with partial readiness, use `sky.Nodes`:
 ```python
 with sky.Compute(
     provider=sky.AWS(),
-    nodes=sky.Nodes(desired=8, min=4),
+    nodes=sky.Nodes(initial=8, min=4),
 ) as compute:
     train() @ compute
 ```

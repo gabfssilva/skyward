@@ -46,8 +46,11 @@ class Connector:
 
         Idempotent by the only means available: a node already being held is a node
         already in hand, and the same event arriving twice must not bootstrap it
-        twice. What the node does when it arrives at a machine that is already
-        working is adopt it — see :meth:`skyward.server.application.node.Node._serving`.
+        twice. Membership alone cannot say so — the node is only held several awaits
+        from now — so the machine is claimed first, synchronously, and the event
+        that finds it claimed leaves. What the node does when it arrives at a
+        machine that is already working is adopt it — see
+        :meth:`skyward.server.application.node.Node._serving`.
         """
         compute = await self._computes.get(compute_id)
         infrastructure = await self._computes.infrastructure(compute_id)
@@ -68,33 +71,38 @@ class Connector:
         if node_id in runtime.nodes:
             await runtime.retopology(node_id, _peers(nodes))
             return
+        if not runtime.claim(node_id):
+            return
 
-        includes = compute.spec.image.includes_sha256
-        user_code = await self._blobs.get(includes) if includes else None
-        match infrastructure.binding.get("instance_timeout"):
-            case int() as provider_timeout:
-                instance_timeout = compute.spec.ttl or provider_timeout
-            case _:
-                instance_timeout = None
+        try:
+            includes = compute.spec.image.includes_sha256
+            user_code = await self._blobs.get(includes) if includes else None
+            match infrastructure.binding.get("instance_timeout"):
+                case int() as provider_timeout:
+                    instance_timeout = compute.spec.ttl or provider_timeout
+                case _:
+                    instance_timeout = None
 
-        await self._runtimes.start(
-            runtime,
-            node_id,
-            msgspec.convert(node.provider_binding, Machine),
-            image=plugins.image(compute.spec.image, plugins.resolve(compute.spec.plugins)),
-            rank=node.rank,
-            peers=_peers(nodes),
-            seeds=_seeds(nodes, node, cluster),
-            concurrency=compute.spec.worker.concurrency or 1,
-            buffer=compute.spec.worker.buffer,
-            executor=compute.spec.worker.executor,
-            reuse=compute.spec.worker.reuse,
-            options=msgspec.structs.replace(compute.spec.options, cluster=cluster),
-            plugins=compute.spec.plugins,
-            user_code=user_code,
-            volumes=infrastructure.volumes,
-            instance_timeout=instance_timeout,
-        )
+            await self._runtimes.start(
+                runtime,
+                node_id,
+                msgspec.convert(node.provider_binding, Machine),
+                image=plugins.image(compute.spec.image, plugins.resolve(compute.spec.plugins)),
+                rank=node.rank,
+                peers=_peers(nodes),
+                seeds=_seeds(nodes, node, cluster),
+                concurrency=compute.spec.worker.concurrency or 1,
+                buffer=compute.spec.worker.buffer,
+                executor=compute.spec.worker.executor,
+                reuse=compute.spec.worker.reuse,
+                options=msgspec.structs.replace(compute.spec.options, cluster=cluster),
+                plugins=compute.spec.plugins,
+                user_code=user_code,
+                volumes=infrastructure.volumes,
+                instance_timeout=instance_timeout,
+            )
+        finally:
+            runtime.release(node_id)
 
     async def disconnect(self, compute_id: str, node_id: str) -> None:
         """Let go of one machine before it is terminated.

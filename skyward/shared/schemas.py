@@ -338,14 +338,17 @@ class Spec(Struct, frozen=True):
 
 
 class NodeBounds(Struct, frozen=True):
-    """How many machines, and how much of that is negotiable.
+    """How many machines to open with, and how much of that is negotiable.
 
-    ``desired`` is the target. ``min`` is the count at which work may start, which
-    is what lets a job of eight begin on four. ``max`` is the ceiling autoscaling
-    may reach. Both unset means the target is also the floor and the ceiling.
+    ``initial`` is the size the pool asks for once, when it starts. ``min`` is the
+    count it is willing to live at: what lets a job of eight begin on four, and the
+    only floor the pool is held to afterwards — a machine the opening request never
+    got is not asked for again. ``max`` is the ceiling autoscaling may reach, and
+    setting it is what makes the pool elastic at all. Both unset means the pool
+    opens at ``initial`` and stays there.
     """
 
-    desired: int
+    initial: int
     min: int | None = None
     max: int | None = None
 
@@ -383,13 +386,19 @@ class Options(Struct, frozen=True):
     Founding is cheap and joining is not, so this covers the slower of the two.
     """
     provision_timeout: float = 300.0
-    """Seconds a bought machine has to publish an address before it is given up on.
+    """Seconds a bought machine has to get closer to an address before it is given up on.
 
     The SSH timeouts start when there is somewhere to dial; this is the window
     before that, and nothing else measures it. A machine the provider reports as
     running and never gives an address to is a machine that bills for as long as
     the compute lives — so it becomes ``lost``, is terminated, and the deficit is
     closed with another one. ``0`` waits forever.
+
+    Measured from the last thing the provider said the machine was doing rather
+    than from the launch, where the provider says anything at all: a container
+    host pulling a multi-gigabyte image is minutes from an address and is not
+    stuck, and a window run against the clock would kill the pull and have the
+    replacement start it over.
     """
     autoscale_idle_timeout: float = 30.0
     autoscale_cooldown: float = 0.0
@@ -865,6 +874,21 @@ class NodeEvent(Struct, frozen=True, tag_field="type", tag="node.state"):
     error: str | None = None
 
 
+class ProgressEvent(Struct, frozen=True, tag_field="type", tag="node.progress"):
+    """What a machine short of an address is doing, while it is still doing it.
+
+    Published rather than recorded, like a gauge: a percentage is true for the
+    moment it is sent, and a late subscriber wants where the machine got to, not
+    the hundred readings it passed through while nobody was watching. What outlives
+    the wait is the node's state and, if it never arrives, the reason it was given
+    up on.
+    """
+
+    compute: str
+    node: str
+    progress: str
+
+
 class ConsoleEvent(Struct, frozen=True, tag_field="type", tag="node.console"):
     """A line a node printed, and the work it belongs to when it belongs to some.
 
@@ -914,7 +938,7 @@ class TaskEvent(Struct, frozen=True, tag_field="type", tag="task.state"):
 
 
 type Event = (
-    ComputeEvent | ComputeAbandoned | CostEvent | NodeEvent | ConsoleEvent | PhaseEvent | MetricEvent | TaskEvent
+    ComputeEvent | ComputeAbandoned | CostEvent | NodeEvent | ProgressEvent | ConsoleEvent | PhaseEvent | MetricEvent | TaskEvent
 )
 """Everything the SSE stream carries, as one tagged union.
 

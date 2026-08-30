@@ -53,6 +53,13 @@ class Machine(Struct, frozen=True):
     password : str | None
         Set only by providers that hand back a root password instead of taking a
         public key.
+    progress : str | None
+        What a pending machine is doing right now, in the provider's own words.
+        It is read as a token and not as prose: a value that keeps changing is a
+        machine still getting closer to an address, and the provision deadline is
+        measured from the last time it changed rather than from the launch. A
+        provider with nothing to say leaves it out, and its machines are held to
+        the deadline from the moment they were bought.
     """
 
     id: str
@@ -62,6 +69,7 @@ class Machine(Struct, frozen=True):
     user: str = "root"
     private_host: str | None = None
     password: str | None = None
+    progress: str | None = None
 
 
 @runtime_checkable

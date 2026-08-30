@@ -102,7 +102,7 @@ class _State:
     task_fn_stats: MappingProxyType[str, tuple[float, ...]] = MappingProxyType({})
     task_fn_failed: MappingProxyType[str, int] = MappingProxyType({})
     ready_at: float = 0.0
-    desired_nodes: int = 0
+    target_nodes: int = 0
     pending_nodes: int = 0
     draining_nodes: int = 0
     reconciler_state: str = "watching"
@@ -291,8 +291,17 @@ def _node_instance(state: _State, node_id: int) -> _Instance | None:
 
 
 def _node_label(state: _State, node_id: int) -> str:
+    """The node in eight characters, taken from the end of its machine id.
+
+    From the end because that is the half that differs. A provider whose machine id
+    is a name it was given carries the compute in the front of it — every node of a
+    Salad compute is ``skyward-cmp-...``, and eight characters off the front label
+    all of them the same thing.
+    """
     instance = _node_instance(state, node_id)
-    return instance.id if instance else f"node-{node_id}"
+    if instance is None:
+        return f"node-{node_id}"
+    return instance.id[-8:] if len(instance.id) > 8 else instance.id
 
 
 def _ssh_url(state: _State, node_id: int) -> str:
@@ -409,7 +418,7 @@ def _collect_badges(state: _State) -> tuple[list[Text], list[Text], list[Text]]:
     if state.instances:
         first = state.instances[0]
         instance_type = first.offer.instance_type
-        count = state.desired_nodes or state.total_nodes or len(state.instances)
+        count = state.target_nodes or state.total_nodes or len(state.instances)
         spot = sum(1 for instance in state.instances if instance.spot)
         on_demand = count - spot
 
@@ -450,7 +459,7 @@ def _collect_badges(state: _State) -> tuple[list[Text], list[Text], list[Text]]:
             status.extend(cost)
         return infra, status, tasks
 
-    total = state.desired_nodes or state.total_nodes or len(state.nodes)
+    total = state.target_nodes or state.total_nodes or len(state.nodes)
     if state.phase == _Phase.PROVISIONING and total == 0:
         status.append(_inline_badge("provisioning"))
     elif total > 0:
@@ -476,7 +485,7 @@ def _collect_badges(state: _State) -> tuple[list[Text], list[Text], list[Text]]:
 
     match state.reconciler_state:
         case "scaling_up":
-            status.append(_styled_badge(f"● scaling → {state.desired_nodes}", "scaling"))
+            status.append(_styled_badge(f"● scaling → {state.target_nodes}", "scaling"))
             if state.pending_nodes:
                 status.append(_styled_badge(f"pending {state.pending_nodes}", "scaling"))
         case "draining":

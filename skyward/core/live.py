@@ -58,6 +58,7 @@ from skyward.shared.schemas import (
     NodeEvent,
     Page,
     PhaseEvent,
+    ProgressEvent,
     Task,
     TaskEvent,
 )
@@ -105,7 +106,7 @@ class Pool:
     allocation: str = ""
     state: str = "requested"
     total: int = 0
-    desired: int = 0
+    initial: int = 0
     minimum: int | None = None
     maximum: int | None = None
     created_at: datetime | None = None
@@ -138,6 +139,8 @@ def observe(view: View, event: Event) -> View:
             return replace(view, pool=replace(view.pool, cost=cost))
         case PhaseEvent():
             return _phased(view, event)
+        case ProgressEvent(node=node, progress=progress):
+            return _progressed(view, node, progress)
         case ConsoleEvent(node=node, content=content):
             return _spoken(view, node, content)
         case NodeEvent(node=node, state=state, error=error):
@@ -161,7 +164,7 @@ def refresh(view: View, compute: Compute, nodes: Page[Node]) -> View:
         allocation=compute.spec.allocation,
         state=compute.status.state,
         total=compute.status.nodes_total,
-        desired=compute.spec.nodes.desired,
+        initial=compute.spec.nodes.initial,
         minimum=compute.spec.nodes.min,
         maximum=compute.spec.nodes.max,
         created_at=compute.created_at,
@@ -248,7 +251,33 @@ def _spoken(view: View, node_id: str, content: str) -> View:
 def _transition(view: View, node_id: str, state: str, error: str | None) -> View:
     if not node_id:
         return view
-    return _amend(view, node_id, lambda row: replace(row, state=state, error=error or row.error))
+    moved = _amend(view, node_id, lambda row: replace(row, state=state, error=error or row.error))
+    return moved if state in _WAITING else _erased(moved, node_id)
+
+
+_WAITING = frozenset({"requested", "provisioning"})
+"""The states a machine is in while it is still on its way to an address."""
+
+
+def _progressed(view: View, node_id: str, progress: str) -> View:
+    """What the machine is doing, on the line the footer keeps for the node.
+
+    Keyed by rank, because that is what the footer labels a node by, and dropped the
+    moment the node reaches a state that speaks for itself.
+    """
+    rank = _ranked(view, node_id)
+    return view if rank is None else replace(view, progress=MappingProxyType({**view.progress, rank: progress}))
+
+
+def _erased(view: View, node_id: str) -> View:
+    rank = _ranked(view, node_id)
+    if rank is None or rank not in view.progress:
+        return view
+    return replace(view, progress=MappingProxyType({at: line for at, line in view.progress.items() if at != rank}))
+
+
+def _ranked(view: View, node_id: str) -> int | None:
+    return next((row.rank for row in view.nodes if row.id == node_id), None)
 
 
 def _amend(view: View, node_id: str, change: Callable[[NodeRow], NodeRow]) -> View:
@@ -309,11 +338,12 @@ def _state(view: View) -> _State:
         else 0.0
     )
     active = sum(row.state not in {"deleted", "failed", "lost"} for row in rows)
+    pending = max(0, view.pool.initial - len(rows))
     reconciler_state = (
         "draining"
         if any(row.state == "draining" for row in rows)
         else "scaling_up"
-        if view.pool.desired > active
+        if pending
         else "watching"
     )
     return _State(
@@ -332,8 +362,8 @@ def _state(view: View) -> _State:
         task_latencies=latencies,
         task_fn_stats=MappingProxyType(per_function),
         task_fn_failed=MappingProxyType(dict(failures)),
-        desired_nodes=view.pool.desired,
-        pending_nodes=max(0, view.pool.desired - len(rows)),
+        target_nodes=active + pending,
+        pending_nodes=pending,
         draining_nodes=sum(row.state == "draining" for row in rows),
         reconciler_state=reconciler_state,
         min_nodes=view.pool.minimum,

@@ -100,11 +100,13 @@ See [Persistence](persistence.md) for the tables and [HTTP API](http-api.md) for
 ```python
 sky.Compute(provider=sky.AWS(), nodes=4)                              # exactly 4
 sky.Compute(provider=sky.AWS(), nodes=(2, 8))                         # elastic, 2 to 8
-sky.Compute(provider=sky.AWS(), nodes=sky.Nodes(desired=8, min=4))    # want 8, start at 4
-sky.Compute(provider=sky.AWS(), nodes=sky.Nodes(desired=4, min=2, max=16))
+sky.Compute(provider=sky.AWS(), nodes=sky.Nodes(initial=8, min=4))    # open at 8, live on 4
+sky.Compute(provider=sky.AWS(), nodes=sky.Nodes(initial=4, min=2, max=16))
 ```
 
-An integer fixes both bounds. A tuple is an elastic range: the daemon scales inside it based on queued and running task load. `sky.Nodes` separates the two ideas that a tuple conflates — `desired` is how many you want, `min` is how few you're willing to start with, and `max` is the ceiling. With `min` below `desired`, work begins as soon as `min` nodes are ready and the rest join as they come up, which matters when one slow provider would otherwise hold up seven fast ones.
+An integer fixes both bounds. A tuple is an elastic range: the daemon opens at the floor and scales inside the range based on queued and running task load. `sky.Nodes` separates the two ideas that a tuple conflates — `initial` is the size the pool opens at, `min` is how few nodes you are willing to live on, and `max` is the ceiling.
+
+`initial` is a request made once, not a target the daemon holds you to. With `min` below it, work begins as soon as `min` nodes are ready and the rest join as they come up, which matters when one slow provider would otherwise hold up seven fast ones — and a machine the opening request never got is not bought again. Eight asked for, five up, `min=4`: the pool is ready, it stays at five, and it buys another machine only if it drops below four. If you want eight to be self-healing, `min=8` says so.
 
 A collective plugin freezes the world of a distributed job, so a compute using one cannot be resized while that definition is active.
 

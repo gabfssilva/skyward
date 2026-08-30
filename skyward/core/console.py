@@ -21,7 +21,7 @@ from typing import Literal, Protocol, TextIO, assert_never
 import msgspec
 
 from skyward.core.client import Client
-from skyward.shared.schemas import ComputeEvent, ConsoleEvent, Event, NodeEvent
+from skyward.shared.schemas import ComputeEvent, ConsoleEvent, Event, NodeEvent, ProgressEvent
 
 type ConsoleMode = Literal["rich", "log"]
 
@@ -115,12 +115,19 @@ def render(event: Event, color: bool = False) -> str | None:
     and has a better account of it than a log line could give. What the machines are
     doing is a different matter — nobody else is going to say it. The gauges get
     none either: a reading every couple of seconds is a graph, not a log.
+
+    A machine still short of an address is the exception to that, and the reason is
+    that there is nothing else on the line: a container host pulling an image sits in
+    ``provisioning`` for minutes, and its progress is only sent when it moves, so what
+    would be a graph anywhere else is here the only sign the pool is not hung.
     """
     match event:
         case ConsoleEvent(node=node, content=content):
             return f"{_who(node, color)} {_sep(color)} {content}"
-        case NodeEvent(node=node, state="failed" as state, error=error):
-            return f"{_who(node, color)} {_sep(color)} {_badge(state, color)} {_dim(error or 'failed', color)}"
+        case ProgressEvent(node=node, progress=progress):
+            return f"{_who(node, color)} {_sep(color)} {_dim(progress, color)}"
+        case NodeEvent(node=node, state="failed" | "lost" as state, error=error) if error:
+            return f"{_who(node, color)} {_sep(color)} {_badge(state, color)} {_dim(error, color)}"
         case NodeEvent(node=node, state=state):
             return f"{_who(node, color)} {_sep(color)} {_badge(state, color)}"
         case ComputeEvent(compute=compute, state="degraded" as state, error=error):

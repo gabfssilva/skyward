@@ -23,9 +23,9 @@ def main() -> int:
     with TestClient(app=app) as client:
         calls = [
             ("GET", "/v1/computes", {}),
-            ("POST", "/v1/computes", {"headers": IDEM, "json": {"spec": {"specs": [{"provider": {"kind": "aws"}}], "nodes": {"desired": 4}}}}),
+            ("POST", "/v1/computes", {"headers": IDEM, "json": {"spec": {"specs": [{"provider": {"kind": "aws"}}], "nodes": {"initial": 4}}}}),
             ("GET", "/v1/computes/cmp_7f3a1c", {}),
-            ("PATCH", "/v1/computes/cmp_7f3a1c", {"headers": MATCH, "json": {"nodes": {"desired": 8}}}),
+            ("PATCH", "/v1/computes/cmp_7f3a1c", {"headers": MATCH, "json": {"nodes": {"initial": 8}}}),
             ("DELETE", "/v1/computes/cmp_7f3a1c", {"headers": {**IDEM, **MATCH}}),
             ("GET", "/v1/computes/cmp_7f3a1c/generations", {}),
             ("GET", "/v1/computes/cmp_7f3a1c/generations/3", {}),

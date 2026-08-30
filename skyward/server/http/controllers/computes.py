@@ -28,9 +28,11 @@ class ComputeController(Controller):
     @get(
         summary="List computes",
         description=(
-            "Every compute this daemon knows about, including the deleted ones — a compute's row outlives its "
-            "machines. `owned=false` lists the orphans: computes no live process is holding a lease on, which is what "
-            "a compute looks like between the script that made it exiting and the next one attaching."
+            "Every compute this daemon knows about, newest first, including the deleted ones — a compute's row "
+            "outlives its machines. `live=true` lists only the computes that still owe something (`requested` through "
+            "`deleting`), and `live=false` the finished ones. `owned=false` lists the orphans: computes no live "
+            "process is holding a lease on, which is what a compute looks like between the script that made it "
+            "exiting and the next one attaching."
         ),
         responses=failures(404),
     )
@@ -41,8 +43,9 @@ class ComputeController(Controller):
         limit: int = 50,
         compute_state: ComputeState | None = Parameter(query="state", default=None),
         owned: bool | None = Parameter(default=None, description="`false` lists orphans — computes with no live owner."),
+        live: bool | None = Parameter(default=None, description="`true` lists what is still running, `false` what is finished."),
     ) -> Page[Compute]:
-        return await computes.list(cursor, limit, compute_state, owned)
+        return await computes.list(cursor, limit, compute_state, owned, live)
 
     @post(
         status_code=201,

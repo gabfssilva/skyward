@@ -102,12 +102,31 @@ FACTORIES: dict[str, Callable[[], Provider]] = {
 def list_computes(
     *,
     state: Annotated[str | None, Parameter(help="Only computes in this state")] = None,
+    history: Annotated[int, Parameter(help="How many finished computes to show under the live ones. 0 shows none")] = 5,
     url: Annotated[str | None, Parameter(help="Daemon URL")] = None,
     output: Annotated[Output, Parameter(help="table or json")] = "table",
 ) -> None:
-    """List the computes the daemon knows about."""
-    page = _call(lambda client: client.call("GET", "/v1/computes", Page[Compute], state=state), url=url)
-    render(COMPUTE_COLUMNS, [_compute_row(compute) for compute in page.items], output=output)
+    """List the computes the daemon knows about, newest first.
+
+    A daemon keeps a compute's row long after its machines are gone, so the
+    finished ones are all it accumulates. They are not what a person is looking
+    at: the live ones come first and whole, and the finished ones follow as the
+    newest ``--history`` of them.
+
+    ``--state`` asks for one state instead, and is then the whole filtered list.
+    """
+    async def work(client: Client) -> tuple[Compute, ...]:
+        if state:
+            return (await client.call("GET", "/v1/computes", Page[Compute], state=state)).items
+
+        live = await client.call("GET", "/v1/computes", Page[Compute], live=True)
+        if history <= 0:
+            return live.items
+
+        finished = await client.call("GET", "/v1/computes", Page[Compute], live=False, limit=history)
+        return live.items + finished.items
+
+    render(COMPUTE_COLUMNS, [_compute_row(compute) for compute in _call(work, url=url)], output=output)
 
 
 @compute_app.command(name="get")
@@ -160,7 +179,7 @@ def create_compute(
                 region=region,
             ),
         ),
-        nodes=NodeBounds(desired=nodes),
+        nodes=NodeBounds(initial=nodes),
     )
     if ttl is not None:
         spec = msgspec.structs.replace(spec, ttl=ttl)
@@ -400,7 +419,7 @@ def _nodes(value: str) -> NodeBounds:
 
     The bounds are written whole rather than field by field, because a size is only
     coherent as a set: on an elastic compute the reconciler sizes between ``min`` and
-    ``max``, and a ``desired`` moved on its own would be a write that changes nothing.
+    ``max``, and an ``initial`` moved on its own would be a write that changes nothing.
     """
     match value.split(":"):
         case [count] if count.isdigit() and int(count) > 0:

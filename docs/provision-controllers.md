@@ -14,20 +14,22 @@ import skyward as sky
 
 sky.Compute(provider=sky.AWS(), nodes=4)
 sky.Compute(provider=sky.AWS(), nodes=(2, 16))
-sky.Compute(provider=sky.AWS(), nodes=sky.Nodes(desired=8, min=4))
-sky.Compute(provider=sky.AWS(), nodes=sky.Nodes(desired=4, min=2, max=16))
+sky.Compute(provider=sky.AWS(), nodes=sky.Nodes(initial=8, min=4))
+sky.Compute(provider=sky.AWS(), nodes=sky.Nodes(initial=4, min=2, max=16))
 ```
 
 The forms mean:
 
-| Definition | Lower bound | Upper bound | Readiness |
-|------------|-------------|-------------|-----------|
-| `nodes=4` | 4 | 4 | Four ready nodes |
-| `nodes=(2, 16)` | 2 | 16 | Two ready nodes |
-| `Nodes(desired=8, min=4)` | 4 | 8 | Four ready nodes |
-| `Nodes(desired=4, min=2, max=16)` | 2 | 16 | Two ready nodes |
+| Definition | Opening request | Lower bound | Upper bound | Readiness |
+|------------|-----------------|-------------|-------------|-----------|
+| `nodes=4` | 4 | 4 | 4 | Four ready nodes |
+| `nodes=(2, 16)` | 2 | 2 | 16 | Two ready nodes |
+| `Nodes(initial=8, min=4)` | 8 | 4 | 8 | Four ready nodes |
+| `Nodes(initial=4, min=2, max=16)` | 4 | 2 | 16 | Two ready nodes |
 
-The lower bound is the number of ready nodes required before `status.state` becomes `"ready"`. The upper bound limits demand-driven growth. With no outstanding work, reconciliation retains the lower bound; it does not provision the upper bound merely because it is available.
+`initial` is requested once per generation, counted against the node rows the request created rather than against the machines that survived: a launch that failed is not retried, because the pool already stands on what it does have. An omitted `min` defaults to `initial`, which is why `nodes=4` is self-healing and `Nodes(initial=8, min=4)` is not.
+
+The lower bound is the number of ready nodes required before `status.state` becomes `"ready"`, and the count reconciliation holds the pool to afterwards. The upper bound limits demand-driven growth. With no outstanding work, reconciliation retains what it has; it does not provision the upper bound merely because it is available, and it gives nodes back only when a `max` made the Compute elastic.
 
 ## Demand and capacity
 
@@ -37,14 +39,14 @@ For a non-collective Compute, the reconciler reads the number of queued and runn
 target = clamp(ceil(outstanding_attempts / slots_per_node), lower, upper)
 ```
 
-It then compares `target` with the live node rows. A fixed definition has equal bounds, so demand cannot change its target. An elastic definition grows when queued work requires more free slots and shrinks toward its lower bound after nodes have been idle for `Options.autoscale_idle_timeout`.
+It then compares `target` with the live node rows, and with whatever remains of the opening request. A definition without a `max` is not elastic: demand says nothing, the target is the lower bound, and nothing is drained above it. An elastic definition grows when queued work requires more free slots and shrinks toward its lower bound after nodes have been idle for `Options.autoscale_idle_timeout`.
 
 The executor determines the denominator:
 
 ```python
 with sky.Compute(
     provider=sky.AWS(),
-    nodes=sky.Nodes(desired=4, min=2, max=16),
+    nodes=sky.Nodes(initial=4, min=2, max=16),
     executor=sky.Executor(concurrency=4, buffer=2),
     options=sky.Options(autoscale_idle_timeout=60),
 ) as compute:

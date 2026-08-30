@@ -103,19 +103,29 @@ class ComputeStore:
     async def get(self, ref: str) -> Compute:
         return await _to_compute(await self._row(ref))
 
-    async def list(self, cursor: str | None, limit: int, state: ComputeState | None, owned: bool | None) -> Page[Compute]:
+    async def list(self, cursor: str | None, limit: int, state: ComputeState | None, owned: bool | None, live: bool | None) -> Page[Compute]:
+        """Newest first.
+
+        A compute's row outlives its machines, so what a daemon has the most of is
+        history: paged from the oldest end, a page answers what a laptop ran months
+        ago before it answers what is running now.
+        """
         query = ComputeRow.objects()
 
         if pivot := await after(ComputeRow, cursor):
-            query = query.where(ComputeRow.created_at > pivot)
+            query = query.where(ComputeRow.created_at < pivot)
         if state:
             query = query.where(ComputeRow.status_state == state)
+        if live:
+            query = query.where(ComputeRow.status_state.is_in(list(LIVE)))
+        elif live is False:
+            query = query.where(ComputeRow.status_state.not_in(list(LIVE)))
         if owned:
             query = query.where(ComputeRow.lease_owner.is_not_null() & (ComputeRow.lease_expires_at > now()))
         elif owned is False:
             query = query.where(ComputeRow.lease_owner.is_null() | (ComputeRow.lease_expires_at <= now()))
 
-        rows = await query.order_by(ComputeRow.created_at).limit(limit)
+        rows = await query.order_by(ComputeRow.created_at, ascending=False).limit(limit)
         items = tuple([await _to_compute(row) for row in rows])
         return Page(items=items, next_cursor=items[-1].id if len(items) == limit else None)
 
@@ -224,7 +234,18 @@ class ComputeStore:
         only in memory when the daemon dies is a network, a keypair and a security
         group that nobody will ever find again — and a key that is lost is a fleet
         that keeps billing and can never be logged into.
+
+        The write is conditional on the key: a row that already carries a different
+        private key was bound by somebody else — another daemon on the same file,
+        racing — and overwriting it would strand every machine launched under the
+        first key behind a lock the store no longer opens. The loser's write is a
+        no-op; whether it lost is read back, not returned, because the row is the
+        authority either way.
         """
+        guard = ComputeRow.private_key.is_null()
+        if infrastructure.private_key is not None:
+            guard = guard | (ComputeRow.private_key == infrastructure.private_key)
+
         await ComputeRow.update({
             ComputeRow.provider_id: infrastructure.provider_id,
             ComputeRow.offer_id: infrastructure.offer_id,
@@ -235,7 +256,7 @@ class ComputeStore:
             ComputeRow.markets: await packed(infrastructure.markets),
             ComputeRow.volumes: await packed(infrastructure.volumes),
             ComputeRow.revision: ComputeRow.revision + 1,
-        }).where(ComputeRow.id == compute_id).run()
+        }).where((ComputeRow.id == compute_id) & guard).run()
 
     async def observe(self, compute_id: str, status: ComputeStatus) -> None:
         """Write what was seen. Only the reconciler calls this."""

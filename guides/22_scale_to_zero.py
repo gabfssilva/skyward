@@ -16,7 +16,7 @@ if __name__ == "__main__":
     with sky.Compute(
         provider=sky.RunPod(),
         accelerator=sky.accelerators.RTX_3090(),
-        nodes=sky.Nodes(desired=1, min=0),
+        nodes=sky.Nodes(initial=1, min=0, max=1),
         options=sky.Options(autoscale_idle_timeout=30.0, autoscale_cooldown=10.0),
     ) as compute:
         first = train(1) >> compute

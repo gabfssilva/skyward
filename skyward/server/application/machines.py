@@ -16,6 +16,7 @@ nobody will ever find and everybody will keep paying for.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import Protocol
 
 import msgspec
@@ -34,7 +35,20 @@ from skyward.shared import codec
 from skyward.shared.errors import CapabilityMismatchError
 from skyward.shared.observability import logger
 from skyward.shared.provider import Bakeable, Binding, Machine, Mount, Mountable, Preemptible, Provider
-from skyward.shared.schemas import Compute, ComputeSpec, Endpoint, Error, Event, Image, Market, Node, NodeEvent, Offer, Volume
+from skyward.shared.schemas import (
+    Compute,
+    ComputeSpec,
+    Endpoint,
+    Error,
+    Event,
+    Image,
+    Market,
+    Node,
+    NodeEvent,
+    Offer,
+    ProgressEvent,
+    Volume,
+)
 from skyward.shared.tls import authority
 from skyward.worker import bootstrap
 
@@ -96,6 +110,8 @@ class Machines:
         self._fleet: dict[str, asyncio.Lock] = {}
         self._baked: set[tuple[str, str]] = set()
         """Which compute has already had which environment offered to the provider, once."""
+        self._progress: dict[str, tuple[str | None, datetime]] = {}
+        """What each machine still short of an address was last seen doing, and when that changed."""
 
     async def create(self, compute_id: str, node_id: str) -> None:
         """Buy the machine one row is asking for, and write down what we got.
@@ -212,10 +228,18 @@ class Machines:
     async def _abandon(self, adapter: Provider, infrastructure: Infrastructure) -> None:
         """Give back the network a region held for a launch it then refused.
 
-        Best effort: a region that will not release is a leak to log, not a reason to
-        fail a placement that has already found a region that sold.
+        Asked of the provider first, because ``release`` destroys what ``initialize``
+        created and is owed the condition it is written under: no machine left. A
+        binding that still has machines under it is not abandoned — the compute's
+        earlier nodes are living in it, and on a provider whose machine *is* the thing
+        ``initialize`` describes, releasing it would take them down.
+
+        Best effort otherwise: a region that will not release is a leak to log, not a
+        reason to fail a placement that has already found a region that sold.
         """
         try:
+            if await adapter.machines(infrastructure.binding):
+                return
             await adapter.release(infrastructure.binding)
         except Exception:
             logger.warning("could not release the abandoned binding {}", infrastructure.binding, exc_info=True)
@@ -225,6 +249,13 @@ class Machines:
 
         The binding is committed before a single machine is: the reverse order is
         how a crash turns into a fleet that bills forever and that nothing can find.
+
+        Once for the whole file, not once per process. The lock only covers this
+        daemon; a second daemon on the same database passes its own lock and minted
+        pairs would race — machines launched trusting a public key whose private
+        half the row no longer holds, and a fleet nobody can log into. So the store's
+        write is conditional on the key, and the loser reads the row back and adopts
+        the binding that won, releasing what its own ``initialize`` briefly held.
         """
         async with self._binding:
             infrastructure = await self._computes.infrastructure(compute.id)
@@ -257,6 +288,12 @@ class Machines:
                 volumes=mount.phases,
             )
             await self._computes.bind(compute.id, infrastructure)
+
+            stored = await self._computes.infrastructure(compute.id)
+            if stored.private_key != private:
+                logger.warning("compute {} was bound by another daemon; adopting its binding", compute.id)
+                await self._abandon(adapter, infrastructure)
+                return stored
             return infrastructure
 
     async def _mount(self, adapter: Provider, spec: ComputeSpec, binding: Binding) -> Mount:
@@ -436,11 +473,12 @@ class Machines:
 
                 match observed.get(node.machine or ""):
                     case Machine(state="running") as machine if machine.host or machine.private_host:
+                        self._progress.pop(node.id, None)
                         await self._nodes.reachable(node.id, machine)
                     case None if node.machine and _settled(node):
                         await self._lost(node, "the provider no longer has it")
-                    case Machine() if _stalled(node, deadline):
-                        await self._lost(node, f"the machine never published an address in {deadline:.0f}s")
+                    case Machine() as machine if await self._stalled(node, machine, deadline):
+                        await self._lost(node, _unaddressed(machine, deadline))
                     case _:
                         pass
 
@@ -486,6 +524,51 @@ class Machines:
         """
         return self._fleet.setdefault(compute_id, asyncio.Lock())
 
+    async def _stalled(self, node: Node, machine: Machine, deadline: float) -> bool:
+        """A machine that was bought, is there, and has stopped getting closer.
+
+        Every other timeout in the system starts once there is an address to dial.
+        This is the window before that one, and it is the window in which a machine
+        bills for nothing: the provider has it running, the compute is paying for it,
+        and no node can be made out of it.
+
+        The window is measured from the last sign of movement rather than from the
+        launch, because elapsed time cannot tell a machine that is never coming up
+        from one that is pulling a multi-gigabyte image. Measured from the launch, the
+        pull is killed at the deadline and the replacement starts the same pull from
+        nothing, for as long as the compute is asked for. A machine whose reported
+        progress keeps changing is one to wait for; one that has been saying the same
+        thing for the whole window has stopped.
+
+        A provider that reports nothing has one unchanging answer, so its machines are
+        held to the deadline from the moment they were bought — which is what every
+        provider was held to before there was anything to report.
+        """
+        if not deadline or node.launched_at is None:
+            return False
+
+        seen, since = self._progress.get(node.id, (None, node.launched_at))
+        if machine.progress != seen:
+            self._progress[node.id] = (machine.progress, now())
+            await self._progressed(node, machine.progress)
+            return False
+
+        return (now() - since).total_seconds() > deadline
+
+    async def _progressed(self, node: Node, progress: str | None) -> None:
+        """Say what the machine is doing, once, to whoever is watching.
+
+        The moment it moves is the only moment worth saying so, which is why this is
+        here and not on a timer. Published rather than recorded, for the reason a
+        gauge is: a compute waiting ten minutes on an image would otherwise leave
+        hundreds of rows behind that say nothing the node's state does not.
+        """
+        if progress is None:
+            return
+
+        payload = ProgressEvent(compute=node.compute_id, node=node.id, progress=progress)
+        await self._events.publish("node.progress", await codec.json(Event).encode(payload), compute=node.compute_id)
+
     async def _lost(self, node: Node, why: str) -> None:
         """Give up on a machine, and say so where anybody can read it.
 
@@ -494,6 +577,7 @@ class Machines:
         is discovered — the reconciler learns of it as a row already in ``lost``,
         with nothing left to say about which machine went missing or why.
         """
+        self._progress.pop(node.id, None)
         await self._nodes.observe(node.id, "lost", Error(code="not_found", message=why, retryable=True))
         payload = NodeEvent(compute=node.compute_id, node=node.id, state="lost", error=why)
         await self._events.record("node.lost", await codec.json(Event).encode(payload), compute=node.compute_id)
@@ -503,12 +587,8 @@ def _settled(node: Node) -> bool:
     return (now() - node.created_at).total_seconds() > DOUBT_SECONDS
 
 
-def _stalled(node: Node, deadline: float) -> bool:
-    """A machine that was bought, is there, and has never said where it is.
-
-    Every other timeout in the system starts once there is an address to dial. This
-    is the window before that one, and it is the window in which a machine bills for
-    nothing: the provider has it running, the compute is paying for it, and no node
-    can be made out of it.
-    """
-    return bool(deadline) and node.launched_at is not None and (now() - node.launched_at).total_seconds() > deadline
+def _unaddressed(machine: Machine, deadline: float) -> str:
+    """Why a machine short of an address was given up on, in terms of what it was doing."""
+    if machine.progress is None:
+        return f"the machine never published an address in {deadline:.0f}s"
+    return f"the machine has been {machine.progress} for {deadline:.0f}s without publishing an address"

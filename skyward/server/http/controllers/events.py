@@ -34,12 +34,13 @@ class EventController(Controller):
             "| `compute.abandoned` | `compute.abandoned` |\n"
             "| `compute.cost` | `compute.cost` |\n"
             "| `node.{state}` — ten of them | `node.state` |\n"
+            "| `node.progress` | `node.progress` |\n"
             "| `node.console` | `node.console` |\n"
             "| `node.phase` | `node.phase` |\n"
             "| `node.metrics` | `node.metrics` |\n"
             "| `task.started`, `task.succeeded`, `task.failed`, `task.indeterminate` | `task.state` |\n\n"
-            "`compute.cost` and `node.metrics` are published rather than recorded: they ride the live feed, carry the "
-            "last sequence seen rather than one of their own, and never replay."
+            "`compute.cost`, `node.metrics` and `node.progress` are published rather than recorded: they ride the live "
+            "feed, carry the last sequence seen rather than one of their own, and never replay."
         ),
         responses={
             200: ResponseSpec(
