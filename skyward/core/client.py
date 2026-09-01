@@ -187,23 +187,53 @@ class Client:
                     del buffer[: 4 + size]
 
     async def events(self, compute: str) -> AsyncGenerator[tuple[str, bytes]]:
-        """One compute's event log, replayed and then followed.
+        """One compute's event log, replayed and then followed, across reconnects.
 
         The replay is what makes subscribing late harmless: the log is in the store,
         and the stream starts at the beginning of it. Nothing said before anybody was
         listening is lost — which is the only reason the pool can print a bootstrap
         it did not subscribe to in time.
+
+        The connection is one, and it is nursed: every frame's ``id:`` is the global
+        sequence, so when the transport drops — a daemon bounce, a flaky network —
+        the stream reconnects with ``Last-Event-ID`` and resumes after the last event
+        it delivered, never repeating one. What it cannot resume are the published
+        gauges (cost, metrics, progress) that fell in the gap, which is what they are
+        for. A daemon that stays silent past ``RETRY_SECONDS`` is a different thing,
+        and past that the error is the answer.
         """
-        async with self._http.stream("GET", "/v1/events", params={"compute": compute}) as response:
-            event = ""
-            async for line in response.aiter_lines():
-                match line.split(": ", 1):
-                    case ["event", name]:
-                        event = name
-                    case ["data", payload]:
-                        yield event, payload.encode()
-                    case _:
-                        continue
+        cursor: str | None = None
+        deadline = time.monotonic() + RETRY_SECONDS
+        while True:
+            headers = {"Last-Event-ID": cursor} if cursor is not None else {}
+            try:
+                async with self._http.stream("GET", "/v1/events", params={"compute": compute}, headers=headers) as response:
+                    if response.status_code >= 400:
+                        await response.aread()
+                        raise refused(response.status_code, response.content)
+                    event = ""
+                    async for line in response.aiter_lines():
+                        match line.split(": ", 1):
+                            case ["id", sequence]:
+                                cursor = sequence
+                            case ["event", name]:
+                                event = name
+                            case ["data", payload]:
+                                deadline = time.monotonic() + RETRY_SECONDS
+                                yield event, payload.encode()
+                            case _:
+                                continue
+            except (httpx.HTTPError, OSError):
+                if time.monotonic() >= deadline:
+                    raise
+                await asyncio.sleep(1)
+            else:
+                # A clean close is the server shedding a slow consumer; resume from
+                # the cursor. One that keeps closing without ever saying anything is
+                # not shedding, it is gone.
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f"the event stream for {compute} keeps closing without events")
+                await asyncio.sleep(1)
 
     async def forward_up(self, compute: str, cid: str, port: int, route: str, chunks: AsyncIterator[bytes]) -> None:
         """Send one connection's bytes up to a node, as a streaming request body.

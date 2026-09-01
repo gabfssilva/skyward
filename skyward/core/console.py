@@ -16,44 +16,167 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
+from contextlib import suppress
 from typing import Literal, Protocol, TextIO, assert_never
 
-import msgspec
-
 from skyward.core.client import Client
-from skyward.shared.schemas import ComputeEvent, ConsoleEvent, Event, NodeEvent, ProgressEvent
+from skyward.core.view import ComputeView, EventCallback, decoded, observe, refresh, refresh_tasks
+from skyward.shared.schemas import (
+    Compute as ComputeResource,
+)
+from skyward.shared.schemas import (
+    ComputeEvent,
+    ConsoleEvent,
+    Event,
+    Function,
+    Node,
+    NodeEvent,
+    Page,
+    ProgressEvent,
+    Task,
+    TaskEvent,
+    progressed,
+)
 
 type ConsoleMode = Literal["rich", "log"]
 
-
-class Follower(Protocol):
-    """Whatever is watching the pool: the line log, or the live panel above it."""
-
-    async def follow(self) -> None: ...
+POLL = 2.0
+"""How stale the API half of the view may get before an event prompts a re-read."""
 
 
-def watcher(
-    client: Client,
-    compute: str,
-    out: TextIO | None = None,
-    *,
-    mode: ConsoleMode = "rich",
-) -> Follower:
+class Watcher(Protocol):
+    """A console attached to the pool for its whole life.
+
+    The :class:`Observer` opens it once, feeds it every event with the view
+    folded up to it, tells it when the API half of the view was re-read, and
+    closes it when the stream ends. A user's callback is narrower — one
+    callable, events only — and does not need this shape.
+    """
+
+    def opened(self, view: ComputeView) -> None: ...
+
+    def event(self, event: Event, view: ComputeView) -> None: ...
+
+    def refreshed(self, view: ComputeView) -> None: ...
+
+    def closed(self, view: ComputeView) -> None: ...
+
+
+def watcher(out: TextIO | None = None, *, mode: ConsoleMode = "rich") -> Watcher:
     """Select the Rich live view or the line log."""
     stream = out or sys.stderr
     match mode:
         case "log":
-            return Console(client, compute, out)
+            return Console(out)
         case "rich":
             if stream.isatty():
                 try:
                     from skyward.core.live import RichConsole
                 except ImportError:
-                    return Console(client, compute, out)
-                return RichConsole(client, compute, out)
-            return Console(client, compute, out)
+                    return Console(out)
+                return RichConsole(out)
+            return Console(out)
         case _ as unreachable:
             assert_never(unreachable)
+
+
+class Observer:
+    """One SSE stream, one fold, everybody watching.
+
+    The consoles and the user's callbacks all hang off this one consumer: the
+    stream is read once, folded once into a :class:`ComputeView`, and each
+    subscriber is handed the same value. A callback that raises is reported and
+    skipped — a broken observer must not take the training run with it.
+    """
+
+    def __init__(
+        self,
+        client: Client,
+        compute: str,
+        watchers: tuple[Watcher, ...] = (),
+        callbacks: tuple[EventCallback, ...] = (),
+    ) -> None:
+        self._client = client
+        self._compute = compute
+        self._watchers = watchers
+        self._callbacks = callbacks
+        self._view = ComputeView(id=compute)
+        self._names: dict[str, str] = {}
+        self._fetched = 0.0
+
+    async def follow(self) -> None:
+        with suppress(Exception):
+            self._view = await self._fetch(self._view)
+        await asyncio.to_thread(self._open)
+        try:
+            async for _, payload in self._client.events(self._compute):
+                if (event := decoded(payload)) is None:
+                    continue
+                view = observe(self._view, event)
+                if refreshed := self._stale(event):
+                    with suppress(Exception):
+                        view = await self._fetch(view)
+                self._view = view
+                await asyncio.to_thread(self._dispatch, event, view, refreshed)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"skyward: the event stream stopped ({exc})", file=sys.stderr, flush=True)
+        finally:
+            await asyncio.to_thread(self._close)
+
+    def _stale(self, event: Event) -> bool:
+        """Whether this event obsoletes the API half of the view.
+
+        A node or task transition always does — an address, a price, a timing
+        just appeared somewhere only a read can see. Anything else does only
+        once the last read has aged past ``POLL``, which turns the steady drip
+        of gauges and cost into the poll the panel used to run for itself.
+        """
+        match event:
+            case NodeEvent() | TaskEvent():
+                return True
+            case _:
+                return time.monotonic() - self._fetched > POLL
+
+    async def _fetch(self, view: ComputeView) -> ComputeView:
+        compute = await self._client.call("GET", f"/v1/computes/{self._compute}", ComputeResource)
+        nodes = await self._client.call("GET", f"/v1/computes/{self._compute}/nodes", Page[Node])
+        tasks: Page[Task] = Page(items=())
+        with suppress(Exception):
+            tasks = await self._client.call("GET", "/v1/tasks", Page[Task], compute=self._compute, limit=200)
+        self._fetched = time.monotonic()
+        return refresh_tasks(refresh(view, compute, nodes), tasks, await self._names_for(tasks))
+
+    async def _names_for(self, tasks: Page[Task]) -> dict[str, str]:
+        for sha in {task.function for task in tasks.items} - self._names.keys():
+            try:
+                function = await self._client.call("GET", f"/v1/functions/{sha}", Function)
+                self._names[sha] = function.name or sha[:8]
+            except Exception:
+                self._names[sha] = sha[:8]
+        return self._names
+
+    def _open(self) -> None:
+        for one in self._watchers:
+            one.opened(self._view)
+
+    def _dispatch(self, event: Event, view: ComputeView, refreshed: bool) -> None:
+        for one in self._watchers:
+            one.event(event, view)
+            if refreshed:
+                one.refreshed(view)
+        for callback in self._callbacks:
+            try:
+                callback(event, view)
+            except Exception as exc:
+                print(f"skyward: a callback raised ({exc})", file=sys.stderr, flush=True)
+
+    def _close(self) -> None:
+        for one in self._watchers:
+            with suppress(Exception):
+                one.closed(self._view)
 
 RESET = "\033[0m"
 DIM = "\033[2m"
@@ -79,11 +202,9 @@ _NODE_HUES = ("\033[36m", "\033[35m", "\033[33m", "\033[34m", "\033[32m", "\033[
 
 
 class Console:
-    """The compute's log, on the terminal, for as long as the pool is open."""
+    """The compute's log, on the terminal, one line per event worth one."""
 
-    def __init__(self, client: Client, compute: str, out: TextIO | None = None) -> None:
-        self._client = client
-        self._compute = compute
+    def __init__(self, out: TextIO | None = None) -> None:
         self._out = out
 
     @property
@@ -96,16 +217,18 @@ class Console:
         """
         return self._out or sys.stderr
 
-    async def follow(self) -> None:
-        color = self.out.isatty()
-        try:
-            async for _, payload in self._client.events(self._compute):
-                if line := render(msgspec.json.decode(payload, type=Event), color):
-                    await asyncio.to_thread(print, line, file=self.out, flush=True)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            print(f"skyward: the event stream stopped ({exc})", file=self.out, flush=True)
+    def opened(self, view: ComputeView) -> None:
+        return None
+
+    def event(self, event: Event, view: ComputeView) -> None:
+        if line := render(event, self.out.isatty()):
+            print(line, file=self.out, flush=True)
+
+    def refreshed(self, view: ComputeView) -> None:
+        return None
+
+    def closed(self, view: ComputeView) -> None:
+        return None
 
 
 def render(event: Event, color: bool = False) -> str | None:
@@ -124,8 +247,8 @@ def render(event: Event, color: bool = False) -> str | None:
     match event:
         case ConsoleEvent(node=node, content=content):
             return f"{_who(node, color)} {_sep(color)} {content}"
-        case ProgressEvent(node=node, progress=progress):
-            return f"{_who(node, color)} {_sep(color)} {_dim(progress, color)}"
+        case ProgressEvent(node=node, progress=progress, completion=completion):
+            return f"{_who(node, color)} {_sep(color)} {_dim(progressed(progress, completion), color)}"
         case NodeEvent(node=node, state="failed" | "lost" as state, error=error) if error:
             return f"{_who(node, color)} {_sep(color)} {_badge(state, color)} {_dim(error, color)}"
         case NodeEvent(node=node, state=state):

@@ -29,6 +29,21 @@ def world() -> int:
     return sky.instance_info().nodes
 
 
+def describe_a_pool_watched_through_callbacks() -> None:
+    @pytest.mark.timeout(600)
+    def they_see_the_lifecycle_and_the_view_it_folds_into(compute: Build) -> None:
+        seen: list[tuple[sky.Event, sky.ComputeView]] = []
+
+        with compute(callbacks=(lambda event, view: seen.append((event, view)),)) as pool:
+            assert double(5) >> pool == 10
+
+        assert any(isinstance(event, sky.NodeEvent) and event.state == "ready" for event, _ in seen), "the bootstrap was replayed"
+        assert any(isinstance(event, sky.PhaseEvent) for event, _ in seen), "the phases came through"
+        ready = next(view for _, view in seen if view.state == "ready")
+        assert ready.provider == "container"
+        assert ready.nodes, "the view carried the machines, not only the words"
+
+
 def describe_a_compute_that_outlives_the_process_that_made_it() -> None:
     def it_is_picked_up_by_name_and_goes_on_working(compute: Build, daemon: str) -> None:
         with compute(name="picked-up", delete_on_exit=False) as pool:

@@ -87,6 +87,7 @@ class Build(Protocol):
         ports: Sequence[sky.Port] = (),
         name: str | None = None,
         delete_on_exit: bool = True,
+        callbacks: Sequence[sky.EventCallback] = (),
     ) -> sky.Compute: ...
 
 
@@ -176,6 +177,7 @@ def compute(daemon: str) -> Build:
         ports: Sequence[sky.Port] = (),
         name: str | None = None,
         delete_on_exit: bool = True,
+        callbacks: Sequence[sky.EventCallback] = (),
     ) -> sky.Compute:
         return sky.Compute(
             provider=sky.Container(),
@@ -189,6 +191,7 @@ def compute(daemon: str) -> Build:
             ports=list(ports),
             name=name,
             delete_on_exit=delete_on_exit,
+            callbacks=callbacks,
             url=daemon,
         )
 

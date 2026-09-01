@@ -45,6 +45,10 @@ Inside a `with Compute(...)` block, `>> sky` uses the active compute. The explic
 
 `Compute.map(fn, items)` submits one pending call per item and returns results in input order. `Compute.current_nodes()` reports the number of ready nodes. `Compute.resize(nodes)` asks for a different size — `4`, `(2, 8)`, or a `Nodes` — and returns as soon as the intent is recorded, so `current_nodes()` is what says how much of it is real. A compute running a collective plugin cannot be resized.
 
+## Watching the compute
+
+`callbacks=` takes an iterable of `Callable[[Event, ComputeView], None]`; each callable sees every event on the compute's stream together with the whole compute folded into an immutable `ComputeView` — state, nodes, bootstrap phases, tasks, cost, and a bounded window of errors. The stream replays from the compute's creation, so a callback registered at construction still sees the provisioning it was not around for. `Compute.events()` is the primitive underneath: an iterator of decoded events, replayed and then followed, reconnecting on transport drops without repeating an event. `Compute.attached` accepts `callbacks=` too. See [Watching a compute](../callbacks.md).
+
 ## Specifications and runtime options
 
 `Spec` accepts `provider`, `accelerator`, `cpus`, `memory_gb`, `region`, `disk_gb`, `architecture`, and `max_hourly_cost`.

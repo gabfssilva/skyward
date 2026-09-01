@@ -84,6 +84,7 @@ nav:
       - Core concepts: concepts.md
       - CLI: cli.md
       - Jupyter notebooks: notebook.md
+      - Watching a compute: callbacks.md
       - Infrastructure:
           - Providers: providers.md
           - Accelerators: accelerators.md

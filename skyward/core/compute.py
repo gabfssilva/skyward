@@ -23,13 +23,14 @@ import msgspec
 from skyward.core import context, usercode
 from skyward.core.accelerators import Accelerator
 from skyward.core.client import Client, connect
-from skyward.core.console import watcher
+from skyward.core.console import Observer, Watcher, watcher
 from skyward.core.errors import SkywardError, TaskFailedError
 from skyward.core.forward import TcpProxy
 from skyward.core.function import Group, Pending, Streaming
 from skyward.core.provider import Provider
 from skyward.core.provider import resolve as resolve_provider
 from skyward.core.spec import Executor, NodeSpec, Options, Port, Spec, Volume, bounds
+from skyward.core.view import EventCallback, decoded
 from skyward.shared import codec
 from skyward.shared.accelerators import resolve
 from skyward.shared.frames import Chunk, Failed, Frame
@@ -41,6 +42,7 @@ from skyward.shared.schemas import (
     Dispatch,
     Endpoint,
     Error,
+    Event,
     Image,
     Lease,
     LeaseClaim,
@@ -52,7 +54,7 @@ from skyward.shared.schemas import (
     Worker,
 )
 from skyward.shared.schemas import (
-    Compute as ComputeView,
+    Compute as ComputeResource,
 )
 from skyward.shared.schemas import (
     Options as OptionsRef,
@@ -141,6 +143,7 @@ class Compute:
         database: Path | None = None,
         delete_on_exit: bool = True,
         console: bool = True,
+        callbacks: Iterable[EventCallback] = (),
         attach: str | None = None,
     ) -> None:
         if specs and provider is not None:
@@ -197,6 +200,7 @@ class Compute:
         self._database = database
         self._delete_on_exit = delete_on_exit
         self._console = console
+        self._callbacks = tuple(callbacks)
         self._ready_timeout = options.ready_timeout
         self._shutdown_timeout = options.shutdown_timeout
 
@@ -215,6 +219,7 @@ class Compute:
         url: str | None = None,
         database: Path | None = None,
         console: bool = True,
+        callbacks: Iterable[EventCallback] = (),
         delete_on_exit: bool = False,
     ) -> Compute:
         """The compute that is already there, by name or by id.
@@ -233,7 +238,7 @@ class Compute:
         It does not delete on exit by default. A pool somebody else is using is not a
         pool to take down on the way out.
         """
-        return cls(url=url, database=database, console=console, delete_on_exit=delete_on_exit, attach=ref)
+        return cls(url=url, database=database, console=console, callbacks=callbacks, delete_on_exit=delete_on_exit, attach=ref)
 
     @property
     def id(self) -> str:
@@ -341,8 +346,26 @@ class Compute:
         futures = [self.start(fn(item)) for item in items]
         return [future.result() for future in futures]
 
+    def events(self) -> Iterator[Event]:
+        """The compute's event log, replayed from the start and then followed.
+
+        The primitive under ``callbacks=``: one decoded :class:`Event` at a
+        time, for as long as the caller keeps reading. The stream has no end
+        while the compute exists, so the consumer is what decides when to stop
+        — a ``break`` closes it. An event this build does not know is skipped,
+        not raised: a daemon may be newer than the client watching it.
+        """
+        stream = self.client.events(self._id)
+        try:
+            while (item := self.loop.run(_next(stream))) is not None:
+                if (event := decoded(item[1])) is not None:
+                    yield event
+        finally:
+            if self._loop is not None:
+                self.loop.run(stream.aclose())
+
     def current_nodes(self) -> int:
-        compute = self.loop.run(self.client.call("GET", f"/v1/computes/{self._id}", ComputeView))
+        compute = self.loop.run(self.client.call("GET", f"/v1/computes/{self._id}", ComputeResource))
         return compute.status.nodes_ready
 
     def resize(self, nodes: NodeSpec) -> None:
@@ -369,7 +392,7 @@ class Compute:
 
     async def _provision(self) -> None:
         if self._attach:
-            found = await self.client.call("GET", f"/v1/computes/{self._attach}", ComputeView)
+            found = await self.client.call("GET", f"/v1/computes/{self._attach}", ComputeResource)
             self._id = found.id
         else:
             await self._ensure_providers()
@@ -378,7 +401,7 @@ class Compute:
             compute = await self.client.call(
                 "POST",
                 "/v1/computes",
-                ComputeView,
+                ComputeResource,
                 body=msgspec.json.encode(ComputeCreate(spec=self._spec, name=self._name)),
                 headers={"Idempotency-Key": uuid.uuid4().hex},
             )
@@ -387,11 +410,14 @@ class Compute:
         await self._claim()
         self._leasing = self.loop.start(self._renew())
 
+        watchers: tuple[Watcher, ...] = ()
         if self._console:
             # Building the watcher imports the dashboard, which probes the terminal
             # for its background colour (OSC 11) and can wait ~250ms for the reply.
-            follower = await asyncio.to_thread(watcher, self.client, self._id)
-            self._watching = self.loop.start(follower.follow())
+            watchers = (await asyncio.to_thread(watcher),)
+        if watchers or self._callbacks:
+            observer = Observer(self.client, self._id, watchers=watchers, callbacks=self._callbacks)
+            self._watching = self.loop.start(observer.follow())
 
         async with asyncio.timeout(self._ready_timeout):
             current = await self._reach("ready", "failed", "degraded")
@@ -547,7 +573,7 @@ class Compute:
         async with asyncio.timeout(self._shutdown_timeout):
             await self._reach("deleted")
 
-    async def _conditional(self, method: str, body: bytes | None = None, headers: dict[str, str] | None = None) -> ComputeView:
+    async def _conditional(self, method: str, body: bytes | None = None, headers: dict[str, str] | None = None) -> ComputeResource:
         """A write against the compute, guarded by the revision it was read at.
 
         ``If-Match`` guards against reshaping a compute somebody else reshaped, but
@@ -559,12 +585,12 @@ class Compute:
         """
         attempts = WRITE_ATTEMPTS
         while True:
-            current = await self.client.call("GET", f"/v1/computes/{self._id}", ComputeView)
+            current = await self.client.call("GET", f"/v1/computes/{self._id}", ComputeResource)
             try:
                 return await self.client.call(
                     method,
                     f"/v1/computes/{self._id}",
-                    ComputeView,
+                    ComputeResource,
                     body=body,
                     headers={"If-Match": f'"{current.revision}"', **(headers or {})},
                 )
@@ -573,7 +599,7 @@ class Compute:
                 if error.code != "revision_conflict" or not attempts:
                     raise
 
-    async def _reach(self, *states: str) -> ComputeView:
+    async def _reach(self, *states: str) -> ComputeResource:
         """Follow the compute's events; answer with its view once it reaches one of ``states``.
 
         The stream replays the log from the start before it follows, so a state reached
@@ -585,7 +611,7 @@ class Compute:
             async for event, _ in events:
                 if not event.startswith("compute."):
                     continue
-                current = await self.client.call("GET", f"/v1/computes/{self._id}", ComputeView)
+                current = await self.client.call("GET", f"/v1/computes/{self._id}", ComputeResource)
                 if current.status.state in states:
                     return current
         raise RuntimeError(f"the event stream for {self._id} ended before it reached {', '.join(states)}")
@@ -663,9 +689,9 @@ class Compute:
         return blob
 
 
-async def _next(frames: AsyncIterator[bytes]) -> bytes | None:
-    """One frame, or nothing left. The pull the consumer's ``for`` loop turns into."""
-    return await anext(frames, None)
+async def _next[T](source: AsyncIterator[T]) -> T | None:
+    """One item, or nothing left. The pull the consumer's ``for`` loop turns into."""
+    return await anext(source, None)
 
 
 def _wire(spec: Spec) -> SpecRef:

@@ -1,32 +1,34 @@
-"""The live Rich console: daemon events in, widgets out."""
+"""The live Rich console: the folded view in, widgets out.
+
+The fold itself lives in :mod:`skyward.core.view`; this module only renders.
+It is fed by the pool's :class:`~skyward.core.console.Observer` like any other
+watcher — the panel is a subscriber of the same stream the user's callbacks
+get, not a private pipeline of its own.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import sys
 import time
 from collections import Counter
-from collections.abc import Callable, Iterator, Mapping
-from contextlib import aclosing, contextmanager, redirect_stdout, suppress
-from dataclasses import dataclass, field, replace
+from collections.abc import Iterator, Mapping
+from contextlib import ExitStack, contextmanager, redirect_stdout
 from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import TextIO
 
-import msgspec
 from rich.console import Console, RenderableType
 from rich.live import Live
 from rich.table import Table
 from rich.text import Text
 
-from skyward.core.client import Client
+from skyward.core.view import ComputeView, NodeView
 from skyward.core.widgets import (
     _LOGO_LINES,
     DIM,
     WARNING_STYLE,
     _Accelerator,
-    _badge_text,
     _BootstrapTimeline,
     _Cluster,
     _ClusterSpec,
@@ -40,257 +42,19 @@ from skyward.core.widgets import (
     _NodeStatus,
     _Offer,
     _Phase,
+    _Progress,
     _render_summary,
     _ssh_url,
     _State,
 )
 from skyward.shared.observability import NAME as LOGGER_NAME
-from skyward.shared.schemas import (
-    Compute,
-    ComputeAbandoned,
-    ComputeEvent,
-    ConsoleEvent,
-    CostEvent,
-    Event,
-    Function,
-    MetricEvent,
-    Node,
-    NodeEvent,
-    Page,
-    PhaseEvent,
-    ProgressEvent,
-    Task,
-    TaskEvent,
-)
-
-POLL = 2.0
-HISTORY = 12
-TAIL = 40
-_METRICS = frozenset({"gpu_util", "gpu_mem_mb", "gpu_mem_total_mb", "cpu", "mem", "mem_used_mb", "mem_total_mb"})
+from skyward.shared.schemas import ComputeEvent, ConsoleEvent, Event, NodeEvent, TaskEvent
 
 
-@dataclass(frozen=True, slots=True)
-class PhaseMark:
-    name: str
-    started: bool = False
-    finished: bool = False
-    error: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class NodeRow:
-    id: str
-    state: str = "requested"
-    rank: int = 0
-    machine: str | None = None
-    address: str | None = None
-    accelerator: str | None = None
-    price: float | None = None
-    market: str | None = None
-    error: str | None = None
-    provider_binding: Mapping[str, object] = field(default_factory=lambda: MappingProxyType({}))
-    metrics: Mapping[str, tuple[float, ...]] = field(default_factory=lambda: MappingProxyType({}))
-    phases: tuple[PhaseMark, ...] = ()
-    tail: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class Pool:
-    name: str = ""
-    provider: str = ""
-    region: str | None = None
-    accelerator: str | None = None
-    accelerator_count: int = 1
-    cpus: int = 0
-    memory_gb: float = 0.0
-    allocation: str = ""
-    state: str = "requested"
-    total: int = 0
-    initial: int = 0
-    minimum: int | None = None
-    maximum: int | None = None
-    created_at: datetime | None = None
-    cost: float | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class TaskRow:
-    state: str
-    function: str
-    node: str | None
-    submitted_at: datetime
-    started_at: datetime | None
-    finished_at: datetime | None
-
-
-@dataclass(frozen=True, slots=True)
-class View:
-    pool: Pool = field(default_factory=Pool)
-    nodes: tuple[NodeRow, ...] = ()
-    tasks: tuple[TaskRow, ...] = ()
-    progress: Mapping[int, str] = field(default_factory=lambda: MappingProxyType({}))
-
-
-def observe(view: View, event: Event) -> View:
-    match event:
-        case MetricEvent(node=node, name=name, value=value):
-            return _sample(view, node, name, value)
-        case CostEvent(cost=cost):
-            return replace(view, pool=replace(view.pool, cost=cost))
-        case PhaseEvent():
-            return _phased(view, event)
-        case ProgressEvent(node=node, progress=progress):
-            return _progressed(view, node, progress)
-        case ConsoleEvent(node=node, content=content):
-            return _spoken(view, node, content)
-        case NodeEvent(node=node, state=state, error=error):
-            return _transition(view, node, state, error)
-        case ComputeEvent(state=state):
-            return replace(view, pool=replace(view.pool, state=state))
-        case ComputeAbandoned() | TaskEvent():
-            return view
-
-
-def refresh(view: View, compute: Compute, nodes: Page[Node]) -> View:
-    spec = compute.spec.specs[0] if compute.spec.specs else None
-    pool = Pool(
-        name=compute.name or compute.id,
-        provider=spec.provider.kind if spec else "",
-        region=spec.region if spec else None,
-        accelerator=spec.accelerator if spec else None,
-        accelerator_count=spec.accelerator_count if spec else 1,
-        cpus=(spec.cpus or 0) if spec else 0,
-        memory_gb=(spec.memory_gb or 0.0) if spec else 0.0,
-        allocation=compute.spec.allocation,
-        state=compute.status.state,
-        total=compute.status.nodes_total,
-        initial=compute.spec.nodes.initial,
-        minimum=compute.spec.nodes.min,
-        maximum=compute.spec.nodes.max,
-        created_at=compute.created_at,
-        cost=view.pool.cost,
-    )
-    previous = {row.id: row for row in view.nodes}
-    rows = tuple(
-        NodeRow(
-            id=node.id,
-            state=node.state,
-            rank=node.rank,
-            machine=node.machine,
-            address=node.address,
-            accelerator=node.accelerator,
-            price=node.price_per_hour,
-            market=node.market,
-            error=node.last_error.message if node.last_error else None,
-            provider_binding=MappingProxyType(node.provider_binding),
-            metrics=previous[node.id].metrics if node.id in previous else MappingProxyType({}),
-            phases=previous[node.id].phases if node.id in previous else (),
-            tail=previous[node.id].tail if node.id in previous else (),
-        )
-        for node in nodes.items
-        if node.state != "deleted"
-    )
-    return replace(view, pool=pool, nodes=rows)
-
-
-def refresh_tasks(
-    view: View,
-    tasks: Page[Task],
-    names: Mapping[str, str] = MappingProxyType({}),
-) -> View:
-    rows = tuple(
-        TaskRow(
-            state=task.state,
-            function=names.get(task.function) or task.function[:8],
-            node=task.executions[-1].node_id if task.executions else None,
-            submitted_at=task.submitted_at,
-            started_at=task.executions[-1].started_at if task.executions else None,
-            finished_at=task.finished_at,
-        )
-        for task in tasks.items
-    )
-    return replace(view, tasks=rows)
-
-
-def _sample(view: View, node_id: str, name: str, value: float) -> View:
-    if name not in _METRICS or not node_id:
-        return view
-
-    def add(row: NodeRow) -> NodeRow:
-        history = (*row.metrics.get(name, ()), value)[-HISTORY:]
-        return replace(row, metrics=MappingProxyType({**row.metrics, name: history}))
-
-    return _amend(view, node_id, add)
-
-
-def _phased(view: View, event: PhaseEvent) -> View:
-    name = event.phase
-    if not event.node or not name or name == "bootstrap":
-        return view
-
-    def mark(row: NodeRow) -> NodeRow:
-        phases = {phase.name: phase for phase in row.phases}
-        match event.event:
-            case "started":
-                phases[name] = PhaseMark(name, started=True)
-            case "completed":
-                phases[name] = replace(phases.get(name, PhaseMark(name)), finished=True)
-            case "failed":
-                phases[name] = replace(phases.get(name, PhaseMark(name)), finished=True, error=event.error or "failed")
-        return replace(row, phases=tuple(phases.values()))
-
-    return _amend(view, event.node, mark)
-
-
-def _spoken(view: View, node_id: str, content: str) -> View:
-    if not node_id:
-        return view
-    return _amend(view, node_id, lambda row: replace(row, tail=(*row.tail, content)[-TAIL:]))
-
-
-def _transition(view: View, node_id: str, state: str, error: str | None) -> View:
-    if not node_id:
-        return view
-    moved = _amend(view, node_id, lambda row: replace(row, state=state, error=error or row.error))
-    return moved if state in _WAITING else _erased(moved, node_id)
-
-
-_WAITING = frozenset({"requested", "provisioning"})
-"""The states a machine is in while it is still on its way to an address."""
-
-
-def _progressed(view: View, node_id: str, progress: str) -> View:
-    """What the machine is doing, on the line the footer keeps for the node.
-
-    Keyed by rank, because that is what the footer labels a node by, and dropped the
-    moment the node reaches a state that speaks for itself.
-    """
-    rank = _ranked(view, node_id)
-    return view if rank is None else replace(view, progress=MappingProxyType({**view.progress, rank: progress}))
-
-
-def _erased(view: View, node_id: str) -> View:
-    rank = _ranked(view, node_id)
-    if rank is None or rank not in view.progress:
-        return view
-    return replace(view, progress=MappingProxyType({at: line for at, line in view.progress.items() if at != rank}))
-
-
-def _ranked(view: View, node_id: str) -> int | None:
-    return next((row.rank for row in view.nodes if row.id == node_id), None)
-
-
-def _amend(view: View, node_id: str, change: Callable[[NodeRow], NodeRow]) -> View:
-    rows = view.nodes
-    if not any(row.id == node_id for row in rows):
-        rows = (*rows, NodeRow(node_id))
-    return replace(view, nodes=tuple(change(row) if row.id == node_id else row for row in rows))
-
-
-def _state(view: View) -> _State:
+def _state(view: ComputeView) -> _State:
     rows = sorted(view.nodes, key=lambda row: row.rank)
     statuses = MappingProxyType({row.rank: _node_status(row.state) for row in rows})
-    instances = tuple(_instance(view.pool, row) for row in rows)
+    instances = tuple(_instance(view, row) for row in rows)
     metrics = MappingProxyType({
         row.rank: MappingProxyType(_metrics(row))
         for row in rows
@@ -327,18 +91,18 @@ def _state(view: View) -> _State:
         if task.node in ranks:
             per_node[ranks[task.node]] += 1
     started = (
-        time.monotonic() - max(0.0, (datetime.now(UTC) - view.pool.created_at).total_seconds())
-        if view.pool.created_at
+        time.monotonic() - max(0.0, (datetime.now(UTC) - view.created_at).total_seconds())
+        if view.created_at
         else 0.0
     )
+    submissions = [task.submitted_at for task in view.tasks if task.submitted_at]
     first_task_at = (
-        time.monotonic()
-        - max(0.0, (datetime.now(UTC) - min(task.submitted_at for task in view.tasks)).total_seconds())
-        if view.tasks
+        time.monotonic() - max(0.0, (datetime.now(UTC) - min(submissions)).total_seconds())
+        if submissions
         else 0.0
     )
     active = sum(row.state not in {"deleted", "failed", "lost"} for row in rows)
-    pending = max(0, view.pool.initial - len(rows))
+    pending = max(0, view.initial - len(rows))
     reconciler_state = (
         "draining"
         if any(row.state == "draining" for row in rows)
@@ -347,7 +111,7 @@ def _state(view: View) -> _State:
         else "watching"
     )
     return _State(
-        total_nodes=view.pool.total,
+        total_nodes=view.nodes_total,
         phase=_phase(view),
         nodes=statuses,
         tasks_queued=task_counts["queued"],
@@ -355,7 +119,7 @@ def _state(view: View) -> _State:
         tasks_done=task_counts["succeeded"],
         tasks_failed=task_counts["failed"],
         first_task_at=first_task_at,
-        cluster=_Cluster(_ClusterSpec(view.pool.provider)),
+        cluster=_Cluster(_ClusterSpec(view.provider)),
         instances=instances,
         metrics=metrics,
         pool_started_at=started,
@@ -366,22 +130,22 @@ def _state(view: View) -> _State:
         pending_nodes=pending,
         draining_nodes=sum(row.state == "draining" for row in rows),
         reconciler_state=reconciler_state,
-        min_nodes=view.pool.minimum,
-        max_nodes=view.pool.maximum,
-        is_elastic=view.pool.minimum is not None or view.pool.maximum is not None,
+        min_nodes=view.minimum,
+        max_nodes=view.maximum,
+        is_elastic=view.minimum is not None or view.maximum is not None,
         tasks_per_node=MappingProxyType(dict(per_node)),
         ssh_user=_binding_string(rows, "ssh_user"),
         ssh_key_path=_binding_string(rows, "ssh_key_path"),
         bootstrap_spinners=spinners,
-        progress_lines=MappingProxyType(dict(view.progress)),
+        progress_lines=MappingProxyType({row.rank: _Progress(row.progress, row.completion) for row in rows if row.progress is not None}),
         node_instances=MappingProxyType({row.rank: instance for row, instance in zip(rows, instances, strict=True)}),
     )
 
 
-def _phase(view: View) -> _Phase:
-    if view.pool.state in {"deleted", "deleting"}:
+def _phase(view: ComputeView) -> _Phase:
+    if view.state in {"deleted", "deleting"}:
         return _Phase.STOPPED
-    if view.pool.state == "ready":
+    if view.state == "ready":
         return _Phase.READY
     states = {row.state for row in view.nodes}
     if "bootstrapping" in states:
@@ -399,7 +163,7 @@ def _node_status(state: str) -> _NodeStatus:
     return _NodeStatus.WAITING
 
 
-def _metrics(row: NodeRow) -> dict[str, float]:
+def _metrics(row: NodeView) -> dict[str, float]:
     metrics = {name: history[-1] for name, history in row.metrics.items() if history}
     used = metrics.get("mem_used_mb")
     total = metrics.get("mem_total_mb")
@@ -408,22 +172,22 @@ def _metrics(row: NodeRow) -> dict[str, float]:
     return metrics
 
 
-def _instance(pool: Pool, row: NodeRow) -> _Instance:
-    accelerator_name = row.accelerator or pool.accelerator
-    accelerator = _Accelerator(accelerator_name, pool.accelerator_count) if accelerator_name else None
-    price = row.price
-    spot = row.market == "spot" or (row.market is None and pool.allocation == "spot")
+def _instance(view: ComputeView, row: NodeView) -> _Instance:
+    accelerator_name = row.accelerator or view.accelerator
+    accelerator = _Accelerator(accelerator_name, view.accelerator_count) if accelerator_name else None
+    price = row.price_per_hour
+    spot = row.market == "spot" or (row.market is None and view.allocation == "spot")
     return _Instance(
         id=row.machine or row.id,
         ip=row.address,
-        ssh_port=_binding_int(row.provider_binding, "ssh_port", 22),
-        region=_binding_string_value(row.provider_binding, "region") or pool.region or "",
+        ssh_port=_binding_int(row.binding, "ssh_port", 22),
+        region=_binding_string_value(row.binding, "region") or view.region or "",
         spot=spot,
         offer=_Offer(
             instance_type=_InstanceType(
-                name=row.accelerator or pool.accelerator or "",
-                vcpus=pool.cpus,
-                memory_gb=pool.memory_gb,
+                name=row.accelerator or view.accelerator or "",
+                vcpus=view.cpus,
+                memory_gb=view.memory_gb,
                 accelerator=accelerator,
             ),
             spot_price=price if spot else None,
@@ -432,8 +196,8 @@ def _instance(pool: Pool, row: NodeRow) -> _Instance:
     )
 
 
-def _binding_string(rows: list[NodeRow], key: str) -> str:
-    return next((value for row in rows if (value := _binding_string_value(row.provider_binding, key))), "")
+def _binding_string(rows: list[NodeView], key: str) -> str:
+    return next((value for row in rows if (value := _binding_string_value(row.binding, key))), "")
 
 
 def _binding_string_value(binding: Mapping[str, object], key: str) -> str:
@@ -446,18 +210,10 @@ def _binding_int(binding: Mapping[str, object], key: str, default: int) -> int:
     return value if isinstance(value, int) else default
 
 
-def render(view: View) -> RenderableType:
+def render(view: ComputeView) -> RenderableType:
     footer = _LiveFooter()
     footer.state = _state(view)
     return footer
-
-
-@dataclass(frozen=True, slots=True)
-class _Snapshot:
-    compute: Compute
-    nodes: Page[Node]
-    tasks: Page[Task]
-    names: Mapping[str, str]
 
 
 class _LocalOutput:
@@ -490,54 +246,61 @@ class _LocalOutput:
 
 
 class RichConsole:
-    """Rich adaptive console: banner → live footer → event lines → summary."""
+    """Rich adaptive console: banner → live footer → event lines → summary.
 
-    def __init__(self, client: Client, compute: str, out: TextIO | None = None) -> None:
-        self._client = client
-        self._compute = compute
+    A :class:`~skyward.core.console.Watcher`: the pool's observer owns the
+    stream and the fold, and this class only draws what it is handed.
+    """
+
+    def __init__(self, out: TextIO | None = None) -> None:
         self._console = Console(file=out or sys.stderr)
-        self._view = View()
         self._footer = _LiveFooter()
         self._live: Live | None = None
-        self._names: dict[str, str] = {}
+        self._stack = ExitStack()
 
-    async def follow(self) -> None:
-        with suppress(Exception):
-            self._merge(await self._fetch())
+    def opened(self, view: ComputeView) -> None:
         self._print_banner()
-        self._footer.state = _state(self._view)
-        with _quiet(self._console), redirect_stdout(_LocalOutput(self._console, sys.stdout)):
-            live = Live(
-                self._footer,
-                console=self._console,
-                refresh_per_second=8,
-                screen=False,
-                redirect_stdout=False,
-                redirect_stderr=False,
-            )
-            self._live = live
-            live.start()
-            poll = asyncio.create_task(self._poll())
-            try:
-                async with aclosing(self._client.events(self._compute)) as stream:
-                    async for _, payload in stream:
-                        if (event := _safe(payload)) is None:
-                            continue
-                        self._view = observe(self._view, event)
-                        self._footer.state = _state(self._view)
-                        self._print_event(event)
-                        live.update(self._footer)
-                        if isinstance(event, ComputeEvent) and event.state in {"deleted", "failed"}:
-                            live.stop()
-                            _emit(self._console, "skyward", "Shutting down...", WARNING_STYLE)
-                            self._console.print(_render_summary(self._footer.state))
-                            self._live = None
-                            return
-            finally:
-                poll.cancel()
-                if self._live is not None:
-                    live.stop()
-                    self._live = None
+        self._footer.state = _state(view)
+        self._stack.enter_context(_quiet(self._console))
+        self._stack.enter_context(redirect_stdout(_LocalOutput(self._console, sys.stdout)))
+        live = Live(
+            self._footer,
+            console=self._console,
+            refresh_per_second=8,
+            screen=False,
+            redirect_stdout=False,
+            redirect_stderr=False,
+        )
+        self._live = live
+        live.start()
+
+    def event(self, event: Event, view: ComputeView) -> None:
+        if self._live is None:
+            return
+        self._footer.state = _state(view)
+        self._print_event(event, view)
+        self._live.update(self._footer)
+        if isinstance(event, ComputeEvent) and event.state in {"deleted", "failed"}:
+            self._summarize()
+
+    def refreshed(self, view: ComputeView) -> None:
+        if self._live is None:
+            return
+        self._footer.state = _state(view)
+        self._live.update(self._footer)
+
+    def closed(self, view: ComputeView) -> None:
+        if self._live is not None:
+            self._live.stop()
+            self._live = None
+        self._stack.close()
+
+    def _summarize(self) -> None:
+        if self._live is not None:
+            self._live.stop()
+            self._live = None
+        _emit(self._console, "skyward", "Shutting down...", WARNING_STYLE)
+        self._console.print(_render_summary(self._footer.state))
 
     def _print_banner(self) -> None:
         from skyward._version import __version__
@@ -555,10 +318,10 @@ class RichConsole:
         self._console.print(banner)
         self._console.print()
 
-    def _print_event(self, event: Event) -> None:
-        state = _state(self._view)
+    def _print_event(self, event: Event, view: ComputeView) -> None:
+        state = _state(view)
         node = getattr(event, "node", None)
-        row = next((row for row in self._view.nodes if row.id == node), None)
+        row = next((row for row in view.nodes if row.id == node), None)
         node_id = row.rank if row else 0
         match event:
             case ConsoleEvent(content=content):
@@ -576,68 +339,6 @@ class RichConsole:
                 _emit(self._console, "error", error or failure, "red")
             case _:
                 pass
-
-    async def _poll(self) -> None:
-        while True:
-            await asyncio.sleep(POLL)
-            try:
-                snapshot = await self._fetch()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                continue
-            self._merge(snapshot)
-            self._footer.state = _state(self._view)
-            if self._live is not None:
-                self._live.update(self._footer)
-
-    async def _fetch(self) -> _Snapshot:
-        compute = await self._client.call("GET", f"/v1/computes/{self._compute}", Compute)
-        nodes = await self._client.call("GET", f"/v1/computes/{self._compute}/nodes", Page[Node])
-        tasks: Page[Task] = Page(items=())
-        with suppress(Exception):
-            tasks = await self._client.call("GET", "/v1/tasks", Page[Task], compute=self._compute, limit=200)
-        return _Snapshot(compute, nodes, tasks, await self._names_for(tasks))
-
-    def _merge(self, snapshot: _Snapshot) -> None:
-        self._view = refresh_tasks(
-            refresh(self._view, snapshot.compute, snapshot.nodes),
-            snapshot.tasks,
-            snapshot.names,
-        )
-
-    async def _names_for(self, tasks: Page[Task]) -> Mapping[str, str]:
-        for sha in {task.function for task in tasks.items} - self._names.keys():
-            try:
-                function = await self._client.call("GET", f"/v1/functions/{sha}", Function)
-                self._names[sha] = function.name or sha[:8]
-            except Exception:
-                self._names[sha] = sha[:8]
-        return self._names
-
-
-def _event_line(view: View, event: str, data: dict[str, str]) -> Text:
-    state = _state(view)
-    row = next((row for row in view.nodes if row.id == data.get("node")), None)
-    node_id = row.rank if row else 0
-    if event == "node.ready":
-        line = _badge_text(_node_label(state, node_id))
-        line.append("  ✓ Joined")
-        return line
-    return Text(data.get("content") or event)
-
-
-def _safe(payload: bytes) -> Event | None:
-    """Decode one event, or nothing at all if this build does not know it.
-
-    A daemon may be newer than the client watching it, and an event it has learnt
-    to send is not a reason to stop rendering the ones it has always sent.
-    """
-    try:
-        return msgspec.json.decode(payload, type=Event)
-    except msgspec.ValidationError:
-        return None
-
 
 class _LogSink(logging.Handler):
     def __init__(self, console: Console) -> None:

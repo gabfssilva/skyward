@@ -22,6 +22,7 @@ from skyward.core.provider import (
     Vultr,
 )
 from skyward.core.spec import Accelerator, Executor, HealthChecker, Nodes, Options, Port, Spec, Volume
+from skyward.core.view import ComputeView, EventCallback, NodeView, PhaseView, TaskView
 from skyward.shared.schemas import Image, MetricSpec, PipIndex
 
 __all__ = [
@@ -29,8 +30,10 @@ __all__ = [
     "GCP",
     "Accelerator",
     "Compute",
+    "ComputeView",
     "Container",
     "DockerImage",
+    "EventCallback",
     "Executor",
     "Group",
     "HealthChecker",
@@ -40,10 +43,12 @@ __all__ = [
     "Lambda",
     "MassedCompute",
     "MetricSpec",
+    "NodeView",
     "Nodes",
     "Novita",
     "Options",
     "Pending",
+    "PhaseView",
     "PipIndex",
     "Port",
     "Provider",
@@ -55,6 +60,7 @@ __all__ = [
     "Streaming",
     "TaskFailedError",
     "TaskIndeterminateError",
+    "TaskView",
     "TensorDock",
     "VastAI",
     "Verda",

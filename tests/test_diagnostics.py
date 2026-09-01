@@ -6,12 +6,16 @@ still be there when somebody asks: the node's own row, and the event log the
 console and ``sky log export`` read.
 """
 
+import io
 import json
 from pathlib import Path
 
 import pytest
+from rich.console import Console as RichConsole
 
 from skyward.core.console import render
+from skyward.core.live import render as footer
+from skyward.core.view import ComputeView, NodeView, observe
 from skyward.server.application.machines import Machines
 from skyward.server.application.mock import SPEC
 from skyward.server.persistence.computes import ComputeStore
@@ -22,6 +26,7 @@ from skyward.server.persistence.nodes import NodeStore
 from skyward.server.persistence.offers import OfferCache
 from skyward.server.persistence.providers import ProviderStore
 from skyward.server.persistence.tables import EventRow
+from skyward.shared.provider import Machine
 from skyward.shared.schemas import ComputeCreate, Error, Node, NodeEvent, ProgressEvent
 
 pytestmark = pytest.mark.local
@@ -91,14 +96,38 @@ def describe_a_machine_still_on_its_way_up() -> None:
         machines = machines_for(nodes, events)
         before = len(await EventRow.objects())
 
-        await machines._progressed(node, "downloading (42%)")
+        await machines._progressed(node, Machine(id="m1", state="pending", progress="downloading", completion=0.42))
 
         assert len(await EventRow.objects()) == before, "a percentage that moves every couple of seconds is a gauge"
 
     def it_reads_as_a_line_of_the_node_own() -> None:
-        line = render(ProgressEvent(compute="cmp_1", node="nod_1", progress="downloading (42%)"))
+        line = render(ProgressEvent(compute="cmp_1", node="nod_1", progress="downloading", completion=0.42))
 
-        assert line is not None and "downloading (42%)" in line
+        assert line is not None and "downloading (42%)" in line, "a log line spells the fraction it cannot draw"
+
+    def it_is_drawn_as_a_bar_where_there_is_a_terminal_to_draw_on() -> None:
+        drawn = _footer("downloading", 0.42)
+
+        assert "downloading" in drawn, "the bar says how far, the words say into what"
+        assert "42%" in drawn
+        assert "\u2501" in drawn, "a percentage nobody has to read is the point of a terminal"
+
+    def it_is_only_words_for_a_provider_that_counts_nothing() -> None:
+        drawn = _footer("waiting for salad to allocate a machine", None)
+
+        assert "waiting for salad to allocate a machine" in drawn
+        assert "\u2501" not in drawn, "an empty bar would say the machine is at zero, which nobody knows"
+
+
+def _footer(progress: str, completion: float | None) -> str:
+    """The live footer, drawn once, for a compute whose one node is still coming up."""
+    view = observe(
+        ComputeView(id="cmp_1", nodes=(NodeView(id="nod_1", rank=0),)),
+        ProgressEvent(compute="cmp_1", node="nod_1", progress=progress, completion=completion),
+    )
+    buffer = io.StringIO()
+    RichConsole(file=buffer, width=120).print(footer(view))
+    return buffer.getvalue()
 
 
 def describe_the_line_a_lost_machine_leaves() -> None:

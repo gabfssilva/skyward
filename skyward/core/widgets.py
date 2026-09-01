@@ -85,6 +85,14 @@ class _BootstrapTimeline:
 
 
 @dataclass(frozen=True, slots=True)
+class _Progress:
+    """What a machine short of an address is doing, and how far into it."""
+
+    label: str
+    completion: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class _State:
     total_nodes: int
     phase: _Phase = _Phase.PROVISIONING
@@ -114,7 +122,7 @@ class _State:
     ssh_user: str = ""
     ssh_key_path: str = ""
     bootstrap_spinners: MappingProxyType[int, _BootstrapTimeline] = MappingProxyType({})
-    progress_lines: MappingProxyType[int, str] = MappingProxyType({})
+    progress_lines: MappingProxyType[int, _Progress] = MappingProxyType({})
     node_instances: MappingProxyType[int, _Instance] = MappingProxyType({})
 
 
@@ -257,6 +265,28 @@ def _gauge_badge(_label: str, percentage: float) -> Style:
     return _make_badge(120.0 * (1 - min(percentage, 100.0) / 100.0), 0.55)
 
 
+def _fill_style(hue: float) -> Style:
+    red, green, blue = _hsl_to_rgb(hue % 360, 0.65, _BADGE_L)
+    return Style(color=f"rgb({red},{green},{blue})")
+
+
+_BAR_WIDTH = 24
+
+
+def _bar(completion: float) -> Text:
+    """How much of it is done, as a bar that walks from the colour of `provisioning` to the colour of `ready`.
+
+    The palette is the one the badges use, so a bar filling and a badge turning green
+    are the same event said twice rather than two vocabularies on one screen.
+    """
+    done = min(max(completion, 0.0), 1.0)
+    filled = round(done * _BAR_WIDTH)
+    text = Text()
+    text.append("━" * filled, style=_fill_style(45 + 75 * done))
+    text.append("━" * (_BAR_WIDTH - filled), style=DIM)
+    return text
+
+
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _spinner_tick = [0]
 _PHASE_LABELS = {
@@ -348,12 +378,19 @@ def _emit_task(
 
 
 def _find_metrics(raw: MappingProxyType[str, float], *prefixes: str) -> list[float]:
+    """The metric, or its per-device shards (``gpu_util_0``, ``gpu_util_1``, …).
+
+    Only a numeric suffix is a shard. Matching on the bare prefix would sweep up
+    different metrics that merely share it — ``mem_used_mb`` is not a slice of
+    ``mem``, and averaging megabytes into a percentage gauge is how a dashboard
+    reports a node at 28900%.
+    """
     values: list[float] = []
     for prefix in prefixes:
         if prefix in raw:
             values.append(raw[prefix])
         else:
-            values.extend(value for key, value in raw.items() if key.startswith(f"{prefix}_"))
+            values.extend(value for key, value in raw.items() if key.startswith(f"{prefix}_") and key.removeprefix(f"{prefix}_").isdigit())
     return values
 
 
@@ -538,6 +575,24 @@ def _render_spinners(state: _State) -> list[Text]:
     return lines
 
 
+def _render_progress(state: _State) -> list[Text]:
+    """One line per machine still on its way, with a bar for the ones that count.
+
+    Sorted by rank, because these lines are redrawn several times a second and a
+    machine that changed places between two frames is a machine nobody can read.
+    """
+    lines: list[Text] = []
+    for node_id, progress in sorted(state.progress_lines.items()):
+        line = _badge_text(_node_label(state, node_id))
+        line.append(f"  {progress.label}", style=MEDIUM)
+        if progress.completion is not None:
+            line.append("  ")
+            line.append_text(_bar(progress.completion))
+            line.append(f" {progress.completion * 100:.0f}%", style=MEDIUM)
+        lines.append(line)
+    return lines
+
+
 class _LiveFooter:
     def __init__(self) -> None:
         self.state = _State(total_nodes=0)
@@ -546,10 +601,7 @@ class _LiveFooter:
         _spinner_tick[0] += 1
         infra, status, tasks = _collect_badges(self.state)
         spinners = _render_spinners(self.state)
-        progress = [
-            Text.assemble(_badge_text(_node_label(self.state, node_id)), (f"  {content}", MEDIUM))
-            for node_id, content in self.state.progress_lines.items()
-        ]
+        progress = _render_progress(self.state)
         parts: list[RenderableType] = [Text()]
         parts.extend(spinners)
         if spinners:

@@ -26,8 +26,10 @@ if TYPE_CHECKING:
         GCP,
         Accelerator,
         Compute,
+        ComputeView,
         Container,
         DockerImage,
+        EventCallback,
         Executor,
         Group,
         HealthChecker,
@@ -38,9 +40,11 @@ if TYPE_CHECKING:
         MassedCompute,
         MetricSpec,
         Nodes,
+        NodeView,
         Novita,
         Options,
         Pending,
+        PhaseView,
         PipIndex,
         Port,
         Provider,
@@ -52,6 +56,7 @@ if TYPE_CHECKING:
         Streaming,
         TaskFailedError,
         TaskIndeterminateError,
+        TaskView,
         TensorDock,
         VastAI,
         Verda,
@@ -64,6 +69,21 @@ if TYPE_CHECKING:
         stream,
     )
     from skyward.shared import observability, time
+    from skyward.shared.schemas import (
+        ComputeAbandoned,
+        ComputeEvent,
+        ComputeState,
+        ConsoleEvent,
+        CostEvent,
+        Event,
+        MetricEvent,
+        NodeEvent,
+        NodeState,
+        PhaseEvent,
+        ProgressEvent,
+        TaskEvent,
+        TaskState,
+    )
     from skyward.worker import metrics, plugins, storage
     from skyward.worker.api import CallbackWriter, Info, instance_info, is_head, redirect_output, shard, silent, stderr, stdout
     from skyward.worker.distributed import Consistency, DistributedRegistry, barrier, counter, dict, lock, queue, registry, set
@@ -80,17 +100,47 @@ job is to run somebody's training loop.
 SHARED = ("Consistency", "DistributedRegistry", "barrier", "counter", "dict", "lock", "queue", "registry", "set")
 """The compute's own state, out of ``skyward.worker.distributed``. Same reason."""
 
+SCHEMAS = (
+    "ComputeAbandoned",
+    "ComputeEvent",
+    "ComputeState",
+    "ConsoleEvent",
+    "CostEvent",
+    "Event",
+    "MetricEvent",
+    "NodeEvent",
+    "NodeState",
+    "PhaseEvent",
+    "ProgressEvent",
+    "TaskEvent",
+    "TaskState",
+)
+"""The event stream's vocabulary, out of ``skyward.shared.schemas``.
+
+What a ``callbacks=`` handler matches on. Resolved from ``shared`` rather than
+``core`` because the events are wire types — msgspec and the standard library,
+nothing a bare node could not import.
+"""
+
 __all__ = [
     "AWS",
-    "GCP",
     "Accelerator",
     "CallbackWriter",
     "Compute",
+    "ComputeAbandoned",
+    "ComputeEvent",
+    "ComputeState",
+    "ComputeView",
     "Consistency",
+    "ConsoleEvent",
     "Container",
+    "CostEvent",
     "DistributedRegistry",
     "DockerImage",
+    "Event",
+    "EventCallback",
     "Executor",
+    "GCP",
     "Group",
     "HealthChecker",
     "Hyperstack",
@@ -99,13 +149,20 @@ __all__ = [
     "JarvisLabs",
     "Lambda",
     "MassedCompute",
+    "MetricEvent",
     "MetricSpec",
+    "NodeEvent",
+    "NodeState",
+    "NodeView",
     "Nodes",
     "Novita",
     "Options",
     "Pending",
+    "PhaseEvent",
+    "PhaseView",
     "PipIndex",
     "Port",
+    "ProgressEvent",
     "Provider",
     "RunPod",
     "Salad",
@@ -114,8 +171,11 @@ __all__ = [
     "Spec",
     "Storage",
     "Streaming",
+    "TaskEvent",
     "TaskFailedError",
     "TaskIndeterminateError",
+    "TaskState",
+    "TaskView",
     "TensorDock",
     "VastAI",
     "Verda",
@@ -158,6 +218,8 @@ def __getattr__(name: str) -> object:
             value = importlib.import_module(f"skyward.worker.{name}")
         case "Storage":
             value = importlib.import_module("skyward.worker.storage").Storage
+        case _ if name in SCHEMAS:
+            value = getattr(importlib.import_module("skyward.shared.schemas"), name)
         case _ if name in RUNTIME:
             value = getattr(importlib.import_module("skyward.worker.api"), name)
         case _ if name in SHARED:
