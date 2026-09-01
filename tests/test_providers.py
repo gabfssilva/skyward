@@ -102,8 +102,9 @@ def describe_a_salad_container_group_nobody_wrote_down() -> None:
     class _Salad:
         """The project as Salad has it: some of this compute's groups, and another's."""
 
-        def __init__(self, instances: dict[str, str]) -> None:
+        def __init__(self, instances: dict[str, str], pulled: float) -> None:
             self._instances = instances
+            self._pulled = pulled
             self.deleted: list[str] = []
 
         async def list_container_groups(self, organization: str, project: str) -> Any:
@@ -112,14 +113,14 @@ def describe_a_salad_container_group_nobody_wrote_down() -> None:
 
         async def list_container_group_instances(self, organization: str, project: str, name: str) -> Any:
             state = self._instances[name]
-            return SimpleNamespace(instances=[SimpleNamespace(state=state, ready=False, pulling_progress=0.43)] if state else [])
+            return SimpleNamespace(instances=[SimpleNamespace(state=state, ready=False, pulling_progress=self._pulled)] if state else [])
 
         async def delete_container_group(self, organization: str, project: str, name: str) -> None:
             self.deleted.append(name)
 
-    def _salad(instances: dict[str, str]) -> tuple[SaladProvider, _Salad]:
+    def _salad(instances: dict[str, str], pulled: float = 0.43) -> tuple[SaladProvider, _Salad]:
         provider = SaladProvider.create("prv_salad", "salad", {"api_key": "not-a-key"}, {"organization": "org", "project": "proj"})
-        groups = _Salad(instances)
+        groups = _Salad(instances, pulled)
         provider._sdk = SimpleNamespace(container_groups=groups)
         return provider, groups
 
@@ -130,7 +131,8 @@ def describe_a_salad_container_group_nobody_wrote_down() -> None:
 
         assert set(observed) == {"skyward-cmp-1-aaaa"}, "found by the compute in its name, not by the binding"
         assert observed["skyward-cmp-1-aaaa"].state == "pending"
-        assert observed["skyward-cmp-1-aaaa"].progress == "downloading (43%)", "a pull is progress, and the deadline is measured against it"
+        assert observed["skyward-cmp-1-aaaa"].progress == "downloading", "a pull is progress, and the deadline is measured against it"
+        assert observed["skyward-cmp-1-aaaa"].completion == 0.43, "how far into the pull, as a number a bar can be drawn from"
 
     async def it_says_it_is_waiting_when_salad_has_allocated_nothing() -> None:
         provider, _ = _salad({"skyward-cmp-1-aaaa": ""})
@@ -138,14 +140,15 @@ def describe_a_salad_container_group_nobody_wrote_down() -> None:
         observed = await provider.machines({"compute_id": "cmp_1"})
 
         assert observed["skyward-cmp-1-aaaa"].progress == "waiting for salad to allocate a machine", "one answer, so the deadline runs"
+        assert observed["skyward-cmp-1-aaaa"].completion is None, "there is no fraction of a machine that was never allocated"
 
-    async def it_reports_the_pull_as_a_percentage_whichever_way_salad_says_it() -> None:
+    async def it_reports_the_pull_as_a_fraction_whichever_way_salad_says_it() -> None:
         """Salad sends a fraction where its own sdk promises a percentage."""
-        provider, _ = _salad({"skyward-cmp-1-aaaa": "downloading"})
+        provider, _ = _salad({"skyward-cmp-1-aaaa": "downloading"}, pulled=43)
 
         observed = await provider.machines({"compute_id": "cmp_1"})
 
-        assert observed["skyward-cmp-1-aaaa"].progress == "downloading (43%)", "0.43 of the image is 43%, not 0%"
+        assert observed["skyward-cmp-1-aaaa"].completion == 0.43, "43 out of a hundred and 0.43 of one are the same pull"
 
     async def it_is_taken_down_with_the_compute() -> None:
         provider, groups = _salad({"skyward-cmp-1-aaaa": "downloading"})
@@ -229,7 +232,9 @@ def describe_a_pod_as_runpod_reports_it() -> None:
 
         assert deploy["startSsh"] is True, "without it runpod publishes no port and the node is unreachable"
         assert "22/tcp" in deploy["ports"], "and the flag alone is not enough"
-        assert deploy["env"]["PUBLIC_KEY"] == "ssh-ed25519 AAAA", "the key stays the compute's, not the account's"
+        assert deploy["env"]["SKYWARD_PUBLIC_KEY"] == "ssh-ed25519 AAAA", "the compute's key travels in a variable of its own"
+        assert "PUBLIC_KEY" not in deploy["env"], "PUBLIC_KEY is runpod's, and a second writer on it costs the daemon its access"
+        assert '"$PUBLIC_KEY" "$SKYWARD_PUBLIC_KEY"' in deploy["args"], "the node trusts the account's keys and the compute's"
 
     def it_is_still_pending_while_the_running_pod_has_none() -> None:
         machine = _machine({

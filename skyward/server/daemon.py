@@ -24,6 +24,15 @@ LOG_FILE = RUNTIME_DIR / "server.log"
 TARGET = "skyward.server.http.app:daemon"
 MISSING = "the daemon needs an ASGI server: pip install 'skyward[server]'"
 
+GRACEFUL_SECONDS = 5
+"""How long a stopping daemon waits for its open connections.
+
+Uvicorn's default is forever, and this daemon's connections are the kind that
+never end on their own — an event stream being watched, a result being
+long-polled. A stop that waits for those outlives every ``sky server stop``
+timeout; the clients know how to come back, so they are cut instead.
+"""
+
 
 def installed() -> bool:
     """Whether there is an ASGI server here to run the application."""
@@ -78,7 +87,7 @@ def serve(host: str, port: int, database: Path | None = None) -> None:
 
     if database is not None:
         os.environ["SKYWARD_DATABASE"] = str(database)
-    uvicorn.run(TARGET, host=host, port=port, factory=True)
+    uvicorn.run(TARGET, host=host, port=port, factory=True, timeout_graceful_shutdown=GRACEFUL_SECONDS)
 
 
 def spawn(host: str, port: int, database: Path | None = None) -> int:
@@ -93,7 +102,19 @@ def spawn(host: str, port: int, database: Path | None = None) -> int:
 
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     log = LOG_FILE.open("ab")  # noqa: SIM115
-    command = [sys.executable, "-m", "uvicorn", TARGET, "--factory", "--host", host, "--port", str(port)]
+    command = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        TARGET,
+        "--factory",
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--timeout-graceful-shutdown",
+        str(GRACEFUL_SECONDS),
+    ]
     process = subprocess.Popen(
         command,
         stdout=log,

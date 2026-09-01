@@ -1251,7 +1251,7 @@
       "Options": {
         "default": {
           "autoscale_cooldown": 0.0,
-          "autoscale_idle_timeout": 30.0,
+          "autoscale_idle_timeout": 120.0,
           "cluster": null,
           "default_compute_timeout": 0.0,
           "health_command": null,
@@ -1273,7 +1273,7 @@
             "type": "number"
           },
           "autoscale_idle_timeout": {
-            "default": 30.0,
+            "default": 120.0,
             "type": "number"
           },
           "cluster": {
@@ -1647,8 +1647,18 @@
         "type": "object"
       },
       "ProgressEvent": {
-        "description": "What a machine short of an address is doing, while it is still doing it.\n\nPublished rather than recorded, like a gauge: a percentage is true for the\nmoment it is sent, and a late subscriber wants where the machine got to, not\nthe hundred readings it passed through while nobody was watching. What outlives\nthe wait is the node's state and, if it never arrives, the reason it was given\nup on.",
+        "description": "What a machine short of an address is doing, while it is still doing it.\n\nPublished rather than recorded, like a gauge: a percentage is true for the\nmoment it is sent, and a late subscriber wants where the machine got to, not\nthe hundred readings it passed through while nobody was watching. What outlives\nthe wait is the node's state and, if it never arrives, the reason it was given\nup on.\n\n``progress`` is what the machine is doing and ``completion`` is how far into it,\nkept apart so that a reader can draw the fraction instead of spelling it: a\nterminal gets a bar that fills, a log file gets the same words it always got.",
         "properties": {
+          "completion": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "compute": {
             "type": "string"
           },

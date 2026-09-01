@@ -188,6 +188,8 @@ class Runtime:
         if self.cluster:
             key = None
             seeds = [self.nodes[ready].seed for ready in self.ready]
+            if len(set(seeds)) != len(seeds):
+                raise RuntimeError(f"compute {self.compute} has nodes sharing an address — a cluster cannot tell their workers apart")
         else:
             if node_id is None:
                 raise ValueError("a standalone runtime needs the node whose worker it should reach")
@@ -204,12 +206,33 @@ class Runtime:
                     seeds,
                     tls=self._material(),
                     config=casty.Config(call_timeout=CALL_TIMEOUT),
-                    address_map=lambda addr: self._tunnels.get(addr, addr),
+                    address_map=self.address_map(key),
                     cluster_name=self.compute,
                 )
 
         self._refresh()
         return self._systems[key]
+
+    def address_map(self, node_id: str | None) -> Callable[[str], str]:
+        """How one client turns an advertised address into something it can dial.
+
+        The cluster client resolves through the shared map, keyed by what each
+        worker advertises — unique there, because a cluster only exists on a
+        private network. A standalone client belongs to one node, and that node's
+        advertised address is not its identity: two marketplace machines behind
+        the same NAT advertise the same ``host:port``, and a map keyed by it would
+        route both clients to whichever tunnel registered last. So the standalone
+        client ignores the address entirely and dials its own node's tunnel, read
+        live because an SSH reconnect moves it.
+        """
+        if node_id is None:
+            return lambda addr: self._tunnels.get(addr, addr)
+
+        def via(addr: str) -> str:
+            node = self.nodes.get(node_id)
+            return f"127.0.0.1:{node.tunnel}" if node and node.tunnel else addr
+
+        return via
 
     async def retopology(self, node_id: str, peers: tuple[str, ...]) -> None:
         """Tell one running worker that the compute is a different size than it was.

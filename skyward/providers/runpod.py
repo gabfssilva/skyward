@@ -75,7 +75,7 @@ ENTRYPOINT = (
     "install -y --no-install-recommends openssh-server"
     ")) && "
     "mkdir -p /run/sshd ~/.ssh && "
-    'echo "$PUBLIC_KEY" >> ~/.ssh/authorized_keys && '
+    'printf "%s\\n%s\\n" "$PUBLIC_KEY" "$SKYWARD_PUBLIC_KEY" >> ~/.ssh/authorized_keys && '
     "chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && "
     "ssh-keygen -A && "
     'sed -i "s/#PermitRootLogin.*/PermitRootLogin yes/" /etc/ssh/sshd_config && '
@@ -264,8 +264,8 @@ class RunPodProvider:
         """Resolve the pod recipe. RunPod has nothing to create up front.
 
         There is no keypair resource, no network and no security group: the public
-        key travels as a ``PUBLIC_KEY`` env var and the entrypoint appends it to
-        ``authorized_keys`` on first boot. Everything here is therefore a decision
+        key travels as a ``SKYWARD_PUBLIC_KEY`` env var and the entrypoint appends it
+        to ``authorized_keys`` on first boot. Everything here is therefore a decision
         rather than an allocation, which is what makes it trivially idempotent —
         and what makes :meth:`release` a no-op.
         """
@@ -523,9 +523,15 @@ def _deploy_input(binding: Binding, market: Market, image: str | None = None) ->
 
     ``startSsh`` is what makes the pod reachable at all: RunPod publishes the public
     port behind ``ssh.direct`` only for a pod created with it, and a pod without one
-    can be talked to through the interactive proxy and nowhere else. The key it would
-    inject is the account's, not the compute's — it is skipped because this request
-    carries a ``PUBLIC_KEY`` of its own, which is the one the node will trust.
+    can be talked to through the interactive proxy and nowhere else. It also injects
+    the account's keys, and it does so through ``PUBLIC_KEY`` — RunPod's own variable,
+    documented as the pod's authorized SSH public keys. A request that writes the
+    compute's key into that same variable is a second writer on it, and which value the
+    pod ends up with is not ours to decide: whenever theirs wins, the daemon cannot log
+    into the machine it just bought. So the compute's key travels in
+    ``SKYWARD_PUBLIC_KEY``, which nothing on their side touches, and the entrypoint
+    appends both — the account keeps the access it configured, the daemon always has its
+    own, and neither depends on the other.
     """
     if market == "spot":
         raise CapabilityMismatchError(
@@ -545,7 +551,7 @@ def _deploy_input(binding: Binding, market: Market, image: str | None = None) ->
         "ports": normalized_ports,
         "startSsh": True,
         "env": {
-            "PUBLIC_KEY": binding["public_key"],
+            "SKYWARD_PUBLIC_KEY": binding["public_key"],
             "INSTANCE_TIMEOUT": str(binding.get("ttl", 0)),
         },
     }

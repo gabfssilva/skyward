@@ -171,7 +171,8 @@ class Options:
     worker_timeout : float
         Seconds to wait for the worker to come up once bootstrap has finished.
     autoscale_idle_timeout : float
-        Seconds a node must sit idle before an elastic pool may reclaim it.
+        Seconds a node must sit idle, counted from the moment it became ready,
+        before an elastic pool may reclaim it.
     autoscale_cooldown : float
         Seconds between autoscaling decisions. ``0`` is no cooldown.
     default_compute_timeout : float
@@ -199,7 +200,7 @@ class Options:
     max_provision_attempts: int = 30
     provision_timeout: float = 300.0
     worker_timeout: float = 180.0
-    autoscale_idle_timeout: float = 30.0
+    autoscale_idle_timeout: float = 120.0
     autoscale_cooldown: float = 0.0
     default_compute_timeout: float = 0.0
     health_command: str | None = None

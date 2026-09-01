@@ -48,6 +48,7 @@ from skyward.shared.schemas import (
     Offer,
     ProgressEvent,
     Volume,
+    progressed,
 )
 from skyward.shared.tls import authority
 from skyward.worker import bootstrap
@@ -548,14 +549,15 @@ class Machines:
             return False
 
         seen, since = self._progress.get(node.id, (None, node.launched_at))
-        if machine.progress != seen:
-            self._progress[node.id] = (machine.progress, now())
-            await self._progressed(node, machine.progress)
+        moved = _token(machine)
+        if moved != seen:
+            self._progress[node.id] = (moved, now())
+            await self._progressed(node, machine)
             return False
 
         return (now() - since).total_seconds() > deadline
 
-    async def _progressed(self, node: Node, progress: str | None) -> None:
+    async def _progressed(self, node: Node, machine: Machine) -> None:
         """Say what the machine is doing, once, to whoever is watching.
 
         The moment it moves is the only moment worth saying so, which is why this is
@@ -563,10 +565,10 @@ class Machines:
         gauge is: a compute waiting ten minutes on an image would otherwise leave
         hundreds of rows behind that say nothing the node's state does not.
         """
-        if progress is None:
+        if machine.progress is None:
             return
 
-        payload = ProgressEvent(compute=node.compute_id, node=node.id, progress=progress)
+        payload = ProgressEvent(compute=node.compute_id, node=node.id, progress=machine.progress, completion=machine.completion)
         await self._events.publish("node.progress", await codec.json(Event).encode(payload), compute=node.compute_id)
 
     async def _lost(self, node: Node, why: str) -> None:
@@ -587,8 +589,14 @@ def _settled(node: Node) -> bool:
     return (now() - node.created_at).total_seconds() > DOUBT_SECONDS
 
 
+def _token(machine: Machine) -> str | None:
+    """The one string that changes exactly when the machine has got closer."""
+    return None if machine.progress is None else progressed(machine.progress, machine.completion)
+
+
 def _unaddressed(machine: Machine, deadline: float) -> str:
     """Why a machine short of an address was given up on, in terms of what it was doing."""
-    if machine.progress is None:
+    token = _token(machine)
+    if token is None:
         return f"the machine never published an address in {deadline:.0f}s"
-    return f"the machine has been {machine.progress} for {deadline:.0f}s without publishing an address"
+    return f"the machine has been {token} for {deadline:.0f}s without publishing an address"

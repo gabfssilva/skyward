@@ -48,6 +48,15 @@ DEFAULT_URL = f"http://{HOST}:{PORT}"
 START_TIMEOUT = 30.0
 POLL_SECONDS = 0.2
 
+RETRY_SECONDS = 30.0
+"""How long a request outlives the daemon it was talking to.
+
+A daemon bounce is seconds, and every mutating route was built to be re-asked —
+submits and cancels carry an ``Idempotency-Key``, blobs are addressed by their
+content, a lease renew renews. A daemon that is actually gone is a different
+thing, and past this the error is the answer.
+"""
+
 NOT_A_DAEMON = (httpx.HTTPError, OSError, msgspec.DecodeError, SkywardError, UnexpectedResponseError)
 """What asking an address whether it holds a daemon can fail with.
 
@@ -98,9 +107,15 @@ class Client:
         return cls(await stack.enter_async_context(http), stack)
 
     async def liveness(self) -> Liveness | None:
-        """What the daemon says about itself, or nothing when none answers."""
+        """What the daemon says about itself, or nothing when none answers.
+
+        No patience here: this is the probe :func:`connect` uses to decide whether
+        to start a daemon, and a probe that retries for half a minute is a daemon
+        that takes half a minute to be found missing.
+        """
         try:
-            return await self.call("GET", "/v1/health/live", Liveness)
+            response = await self._send("GET", "/v1/health/live", None, JSON, None, {}, patience=0.0)
+            return msgspec.json.decode(response.content, type=Liveness)
         except NOT_A_DAEMON:
             return None
 
@@ -269,17 +284,35 @@ class Client:
         content_type: str,
         headers: dict[str, str] | None,
         query: dict[str, object],
+        *,
+        patience: float = RETRY_SECONDS,
     ) -> httpx.Response:
-        response = await self._http.request(
-            method,
-            path,
-            content=body,
-            params={key: str(value) for key, value in query.items() if value is not None},
-            headers={"Content-Type": content_type, **(headers or {})},
-        )
-        if response.status_code >= 400:
-            raise refused(response.status_code, response.content)
-        return response
+        """One request, re-sent through a daemon bounce.
+
+        Only transport failures are retried — a connection refused or reset is the
+        daemon being restarted under us, and every route is safe to re-ask (see
+        :data:`RETRY_SECONDS`). An HTTP refusal is an answer, and it stands.
+        """
+        deadline = asyncio.get_running_loop().time() + patience
+        delay = POLL_SECONDS
+        while True:
+            try:
+                response = await self._http.request(
+                    method,
+                    path,
+                    content=body,
+                    params={key: str(value) for key, value in query.items() if value is not None},
+                    headers={"Content-Type": content_type, **(headers or {})},
+                )
+            except httpx.TransportError:
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 5.0)
+                continue
+            if response.status_code >= 400:
+                raise refused(response.status_code, response.content)
+            return response
 
 
 class Embedded(httpx.AsyncBaseTransport):

@@ -6,12 +6,14 @@ again. What holds the pool up afterwards is ``min`` — the same count that deci
 whether it is ready — and what makes it move at all afterwards is ``max``.
 """
 
+from collections import Counter
+
 import msgspec
 import pytest
 
 from skyward.core.spec import bounds as spelled
 from skyward.server.application.mock import COMPUTE, NODE, SPEC
-from skyward.server.application.reconciler import demand
+from skyward.server.application.reconciler import demand, leavable
 from skyward.shared.schemas import Compute, Node, NodeBounds, NodeState, PluginRef
 
 pytestmark = pytest.mark.local
@@ -112,6 +114,29 @@ def describe_a_pool_running_a_collective() -> None:
         buy, _ = demand(pool(NodeBounds(initial=4, min=1), "torch"), rows("ready", "ready", "ready", "failed"), load=0)
 
         assert buy == 1, "a world of four that opened on three is a rendezvous one rank short"
+
+
+def describe_which_nodes_an_elastic_pool_may_reclaim() -> None:
+    def a_machine_still_coming_up_is_not_idle_however_long_it_takes() -> None:
+        booting: tuple[NodeState, ...] = ("requested", "provisioning", "connecting", "bootstrapping")
+
+        for node in rows(*booting):
+            assert not leavable(node, Counter(), frozenset()), f"a {node.state} node has never had work to be idle from"
+
+    def a_ready_node_with_nothing_on_it_may_go() -> None:
+        (node,) = rows("ready")
+
+        assert leavable(node, Counter(), frozenset())
+
+    def a_ready_node_holding_an_execution_stays() -> None:
+        (node,) = rows("ready")
+
+        assert not leavable(node, Counter({node.id: 1}), frozenset())
+
+    def a_ready_node_whose_rank_a_broadcast_froze_stays() -> None:
+        (node,) = rows("ready")
+
+        assert not leavable(node, Counter(), frozenset({node.rank}))
 
 
 def describe_a_pool_being_deleted() -> None:

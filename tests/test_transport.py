@@ -11,9 +11,12 @@ import asyncio
 import os
 import signal
 import socket
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
+from contextlib import AsyncExitStack
 from pathlib import Path
 
+import httpx
 import msgspec
 import pytest
 
@@ -137,6 +140,51 @@ def describe_a_daemon_running_another_skyward() -> None:
             asyncio.run(connect(None, None))
 
         assert "sky server stop" in str(refusal.value), "the refusal has to say what to do about it"
+
+
+def describe_a_daemon_that_bounces_mid_request() -> None:
+    def it_is_asked_again_until_it_comes_back() -> None:
+        attempts = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise httpx.ConnectError("connection refused")
+            return httpx.Response(200, content=msgspec.json.encode(Page(items=[], next_cursor=None)))
+
+        async def survive_the_bounce() -> Page[Provider]:
+            client = _mocked(handler)
+            try:
+                return await client.call("GET", "/v1/providers", Page[Provider])
+            finally:
+                await client.close()
+
+        page = asyncio.run(survive_the_bounce())
+
+        assert attempts == 3, "the request must outlive the bounce, not fail on the first refused connection"
+        assert page.items == ()
+
+    def it_probes_liveness_without_waiting_for_one() -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused")
+
+        async def probe() -> object:
+            client = _mocked(handler)
+            try:
+                return await client.liveness()
+            finally:
+                await client.close()
+
+        started = time.monotonic()
+
+        assert asyncio.run(probe()) is None
+        assert time.monotonic() - started < 1.0, "the probe decides whether to start a daemon; it must not wait for one"
+
+
+def _mocked(handler: Callable[[httpx.Request], httpx.Response]) -> Client:
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://skyward")
+    return Client(http, AsyncExitStack())
 
 
 def describe_leaving_a_pool_that_borrowed_a_daemon() -> None:

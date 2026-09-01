@@ -60,6 +60,11 @@ class Machine(Struct, frozen=True):
         measured from the last time it changed rather than from the launch. A
         provider with nothing to say leaves it out, and its machines are held to
         the deadline from the moment they were bought.
+    completion : float | None
+        How much of that is done, between zero and one, for the providers that
+        count it. It is the number and not the sentence, so that a terminal can
+        draw it; the deadline reads it as part of the same token, since an image
+        that is 10% pulled and one that is 90% pulled are not the same news.
     """
 
     id: str
@@ -70,6 +75,7 @@ class Machine(Struct, frozen=True):
     private_host: str | None = None
     password: str | None = None
     progress: str | None = None
+    completion: float | None = None
 
 
 @runtime_checkable

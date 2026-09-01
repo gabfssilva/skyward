@@ -127,7 +127,7 @@ def describe_a_machine_the_provider_says_is_still_getting_closer() -> None:
         machines, compute, node = await _bought(
             tmp_path / "skyward.sqlite",
             provision_timeout=0.01,
-            reported=("downloading (10%)", "downloading (55%)", "downloading (90%)"),
+            reported=(("downloading", 0.10), ("downloading", 0.55), ("downloading", 0.90)),
         )
 
         for _ in range(3):
@@ -141,7 +141,7 @@ def describe_a_machine_the_provider_says_is_still_getting_closer() -> None:
         machines, compute, node = await _bought(
             tmp_path / "skyward.sqlite",
             provision_timeout=0.01,
-            reported=("downloading (55%)", "downloading (55%)"),
+            reported=(("downloading", 0.55), ("downloading", 0.55)),
         )
 
         for _ in range(2):
@@ -203,6 +203,42 @@ def describe_taking_hold_of_one_machine() -> None:
         assert not runtime.claim("nod_1"), "membership is what refuses the claim once the node exists"
 
 
+def describe_two_nodes_behind_one_address() -> None:
+    """Marketplace machines NAT-share a public IP, so an advertised address does not name a node."""
+
+    def it_routes_each_standalone_client_through_its_own_tunnel() -> None:
+        runtime = _runtime(cluster=False)
+        first, second = _node(host="140.82.47.249"), _node(host="140.82.47.249")
+        first.tunnel, second.tunnel = 40001, 40002
+        runtime.track("nod_1", first)
+        runtime.track("nod_2", second)
+
+        assert first.seed == second.seed, "the collision under test — both nodes advertise the same address"
+        assert runtime.address_map("nod_1")(first.seed) == "127.0.0.1:40001"
+        assert runtime.address_map("nod_2")(second.seed) == "127.0.0.1:40002"
+
+    def it_reads_the_tunnel_live_across_a_reconnect() -> None:
+        runtime = _runtime(cluster=False)
+        node = _node()
+        node.tunnel = 40001
+        runtime.track("nod_1", node)
+        via = runtime.address_map("nod_1")
+
+        node.tunnel = 40002
+
+        assert via(node.seed) == "127.0.0.1:40002"
+
+    async def it_refuses_to_cluster_nodes_it_cannot_tell_apart() -> None:
+        runtime = _runtime()
+        first, second = _node(host="140.82.47.249"), _node(host="140.82.47.249")
+        first.tunnel, second.tunnel = 40001, 40002
+        runtime.track("nod_1", first)
+        runtime.track("nod_2", second)
+
+        with pytest.raises(RuntimeError, match="sharing an address"):
+            await runtime.system()
+
+
 def describe_a_spec_written_under_the_old_vocabulary() -> None:
     async def it_is_mended_on_the_next_open(tmp_path: Path) -> None:
         """A row from before ``NodeBounds.desired`` became ``initial`` must still decode."""
@@ -221,11 +257,15 @@ def describe_a_spec_written_under_the_old_vocabulary() -> None:
         assert mended.spec.nodes == SPEC.nodes
 
 
-async def _bought(database: Path, provision_timeout: float, reported: tuple[str, ...] = ()) -> tuple[Machines, Compute, Node]:
+async def _bought(
+    database: Path,
+    provision_timeout: float,
+    reported: tuple[tuple[str, float | None], ...] = (),
+) -> tuple[Machines, Compute, Node]:
     """A compute whose one node has a machine the provider reports without an address.
 
-    ``reported`` is what the provider says the machine is doing, one entry per
-    listing; the last one is repeated once they run out.
+    ``reported`` is what the provider says the machine is doing and how far into it,
+    one entry per listing; the last one is repeated once they run out.
     """
     await connect(database)
     computes, nodes, providers = ComputeStore(), NodeStore(), ProviderStore()
@@ -249,14 +289,14 @@ async def _bought(database: Path, provision_timeout: float, reported: tuple[str,
     return machines, await computes.get(compute.id), node
 
 
-async def _answering(progress: deque[str]) -> Any:
+async def _answering(progress: deque[tuple[str, float | None]]) -> Any:
     """A provider with one machine that has no address, and is asked nothing else."""
     return SimpleNamespace(machines=lambda _: _listing(progress))
 
 
-async def _listing(progress: deque[str]) -> dict[str, Machine]:
-    seen = progress.popleft() if len(progress) > 1 else next(iter(progress), None)
-    return {"m1": Machine(id="m1", state="running", progress=seen)}
+async def _listing(progress: deque[tuple[str, float | None]]) -> dict[str, Machine]:
+    seen = progress.popleft() if len(progress) > 1 else next(iter(progress), (None, None))
+    return {"m1": Machine(id="m1", state="running", progress=seen[0], completion=seen[1])}
 
 
 async def _store(tmp_path: Path) -> ComputeStore:
@@ -264,14 +304,14 @@ async def _store(tmp_path: Path) -> ComputeStore:
     return ComputeStore()
 
 
-def _runtime() -> Runtime:
-    return Runtime("cmp_1", Source(arguments=("skyward",)), private_key="key")
+def _runtime(cluster: bool = True) -> Runtime:
+    return Runtime("cmp_1", Source(arguments=("skyward",)), private_key="key", cluster=cluster)
 
 
-def _node() -> ApplicationNode:
+def _node(host: str = "127.0.0.1") -> ApplicationNode:
     quiet = lambda *args: None  # noqa: E731
     return ApplicationNode(
-        Machine(id="m1", state="running", host="127.0.0.1"),
+        Machine(id="m1", state="running", host=host),
         compute="cmp_1",
         private_key="key",
         image=Image(),

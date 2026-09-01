@@ -317,7 +317,7 @@ async def execute(id: str, code: bytes, args: bytes) -> Outcome:
             value = await loop.run_in_executor(thread_pool, contextvars.copy_context().run, wrapped)
             return Done(value=await codec.payload.encode(value))
 
-        ok, payload = await loop.run_in_executor(task_pool, _run_in_process, code, args, os.environ["SKYWARD_PEERS"])
+        ok, payload = await loop.run_in_executor(task_pool, _run_in_process, id, code, args, os.environ["SKYWARD_PEERS"])
         if ok:
             assert isinstance(payload, bytes)
             return Done(value=payload)
@@ -383,7 +383,7 @@ def _installed() -> tuple[Plugin, ...]:
     return child_plugins
 
 
-def _run_in_process(code: bytes, args: bytes, peers: str) -> tuple[Literal[True], bytes] | tuple[Literal[False], tuple[str, str]]:
+def _run_in_process(id: str, code: bytes, args: bytes, peers: str) -> tuple[Literal[True], bytes] | tuple[Literal[False], tuple[str, str]]:
     """Run one task in a subprocess, and bring back an answer that survives the trip.
 
     The code and the arguments are unpickled here, where the user's libraries are,
@@ -396,8 +396,17 @@ def _run_in_process(code: bytes, args: bytes, peers: str) -> tuple[Literal[True]
     environment: a reused child was forked with the world as it was when the pool
     was built, and a compute that has grown since would be sharded here into the
     number of ways there used to be.
+
+    Output is redirected here for the same reason it is redirected in ``cli``: a
+    fresh interpreter writes to the fd it inherited, which is the worker's log file
+    and not the journal the daemon is tailing — the one place bootstrap output and
+    thread-mode output already stream from.
     """
     os.environ["SKYWARD_PEERS"] = peers
+    if not isinstance(sys.stdout, Journal):
+        sys.stdout = Journal("stdout")
+        sys.stderr = Journal("stderr")
+    token = task.set(id)
     try:
         fn: Callable[..., object] = codec.loads(code)
         decoded: Arguments = codec.loads(args)
@@ -411,6 +420,8 @@ def _run_in_process(code: bytes, args: bytes, peers: str) -> tuple[Literal[True]
         return True, codec.dumps(value)
     except Exception as exc:
         return False, (str(exc), traceback.format_exc())
+    finally:
+        task.reset(token)
 
 
 async def reachable(seed: str) -> None:

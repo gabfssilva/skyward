@@ -21,6 +21,7 @@ to whoever was supposed to act on it. That is what buys the right to skip an out
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from collections.abc import Callable, Sequence
 from datetime import timedelta
 from math import ceil
@@ -54,18 +55,6 @@ from skyward.worker import plugins
 logger = logger.bind(component="reconciler")
 
 type Wake = Callable[..., None]
-
-IDLE_SECONDS = 30.0
-"""How long a node must have had nothing to do before it is taken away.
-
-Booting a machine costs minutes and most providers bill the hour they started. A pool
-that shrank the instant a burst ended would kill the machines it had just paid to
-boot, and buy them again on the next burst.
-
-Seconds, and not passes: a pass runs whenever anything happens, so a compute in the
-middle of a busy moment would run through a pass-counted delay in milliseconds and
-call it patience.
-"""
 
 ABANDON_SECONDS = 60.0
 """How old a compute must be before having no owner means nobody is coming.
@@ -232,7 +221,7 @@ class Reconciler:
 
         A compute being deleted skips the waiting. The patience exists to stop a pool
         from thrashing around a burst; a pool nobody wants any more is not going to
-        need these machines in thirty seconds, and making the user watch us hesitate
+        need these machines back in a moment, and making the user watch us hesitate
         before we stop billing them is the wrong kind of caution.
         """
         if surplus <= 0:
@@ -247,13 +236,18 @@ class Reconciler:
         return sorted(leavable, key=lambda node: node.rank, reverse=True)[:surplus]
 
     async def _idlers(self, compute_id: str, idle_timeout: float) -> set[str]:
-        """Nodes with nothing on them, and nothing owed to them, for long enough."""
+        """Nodes with nothing on them, and nothing owed to them, for long enough.
+
+        The clock starts at ``ready``, and only runs while the node stays leavable:
+        anything else resets it, so a machine that spends five minutes booting has
+        been idle for zero seconds when it arrives.
+        """
         holding, owed = await self._tasks.busy(compute_id)
         now = monotonic()
 
         idle: set[str] = set()
         for node in await self._nodes.of(compute_id):
-            if node.id in holding or node.rank in owed:
+            if not leavable(node, holding, owed):
                 self._idle.pop(node.id, None)
                 continue
 
@@ -358,6 +352,22 @@ def abandoned(compute: Compute) -> bool:
     if compute.lease.owner is not None and compute.lease.expires_at is not None and compute.lease.expires_at > now():
         return False
     return now() - compute.created_at > timedelta(seconds=ABANDON_SECONDS)
+
+
+def leavable(node: Node, holding: Counter[str], owed: frozenset[int]) -> bool:
+    """Whether this node may ever be reclaimed, before any question of time.
+
+    Only a ``ready`` node. One still being bought, logged into, or bootstrapped has
+    had nothing to do since before it existed — an idle clock started at
+    ``requested`` reads boot time as idleness, and boot time is minutes on the
+    providers where it matters, so an elastic pool would drain the machines it was
+    still waiting for and buy them again when the work arrived.
+
+    And not one holding an execution, or standing on a rank a broadcast froze:
+    rank 3 is owed work even when nothing has been placed on it yet, and taking
+    the machine leaves the broadcast waiting for a peer that is never coming back.
+    """
+    return node.state == "ready" and node.id not in holding and node.rank not in owed
 
 
 def demand(compute: Compute, nodes: Sequence[Node], load: int) -> tuple[int, int]:

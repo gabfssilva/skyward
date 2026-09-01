@@ -311,7 +311,13 @@ class SaladProvider:
                 continue
             instance = next(iter(instances), None)
             if _state(instance) != "running" or not dns:
-                machines[group_name] = Machine(id=group_name, state="pending", user=SSH_USER, progress=_progress(instance))
+                machines[group_name] = Machine(
+                    id=group_name,
+                    state="pending",
+                    user=SSH_USER,
+                    progress=_progress(instance),
+                    completion=_completion(instance),
+                )
                 continue
             bridge = await _bridge(group_name, dns)
             machines[group_name] = Machine(
@@ -504,29 +510,33 @@ def _group_name(compute_id: str) -> str:
 
 
 def _progress(instance: object) -> str:
-    """What Salad is doing with a group that has no address yet.
+    """What Salad is doing with a group that has no address yet, in one word.
 
-    Written to change while the machine is getting closer and to hold still when it
-    is not: the pull reports the percentage it has reached, and everything else is
-    the state's own name.
+    The state's own name, which is what a reader wants above the bar: how far the
+    pull has got is :func:`_completion`, and the two are put together by whoever is
+    rendering them.
+    """
+    if instance is None:
+        return "waiting for salad to allocate a machine"
+    return _enum_value(getattr(instance, "state", None)) or "pending"
 
-    Whole percent, because every change is a line on somebody's console: a pull is
-    polled every couple of seconds and a tenth of a percent is not news. It is still
-    a hundred times finer than the deadline needs.
+
+def _completion(instance: object) -> float | None:
+    """How much of the image is pulled, as a fraction, for the state that pulls one.
+
+    Whole percent, because every change is a line on somebody's console and an event
+    on the wire: a pull is polled every couple of seconds and a tenth of a percent is
+    not news. It is still a hundred times finer than the deadline needs.
 
     ``pulling_progress`` arrives as a fraction — ``0.43`` is 43% of the image — while
     the sdk's own model says it is a percentage and validates it to 100. Only one
     reading of ``0.43`` is sane, and a value above one can only be the other, so both
-    are accepted and the answer is a percentage either way.
+    are accepted and the answer is a fraction either way.
     """
-    if instance is None:
-        return "waiting for salad to allocate a machine"
-
-    state = _enum_value(getattr(instance, "state", None)) or "pending"
+    if instance is None or _enum_value(getattr(instance, "state", None)) != "downloading":
+        return None
     pulled = _number(getattr(instance, "pulling_progress", None))
-    if state != "downloading" or pulled is None:
-        return state
-    return f"{state} ({int(pulled * 100 if pulled <= 1 else pulled)}%)"
+    return None if pulled is None else round(pulled if pulled <= 1 else pulled / 100, 2)
 
 
 def _required(value: str | None, key: str, provider: str) -> str:

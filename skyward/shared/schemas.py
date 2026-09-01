@@ -400,7 +400,14 @@ class Options(Struct, frozen=True):
     stuck, and a window run against the clock would kill the pull and have the
     replacement start it over.
     """
-    autoscale_idle_timeout: float = 30.0
+    autoscale_idle_timeout: float = 120.0
+    """Seconds a node must sit idle, counted from ``ready``, before an elastic pool may reclaim it.
+
+    Booting a machine costs minutes and most providers bill the hour they started,
+    so the patience is sized to the boot: a pool that shrank the instant a burst
+    ended would kill the machines it had just paid to bring up, and buy them again
+    on the next burst.
+    """
     autoscale_cooldown: float = 0.0
     """Seconds between autoscaling decisions. ``0`` is no cooldown — today's behavior."""
     default_compute_timeout: float = 0.0
@@ -882,11 +889,26 @@ class ProgressEvent(Struct, frozen=True, tag_field="type", tag="node.progress"):
     the hundred readings it passed through while nobody was watching. What outlives
     the wait is the node's state and, if it never arrives, the reason it was given
     up on.
+
+    ``progress`` is what the machine is doing and ``completion`` is how far into it,
+    kept apart so that a reader can draw the fraction instead of spelling it: a
+    terminal gets a bar that fills, a log file gets the same words it always got.
     """
 
     compute: str
     node: str
     progress: str
+    completion: float | None = None
+
+
+def progressed(progress: str, completion: float | None) -> str:
+    """What a machine is doing and how far into it, as one phrase.
+
+    One rendering, because the same words are the line a log carries and the reason
+    a machine that never moved again was given up on, and a percentage written two
+    ways reads as two different machines.
+    """
+    return progress if completion is None else f"{progress} ({completion * 100:.0f}%)"
 
 
 class ConsoleEvent(Struct, frozen=True, tag_field="type", tag="node.console"):
